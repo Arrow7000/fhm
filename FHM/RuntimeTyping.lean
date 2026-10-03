@@ -1397,6 +1397,143 @@ theorem RunWT.letRecUnfold_preservation {ctx : Ctx}
       have hsubst := RunWT.substMany (envPre := []) hvalues hbody
       simpa [RecSpecs.bodyCtx, List.nil_append, RecSpec.bodyScheme] using hsubst
 
+/-- One-step subject reduction for fully erased runtime terms. -/
+theorem RunWT.preservation {ctx : Ctx} {e e' : Expr} {ty : Ty}
+    (hstep : SmallStep.Step e e') (htyped : RunWT ctx e ty) :
+    RunWT ctx e' ty := by
+  induction hstep generalizing ty with
+  | beta hval =>
+      rename_i ann body v
+      cases htyped with
+      | app hfn harg =>
+          cases hfn with
+          | lambda hparam hbody =>
+              have hvalues : List.Forall₂ (RunHasScheme ctx)
+                  [v] [PolyTy.mkTrivial _] :=
+                .cons (RunHasScheme.ofTrivial harg) .nil
+              have hsubst := RunWT.substMany
+                (envPre := []) (schemes := [PolyTy.mkTrivial _])
+                (values := [v]) hvalues hbody
+              simpa using hsubst
+  | letReduce =>
+      rename_i ann rhs body
+      cases htyped with
+      | letIn hwf hgen hbody =>
+          expose_names
+          have hvalues : List.Forall₂ (RunHasScheme ctx)
+              [rhs] [scheme] :=
+            .cons (RunHasScheme.ofGeneralisesTo hwf hgen) .nil
+          have hsubst := RunWT.substMany
+            (envPre := []) (schemes := [scheme]) (values := [rhs])
+            hvalues hbody
+          simpa using hsubst
+  | deltaIntAdd =>
+      cases htyped with
+      | app hfn _ => cases hfn with
+        | app hop _ => cases hop; exact .primLitInt
+  | deltaIntSub =>
+      cases htyped with
+      | app hfn _ => cases hfn with
+        | app hop _ => cases hop; exact .primLitInt
+  | deltaIntLt =>
+      cases htyped with
+      | app hfn _ => cases hfn with
+        | app hop _ => cases hop with
+          | primBinOpIntLt htrue hfalse => split <;> assumption
+  | deltaCharLt =>
+      cases htyped with
+      | app hfn _ => cases hfn with
+        | app hop _ => cases hop with
+          | primBinOpCharLt htrue hfalse => split <;> assumption
+  | matchReduce hval hctor hfirst =>
+      rename_i scrut branches name args pat body
+      cases htyped with
+      | match_ hscrut _ hbranches =>
+          have hmem := hfirst.mem
+          have hpeq := hfirst.ctor_eq
+          cases pat with
+          | wildcard =>
+              cases hbranches (.wildcard, body) hmem with
+              | wildcard hbody =>
+                  have hsubst := RunWT.substMany
+                    (envPre := []) (schemes := []) (values := [])
+                    List.Forall₂.nil hbody
+                  simpa [MatchPattern.bindCount] using hsubst
+          | named c n =>
+              simp only [MatchPattern.matchesCtor, Bool.and_eq_true,
+                beq_iff_eq] at hpeq
+              obtain ⟨hcname, hnlen⟩ := hpeq
+              simp only [MatchPattern.bindCount]
+              rw [hnlen, List.take_length]
+              cases hbranches (.named c n, body) hmem with
+              | @mk _ _ _ _ ctorB _ _ tyArgsB instContents hspecB hbodyB =>
+                  have hlookB := hspecB.lookup
+                  have hScrutB := hspecB.scrut_eq
+                  have hpcB := hspecB.arity
+                  have hinstB := hspecB.fields
+                  rw [hScrutB] at hscrut
+                  obtain ⟨ctorS, tyArgsS, consumedS, remainingS,
+                    hlookS, htyargsS, hcontentsS, hforallS, hinstS⟩ :=
+                    RunWT.ctor_applied_inversion hctor hscrut
+                  rw [hcname] at hlookB
+                  have hcc := Option.some.inj (hlookS.symm.trans hlookB)
+                  cases hcc
+                  rename_i ctorB
+                  cases remainingS with
+                  | cons field rest =>
+                      simp only [Ty.wrapArrows] at hinstS
+                      cases hinstS
+                  | nil =>
+                      rw [List.append_nil] at hcontentsS
+                      subst hcontentsS
+                      simp only [Ty.wrapArrows] at hinstS
+                      cases hinstS with
+                      | customTy hbvr =>
+                          have hpc_len : tyArgsB.length = ctorB.paramCount := hpcB.symm
+                          have hagree : ∀ k, k < ctorB.paramCount →
+                              tyArgsB[k]? = tyArgsS[k]? := by
+                            intro k hk
+                            have hkt : k < tyArgsB.length := by omega
+                            have hkr : k < (Ty.bvarRange ctorB.paramCount).length := by
+                              rw [hbvr.length_eq]
+                              exact hkt
+                            have hrel := List.Forall₂.get hbvr hkr hkt
+                            simp only [List.get_eq_getElem] at hrel
+                            have helem : (Ty.bvarRange ctorB.paramCount)[k] =
+                                Ty.bvar k := by
+                              have h1 := Ty.bvarRange_getElem?
+                                (n := ctorB.paramCount) (k := k) hk
+                              rw [List.getElem?_eq_getElem hkr] at h1
+                              exact Option.some.inj h1
+                            rw [helem] at hrel
+                            cases hrel with
+                            | bvar hsome =>
+                                rw [hsome]
+                                exact List.getElem?_eq_getElem hkt
+                          have hvalues := InstantiatesBy.build_run_match_values
+                            hagree ctorB.bound hinstB hforallS
+                          have hsubst := RunWT.substMany
+                            (envPre := []) hvalues hbodyB
+                          simpa using hsubst
+  | matchWildReduce hval hnc =>
+      rename_i scrut body rest
+      cases htyped with
+      | match_ _ _ hbranches =>
+          cases hbranches (.wildcard, body) (List.mem_cons_self ..) with
+          | wildcard hbody => exact hbody
+  | appFn _ ih =>
+      cases htyped with
+      | app hfn harg => exact .app (ih hfn) harg
+  | appArg hval _ ih =>
+      cases htyped with
+      | app hfn harg => exact .app hfn (ih harg)
+  | matchScrut _ ih =>
+      cases htyped with
+      | match_ hscrut hne hbranches =>
+          exact .match_ (ih hscrut) hne hbranches
+  | letRecUnfold =>
+      exact RunWT.letRecUnfold_preservation htyped
+
 
 /-! ## A real-Core erased polymorphic-recursion witness -/
 
@@ -1497,6 +1634,7 @@ theorem erased_polySelf_unfolded_typed :
 #print axioms RunWT.substFvar
 #print axioms RunWT.substMany
 #print axioms RunWT.letRecUnfold_preservation
+#print axioms RunWT.preservation
 #print axioms erased_polySelf_typed
 #print axioms erased_polySelf_unfolded_typed
 

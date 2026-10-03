@@ -9,8 +9,9 @@ polymorphic inside its SCC, while an unannotated member remains monomorphic. Run
 terms remain completely type-erased. The additive production migration has begun:
 [`FHM/RuntimeTyping.lean`](../FHM/RuntimeTyping.lean) now fixes the proof-only mixed
 runtime judgment over the real Core `Expr`/`Ctx` types and proves preservation for
-the real recursive-unfolding step. The existing source checker remains unchanged
-until the vertical source/checker cut is ready.
+the complete real `Step` relation, including recursive unfolding and constructor
+match reduction. The existing source checker remains unchanged until the vertical
+source/checker cut is ready.
 
 The structural and scoped-opening gates are now present in
 [`FHM/AnnotatedPolyRecErasure.lean`](../FHM/AnnotatedPolyRecErasure.lean). It is a
@@ -650,15 +651,15 @@ The active implementation deliberately begins without altering `Expr` or `Step`.
 5. **Choose checker organization.** **Done.** Restore the focused historical
    `InferRecGroup.consPoly` path beside `consMono`; do not turn the whole inferencer
    into a bidirectional calculus and do not change runtime syntax.
-6. **Integrate after the mixed spike gate.** **Runtime unfolding slice complete:**
+6. **Integrate after the mixed spike gate.** **Production runtime layer complete:**
    the real-Core proof-only runtime relation and mixed source-premise vocabulary are
    in the default verified build. Its type substitution, fixed-opening rewrapping,
    scheme inhabitation, term weakening, simultaneous term substitution, and real
-   `Step.letRecUnfold` preservation are proved. A fully erased direct-self witness
-   takes that step and remains typed. Next complete the other production `Step`
-   cases—principally constructor-match reduction—then switch the source rule,
-   focused checker, soundness boundary, and acceptance tests as one coherent
-   vertical slice.
+   `Step` preservation are proved. This includes both mixed recursive unfolding and
+   the independent constructor instantiations that meet at match reduction. A fully
+   erased direct-self witness takes its unfolding step and remains typed. Next switch
+   the source rule, focused checker, soundness boundary, and acceptance tests as one
+   coherent vertical slice.
 
 The stop condition for the spike is important: if the supposedly small calculus once
 again demands type arguments on runtime variables, term-level `Λ`, or an elaborated
@@ -743,10 +744,8 @@ complete annotated member: checked and recursively available at that scheme
 all members: erased at runtime
 ```
 
-The proof-first spike gate and production recursive-unfolding slice are now complete.
-The remaining runtime preservation cases reuse ordinary HM machinery; match reduction
-is the substantial one because it must align constructor fields with pattern-bound
-values. After that, port the mixed source rule and focused checker and rebuild the
+The proof-first spike gate and production runtime preservation layer are now complete.
+The next phase is to port the mixed source rule and focused checker and rebuild the
 production erasure/safety boundary around `RunWT`. Head-binder sugar and partial
 annotations remain out of scope; they still require a separately designed type-hole
 story.
