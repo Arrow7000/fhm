@@ -23,11 +23,12 @@ substitution, concrete scheme inhabitation, recursive-member rewrapping, de Brui
 weakening, and simultaneous term substitution. No type abstraction, type
 application, or scheme survives in runtime syntax.
 
-One deliberate spike gap remains before production migration: its tiny recursive
-groups currently give every member a full scheme. Production needs the hybrid rule
-where annotated members are polymorphic inside the SCC while unannotated members
-share monotypes inside and are generalized only for the enclosing body. The erased
-runtime relation must remember both views without making runtime syntax typed.
+The mixed runtime rule is now fixed in
+[`FHM/AnnotatedPolyRecHybrid.lean`](../FHM/AnnotatedPolyRecHybrid.lean): annotated
+members carry proof-only schemes, while unannotated members carry shared monotypes
+inside the SCC and `genGroup` schemes in the enclosing body. A concrete mixed group
+is typed under that rule with no specs in its runtime syntax. Its remaining spike
+gate is the corresponding mixed recursive-rewrapping/preservation theorem.
 
 ## Executive summary
 
@@ -630,7 +631,8 @@ The active implementation deliberately begins without altering `Expr` or `Step`.
    [`FHM/AnnotatedPolyRecErasure.lean`](../FHM/AnnotatedPolyRecErasure.lean). Include only variables, functions, application,
    `let`, and `let rec`. Define annotated `SourceWT`, annotation-free `RunWT`, full
    erasure, and the nested `forall a. ... c ...` witness.
-3. **Prove the hard bridge first.** **Done for fully annotated recursive groups.** Before touching production FHM, prove
+3. **Prove the hard bridge first.** **Done for fully annotated recursive groups;
+   mixed rule and witness done, mixed preservation pending.** Before touching production FHM, prove
    `SourceWT e τ -> RunWT (erase e) τ` for the nested scoped polymorphic-recursive
    example and prove preservation of its unfolding step. **Next:** generalize the
    proof-only group witness to the selected annotated/unannotated hybrid rule.
