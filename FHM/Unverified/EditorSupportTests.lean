@@ -522,9 +522,9 @@ def afterSccSrc : String :=
       (r.diagnostics.all fun d => d.endLine > d.line || d.endCol > d.col)
   | none => false)
 
--- An annotation does not permit polymorphic calls *within* its SCC.
+-- Complete annotations permit polymorphic calls within their SCC.
 #guard (match hoverReport "let f : {a} a -> Int = \\x -> g True + g 1\nlet g : {a} a -> Int = \\x -> f x\nf\n" with
-  | some r => !r.diagnostics.isEmpty
+  | some r => r.diagnostics.isEmpty
   | none => false)
 
 -- Non-BMP characters consume two UTF-16 columns before later tokens.

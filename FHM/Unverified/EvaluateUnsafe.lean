@@ -121,11 +121,10 @@ partial def evaluateUnsafe : Expr → Option Expr
     progress rules out stuck states, so this returns a definite `Expr` rather than
     `Option` (still `partial` — divergence is allowed).
 
-`ctx.env = []` is baked into the `TypeOfHM ⟨[], ctors⟩` hypothesis (same
-shape as `type_safety` / `type_safety_star`); `h_erased` supplies the runtime
-erasedness invariant. -/
+`ctx.env = []` is baked into the `RuntimeTyping.RunWT ⟨[], ctors⟩`
+hypothesis; `h_erased` supplies the runtime erasedness invariant. -/
 partial def evaluateUnsafeTyped {ctors : CtorEnv} {τ : Ty} (e : Expr)
-    (h_ty : TypeOfHM ⟨[], ctors⟩ e τ)
+    (h_ty : RuntimeTyping.RunWT ⟨[], ctors⟩ e τ)
     (h_erased : e.erase = e)
     (h_exh : AllMatchesExhaustive ctors e) : Expr :=
   if hval : isValue e = true then e
@@ -134,7 +133,7 @@ partial def evaluateUnsafeTyped {ctors : CtorEnv} {τ : Ty} (e : Expr)
     | some e' =>
       have hstep := step_sound hs
       evaluateUnsafeTyped e'
-        (TypeOfHM.preservation hstep h_ty h_erased)
+        (RuntimeTyping.RunWT.preservation hstep h_ty)
         (SmallStep.Step.preserves_erased h_erased hstep)
         (Step.preserves_exhaustive h_exh hstep)
     | none =>
@@ -142,7 +141,7 @@ partial def evaluateUnsafeTyped {ctors : CtorEnv} {τ : Ty} (e : Expr)
         have nval : ¬ IsValue e := by
           intro hv
           simp [isValue_iff_IsValue.mpr hv] at hval
-        match TypeOfHM.progress h_ty rfl h_exh h_erased with
+        match RuntimeTyping.RunWT.progress h_ty rfl h_exh h_erased with
         | .inl hv => exact nval hv
         | .inr ⟨_, hstep⟩ => simp [step_complete hstep] at hs
 
