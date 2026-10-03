@@ -6,7 +6,10 @@
 member one monotype while an SCC is checked. The branch above is implementing the
 opt-in exception described here: a member with a complete explicit scheme is
 polymorphic inside its SCC, while an unannotated member remains monomorphic. Runtime
-terms remain completely type-erased.
+terms remain completely type-erased. The additive production migration has begun:
+[`FHM/RuntimeTyping.lean`](../FHM/RuntimeTyping.lean) now fixes the proof-only mixed
+runtime judgment over the real Core `Expr`/`Ctx` types, while the existing source
+checker remains unchanged until the vertical source/checker cut is ready.
 
 The structural and scoped-opening gates are now present in
 [`FHM/AnnotatedPolyRecErasure.lean`](../FHM/AnnotatedPolyRecErasure.lean). It is a
@@ -646,9 +649,12 @@ The active implementation deliberately begins without altering `Expr` or `Step`.
 5. **Choose checker organization.** **Done.** Restore the focused historical
    `InferRecGroup.consPoly` path beside `consMono`; do not turn the whole inferencer
    into a bidirectional calculus and do not change runtime syntax.
-6. **Integrate after the mixed spike gate.** Port the proof-only runtime relation,
-   mixed recursive source rule, focused checker, and acceptance tests into the full
-   language.
+6. **Integrate after the mixed spike gate.** **Started additively:** the real-Core
+   proof-only runtime relation and mixed source-premise vocabulary are in the default
+   verified build, together with a fully erased direct-self polymorphic-recursion
+   witness. Next port its operational metatheory, then switch the source rule,
+   focused checker, soundness boundary, and acceptance tests as one coherent
+   vertical slice.
 
 The stop condition for the spike is important: if the supposedly small calculus once
 again demands type arguments on runtime variables, term-level `Λ`, or an elaborated

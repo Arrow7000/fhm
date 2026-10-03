@@ -130,6 +130,369 @@ inductive RunWTMatchBranch :
 end
 
 
+/-! ## Runtime type substitution
+
+This is proof-only substitution.  Runtime expressions contain no type
+annotations, so substituting a free type variable changes the context and the
+derived type but leaves the expression itself untouched.  The recursive case
+freshens the shared HM pool before applying the substitution.
+-/
+
+private theorem Ty.IsLC.substFvars_runtime {pairs : List (Nat × Ty)} {ty : Ty}
+    (hpairs : ∀ pair ∈ pairs, pair.2.IsLC) (hty : ty.IsLC) :
+    (Ty.substFvars pairs ty).IsLC := by
+  induction pairs generalizing ty with
+  | nil => exact hty
+  | cons pair rest ih =>
+      obtain ⟨name, replacement⟩ := pair
+      simp only [Ty.substFvars]
+      exact ih
+        (fun pair hpair => hpairs pair (List.mem_cons_of_mem _ hpair))
+        (Ty.IsLC.substFvar (hpairs (name, replacement) List.mem_cons_self) hty)
+
+private theorem Ty.renameG_isLC_runtime {G Xs : List Nat} {ty : Ty}
+    (hty : ty.IsLC) : (Ty.renameG G Xs ty).IsLC := by
+  unfold Ty.renameG
+  apply Ty.IsLC.substFvars_runtime
+  · intro pair hpair
+    obtain ⟨name, _, heq⟩ := List.mem_map.mp (List.of_mem_zip hpair).2
+    rw [← heq]
+    exact ContainsBvarsUpTo.fvar
+  · exact hty
+
+private theorem mem_zip_map_right_runtime {α β γ : Type _} {f : β → γ} :
+    ∀ {left : List α} {right : List β} {pair : α × γ},
+      pair ∈ left.zip (right.map f) →
+      ∃ a b, (a, b) ∈ left.zip right ∧ pair = (a, f b) := by
+  intro left
+  induction left with
+  | nil => intro right pair hpair; simp at hpair
+  | cons head tail ih =>
+      intro right pair hpair
+      cases right with
+      | nil => simp at hpair
+      | cons rhead rtail =>
+          simp only [List.map_cons, List.zip_cons_cons, List.mem_cons] at hpair
+          rcases hpair with hpair | hpair
+          · exact ⟨head, rhead, by simp, hpair⟩
+          · obtain ⟨a, b, hab, heq⟩ := ih hpair
+            exact ⟨a, b, by simp [hab], heq⟩
+
+private def substSpecs (Z : Nat) (U : Ty) (G W : List Nat)
+    (specs : List RecSpec) : List RecSpec :=
+  specs.map (RecSpec.substFreshened Z U G W)
+
+theorem RunWT.substFvar {ctx : Ctx} {e : Expr} {ty U : Ty} {Z : Nat}
+    (hU : U.IsLC) (h : RunWT ctx e ty) :
+    RunWT { ctx with env := ctx.env.substFvar Z U } e
+      (Ty.substFvar Z U ty) := by
+  induction h using RunWT.rec
+    (motive_2 := fun ctx branch scrutTy resultTy _ =>
+      RunWTMatchBranch { ctx with env := ctx.env.substFvar Z U }
+        branch (Ty.substFvar Z U scrutTy) (Ty.substFvar Z U resultTy)) with
+  | primLitUnit => exact .primLitUnit
+  | primLitInt => exact .primLitInt
+  | primLitNat => exact .primLitNat
+  | primLitChar => exact .primLitChar
+  | primBinOpIntAdd => exact .primBinOpIntAdd
+  | primBinOpIntSub => exact .primBinOpIntSub
+  | primBinOpIntLt _ _ ihtrue ihfalse =>
+      exact .primBinOpIntLt ihtrue ihfalse
+  | primBinOpCharLt _ _ ihtrue ihfalse =>
+      exact .primBinOpCharLt ihtrue ihfalse
+  | lambda hparam _ ihbody =>
+      expose_names
+      simpa only [Env.substFvar, List.map_cons, PolyTy.substFvar,
+        PolyTy.mkTrivial] using
+        (RunWT.lambda (ctx := { ctx_1 with env := ctx_1.env.substFvar Z U })
+          (Ty.IsLC.substFvar hU hparam) ihbody)
+  | app _ _ ihfn iharg => exact .app ihfn iharg
+  | letIn hwf hgen _ ihgen ihbody =>
+      expose_names
+      let avoid' := Z :: avoid
+      apply RunWT.letIn (scheme := scheme.substFvar Z U) (avoid := avoid')
+      · exact hwf.substFvar hU
+      · intro names hfresh
+        have hfresh0 : FreshNames avoid scheme.paramCount names := by
+          refine ⟨by simpa [PolyTy.substFvar] using hfresh.length,
+            hfresh.nodup, ?_⟩
+          intro x hx hmem
+          exact hfresh.avoid x hx (List.mem_cons_of_mem _ hmem)
+        have hZ : Z ∉ names := fun hmem =>
+          hfresh.avoid Z hmem List.mem_cons_self
+        have hrhs := ihgen names hfresh0
+        rw [PolyTy.substFvar_openVars hU hZ]
+        exact hrhs
+      · simpa only [Env.substFvar, List.map_cons] using ihbody
+  | var hlookup hlc hinst =>
+      expose_names
+      have hlookup' : (ctx_1.env.substFvar Z U)[index]? =
+          some (scheme.substFvar Z U) := by
+        simp only [Env.substFvar, List.getElem?_map, hlookup, Option.map_some]
+      apply RunWT.var (ctx := { ctx_1 with env := ctx_1.env.substFvar Z U })
+        (args := args.map (Ty.substFvar Z U))
+        hlookup'
+      · intro arg harg
+        obtain ⟨arg0, harg0, rfl⟩ := List.mem_map.mp harg
+        exact Ty.IsLC.substFvar hU (hlc arg0 harg0)
+      · exact InstantiatesBy.substFvar hU hinst
+  | ctor hlookup hlc hinst =>
+      expose_names
+      have hinst' := InstantiatesBy.substFvar (Z := Z) (U := U) hU hinst
+      rw [Ty.substFvar_fresh
+        (NoFreeVars.not_mem_freeVars (Ctor.toTy_body_noFreeVars _) Z)] at hinst'
+      apply RunWT.ctor (ctx := { ctx_1 with env := ctx_1.env.substFvar Z U })
+        (args := args.map (Ty.substFvar Z U))
+        hlookup
+      · intro arg harg
+        obtain ⟨arg0, harg0, rfl⟩ := List.mem_map.mp harg
+        exact Ty.IsLC.substFvar hU (hlc arg0 harg0)
+      · exact hinst'
+  | match_ _ hne _ ihscrut ihbranches =>
+      exact .match_ ihscrut hne ihbranches
+  | @letRec bindings ctx body resultTy specs G avoid hwf hmono hpoly _
+      ihmono ihpoly ihbody =>
+      obtain ⟨W, hWlen, hWnodup, hWavoid⟩ :=
+        exists_fresh_names
+          (G ++ [Z] ++ U.freeVars ++ specs.flatMap RecSpec.monoFreeVars)
+          G.length
+      have hGW : ∀ g ∈ G, g ∉ W := fun g hg hc =>
+        hWavoid g hc (by simp [List.mem_append, hg])
+      have hZW : Z ∉ W := fun hc =>
+        hWavoid Z hc (by simp [List.mem_append])
+      have hUW : ∀ u ∈ U.freeVars, u ∉ W := fun u hu hc =>
+        hWavoid u hc (by simp [List.mem_append, hu])
+      have hWfree : ∀ τ, RecSpec.mono τ ∈ specs →
+          ∀ w ∈ W, w ∉ τ.freeVars := by
+        intro τ hτ w hw hc
+        have hflat : w ∈ specs.flatMap RecSpec.monoFreeVars :=
+          List.mem_flatMap.mpr ⟨.mono τ, hτ, hc⟩
+        exact hWavoid w hw (by simp [List.mem_append, hflat])
+      let specs' := substSpecs Z U G W specs
+      let avoid' := Z :: G ++ W ++ avoid
+      have hwf' : RecSpecsWF bindings specs' W := by
+        refine ⟨by simpa [specs', substSpecs] using hwf.length,
+          hWnodup, ?_, ?_⟩
+        · intro τ' hτ'
+          obtain ⟨spec, hspec, heq⟩ := List.mem_map.mp hτ'
+          cases spec with
+          | mono τ =>
+              simp only [RecSpec.substFreshened, RecSpec.mono.injEq] at heq
+              subst τ'
+              exact Ty.IsLC.substFvar hU
+                (Ty.renameG_isLC_runtime (hwf.mono_lc τ hspec))
+          | poly scheme => exact RecSpec.noConfusion heq
+        · intro scheme' hscheme'
+          obtain ⟨spec, hspec, heq⟩ := List.mem_map.mp hscheme'
+          cases spec with
+          | mono τ => exact RecSpec.noConfusion heq
+          | poly scheme =>
+              simp only [RecSpec.substFreshened, RecSpec.poly.injEq] at heq
+              subst scheme'
+              exact (hwf.poly_wf scheme hspec).substFvar hU
+      apply RunWT.letRec (specs := specs') (G := W) (avoid := avoid') hwf'
+      · intro Xs hXs pair hpair τ' hτ'
+        have hXlen : Xs.length = G.length := hXs.length.trans hWlen
+        have hZXs : Z ∉ Xs := fun hc =>
+          hXs.avoid Z hc (by simp [avoid'])
+        have hGXs : ∀ g ∈ G, g ∉ Xs := fun g hg hc =>
+          hXs.avoid g hc (by simp [avoid', List.mem_append, hg])
+        have hWXs : ∀ w ∈ W, w ∉ Xs := fun w hw hc =>
+          hXs.avoid w hc (by simp [avoid', List.mem_append, hw])
+        have hXs0 : FreshNames avoid G.length Xs := by
+          refine ⟨hXlen, hXs.nodup, ?_⟩
+          intro x hx ha
+          exact hXs.avoid x hx (by simp [avoid', List.mem_append, ha])
+        obtain ⟨rhs0, spec0, hold, rfl⟩ := mem_zip_map_right_runtime hpair
+        cases spec0 with
+        | poly scheme => exact RecSpec.noConfusion hτ'
+        | mono τ =>
+            simp only [RecSpec.substFreshened, RecSpec.mono.injEq] at hτ'
+            subst τ'
+            have hτmem : RecSpec.mono τ ∈ specs := (List.of_mem_zip hold).2
+            have hkey :
+                Ty.renameG W Xs (Ty.substFvar Z U (Ty.renameG G W τ)) =
+                  Ty.substFvar Z U (Ty.renameG G Xs τ) := by
+              rw [Ty.renameG_substFvar_comm hU hZW hUW hZXs
+                    (Ty.renameG_isLC_runtime (hwf.mono_lc τ hτmem))
+                    hWnodup hXs.length hWXs,
+                Ty.renameG_renameG (hwf.mono_lc τ hτmem) hwf.nodup
+                  hWnodup hWlen hXlen hGW (hWfree τ hτmem) hWXs hGXs]
+            have henv :
+                (RecSpecs.rhsCtx { ctx with env := ctx.env.substFvar Z U }
+                    specs' W Xs).env =
+                  (RecSpecs.rhsCtx ctx specs G Xs).env.substFvar Z U := by
+              unfold RecSpecs.rhsCtx specs' substSpecs
+              rw [Env.substFvar_append]
+              simp only [Env.substFvar, List.map_map]
+              congr 1
+              apply List.map_congr_left
+              intro spec hspec
+              cases spec with
+              | poly scheme => rfl
+              | mono original =>
+                  have horig : RecSpec.mono original ∈ specs := hspec
+                  have horigKey :
+                      Ty.renameG W Xs
+                          (Ty.substFvar Z U (Ty.renameG G W original)) =
+                        Ty.substFvar Z U (Ty.renameG G Xs original) := by
+                    rw [Ty.renameG_substFvar_comm hU hZW hUW hZXs
+                          (Ty.renameG_isLC_runtime
+                            (hwf.mono_lc original horig))
+                          hWnodup hXs.length hWXs,
+                      Ty.renameG_renameG (hwf.mono_lc original horig)
+                        hwf.nodup hWnodup hWlen hXlen hGW
+                        (hWfree original horig) hWXs hGXs]
+                  simp only [Function.comp_apply, RecSpec.substFreshened,
+                    RecSpec.rhsEntry, PolyTy.substFvar, PolyTy.mkTrivial]
+                  rw [horigKey]
+            rw [hkey]
+            have ht := ihmono Xs hXs0 (rhs0, .mono τ) hold τ rfl
+            have hctx :
+                RecSpecs.rhsCtx { ctx with env := ctx.env.substFvar Z U }
+                    specs' W Xs =
+                  { RecSpecs.rhsCtx ctx specs G Xs with
+                    env := (RecSpecs.rhsCtx ctx specs G Xs).env.substFvar Z U } := by
+              cases ctx
+              simp only [RecSpecs.rhsCtx] at henv ⊢
+              rw [henv]
+            rw [hctx]
+            exact ht
+      · intro Xs hXs pair hpair scheme' hscheme' Ys hYs
+        have hXlen : Xs.length = G.length := hXs.length.trans hWlen
+        have hZXs : Z ∉ Xs := fun hc =>
+          hXs.avoid Z hc (by simp [avoid'])
+        have hGXs : ∀ g ∈ G, g ∉ Xs := fun g hg hc =>
+          hXs.avoid g hc (by simp [avoid', List.mem_append, hg])
+        have hWXs : ∀ w ∈ W, w ∉ Xs := fun w hw hc =>
+          hXs.avoid w hc (by simp [avoid', List.mem_append, hw])
+        have hXs0 : FreshNames avoid G.length Xs := by
+          refine ⟨hXlen, hXs.nodup, ?_⟩
+          intro x hx ha
+          exact hXs.avoid x hx (by simp [avoid', List.mem_append, ha])
+        obtain ⟨rhs0, spec0, hold, rfl⟩ := mem_zip_map_right_runtime hpair
+        cases spec0 with
+        | mono τ => exact RecSpec.noConfusion hscheme'
+        | poly scheme =>
+            simp only [RecSpec.substFreshened, RecSpec.poly.injEq] at hscheme'
+            subst scheme'
+            have hYs0 : FreshNames (avoid ++ Xs) scheme.paramCount Ys := by
+              refine ⟨by simpa [PolyTy.substFvar] using hYs.length,
+                hYs.nodup, ?_⟩
+              intro y hy hmem
+              apply hYs.avoid y hy
+              simp only [avoid', List.append_assoc, List.mem_append,
+                List.mem_cons]
+              simp only [List.mem_append] at hmem ⊢
+              tauto
+            have hZYs : Z ∉ Ys := fun hc =>
+              hYs.avoid Z hc (by simp [avoid', List.mem_append])
+            have henv :
+                (RecSpecs.rhsCtx { ctx with env := ctx.env.substFvar Z U }
+                    specs' W Xs).env =
+                  (RecSpecs.rhsCtx ctx specs G Xs).env.substFvar Z U := by
+              unfold RecSpecs.rhsCtx specs' substSpecs
+              rw [Env.substFvar_append]
+              simp only [Env.substFvar, List.map_map]
+              congr 1
+              apply List.map_congr_left
+              intro spec hspec
+              cases spec with
+              | poly original => rfl
+              | mono original =>
+                  have horig : RecSpec.mono original ∈ specs := hspec
+                  have horigKey :
+                      Ty.renameG W Xs
+                          (Ty.substFvar Z U (Ty.renameG G W original)) =
+                        Ty.substFvar Z U (Ty.renameG G Xs original) := by
+                    rw [Ty.renameG_substFvar_comm hU hZW hUW hZXs
+                          (Ty.renameG_isLC_runtime
+                            (hwf.mono_lc original horig))
+                          hWnodup hXs.length hWXs,
+                      Ty.renameG_renameG (hwf.mono_lc original horig)
+                        hwf.nodup hWnodup hWlen hXlen hGW
+                        (hWfree original horig) hWXs hGXs]
+                  simp only [Function.comp_apply, RecSpec.substFreshened,
+                    RecSpec.rhsEntry, PolyTy.substFvar,
+                    PolyTy.mkTrivial]
+                  rw [horigKey]
+            rw [show (scheme.substFvar Z U).openVars Ys =
+                Ty.substFvar Z U (scheme.openVars Ys) by
+                  unfold PolyTy.openVars PolyTy.substFvar
+                  exact (Ty.substFvar_openVars hU hZYs).symm]
+            have ht := ihpoly Xs hXs0 (rhs0, .poly scheme) hold scheme rfl
+              Ys hYs0
+            have hctx :
+                RecSpecs.rhsCtx { ctx with env := ctx.env.substFvar Z U }
+                    specs' W Xs =
+                  { RecSpecs.rhsCtx ctx specs G Xs with
+                    env := (RecSpecs.rhsCtx ctx specs G Xs).env.substFvar Z U } := by
+              cases ctx
+              simp only [RecSpecs.rhsCtx] at henv ⊢
+              rw [henv]
+            rw [hctx]
+            exact ht
+      · have henv :
+            (RecSpecs.bodyCtx { ctx with env := ctx.env.substFvar Z U }
+                specs' W).env =
+              (RecSpecs.bodyCtx ctx specs G).env.substFvar Z U := by
+          unfold RecSpecs.bodyCtx specs' substSpecs
+          rw [Env.substFvar_append]
+          simp only [Env.substFvar, List.map_map]
+          congr 1
+          apply List.map_congr_left
+          intro spec hspec
+          cases spec with
+          | poly scheme => rfl
+          | mono τ =>
+              have hτ : RecSpec.mono τ ∈ specs := hspec
+              have hrename := PolyTy.genGroup_renameG
+                (hwf.mono_lc τ hτ) hWlen hwf.nodup hWnodup hGW
+                (hWfree τ hτ)
+              have hsubst := PolyTy.genGroup_substFvar
+                (Z := Z) (U := U) (G := W) (τ := Ty.renameG G W τ) hZW hUW
+              simp only [Function.comp_apply, RecSpec.substFreshened,
+                RecSpec.bodyScheme]
+              rw [← hsubst, ← hrename]
+        have hctx :
+            RecSpecs.bodyCtx { ctx with env := ctx.env.substFvar Z U }
+                specs' W =
+              { RecSpecs.bodyCtx ctx specs G with
+                env := (RecSpecs.bodyCtx ctx specs G).env.substFvar Z U } := by
+          cases ctx
+          simp only [RecSpecs.bodyCtx] at henv ⊢
+          rw [henv]
+        rw [hctx]
+        exact ihbody
+  | mk hspec _ ihbody =>
+      expose_names
+      have hcontents : ctor.contents.map (Ty.substFvar Z U) = ctor.contents := by
+        calc
+          ctor.contents.map (Ty.substFvar Z U) = ctor.contents.map id := by
+            apply List.map_congr_left
+            intro field hfield
+            exact Ty.substFvar_fresh
+              ((ctor.closed field hfield).not_mem_freeVars Z)
+          _ = ctor.contents := by simp only [List.map_id]
+      have hfields := InstantiatesBy.forall2_substFvar
+        (Z := Z) (U := U) hU hspec.fields
+      rw [hcontents] at hfields
+      rw [Env.substFvar_append, Env.substFvar_map_mkTrivial] at ihbody
+      have hspec' : BranchCtorSpec ctx_1.ctors c n
+          (Ty.substFvar Z U scrutTy) ctor
+          (tyArgs.map (Ty.substFvar Z U))
+          (instContents.map (Ty.substFvar Z U)) :=
+        ⟨hspec.lookup, by
+          rw [hspec.scrut_eq]
+          simp [Ty.substFvar, TyList.substFvar_eq_map],
+          by simpa using hspec.arity,
+          hspec.bind_count, hfields⟩
+      exact RunWTMatchBranch.mk
+        (ctx := { ctx_1 with env := ctx_1.env.substFvar Z U })
+        hspec' (by simpa only using ihbody)
+  | wildcard _ ihbody => exact .wildcard ihbody
+
+
 /-! ## A real-Core erased polymorphic-recursion witness -/
 
 def polyId : PolyTy := ⟨1, .arrow (.bvar 0) (.bvar 0)⟩
@@ -207,6 +570,7 @@ theorem erased_polySelf_typed :
       (.arrow (.prim .unit) (.prim .unit)) := by
   exact .letRec polySelf_specs_wf polySelf_mono polySelf_poly polySelf_body
 
+#print axioms RunWT.substFvar
 #print axioms erased_polySelf_typed
 
 end RuntimeTyping
