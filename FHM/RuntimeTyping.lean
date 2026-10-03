@@ -715,6 +715,136 @@ private theorem RunWT.instantiate_opening {ctx : Ctx} {e : Expr}
     hnamesNodup hnamesBody hnamesArgs
   simpa [PolyTy.openVars, PolyTy.openWith, hopen] using hsub
 
+/-- A completely annotated recursive member retains its declared scheme when
+the erased group is wrapped around it. -/
+theorem RunHasScheme.ofPolyRecMember {ctx : Ctx}
+    {bindings : List Expr} {specs : List RecSpec} {G avoid : List Nat}
+    (hwf : RecSpecsWF bindings specs G)
+    (hmono : MonoTyped RunWT ctx bindings specs G avoid)
+    (hpoly : PolyTyped RunWT ctx bindings specs G avoid)
+    {rhs : Expr} {scheme : PolyTy}
+    (hmember : (rhs, .poly scheme) ∈ bindings.zip specs) :
+    RunHasScheme ctx
+      (.letRec (bindings.map (fun _ => none)) bindings rhs) scheme := by
+  intro args ty hlc hinst
+  let exactArgs := exactInstArgs scheme.paramCount args
+  have hargs : Ty.AreLC scheme.paramCount exactArgs :=
+    exactInstArgs_areLC hlc
+  have hschemeWf : scheme.WF := hwf.poly_wf scheme (List.of_mem_zip hmember).2
+  have hrealise := exactInstArgs_realise hschemeWf hinst
+  rw [hrealise]
+  obtain ⟨Xs, hXsLen, hXsNodup, hXsAvoid⟩ :=
+    exists_fresh_names avoid G.length
+  have hXs : FreshNames avoid G.length Xs :=
+    ⟨hXsLen, hXsNodup, hXsAvoid⟩
+  obtain ⟨Ys, hYsLen, hYsNodup, hYsAvoid⟩ :=
+    exists_fresh_names
+      (avoid ++ Xs ++ ctx.env.freeVars ++ scheme.body.freeVars ++
+        Ty.freeVarsList exactArgs)
+      scheme.paramCount
+  have hYs : FreshNames (avoid ++ Xs) scheme.paramCount Ys :=
+    ⟨hYsLen, hYsNodup, fun y hy hmem => hYsAvoid y hy (by
+      simp only [List.mem_append]
+      rcases List.mem_append.mp hmem with ha | hx
+      · exact Or.inl (Or.inl (Or.inl (Or.inl ha)))
+      · exact Or.inl (Or.inl (Or.inl (Or.inr hx))))⟩
+  have htyped := hpoly Xs hXs (rhs, .poly scheme) hmember scheme rfl Ys hYs
+  have hwrapped := RunWT.rec_rewrap_at hwf hmono hpoly hXs htyped
+  apply RunWT.instantiate_opening hargs hYsLen hYsNodup
+    (htyped := hwrapped)
+  · intro y hy hmem
+    exact hYsAvoid y hy (by simp [List.mem_append, hmem])
+  · intro y hy hmem
+    exact hYsAvoid y hy (by simp [List.mem_append, hmem])
+  · intro y hy hmem
+    exact hYsAvoid y hy (by simp [List.mem_append, hmem])
+
+/-- An ordinary recursive member becomes polymorphic only at the HM scheme
+obtained by generalising its shared monotype after leaving the group. -/
+theorem RunHasScheme.ofMonoRecMember {ctx : Ctx}
+    {bindings : List Expr} {specs : List RecSpec} {G avoid : List Nat}
+    (hwf : RecSpecsWF bindings specs G)
+    (hmono : MonoTyped RunWT ctx bindings specs G avoid)
+    (hpoly : PolyTyped RunWT ctx bindings specs G avoid)
+    {rhs : Expr} {ty : Ty}
+    (hmember : (rhs, .mono ty) ∈ bindings.zip specs) :
+    RunHasScheme ctx
+      (.letRec (bindings.map (fun _ => none)) bindings rhs)
+      (PolyTy.genGroup G ty) := by
+  intro args result hlc hinst
+  let scheme := PolyTy.genGroup G ty
+  let exactArgs := exactInstArgs scheme.paramCount args
+  have hargs : Ty.AreLC scheme.paramCount exactArgs :=
+    exactInstArgs_areLC hlc
+  have htyLC : ty.IsLC := hwf.mono_lc ty (List.of_mem_zip hmember).2
+  have hschemeWf : scheme.WF := PolyTy.genGroup_wf htyLC
+  have hrealise := exactInstArgs_realise hschemeWf hinst
+  rw [hrealise]
+  obtain ⟨Xs, hXsLen, hXsNodup, hXsAvoid⟩ :=
+    exists_fresh_names
+      (avoid ++ G ++ ty.freeVars ++ ctx.env.freeVars ++ Ty.freeVarsList exactArgs ++
+        scheme.body.freeVars)
+      G.length
+  have hXs : FreshNames avoid G.length Xs :=
+    ⟨hXsLen, hXsNodup, fun x hx hmem =>
+      hXsAvoid x hx (by simp [List.mem_append, hmem])⟩
+  have hdisj : ∀ g ∈ G, g ∉ Xs := fun g hg hc =>
+    hXsAvoid g hc (by simp [List.mem_append, hg])
+  have hXsTy : ∀ x ∈ Xs, x ∉ ty.freeVars := fun x hx hc =>
+    hXsAvoid x hx (by simp [List.mem_append, hc])
+  have hXsEnv : ∀ x ∈ Xs, x ∉ ctx.env.freeVars := fun x hx hc =>
+    hXsAvoid x hx (by simp [List.mem_append, hc])
+  have hXsArgs : ∀ x ∈ Xs, x ∉ Ty.freeVarsList exactArgs := fun x hx hc =>
+    hXsAvoid x hx (by simp [List.mem_append, hc])
+  have hXsBody : ∀ x ∈ Xs, x ∉ scheme.body.freeVars := fun x hx hc =>
+    hXsAvoid x hx (by simp [List.mem_append, hc])
+  have htyped := hmono Xs hXs (rhs, .mono ty) hmember ty rfl
+  have hwrapped : RunWT ctx
+      (.letRec (bindings.map (fun _ => none)) bindings rhs)
+      (Ty.renameG G Xs ty) :=
+    RunWT.rec_rewrap_at hwf hmono hpoly hXs htyped
+  set Xs' := Ty.genFilter Xs (Ty.renameG G Xs ty) with hXsDef
+  have hXsLen' : Xs'.length = (Ty.genFilter G ty).length := by
+    have h := congrArg PolyTy.paramCount
+      (PolyTy.genGroup_renameG htyLC hXsLen hwf.nodup hXsNodup
+        hdisj hXsTy)
+    simp only [PolyTy.genGroup] at h
+    rw [hXsDef]
+    exact h.symm
+  have hXsNodup' : Xs'.Nodup := by
+    rw [hXsDef]
+    unfold Ty.genFilter
+    exact hXsNodup.filter _
+  have hGNodup : (Ty.genFilter G ty).Nodup := by
+    unfold Ty.genFilter
+    exact hwf.nodup.filter _
+  have hGDisj : ∀ g ∈ Ty.genFilter G ty, g ∉ Xs' := by
+    intro g hg hc
+    exact hdisj g (Ty.mem_of_mem_genFilter hg) (by
+      rw [hXsDef] at hc
+      exact Ty.mem_of_mem_genFilter hc)
+  have hrewrite : Ty.renameG G Xs ty =
+      Ty.openVars Xs' (Ty.closeOver (Ty.genFilter G ty) ty) := by
+    rw [Ty.renameG_eq_genFilter hXsLen hwf.nodup hXsNodup hdisj hXsTy]
+    exact (Ty.openVars_closeOver_rename htyLC hGNodup hXsLen' hGDisj).symm
+  rw [hrewrite] at hwrapped
+  apply RunWT.instantiate_opening hargs
+    (scheme := scheme) (names := Xs')
+    (by simpa [scheme, PolyTy.genGroup] using hXsLen') hXsNodup'
+    (htyped := by simpa [scheme, PolyTy.genGroup, PolyTy.openVars] using hwrapped)
+  · intro x hx
+    apply hXsEnv x
+    rw [hXsDef] at hx
+    exact Ty.mem_of_mem_genFilter hx
+  · intro x hx
+    apply hXsBody x
+    rw [hXsDef] at hx
+    exact Ty.mem_of_mem_genFilter hx
+  · intro x hx
+    apply hXsArgs x
+    rw [hXsDef] at hx
+    exact Ty.mem_of_mem_genFilter hx
+
 
 /-! ## A real-Core erased polymorphic-recursion witness -/
 
