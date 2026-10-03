@@ -913,6 +913,98 @@ theorem RunHasScheme.ofGeneralisesTo {ctx : Ctx} {rhs : Expr}
   · intro x hx hmem
     exact hXsAvoid x hx (by simp [List.mem_append, hmem])
 
+/-! ### Constructor-spine inversion for match reduction -/
+
+private theorem List.Forall₂.snoc_runtime {α β : Type _} {R : α → β → Prop}
+    {left : List α} {right : List β} {a : α} {b : β}
+    (h : List.Forall₂ R left right) (hab : R a b) :
+    List.Forall₂ R (left ++ [a]) (right ++ [b]) := by
+  induction h with
+  | nil => exact .cons hab .nil
+  | cons hhd _ ih => exact .cons hhd ih
+
+/-- Invert typing directly along the constructor spine supplied by the
+operational match rule. No separate canonical-forms detour is required. -/
+theorem RunWT.ctor_applied_inversion {ctx : Ctx} {e : Expr}
+    {name : CtorName} {args : List Expr} {ty : Ty}
+    (hcat : SmallStep.CtorAppliedTo e name args)
+    (htyped : RunWT ctx e ty) :
+    ∃ (ctor : Ctor) (tyArgs consumed remaining : List Ty),
+      LookupList.get? ctx.ctors name = some ctor ∧
+      (∀ arg ∈ tyArgs, arg.IsLC) ∧
+      ctor.contents = consumed ++ remaining ∧
+      List.Forall₂
+        (fun value field =>
+          ∃ fieldTy, InstantiatesBy tyArgs field fieldTy ∧
+            RunWT ctx value fieldTy)
+        args consumed ∧
+      InstantiatesBy tyArgs
+        (Ty.wrapArrows
+          (.customTy ctor.tyName (Ty.bvarRange ctor.paramCount)) remaining)
+        ty := by
+  induction hcat generalizing ty with
+  | base name =>
+      cases htyped with
+      | ctor hlook htyargs hinst =>
+          exact ⟨_, _, [], _, hlook, htyargs, rfl, .nil,
+            by simpa [Ctor.toTy] using hinst⟩
+  | step hcat ih =>
+      cases htyped with
+      | app hf harg =>
+          obtain ⟨ctor, tyArgs, consumed, remaining, hlook, htyargs,
+            hcontents, hforall, hinst_f⟩ := ih hf
+          cases remaining with
+          | nil =>
+              simp only [Ty.wrapArrows] at hinst_f
+              cases hinst_f
+          | cons field rest =>
+              simp only [Ty.wrapArrows] at hinst_f
+              cases hinst_f with
+              | arrow hfield hrest =>
+                  refine ⟨ctor, tyArgs, consumed ++ [field], rest,
+                    hlook, htyargs, ?_, List.Forall₂.snoc_runtime hforall
+                      ⟨_, hfield, harg⟩,
+                    hrest⟩
+                  rw [hcontents]
+                  exact (List.append_assoc consumed [field] rest).symm
+
+/-- Align constructor-field instances from the branch typing and the runtime
+constructor spine, producing the scheme inhabitants consumed by `substMany`. -/
+private theorem InstantiatesBy.build_run_match_values
+    {ctx : Ctx} {n : Nat} {tyArgs tyArgsSpine : List Ty}
+    (hagree : ∀ k, k < n → tyArgs[k]? = tyArgsSpine[k]?) :
+    ∀ {contents instContents : List Ty} {args : List Expr},
+      (∀ field ∈ contents, ContainsBvarsUpTo n field) →
+      List.Forall₂ (InstantiatesBy tyArgs) contents instContents →
+      List.Forall₂
+        (fun value field =>
+          ∃ fieldTy, InstantiatesBy tyArgsSpine field fieldTy ∧
+            RunWT ctx value fieldTy)
+        args contents →
+      List.Forall₂ (RunHasScheme ctx)
+        args (instContents.map PolyTy.mkTrivial) := by
+  intro contents
+  induction contents with
+  | nil =>
+      intro instContents args _ hinst hfor
+      cases hinst
+      cases hfor
+      exact .nil
+  | cons field rest ih =>
+      intro instContents args hbound hinst hfor
+      cases hinst with
+      | cons hinstField hinstRest =>
+          cases hfor with
+          | cons hforField hforRest =>
+              obtain ⟨fieldTy, hspine, hvalue⟩ := hforField
+              have heq := InstantiatesBy.det_agree hagree
+                (hbound field List.mem_cons_self) hinstField hspine
+              refine List.Forall₂.cons ?_
+                (ih (fun ty hty => hbound ty (List.mem_cons_of_mem _ hty))
+                  hinstRest hforRest)
+              rw [heq]
+              exact RunHasScheme.ofTrivial hvalue
+
 private theorem RunHasScheme.ofRecMember {ctx : Ctx}
     {bindings : List Expr} {specs : List RecSpec} {G avoid : List Nat}
     (hwf : RecSpecsWF bindings specs G)
