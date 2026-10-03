@@ -23,6 +23,7 @@ roots = [
   "FHM.Headlines",
   "FHM.AnnotatedPolyRecErasure",
   "FHM.AnnotatedPolyRecHybrid",
+  "FHM.RuntimeTyping",
 ]
 
 [[lean_lib]]

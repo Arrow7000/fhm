@@ -2809,8 +2809,8 @@ structure BranchCtorSpec (ctors : CtorEnv) (c : CtorName) (n : Nat) (scrutTy : T
   fields     : List.Forall₂ (InstantiatesBy tyArgs) ctor.contents instContents
 
 /-- The context a recursion group's RHSs are checked in, at the shared pool
-    opening `G ↦ Xs`. `TypeOfHM.letRec` supplies an all-`.mono` witness list,
-    so every recursive use is monomorphic inside the group. -/
+    opening `G ↦ Xs`. A mixed source rule renders `.mono` members at their
+    shared opened monotypes and `.poly` members at their complete schemes. -/
 def RecSpecs.rhsCtx (ctx : Ctx) (specs : List RecSpec) (G Xs : List Nat) : Ctx :=
   { ctx with env := specs.map (RecSpec.rhsEntry G Xs) ++ ctx.env }
 
@@ -2852,6 +2852,26 @@ def RecSpecs.MonoTypedInit (TypeOf : Ctx → Expr → Ty → Prop) (ctx : Ctx)
   ∀ Xs, FreshNames L G.length Xs →
     ∀ p ∈ bindings.zip τs,
       TypeOf (RecSpecs.rhsCtx ctx (τs.map RecSpec.mono) G Xs) p.1 (Ty.renameG G Xs p.2)
+
+/-- Cofinite checking for ordinary HM members of a mixed recursive group.
+Every `.mono τ` member shares the same pool opening `G ↦ Xs`; annotated
+siblings are already present at their complete schemes in `rhsCtx`. -/
+def RecSpecs.MonoTyped (TypeOf : Ctx → Expr → Ty → Prop) (ctx : Ctx)
+    (bindings : List Expr) (specs : List RecSpec) (G L : List Nat) : Prop :=
+  ∀ Xs, FreshNames L G.length Xs →
+    ∀ pair ∈ bindings.zip specs, ∀ τ, pair.2 = .mono τ →
+      TypeOf (RecSpecs.rhsCtx ctx specs G Xs) pair.1 (Ty.renameG G Xs τ)
+
+/-- Cofinite scheme-relative checking for completely annotated members. The
+shared HM pool is fixed first; the member's own rigid opening is then chosen
+fresh from both `L` and `Xs`, preventing a mono sibling from capturing it. -/
+def RecSpecs.PolyTyped (TypeOf : Ctx → Expr → Ty → Prop) (ctx : Ctx)
+    (bindings : List Expr) (specs : List RecSpec) (G L : List Nat) : Prop :=
+  ∀ Xs, FreshNames L G.length Xs →
+    ∀ pair ∈ bindings.zip specs, ∀ σ, pair.2 = .poly σ →
+      ∀ Ys, FreshNames (L ++ Xs) σ.paramCount Ys →
+        TypeOf (RecSpecs.rhsCtx ctx specs G Xs)
+          (pair.1.openTyVars Ys) (σ.openVars Ys)
 
 
 /-! ### The *declarative* HM typing relation `TypeOfHM` (the completeness spec).
