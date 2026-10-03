@@ -619,6 +619,103 @@ def RunHasScheme (ctx : Ctx) (value : Expr) (scheme : PolyTy) : Prop :=
     scheme.InstantiatesTo args ty → RunWT ctx value ty
 
 
+/-! ### From cofinite openings to production scheme instances
+
+The production variable rule intentionally does not require its witness list
+to have exactly the scheme arity: unused quantifiers may be omitted and extra
+arguments are harmless.  For the cofinite proof we canonicalize that witness
+to exactly `paramCount` entries, padding omitted unused entries with `Unit`.
+-/
+
+private def exactInstArgs (n : Nat) (args : List Ty) : List Ty :=
+  (List.range n).map (fun i => (args[i]?).getD (.prim .unit))
+
+private theorem exactInstArgs_areLC {n : Nat} {args : List Ty}
+    (hlc : ∀ arg ∈ args, arg.IsLC) : Ty.AreLC n (exactInstArgs n args) := by
+  constructor
+  · simp [exactInstArgs]
+  · intro arg harg
+    obtain ⟨i, hi, rfl⟩ := List.mem_map.mp harg
+    cases hget : args[i]? with
+    | none => exact ContainsBvarsUpTo.prim
+    | some actual =>
+        simp only [Option.getD_some]
+        exact hlc actual (List.mem_of_getElem? hget)
+
+private theorem exactInstArgs_realise {scheme : PolyTy} {args : List Ty}
+    {ty : Ty} (hwf : scheme.WF)
+    (hinst : scheme.InstantiatesTo args ty) :
+    ty = scheme.openWith (exactInstArgs scheme.paramCount args) := by
+  unfold PolyTy.InstantiatesTo at hinst
+  have h := InstantiatesBy.eq_openWith_range hinst hwf
+  simpa [exactInstArgs, PolyTy.openWith] using h
+
+private def substFvarsEnvRuntime : List (Nat × Ty) → Env → Env
+  | [], env => env
+  | (name, replacement) :: rest, env =>
+      substFvarsEnvRuntime rest (env.substFvar name replacement)
+
+private theorem RunWT.substFvars {ctx : Ctx} {e : Expr} {ty : Ty}
+    {pairs : List (Nat × Ty)}
+    (hlc : ∀ pair ∈ pairs, pair.2.IsLC) (h : RunWT ctx e ty) :
+    RunWT { ctx with env := substFvarsEnvRuntime pairs ctx.env }
+      e (Ty.substFvars pairs ty) := by
+  induction pairs generalizing ctx ty with
+  | nil => simpa [substFvarsEnvRuntime, Ty.substFvars] using h
+  | cons pair rest ih =>
+      obtain ⟨name, replacement⟩ := pair
+      simp only [substFvarsEnvRuntime, Ty.substFvars]
+      exact ih (fun pair hpair => hlc pair (List.mem_cons_of_mem _ hpair))
+        (h.substFvar (hlc (name, replacement) List.mem_cons_self))
+
+private theorem substFvarsEnvRuntime_eq_self_of_fresh
+    {pairs : List (Nat × Ty)} {env : Env}
+    (hfresh : ∀ pair ∈ pairs, pair.1 ∉ env.freeVars) :
+    substFvarsEnvRuntime pairs env = env := by
+  induction pairs generalizing env with
+  | nil => rfl
+  | cons pair rest ih =>
+      obtain ⟨name, replacement⟩ := pair
+      simp only [substFvarsEnvRuntime]
+      rw [Env.substFvar_fresh (hfresh (name, replacement) List.mem_cons_self)]
+      exact ih (fun pair hpair => hfresh pair (List.mem_cons_of_mem _ hpair))
+
+private theorem pairs_zip_values_lc_runtime {names : List Nat} {args : List Ty}
+    (hlc : ∀ arg ∈ args, arg.IsLC) :
+    ∀ pair ∈ names.zip args, pair.2.IsLC := by
+  intro pair hpair
+  exact hlc pair.2 (List.of_mem_zip hpair).2
+
+private theorem pairs_zip_names_fresh_runtime {names : List Nat}
+    {args : List Ty} {env : Env}
+    (hfresh : ∀ name ∈ names, name ∉ env.freeVars) :
+    ∀ pair ∈ names.zip args, pair.1 ∉ env.freeVars := by
+  intro pair hpair
+  exact hfresh pair.1 (List.of_mem_zip hpair).1
+
+/-- Replace one fresh rigid opening by an exact concrete scheme instance.
+The erased runtime expression itself is unchanged. -/
+private theorem RunWT.instantiate_opening {ctx : Ctx} {e : Expr}
+    {scheme : PolyTy} {names : List Nat} {args : List Ty}
+    (hargs : Ty.AreLC scheme.paramCount args)
+    (hnamesLen : names.length = scheme.paramCount)
+    (hnamesNodup : names.Nodup)
+    (hnamesEnv : ∀ x ∈ names, x ∉ ctx.env.freeVars)
+    (hnamesBody : ∀ x ∈ names, x ∉ scheme.body.freeVars)
+    (hnamesArgs : ∀ x ∈ names, x ∉ Ty.freeVarsList args)
+    (htyped : RunWT ctx e (scheme.openVars names)) :
+    RunWT ctx e (scheme.openWith args) := by
+  have hsub := RunWT.substFvars (pairs := names.zip args)
+    (pairs_zip_values_lc_runtime (names := names) hargs.2) htyped
+  rw [substFvarsEnvRuntime_eq_self_of_fresh
+    (pairs_zip_names_fresh_runtime hnamesEnv)] at hsub
+  have hopen := Ty.openWith_eq_substFvars_openVars
+    (ty := scheme.body) (Vs := args) (Xs := names)
+    ⟨hargs.1.trans hnamesLen.symm, hargs.2⟩
+    hnamesNodup hnamesBody hnamesArgs
+  simpa [PolyTy.openVars, PolyTy.openWith, hopen] using hsub
+
+
 /-! ## A real-Core erased polymorphic-recursion witness -/
 
 def polyId : PolyTy := ⟨1, .arrow (.bvar 0) (.bvar 0)⟩
