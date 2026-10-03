@@ -204,6 +204,24 @@ private def pair (a b : Expr) : Expr :=
 private def polyIdAnn : PolyTy :=
   ⟨1, .arrow (.bvar 0) (.bvar 0)⟩
 
+/-- The rigid variable used while checking an annotated recursive RHS is an
+    implementation detail. Public hover metadata must close it back to the
+    source annotation's bound variable, just as annotated non-recursive `let`
+    does. -/
+private def annotatedRecursiveSkolemsAreClosed : Bool :=
+  let source : Expr :=
+    .letRec [some polyIdAnn] [.lambda none (.var 0)] (.var 0)
+  match inferWithTypes [] source with
+  | some r =>
+      hasTy r.nodeTypes [.letRecRhs 0]
+        (.arrow (.bvar 0) (.bvar 0)) &&
+      hasTy r.nodeTypes [.letRecRhs 0, .lambdaBody] (.bvar 0) &&
+      r.nodeTypes.all fun (path, ty) =>
+        match path with
+        | .letRecRhs 0 :: _ => ty.freeVars.isEmpty
+        | _ => true
+  | none => false
+
 /-- Once the recursive block is exited, its annotated member is available at
     separate instantiations in the body. -/
 private def annotatedPolyUseAfterBlockAccepted : Bool :=
@@ -218,9 +236,9 @@ private def annotatedPolyUseAfterBlockAccepted : Bool :=
       nodeTypesTotalFor source r.nodeTypes
   | none => false
 
-/-- Inside the SCC, that same declaration is a monomorphic recursive slot;
-    two incompatible instantiations in another member must be rejected. -/
-private def annotatedPolyUseInsideBlockRejected : Bool :=
+/-- A complete recursive annotation is available at its declared scheme inside
+    the SCC, so an ordinary sibling may instantiate it independently. -/
+private def annotatedPolyUseInsideBlockAccepted : Bool :=
   let source : Expr :=
     .letRec [some polyIdAnn, none]
       [.lambda none (.var 0),
@@ -228,7 +246,7 @@ private def annotatedPolyUseInsideBlockRejected : Bool :=
         (.app (.var 0) (.primLit (.int 1)))
         (.app (.var 0) (.primLit (.char 'x')))]
       (.primLit .unit)
-  (inferWithTypes preludeCtors source).isNone
+  (inferWithTypes preludeCtors source).isSome
 
 private def negativeInferenceCases : Bool :=
   let badApp : Expr := .app (.primLit (.int 5)) (.primLit (.int 5))
@@ -252,8 +270,9 @@ def main : IO Unit := do
     ("branch scheme paths", branchSchemePaths),
     ("let-rec scheme paths", recSchemesIndexed),
     ("nested annotated scheme depth", nestedAnnotatedSchemeDepthIsClosed),
+    ("annotated recursive skolems close in node metadata", annotatedRecursiveSkolemsAreClosed),
     ("polymorphic use after recursive block", annotatedPolyUseAfterBlockAccepted),
-    ("polymorphic use inside recursive block rejected", annotatedPolyUseInsideBlockRejected),
+    ("polymorphic use inside recursive block", annotatedPolyUseInsideBlockAccepted),
     ("negative inference cases", negativeInferenceCases)
   ]
   for (name, ok) in checks do

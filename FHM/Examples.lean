@@ -522,9 +522,9 @@ the enclosing skolem and closes it back, so the whole thing infers `∀ a. a →
 /-! ### Mixed annotated/unannotated recursion
 
 The `letRec` node carries per-binding optional annotations, so one group can mix
-annotated and inferred members. Every member remains monomorphic while the SCC
-is checked. An annotation constrains the eventual exported scheme; it does not
-make in-group uses polymorphic. -/
+annotated and inferred members. A complete annotation makes that member available
+at its declared scheme while the SCC is checked; an unannotated member remains on
+the shared monomorphic HM pool and is generalized only for the body. -/
 
 /-- `∀a. a → a`. -/
 private def selfSig : PolyTy := ⟨1, .arrow (.bvar 0) (.bvar 0)⟩
@@ -541,12 +541,12 @@ private def gRhs : Expr := .lambda none (.app (.var 1) (.var 0))
 -- let rec (f : ∀ a. a → a) = λx. let _ = f () in x
 --     and g                = λx. f x
 -- in g 0   :   Int
--- The annotation does not make `f` polymorphic inside the group, so this is
--- rejected: its use at `Unit` conflicts with the eventual use of `g` at `Int`.
+-- `f` is checked against its complete scheme and may instantiate itself at
+-- `Unit`; `g` independently instantiates the same declared scheme at `Int`.
 #eval showType (.letRec [some selfSig, none] [fRhs, gRhs]
   (.app (.var 1) (.primLit (.int 0))))
 #guard (typecheck [] (.letRec [some selfSig, none] [fRhs, gRhs]
-  (.app (.var 1) (.primLit (.int 0))))).isSome = false
+  (.app (.var 1) (.primLit (.int 0))))).isSome = true
 
 -- …and the SAME program's all-unannotated reading is REJECTED (the recursive call
 -- `f ()` pins `f`'s monotype to `unit → unit`, so the body's `g 0` fails): the
@@ -554,22 +554,29 @@ private def gRhs : Expr := .lambda none (.app (.var 1) (.var 0))
 #guard (typecheck [] (.letRec [none, none] [fRhs, gRhs]
   (.app (.var 1) (.primLit (.int 0))))).isSome = false
 
--- let rec (f : ∀ a. a → a) = λx. g x and g = λx. f x in f   :   ∀ a. a → a
--- Both cross-calls agree at one monotype inside the group, so the group can be
--- generalized for the body and checked against `f`'s annotation.
+-- let rec (f : ∀ a. a → a) = λx. g x and g = λx. f x in f   :   ill-typed
+-- Checking `f` at its declared scheme makes `x` rigid. Passing that rigid value
+-- through unannotated `g` would let `f`'s local skolem escape into `g`'s shared
+-- monotype, so the mixed group is deliberately rejected.
 #eval showType (.letRec [some selfSig, none]
   [.lambda none (.app (.var 2) (.var 0)), .lambda none (.app (.var 1) (.var 0))]
   (.var 0))
 #guard (typecheck [] (.letRec [some selfSig, none]
   [.lambda none (.app (.var 2) (.var 0)), .lambda none (.app (.var 1) (.var 0))]
+  (.var 0))).isSome = false
+
+-- Giving the sibling its own complete scheme makes both directions explicitly
+-- polymorphic, so the same recursive cycle is accepted.
+#guard (typecheck [] (.letRec [some selfSig, some selfSig]
+  [.lambda none (.app (.var 2) (.var 0)), .lambda none (.app (.var 1) (.var 0))]
   (.var 0))).isSome = true
 
 
-/-! ### Rejection boundary: non-regular data and mixed groups
+/-! ### Annotated polymorphic recursion over non-regular data
 
 `Seq a` is non-regular (`SCons a (Seq (List a))`), so its natural fold calls
 itself one `List` layer deeper. That requires in-group polymorphic recursion,
-which this language rejects even when the binding has an annotation. -/
+which is accepted exactly when the recursive binding has a complete annotation. -/
 
 /-- `slen`'s declared scheme: `∀ a. Seq a → Peano`. -/
 private def slenSig : PolyTy :=
@@ -592,33 +599,32 @@ private def bumpRhs : Expr := .lambda none (.app (.ctor ⟨"Succ"⟩) (.var 0))
 --                                             | SNil       => Zero
 --                                             | SCons x xs => bump (slen xs)
 --     and bump                        = λn. Succ n
--- in slen   :   ill-typed
+-- in slen   :   ∀ a. Seq a → Peano
 -- (polymorphic recursion over a NESTED datatype: the recursive call `slen xs`
---  instantiates `slen` at `Seq (List a) ≠ Seq a`, which is in-group poly-rec —
---  exactly what the monomorphic-within-group rule forbids. The annotation is a ceiling, not a
---  polymorphic-recursion enabler.)
+--  instantiates `slen` at `List a`; the complete annotation enables this
+--  deliberate in-group polymorphic recursion.)
 #eval showTypeP (.letRec [some slenSig, none] [slenRhs, bumpRhs] (.var 0))
 #guard (typecheck demoCtors
-  (.letRec [some slenSig, none] [slenRhs, bumpRhs] (.var 0))).isSome = false
+  (.letRec [some slenSig, none] [slenRhs, bumpRhs] (.var 0))).isSome = true
 
 -- …and WITHOUT the annotation the same program is REJECTED: monomorphic `slen`
 -- forces `a = List a` at the recursive call (no finite type). Adding an
--- annotation does not unlock polymorphic recursion, as the previous guard shows.
+-- annotation is what unlocks polymorphic recursion, as the previous guard shows.
 #eval showTypeP (.letRec [none, none] [slenRhs, bumpRhs] (.var 0))
 #guard (typecheck demoCtors
   (.letRec [none, none] [slenRhs, bumpRhs] (.var 0))).isSome = false
 
-/-! A three-member negative example: one member attempts polymorphic recursion,
-another tries to use it at a different in-group type, and a third recurses
-monomorphically over `Forest`. The first two constraints make the SCC fail. -/
+/-! A three-member mixed positive example: one annotated member recurses
+polymorphically, another instantiates it at a different in-group type, and a third
+recurses monomorphically over `Forest`. -/
 
 -- let rec (poly : ∀ a. a → a) = λx. let _ = poly Zero in x     (poly-rec at Peano)
 --     and dup   = λt. FCons (poly t) (FCons t FNil)            (uses poly at pool var)
 --     and sizeF = λts. match ts with | FNil       => Zero      (own pool slice)
 --                                    | FCons h tl => Succ (sizeF tl)
--- in λt. sizeF (dup t)   :   ill-typed
--- (`poly Zero` pins the in-group monotype. `dup` then tries to use `poly` at a
---  different type, so the SCC is rejected.)
+-- in λt. sizeF (dup t)   :   ∀ a. Tree a → Peano
+-- (`poly`'s complete annotation permits the `Peano` self-call and `dup`'s
+--  independent instantiation, while `sizeF` remains ordinary monomorphic recursion.)
 #eval showTypeP (.letRec [some selfSig, none, none]
   [ .lambda none (.letIn none (.app (.var 1) (.ctor ⟨"Zero"⟩)) (.var 1))
   , .lambda none (.app (.app (.ctor ⟨"FCons"⟩) (.app (.var 1) (.var 0)))
@@ -634,12 +640,11 @@ monomorphically over `Forest`. The first two constraints make the SCC fail. -/
   , .lambda none (.match_ (.var 0)
       [ (.named ⟨"FNil"⟩ 0, .ctor ⟨"Zero"⟩)
       , (.named ⟨"FCons"⟩ 2, .app (.ctor ⟨"Succ"⟩) (.app (.var 5) (.var 1))) ]) ]
-  (.lambda none (.app (.var 3) (.app (.var 2) (.var 0)))))).isSome = false
+  (.lambda none (.app (.var 3) (.app (.var 2) (.var 0)))))).isSome = true
 
-/-! Monomorphic in-group visibility: annotating `f` does not unlock polymorphic use
-of its unannotated sibling `h` *inside the group* — `h` is monomorphic there
-(same contract as an ordinary unannotated `let` binding inside its own RHS).
-Annotating `h` too still does not make its in-group uses polymorphic. -/
+/-! Monomorphic in-group visibility is per member: annotating `f` does not unlock
+polymorphic use of its unannotated sibling `h`. Giving `h` its own complete
+annotation does unlock those uses. -/
 
 /-- `λx. let _ = h 0 in let _ = h () in x` — uses the sibling at `Int` AND `Unit`. -/
 private def fUsesHTwice : Expr :=
@@ -654,13 +659,12 @@ private def fUsesHTwice : Expr :=
 #guard (typecheck [] (.letRec [some selfSig, none]
   [fUsesHTwice, .lambda none (.var 0)] (.var 0))).isSome = false
 
--- …annotating `h` as well does not rescue it: both members are
--- now MONOMORPHIC inside the group, so `h 0` and `h ()` still clash (Int vs Unit).
--- : ill-typed
+-- …annotating `h` as well does rescue it: `h 0` and `h ()` independently
+-- instantiate its declared scheme.
 #eval showType (.letRec [some selfSig, some selfSig]
   [fUsesHTwice, .lambda none (.var 0)] (.var 0))
 #guard (typecheck [] (.letRec [some selfSig, some selfSig]
-  [fUsesHTwice, .lambda none (.var 0)] (.var 0))).isSome = false
+  [fUsesHTwice, .lambda none (.var 0)] (.var 0))).isSome = true
 
 
 /-! ### Adversarial: where `letRec` is *supposed* to say no
@@ -670,7 +674,8 @@ in-group polymorphic recursion or an infinite type, so all are correctly rejecte
 
 -- let rec f = λx. let a = f 0 in let b = f () in x in f   :  ill-typed
 -- (polymorphic recursion: `f` is used at both `Int → _` and `Unit → _` inside its own
---  group, where it is monomorphic. An annotation would not change that rule.)
+--  group, where it is monomorphic. A complete annotation would opt this member
+--  into checked polymorphic recursion.)
 #eval showType (.letRec [none]
   [.lambda none
     (.letIn none (.app (.var 1) (.primLit (.int 0)))

@@ -15,9 +15,9 @@ The recursive rule is deliberately mixed:
   in the enclosing body; and
 * the runtime node stores only `none` annotations.
 
-This module initially fixes the production judgment and a real-`Expr` witness.
-Erasure soundness and operational preservation are proved in subsequent
-checkpoints, using the completed small-calculus proofs as their template.
+Source typing erases into this judgment. Its substitution and preservation
+theorems then show that evaluation keeps the source program's type, including
+when annotated recursive members instantiate their own schemes differently.
 -/
 
 namespace RuntimeTyping
@@ -128,6 +128,84 @@ inductive RunWTMatchBranch :
       RunWTMatchBranch ctx (.wildcard, body) scrutTy resultTy
 
 end
+
+end RuntimeTyping
+
+/-- Checking the annotated source first justifies its completely erased runtime
+term. Recursive schemes survive only as witnesses in the runtime derivation. -/
+theorem TypeOfHM.erase_preserves_typing {ctx : Ctx} {e : Expr} {τ : Ty}
+    (h : TypeOfHM ctx e τ) : RuntimeTyping.RunWT ctx e.erase τ := by
+  induction h using TypeOfHM.rec
+    (motive_2 := fun ctx branch scrutTy resultTy _ =>
+      RuntimeTyping.RunWTMatchBranch ctx (branch.1, branch.2.erase)
+        scrutTy resultTy) with
+  | primLitUnit => simpa only [Expr.erase] using RuntimeTyping.RunWT.primLitUnit
+  | primLitInt => simpa only [Expr.erase] using RuntimeTyping.RunWT.primLitInt
+  | primLitNat => simpa only [Expr.erase] using RuntimeTyping.RunWT.primLitNat
+  | primLitChar => simpa only [Expr.erase] using RuntimeTyping.RunWT.primLitChar
+  | primBinOpIntAdd =>
+      simpa only [Expr.erase] using RuntimeTyping.RunWT.primBinOpIntAdd
+  | primBinOpIntSub =>
+      simpa only [Expr.erase] using RuntimeTyping.RunWT.primBinOpIntSub
+  | primBinOpIntLt _ _ ihtrue ihfalse =>
+      simp only [Expr.erase] at ihtrue ihfalse ⊢
+      exact RuntimeTyping.RunWT.primBinOpIntLt ihtrue ihfalse
+  | primBinOpCharLt _ _ ihtrue ihfalse =>
+      simp only [Expr.erase] at ihtrue ihfalse ⊢
+      exact RuntimeTyping.RunWT.primBinOpCharLt ihtrue ihfalse
+  | lambda hpc _ _ _ ihbody =>
+      expose_names
+      subst bodyCtx
+      simp only [Expr.erase]
+      exact RuntimeTyping.RunWT.lambda hpc ihbody
+  | app _ _ ihfn iharg =>
+      simpa only [Expr.erase] using RuntimeTyping.RunWT.app ihfn iharg
+  | letIn hwf _ _ _ _ ihcofin ihbody =>
+      expose_names
+      subst bodyCtx
+      simp only [Expr.erase]
+      refine RuntimeTyping.RunWT.letIn (scheme := M) (avoid := L) hwf ?_ ihbody
+      intro Xs hfresh
+      have hrhs := ihcofin Xs hfresh
+      rwa [Expr.erase_openBoundTyVars] at hrhs
+  | var hlook hargs hinst =>
+      simpa only [Expr.erase] using RuntimeTyping.RunWT.var hlook hargs hinst
+  | ctor hlook hargs hinst =>
+      simpa only [Expr.erase] using RuntimeTyping.RunWT.ctor hlook hargs hinst
+  | match_ _ hne _ ihscrut ihbranches =>
+      expose_names
+      simp only [Expr.erase_match]
+      refine RuntimeTyping.RunWT.match_ ihscrut ?_ ?_
+      · intro hempty
+        obtain ⟨head, tail, rfl⟩ := List.exists_cons_of_ne_nil hne
+        simp at hempty
+      · intro branch' hmem'
+        obtain ⟨⟨pat, branchBody⟩, hmem, rfl⟩ := List.mem_map.mp hmem'
+        exact ihbranches (pat, branchBody) hmem
+  | letRec hwf _ _ heq _ ihmono ihpoly ihbody =>
+      expose_names
+      subst heq
+      simp only [Expr.erase_letRec]
+      rw [show bindings.map (fun _ => none) =
+        (bindings.map Expr.erase).map (fun _ => none) by
+          simp only [List.map_map, Function.comp_def]]
+      refine RuntimeTyping.RunWT.letRec (specs := specs) (G := G) (avoid := L)
+        ⟨by simpa using hwf.length, hwf.nodup, hwf.mono_lc, hwf.poly_wf⟩
+        ?_ ?_ ihbody
+      · intro Xs hfresh pair hpair ty heq
+        obtain ⟨binding, spec, _, hpair', rfl⟩ := List.mem_zip_map_left hpair
+        exact ihmono Xs hfresh (binding, spec) hpair' ty heq
+      · intro Xs hfresh pair hpair scheme heq Ys hfreshY
+        obtain ⟨binding, spec, _, hpair', rfl⟩ := List.mem_zip_map_left hpair
+        have hrhs := ihpoly Xs hfresh (binding, spec) hpair' scheme heq Ys hfreshY
+        rwa [Expr.erase_openTyVars] at hrhs
+  | mk hspec _ _ ihbody =>
+      expose_names
+      subst bodyCtx
+      exact RuntimeTyping.RunWTMatchBranch.mk hspec ihbody
+  | wildcard _ ihbody => exact RuntimeTyping.RunWTMatchBranch.wildcard ihbody
+
+namespace RuntimeTyping
 
 
 /-! ## Runtime type substitution
@@ -1535,6 +1613,344 @@ theorem RunWT.preservation {ctx : Ctx} {e e' : Expr} {ty : Ty}
       exact RunWT.letRecUnfold_preservation htyped
 
 
+/-! ## Runtime progress -/
+
+private lemma RunWT.ctor_chain_has_customTy_form
+    {ctx e τ}
+    (h_chain : SmallStep.IsCtorChain e) (h_ty : RunWT ctx e τ) :
+    ∃ name args tys, τ = Ty.wrapArrows (.customTy name args) tys := by
+  induction e using Expr.rec_strong generalizing ctx τ with
+  | ctor _ =>
+    cases h_ty with
+    | ctor _ _ hinst =>
+      have hform : ∀ {name : TyName} {tyArgs : List Ty} {args tys : List Ty} {τ' : Ty},
+          InstantiatesBy tyArgs (Ty.wrapArrows (.customTy name args) tys) τ' →
+          ∃ instArgs instTys, τ' = Ty.wrapArrows (.customTy name instArgs) instTys := by
+        intro name tyArgs args tys τ'
+        induction tys generalizing τ' with
+        | nil => intro h; cases h with | customTy _ => exact ⟨_, [], rfl⟩
+        | cons _ rest ih =>
+          intro h
+          cases h with
+          | arrow _ h_rest =>
+            expose_names
+            obtain ⟨instArgs, instRest, h_eq⟩ := ih h_rest
+            refine ⟨instArgs, instFst :: instRest, ?_⟩
+            simp [Ty.wrapArrows, h_eq]
+      obtain ⟨instArgs, instTys, h_eq⟩ := hform hinst
+      exact ⟨_, instArgs, instTys, h_eq⟩
+  | app _ _ ihf _ =>
+    cases h_chain with
+    | app h_chain' _ =>
+      cases h_ty with
+      | app h_f_ty _ =>
+        obtain ⟨name, args, tys, h_eq⟩ := ihf h_chain' h_f_ty
+        cases tys with
+        | nil => simp [Ty.wrapArrows] at h_eq
+        | cons _ rest =>
+          simp only [Ty.wrapArrows] at h_eq
+          injection h_eq with _ h_ret
+          exact ⟨name, args, rest, h_ret⟩
+  | primLit _      => cases h_chain
+  | primBinOp _    => cases h_chain
+  | lambda _ _ _   => cases h_chain
+  | letIn _ _ _ _ _ => cases h_chain
+  | var _          => cases h_chain
+  | match_ _ _ _ _ => cases h_chain
+  | letRec _ _ _ _ _ => cases h_chain
+
+/-- A value of arrow type is a λ, a ctor chain, a bare primop, or a one-argument-
+    short primop application. -/
+theorem RunWT.canonical_arrow {ctx e argTy retTy}
+    (h_ty : RunWT ctx e (.arrow argTy retTy))
+    (h_val : SmallStep.IsValue e) :
+    (∃ ann body, e = .lambda ann body) ∨ SmallStep.IsCtorChain e
+    ∨ (∃ op, e = .primBinOp op) ∨ (∃ op v, e = .app (.primBinOp op) v) := by
+  cases h_val with
+  | primLit _ => cases h_ty
+  | lambda ann body => exact .inl ⟨ann, body, rfl⟩
+  | ctor name => exact .inr (.inl (.ctor name))
+  | ctorApp h_chain h_v => exact .inr (.inl (.app h_chain h_v))
+  -- a bare primop and a one-argument-short application are both arrow-typed values
+  | primBinOp op => exact .inr (.inr (.inl ⟨op, rfl⟩))
+  | primBinOpPartial hv => exact .inr (.inr (.inr ⟨_, _, rfl⟩))
+
+/-- A value of a data type is a constructor chain. -/
+theorem RunWT.canonical_customTy {ctx e tyName tyArgs}
+    (h_ty : RunWT ctx e (.customTy tyName tyArgs))
+    (h_val : SmallStep.IsValue e) :
+    SmallStep.IsCtorChain e := by
+  cases h_val with
+  | primLit _ => cases h_ty
+  | lambda _ _ => cases h_ty
+  | ctor name => exact .ctor name
+  | ctorApp h_chain h_v => exact .app h_chain h_v
+  -- `primBinOp`/`primBinOpPartial` are arrow-typed, never `customTy` — the typing
+  -- rule for `.primBinOp _` forces an arrow, contradicting `customTy`.
+  | primBinOp op => cases h_ty
+  | primBinOpPartial hv => cases h_ty with | app h_pbo _ => cases h_pbo
+
+/-- A value of type `int` is an integer literal. -/
+theorem RunWT.canonical_int {ctx e}
+    (h_ty : RunWT ctx e (.prim .int))
+    (h_val : SmallStep.IsValue e) :
+    ∃ m : Int, e = .primLit (.int m) := by
+  cases h_val with
+  | primLit p => cases h_ty; exact ⟨_, rfl⟩
+  | lambda _ _ => cases h_ty
+  | ctor name =>
+    obtain ⟨_, _, tys, h_eq⟩ :=
+      RunWT.ctor_chain_has_customTy_form (.ctor name) h_ty
+    cases tys <;> simp [Ty.wrapArrows] at h_eq
+  | ctorApp h_chain h_v =>
+    obtain ⟨_, _, tys, h_eq⟩ :=
+      RunWT.ctor_chain_has_customTy_form (.app h_chain h_v) h_ty
+    cases tys <;> simp [Ty.wrapArrows] at h_eq
+  | primBinOp op => cases h_ty
+  | primBinOpPartial hv => cases h_ty with | app h_pbo _ => cases h_pbo
+
+/-- A value of type `char` is a character literal. -/
+theorem RunWT.canonical_char {ctx e}
+    (h_ty : RunWT ctx e (.prim .char))
+    (h_val : SmallStep.IsValue e) :
+    ∃ c : Char, e = .primLit (.char c) := by
+  cases h_val with
+  | primLit p => cases h_ty; exact ⟨_, rfl⟩
+  | lambda _ _ => cases h_ty
+  | ctor name =>
+    obtain ⟨_, _, tys, h_eq⟩ :=
+      RunWT.ctor_chain_has_customTy_form (.ctor name) h_ty
+    cases tys <;> simp [Ty.wrapArrows] at h_eq
+  | ctorApp h_chain h_v =>
+    obtain ⟨_, _, tys, h_eq⟩ :=
+      RunWT.ctor_chain_has_customTy_form (.app h_chain h_v) h_ty
+    cases tys <;> simp [Ty.wrapArrows] at h_eq
+  | primBinOp op => cases h_ty
+  | primBinOpPartial hv => cases h_ty with | app h_pbo _ => cases h_pbo
+
+/-- (helper) `Forall₂` distributes over appending one element to both sides. -/
+private theorem forall₂_snoc_runtime {α β : Type _} {R : α → β → Prop}
+    {l1 : List α} {l2 : List β} {a : α} {b : β}
+    (h : List.Forall₂ R l1 l2) (hab : R a b) :
+    List.Forall₂ R (l1 ++ [a]) (l2 ++ [b]) := by
+  induction h with
+  | nil => exact .cons hab .nil
+  | cons hhd _ ih => exact .cons hhd ih
+
+/-- A well-typed constructor chain decomposes into a head constructor applied to
+    args, where the consumed fields are well-typed at their instantiations and
+    the result type is the remaining fields wrapped over the (instantiated)
+    `customTy`. -/
+theorem RunWT.ctor_chain_inversion {ctx : Ctx} {e : Expr} {τ : Ty}
+    (h_chain : SmallStep.IsCtorChain e) (h_ty : RunWT ctx e τ) :
+    ∃ (name : CtorName) (args : List Expr) (ctor : Ctor)
+      (tyArgs consumed remaining : List Ty),
+      SmallStep.CtorAppliedTo e name args ∧
+      LookupList.get? ctx.ctors name = some ctor ∧
+      (∀ t ∈ tyArgs, ContainsBvarsUpTo 0 t) ∧
+      ctor.contents = consumed ++ remaining ∧
+      List.Forall₂ (fun a c => ∃ ct, InstantiatesBy tyArgs c ct ∧ RunWT ctx a ct)
+        args consumed ∧
+      InstantiatesBy tyArgs
+        (Ty.wrapArrows (.customTy ctor.tyName (Ty.bvarRange ctor.paramCount)) remaining) τ := by
+  induction e using Expr.rec_strong generalizing τ with
+  | ctor name =>
+    cases h_ty with
+    | ctor hlook htyargs hinst =>
+      exact ⟨name, [], _, _, [], _, .base name, hlook, htyargs, rfl, .nil,
+        by simpa [Ctor.toTy] using hinst⟩
+  | app f arg ihf _ =>
+    cases h_chain with
+    | app hchainf hvarg =>
+      cases h_ty with
+      | app hf harg =>
+        obtain ⟨name, args, ctor, tyArgs, consumed, remaining, hcat, hlook, htyargs,
+          hcontents, hforall, hinst_f⟩ := ihf hchainf hf
+        cases remaining with
+        | nil =>
+          simp only [Ty.wrapArrows] at hinst_f
+          cases hinst_f
+        | cons c rest =>
+          simp only [Ty.wrapArrows] at hinst_f
+          cases hinst_f with
+          | arrow hc hrest =>
+            refine ⟨name, args ++ [arg], ctor, tyArgs, consumed ++ [c], rest,
+              .step hcat, hlook, htyargs, ?_,
+              forall₂_snoc_runtime hforall ⟨_, hc, harg⟩, hrest⟩
+            rw [hcontents]
+            exact (List.append_assoc consumed [c] rest).symm
+  | primLit _ => cases h_chain
+  | primBinOp _ => cases h_chain
+  | lambda _ _ _ => cases h_chain
+  | letIn _ _ _ _ _ => cases h_chain
+  | var _ => cases h_chain
+  | match_ _ _ _ _ => cases h_chain
+  | letRec _ _ _ _ _ => cases h_chain
+
+/-- Progress: a closed, well-typed term is a value or takes a step. -/
+theorem RunWT.progress {ctx : Ctx} {e : Expr} {τ : Ty}
+    (h_ty : RunWT ctx e τ) (h_closed : ctx.env = [])
+    (h_exh : SmallStep.AllMatchesExhaustive ctx.ctors e) (h_erased : e.erase = e) :
+    SmallStep.IsValue e ∨ ∃ e', SmallStep.Step e e' := by
+  open SmallStep in
+  suffices H : ∀ (n : Nat) (e : Expr), e.size ≤ n → ∀ (ctx : Ctx) (τ : Ty),
+      RunWT ctx e τ → ctx.env = [] → AllMatchesExhaustive ctx.ctors e →
+      e.erase = e → IsValue e ∨ ∃ e', Step e e' by
+    exact H e.size e (Nat.le_refl _) ctx τ h_ty h_closed h_exh h_erased
+  intro n
+  induction n with
+  | zero => intro e he; exact absurd he (Nat.not_le.mpr (Expr.size_pos e))
+  | succ n ih =>
+    intro e hsize ctx τ h_ty h_closed h_exh h_erased
+    cases h_ty with
+    | primLitUnit => exact .inl (.primLit _)
+    | primLitInt => exact .inl (.primLit _)
+    | primLitNat => exact .inl (.primLit _)
+    | primLitChar => exact .inl (.primLit _)
+    | primBinOpIntAdd => exact .inl (.primBinOp _)
+    | primBinOpIntSub => exact .inl (.primBinOp _)
+    | primBinOpIntLt _ _ => exact .inl (.primBinOp _)
+    | primBinOpCharLt _ _ => exact .inl (.primBinOp _)
+    | ctor _ _ _ => exact .inl (.ctor _)
+    | lambda _ _ => exact .inl (.lambda _ _)
+    | var h_lookup _ _ => rw [h_closed] at h_lookup; simp at h_lookup
+    | @app _ f _ _ arg h_f h_arg =>
+      cases h_exh with
+      | app h_exh_f h_exh_arg =>
+        simp only [Expr.size] at hsize
+        have herased : f.erase = f ∧ arg.erase = arg := by
+          simpa [Expr.erase_app] using h_erased
+        rcases ih f (by omega) ctx _ h_f h_closed h_exh_f herased.1 with hvf | ⟨f', hf⟩
+        · rcases ih arg (by omega) ctx _ h_arg h_closed h_exh_arg herased.2 with hva | ⟨arg', harg⟩
+          · rcases RunWT.canonical_arrow h_f hvf with
+                ⟨ann, body, rfl⟩ | hchain | ⟨op, rfl⟩ | ⟨op, v, rfl⟩
+            · exact .inr ⟨_, .beta hva⟩
+            · exact .inl (.ctorApp hchain hva)
+            · -- `f` is a bare primop; applying one value leaves it one arg short → a value
+              exact .inl (.primBinOpPartial hva)
+            · -- `f` is a partial primop; this application saturates it → δ-step.
+              -- Both operands are values of type `int`, hence literals (canonical_int).
+              cases hvf with
+              | ctorApp hchain _ => nomatch hchain
+              | primBinOpPartial hv =>
+                cases h_f with
+                | app h_pbo h_v =>
+                  cases h_pbo with
+                  | primBinOpIntAdd =>
+                    obtain ⟨m, rfl⟩ := RunWT.canonical_int h_v hv
+                    obtain ⟨n, rfl⟩ := RunWT.canonical_int h_arg hva
+                    exact .inr ⟨_, .deltaIntAdd⟩
+                  | primBinOpIntSub =>
+                    obtain ⟨m, rfl⟩ := RunWT.canonical_int h_v hv
+                    obtain ⟨n, rfl⟩ := RunWT.canonical_int h_arg hva
+                    exact .inr ⟨_, .deltaIntSub⟩
+                  | primBinOpIntLt _ _ =>
+                    obtain ⟨m, rfl⟩ := RunWT.canonical_int h_v hv
+                    obtain ⟨n, rfl⟩ := RunWT.canonical_int h_arg hva
+                    exact .inr ⟨_, .deltaIntLt⟩
+                  | primBinOpCharLt _ _ =>
+                    obtain ⟨a, rfl⟩ := RunWT.canonical_char h_v hv
+                    obtain ⟨b, rfl⟩ := RunWT.canonical_char h_arg hva
+                    exact .inr ⟨_, .deltaCharLt⟩
+          · exact .inr ⟨_, .appArg hvf harg⟩
+        · exact .inr ⟨_, .appFn hf⟩
+    | letIn _ _ _ =>
+      -- call-by-name: a `let` always steps via `letReduce` (no rhs reduction).
+      exact .inr ⟨_, .letReduce⟩
+    | @match_ _ scrut scrutTy branches resultTy h_scrut h_ne h_brs =>
+      cases h_exh with
+      | match_ h_exh_scrut _ h_branch_ty h_match_exh =>
+        simp only [Expr.size] at hsize
+        have herased : scrut.erase = scrut := by
+          have hboth : scrut.erase = scrut ∧
+              (branches.map fun pe => (pe.1, pe.2.erase)) = branches := by
+            simpa [Expr.erase_match] using h_erased
+          exact hboth.1
+        rcases ih scrut (by omega) ctx _ h_scrut h_closed h_exh_scrut herased with hvs | ⟨scrut', hscrut⟩
+        · obtain ⟨⟨pat0, body0⟩, rest0, hbeq⟩ := List.exists_cons_of_ne_nil h_ne
+          have hb0 : (pat0, body0) ∈ branches := by rw [hbeq]; exact List.mem_cons_self
+          by_cases hchain : IsCtorChain scrut
+          · rcases (Expr.rec_strong
+                (motive := fun e => IsCtorChain e → ∃ name args, CtorAppliedTo e name args)
+                (fun _ h => by cases h)
+                (fun _ h => by cases h)
+                (fun _ _ _ => by intro h; cases h)
+                (fun f v ihf _ => by
+                  intro h
+                  cases h with
+                  | app hf _ =>
+                    obtain ⟨name, args, hca⟩ := ihf hf
+                    exact ⟨name, args ++ [v], .step hca⟩)
+                (fun _ _ _ _ _ => by intro h; cases h)
+                (fun _ => by intro h; cases h)
+                (fun nm => by
+                  intro h
+                  cases h
+                  exact ⟨nm, [], .base nm⟩)
+                (fun _ _ _ _ => by intro h; cases h)
+                (fun _ _ _ _ _ => by intro h; cases h)
+                scrut hchain) with ⟨name, args, hcat⟩
+            have hcover : ∃ pat body, (pat, body) ∈ branches ∧
+                pat.matchesCtor name args.length = true := by
+              cases pat0 with
+              | wildcard => exact ⟨.wildcard, body0, hb0, rfl⟩
+              | named c0 n0 =>
+                cases h_brs (.named c0 n0, body0) hb0 with
+                | mk hspec0 _ =>
+                  obtain ⟨name', args', ctor, tyArgs', consumed, remaining,
+                    hcat', hlook, _, hcontents, hforall, hinst⟩ :=
+                    RunWT.ctor_chain_inversion hchain h_scrut
+                  obtain ⟨rfl, rfl⟩ : name = name' ∧ args = args' := by
+                    exact CtorAppliedTo.det hcat hcat'
+                  cases remaining with
+                  | cons d rest =>
+                    simp only [Ty.wrapArrows] at hinst
+                    rw [hspec0.scrut_eq] at hinst; cases hinst
+                  | nil =>
+                    simp only [Ty.wrapArrows] at hinst
+                    rw [List.append_nil] at hcontents
+                    have hlen : args.length = ctor.contents.length := by
+                      rw [hcontents]; exact hforall.length_eq
+                    obtain ⟨ctorB, hlookB, htyB⟩ := h_branch_ty c0 n0 body0 hb0
+                    cases hinst with
+                    | customTy _ =>
+                      obtain ⟨pat, body, hmem, hcov⟩ := h_match_exh name ctor hlook (by
+                        injection hspec0.scrut_eq with hn _
+                        rw [hn, Option.some.inj (hspec0.lookup.symm.trans hlookB)]; exact htyB)
+                      exact ⟨pat, body, hmem, by rw [hlen]; exact hcov⟩
+            obtain ⟨pat, body, hmem, hcov⟩ := hcover
+            obtain ⟨e', hfmb⟩ := findMatchingBranch_of_exists ⟨pat, body, hmem, hcov⟩
+            rcases (List.rec
+              (motive := fun l => findMatchingBranch name args l = some e' →
+                  ∃ pat body, FirstMatchingBranch name args.length l pat body ∧
+                    e' = body.substN 0 (args.take pat.bindCount))
+              (fun h => by simp [findMatchingBranch] at h)
+              (fun hd tl ih => by
+                obtain ⟨pat, body⟩ := hd
+                intro h
+                simp only [findMatchingBranch] at h
+                split at h
+                · rename_i hm
+                  simp at h
+                  exact ⟨pat, body, .here hm, h.symm⟩
+                · rename_i hnm
+                  obtain ⟨p, b, hfirst, heq⟩ := ih h
+                  exact ⟨p, b, .there ((Bool.not_eq_true _).mp hnm) hfirst, heq⟩)
+              branches hfmb) with ⟨pat', body', hfirst, _⟩
+            exact .inr ⟨_, .matchReduce hvs hcat hfirst⟩
+          · have hwild : pat0 = .wildcard := by
+              cases pat0 with
+              | wildcard => rfl
+              | named c0 n0 =>
+                cases h_brs (.named c0 n0, body0) hb0 with
+                | mk hspecA _ =>
+                  exact absurd (RunWT.canonical_customTy (hspecA.scrut_eq ▸ h_scrut) hvs) hchain
+            subst hwild
+            rw [hbeq]
+            exact .inr ⟨body0, .matchWildReduce hvs hchain⟩
+        · exact .inr ⟨_, .matchScrut hscrut⟩
+    | letRec _ _ _ _ => exact .inr ⟨_, .letRecUnfold⟩
+
 /-! ## A real-Core erased polymorphic-recursion witness -/
 
 def polyId : PolyTy := ⟨1, .arrow (.bvar 0) (.bvar 0)⟩
@@ -1604,13 +2020,55 @@ theorem polySelf_body :
     (args := [.prim .unit]) rfl (by simp; exact .prim)
     (.arrow (.bvar rfl) (.bvar rfl))
 
+/-- The annotated source accepts the same independently instantiated recursive
+call. Its complete annotation is checked before the machine sees the term. -/
+theorem annotated_polySelf_typed :
+    TypeOfHM ⟨[], []⟩ (.letRec [some polyId] polySelfBindings (.var 0))
+      (.arrow (.prim .unit) (.prim .unit)) := by
+  refine TypeOfHM.letRec (specs := [.poly polyId]) (G := []) (L := [])
+    ⟨rfl, rfl, by simp, ?_, ?_⟩ ?_ ?_ rfl ?_
+  · intro ty hty
+    simp at hty
+  · intro scheme hscheme
+    simp only [List.mem_singleton, RecSpec.poly.injEq] at hscheme
+    subst scheme
+    exact polyId_wf
+  · intro Xs hXs pair hpair ty hmono
+    simp [polySelfBindings] at hpair
+    subst pair
+    simp at hmono
+  · intro Xs hXs pair hpair scheme hscheme Ys hYs
+    have hXsNil : Xs = [] := List.length_eq_zero_iff.mp hXs.length
+    subst Xs
+    simp [polySelfBindings] at hpair
+    subst pair
+    simp only [RecSpec.poly.injEq] at hscheme
+    subst scheme
+    obtain ⟨Y, rfl⟩ := singleton_of_fresh_one hYs
+    change TypeOfHM ⟨[polyId], []⟩ polySelfRhs
+      (.arrow (.fvar Y) (.fvar Y))
+    apply TypeOfHM.lambda .fvar (by simp [Option.Pins]) rfl
+    apply TypeOfHM.app (argTy := .prim .int)
+    · apply TypeOfHM.lambda .prim (by simp [Option.Pins]) rfl
+      exact TypeOfHM.var (dbl := 1) (polyTy := PolyTy.mkTrivial (.fvar Y))
+        (instArgs := []) rfl (by simp) .fvar
+    · apply TypeOfHM.app (argTy := .prim .int)
+      · exact TypeOfHM.var (dbl := 1) (polyTy := polyId)
+          (instArgs := [.prim .int]) rfl (by simp; exact .prim)
+          (.arrow (.bvar rfl) (.bvar rfl))
+      · exact .primLitInt
+  · exact TypeOfHM.var (dbl := 0) (polyTy := polyId)
+      (instArgs := [.prim .unit]) rfl (by simp; exact .prim)
+      (.arrow (.bvar rfl) (.bvar rfl))
+
 /-- No scheme or type application occurs anywhere in this runtime expression. -/
 theorem erased_polySelf_typed :
     RunWT ⟨[], []⟩
       (.letRec (polySelfBindings.map (fun _ => none))
         polySelfBindings (.var 0))
       (.arrow (.prim .unit) (.prim .unit)) := by
-  exact .letRec polySelf_specs_wf polySelf_mono polySelf_poly polySelf_body
+  simpa [Expr.erase, polySelfBindings, polySelfRhs] using
+    TypeOfHM.erase_preserves_typing annotated_polySelf_typed
 
 theorem erased_polySelf_steps :
     SmallStep.Step
@@ -1632,9 +2090,12 @@ theorem erased_polySelf_unfolded_typed :
   exact RunWT.letRecUnfold_preservation erased_polySelf_typed
 
 #print axioms RunWT.substFvar
+#print axioms TypeOfHM.erase_preserves_typing
 #print axioms RunWT.substMany
 #print axioms RunWT.letRecUnfold_preservation
 #print axioms RunWT.preservation
+#print axioms RunWT.progress
+#print axioms annotated_polySelf_typed
 #print axioms erased_polySelf_typed
 #print axioms erased_polySelf_unfolded_typed
 

@@ -5,7 +5,7 @@ import FHM.Pretty
 import FHM.Unverified.EvaluateUnsafe
 
 /-!
-# Damas--Milner recursion smoke-test driver
+# Erased annotated-polymorphic-recursion smoke-test driver
 
 This is an executable specification of the recursion boundary on the erased
 branch. It deliberately drives the current API directly:
@@ -13,9 +13,10 @@ branch. It deliberately drives the current API directly:
 `parse -> lower -> infer -> exhaustiveness ->
 erase Core annotations -> evaluate`.
 
-The negative cases assert rejection specifically at inference. In particular,
-this suite does not preserve the old type-passing branch's expectation that an
-annotation enables polymorphic use inside an SCC.
+Complete annotations enable polymorphic use inside an SCC without changing
+runtime terms. Unannotated members remain monomorphic within the SCC. The
+typing negatives assert rejection specifically at inference; the unsupported
+head-binder syntax fixture asserts rejection at parsing.
 -/
 
 open Surface.Parse
@@ -44,7 +45,7 @@ structure CheckedProgram where
   ty : Ty
   value : Expr
 
-/-- The real erased HM path, kept local so the smoke test pins each stage and
+/-- The real erased source path, kept local so the smoke test pins each stage and
 does not depend on the CLI/reporting layer. -/
 def checkPipelineDM (src : String) : Except PipelineError CheckedProgram := do
   let parsed <- match parseProgram src with
@@ -118,11 +119,11 @@ def main : IO UInt32 := do
         motivation := "a recursive binding generalises after its SCC exits"
         expected := .pass "(1, True)" }
     , { path := "scratch/polyrec-inner-poly-calls.fhm"
-        motivation := "an annotation does not permit two in-SCC instantiations under D2"
-        expected := .rejectAt .infer }
+        motivation := "a complete annotation permits two independent in-SCC instantiations"
+        expected := .pass "(4, 4)" }
     , { path := "scratch/polyrec-mixed-group.fhm"
-        motivation := "mixed SCC members still have one monotype while the SCC is checked"
-        expected := .rejectAt .infer }
+        motivation := "an unannotated sibling independently instantiates an annotated member"
+        expected := .pass "(1, 2)" }
     , { path := "scratch/polyrec-mixed-conflict-must-fail.fhm"
         motivation := "conflicting in-SCC recursive instantiations are rejected"
         expected := .rejectAt .infer }
@@ -133,17 +134,17 @@ def main : IO UInt32 := do
         motivation := "the two-instantiation unannotated variant also fails"
         expected := .rejectAt .infer }
     , { path := "scratch/polyrec-head-binder-scoped-must-fail.fhm"
-        motivation := "complete head-binder/scoped-type-variable support is explicitly parked"
-        expected := .rejectAt .infer }
+        motivation := "head-binder syntax remains unsupported (explicit lambdas are required)"
+        expected := .rejectAt .parse }
     , { path := "scratch/polyrec-nested.fhm"
-        motivation := "the canonical annotated polymorphic-recursion example is outside D2"
-        expected := .rejectAt .infer }
+        motivation := "a complete annotation enables recursion over a nested datatype"
+        expected := .pass "7" }
     , { path := "scratch/polyrec-groups-nested.fhm"
-        motivation := "annotations do not restore polymorphic recursion in a larger program"
-        expected := .rejectAt .infer }
+        motivation := "annotated polymorphic recursion composes across several SCCs"
+        expected := .pass "7" }
     , { path := "scratch/polyrec-mixed-fixed-instantiation.fhm"
-        motivation := "a mixed SCC is accepted when recursive uses share one instantiation"
-        expected := .pass "[5, 5, 5]" }
+        motivation := "a rigid annotation variable cannot escape through an unannotated sibling"
+        expected := .rejectAt .infer }
     ]
   let results <- cases.mapM runCase
   let passed := results.count true

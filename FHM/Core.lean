@@ -2642,9 +2642,9 @@ theorem PolyTy.genGroup_wf {G : List Nat} {τ : Ty} (hτ : τ.IsLC) :
 The `letRec` rule carries one derivation-internal `RecSpec` per binding: an
 UNANNOTATED member's shared monotype `τ`, or an ANNOTATED member's declared
 scheme `σ` (pinned to the stored annotation via `RecSpec.ann`). `bodyScheme`
-describes the binding exported to the body. Recursive RHSs never use an
-annotated member at its declared scheme: the rule checks every RHS against an
-all-monomorphic witness context. -/
+describes the binding exported to the body. Recursive RHSs see annotated
+members at their declared schemes and unannotated members at their shared
+monotypes. -/
 
 /-- Derivation-internal per-binding datum for a recursion group. -/
 inductive RecSpec
@@ -2658,9 +2658,8 @@ def RecSpec.ann : RecSpec → Option PolyTy
   | .mono _ => none
   | .poly σ => some σ
 
-/-- Render a spec as an environment entry. The typing rule uses this only for
-    all-`.mono` witness lists when checking recursive RHSs; the `.poly` branch is
-    useful for the post-group body projection and supporting algebra. -/
+/-- Render a spec in the recursive RHS environment: unannotated members use
+    shared monotypes, while annotated members expose their complete schemes. -/
 def RecSpec.rhsEntry (G Xs : List Nat) : RecSpec → PolyTy
   | .mono τ => PolyTy.mkTrivial (Ty.renameG G Xs τ)
   | .poly σ => σ
@@ -2672,7 +2671,8 @@ def RecSpec.bodyScheme (G : List Nat) : RecSpec → PolyTy
   | .mono τ => PolyTy.genGroup G τ
   | .poly σ => σ
 
-/-- The pointwise relation underlying the recursive annotation ceiling. -/
+/-- Legacy pointwise relation for the former monomorphic annotation ceiling.
+    The mixed recursive typing rule does not use this relation. -/
 def RecSpecs.CeilingRel (G : List Nat) (ann : Option PolyTy) (spec : RecSpec) : Prop :=
   match ann, spec with
     | some σ, .mono τ =>
@@ -2680,7 +2680,7 @@ def RecSpecs.CeilingRel (G : List Nat) (ann : Option PolyTy) (spec : RecSpec) : 
     | some _, .poly _ => False
     | none, _ => True
 
-/-- The `letRec` ceiling premise. At an annotated position the solved member
+/-- Legacy ceiling certificate. At an annotated position the solved member
     must be monomorphic, and its scheme generalised over the shared pool must be
     at least as general as the annotation.
     Unannotated positions impose no ceiling. -/
@@ -2833,7 +2833,8 @@ structure RecSpecs.WF (anns : List (Option PolyTy)) (bindings : List Expr)
   mono_lc : ∀ τ, RecSpec.mono τ ∈ specs → τ.IsLC
   poly_wf : ∀ σ, RecSpec.poly σ ∈ specs → σ.WF
 
-/-- **Cofinite monomorphic-recursion premise for all members.** There is one
+/-- Legacy cofinite premise for the former all-monomorphic recursion rule.
+    There is one
     monotype per member (the rule's `τs`, aligned with `specs` by its
     `hlen`/`hlink`/`hlc` premises), and at every sufficiently-fresh shared pool
     opening `G ↦ Xs` (the SAME `Xs` for the whole group — what keeps mutual
@@ -2876,13 +2877,14 @@ def RecSpecs.PolyTyped (TypeOf : Ctx → Expr → Ty → Prop) (ctx : Ctx)
 
 /-! ### The *declarative* HM typing relation `TypeOfHM` (the completeness spec).
 
-Classic Damas–Milner typing and the single algorithm-independent specification
-of "this program is HM-typeable". A variable use instantiates its environment
-scheme by existential witness types, exactly as in textbook HM. Source
-annotations constrain `lambda`, `letIn`, and `letRec`.
+Rank-one let-polymorphism with complete annotations admitting polymorphic
+recursive uses. This is the algorithm-independent specification of accepted
+source programs. A variable use instantiates its environment scheme by
+existential witness types. Source annotations constrain `lambda`, `letIn`,
+and `letRec`.
 
-Its substitution, progress, preservation, and type-safety metatheory is proved
-directly, without an elaborated term language. -/
+Runtime safety is proved by erasing a source derivation into `RuntimeTyping.RunWT`,
+whose scheme witnesses remain in the proof and never enter the runtime terms. -/
 
 mutual
 
@@ -2967,28 +2969,14 @@ inductive TypeOfHM : Ctx → Expr → Ty → Prop
     (∀ branch ∈ branches, TypeOfMatchBranch ctx branch scrutTy resultTy) →
     TypeOfHM ctx (.match_ scrutinee branches) resultTy
 
-  /-- Recursive group with **monomorphic recursion**. Every member's
-      RHS is checked MONOMORPHICALLY at the all-mono-rendered group context
-      (`RecSpecs.MonoTypedInit` over the per-member monotypes `τs`), at the
-      cofinite shared-pool openings `G ↦ Xs`. An annotated member is never
-      available at its declared scheme while the RHSs are checked (it appears at
-      its witness `τᵢ` instead) — the annotation's role is confined to the BODY
-      (`RecSpecs.bodyCtx`: annotated members at their schemes, unannotated ones
-      generalised over `G`). The ceiling relation additionally requires every
-      solved monotype to support its declared annotation. `hlen` aligns `τs`
-      with the members; `hlink` pins an
-      unannotated member's witness to its spec monotype (so the body's
-      `genGroup G τᵢ` is justified by the RHS typing); `hlc` keeps the witnesses
-      locally closed. There is deliberately no scheme-relative RHS premise:
-      an annotated binding is polymorphic only after the group has been checked,
-      when it is made available to the body. -/
-  | letRec {specs : List RecSpec} {τs : List Ty} {G L : List Nat} :
+  /-- Mixed recursive group. Unannotated members share one monotype inside the
+      group and generalise only in the body. Completely annotated members are
+      available at their declared schemes throughout the group; their own RHSs
+      are checked at every fresh rigid opening of those schemes. -/
+  | letRec {specs : List RecSpec} {G L : List Nat} :
     RecSpecs.WF anns bindings specs G →
-    bindings.length = τs.length →
-    (∀ p ∈ specs.zip τs, ∀ τ, p.1 = .mono τ → p.2 = τ) →
-    (∀ t ∈ τs, t.IsLC) →
-    RecSpecs.MonoTypedInit TypeOfHM ctx bindings τs G L →
-    RecSpecs.ceilingOK G anns (τs.map RecSpec.mono) →
+    RecSpecs.MonoTyped TypeOfHM ctx bindings specs G L →
+    RecSpecs.PolyTyped TypeOfHM ctx bindings specs G L →
     bodyCtx = RecSpecs.bodyCtx ctx specs G →
     TypeOfHM bodyCtx body ρ →
     TypeOfHM ctx (.letRec anns bindings body) ρ
@@ -3008,289 +2996,6 @@ inductive TypeOfMatchBranch :
     TypeOfMatchBranch ctx (.wildcard, bodyExpr) scrutTy resultTy
 
 end
-
-
-/-! ### Typing is preserved by runtime erasure
-
-Erasing a recursive annotation changes the corresponding body-context entry
-from the declared scheme to the scheme inferred from the member's shared
-monotype.  The recursive annotation ceiling says precisely that the inferred
-scheme is at least as general, so the erasure proof needs the standard HM fact
-that replacing an environment entry by a more-general scheme preserves
-typing.  These two helpers are private because the public API of this section
-is the erasure theorem itself. -/
-
-private theorem TypeOfHM.weaken_scheme_for_erasure
-    {ctors : CtorEnv} {env_post env : Env} {M M' : PolyTy}
-    {e : Expr} {τ : Ty}
-    (hgen : M'.Generalizes M)
-    (h : TypeOfHM ⟨env_post ++ [M] ++ env, ctors⟩ e τ) :
-    TypeOfHM ⟨env_post ++ [M'] ++ env, ctors⟩ e τ := by
-  have H : ∀ {ctx : Ctx} {e₀ : Expr} {τ₀ : Ty}, TypeOfHM ctx e₀ τ₀ →
-      ∀ ep : Env, ctx.env = ep ++ [M] ++ env →
-      TypeOfHM ⟨ep ++ [M'] ++ env, ctx.ctors⟩ e₀ τ₀ := by
-    intro ctx e₀ τ₀ hd
-    induction hd using TypeOfHM.rec
-      (motive_2 := fun ctx branch scrutTy resultTy _ =>
-        ∀ ep : Env, ctx.env = ep ++ [M] ++ env →
-          TypeOfMatchBranch ⟨ep ++ [M'] ++ env, ctx.ctors⟩ branch scrutTy resultTy) with
-    | primLitUnit => intro ep _; exact .primLitUnit
-    | primLitInt => intro ep _; exact .primLitInt
-    | primLitNat => intro ep _; exact .primLitNat
-    | primLitChar => intro ep _; exact .primLitChar
-    | primBinOpIntAdd => intro ep _; exact .primBinOpIntAdd
-    | primBinOpIntSub => intro ep _; exact .primBinOpIntSub
-    | primBinOpIntLt _ _ ihtrue ihfalse =>
-        intro ep heq
-        exact .primBinOpIntLt (ihtrue ep heq) (ihfalse ep heq)
-    | primBinOpCharLt _ _ ihtrue ihfalse =>
-        intro ep heq
-        exact .primBinOpCharLt (ihtrue ep heq) (ihfalse ep heq)
-    | app _ _ ihf ihinput =>
-        intro ep heq
-        exact .app (ihf ep heq) (ihinput ep heq)
-    | lambda hpc hann heqctx hbody ihbody =>
-        expose_names
-        intro ep heq
-        refine TypeOfHM.lambda hpc hann rfl ?_
-        have hbc := ihbody (PolyTy.mkTrivial paramTy :: ep)
-          (by simp only [heqctx, heq, List.cons_append])
-        simpa only [heqctx, List.cons_append] using hbc
-    | letIn hwf hann hcofin heqctx hbody ihcofin ihbody =>
-        expose_names
-        intro ep heq
-        refine TypeOfHM.letIn hwf hann
-          (fun Xs hfresh => ihcofin Xs hfresh ep heq) rfl ?_
-        have hbc := ihbody (M_1 :: ep)
-          (by simp only [heqctx, heq, List.cons_append])
-        simpa only [heqctx, List.cons_append] using hbc
-    | var hlook hbvars hinst =>
-        expose_names
-        intro ep heq
-        rw [heq] at hlook
-        rcases lt_trichotomy dbl ep.length with hlt | heqd | hgt
-        · refine TypeOfHM.var ?_ hbvars hinst
-          show (ep ++ [M'] ++ env)[dbl]? = _
-          rw [List.append_assoc, List.getElem?_append_left hlt]
-          rw [List.append_assoc, List.getElem?_append_left hlt] at hlook
-          exact hlook
-        · subst heqd
-          have hpoly : polyTy = M := by
-            rw [List.append_assoc, List.getElem?_append_right (le_refl ep.length)] at hlook
-            simpa only [Nat.sub_self, List.singleton_append, List.getElem?_cons_zero,
-              Option.some.injEq] using hlook.symm
-          subst hpoly
-          obtain ⟨instArgs', hbvars', hinst'⟩ := hgen instArgs ty hbvars hinst
-          refine TypeOfHM.var ?_ hbvars' hinst'
-          show (ep ++ [M'] ++ env)[ep.length]? = some M'
-          rw [List.append_assoc, List.getElem?_append_right (le_refl ep.length)]
-          simp only [Nat.sub_self, List.singleton_append, List.getElem?_cons_zero]
-        · refine TypeOfHM.var ?_ hbvars hinst
-          show (ep ++ [M'] ++ env)[dbl]? = _
-          have hle : ep.length ≤ dbl := by omega
-          rw [List.append_assoc, List.getElem?_append_right hle] at hlook
-          rw [List.append_assoc, List.getElem?_append_right hle]
-          rw [show ([M] ++ env) = M :: env from rfl] at hlook
-          rw [show ([M'] ++ env) = M' :: env from rfl]
-          rw [show (dbl - ep.length) = (dbl - ep.length - 1) + 1 from by omega] at hlook ⊢
-          simp only [List.getElem?_cons_succ] at hlook ⊢
-          exact hlook
-    | ctor hlook htyargs hinst =>
-        intro ep _
-        exact .ctor hlook htyargs hinst
-    | match_ hscrut hne hbrs ihscrut ihbrs =>
-        intro ep heq
-        refine TypeOfHM.match_ (ihscrut ep heq) hne ?_
-        intro branch hmem
-        exact ihbrs branch hmem ep heq
-    | letRec hwf hlen hlink hlc hmono hceiling heq hbody ihmono ihbody =>
-        expose_names
-        intro ep hep
-        subst heq
-        refine TypeOfHM.letRec (specs := specs) (τs := τs) (G := G) (L := L)
-          hwf hlen hlink hlc ?_ hceiling rfl ?_
-        · intro Xs hfresh p hp
-          have hc := ihmono Xs hfresh p hp
-            ((τs.map RecSpec.mono).map (RecSpec.rhsEntry G Xs) ++ ep)
-            (by simp only [RecSpecs.rhsCtx, hep, List.append_assoc])
-          simpa only [RecSpecs.rhsCtx, List.append_assoc] using hc
-        · have hb := ihbody (specs.map (RecSpec.bodyScheme G) ++ ep)
-            (by simp only [RecSpecs.bodyCtx, hep, List.append_assoc])
-          simpa only [RecSpecs.bodyCtx, List.append_assoc] using hb
-    | mk hspec heqctx hbody ihbody =>
-        expose_names
-        refine TypeOfMatchBranch.mk hspec rfl ?_
-        have hbc := ihbody (instContents.map PolyTy.mkTrivial ++ ep)
-          (by simp only [heqctx, h_1, List.append_assoc])
-        simpa only [heqctx, List.append_assoc] using hbc
-    | wildcard hbody ihbody =>
-        expose_names
-        exact TypeOfMatchBranch.wildcard (ihbody ep h_1)
-  exact H h env_post rfl
-
-private theorem TypeOfHM.weaken_schemes_for_erasure
-    {ctors : CtorEnv} {env : Env} {e : Expr} {τ : Ty}
-    {Ms Ms' : List PolyTy}
-    (hgen : List.Forall₂ PolyTy.Generalizes Ms' Ms)
-    (h : TypeOfHM ⟨Ms ++ env, ctors⟩ e τ) :
-    TypeOfHM ⟨Ms' ++ env, ctors⟩ e τ := by
-  have H : ∀ {Ms Ms' : List PolyTy}, List.Forall₂ PolyTy.Generalizes Ms' Ms →
-      ∀ ep : Env, TypeOfHM ⟨ep ++ Ms ++ env, ctors⟩ e τ →
-        TypeOfHM ⟨ep ++ Ms' ++ env, ctors⟩ e τ := by
-    intro Ms Ms' hgen
-    induction hgen with
-    | nil => intro ep h; simpa using h
-    | @cons M' M Mt' Mt hM _ ih =>
-        intro ep h
-        have h₁ : TypeOfHM ⟨(ep ++ [M]) ++ Mt ++ env, ctors⟩ e τ := by
-          simpa only [List.append_assoc, List.cons_append, List.nil_append,
-            List.singleton_append] using h
-        have h₂ := ih (ep ++ [M]) h₁
-        have h₃ := TypeOfHM.weaken_scheme_for_erasure
-          (env_post := ep) (env := Mt' ++ env) hM
-          (by simpa only [List.append_assoc, List.singleton_append] using h₂)
-        simpa only [List.append_assoc, List.cons_append, List.nil_append,
-          List.singleton_append] using h₃
-  have hfin := H hgen [] (by simpa using h)
-  simpa using hfin
-
-/-- The schemes inferred for an erased recursive group are pointwise at least as
-    general as the schemes exposed by the annotated source group. -/
-private theorem RecSpecs.erasure_body_generalizes
-    {anns : List (Option PolyTy)} {specs : List RecSpec} {τs : List Ty} {G : List Nat}
-    (hanns : specs.map RecSpec.ann = anns)
-    (hlink : ∀ p ∈ specs.zip τs, ∀ τ, p.1 = .mono τ → p.2 = τ)
-    (hceiling : RecSpecs.ceilingOK G anns (τs.map RecSpec.mono)) :
-    List.Forall₂ PolyTy.Generalizes
-      (τs.map (PolyTy.genGroup G))
-      (specs.map (RecSpec.bodyScheme G)) := by
-  subst anns
-  unfold RecSpecs.ceilingOK at hceiling
-  induction specs generalizing τs with
-  | nil =>
-      cases τs with
-      | nil => exact .nil
-      | cons τ τs => cases hceiling
-  | cons spec specs ih =>
-      cases τs with
-      | nil => cases hceiling
-      | cons τ τs =>
-          simp only [List.map_cons] at hceiling ⊢
-          cases hceiling with
-          | cons hhead htail =>
-              refine .cons ?_ (ih ?_ htail)
-              · cases spec with
-                | mono τspec =>
-                    have heq : τ = τspec := hlink (.mono τspec, τ) List.mem_cons_self τspec rfl
-                    subst τ
-                    exact PolyTy.Generalizes.refl _
-                | poly σ =>
-                    simpa [RecSpec.ann, RecSpec.bodyScheme, RecSpecs.CeilingRel] using hhead
-              · intro p hp t hmono
-                exact hlink p (List.mem_cons_of_mem _ hp) t hmono
-
-private theorem RecSpecs.mono_zip_link (τs : List Ty) :
-    ∀ p ∈ (τs.map RecSpec.mono).zip τs, ∀ τ, p.1 = .mono τ → p.2 = τ := by
-  induction τs with
-  | nil => simp
-  | cons hd tl ih =>
-      intro p hp τ hmono
-      simp only [List.map_cons, List.zip_cons_cons, List.mem_cons] at hp
-      rcases hp with rfl | hp
-      · simpa using hmono
-      · exact ih p hp τ hmono
-
-/-- **Runtime erasure preserves HM typing.** Source annotations and inference
-    markers are checked statically but carry no runtime information.  Erasing
-    them therefore preserves the source type, including for annotated
-    recursive groups: their RHSs remain monomorphic inside the group, while the
-    erased body receives the inferred (and hence pointwise more-general)
-    schemes certified by the annotation ceiling. -/
-theorem TypeOfHM.erase_preserves_typing {ctx : Ctx} {e : Expr} {τ : Ty}
-    (h : TypeOfHM ctx e τ) : TypeOfHM ctx e.erase τ := by
-  induction h using TypeOfHM.rec
-    (motive_2 := fun ctx branch scrutTy resultTy _ =>
-      TypeOfMatchBranch ctx (branch.1, branch.2.erase) scrutTy resultTy) with
-  | primLitUnit => simpa only [Expr.erase] using (TypeOfHM.primLitUnit)
-  | primLitInt => simpa only [Expr.erase] using (TypeOfHM.primLitInt)
-  | primLitNat => simpa only [Expr.erase] using (TypeOfHM.primLitNat)
-  | primLitChar => simpa only [Expr.erase] using (TypeOfHM.primLitChar)
-  | primBinOpIntAdd => simpa only [Expr.erase] using (TypeOfHM.primBinOpIntAdd)
-  | primBinOpIntSub => simpa only [Expr.erase] using (TypeOfHM.primBinOpIntSub)
-  | primBinOpIntLt _ _ ihtrue ihfalse =>
-      simp only [Expr.erase] at ihtrue ihfalse ⊢
-      exact TypeOfHM.primBinOpIntLt ihtrue ihfalse
-  | primBinOpCharLt _ _ ihtrue ihfalse =>
-      simp only [Expr.erase] at ihtrue ihfalse ⊢
-      exact TypeOfHM.primBinOpCharLt ihtrue ihfalse
-  | lambda hpc _ _ _ ihbody =>
-      expose_names
-      subst bodyCtx
-      simp only [Expr.erase]
-      exact TypeOfHM.lambda hpc (by simp [Option.Pins]) rfl ihbody
-  | app _ _ ihf ihinput =>
-      simpa only [Expr.erase] using (TypeOfHM.app ihf ihinput)
-  | letIn hwf _ _ _ _ ihcofin ihbody =>
-      expose_names
-      subst bodyCtx
-      simp only [Expr.erase]
-      refine TypeOfHM.letIn (M := M) (L := L) hwf
-        (by simp [Option.Pins]) ?_ rfl ihbody
-      intro Xs hfresh
-      have hrhs := ihcofin Xs hfresh
-      rw [Expr.erase_openBoundTyVars] at hrhs
-      simpa [Expr.openBoundTyVars] using hrhs
-  | var hlook htyargs hinst =>
-      simpa only [Expr.erase] using (TypeOfHM.var hlook htyargs hinst)
-  | ctor hlook htyargs hinst =>
-      simpa only [Expr.erase] using (TypeOfHM.ctor hlook htyargs hinst)
-  | match_ _ hne _ ihscrut ihbranches =>
-      expose_names
-      simp only [Expr.erase_match]
-      refine TypeOfHM.match_ ihscrut ?_ ?_
-      · intro hempty
-        obtain ⟨head, tail, rfl⟩ := List.exists_cons_of_ne_nil hne
-        simp at hempty
-      · intro branch' hmem'
-        obtain ⟨⟨pat, branchBody⟩, hmem, rfl⟩ := List.mem_map.mp hmem'
-        exact ihbranches (pat, branchBody) hmem
-  | letRec hwf hlen hlink hlc hmono hceiling heq hbody ihmono ihbody =>
-      expose_names
-      subst heq
-      simp only [Expr.erase_letRec]
-      refine TypeOfHM.letRec
-        (specs := τs.map RecSpec.mono) (τs := τs) (G := G) (L := L)
-        ?_ ?_ (RecSpecs.mono_zip_link τs) hlc ?_
-        (RecSpecs.ceilingOK_mapNone G bindings τs hlen) rfl ?_
-      · refine ⟨?_, ?_, hwf.nodup, ?_, ?_⟩
-        · rw [List.map_map]
-          change τs.map (fun _ => none) = bindings.map (fun _ => none)
-          rw [List.map_const', List.map_const', hlen]
-        · simpa only [List.length_map] using hlen
-        · intro t ht
-          obtain ⟨t', ht', heq⟩ := List.mem_map.mp ht
-          simp only [RecSpec.mono.injEq] at heq
-          subst t
-          exact hlc t' ht'
-        · intro σ hp
-          simp at hp
-      · simpa only [List.length_map] using hlen
-      · intro Xs hfresh p hp
-        obtain ⟨binding, ty, _, hp', rfl⟩ := List.mem_zip_map_left hp
-        exact ihmono Xs hfresh (binding, ty) hp'
-      ·
-        have hbody_erased : TypeOfHM
-            ⟨specs.map (RecSpec.bodyScheme G) ++ ctx_1.env, ctx_1.ctors⟩ body.erase ρ := by
-          simpa only [RecSpecs.bodyCtx] using ihbody
-        have hgen := RecSpecs.erasure_body_generalizes hwf.anns_eq hlink hceiling
-        have hbody_general := TypeOfHM.weaken_schemes_for_erasure hgen hbody_erased
-        simpa only [RecSpecs.bodyCtx, List.map_map, Function.comp_apply,
-          RecSpec.bodyScheme] using hbody_general
-  | mk hspec _ _ ihbody =>
-      expose_names
-      subst bodyCtx
-      exact TypeOfMatchBranch.mk hspec rfl ihbody
-  | wildcard _ ihbody => exact TypeOfMatchBranch.wildcard ihbody
 
 
 /-! ### Key commute lemmas. -/

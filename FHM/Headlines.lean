@@ -12,8 +12,9 @@ precisely how far the machine-checking currently reaches.
 **Status.** Type safety, inference soundness, principality, and completeness are
 closed and axiom-clean. `Infer.sourceSound` and its branch/group families type
 the annotated Core source, while `Infer.sound` derives typing for the erased
-runtime term. The `TypeOfHM` / `Step` metatheory includes substitution,
-canonical forms, progress, preservation, and one- and many-step type safety.
+runtime term. `TypeOfHM` specifies checked source, while proof-only `RunWT`
+provides substitution, canonical forms, progress, preservation, and one- and
+many-step type safety for erased execution.
 Principality factors every declarative type through a successfully inferred
 type by a locally closed residual substitution. Relational and executable
 completeness show that `principalType` and `typecheck` succeed exactly when the
@@ -73,9 +74,9 @@ well-typed and is a value or can step again — "never gets stuck" formalised. -
 `Infer` is the Algorithm-W-style inference relation; `inferCore` is its
 proof-carrying executable implementation. **Soundness**
 `Infer.sourceSound` types the annotated source after the inferred substitution;
-`Infer.sound` then erases annotations and types the
-runnable `e.erase` at the same inferred type. There is one typing relation and
-no second typed output language. **Principality** is proved
+`Infer.sound` then erases annotations and types the runnable `e.erase` under
+proof-only `RunWT` at the same inferred type. There is no second typed output
+language or type-bearing runtime syntax. **Principality** is proved
 directly against the annotated source: every declarative type factors through a
 successful inferred type via an LC residual substitution. Producer completeness
 constructs relational derivations from declarative typings, and executable
@@ -384,21 +385,20 @@ example (ctors : CtorEnv) :
        rhs := .var (.mk "x") }]
   refine SurfaceWTExpr.letRecInAnn (tvs := []) (vs := []) (Γ := [])
     (binds := binds) (anns' := [some σ]) (specs := [RecSpec.poly σ])
-    (τs := [σ.body])
-    (G := []) (L := []) (paramTysList := [[.prim .int]])
-    (ΓRhsList := [[PolyTy.mkTrivial (.prim .int), PolyTy.mkTrivial σ.body]])
-    (τretsList := [.prim .int])
+    (G := []) (L := []) (paramTysList := fun _ _ => [[Ty.prim .int]])
+    (ΓRhsList := fun _ _ => [[PolyTy.mkTrivial (.prim .int), σ]])
+    (τretsList := fun _ _ => [Ty.prim .int])
     (body := _) (τ := _)
     ?htvs ?hann ?hlen ?hparamLen ?hΓRhsLen ?hretsLen ?hanns_eq ?hnodup
-    ?hmono_lc ?hpoly_wf ?hτs_len ?hτs_link ?hτs_lc ?hceiling ?hLL ?hτbinds ?hmono ?hbody
+    ?hmono_lc ?hpoly_wf ?hLL ?hτbindsMono ?hτbindsPoly ?hmono ?hpoly ?hbody
   · rfl
   · -- lowerAnnList of finalizeAnn return-type sugar
     have h1 := packingB_lowerPoly ctors
     simp [binds, lowerAnnList, h1, σ]
   · rfl
-  · rfl
-  · rfl
-  · rfl
+  · intro Xs Ys; rfl
+  · intro Xs Ys; rfl
+  · intro Xs Ys; rfl
   · rfl  -- RecSpec.ann (poly σ) = some σ
   · exact List.nodup_nil
   · intro τm h; simp [σ] at h
@@ -406,36 +406,42 @@ example (ctors : CtorEnv) :
     simp only [List.mem_singleton, σ] at h
     injection h with h; subst h
     exact .arrow ContainsBvarsUpTo.prim ContainsBvarsUpTo.prim
-  · rfl
-  · intro p hp τ hτ
-    simp only [List.zip_cons_cons, List.zip_nil_right, List.mem_singleton] at hp
-    subst p
-    cases hτ
-  · intro t ht
-    simp only [List.mem_singleton] at ht
-    subst t
-    exact .arrow .prim .prim
-  · simpa [RecSpecs.ceilingOK, RecSpecs.CeilingRel, PolyTy.genGroup,
-      Ty.genFilter, Ty.closeOver] using
-        (PolyTy.Generalizes.refl σ)
-  · intro Xs _ i hi
+  · intro Xs _ i hi Ys
     have hi0 : i = 0 := by
       simp only [binds, List.length_cons, List.length_nil] at hi; omega
     subst hi0
     refine LowerLetParams.cons rfl (by simp [lowerTy]) ContainsBvarsUpTo.prim LowerLetParams.nil
-  · intro Xs hfresh i hi
+  · intro Xs hfresh i hi τm hspec
+    have hi0 : i = 0 := by
+      simp only [binds, List.length_cons, List.length_nil] at hi; omega
+    subst hi0
+    simp [σ] at hspec
+  · intro Xs hfresh i hi σ' hspec Ys hYs
     have hi0 : i = 0 := by
       simp only [binds, List.length_cons, List.length_nil] at hi; omega
     subst hi0
     have hXs : Xs = [] := List.eq_nil_of_length_eq_zero hfresh.length
     subst hXs
-    simp [σ, coreParamsToArrows, Ty.renameG_nil_pool]
-  · intro Xs hfresh i hi
+    have hσ' : σ' = σ := by symm; simpa using hspec
+    subst hσ'
+    have hYs0 : Ys = [] := List.eq_nil_of_length_eq_zero (by simpa [σ] using hYs.length)
+    subst hYs0
+    simp [σ, coreParamsToArrows, PolyTy.openVars]
+  · intro Xs hfresh i hi τm hspec
+    have hi0 : i = 0 := by
+      simp only [binds, List.length_cons, List.length_nil] at hi; omega
+    subst hi0
+    simp [σ] at hspec
+  · intro Xs hfresh i hi σ' hspec Ys hYs
     have hi0 : i = 0 := by
       simp only [binds, List.length_cons, List.length_nil] at hi; omega
     subst hi0
     have hXs : Xs = [] := List.eq_nil_of_length_eq_zero hfresh.length
     subst hXs
+    have hσ' : σ' = σ := by symm; simpa using hspec
+    subst hσ'
+    have hYs0 : Ys = [] := List.eq_nil_of_length_eq_zero (by simpa [σ] using hYs.length)
+    subst hYs0
     exact .of_lowers .var (.var (by rfl))
       (TypeOfHM.var (polyTy := PolyTy.mkTrivial (.prim .int)) (instArgs := []) rfl
         (by simp) .prim)
@@ -456,12 +462,10 @@ type — a `Safe` term is a passport that carries evidence of both, so anything
 downstream that only needs one of the two conjuncts can project it out
 without re-deriving it. -/
 
-/-- Erased-term well-typedness (closed): the `TypeOfHM` judgment for the
-    runnable term under its actual constructor environment. `erase` happens in
-    `elaborateSafe`, before `WellTyped` is applied, so `e` here is already in the
-    image of `Expr.erase`. -/
+/-- Erased-term well-typedness (closed): the proof-only `RunWT` judgment for
+    the runnable term under its actual constructor environment. -/
 def WellTyped (ctors : CtorEnv) (e : Expr) : Prop :=
-  ∃ τ, TypeOfHM ⟨[], ctors⟩ (e.erase) τ
+  ∃ τ, RuntimeTyping.RunWT ⟨[], ctors⟩ e τ
 
 /-- A passport: an ERASED term that passed BOTH independent checks (well-typed,
     exhaustive) and is in fact erased (`e.erase = e`, so the runtime dynamics
@@ -487,7 +491,7 @@ def elaborateSafe (p : Surface.Program) : Option (Σ ctors : CtorEnv, Safe ctors
       | true =>
         some ⟨ctors, ⟨c.erase, by
           obtain ⟨τ, hty, hexh, _⟩ := program_type_safe hlow htc (checkExhaustive_sound p.term hcov)
-          exact ⟨Expr.erase_idem c, ⟨τ, by simpa [Expr.erase_idem] using hty⟩, hexh⟩⟩⟩
+          exact ⟨Expr.erase_idem c, ⟨τ, hty⟩, hexh⟩⟩⟩
 
 /-- A finished run: an actual value, still carrying its `WellTyped` passport.
     (`IsValue` here is what `runSafe_never_stuck` used to have to prove
@@ -511,18 +515,14 @@ theorem WellTyped.progress {ctors : CtorEnv} {e : Expr}
     (hwt : WellTyped ctors e) (h_erased : e.erase = e) (hexh : AllMatchesExhaustive ctors e) :
     IsValue e ∨ ∃ e', Step e e' := by
   obtain ⟨τ, hty⟩ := hwt
-  have hty0 : TypeOfHM ⟨[], ctors⟩ e τ := by simpa [h_erased] using hty
-  exact TypeOfHM.progress hty0 rfl hexh h_erased
+  exact RuntimeTyping.RunWT.progress hty rfl hexh h_erased
 
 /-- Preservation for `WellTyped`: a step of an erased term preserves
     well-typedness (the step's target is itself erased, via `Step.preserves_erased`). -/
 theorem WellTyped.preservation {ctors : CtorEnv} {e e' : Expr}
-    (hwt : WellTyped ctors e) (h_erased : e.erase = e) (hstep : Step e e') : WellTyped ctors e' := by
+    (hwt : WellTyped ctors e) (hstep : Step e e') : WellTyped ctors e' := by
   obtain ⟨τ, hty⟩ := hwt
-  have hty0 : TypeOfHM ⟨[], ctors⟩ e τ := by simpa [h_erased] using hty
-  have hty' := TypeOfHM.preservation hstep hty0 h_erased
-  have he' : e'.erase = e' := SmallStep.Step.preserves_erased h_erased hstep
-  exact ⟨τ, by simpa [he'] using hty'⟩
+  exact ⟨τ, RuntimeTyping.RunWT.preservation hstep hty⟩
 
 /-- **Genuinely more to do.** A `Running` term isn't stuck — it's merely out of
     fuel — so it always has a next step. Progress, specialised to the
@@ -556,7 +556,7 @@ def runSafe (ctors : CtorEnv) (fuel : Nat) (t : Safe ctors) : Value ctors ⊕ Ru
       match hs : step t.val with
       | some e' =>
         have hty' : WellTyped ctors e' :=
-          WellTyped.preservation t.property.2.1 t.property.1 (step_sound hs)
+          WellTyped.preservation t.property.2.1 (step_sound hs)
         have hexh' : AllMatchesExhaustive ctors e' :=
           Step.preserves_exhaustive t.property.2.2 (step_sound hs)
         have herased' : e'.erase = e' :=
@@ -632,18 +632,19 @@ The clean baseline is `{propext, Classical.choice, Quot.sound}`, the three
 standard classical axioms mathlib itself depends on. Not every theorem needs
 all three; a strict subset (e.g. `[propext, Quot.sound]`) is just as clean.
 
-The runtime-erasure bridge and the whole `TypeOfHM`/`Step` metatheory live
-proved and axiom-clean in `FHM.Core` and `FHM.InferW`, so `runSafe` and
+The source-to-runtime erasure bridge and the `RunWT`/`Step` metatheory live
+proved and axiom-clean in `FHM.RuntimeTyping` and `FHM.InferW`, so `runSafe` and
 `elaborateSafe` do not inherit any `sorryAx` from their operational bridge.
 
 Inference soundness, successful-inference principality, and both relational and
 executable completeness are closed; the guards below show all proof families
 axiom-clean. -/
 
--- Closed and clean: direct erased-term dynamics metatheory.
-#print axioms TypeOfHM.progress             -- expect {propext, Classical.choice, Quot.sound}
-#print axioms TypeOfHM.preservation         -- expect {propext, Classical.choice, Quot.sound}
-#print axioms TypeOfHM.type_safety_star     -- expect {propext, Classical.choice, Quot.sound}
+-- Closed and clean: source-to-runtime bridge and erased-term dynamics.
+#print axioms TypeOfHM.erase_preserves_typing -- expect {propext, Classical.choice, Quot.sound}
+#print axioms RuntimeTyping.RunWT.progress    -- expect {propext, Classical.choice, Quot.sound}
+#print axioms RuntimeTyping.RunWT.preservation -- expect {propext, Classical.choice, Quot.sound}
+#print axioms TypeOfHM.type_safety_star       -- expect {propext, Classical.choice, Quot.sound}
 
 -- Closed and clean: source and runtime inference soundness.
 #print axioms Infer.sound                -- expect {propext, Classical.choice, Quot.sound}

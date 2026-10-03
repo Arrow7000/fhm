@@ -1,17 +1,18 @@
 # Annotated in-block polymorphism with erased execution
 
-**Status:** mixed erased-runtime spike complete on `annotated-polyrec-erased`, 2026-10-03
+**Status:** production implementation complete on `annotated-polyrec-erased`, 2026-10-03
 
-**Current implementation baseline:** the production checker still gives every
-member one monotype while an SCC is checked. The branch above is implementing the
-opt-in exception described here: a member with a complete explicit scheme is
-polymorphic inside its SCC, while an unannotated member remains monomorphic. Runtime
-terms remain completely type-erased. The additive production migration has begun:
-[`FHM/RuntimeTyping.lean`](../FHM/RuntimeTyping.lean) now fixes the proof-only mixed
-runtime judgment over the real Core `Expr`/`Ctx` types and proves preservation for
-the complete real `Step` relation, including recursive unfolding and constructor
-match reduction. The existing source checker remains unchanged until the vertical
-source/checker cut is ready.
+**Current implementation baseline:** a recursive member with a complete explicit
+scheme is polymorphic inside its SCC, while an unannotated member remains
+monomorphic and is generalized only for the body. Runtime terms remain completely
+type-erased. [`FHM/Core.lean`](../FHM/Core.lean) specifies this mixed source rule;
+[`FHM/InferW.lean`](../FHM/InferW.lean) implements its focused `consPoly`/`consMono`
+checker; and [`FHM/RuntimeTyping.lean`](../FHM/RuntimeTyping.lean) provides the
+proof-only mixed runtime judgment over the real Core `Expr`/`Ctx` types. The latter
+proves preservation for the complete real `Step` relation, including recursive
+unfolding and constructor match reduction. Soundness crosses from source `TypeOfHM`
+to erased `RunWT`; source principality and completeness deliberately stay on
+`TypeOfHM`.
 
 The structural and scoped-opening gates are now present in
 [`FHM/AnnotatedPolyRecErasure.lean`](../FHM/AnnotatedPolyRecErasure.lean). It is a
@@ -584,6 +585,7 @@ The implementation branch fixes the formerly open choices as follows:
 | Complete annotation, differently typed calls from siblings | Accept |
 | Mixed SCC: annotated member used polymorphically by an unannotated sibling | Accept |
 | Unannotated member used at different types inside its SCC | Reject |
+| Annotated member passes its rigid variable through an unannotated sibling | Reject unless that sibling is also annotated |
 | Annotated scheme mentioning an enclosing scoped variable | Accept |
 | Partial annotation, type holes, or head-binder scheme sugar | Unsupported |
 
@@ -651,15 +653,15 @@ The active implementation deliberately begins without altering `Expr` or `Step`.
 5. **Choose checker organization.** **Done.** Restore the focused historical
    `InferRecGroup.consPoly` path beside `consMono`; do not turn the whole inferencer
    into a bidirectional calculus and do not change runtime syntax.
-6. **Integrate after the mixed spike gate.** **Production runtime layer complete:**
-   the real-Core proof-only runtime relation and mixed source-premise vocabulary are
-   in the default verified build. Its type substitution, fixed-opening rewrapping,
-   scheme inhabitation, term weakening, simultaneous term substitution, and real
-   `Step` preservation are proved. This includes both mixed recursive unfolding and
-   the independent constructor instantiations that meet at match reduction. A fully
-   erased direct-self witness takes its unfolding step and remains typed. Next switch
-   the source rule, focused checker, soundness boundary, and acceptance tests as one
-   coherent vertical slice.
+6. **Integrate after the mixed spike gate.** **Done.** The real-Core source rule,
+   focused checker, proof-only runtime relation, surface bridge, soundness boundary,
+   principality, relational and executable completeness, and acceptance fixtures now
+   form one coherent vertical slice. Runtime type substitution, fixed-opening
+   rewrapping, scheme inhabitation, term weakening, simultaneous term substitution,
+   and full `Step` preservation are proved. This includes mixed recursive unfolding,
+   the independent constructor instantiations that meet at match reduction, a fully
+   erased direct-self unfolding witness, scoped annotations, and public node-type
+   metadata that closes temporary checking skolems back to source bound variables.
 
 The stop condition for the spike is important: if the supposedly small calculus once
 again demands type arguments on runtime variables, term-level `Λ`, or an elaborated
@@ -675,7 +677,7 @@ for the mixed executable checker, where those failure modes actually exist.
 
 The old fused checker already contains most of the useful static vocabulary:
 `RecSpec.mono`, `RecSpec.poly`, rigid skolem openings, and the historical
-`InferRecGroup.consPoly` rule. The integration should revive those pieces without
+`InferRecGroup.consPoly` rule. The implementation revives those pieces without
 reviving their former elaborated/runtime consumers:
 
 1. `RecSpec.init` maps `none` to a fresh `.mono β` and `some σ` to `.poly σ`.
@@ -695,8 +697,8 @@ the annotated RHS has already been checked against its public scheme. Keeping bo
 mechanisms would duplicate policy and obscure which check grants in-block
 polymorphism.
 
-The production source specification must change in parallel. It should describe the
-hybrid rule above; the proof-only runtime relation should existentially retain the
+The production source specification now describes the hybrid rule above; the
+proof-only runtime relation existentially retains the
 same mixed list of schemes after all source annotations have erased. Existing
 Algorithm-W completeness and principality claims remain about this decidable source
 relation. They must not be generalized to arbitrary proof-only runtime typability.
@@ -710,7 +712,7 @@ TypeOfHM Γ e τ -> TypeOfHM Γ (erase e) τ
 cannot remain the operational bridge. If `TypeOfHM` allowed an annotation-free
 runtime group to existentially recover polymorphic schemes, it would also make an
 authored, unannotated polymorphic-recursive group declaratively typable. Completeness
-of the decidable source inferencer would then be false. Production therefore needs
+of the decidable source inferencer would then be false. Production therefore uses
 the honest split already exercised by the spike:
 
 ```text
@@ -735,7 +737,7 @@ type-passing runtime architecture is specifically not part of this design.
 
 ## Present decision
 
-FHM is now implementing the annotation-directed exception while retaining ordinary
+FHM now implements the annotation-directed exception while retaining ordinary
 HM behavior as the default:
 
 ```text
@@ -744,8 +746,7 @@ complete annotated member: checked and recursively available at that scheme
 all members: erased at runtime
 ```
 
-The proof-first spike gate and production runtime preservation layer are now complete.
-The next phase is to port the mixed source rule and focused checker and rebuild the
-production erasure/safety boundary around `RunWT`. Head-binder sugar and partial
-annotations remain out of scope; they still require a separately designed type-hole
-story.
+The proof-first spike, mixed production source/checker, executable completeness,
+erasure bridge, runtime preservation, surface safety boundary, examples, and editor
+metadata canaries are complete. Head-binder sugar and partial annotations remain out
+of scope; they still require a separately designed type-hole story.

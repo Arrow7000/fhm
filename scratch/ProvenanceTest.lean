@@ -218,7 +218,7 @@ private def nestedPatCompTraceRebases : Bool :=
         | none => false
 
 private def parserMirrorFeedsProvenance : Bool :=
-  match parseExprWithSpans "let id x = x in id 7" with
+  match parseExprWithSpans "let id = \\x -> x in id 7" with
   | .ok (surface, _, spanned) =>
       match lowerWithProvenance demoCtors surface spanned with
       | some lowering => lowering.provenanceTotal
