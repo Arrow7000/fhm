@@ -1,12 +1,33 @@
 # Annotated in-block polymorphism with erased execution
 
-**Status:** future design note and postmortem, 2026-09-29
+**Status:** implementation in progress on `annotated-polyrec-erased`, 2026-10-02
 
-**Current language decision:** FHM does **not** support polymorphic uses inside a
-recursive SCC. Every member has one monotype while the SCC is checked and is
-generalized only for the SCC body and later SCCs. This note records how a future
-version could support explicitly annotated in-block polymorphism without restoring
-the old type-passing operational semantics.
+**Current implementation baseline:** the production checker still gives every
+member one monotype while an SCC is checked. The branch above is implementing the
+opt-in exception described here: a member with a complete explicit scheme is
+polymorphic inside its SCC, while an unannotated member remains monomorphic. Runtime
+terms remain completely type-erased.
+
+The structural and scoped-opening gates are now present in
+[`FHM/AnnotatedPolyRecErasure.lean`](../FHM/AnnotatedPolyRecErasure.lean). It is a
+small calculus over the repository's real `Ty`/`PolyTy` definitions. It proves a
+cofinite structural source-to-runtime erasure bridge, a direct-self-use witness,
+and a closed nested-scoped witness in which an outer `forall c` opens through
+`forall a. a -> c` in a recursive RHS. The corresponding runtime terms contain
+neither annotations nor type applications. The module is part of the default
+verified build and has no `sorry` axioms.
+
+The all-annotated hard gate is now complete: erased recursive unfolding preserves
+`RunWT`. The proof passes through cofinite rigid opening, proof-only type
+substitution, concrete scheme inhabitation, recursive-member rewrapping, de Bruijn
+weakening, and simultaneous term substitution. No type abstraction, type
+application, or scheme survives in runtime syntax.
+
+One deliberate spike gap remains before production migration: its tiny recursive
+groups currently give every member a full scheme. Production needs the hybrid rule
+where annotated members are polymorphic inside the SCC while unannotated members
+share monotypes inside and are generalized only for the enclosing body. The erased
+runtime relation must remember both views without making runtime syntax typed.
 
 ## Executive summary
 
@@ -547,6 +568,27 @@ still be a real language and proof project.
 
 ### Static language choices
 
+The implementation branch fixes the formerly open choices as follows:
+
+| Case | Intended result |
+|---|---|
+| Complete annotation, differently typed direct self-calls | Accept |
+| Complete annotation, differently typed calls from siblings | Accept |
+| Mixed SCC: annotated member used polymorphically by an unannotated sibling | Accept |
+| Unannotated member used at different types inside its SCC | Reject |
+| Annotated scheme mentioning an enclosing scoped variable | Accept |
+| Partial annotation, type holes, or head-binder scheme sugar | Unsupported |
+
+Groups remain simultaneous for term scope and runtime recursion, but no longer force
+annotated members to share one recursive monotype. Each annotated member is checked
+at a fresh rigid opening of its own scheme, with all complete annotated schemes and
+all unannotated monotypes already present in the group environment. The written
+scheme is the recursive and exported interface; an implementation may be more
+general so long as it checks against that interface.
+
+The questions below are retained as the historical checklist that led to those
+decisions:
+
 - What counts as a complete polymorphic annotation?
 - May annotations enable polymorphism for direct self-use, sibling use, or both?
 - Are groups checked as syntactic groups or dependency SCCs?
@@ -574,49 +616,119 @@ still be a real language and proof project.
 These are substantial costs, but they are localized to static checking and proof
 evidence. They do not require a type-directed evaluator or type-bearing Core terms.
 
-## Recommended future implementation plan
+## Implementation plan and progress
 
-If this feature is reconsidered, do not begin by altering `Expr` or `Step`.
+The active implementation deliberately begins without altering `Expr` or `Step`.
 
-1. **Freeze examples first.** Extend the comparison corpus with the exact desired
-   self, sibling, mixed-group, nested-scoped-variable, and partial-annotation cases.
-   Decide their polarity explicitly.
-2. **Spike a tiny erased calculus.** Include only variables, functions, application,
+1. **Freeze examples first.** **Done at the semantic-policy level above;** production
+   fixtures will be flipped only when the new checker path lands. The spike now has
+   positive direct-self, sibling, and nested-scoped witnesses. Missing-annotation
+   and skolem-leak negatives belong in the production checker: the all-annotated
+   declarative spike has neither absent annotations nor inference metavariables, so
+   pretending to test those there would not exercise the intended failure mode.
+2. **Spike a tiny erased calculus.** **Cofinite structural/scoped checkpoint done:**
+   [`FHM/AnnotatedPolyRecErasure.lean`](../FHM/AnnotatedPolyRecErasure.lean). Include only variables, functions, application,
    `let`, and `let rec`. Define annotated `SourceWT`, annotation-free `RunWT`, full
    erasure, and the nested `forall a. ... c ...` witness.
-3. **Prove the hard bridge first.** Before touching production FHM, prove
+3. **Prove the hard bridge first.** **Done for fully annotated recursive groups.** Before touching production FHM, prove
    `SourceWT e τ -> RunWT (erase e) τ` for the nested scoped polymorphic-recursive
-   example and prove preservation of its unfolding step.
-4. **Audit theorem boundaries.** Confirm that Algorithm-W completeness is stated only
-   against the decidable source relation, never against existential `RunWT`.
-5. **Choose checker organization.** Add a bidirectional `Check` relation or a focused
-   annotated-group checking phase to the existing inferencer. Do not change runtime
-   syntax.
-6. **Integrate only after the spike is small and axiom-clean.** Port the proof-only
-   recursive scheme rule, erasure bridge, and tests into the full language.
+   example and prove preservation of its unfolding step. **Next:** generalize the
+   proof-only group witness to the selected annotated/unannotated hybrid rule.
+4. **Audit theorem boundaries.** **Done.** Algorithm-W completeness and principality
+   remain about source `TypeOfHM`; operational soundness crosses by erasure into
+   proof-only `RunWT`. No completeness theorem is claimed for arbitrary `RunWT`.
+5. **Choose checker organization.** **Done.** Restore the focused historical
+   `InferRecGroup.consPoly` path beside `consMono`; do not turn the whole inferencer
+   into a bidirectional calculus and do not change runtime syntax.
+6. **Integrate after the mixed spike gate.** Port the proof-only runtime relation,
+   mixed recursive source rule, focused checker, and acceptance tests into the full
+   language.
 
 The stop condition for the spike is important: if the supposedly small calculus once
 again demands type arguments on runtime variables, term-level `Λ`, or an elaborated
 recursive group copied into executable syntax, the design has accidentally restored
 the old invariant and should be reconsidered before migration work begins.
 
-The spike should include three positive witnesses—own-`forall` self recursion,
-annotated siblings instantiated differently, and the nested `forall a. ... c ...`
-case—and negative controls for a missing complete annotation and a leaking skolem.
+The spike now includes its three meaningful positive witnesses—own-`forall` self
+recursion, annotated siblings instantiated differently, and the nested
+`forall a. ... c ...` case. Missing-annotation and skolem-leak controls are reserved
+for the mixed executable checker, where those failure modes actually exist.
+
+### Production checker shape selected for this branch
+
+The old fused checker already contains most of the useful static vocabulary:
+`RecSpec.mono`, `RecSpec.poly`, rigid skolem openings, and the historical
+`InferRecGroup.consPoly` rule. The integration should revive those pieces without
+reviving their former elaborated/runtime consumers:
+
+1. `RecSpec.init` maps `none` to a fresh `.mono β` and `some σ` to `.poly σ`.
+2. The recursive environment renders `.mono β` as a trivial scheme and `.poly σ`
+   as the complete declared scheme.
+3. `consMono` retains ordinary Damas–Milner inference and one shared monotype.
+4. `consPoly` opens the member's scoped variables at fresh rigid skolems, infers the
+   opened RHS, checks it against the rigid opening of `σ`, performs the usual escape
+   checks, and leaves `σ` itself rigid in the environment.
+5. Only solved `.mono` members contribute to the post-group generalisation pool.
+   The body sees their inferred schemes and sees each `.poly σ` exactly as `σ`.
+
+This makes the current annotation-ceiling phase unnecessary for annotated members.
+That phase exists because the HM-only checker first solves *every* member at a
+monotype and checks an annotation afterwards. Under annotation-directed checking,
+the annotated RHS has already been checked against its public scheme. Keeping both
+mechanisms would duplicate policy and obscure which check grants in-block
+polymorphism.
+
+The production source specification must change in parallel. It should describe the
+hybrid rule above; the proof-only runtime relation should existentially retain the
+same mixed list of schemes after all source annotations have erased. Existing
+Algorithm-W completeness and principality claims remain about this decidable source
+relation. They must not be generalized to arbitrary proof-only runtime typability.
+
+One important consequence is that the existing same-relation theorem
+
+```text
+TypeOfHM Γ e τ -> TypeOfHM Γ (erase e) τ
+```
+
+cannot remain the operational bridge. If `TypeOfHM` allowed an annotation-free
+runtime group to existentially recover polymorphic schemes, it would also make an
+authored, unannotated polymorphic-recursive group declaratively typable. Completeness
+of the decidable source inferencer would then be false. Production therefore needs
+the honest split already exercised by the spike:
+
+```text
+TypeOfHM Γ e τ -> RunWT Γ (erase e) τ
+```
+
+Inference soundness, surface safety, and program safety end in `RunWT`; inference
+completeness and principality continue to quantify only over annotated-source
+`TypeOfHM`. There is deliberately no converse from arbitrary `RunWT` evidence to
+successful source inference.
+
+The historical implementation can be mined selectively rather than rediscovered:
+
+- `78cf9a1^` contains the mixed declarative `MonoTyped`/`PolyTyped` group premises;
+- `16ae7bc^` contains the deleted relational `InferRecGroup.consPoly` and much of
+  its invariant proof structure;
+- `7bd7020` activates `.poly` in `RecSpec.init`; and
+- `b36ca3d` / `78cf9a1^` contain mixed-group principality and completeness proofs.
+
+Only their static checking structure should be restored. Their elaborated or
+type-passing runtime architecture is specifically not part of this design.
 
 ## Present decision
 
-The existence of this simpler architecture does not imply that FHM should implement
-the feature now. The HM reset deliberately selects the smaller rule:
+FHM is now implementing the annotation-directed exception while retaining ordinary
+HM behavior as the default:
 
 ```text
-monomorphic inside an SCC; generalized after the SCC; erased at runtime
+unannotated member: monomorphic inside the SCC, generalized afterwards
+complete annotated member: checked and recursively available at that scheme
+all members: erased at runtime
 ```
 
-That rule permits one source typing relation and one ordinary erased safety relation
-to coincide closely, keeps Algorithm W complete and principal for the language, and
-avoids all annotation-directed recursive-group policy.
-
-This note exists so a future decision to support annotated in-block polymorphism can
-begin from the correct theorem architecture rather than repeating the type-passing
-migration.
+The implementation order remains intentionally proof-first: generalize the completed
+all-annotated unfolding proof to the mixed proof witness, then port the mixed source
+rule and focused checker, then rebuild the production erasure/safety boundary around
+`RunWT`. Head-binder sugar and partial annotations remain out of scope; they still
+require a separately designed type-hole story.

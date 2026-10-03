@@ -21,6 +21,7 @@ roots = [
   "FHM.Scc.Kosaraju",
   "FHM.Examples",
   "FHM.Headlines",
+  "FHM.AnnotatedPolyRecErasure",
 ]
 
 [[lean_lib]]
