@@ -42,8 +42,8 @@ a handful of standard algebraic types:
 * `Tree a`/`Forest a` — `Node a (Forest a)`; `FNil`, `FCons (Tree a) (Forest a)`
   (mutually recursive types — the natural home for a mutually recursive map).
 * `Seq a`           — `SNil`, `SCons a (Seq (List a))`: a NON-REGULAR (nested)
-  type. Its natural fold needs polymorphic recursion and is therefore a useful
-  rejection example for this language's monomorphic-within-group rule. -/
+  type. Its natural fold needs polymorphic recursion and therefore distinguishes
+  rejected unsigned recursion from recursion checked against a complete contract. -/
 
 /-- The demo declaration group, in `DataDecl` form (one entry per type, its
     constructors bundled). Fed to the verified `elabDecls` to produce `demoCtors`. -/
@@ -335,8 +335,9 @@ algorithmic giving-up. -/
 /-! ## Recursion (`letRec`)
 
 Recursive binding groups. `n = 1` is self-recursion (coincides with `fix`); `n > 1`
-is mutual recursion. Members share monotypes while their SCC is checked; those
-types are generalized only when the body is checked. -/
+is mutual recursion. Unannotated members share monotypes while their sub-group is
+inferred, then are generalized. A completely annotated member is instead checked
+at its declared scheme after those inferred schemes have been fixed. -/
 
 -- let rec f = λx. x in f  :  ∀ a. a → a
 -- (a non-recursive binding placed in a letRec — still sound, generalised as usual)
@@ -359,13 +360,13 @@ types are generalized only when the body is checked. -/
   (.var 0))
 
 
-/-! ### Recursive annotation ceilings
+/-! ### Recursive annotation contracts
 
-An annotation is an upper bound on what the group may claim after inference:
-the inferred RHS scheme must be at least as general as the declaration.  The
-constraint phase may refine flexible variables from the surrounding inference
-context, but it may neither bind source-rigid variables nor consume the frozen
-generalisation pool of an unannotated sibling. -/
+A complete annotation is the contract at which a recursive RHS is checked. The
+check may refine flexible variables from the surrounding inference context, but
+it may not bind source-rigid variables. In a mixed group, unsigned siblings are
+inferred and generalized first, so checking a signed RHS cannot consume their
+generalisation variables. -/
 
 /-- A recursive `Int` annotation refines the enclosing lambda parameter's
     flexible inference variable. -/
@@ -376,8 +377,8 @@ private def recAnnRefinesOuter : Expr :=
   | some ⟨0, .arrow (.prim .int) (.prim .int)⟩ => true
   | _ => false
 
-/-- A less-general monomorphic declaration is a valid ceiling for the inferred
-    polymorphic identity. -/
+/-- A less-general monomorphic contract is a valid type at which to check the
+    otherwise polymorphic identity. -/
 private def recAnnSpecialisesIdentity : Expr :=
   .letRec [some ⟨0, .arrow (.prim .int) (.prim .int)⟩]
     [.lambda none (.var 0)] (.var 0)
@@ -393,14 +394,15 @@ private def recAnnOverclaims : Expr :=
 #guard (typecheck [] recAnnOverclaims).isNone
 
 /-- A free variable written in an annotation is source-rigid, not an inference
-    metavariable which the ceiling checker may solve. -/
+    metavariable which contract checking may solve. -/
 private def recAnnCannotSolveRigid : Expr :=
   .letRec [some ⟨0, .fvar 7⟩] [.primLit (.int 1)] (.var 0)
 
 #guard (typecheck [] recAnnCannotSolveRigid).isNone
 
-/-- Constraining annotated `f` must not consume `g`'s frozen group variable:
-    the body can still instantiate unannotated `g` at both `Int` and `Char`. -/
+/-- Checking annotated `f` cannot consume `g`'s generalisation variable: `g`
+    has already been inferred and generalized, so the body can instantiate it
+    at both `Int` and `Char`. -/
 private def recAnnKeepsSiblingPolymorphic : Expr :=
   .letRec [some ⟨0, .arrow (.prim .int) (.prim .int)⟩, none]
     [.lambda none (.var 0), .lambda none (.var 0)]
@@ -491,8 +493,9 @@ generalised independently for the body. -/
 
 /-! ### Body generalisation (the `letRec` analogue of `let y = λx. x in y y`)
 
-Inside the group every binding is monomorphic, but the *body* sees each binding
-generalised. So a polymorphic self-application in the body must be accepted. -/
+An unsigned binding is monomorphic while its recursive sub-group is inferred, but
+the *body* sees it generalised. So a polymorphic self-application in the body must
+be accepted. -/
 
 -- let rec id = λx. x in id id   :  ∀ a. a → a
 -- (`id id` forces the body's `id` to be used at two types at once — only typeable
@@ -523,14 +526,14 @@ the enclosing skolem and closes it back, so the whole thing infers `∀ a. a →
 
 The `letRec` node carries per-binding optional annotations, so one group can mix
 annotated and inferred members. A complete annotation makes that member available
-at its declared scheme while the SCC is checked; an unannotated member remains on
-the shared monomorphic HM pool and is generalized only for the body. -/
+at its declared scheme while the unsigned sub-group is inferred. Unannotated members
+share ordinary HM monotypes during that phase, are then generalized, and their final
+schemes are available while annotated RHSs and the group body are checked. -/
 
 /-- `∀a. a → a`. -/
 private def selfSig : PolyTy := ⟨1, .arrow (.bvar 0) (.bvar 0)⟩
 
-/-- `f`'s RHS uses `f` at `Unit` inside its own SCC. This pins the in-group
-    monotype and makes a differently instantiated body use fail. -/
+/-- `f`'s RHS uses annotated `f` at `Unit` inside its own SCC. -/
 private def fRhs : Expr :=
   .lambda none (.letIn none (.app (.var 1) (.primLit .unit)) (.var 1))
 
@@ -554,16 +557,16 @@ private def gRhs : Expr := .lambda none (.app (.var 1) (.var 0))
 #guard (typecheck [] (.letRec [none, none] [fRhs, gRhs]
   (.app (.var 1) (.primLit (.int 0))))).isSome = false
 
--- let rec (f : ∀ a. a → a) = λx. g x and g = λx. f x in f   :   ill-typed
--- Checking `f` at its declared scheme makes `x` rigid. Passing that rigid value
--- through unannotated `g` would let `f`'s local skolem escape into `g`'s shared
--- monotype, so the mixed group is deliberately rejected.
+-- let rec (f : ∀ a. a → a) = λx. g x and g = λx. f x in f
+-- The complete contract for `f` is assumed while `g` is inferred and generalized;
+-- `f` is then checked with that final scheme for `g`. Thus adding `f`'s principal
+-- annotation does not make this ordinary HM cycle fail.
 #eval showType (.letRec [some selfSig, none]
   [.lambda none (.app (.var 2) (.var 0)), .lambda none (.app (.var 1) (.var 0))]
   (.var 0))
 #guard (typecheck [] (.letRec [some selfSig, none]
   [.lambda none (.app (.var 2) (.var 0)), .lambda none (.app (.var 1) (.var 0))]
-  (.var 0))).isSome = false
+  (.var 0))).isSome = true
 
 -- Giving the sibling its own complete scheme makes both directions explicitly
 -- polymorphic, so the same recursive cycle is accepted.
@@ -585,8 +588,8 @@ private def slenSig : PolyTy :=
 /-- `λs. match s with | SNil => Zero | SCons x xs => bump (slen xs)`.
     `xs : Seq (List a)`, so the recursive call instantiates `slen`'s OWN scheme
     at `List a` — genuine polymorphic recursion over a nested type — and feeds
-    the result to the UNANNOTATED sibling `bump` (at the concrete `Peano`,
-    which is what makes the cross-boundary use legal). -/
+    the result to the unannotated sibling `bump`. The latter is inferred and
+    generalized before this annotated RHS is checked. -/
 private def slenRhs : Expr :=
   .lambda none (.match_ (.var 0)
     [ (.named ⟨"SNil"⟩ 0, .ctor ⟨"Zero"⟩)
@@ -642,9 +645,9 @@ recurses monomorphically over `Forest`. -/
       , (.named ⟨"FCons"⟩ 2, .app (.ctor ⟨"Succ"⟩) (.app (.var 5) (.var 1))) ]) ]
   (.lambda none (.app (.var 3) (.app (.var 2) (.var 0)))))).isSome = true
 
-/-! Monomorphic in-group visibility is per member: annotating `f` does not unlock
-polymorphic use of its unannotated sibling `h`. Giving `h` its own complete
-annotation does unlock those uses. -/
+/-! Complete contracts also cut dependencies in the other direction. An unsigned
+sibling is inferred monomorphically, then generalized before signed RHSs are checked;
+an annotated member may therefore use that inferred sibling polymorphically. -/
 
 /-- `λx. let _ = h 0 in let _ = h () in x` — uses the sibling at `Int` AND `Unit`. -/
 private def fUsesHTwice : Expr :=
@@ -653,14 +656,15 @@ private def fUsesHTwice : Expr :=
 
 -- let rec (f : ∀ a. a → a) = λx. let _ = h 0 in let _ = h () in x
 --     and h = λy. y
--- in f   :   ill-typed   (h is mono inside the group: Int vs Unit clash)
+-- in f
+-- `h` is inferred as the identity and generalized before `f` is checked, so its
+-- `Int` and `Unit` uses are independent instantiations.
 #eval showType (.letRec [some selfSig, none]
   [fUsesHTwice, .lambda none (.var 0)] (.var 0))
 #guard (typecheck [] (.letRec [some selfSig, none]
-  [fUsesHTwice, .lambda none (.var 0)] (.var 0))).isSome = false
+  [fUsesHTwice, .lambda none (.var 0)] (.var 0))).isSome = true
 
--- …annotating `h` as well does rescue it: `h 0` and `h ()` independently
--- instantiate its declared scheme.
+-- Giving `h` its own complete annotation is equivalent at this boundary.
 #eval showType (.letRec [some selfSig, some selfSig]
   [fUsesHTwice, .lambda none (.var 0)] (.var 0))
 #guard (typecheck [] (.letRec [some selfSig, some selfSig]
@@ -669,8 +673,9 @@ private def fUsesHTwice : Expr :=
 
 /-! ### Adversarial: where `letRec` is *supposed* to say no
 
-Bindings are not generalized within their own group. These programs require
-in-group polymorphic recursion or an infinite type, so all are correctly rejected. -/
+Unsigned bindings are not generalized within their own recursive sub-group. These
+programs give no complete contract at the point that would require polymorphism,
+or require an infinite type, so all are correctly rejected. -/
 
 -- let rec f = λx. let a = f 0 in let b = f () in x in f   :  ill-typed
 -- (polymorphic recursion: `f` is used at both `Int → _` and `Unit → _` inside its own

@@ -4,10 +4,12 @@
 
 **Current implementation baseline:** a recursive member with a complete explicit
 scheme is polymorphic inside its SCC, while an unannotated member remains
-monomorphic and is generalized only for the body. Runtime terms remain completely
-type-erased. [`FHM/Core.lean`](../FHM/Core.lean) specifies this mixed source rule;
-[`FHM/InferW.lean`](../FHM/InferW.lean) implements its focused `consPoly`/`consMono`
-checker; and [`FHM/RuntimeTyping.lean`](../FHM/RuntimeTyping.lean) provides the
+monomorphic while the unsigned sub-group is inferred, then is generalized before
+the signed RHSs and group body are checked. Complete signatures therefore act as
+dependency cuts. Runtime terms remain completely type-erased.
+[`FHM/Core.lean`](../FHM/Core.lean) specifies this stratified source rule;
+[`FHM/InferW.lean`](../FHM/InferW.lean) implements separate unsigned-inference and
+signed-checking phases; and [`FHM/RuntimeTyping.lean`](../FHM/RuntimeTyping.lean) provides the
 proof-only mixed runtime judgment over the real Core `Expr`/`Ctx` types. The latter
 proves preservation for the complete real `Step` relation, including recursive
 unfolding and constructor match reduction. Soundness crosses from source `TypeOfHM`
@@ -29,14 +31,13 @@ substitution, concrete scheme inhabitation, recursive-member rewrapping, de Brui
 weakening, and simultaneous term substitution. No type abstraction, type
 application, or scheme survives in runtime syntax.
 
-The mixed runtime rule is now fixed in
-[`FHM/AnnotatedPolyRecHybrid.lean`](../FHM/AnnotatedPolyRecHybrid.lean): annotated
-members carry proof-only schemes, while unannotated members carry shared monotypes
-inside the SCC and `genGroup` schemes in the enclosing body. A concrete mixed group
-is typed under that rule with no specs in its runtime syntax. The mixed hard gate is
-also complete: the module proves type substitution with shared-pool freshening,
-rewrapping at every exported scheme instance for both `.poly` and `.mono` members,
-simultaneous term substitution, and preservation of erased recursive unfolding.
+[`FHM/AnnotatedPolyRecHybrid.lean`](../FHM/AnnotatedPolyRecHybrid.lean) is the
+historical intermediate mixed-rule spike. It established that proof-only `.poly`
+and `.mono` witnesses can support type substitution, recursive rewrapping,
+simultaneous term substitution, and erased unfolding, but it predates contract
+stratification and deliberately retains the older simultaneous source premise.
+The production final-scheme rule and its preservation proof live in
+[`FHM/RuntimeTyping.lean`](../FHM/RuntimeTyping.lean).
 
 ## Executive summary
 
@@ -365,9 +366,12 @@ inductive CheckRecGroup :
       CheckRecGroup ctx ((sigma, rhs) :: rest)
 ```
 
-The exact group rule must treat all members simultaneously and specify how annotated
-and unannotated members mix. The important point is that only explicit complete
-schemes receive polymorphic recursive use. Unannotated members remain monomorphic.
+Term scope remains simultaneous, but source checking is contract-stratified:
+complete schemes are assumed while unannotated members are inferred monomorphically;
+those inferred results are generalized before annotated RHSs are checked. Only
+explicit complete schemes enable polymorphic self-recursion. An unannotated member
+cannot use itself or another member of the unsigned sub-group polymorphically during
+the inference phase.
 
 The existing Algorithm-W relation need not necessarily be rewritten wholesale as a
 bidirectional system. An annotated-recursive-group checking mode can be embedded in
@@ -414,10 +418,12 @@ inductive RunWT : TyVarCtx -> RunCtx -> RuntimeExpr -> Ty -> Prop
       RunWT typeVars ctx (.letRec rhss body) result
 ```
 
-`RunRecGroupWT` would check each erased RHS at a fresh rigid opening of its selected
-scheme, with the full selected scheme environment available at recursive uses. For a
-mixed group, it may contain polymorphic schemes for explicitly annotated members and
-trivial one-instance schemes for unannotated members.
+`RunRecGroupWT` would check each erased RHS at a fresh opening of its selected
+scheme, with the full final scheme environment available at recursive uses. For a
+mixed group, it contains the declared schemes of explicitly annotated members and
+the schemes inferred and generalized for unannotated members. This is proof evidence
+transported from source checking, not a claim that those schemes can be inferred
+again from the erased term.
 
 Searching for `schemes` from an arbitrary erased `letRec` is not required to be
 decidable. `RunWT` is a semantic invariant, not the compiler algorithm.
@@ -585,16 +591,20 @@ The implementation branch fixes the formerly open choices as follows:
 | Complete annotation, differently typed calls from siblings | Accept |
 | Mixed SCC: annotated member used polymorphically by an unannotated sibling | Accept |
 | Unannotated member used at different types inside its SCC | Reject |
-| Annotated member passes its rigid variable through an unannotated sibling | Reject unless that sibling is also annotated |
+| Annotated member passes its rigid variable through an unannotated sibling | Accept when the unsigned sub-group has an ordinary HM solution |
+| Annotated RHS uses an inferred sibling at several types | Accept; infer and generalize unsigned members first |
 | Annotated scheme mentioning an enclosing scoped variable | Accept |
 | Partial annotation, type holes, or head-binder scheme sugar | Unsupported |
 
-Groups remain simultaneous for term scope and runtime recursion, but no longer force
-annotated members to share one recursive monotype. Each annotated member is checked
-at a fresh rigid opening of its own scheme, with all complete annotated schemes and
-all unannotated monotypes already present in the group environment. The written
-scheme is the recursive and exported interface; an implementation may be more
-general so long as it checks against that interface.
+Groups remain simultaneous for term scope and runtime recursion, but complete
+signatures cut the static dependency graph. First, all unannotated members are
+inferred together by ordinary Damas--Milner recursion while annotated siblings are
+available at their written schemes. The resulting monotypes are then generalized.
+Second, each annotated RHS is checked at a fresh rigid opening of its own scheme
+under the **final** environment, where inferred siblings are now available at those
+generalized schemes. The body uses that same final environment. The written scheme
+is the recursive and exported interface; an implementation may be more general so
+long as it checks against that interface.
 
 The questions below are retained as the historical checklist that led to those
 decisions:
@@ -644,15 +654,16 @@ The active implementation deliberately begins without altering `Expr` or `Step`.
    groups.** Before touching production FHM, prove
    `SourceWT e τ -> RunWT (erase e) τ` for the nested scoped polymorphic-recursive
    example and prove preservation of its unfolding step. The hybrid spike now proves
-   the harder selected rule: complete annotations remain polymorphic inside the SCC,
-   ordinary members share monotypes there and are generalized only outside it, and
-   both kinds can be substituted during type-free unfolding.
+   the erased-runtime rule: complete annotations remain polymorphic, inferred
+   members have their final generalized schemes, and both kinds can be substituted
+   during type-free unfolding.
 4. **Audit theorem boundaries.** **Done.** Algorithm-W completeness and principality
    remain about source `TypeOfHM`; operational soundness crosses by erasure into
    proof-only `RunWT`. No completeness theorem is claimed for arbitrary `RunWT`.
-5. **Choose checker organization.** **Done.** Restore the focused historical
-   `InferRecGroup.consPoly` path beside `consMono`; do not turn the whole inferencer
-   into a bidirectional calculus and do not change runtime syntax.
+5. **Choose checker organization.** **Done.** Use two focused passes rather than
+   turning the whole inferencer into a bidirectional calculus: infer the unsigned
+   sub-group (skipping signed positions), then check signed RHSs (skipping unsigned
+   positions) under the finalized schemes. Runtime syntax remains unchanged.
 6. **Integrate after the mixed spike gate.** **Done.** The real-Core source rule,
    focused checker, proof-only runtime relation, surface bridge, soundness boundary,
    principality, relational and executable completeness, and acceptance fixtures now
@@ -675,20 +686,23 @@ for the mixed executable checker, where those failure modes actually exist.
 
 ### Production checker shape selected for this branch
 
-The old fused checker already contains most of the useful static vocabulary:
-`RecSpec.mono`, `RecSpec.poly`, rigid skolem openings, and the historical
-`InferRecGroup.consPoly` rule. The implementation revives those pieces without
-reviving their former elaborated/runtime consumers:
+The old fused checker contained most of the useful static vocabulary:
+`RecSpec.mono`, `RecSpec.poly`, and rigid skolem openings. The implementation keeps
+that vocabulary without reviving the former elaborated/runtime consumers, but splits
+group checking into two phases:
 
 1. `RecSpec.init` maps `none` to a fresh `.mono β` and `some σ` to `.poly σ`.
-2. The recursive environment renders `.mono β` as a trivial scheme and `.poly σ`
-   as the complete declared scheme.
-3. `consMono` retains ordinary Damas–Milner inference and one shared monotype.
-4. `consPoly` opens the member's scoped variables at fresh rigid skolems, infers the
-   opened RHS, checks it against the rigid opening of `σ`, performs the usual escape
-   checks, and leaves `σ` itself rigid in the environment.
-5. Only solved `.mono` members contribute to the post-group generalisation pool.
-   The body sees their inferred schemes and sees each `.poly σ` exactly as `σ`.
+2. The initial recursive environment renders `.mono β` as a trivial scheme and
+   `.poly σ` as the complete declared contract.
+3. The unsigned phase skips `.poly` positions and performs ordinary
+   Damas--Milner inference for every `.mono` member, sharing one monotype per member
+   throughout that phase.
+4. Solved `.mono` members are generalized, producing the final environment.
+5. The signed phase skips `.mono` positions. For every `.poly σ`, it opens the
+   member's scoped variables at fresh rigid skolems, checks the opened RHS against
+   the corresponding opening of `σ`, and performs the usual escape checks under the
+   final environment.
+6. The body is inferred under that same final environment.
 
 This makes the current annotation-ceiling phase unnecessary for annotated members.
 That phase exists because the HM-only checker first solves *every* member at a
@@ -724,16 +738,16 @@ completeness and principality continue to quantify only over annotated-source
 `TypeOfHM`. There is deliberately no converse from arbitrary `RunWT` evidence to
 successful source inference.
 
-The historical implementation can be mined selectively rather than rediscovered:
+The implementation mined the historical development selectively:
 
 - `78cf9a1^` contains the mixed declarative `MonoTyped`/`PolyTyped` group premises;
-- `16ae7bc^` contains the deleted relational `InferRecGroup.consPoly` and much of
-  its invariant proof structure;
+- `16ae7bc^` contains the old relational `InferRecGroup.consPoly` and much of its
+  invariant proof structure (useful raw material for the separate signed phase);
 - `7bd7020` activates `.poly` in `RecSpec.init`; and
 - `b36ca3d` / `78cf9a1^` contain mixed-group principality and completeness proofs.
 
-Only their static checking structure should be restored. Their elaborated or
-type-passing runtime architecture is specifically not part of this design.
+Only their static checking structure was reused. Their elaborated or type-passing
+runtime architecture is specifically not part of this design.
 
 ## Present decision
 
@@ -742,7 +756,7 @@ HM behavior as the default:
 
 ```text
 unannotated member: monomorphic inside the SCC, generalized afterwards
-complete annotated member: checked and recursively available at that scheme
+complete annotated member: dependency-cut contract, checked after unsigned generalization
 all members: erased at runtime
 ```
 

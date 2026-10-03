@@ -1,4 +1,4 @@
--- Positive D2 baseline: this recursive SCC uses `fact` at one monotype.
+-- Ordinary HM baseline: this recursive group uses `fact` at one monotype.
 
 let fact =
   \n -> if n < 1 then 0 else n + fact (n - 1)

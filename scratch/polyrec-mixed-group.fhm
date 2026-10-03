@@ -1,13 +1,12 @@
--- Negative D2 mixed group (genuinely mutual: f refs g, g refs f).
--- f is annotated polymorphic {a} Int -> a -> Int; g is unannotated.
--- Inside the group g is monomorphic: f's call `g (n - 1)` (result ignored
--- via `let u = ... in 1`, so g's SECOND parameter is never pinned by f)
--- pins g's first arg to Int but leaves g's second arg at the SHARED POOL
--- variable β. g's body then calls f at TWO instantiations INSIDE the group:
+-- Positive contract-stratified mixed group (genuinely mutual: f refs g,
+-- g refs f). f is annotated polymorphic {a} Int -> a -> Int; g is
+-- unannotated. While g is inferred, f's complete contract is available, so
+-- g's body may call f at TWO instantiations:
 --   `f n m`   a := β (m : β, the pool var)
 --   `f n [m]` a := List β
--- D2 does not make `f` independently polymorphic at those two call sites while
--- the SCC is checked, so Infer must reject before group-exit generalisation.
+-- g is then generalized. f's RHS is checked afterwards, with g's final scheme
+-- available. Thus both directions remain polymorphic without inferring
+-- polymorphic recursion for an unsigned member.
 
 let f : {a} Int -> a -> Int =
   \n x -> if n < 1 then 1 else let u = g (n - 1) in 1

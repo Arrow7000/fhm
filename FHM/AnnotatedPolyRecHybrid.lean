@@ -1,9 +1,15 @@
 import FHM.AnnotatedPolyRecErasure
 
 /-!
-# Mixed annotated/unannotated recursion over an erased runtime
+# Historical simultaneous mixed recursion over an erased runtime
 
-This module is the second formal spike for annotated in-block polymorphism.  The
+This module is the second formal spike for annotated in-block polymorphism. It is
+retained as a proof artifact, not as the production source rule: it predates the
+later contract-stratified ordering, so its unsigned members remain monomorphic
+while signed RHSs are checked. Production `TypeOfHM`/`Infer` instead infer and
+generalize the unsigned sub-group before checking signed RHSs under final schemes.
+
+The
 first spike, `FHM.AnnotatedPolyRecErasure`, proves erasure and recursive-unfolding
 preservation when every member has a complete scheme.  Here the proof-only
 runtime judgment records a `RecSpec` per member:
@@ -13,8 +19,8 @@ runtime judgment records a `RecSpec` per member:
   `PolyTy.genGroup G τ` in the body; and
 * neither the specs nor `G` occur in `RunExpr`.
 
-The initial checkpoint fixes the mixed declarative rule and a concrete witness.
-Its next obligation is the mixed recursive-rewrapping/preservation theorem.
+The spike fixes its historical mixed declarative rule and a concrete witness,
+including recursive-rewrapping/preservation for that rule.
 -/
 
 namespace AnnotatedPolyRecHybrid

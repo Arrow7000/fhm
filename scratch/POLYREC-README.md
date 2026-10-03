@@ -22,19 +22,22 @@ syntax case separately expects a parse error.
 
 The checker uses a mixed recursive group:
 
-- An unannotated member has one monotype while its SCC is checked and is
-  generalized only after the SCC exits.
+- Complete annotations are dependency cuts. Their schemes are assumed while
+  the unannotated sub-group is inferred.
+- Unannotated members each have one monotype while that sub-group is inferred;
+  after it is solved, they are generalized.
 - A completely annotated member is checked against its declared scheme and can
-  be instantiated independently at recursive call sites inside the SCC.
+  be instantiated independently at recursive call sites inside the SCC. Its RHS
+  is checked only after inferred siblings have their final schemes.
 - Its scoped annotation variables are rigid while its body is checked; they
-  cannot escape through an unannotated sibling's shared monotype.
+  cannot be unified away, but may pass through an inferred sibling by ordinary
+  instantiation of that sibling's generalized scheme.
 - Unannotated polymorphic recursion remains uninferable.
 - All runtime annotations are erased; checking introduces no type-passing terms.
 
 Head-binder sugar remains unsupported; explicit lambda RHSs support scoped type
 variables. The syntax negative records that distinction, not a typing restriction.
-The `.fhm` files retain historical names/comments from the former D2 policy;
-the current matrix and executable driver are authoritative.
+The matrix and executable driver are authoritative.
 
 ## Test matrix
 
@@ -42,7 +45,7 @@ the current matrix and executable driver are authoritative.
 |---|---:|---|
 | `polyrec-ordinary-recursion.fhm` | pass, `15` | ordinary recursion at one monotype |
 | `polyrec-generalize-after-scc.fhm` | pass, `(1, True)` | a recursive binding is polymorphic after SCC exit |
-| `polyrec-mixed-fixed-instantiation.fhm` | Infer rejects | a rigid annotation variable escapes into an unannotated sibling |
+| `polyrec-mixed-fixed-instantiation.fhm` | pass, `[5, 5, 5]` | an inferred sibling is generalized before the signed RHS is checked |
 | `polyrec-inner-poly-calls.fhm` | pass, `(4, 4)` | an annotated member is called at two types inside its SCC |
 | `polyrec-mixed-group.fhm` | pass, `(1, 2)` | an unannotated sibling independently instantiates an annotated member |
 | `polyrec-mixed-conflict-must-fail.fhm` | Infer rejects | a recursive monotype is forced to equal its own list type |
@@ -53,11 +56,11 @@ the current matrix and executable driver are authoritative.
 | `polyrec-head-binder-scoped-must-fail.fhm` | Parse rejects | head-binder sugar remains unsupported |
 
 The historical `polyrec-skolem-leak-must-fail.fhm` fixture was renamed to
-`polyrec-mixed-fixed-instantiation.fhm`: the former D2 checker accepted this
-program by solving the shared monotypes first. In the mixed annotation-directed
-checker, checking `f` at rigid `a` would put that `a` into unannotated `g`'s
-monotype, so the program is rejected. Annotating `g` too is the intended remedy;
-the corresponding core fixture is in `FHM/Examples.lean`.
+`polyrec-mixed-fixed-instantiation.fhm`. The earlier simultaneous checker rejected
+it because checking `f` first tried to put rigid `a` into unannotated `g`'s shared
+monotype. Contract stratification removes that accidental order dependence: infer
+and generalize `g` against `f`'s declared contract, then check `f` using `g`'s final
+scheme. The program is therefore accepted without runtime type passing.
 
 ## Parser notes
 

@@ -10,9 +10,9 @@ type system guarantees, what those guarantees *mean* in plain terms, and
 precisely how far the machine-checking currently reaches.
 
 **Status.** Type safety, inference soundness, principality, and completeness are
-closed and axiom-clean. `Infer.sourceSound` and its branch/group families type
-the annotated Core source, while `Infer.sound` derives typing for the erased
-runtime term. `TypeOfHM` specifies checked source, while proof-only `RunWT`
+closed and axiom-clean. `Infer.sourceSound` and its branch/two-phase recursive-group
+families type the annotated Core source, while `Infer.sound` derives typing for the
+erased runtime term. `TypeOfHM` specifies checked source, while proof-only `RunWT`
 provides substitution, canonical forms, progress, preservation, and one- and
 many-step type safety for erased execution.
 Principality factors every declarative type through a successfully inferred
@@ -295,11 +295,10 @@ example (ctors : CtorEnv) :
 
 /-! ### Annotated polymorphic `letRecIn`
 
-The current structural surface constructor cannot directly witness
-`let rec (id : ∀a. a→a) = λx. x in id`: its fixed RHS result type must agree
-with every cofinite renaming of the generalized variable. This is a limitation
-of the structural surface relation, not of Core HM inference. The closed
-monomorphic witness below exercises `letRecInAnn`. -/
+The structural constructor exposes the same two phases as Core: unsigned members
+are typed under the shared monotype opening, while signed members are checked under
+the final scheme environment. The closed monomorphic contract below keeps the
+cofinite openings computationally small while exercising `letRecInAnn`. -/
 
 /-! ### Packing B — annotated mono + head binders
 
@@ -390,7 +389,8 @@ example (ctors : CtorEnv) :
     (τretsList := fun _ _ => [Ty.prim .int])
     (body := _) (τ := _)
     ?htvs ?hann ?hlen ?hparamLen ?hΓRhsLen ?hretsLen ?hanns_eq ?hnodup
-    ?hmono_lc ?hpoly_wf ?hLL ?hτbindsMono ?hτbindsPoly ?hmono ?hpoly ?hbody
+    ?hmono_lc ?hpoly_wf ?hLLMono ?hLLPoly ?hτbindsMono ?hτbindsPoly
+    ?hmono ?hpoly ?hbody
   · rfl
   · -- lowerAnnList of finalizeAnn return-type sugar
     have h1 := packingB_lowerPoly ctors
@@ -406,22 +406,27 @@ example (ctors : CtorEnv) :
     simp only [List.mem_singleton, σ] at h
     injection h with h; subst h
     exact .arrow ContainsBvarsUpTo.prim ContainsBvarsUpTo.prim
-  · intro Xs _ i hi Ys
+  · intro Xs _ i hi τm hspec
     have hi0 : i = 0 := by
       simp only [binds, List.length_cons, List.length_nil] at hi; omega
     subst hi0
+    simp [σ] at hspec
+  · intro i hi σ' hspec Ys hYs
+    have hi0 : i = 0 := by
+      simp only [binds, List.length_cons, List.length_nil] at hi; omega
+    subst hi0
+    have hσ' : σ' = σ := by symm; simpa using hspec
+    subst hσ'
     refine LowerLetParams.cons rfl (by simp [lowerTy]) ContainsBvarsUpTo.prim LowerLetParams.nil
   · intro Xs hfresh i hi τm hspec
     have hi0 : i = 0 := by
       simp only [binds, List.length_cons, List.length_nil] at hi; omega
     subst hi0
     simp [σ] at hspec
-  · intro Xs hfresh i hi σ' hspec Ys hYs
+  · intro i hi σ' hspec Ys hYs
     have hi0 : i = 0 := by
       simp only [binds, List.length_cons, List.length_nil] at hi; omega
     subst hi0
-    have hXs : Xs = [] := List.eq_nil_of_length_eq_zero hfresh.length
-    subst hXs
     have hσ' : σ' = σ := by symm; simpa using hspec
     subst hσ'
     have hYs0 : Ys = [] := List.eq_nil_of_length_eq_zero (by simpa [σ] using hYs.length)
@@ -432,12 +437,10 @@ example (ctors : CtorEnv) :
       simp only [binds, List.length_cons, List.length_nil] at hi; omega
     subst hi0
     simp [σ] at hspec
-  · intro Xs hfresh i hi σ' hspec Ys hYs
+  · intro i hi σ' hspec Ys hYs
     have hi0 : i = 0 := by
       simp only [binds, List.length_cons, List.length_nil] at hi; omega
     subst hi0
-    have hXs : Xs = [] := List.eq_nil_of_length_eq_zero hfresh.length
-    subst hXs
     have hσ' : σ' = σ := by symm; simpa using hspec
     subst hσ'
     have hYs0 : Ys = [] := List.eq_nil_of_length_eq_zero (by simpa [σ] using hYs.length)
@@ -650,7 +653,8 @@ axiom-clean. -/
 #print axioms Infer.sound                -- expect {propext, Classical.choice, Quot.sound}
 #print axioms Infer.sourceSound          -- expect {propext, Classical.choice, Quot.sound}
 #print axioms InferBranches.sourceSound  -- expect {propext, Classical.choice, Quot.sound}
-#print axioms InferRecGroup.sourceSound  -- expect {propext, Classical.choice, Quot.sound}
+#print axioms InferRecGroup.sourceSoundMono      -- expect {propext, Classical.choice, Quot.sound}
+#print axioms InferRecGroupPoly.sourceSoundPoly  -- expect {propext, Classical.choice, Quot.sound}
 
 -- Closed and clean: principality of successful inference.
 #print axioms Infer.principal             -- expect {propext, Classical.choice, Quot.sound}

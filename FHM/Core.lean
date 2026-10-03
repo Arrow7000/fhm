@@ -283,11 +283,11 @@ inductive Expr
 
       `anns` carries one `Option PolyTy` per binding (PARALLEL to `bindings`;
       the length invariant lives in the typing rule, not the constructor).
-      An UNANNOTATED member (`none`) is typed at a shared monotype linked
-      through the group's gen-var pool and generalised only for the `body`
-      (Damas–Milner monomorphic recursion). An ANNOTATED member (`some σ`) is
-      checked against its declared scheme, but recursive uses remain
-      monomorphic within the group. -/
+      An UNANNOTATED member (`none`) has one shared monotype while the unsigned
+      sub-group is inferred (Damas–Milner monomorphic recursion), then is
+      generalised. An ANNOTATED member (`some σ`) contributes a complete
+      dependency-cut contract. Signed RHSs and the body are checked under the
+      resulting final scheme environment. -/
   | letRec (anns : List (Option PolyTy)) (bindings : List Expr) (body : Expr)
 
 /-- Build `[.bvar start, .bvar (start+1), ..., .bvar (start+count-1)]`. -/
@@ -2610,13 +2610,13 @@ def PolyTy.openGroup : List PolyTy → List Nat → List Ty
   | [],      _  => []
   | M :: Ms, Xs => M.openVars (Xs.take M.paramCount) :: PolyTy.openGroup Ms (Xs.drop M.paramCount)
 
-/-! ### `letRec` shared-monotype generalisation helpers.
+/-! ### `letRec` unsigned-member generalisation helpers.
 
-The `letRec` rule types the recursive group at *shared monotypes* `τs`, then
-generalises each `τⱼ` over the group's gen-var pool `G`. `renameG` is the shared
-opening (rename `G ↦ Xs` everywhere — the SAME `Xs` for every binding, so mutual
-recursion's type-sharing stays linked); `genGroup G τⱼ` is the body-scheme
-`∀ (G ∩ ftv τⱼ). τⱼ`. -/
+The `letRec` rule infers every unsigned member at a shared monotype `τⱼ`, then
+generalises each one over the group's gen-var pool `G`. `renameG` is the shared
+opening (rename `G ↦ Xs` everywhere — the SAME `Xs` for every unsigned binding,
+so mutual recursion's type-sharing stays linked); `genGroup G τⱼ` is its final
+scheme `∀ (G ∩ ftv τⱼ). τⱼ`. Signed members already carry complete schemes. -/
 
 /-- Rename the group's gen-vars `G` to fresh names `Xs` throughout a monotype: the
     *shared* opening used by the cofinite `letRec` premise. -/
@@ -2863,16 +2863,17 @@ def RecSpecs.MonoTyped (TypeOf : Ctx → Expr → Ty → Prop) (ctx : Ctx)
     ∀ pair ∈ bindings.zip specs, ∀ τ, pair.2 = .mono τ →
       TypeOf (RecSpecs.rhsCtx ctx specs G Xs) pair.1 (Ty.renameG G Xs τ)
 
-/-- Cofinite scheme-relative checking for completely annotated members. The
-shared HM pool is fixed first; the member's own rigid opening is then chosen
-fresh from both `L` and `Xs`, preventing a mono sibling from capturing it. -/
-def RecSpecs.PolyTyped (TypeOf : Ctx → Expr → Ty → Prop) (ctx : Ctx)
+/-- Cofinite scheme-relative checking for completely annotated members after
+the ordinary HM members have been solved and generalised.  Complete signatures
+are dependency cuts: a signed RHS sees the same FINAL schemes as the group body,
+so both signed and inferred siblings are available polymorphically.  The
+member's own quantified variables are still opened rigidly and cofinally. -/
+def RecSpecs.PolyTypedFinal (TypeOf : Ctx → Expr → Ty → Prop) (ctx : Ctx)
     (bindings : List Expr) (specs : List RecSpec) (G L : List Nat) : Prop :=
-  ∀ Xs, FreshNames L G.length Xs →
-    ∀ pair ∈ bindings.zip specs, ∀ σ, pair.2 = .poly σ →
-      ∀ Ys, FreshNames (L ++ Xs) σ.paramCount Ys →
-        TypeOf (RecSpecs.rhsCtx ctx specs G Xs)
-          (pair.1.openTyVars Ys) (σ.openVars Ys)
+  ∀ pair ∈ bindings.zip specs, ∀ σ, pair.2 = .poly σ →
+    ∀ Ys, FreshNames L σ.paramCount Ys →
+      TypeOf (RecSpecs.bodyCtx ctx specs G)
+        (pair.1.openTyVars Ys) (σ.openVars Ys)
 
 
 /-! ### The *declarative* HM typing relation `TypeOfHM` (the completeness spec).
@@ -2969,14 +2970,15 @@ inductive TypeOfHM : Ctx → Expr → Ty → Prop
     (∀ branch ∈ branches, TypeOfMatchBranch ctx branch scrutTy resultTy) →
     TypeOfHM ctx (.match_ scrutinee branches) resultTy
 
-  /-- Mixed recursive group. Unannotated members share one monotype inside the
-      group and generalise only in the body. Completely annotated members are
-      available at their declared schemes throughout the group; their own RHSs
-      are checked at every fresh rigid opening of those schemes. -/
+  /-- Mixed recursive group. Unannotated members share one monotype while the
+      unsigned sub-group is inferred. Completely annotated members are
+      dependency cuts. First the ordinary members are solved under the initial
+      mixed environment and generalised; then signed RHSs are checked at every
+      fresh rigid opening under the final scheme environment. -/
   | letRec {specs : List RecSpec} {G L : List Nat} :
     RecSpecs.WF anns bindings specs G →
     RecSpecs.MonoTyped TypeOfHM ctx bindings specs G L →
-    RecSpecs.PolyTyped TypeOfHM ctx bindings specs G L →
+    RecSpecs.PolyTypedFinal TypeOfHM ctx bindings specs G L →
     bodyCtx = RecSpecs.bodyCtx ctx specs G →
     TypeOfHM bodyCtx body ρ →
     TypeOfHM ctx (.letRec anns bindings body) ρ

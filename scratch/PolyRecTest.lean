@@ -143,8 +143,8 @@ def main : IO UInt32 := do
         motivation := "annotated polymorphic recursion composes across several SCCs"
         expected := .pass "7" }
     , { path := "scratch/polyrec-mixed-fixed-instantiation.fhm"
-        motivation := "a rigid annotation variable cannot escape through an unannotated sibling"
-        expected := .rejectAt .infer }
+        motivation := "an inferred sibling is generalized before the signed RHS is checked"
+        expected := .pass "[5, 5, 5]" }
     ]
   let results <- cases.mapM runCase
   let passed := results.count true
