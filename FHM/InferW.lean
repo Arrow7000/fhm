@@ -9697,6 +9697,121 @@ threads substitutions. These proofs sit after the `TypeOfHM` substitution and
 weakening infrastructure on which they depend. -/
 
 set_option maxRecDepth 10_000 in
+private abbrev Infer.SourceSoundAt (e : Expr) : Prop :=
+  ∀ {Φ ctx Φ' S τ}, Infer Φ ctx e Φ' S τ →
+    CtxWF ctx → CtxBelow Φ ctx → (K : List Nat) → (∀ k ∈ K, k < Φ) →
+    (∀ y ∈ e.tyFreeVars, y ∈ K) → (∀ p ∈ S, p.1 ∉ K) →
+    TypeOfHM (S.onCtx ctx) e τ
+
+/-- Source typing of selected members in one residual component. This helper
+    takes source soundness only for RHS subexpressions, avoiding any dependence
+    on the eventual strata context. -/
+theorem InferRecComponent.sourceSoundMono_of {members memberIndex Φ ctx bindings specs Φ' S}
+    (h : InferRecComponent members memberIndex Φ ctx bindings specs Φ' S)
+    (hsound : ∀ rhs ∈ bindings, Infer.SourceSoundAt rhs)
+    (hctx : CtxWF ctx) (hbelow : CtxBelow Φ ctx)
+    (hspecs : ∀ s ∈ specs, s.LC) (hspecsB : ∀ s ∈ specs, s.BelowFvars Φ)
+    (K : List Nat) (hKΦ : ∀ k ∈ K, k < Φ)
+    (hKbr : ∀ y ∈ Expr.tyFreeVars.RecGroup.tyFreeVars bindings, y ∈ K)
+    (hSK : ∀ p ∈ S, p.1 ∉ K) :
+    ∀ offset rhs τ, memberIndex + offset ∈ members →
+      bindings[offset]? = some rhs →
+      (specs.map (RecSpec.onSubst S))[offset]? = some (.mono τ) →
+      TypeOfHM (S.onCtx ctx) rhs τ := by
+  match h with
+  | .nil => intro offset rhs τ _ hrhs; simp at hrhs
+  | .skipMono hnot hrest =>
+    intro offset rhs τ hmember hrhs hτ
+    cases offset with
+    | zero => exact False.elim (hnot (by simpa using hmember))
+    | succ offset =>
+      exact InferRecComponent.sourceSoundMono_of hrest
+        (fun e he => hsound e (List.mem_cons_of_mem _ he)) hctx hbelow
+        (fun s hs => hspecs s (List.mem_cons_of_mem _ hs))
+        (fun s hs => hspecsB s (List.mem_cons_of_mem _ hs)) K hKΦ
+        (fun y hy => hKbr y (by
+          simp only [Expr.tyFreeVars.RecGroup.tyFreeVars, List.mem_append]; exact Or.inr hy))
+        hSK offset rhs τ (by simpa only [Nat.add_assoc, Nat.add_comm 1 offset] using hmember)
+        (by simpa using hrhs) (by simpa using hτ)
+  | .skipPoly hrest =>
+    intro offset rhs τ hmember hrhs hτ
+    cases offset with
+    | zero => simp [RecSpec.onSubst] at hτ
+    | succ offset =>
+      exact InferRecComponent.sourceSoundMono_of hrest
+        (fun e he => hsound e (List.mem_cons_of_mem _ he)) hctx hbelow
+        (fun s hs => hspecs s (List.mem_cons_of_mem _ hs))
+        (fun s hs => hspecsB s (List.mem_cons_of_mem _ hs)) K hKΦ
+        (fun y hy => hKbr y (by
+          simp only [Expr.tyFreeVars.RecGroup.tyFreeVars, List.mem_append]; exact Or.inr hy))
+        hSK offset rhs τ (by simpa only [Nat.add_assoc, Nat.add_comm 1 offset] using hmember)
+        (by simpa using hrhs) (by simpa using hτ)
+  | .consSelected _ he huni hrest =>
+    expose_names
+    simp only [Expr.tyFreeVars.RecGroup.tyFreeVars, List.mem_append] at hKbr
+    obtain ⟨hτ'_lc, hS₁⟩ := Infer.lc he hctx
+    have hτ_lc : τ.IsLC := hspecs (.mono τ) List.mem_cons_self
+    have hS₂ := huni.lc hτ'_lc (Subst.onTy_lc hS₁ hτ_lc)
+    have hle1 := Infer.frontier_le he
+    have he_below := Infer.belowFvars he hbelow (fun y hy => hKΦ y (hKbr y (.inl hy)))
+    have hτ_below : Ty.BelowFvars Φ τ := hspecsB (.mono τ) List.mem_cons_self
+    have hS₂below := UnifyRel.belowFvars huni he_below.1
+      (Subst.onTy_belowFvars he_below.2 (hτ_below.mono hle1))
+    have hbelow2 := Subst.onCtx_below hS₂below (le_refl _)
+      (Subst.onCtx_below he_below.2 hle1 hbelow)
+    have hctx2 := Subst.onCtx_wf hS₂ (Subst.onCtx_wf hS₁ hctx)
+    have hK1 : ∀ p ∈ S₁, p.1 ∉ K := fun p hp =>
+      hSK p (List.mem_append_left _ (List.mem_append_left _ hp))
+    have hK2 : ∀ p ∈ S₂, p.1 ∉ K := fun p hp =>
+      hSK p (List.mem_append_left _ (List.mem_append_right _ hp))
+    have hK3 : ∀ p ∈ S₃, p.1 ∉ K := fun p hp => hSK p (List.mem_append_right _ hp)
+    have hspecs' : ∀ s' ∈ specs_1.map (RecSpec.onSubst (S₁ ++ S₂)), s'.LC := by
+      intro s' hs'; obtain ⟨s, hs, rfl⟩ := List.mem_map.mp hs'
+      exact RecSpec.LC.onSubst (fun p hp => (List.mem_append.mp hp).elim (hS₁ p) (hS₂ p))
+        (hspecs s (List.mem_cons_of_mem _ hs))
+    have hspecsB' : ∀ s' ∈ specs_1.map (RecSpec.onSubst (S₁ ++ S₂)), s'.BelowFvars Φ₁ := by
+      intro s' hs'; obtain ⟨s, hs, rfl⟩ := List.mem_map.mp hs'
+      exact RecSpec.BelowFvars.onSubst
+        (fun p hp => (List.mem_append.mp hp).elim (fun h => he_below.2 p h)
+          (fun h => hS₂below p h))
+        ((hspecsB s (List.mem_cons_of_mem _ hs)).mono hle1)
+    have hS₃lc : ∀ p ∈ S₃, p.2.IsLC := InferRecComponent.lc hrest hctx2 hspecs'
+    intro offset rhs τ0 hmember hrhs hτ0
+    cases offset with
+    | zero =>
+      simp only [List.getElem?_cons_zero, Option.some.injEq] at hrhs
+      subst rhs
+      simp only [List.map_cons, List.getElem?_cons_zero, RecSpec.onSubst,
+        Option.some.injEq, RecSpec.mono.injEq] at hτ0
+      subst τ0
+      have h0 := hsound e List.mem_cons_self he hctx hbelow K hKΦ
+        (fun y hy => hKbr y (.inl hy)) hK1
+      have hefix (T : Subst) (hTK : ∀ p ∈ T, p.1 ∉ K) : e.substTyFvars T = e :=
+        Expr.substTyFvars_eq_self_of_not_mem_tyFreeVars
+          (fun p hp hc => hTK p hp (hKbr p.1 (.inl hc)))
+      have h1 := TypeOfHM.onSubst_fixed_append S₁ S₂ hS₁ hS₂ (hefix S₁ hK1) (hefix S₂ hK2) h0
+      have h1' : TypeOfHM ((S₁ ++ S₂).onCtx ctx) e (S₂.onTy (S₁.onTy τ)) := by
+        rwa [huni.unifies] at h1
+      have h2 := TypeOfHM.onSubst_fixed S₃ hS₃lc (hefix S₃ hK3) h1'
+      simpa only [Subst.onTy_append, ← Subst.onCtx_append] using h2
+    | succ offset =>
+      have hspecmap : specs_1.map (RecSpec.onSubst (S₁ ++ S₂ ++ S₃)) =
+          (specs_1.map (RecSpec.onSubst (S₁ ++ S₂))).map (RecSpec.onSubst S₃) := by
+        rw [List.map_map]
+        exact List.map_congr_left (fun s _ => RecSpec.onSubst_append (S₁ ++ S₂) S₃ s)
+      have htail := InferRecComponent.sourceSoundMono_of hrest
+        (fun e he => hsound e (List.mem_cons_of_mem _ he)) hctx2 hbelow2 hspecs' hspecsB'
+        K (fun k hk => lt_of_lt_of_le (hKΦ k hk) hle1)
+        (fun y hy => hKbr y (.inr hy)) hK3 offset rhs τ0
+        (by simpa only [Nat.add_assoc, Nat.add_comm 1 offset] using hmember)
+        (by simpa using hrhs) (by
+          simp only [List.map_cons, List.getElem?_cons_succ] at hτ0
+          rwa [hspecmap] at hτ0)
+      simpa only [← Subst.onCtx_append, List.append_assoc] using htail
+termination_by Expr.sizeRecGroup bindings
+decreasing_by
+  all_goals (simp_wf; simp only [Expr.sizeRecGroup]; omega)
+
 set_option maxHeartbeats 800_000 in
 mutual
 /-- Backward soundness: inference implies declarative typing for the source term. -/
