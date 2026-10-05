@@ -3133,6 +3133,38 @@ private theorem genGroup_generalizes_renameG {Ginf G Xsfull : List Nat} {τinf �
     exact (Ty.renameG_eq_genFilter hXlen hG hXnodup hXG hXτ).symm
   · intro x hx; exact hXinf x (hXsub x hx)
 
+/-- Generalising a monotype over a pool permits its fresh shared opening as a
+    monomorphic instance.  This is the stage-normalisation step used when a
+    fine algorithmic SCC has already been completed but an admissible coarser
+    declarative partition still keeps that dependency monomorphic. -/
+private theorem genGroup_generalizes_trivial_renameG {G Xs : List Nat} {τ : Ty}
+    (hτ : τ.IsLC) (hG : G.Nodup) (hXlen : Xs.length = G.length)
+    (hXnodup : Xs.Nodup) (hXG : ∀ g ∈ G, g ∉ Xs)
+    (hXτ : ∀ x ∈ Xs, x ∉ τ.freeVars) :
+    (PolyTy.genGroup G τ).Generalizes
+      (PolyTy.mkTrivial (Ty.renameG G Xs τ)) := by
+  rw [PolyTy.genGroup_renameG hτ hXlen hG hXnodup hXG hXτ]
+  let opened := Ty.renameG G Xs τ
+  have hopenedLC : opened.IsLC := by
+    dsimp [opened, Ty.renameG]
+    exact Subst.onTy_lc
+      (fun p hp => by
+        obtain ⟨x, _, hx⟩ := List.mem_map.mp (List.of_mem_zip hp).2
+        rw [← hx]
+        exact ContainsBvarsUpTo.fvar)
+      hτ
+  apply genGroup_generalizes (Ginf := Xs)
+    (τ₁ := opened) (R := []) (M := PolyTy.mkTrivial opened) (Xs := [])
+  · exact hopenedLC
+  · simp
+  · exact hopenedLC
+  · simp
+  · rfl
+  · simp
+  · simpa [PolyTy.mkTrivial, Ty.openVars] using
+      (Ty.instantiate_eq_self_of_lc hopenedLC)
+  · simp
+
 /-- A member type's free var in the group solved monotypes is in the pool's free
     var list (erased world helper). -/
 private theorem mem_freeVarsList_monoTys {specs : List RecSpec} {τ : Ty}
@@ -3325,6 +3357,47 @@ private theorem RecGroups.ValidResidualGroups.same_inference_component_stage
   have hlr := h.reach_stage_le hmutual.2 hrightComponent hleftComponent
     hrightDecl hleftDecl
   omega
+
+private theorem RecGroups.ValidResidualGroups.inference_component_contained
+    {anns : List (Option PolyTy)} {bindings : List Expr}
+    {groups : List (List Nat)}
+    (h : RecGroups.ValidResidualGroups anns bindings groups)
+    {algorithmStage : Nat} {algorithmComponent : List Nat}
+    (halgorithm : (RecGroup.inferenceSccs anns bindings)[algorithmStage]? =
+      some algorithmComponent) :
+    ∃ (declStage : Nat) (declComponent : List Nat),
+      groups[declStage]? = some declComponent ∧
+      ∀ member ∈ algorithmComponent, member ∈ declComponent := by
+  have halgValid := RecGroup.inferenceSccs_valid h.length
+  have hnonempty := halgValid.nonempty algorithmComponent
+    (List.mem_of_getElem? halgorithm)
+  obtain ⟨anchor, rest, heq⟩ := List.exists_cons_of_ne_nil hnonempty
+  subst algorithmComponent
+  have hanchor : anchor ∈ anchor :: rest := List.mem_cons_self
+  have hanchorBound := halgValid.bounded anchor
+    (List.mem_flatten.mpr ⟨anchor :: rest,
+      List.mem_of_getElem? halgorithm, hanchor⟩)
+  have hanchorUnsigned := (halgValid.covers_unsigned anchor hanchorBound).1
+    (List.mem_flatten.mpr ⟨anchor :: rest,
+      List.mem_of_getElem? halgorithm, hanchor⟩)
+  obtain ⟨declStage, declComponent, hdeclComponent, hanchorDecl⟩ :=
+    h.stage_of_unsigned hanchorBound hanchorUnsigned
+  refine ⟨declStage, declComponent, hdeclComponent, ?_⟩
+  intro member hmember
+  have hmemberBound := halgValid.bounded member
+    (List.mem_flatten.mpr ⟨anchor :: rest,
+      List.mem_of_getElem? halgorithm, hmember⟩)
+  have hmemberUnsigned := (halgValid.covers_unsigned member hmemberBound).1
+    (List.mem_flatten.mpr ⟨anchor :: rest,
+      List.mem_of_getElem? halgorithm, hmember⟩)
+  obtain ⟨memberStage, memberComponent, hmemberComponent, hmemberDecl⟩ :=
+    h.stage_of_unsigned hmemberBound hmemberUnsigned
+  have hstageEq := h.same_inference_component_stage halgorithm hanchor hmember
+    hdeclComponent hmemberComponent hanchorDecl hmemberDecl
+  subst memberStage
+  have hcomponentEq : memberComponent = declComponent :=
+    Option.some.inj (hmemberComponent.symm.trans hdeclComponent)
+  simpa [hcomponentEq] using hmemberDecl
 
 /-- Pointwise erased agreement on a type's actual free variables is enough to
     transport that type.  This is the finite-support counterpart of
@@ -4433,7 +4506,7 @@ private theorem RecSpec.init_getElem_of_specs {Φ : Nat}
 /-- One fresh opening realizes a mixed declarative recursive group in the
     algorithm's initial context. Only monomorphic slots need residual targets;
     annotated slots retain their complete schemes. -/
-private structure RecGroupOpening (Φ : Nat) (ctx : Ctx) (S₀ : Subst)
+private structure RecGroupOpeningCore (Φ : Nat) (ctx : Ctx) (S₀ : Subst)
     (anns : List (Option PolyTy)) (bindings : List Expr)
     (specs : List RecSpec) (G L K : List Nat) where
   Xs : List Nat
@@ -4450,19 +4523,23 @@ private structure RecGroupOpening (Φ : Nat) (ctx : Ctx) (S₀ : Subst)
     R.onCtx (RecSpecs.rhsCtx ctx (RecSpec.init Φ anns) [] [])
   block : ∀ j (hj : j < specs.length) τ, specs[j]'hj = .mono τ →
     R.onTy (.fvar (Φ + j)) = Ty.renameG G Xs τ
+
+private structure RecGroupOpening (Φ : Nat) (ctx : Ctx) (S₀ : Subst)
+    (anns : List (Option PolyTy)) (bindings : List Expr)
+    (specs : List RecSpec) (G L K : List Nat)
+    extends RecGroupOpeningCore Φ ctx S₀ anns bindings specs G L K where
   mono : ∀ p ∈ bindings.zip (RecSpec.init Φ anns), ∀ τ, p.2 = .mono τ →
     TypeOfHM (R.onCtx (RecSpecs.rhsCtx ctx (RecSpec.init Φ anns) [] []))
       p.1 (R.onTy τ)
 
-private theorem exists_recgroup_opening {Φ : Nat} {ctx : Ctx} {S₀ : Subst}
+private theorem exists_recgroup_opening_core {Φ : Nat} {ctx : Ctx} {S₀ : Subst}
     {anns : List (Option PolyTy)} {bindings : List Expr} {specs : List RecSpec}
     {G L K : List Nat}
     (hwf : RecSpecs.WF anns bindings specs G) (hbelow : CtxBelow Φ ctx)
     (hS₀ : ∀ p ∈ S₀, p.2.IsLC) (hKΦ : ∀ k ∈ K, k < Φ)
     (hKfix : ∀ k ∈ K, S₀.onTy (.fvar k) = .fvar k)
-    (hKrigid : ∀ k ∈ RecGroup.rigidVars anns bindings, k ∈ K)
-    (hmono : RecSpecs.MonoTyped TypeOfHM (S₀.onCtx ctx) bindings specs G L) :
-    Nonempty (RecGroupOpening Φ ctx S₀ anns bindings specs G L K) := by
+    (hKrigid : ∀ k ∈ RecGroup.rigidVars anns bindings, k ∈ K) :
+    Nonempty (RecGroupOpeningCore Φ ctx S₀ anns bindings specs G L K) := by
   let avoid := L ++ G ++ specs.flatMap RecSpec.monoFreeVars ++
     (S₀.onCtx ctx).env.freeVars ++ K
   obtain ⟨Xs, hXlen, hXnodup, hXavoid⟩ := exists_fresh_names avoid G.length
@@ -4549,31 +4626,43 @@ private theorem exists_recgroup_opening {Φ : Nat} {ctx : Ctx} {S₀ : Subst}
     · exact (congrArg Ctx.env (Subst.onCtx_congr hRag hbelow)).symm
   refine ⟨⟨Xs, R, hfresh, hXG, hXmono, hXenv,
     (fun x hx hc => hXK x hx (hKrigid x hc)), hRlc, hRK, hRag, hctx,
-    ?_, ?_⟩⟩
+    ?_⟩⟩
   · intro j hj τ hs
     simpa [target, hs] using hblock j hj
-  · intro p hp τ hpτ
-    obtain ⟨j, hj, hpEq⟩ := List.mem_iff_getElem.mp hp
-    have hjb : j < bindings.length := by rw [List.length_zip] at hj; omega
-    have hjs : j < specs.length := by rwa [← hwf.length]
-    have hji : j < (RecSpec.init Φ anns).length := by
-      rw [RecSpec.init_length, ← hwf.anns_eq, List.length_map]; exact hjs
-    rw [List.getElem_zip] at hpEq
-    have hiτ := congrArg Prod.snd hpEq
-    rw [RecSpec.init_getElem_of_specs hwf.anns_eq j hjs, hpτ] at hiτ
-    cases hs : specs[j]'hjs with
-    | poly σ => simp [hs] at hiτ
-    | mono t =>
-        have hτ : τ = .fvar (Φ + j) := by simpa [hs] using hiτ.symm
-        have hmem : (bindings[j]'hjb, .mono t) ∈ bindings.zip specs := by
-          simpa [hs] using getElem_mem_zip j hjb hjs
-        have hd := hmono Xs hfresh _ hmem t rfl
-        have hb : R.onTy (.fvar (Φ + j)) = Ty.renameG G Xs t := by
-          simpa [target, hs] using hblock j hjs
-        rw [hctx, ← hb] at hd
-        have hbnd : bindings[j]'hjb = p.1 := congrArg Prod.fst hpEq
-        rw [hbnd] at hd
-        simpa [hτ] using hd
+
+private theorem exists_recgroup_opening {Φ : Nat} {ctx : Ctx} {S₀ : Subst}
+    {anns : List (Option PolyTy)} {bindings : List Expr} {specs : List RecSpec}
+    {G L K : List Nat}
+    (hwf : RecSpecs.WF anns bindings specs G) (hbelow : CtxBelow Φ ctx)
+    (hS₀ : ∀ p ∈ S₀, p.2.IsLC) (hKΦ : ∀ k ∈ K, k < Φ)
+    (hKfix : ∀ k ∈ K, S₀.onTy (.fvar k) = .fvar k)
+    (hKrigid : ∀ k ∈ RecGroup.rigidVars anns bindings, k ∈ K)
+    (hmono : RecSpecs.MonoTyped TypeOfHM (S₀.onCtx ctx) bindings specs G L) :
+    Nonempty (RecGroupOpening Φ ctx S₀ anns bindings specs G L K) := by
+  obtain ⟨o⟩ := exists_recgroup_opening_core hwf hbelow hS₀ hKΦ hKfix hKrigid
+  refine ⟨{ o with mono := ?_ }⟩
+  intro p hp τ hpτ
+  obtain ⟨j, hj, hpEq⟩ := List.mem_iff_getElem.mp hp
+  have hjb : j < bindings.length := by rw [List.length_zip] at hj; omega
+  have hjs : j < specs.length := by rwa [← hwf.length]
+  have hji : j < (RecSpec.init Φ anns).length := by
+    rw [RecSpec.init_length, ← hwf.anns_eq, List.length_map]; exact hjs
+  rw [List.getElem_zip] at hpEq
+  have hiτ := congrArg Prod.snd hpEq
+  rw [RecSpec.init_getElem_of_specs hwf.anns_eq j hjs, hpτ] at hiτ
+  cases hs : specs[j]'hjs with
+  | poly σ => simp [hs] at hiτ
+  | mono t =>
+      have hτ : τ = .fvar (Φ + j) := by simpa [hs] using hiτ.symm
+      have hmem : (bindings[j]'hjb, .mono t) ∈ bindings.zip specs := by
+        simpa [hs] using getElem_mem_zip j hjb hjs
+      have hd := hmono o.Xs o.fresh _ hmem t rfl
+      have hb : o.R.onTy (.fvar (Φ + j)) = Ty.renameG G o.Xs t :=
+        o.block j hjs t hs
+      rw [o.ctx_eq, ← hb] at hd
+      have hbnd : bindings[j]'hjb = p.1 := congrArg Prod.fst hpEq
+      rw [hbnd] at hd
+      simpa [hτ] using hd
 
 /-- Simultaneous principality proof by size induction over the three mutually
     recursive derivation relations). -/
