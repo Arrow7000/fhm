@@ -128,7 +128,9 @@ function jump(line, column = 1) {
   editor.revealLineInCenter(line);
   editor.focus();
 }
-async function post(url, source, controller, timeout = 45000) {
+// An idle Render free instance can need a minute to wake. Execution itself is
+// still bounded separately by the server's much shorter compiler timeouts.
+async function post(url, source, controller, timeout = 90000) {
   const timer = setTimeout(
     () =>
       controller.abort(
