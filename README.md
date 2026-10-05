@@ -201,6 +201,8 @@ The design choices that matter most:
 
 ## Roadmap
 
+Known bugs and smaller tasks are tracked in [`TODO.md`](./TODO.md).
+
 Near term:
 
 - **Better error messages.** Type errors are currently reported without a
