@@ -9984,6 +9984,137 @@ inductive InferRecStrata.Frozen :
       (∀ p ∈ S₁, ∀ g ∈ p.2.freeVars, g ∉ G) →
       Frozen hrest → Frozen (.cons hcomponent hspecs hG hrest)
 
+theorem RecSpec.mono_getElem?_map_onSubst {specs : List RecSpec} {S : Subst}
+    {member : Nat} {τ : Ty} (h : (specs.map (RecSpec.onSubst S))[member]? = some (.mono τ)) :
+    ∃ t, specs[member]? = some (.mono t) ∧ τ = S.onTy t := by
+  rw [List.getElem?_map] at h
+  cases hs : specs[member]? with
+  | none => simp [hs] at h
+  | some spec =>
+    cases spec with
+    | poly σ => simp [hs, RecSpec.onSubst] at h
+    | mono t =>
+      simp only [hs, Option.map_some, RecSpec.onSubst, Option.some.injEq, RecSpec.mono.injEq] at h
+      exact ⟨t, rfl, h.symm⟩
+
+/-- The unsigned members not yet completed retain their own original fresh
+    placeholder. No other spec or outer-environment entry mentions that seed. -/
+structure RecSpecs.PendingSeeds (base : Nat) (ctx : Ctx) (specs : List RecSpec)
+    (done : List Nat) : Prop where
+  mono : ∀ member τ, specs[member]? = some (.mono τ) → member ∉ done →
+    τ = .fvar (base + member)
+  other : ∀ member τ, specs[member]? = some (.mono τ) → member ∉ done →
+    ∀ j s, specs[j]? = some s → j ≠ member → base + member ∉ s.freeVars
+  env : ∀ member τ, specs[member]? = some (.mono τ) → member ∉ done →
+    ∀ M ∈ ctx.env, base + member ∉ M.body.freeVars
+
+theorem RecSpecs.PendingSeeds.onSubst {base : Nat} {ctx : Ctx} {specs : List RecSpec}
+    {done done' : List Nat} {S : Subst} (h : RecSpecs.PendingSeeds base ctx specs done)
+    (hdone : ∀ member ∈ done, member ∈ done')
+    (havoid : ∀ member τ, specs[member]? = some (.mono τ) → member ∉ done' →
+      (∀ p ∈ S, base + member ∉ p.2.freeVars) ∧ base + member ∉ S.map Prod.fst) :
+    RecSpecs.PendingSeeds base (S.onCtx ctx) (specs.map (RecSpec.onSubst S)) done' := by
+  constructor
+  · intro member τ hτ hm
+    obtain ⟨t, ht, rfl⟩ := RecSpec.mono_getElem?_map_onSubst hτ
+    rw [h.mono member t ht (fun hc => hm (hdone member hc))]
+    apply Ty.substFvars_eq_self_of_no_key
+    intro p hp hc
+    apply (havoid member t ht hm).2
+    apply List.mem_map.mpr
+    refine ⟨p, hp, ?_⟩
+    simpa only [Ty.freeVars, List.mem_singleton] using hc
+  · intro member τ hτ hm j s hs hj
+    obtain ⟨t, ht, _⟩ := RecSpec.mono_getElem?_map_onSubst hτ
+    rw [List.getElem?_map] at hs
+    obtain ⟨old,hold,rfl⟩ := Option.map_eq_some_iff.mp hs
+    exact RecSpec.notMem_freeVars_onSubst (havoid member t ht hm).1
+      (h.other member t ht (fun hc => hm (hdone member hc)) j old hold hj)
+  · intro member τ hτ hm
+    obtain ⟨t, ht, _⟩ := RecSpec.mono_getElem?_map_onSubst hτ
+    exact Subst.onCtx_avoid (h.env member t ht (fun hc => hm (hdone member hc)))
+      (havoid member t ht hm).1
+
+theorem RecSpecs.PendingSeeds.init {base : Nat} {ctx : Ctx} {anns : List (Option PolyTy)}
+    (hctx : CtxBelow base ctx)
+    (hanns : ∀ σ, some σ ∈ anns → Ty.BelowFvars base σ.body) :
+    RecSpecs.PendingSeeds base ctx (RecSpec.init base anns) [] := by
+  have hmono {member : Nat} {τ : Ty} (ht : (RecSpec.init base anns)[member]? = some (.mono τ)) :
+      τ = .fvar (base + member) := by
+    rw [RecSpec.init_getElem?] at ht
+    cases ha : anns[member]? with
+    | none => simp [ha] at ht
+    | some ann =>
+      cases ann with
+      | some σ => simp [ha] at ht
+      | none => simpa only [ha, Option.map_some, Option.some.injEq, RecSpec.mono.injEq] using ht.symm
+  constructor
+  · intro member τ ht _; exact hmono ht
+  · intro member τ ht _ j s hs hj
+    rw [RecSpec.init_getElem?] at hs
+    cases ha : anns[j]? with
+    | none => simp [ha] at hs
+    | some ann =>
+      cases ann with
+      | none =>
+        simp only [ha, Option.map_some, Option.some.injEq] at hs
+        subst s
+        simp only [RecSpec.freeVars, Ty.freeVars, List.mem_singleton]
+        omega
+      | some σ =>
+        simp only [ha, Option.map_some, Option.some.injEq] at hs
+        subst s
+        intro hc
+        have := Ty.BelowFvars.mem_lt (hanns σ (List.mem_of_getElem? ha)) _ hc
+        omega
+  · intro member τ ht _ M hM hc
+    have := Ty.BelowFvars.mem_lt (hctx M hM) _ hc
+    omega
+
+theorem Expr.ForallOuter.of_recGroupRefs_with_outer {P : Nat → Prop} {e : Expr} {n depth : Nat}
+    (hrefs : ∀ i ∈ e.recGroupRefs n depth, P i) (houter : ∀ i, n ≤ i → P i) :
+    e.ForallOuter P depth := by
+  apply (Expr.ForallOuter.of_recGroupRefs hrefs).mono
+  intro i hi
+  by_cases hlt : i < n
+  · exact hi hlt
+  · exact houter i (by omega)
+
+theorem RecSpecs.PendingSeeds.stage_lookupAvoid_other {base : Nat} {ctx : Ctx}
+    {specs : List RecSpec} {done G : List Nat} (h : RecSpecs.PendingSeeds base ctx specs done)
+    {member : Nat} {τ : Ty} (ht : specs[member]? = some (.mono τ)) (hm : member ∉ done)
+    {i : Nat} (hi : i ≠ member) :
+    ∀ M, (RecSpecs.algorithmStageCtx ctx specs done G).env[i]? = some M →
+      base + member ∉ M.body.freeVars := by
+  intro M hM
+  by_cases hil : i < specs.length
+  · rw [RecSpecs.algorithmStageCtx, List.getElem?_append_left (by simpa using hil),
+      List.getElem?_mapIdx] at hM
+    obtain ⟨s, hs, heq⟩ := Option.map_eq_some_iff.mp hM
+    subst M
+    exact fun hc => h.other member τ ht hm i s hs hi
+      (RecSpec.algorithmStageEntry_freeVars_subset hc)
+  · rw [RecSpecs.algorithmStageCtx, List.getElem?_append_right
+      (by simp only [List.length_mapIdx]; omega)] at hM
+    exact h.env member τ ht hm M (List.mem_of_getElem? hM)
+
+theorem RecSpecs.PendingSeeds.stage_lookupAvoid_of_no_ref {base : Nat} {ctx : Ctx}
+    {specs : List RecSpec} {done G : List Nat} (h : RecSpecs.PendingSeeds base ctx specs done)
+    {member : Nat} {τ : Ty} (ht : specs[member]? = some (.mono τ)) (hm : member ∉ done)
+    {rhs : Expr} (href : member ∉ rhs.recGroupRefs specs.length 0) :
+    rhs.ForallOuter (fun i => ∀ M,
+      (RecSpecs.algorithmStageCtx ctx specs done G).env[i]? = some M →
+      base + member ∉ M.body.freeVars) 0 := by
+  apply Expr.ForallOuter.of_recGroupRefs_with_outer
+    (n := specs.length)
+  · intro i hi
+    apply h.stage_lookupAvoid_other ht hm
+    exact fun heq => href (heq ▸ hi)
+  · intro i hi
+    apply h.stage_lookupAvoid_other ht hm
+    have hmlt := (List.getElem?_eq_some_iff.mp ht).1
+    omega
+
 theorem InferRecStrata.pool_nodup {rigid bindings Φ ctx specs done G groups Φ' S specs' G'}
     (h : InferRecStrata rigid bindings Φ ctx specs done G groups Φ' S specs' G')
     (hG : G.Nodup) : G'.Nodup := by
