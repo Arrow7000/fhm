@@ -3181,6 +3181,151 @@ private theorem getElem_mem_zip {α β : Type _} {as : List α} {bs : List β}
     omega
   · rw [List.getElem_zip]
 
+/-! ### Residual-partition comparison
+
+The declarative rule accepts any dependency-first partition, whereas inference
+uses the canonical fine SCC partition.  The following lemmas are the small
+graph-theoretic bridge needed by completeness: a valid partition assigns every
+unsigned member a unique stage, graph reachability can only move to an earlier
+stage, and consequently a canonical SCC cannot be split by a declarative
+partition. -/
+
+private theorem RecGroups.ValidResidualGroups.stage_unique
+    {anns : List (Option PolyTy)} {bindings : List Expr}
+    {groups : List (List Nat)}
+    (h : RecGroups.ValidResidualGroups anns bindings groups)
+    {leftStage rightStage member : Nat} {left right : List Nat}
+    (hleft : groups[leftStage]? = some left)
+    (hright : groups[rightStage]? = some right)
+    (hmemLeft : member ∈ left) (hmemRight : member ∈ right) :
+    leftStage = rightStage := by
+  have hleftBound := (List.getElem?_eq_some_iff.mp hleft).1
+  have hrightBound := (List.getElem?_eq_some_iff.mp hright).1
+  rcases lt_trichotomy leftStage rightStage with hlt | heq | hgt
+  · have hdisjoint := (List.pairwise_iff_getElem.mp
+      (List.nodup_flatten.mp h.flatten_nodup).2)
+      leftStage rightStage hleftBound hrightBound hlt
+    rw [(List.getElem?_eq_some_iff.mp hleft).2,
+      (List.getElem?_eq_some_iff.mp hright).2] at hdisjoint
+    exact (List.disjoint_left.mp hdisjoint hmemLeft hmemRight).elim
+  · exact heq
+  · have hdisjoint := (List.pairwise_iff_getElem.mp
+      (List.nodup_flatten.mp h.flatten_nodup).2)
+      rightStage leftStage hrightBound hleftBound hgt
+    rw [(List.getElem?_eq_some_iff.mp hright).2,
+      (List.getElem?_eq_some_iff.mp hleft).2] at hdisjoint
+    exact (List.disjoint_left.mp hdisjoint hmemRight hmemLeft).elim
+
+private theorem RecGroups.ValidResidualGroups.stage_of_unsigned
+    {anns : List (Option PolyTy)} {bindings : List Expr}
+    {groups : List (List Nat)}
+    (h : RecGroups.ValidResidualGroups anns bindings groups)
+    {member : Nat} (hbound : member < bindings.length)
+    (hunsigned : RecGroups.UnsignedAt anns member) :
+    ∃ (stage : Nat) (component : List Nat),
+      groups[stage]? = some component ∧ member ∈ component := by
+  have hflat : member ∈ groups.flatten :=
+    (h.covers_unsigned member hbound).2 hunsigned
+  obtain ⟨component, hcomponent, hmember⟩ := List.mem_flatten.mp hflat
+  obtain ⟨stage, hstage, heq⟩ := List.mem_iff_getElem.mp hcomponent
+  exact ⟨stage, component, by rw [List.getElem?_eq_getElem hstage, heq], hmember⟩
+
+private theorem RecGroups.ValidResidualGroups.edge_stage_le
+    {anns : List (Option PolyTy)} {bindings : List Expr}
+    {groups : List (List Nat)}
+    (h : RecGroups.ValidResidualGroups anns bindings groups)
+    {sourceStage targetStage source target : Nat}
+    {sourceComponent targetComponent : List Nat}
+    (hsourceComponent : groups[sourceStage]? = some sourceComponent)
+    (htargetComponent : groups[targetStage]? = some targetComponent)
+    (hsource : source ∈ sourceComponent) (htarget : target ∈ targetComponent)
+    (hsourceBound : source < bindings.length)
+    (htargetBound : target < bindings.length)
+    (hedge : (⟨target, htargetBound⟩ : Fin bindings.length) ∈
+      (RecGroup.inferenceDigraph anns bindings).succ ⟨source, hsourceBound⟩) :
+    targetStage ≤ sourceStage := by
+  have hsourceUnsigned : RecGroups.UnsignedAt anns source :=
+    (h.covers_unsigned source hsourceBound).1
+      (List.mem_flatten.mpr ⟨sourceComponent,
+        List.mem_of_getElem? hsourceComponent, hsource⟩)
+  have hsourceBool := (RecGroup.isUnsignedAt_eq_true_iff anns source).2
+    hsourceUnsigned
+  have hedge' := (RecGroup.mem_inferenceDigraph_succ_iff
+    (⟨source, hsourceBound⟩ : Fin bindings.length)
+    ⟨target, htargetBound⟩).1 hedge
+  have hrhs : bindings[source]? = some bindings[source] :=
+    List.getElem?_eq_getElem hsourceBound
+  simp only [RecGroup.inferenceSucc, hsourceBool, if_true, hrhs,
+    List.mem_filter] at hedge'
+  exact h.dependencies_first hsourceComponent htargetComponent
+    hsource htarget hrhs hedge'.1
+
+private theorem RecGroups.ValidResidualGroups.reach_stage_le
+    {anns : List (Option PolyTy)} {bindings : List Expr}
+    {groups : List (List Nat)}
+    (h : RecGroups.ValidResidualGroups anns bindings groups)
+    {source target : Fin bindings.length}
+    (hreach : Scc.Reach (RecGroup.inferenceDigraph anns bindings) source target)
+    {sourceStage targetStage : Nat} {sourceComponent targetComponent : List Nat}
+    (hsourceComponent : groups[sourceStage]? = some sourceComponent)
+    (htargetComponent : groups[targetStage]? = some targetComponent)
+    (hsource : source.val ∈ sourceComponent)
+    (htarget : target.val ∈ targetComponent) :
+    targetStage ≤ sourceStage := by
+  induction hreach generalizing sourceStage sourceComponent with
+  | refl =>
+      exact Nat.le_of_eq (h.stage_unique hsourceComponent htargetComponent hsource htarget).symm
+  | @tail source middle target hedge htail ih =>
+      have hedge' := (RecGroup.mem_inferenceDigraph_succ_iff source middle).1 hedge
+      have hsourceUnsigned : RecGroups.UnsignedAt anns source.val :=
+        (h.covers_unsigned source.val source.isLt).1
+          (List.mem_flatten.mpr ⟨sourceComponent,
+            List.mem_of_getElem? hsourceComponent, hsource⟩)
+      have hsourceBool := (RecGroup.isUnsignedAt_eq_true_iff anns source.val).2
+        hsourceUnsigned
+      have hrhs : bindings[source.val]? = some bindings[source.val] :=
+        List.getElem?_eq_getElem source.isLt
+      simp only [RecGroup.inferenceSucc, hsourceBool, if_true, hrhs,
+        List.mem_filter] at hedge'
+      have hmiddleUnsigned : RecGroups.UnsignedAt anns middle.val :=
+        (RecGroup.isUnsignedAt_eq_true_iff anns middle.val).1 hedge'.2
+      obtain ⟨middleStage, middleComponent, hmiddleComponent, hmiddle⟩ :=
+        h.stage_of_unsigned middle.isLt hmiddleUnsigned
+      have hstep : middleStage ≤ sourceStage :=
+        h.edge_stage_le hsourceComponent hmiddleComponent hsource hmiddle
+          source.isLt middle.isLt hedge
+      exact Nat.le_trans (ih hmiddleComponent hmiddle htarget) hstep
+
+private theorem RecGroups.ValidResidualGroups.same_inference_component_stage
+    {anns : List (Option PolyTy)} {bindings : List Expr}
+    {groups : List (List Nat)}
+    (h : RecGroups.ValidResidualGroups anns bindings groups)
+    {algorithmStage : Nat} {algorithmComponent : List Nat}
+    (halgorithm : (RecGroup.inferenceSccs anns bindings)[algorithmStage]? =
+      some algorithmComponent)
+    {left right leftStage rightStage : Nat}
+    {leftComponent rightComponent : List Nat}
+    (hleft : left ∈ algorithmComponent) (hright : right ∈ algorithmComponent)
+    (hleftComponent : groups[leftStage]? = some leftComponent)
+    (hrightComponent : groups[rightStage]? = some rightComponent)
+    (hleftDecl : left ∈ leftComponent) (hrightDecl : right ∈ rightComponent) :
+    leftStage = rightStage := by
+  have hleftBound : left < bindings.length := by
+    apply (RecGroup.inferenceSccs_valid h.length).bounded left
+    exact List.mem_flatten.mpr ⟨algorithmComponent,
+      List.mem_of_getElem? halgorithm, hleft⟩
+  have hrightBound : right < bindings.length := by
+    apply (RecGroup.inferenceSccs_valid h.length).bounded right
+    exact List.mem_flatten.mpr ⟨algorithmComponent,
+      List.mem_of_getElem? halgorithm, hright⟩
+  have hmutual := RecGroup.inferenceSccs_sameScc anns bindings halgorithm
+    hleft hright hleftBound hrightBound
+  have hrl := h.reach_stage_le hmutual.1 hleftComponent hrightComponent
+    hleftDecl hrightDecl
+  have hlr := h.reach_stage_le hmutual.2 hrightComponent hleftComponent
+    hrightDecl hleftDecl
+  omega
+
 /-- Pointwise erased agreement on a type's actual free variables is enough to
     transport that type.  This is the finite-support counterpart of
     `Subst.onTy_congr`, used below because a ceiling step only promises
