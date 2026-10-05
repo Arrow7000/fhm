@@ -2119,6 +2119,43 @@ def InferRecGroup.Principal {Φ₀ Φ : Nat} {ctx : Ctx} {bindings : List Expr}
     ∃ R : Subst, (∀ p ∈ R, p.2.IsLC) ∧ (∀ k ∈ K, R.onTy (.fvar k) = .fvar k) ∧
       Subst.AgreesBelow Φ₀ S₀ (S ++ R) ∧ Subst.AgreesBelow Φ R₀ (S ++ R)
 
+/-- Positional declarative targets for one residual inference component.
+    `memberIndex` is the original recursive-group coordinate of the aligned
+    list heads.  Only positions selected by `members` carry an obligation;
+    skipped unsigned positions and every signed position remain present solely
+    to preserve de Bruijn coordinates. -/
+def RecSpecs.ComponentMonoTyped (TypeOf : Ctx → Expr → Ty → Prop) (ctx : Ctx)
+    (members : List Nat) (memberIndex : Nat) (bindings : List Expr)
+    (specs : List RecSpec) : Prop :=
+  ∀ j rhs τ,
+    bindings[j]? = some rhs → specs[j]? = some (.mono τ) →
+    memberIndex + j ∈ members → TypeOf ctx rhs τ
+
+/-- Principality for one selected residual SCC.  This is the positional
+    analogue of `InferRecGroup.Principal`: a selected member is compared with
+    its declarative monotype, while skipped members merely advance the original
+    group index.  The two agreement conclusions respectively compose with the
+    enclosing expression and thread the current stratum residual. -/
+def InferRecComponent.Principal {Φ₀ Φ : Nat} {ctx : Ctx} {members : List Nat}
+    {memberIndex : Nat} {bindings : List Expr} {specs : List RecSpec}
+    {Φ' : Nat} {S : Subst}
+    (_h : InferRecComponent members memberIndex Φ ctx bindings specs Φ' S)
+    (hle : Φ₀ ≤ Φ) : Prop :=
+  CtxWF ctx → CtxBelow Φ ctx →
+  ∀ (S₀ : Subst) (K : List Nat) (R₀ : Subst),
+    (∀ p ∈ S₀, p.2.IsLC) → (∀ k ∈ K, k < Φ₀) →
+    (∀ y ∈ Expr.tyFreeVars.RecGroup.tyFreeVars bindings, y ∈ K) →
+    (∀ k ∈ K, S₀.onTy (.fvar k) = .fvar k) →
+    (∀ s ∈ specs, RecSpec.LC s) →
+    (∀ s ∈ specs, ∀ τ, s = RecSpec.mono τ → Ty.BelowFvars Φ τ) →
+    (∀ s ∈ specs, ∀ σ, s = RecSpec.poly σ → ∀ y ∈ σ.body.freeVars, y ∈ K) →
+    (∀ p ∈ R₀, p.2.IsLC) → (∀ k ∈ K, R₀.onTy (.fvar k) = .fvar k) →
+    (∀ v, v < Φ₀ → R₀.onTy (.fvar v) = S₀.onTy (.fvar v)) →
+    RecSpecs.ComponentMonoTyped TypeOfHM (R₀.onCtx ctx) members memberIndex
+      bindings specs →
+    ∃ R : Subst, (∀ p ∈ R, p.2.IsLC) ∧ (∀ k ∈ K, R.onTy (.fvar k) = .fvar k) ∧
+      Subst.AgreesBelow Φ₀ S₀ (S ++ R) ∧ Subst.AgreesBelow Φ R₀ (S ++ R)
+
 /-- Principality for the signed recursive-group checking phase.  Unsigned
     members are skipped; signed members are checked at their declared schemes
     under the final recursive environment. -/
