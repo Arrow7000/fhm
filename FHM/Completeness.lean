@@ -14053,6 +14053,92 @@ theorem InferRecGroupPoly.principal {Φ : Nat} {ctx : Ctx} {bindings : List Expr
   exact (Infer.principals_mut (Expr.sizeRecGroup bindings + 1)).2.2.2 h
     (Nat.le_refl Φ) (Nat.lt_succ_self _) hwf hbelow hwf hbelow
 
+/-- The residual-component worker is the legacy mixed worker over the
+    positional component mask, up to metadata packaging.  In particular,
+    success of the latter transfers to the former. -/
+private theorem inferRecComponentWithTypesCore_isSome_of_masked
+    {K members : List Nat} {memberIndex Φ : Nat} {ctx : Ctx}
+    {bindings : List Expr} {specs : List RecSpec}
+    (h : (inferRecGroupWithTypesCore K Φ ctx memberIndex bindings
+      (RecSpecs.selectComponent members memberIndex specs)).isSome) :
+    (inferRecComponentWithTypesCore K members memberIndex Φ ctx bindings specs).isSome := by
+  induction bindings generalizing specs memberIndex Φ ctx with
+  | nil =>
+      cases specs with
+      | nil => simp [inferRecComponentWithTypesCore]
+      | cons spec specs =>
+          cases spec <;>
+            simp [RecSpecs.selectComponent, inferRecGroupWithTypesCore] at h
+  | cons e rest ih =>
+      cases specs with
+      | nil => simp [RecSpecs.selectComponent, inferRecGroupWithTypesCore] at h
+      | cons spec specs =>
+          cases spec with
+          | mono τ =>
+              by_cases hm : memberIndex ∈ members
+              · rw [inferRecComponentWithTypesCore, dif_pos hm]
+                rw [RecSpecs.selectComponent, if_pos hm,
+                  inferRecGroupWithTypesCore] at h
+                cases he : inferWithTypesCore K Φ ctx e with
+                | none => simp [he] at h
+                | some outE =>
+                    rcases outE with ⟨⟨Φe, Se, τe, eTypes, eSchemes⟩, heRel, heK⟩
+                    with_unfolding_all simp only [he] at h
+                    cases hu : unifyCoreK K τe (Se.onTy τ) with
+                    | none => simp [hu] at h
+                    | some outU =>
+                        rcases outU with ⟨Su, huRel, huK⟩
+                        with_unfolding_all simp only [hu] at h
+                        have htRaw : (inferRecGroupWithTypesCore K Φe
+                            (Su.onCtx (Se.onCtx ctx)) (memberIndex + 1) rest
+                            ((RecSpecs.selectComponent members (memberIndex + 1) specs).map
+                              (RecSpec.onSubst (Se ++ Su)))).isSome := by
+                          cases ho : inferRecGroupWithTypesCore K Φe
+                              (Su.onCtx (Se.onCtx ctx)) (memberIndex + 1) rest
+                              ((RecSpecs.selectComponent members (memberIndex + 1) specs).map
+                                (RecSpec.onSubst (Se ++ Su))) with
+                          | none => simp [ho] at h
+                          | some out => simp [ho]
+                        have ht : (inferRecGroupWithTypesCore K Φe
+                            (Su.onCtx (Se.onCtx ctx)) (memberIndex + 1) rest
+                            (RecSpecs.selectComponent members (memberIndex + 1)
+                              (specs.map (RecSpec.onSubst (Se ++ Su))))).isSome := by
+                          rw [RecSpecs.selectComponent_onSubst]
+                          exact htRaw
+                        have hn := ih (specs := specs.map (RecSpec.onSubst (Se ++ Su)))
+                          (memberIndex := memberIndex + 1) (Φ := Φe)
+                          (ctx := Su.onCtx (Se.onCtx ctx)) ht
+                        obtain ⟨out, hout⟩ := Option.isSome_iff_exists.mp hn
+                        simp [he, hu, hout]
+              · rw [inferRecComponentWithTypesCore, dif_neg hm]
+                rw [RecSpecs.selectComponent, if_neg hm,
+                  inferRecGroupWithTypesCore] at h
+                have ht : (inferRecGroupWithTypesCore K Φ ctx (memberIndex + 1)
+                    rest (RecSpecs.selectComponent members (memberIndex + 1) specs)).isSome := by
+                  cases ho : inferRecGroupWithTypesCore K Φ ctx (memberIndex + 1)
+                      rest (RecSpecs.selectComponent members (memberIndex + 1) specs) with
+                  | none => simp [ho] at h
+                  | some out => simp [ho]
+                have hn := ih (specs := specs) (memberIndex := memberIndex + 1)
+                  (Φ := Φ) (ctx := ctx) ht
+                obtain ⟨out, hout⟩ := Option.isSome_iff_exists.mp hn
+                rcases out with ⟨tail, htail, hav⟩
+                simp [hout]
+          | poly σ =>
+              rw [inferRecComponentWithTypesCore]
+              rw [RecSpecs.selectComponent, inferRecGroupWithTypesCore] at h
+              have ht : (inferRecGroupWithTypesCore K Φ ctx (memberIndex + 1)
+                  rest (RecSpecs.selectComponent members (memberIndex + 1) specs)).isSome := by
+                cases ho : inferRecGroupWithTypesCore K Φ ctx (memberIndex + 1)
+                    rest (RecSpecs.selectComponent members (memberIndex + 1) specs) with
+                | none => simp [ho] at h
+                | some out => simp [ho]
+              have hn := ih (specs := specs) (memberIndex := memberIndex + 1)
+                (Φ := Φ) (ctx := ctx) ht
+              obtain ⟨out, hout⟩ := Option.isSome_iff_exists.mp hn
+              rcases out with ⟨tail, htail, hav⟩
+              simp [hout]
+
 private theorem poly_worker_isSome_of_let {K : List Nat} {Φ memberIndex : Nat}
     {ctx : Ctx} {e : Expr} {σ : PolyTy}
     (h : (inferWithTypesCore K Φ ctx (.letIn (some σ) e (.primLit .unit))).isSome) :
