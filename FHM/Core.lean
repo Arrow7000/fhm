@@ -3078,14 +3078,15 @@ inductive TypeOfHM : Ctx → Expr → Ty → Prop
     (∀ branch ∈ branches, TypeOfMatchBranch ctx branch scrutTy resultTy) →
     TypeOfHM ctx (.match_ scrutinee branches) resultTy
 
-  /-- Mixed recursive group. Unannotated members share one monotype while the
-      unsigned sub-group is inferred. Completely annotated members are
-      dependency cuts. First the ordinary members are solved under the initial
-      mixed environment and generalised; then signed RHSs are checked at every
-      fresh rigid opening under the final scheme environment. -/
-  | letRec {specs : List RecSpec} {G L : List Nat} :
+  /-- Mixed recursive group. Completely annotated members are dependency cuts.
+      The residual graph of unannotated members is partitioned into
+      dependency-first components; each component is checked monomorphically
+      while earlier components are already generalized. Signed RHSs are then
+      checked at every fresh rigid opening under the final scheme environment. -/
+  | letRec {specs : List RecSpec} {groups : List (List Nat)} {G L : List Nat} :
+    RecGroups.ValidResidualGroups anns bindings groups →
     RecSpecs.WF anns bindings specs G →
-    RecSpecs.MonoTyped TypeOfHM ctx bindings specs G L →
+    RecSpecs.StratifiedMonoTyped TypeOfHM ctx bindings specs groups G L →
     RecSpecs.PolyTypedFinal TypeOfHM ctx bindings specs G L →
     bodyCtx = RecSpecs.bodyCtx ctx specs G →
     TypeOfHM bodyCtx body ρ →
