@@ -7025,6 +7025,24 @@ theorem Expr.ForallOuter.lookupAvoid_onSubst {e : Expr} {depth w : Nat}
     subst M
     simpa only [Subst.onPolyTy] using Subst.notMemOnTy hS (hi M₀ hlookup)
 
+/-- Extend lookup-only avoidance under a prefix whose entries avoid `w`. -/
+theorem Expr.ForallOuter.lookupAvoid_prepend {e : Expr} {depth w : Nat}
+    {env pre : Env}
+    (h : e.ForallOuter
+      (fun i => ∀ M, env[i]? = some M → w ∉ M.body.freeVars)
+      (depth + pre.length))
+    (hpre : ∀ M ∈ pre, w ∉ M.body.freeVars) :
+    e.ForallOuter
+      (fun i => ∀ M, (pre ++ env)[i]? = some M → w ∉ M.body.freeVars)
+      depth := by
+  apply h.prepend
+  · intro i hi M hM
+    rw [List.getElem?_append_left hi] at hM
+    exact hpre M (List.mem_of_getElem? hM)
+  · intro i hi M hM
+    rw [List.getElem?_append_right (by omega)] at hM
+    exact hi M (by simpa using hM)
+
 /-- Component locality needs only the monotype targets selected for this
     component. The inference premise is phrased as a reusable source-sensitive
     single-expression locality rule. -/
