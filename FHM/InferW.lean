@@ -1358,60 +1358,6 @@ theorem RecCeilingConstraints.fixes_annotations {K rigid G Φ anns specs S}
   intro p hp hfv
   exact (h.dom_avoids p hp).2.1 (h.annotation_fv_rigid σ hσ p.1 hfv)
 
-/-! ### Residual-SCC recursive inference relations
-
-These relations are parameterised by the ambient expression-inference
-relation. This lets the main `Infer` rule recurse through component RHSs without
-adding another mutually generated recursor to every existing proof. -/
-
-abbrev InferRelation := Nat → Ctx → Expr → Nat → Subst → Ty → Prop
-
-/-- Infer exactly one residual component, retaining original member positions.
-Unselected monomorphic members and every annotated member are skipped. -/
-inductive InferRecComponent (InferExpr : InferRelation) (members : List Nat) :
-    Nat → Nat → Ctx → List Expr → List RecSpec → Nat → Subst → Prop
-  | nil {memberIndex Φ ctx} :
-      InferRecComponent InferExpr members memberIndex Φ ctx [] [] Φ []
-  | consSelected {memberIndex Φ ctx e rest τ specs Φ₁ Φ₂ S₁ S₂ S₃ τ'} :
-      memberIndex ∈ members →
-      InferExpr Φ ctx e Φ₁ S₁ τ' →
-      UnifyRel τ' (S₁.onTy τ) S₂ →
-      InferRecComponent InferExpr members (memberIndex + 1) Φ₁
-        (S₂.onCtx (S₁.onCtx ctx)) rest
-        (specs.map (RecSpec.onSubst (S₁ ++ S₂))) Φ₂ S₃ →
-      InferRecComponent InferExpr members memberIndex Φ ctx
-        (e :: rest) (.mono τ :: specs) Φ₂ (S₁ ++ S₂ ++ S₃)
-  | skipMono {memberIndex Φ ctx e rest τ specs Φ' S} :
-      memberIndex ∉ members →
-      InferRecComponent InferExpr members (memberIndex + 1) Φ ctx rest specs Φ' S →
-      InferRecComponent InferExpr members memberIndex Φ ctx
-        (e :: rest) (.mono τ :: specs) Φ' S
-  | skipPoly {memberIndex Φ ctx e rest σ specs Φ' S} :
-      InferRecComponent InferExpr members (memberIndex + 1) Φ ctx rest specs Φ' S →
-      InferRecComponent InferExpr members memberIndex Φ ctx
-        (e :: rest) (.poly σ :: specs) Φ' S
-
-/-- Process residual components dependency-first. `done` records completed
-member indices and `G` the frozen aggregate generalisation pool. -/
-inductive InferRecStrata (InferExpr : InferRelation) (rigid : List Nat)
-    (bindings : List Expr) :
-    Nat → Ctx → List RecSpec → List Nat → List Nat → List (List Nat) →
-      Nat → Subst → List RecSpec → List Nat → Prop
-  | nil { Φ ctx specs done G } :
-      InferRecStrata InferExpr rigid bindings Φ ctx specs done G [] Φ [] specs G
-  | cons { Φ ctx specs done G component rest Φ₁ Φ₂ S₁ S₂ specs₁ specs₂ Gcurrent Gfinal } :
-      InferRecComponent InferExpr component 0 Φ
-        (RecSpecs.algorithmStageCtx ctx specs done G)
-        bindings specs Φ₁ S₁ →
-      specs₁ = specs.map (RecSpec.onSubst S₁) →
-      Gcurrent = genGroupVars (rigid ++ G)
-        (RecSpecs.generalizationCtx (S₁.onCtx ctx) specs₁ done G).env
-        (RecSpecs.monoTysAt specs₁ component) →
-      InferRecStrata InferExpr rigid bindings Φ₁ (S₁.onCtx ctx) specs₁
-        (done ++ component) (G ++ Gcurrent) rest Φ₂ S₂ specs₂ Gfinal →
-      InferRecStrata InferExpr rigid bindings Φ ctx specs done G
-        (component :: rest) Φ₂ (S₁ ++ S₂) specs₂ Gfinal
-
 /-! Algorithm W as a type-directed inference relation over the source `Expr`.
     Its outputs are only the fresh-variable frontier, substitution, and inferred
     monotype; runtime execution uses the independently defined erased source term.
@@ -1499,14 +1445,10 @@ inductive Infer : Nat → Ctx → Expr → Nat → Subst → Ty → Prop
       body under that same final environment. -/
   | letRec {Φ ctx anns bindings body Φ₁ Φ₂ Φ₃ S₁ S₂ S₃ τ₃ G specs1 specs2} :
     (∀ σ, some σ ∈ anns → σ.WF) →
-    InferRecGroup (Φ + bindings.length)
-        { ctx with env := (RecSpec.init Φ anns).map (RecSpec.rhsEntry [] []) ++ ctx.env }
-        bindings
-        (RecSpec.init Φ anns)
-        Φ₁ S₁ →
-    specs1 = (RecSpec.init Φ anns).map (RecSpec.onSubst S₁) →
-    G = genGroupVars (RecGroup.rigidVars anns bindings) (S₁.onCtx ctx).env
-      (RecSpecs.monoTys specs1) →
+    RecGroups.ValidResidualGroups anns bindings (RecGroup.inferenceSccs anns bindings) →
+    InferRecStrata (RecGroup.rigidVars anns bindings) bindings
+      (Φ + bindings.length) ctx (RecSpec.init Φ anns) [] []
+      (RecGroup.inferenceSccs anns bindings) Φ₁ S₁ specs1 G →
     InferRecGroupPoly Φ₁
       { (S₁.onCtx ctx) with
         env := specs1.map (RecSpec.bodyScheme G) ++ (S₁.onCtx ctx).env }
@@ -1551,6 +1493,52 @@ inductive InferBranches :
     InferBranches Φ₁ (S₂.onCtx (S₁.onCtx ctx))
       (S₂.onTy (S₁.onTy scrutTy)) (S₂.onTy (S₁.onTy ρ)) rest Φ₂ S₃ →
     InferBranches Φ ctx scrutTy ρ ((.wildcard, body) :: rest) Φ₂ (S₁ ++ S₂ ++ S₃)
+
+/-- Infer exactly one residual component, retaining original member positions.
+    Unselected monomorphic members and every annotated member are skipped. -/
+inductive InferRecComponent :
+    List Nat → Nat → Nat → Ctx → List Expr → List RecSpec → Nat → Subst → Prop
+  | nil {members memberIndex Φ ctx} :
+      InferRecComponent members memberIndex Φ ctx [] [] Φ []
+  | consSelected {members memberIndex Φ ctx e rest τ specs Φ₁ Φ₂ S₁ S₂ S₃ τ'} :
+      memberIndex ∈ members →
+      Infer Φ ctx e Φ₁ S₁ τ' →
+      UnifyRel τ' (S₁.onTy τ) S₂ →
+      InferRecComponent members (memberIndex + 1) Φ₁
+        (S₂.onCtx (S₁.onCtx ctx)) rest
+        (specs.map (RecSpec.onSubst (S₁ ++ S₂))) Φ₂ S₃ →
+      InferRecComponent members memberIndex Φ ctx
+        (e :: rest) (.mono τ :: specs) Φ₂ (S₁ ++ S₂ ++ S₃)
+  | skipMono {members memberIndex Φ ctx e rest τ specs Φ' S} :
+      memberIndex ∉ members →
+      InferRecComponent members (memberIndex + 1) Φ ctx rest specs Φ' S →
+      InferRecComponent members memberIndex Φ ctx
+        (e :: rest) (.mono τ :: specs) Φ' S
+  | skipPoly {members memberIndex Φ ctx e rest σ specs Φ' S} :
+      InferRecComponent members (memberIndex + 1) Φ ctx rest specs Φ' S →
+      InferRecComponent members memberIndex Φ ctx
+        (e :: rest) (.poly σ :: specs) Φ' S
+
+/-- Process residual components dependency-first. `done` records completed
+    member indices and `G` the frozen aggregate generalisation pool. -/
+inductive InferRecStrata :
+    List Nat → List Expr → Nat → Ctx → List RecSpec → List Nat → List Nat → List (List Nat) →
+      Nat → Subst → List RecSpec → List Nat → Prop
+  | nil { rigid bindings Φ ctx specs done G } :
+      InferRecStrata rigid bindings Φ ctx specs done G [] Φ [] specs G
+  | cons { rigid bindings Φ ctx specs done G component rest Φ₁ Φ₂ S₁ S₂ specs₁ specs₂
+      Gcurrent Gfinal } :
+      InferRecComponent component 0 Φ
+        (RecSpecs.algorithmStageCtx ctx specs done G)
+        bindings specs Φ₁ S₁ →
+      specs₁ = specs.map (RecSpec.onSubst S₁) →
+      Gcurrent = genGroupVars (rigid ++ G)
+        (RecSpecs.generalizationCtx (S₁.onCtx ctx) specs₁ done G).env
+        (RecSpecs.monoTysAt specs₁ component) →
+      InferRecStrata rigid bindings Φ₁ (S₁.onCtx ctx) specs₁
+        (done ++ component) (G ++ Gcurrent) rest Φ₂ S₂ specs₂ Gfinal →
+      InferRecStrata rigid bindings Φ ctx specs done G
+        (component :: rest) Φ₂ (S₁ ++ S₂) specs₂ Gfinal
 
 /-- First contract-stratified phase: solve unsigned members and skip signed
     ones while walking the original aligned lists. -/
@@ -11352,6 +11340,23 @@ the output (soundness by construction);
 recursion is structural on the expression / branch list. The `match_` case reads
 the type name + arity off the first branch's constructor (branches are nonempty).
 The public `infer` erases the derivation. -/
+
+/-- Executable output of one residual recursive component. -/
+structure InferRecComponentOutput where
+  frontier : Nat
+  subst : Subst
+  nodeTypes : InferredNodeTypes
+  binderSchemes : InferredBinderSchemes
+
+/-- Executable output of the dependency-first residual-component pass. -/
+structure InferRecStrataOutput where
+  frontier : Nat
+  subst : Subst
+  specs : List RecSpec
+  genVars : List Nat
+  nodeTypes : InferredNodeTypes
+  binderSchemes : InferredBinderSchemes
+
 mutual
 def inferWithTypesCore (K : List Nat) (Φ : Nat) (ctx : Ctx) (e : Expr) :
     Option { r : Nat × Subst × Ty × InferredNodeTypes × InferredBinderSchemes //
@@ -11541,47 +11546,51 @@ def inferWithTypesCore (K : List Nat) (Φ : Nat) (ctx : Ctx) (e : Expr) :
       -- Complete signatures are dependency cuts: solve unsigned members,
       -- generalise them, then check signed members under the final schemes.
       if hwf : (∀ a ∈ anns, ∀ σ, a = some σ → Ty.bvarsBelow σ.paramCount σ.body = true) then
-        match inferRecGroupWithTypesCore K (Φ + bindings.length)
-            { ctx with env := (RecSpec.init Φ anns).map (RecSpec.rhsEntry [] []) ++ ctx.env }
-            0 bindings (RecSpec.init Φ anns) with
-        | none => none
-        | some ⟨(Φ₁, S₁, monoTypes, monoSchemes), hgroup, hav₁⟩ =>
-          let specs1 := (RecSpec.init Φ anns).map (RecSpec.onSubst S₁)
-          let G := genGroupVars (RecGroup.rigidVars anns bindings) (S₁.onCtx ctx).env
-                     (RecSpecs.monoTys specs1)
-          match inferRecGroupPolyWithTypesCore K Φ₁
-              { (S₁.onCtx ctx) with
-                env := specs1.map (RecSpec.bodyScheme G) ++ (S₁.onCtx ctx).env }
-              0 bindings specs1 with
+        if hgroups : RecGroups.ValidResidualGroups anns bindings
+            (RecGroup.inferenceSccs anns bindings) then
+          match inferRecStrataWithTypesCore K (RecGroup.rigidVars anns bindings) bindings
+              (Φ + bindings.length) ctx (RecSpec.init Φ anns) [] []
+              (RecGroup.inferenceSccs anns bindings) with
           | none => none
-          | some ⟨(Φ₂, S₂, polyTypes, polySchemes), hpoly, hav₂⟩ =>
-            let specs2 := specs1.map (RecSpec.onSubst S₂)
-            match inferWithTypesCore K Φ₂
-                { (S₂.onCtx (S₁.onCtx ctx)) with
-                  env := specs2.map (RecSpec.bodyScheme G) ++
-                    (S₂.onCtx (S₁.onCtx ctx)).env }
-                body with
+          | some ⟨strata, hstrata, hav₁⟩ =>
+            let Φ₁ := strata.frontier
+            let S₁ := strata.subst
+            let specs1 := strata.specs
+            let G := strata.genVars
+            match inferRecGroupPolyWithTypesCore K Φ₁
+                { (S₁.onCtx ctx) with
+                  env := specs1.map (RecSpec.bodyScheme G) ++ (S₁.onCtx ctx).env }
+                0 bindings specs1 with
             | none => none
-            | some ⟨(Φ₃, S₃, τ₃, bodyTypes, bodySchemes), hbody, hav₃⟩ =>
-              let groupSchemes := inferredLetRecSchemes 0 anns
-                ((specs2.map (RecSpec.bodyScheme G)).map S₃.onPolyTy)
-              let rhsSchemes :=
-                ((monoSchemes.onSubst S₂ ++ polySchemes).underRecRhsBinders anns).onSubst S₃
-              let schemes := groupSchemes ++ rhsSchemes ++ bodySchemes.below .letRecBody
-              let rhsTypes :=
-                ((monoTypes.onSubst S₂ ++ polyTypes).underRecRhsBinders anns).onSubst S₃
-              let nodeTypes := .root τ₃ ++ rhsTypes ++ bodyTypes.below .letRecBody
-              some ⟨(Φ₃, S₁ ++ S₂ ++ S₃, τ₃, nodeTypes, schemes),
-                .letRec (fun σ hσ => PolyTy.wf_iff_bvarsBelow.mp (hwf (some σ) hσ σ rfl))
-                  hgroup rfl rfl hpoly rfl hbody, by
-                intro p hp
-                rcases List.mem_append.mp hp with hp | hp
-                · rcases List.mem_append.mp hp with hp | hp
-                  · exact hav₁ p hp
-                  · exact hav₂ p hp
-                · exact hav₃ p hp⟩
+            | some ⟨(Φ₂, S₂, polyTypes, polySchemes), hpoly, hav₂⟩ =>
+              let specs2 := specs1.map (RecSpec.onSubst S₂)
+              match inferWithTypesCore K Φ₂
+                  { (S₂.onCtx (S₁.onCtx ctx)) with
+                    env := specs2.map (RecSpec.bodyScheme G) ++
+                      (S₂.onCtx (S₁.onCtx ctx)).env }
+                  body with
+              | none => none
+              | some ⟨(Φ₃, S₃, τ₃, bodyTypes, bodySchemes), hbody, hav₃⟩ =>
+                let groupSchemes := inferredLetRecSchemes 0 anns
+                  ((specs2.map (RecSpec.bodyScheme G)).map S₃.onPolyTy)
+                let rhsSchemes :=
+                  ((strata.binderSchemes.onSubst S₂ ++ polySchemes).underRecRhsBinders anns).onSubst S₃
+                let schemes := groupSchemes ++ rhsSchemes ++ bodySchemes.below .letRecBody
+                let rhsTypes :=
+                  ((strata.nodeTypes.onSubst S₂ ++ polyTypes).underRecRhsBinders anns).onSubst S₃
+                let nodeTypes := .root τ₃ ++ rhsTypes ++ bodyTypes.below .letRecBody
+                some ⟨(Φ₃, S₁ ++ S₂ ++ S₃, τ₃, nodeTypes, schemes),
+                  .letRec (fun σ hσ => PolyTy.wf_iff_bvarsBelow.mp (hwf (some σ) hσ σ rfl))
+                    hgroups hstrata hpoly rfl hbody, by
+                  intro p hp
+                  rcases List.mem_append.mp hp with hp | hp
+                  · rcases List.mem_append.mp hp with hp | hp
+                    · exact hav₁ p hp
+                    · exact hav₂ p hp
+                  · exact hav₃ p hp⟩
+        else none
       else none
-termination_by e.size
+termination_by (e.size, 0)
 decreasing_by
   all_goals (try simp only [Expr.size, Expr.size_openTyVars]; omega)
 
@@ -11655,9 +11664,101 @@ def inferBranchesWithTypesCore (K : List Nat) (Φ : Nat) (ctx : Ctx) (scrutTy : 
                       · exact hav₂ p h
                     · exact hav₃ p h⟩
         else none
-termination_by Expr.sizeBranches branches
+termination_by (Expr.sizeBranches branches, 0)
 decreasing_by
   all_goals (try simp only [Expr.sizeBranches]; omega)
+
+/-- Infer the members selected by one residual SCC while retaining their
+    original recursive-group coordinates for metadata. -/
+def inferRecComponentWithTypesCore (K : List Nat) (members : List Nat)
+    (memberIndex : Nat) (Φ : Nat) (ctx : Ctx)
+    (bindings : List Expr) (specs : List RecSpec) :
+    Option { r : InferRecComponentOutput //
+      InferRecComponent members memberIndex Φ ctx bindings specs
+        r.frontier r.subst ∧ (∀ p ∈ r.subst, p.1 ∉ K) } :=
+  match bindings, specs with
+  | [], [] => some ⟨⟨Φ, [], [], []⟩, .nil, by simp⟩
+  | e :: rest, .mono τ :: specs' =>
+      if hmember : memberIndex ∈ members then
+        match inferWithTypesCore K Φ ctx e with
+        | none => none
+        | some ⟨(Φ₁, S₁, τ', eTypes, eSchemes), he, hav₁⟩ =>
+          match unifyCoreK K τ' (S₁.onTy τ) with
+          | none => none
+          | some ⟨S₂, huni, hav₂⟩ =>
+            match inferRecComponentWithTypesCore K members (memberIndex + 1) Φ₁
+                (S₂.onCtx (S₁.onCtx ctx)) rest
+                (specs'.map (RecSpec.onSubst (S₁ ++ S₂))) with
+            | none => none
+            | some ⟨tail, htail, hav₃⟩ =>
+              let schemes :=
+                (eSchemes.onSubst (S₂ ++ tail.subst)).below (.letRecRhs memberIndex) ++
+                  tail.binderSchemes
+              let nodeTypes :=
+                (eTypes.onSubst (S₂ ++ tail.subst)).below (.letRecRhs memberIndex) ++
+                  tail.nodeTypes
+              some ⟨⟨tail.frontier, S₁ ++ S₂ ++ tail.subst, nodeTypes, schemes⟩,
+                .consSelected hmember he huni htail, by
+                  intro p hp
+                  rcases List.mem_append.mp hp with hp | hp
+                  · rcases List.mem_append.mp hp with hp | hp
+                    · exact hav₁ p hp
+                    · exact hav₂ p hp
+                  · exact hav₃ p hp⟩
+      else
+        match inferRecComponentWithTypesCore K members (memberIndex + 1) Φ ctx rest specs' with
+        | none => none
+        | some ⟨tail, htail, hav⟩ =>
+            some ⟨tail, .skipMono hmember htail, hav⟩
+  | _e :: rest, .poly _σ :: specs' =>
+      match inferRecComponentWithTypesCore K members (memberIndex + 1) Φ ctx rest specs' with
+      | none => none
+      | some ⟨tail, htail, hav⟩ =>
+          some ⟨tail, .skipPoly htail, hav⟩
+  | _, _ => none
+termination_by (Expr.sizeRecGroup bindings, 0)
+decreasing_by
+  all_goals (try simp only [Expr.sizeRecGroup]; omega)
+
+/-- Infer and generalise residual SCCs dependency-first.  Each completed
+    component becomes polymorphic for subsequent components, while unsolved
+    members retain their positional monotype placeholders. -/
+def inferRecStrataWithTypesCore (K rigid : List Nat) (bindings : List Expr)
+    (Φ : Nat) (ctx : Ctx) (specs : List RecSpec) (done G : List Nat)
+    (groups : List (List Nat)) :
+    Option { r : InferRecStrataOutput //
+      InferRecStrata rigid bindings Φ ctx specs done G groups
+        r.frontier r.subst r.specs r.genVars ∧
+      (∀ p ∈ r.subst, p.1 ∉ K) } :=
+  match groups with
+  | [] => some ⟨⟨Φ, [], specs, G, [], []⟩, .nil, by simp⟩
+  | component :: rest =>
+      match inferRecComponentWithTypesCore K component 0 Φ
+          (RecSpecs.algorithmStageCtx ctx specs done G) bindings specs with
+      | none => none
+      | some ⟨current, hcurrent, hav₁⟩ =>
+        let specs₁ := specs.map (RecSpec.onSubst current.subst)
+        let Gcurrent := genGroupVars (rigid ++ G)
+          (RecSpecs.generalizationCtx (current.subst.onCtx ctx) specs₁ done G).env
+          (RecSpecs.monoTysAt specs₁ component)
+        match inferRecStrataWithTypesCore K rigid bindings current.frontier
+            (current.subst.onCtx ctx) specs₁ (done ++ component) (G ++ Gcurrent) rest with
+        | none => none
+        | some ⟨tail, htail, hav₂⟩ =>
+          let nodeTypes := current.nodeTypes.onSubst tail.subst ++ tail.nodeTypes
+          let schemes := current.binderSchemes.onSubst tail.subst ++ tail.binderSchemes
+          some ⟨⟨tail.frontier, current.subst ++ tail.subst, tail.specs,
+              tail.genVars, nodeTypes, schemes⟩,
+            .cons hcurrent rfl rfl htail, by
+              intro p hp
+              rcases List.mem_append.mp hp with hp | hp
+              · exact hav₁ p hp
+              · exact hav₂ p hp⟩
+termination_by (Expr.sizeRecGroup bindings, groups.length + 1)
+decreasing_by
+  all_goals
+    apply Prod.Lex.right
+    simp
 
 /-- First recursion-group phase: infer unsigned members and skip signed members,
     retaining original source indices for metadata. -/
@@ -11695,7 +11796,7 @@ def inferRecGroupWithTypesCore (K : List Nat) (Φ : Nat) (ctx : Ctx) (memberInde
       | some ⟨(Φ', S, restTypes, restSchemes), hrest, hav⟩ =>
           some ⟨(Φ', S, restTypes, restSchemes), .skipPoly hrest, hav⟩
   | _, _ => none
-termination_by Expr.sizeRecGroup bindings
+termination_by (Expr.sizeRecGroup bindings, 0)
 decreasing_by
   all_goals (try simp only [Expr.sizeRecGroup]; omega)
 
@@ -11743,7 +11844,7 @@ def inferRecGroupPolyWithTypesCore (K : List Nat) (Φ : Nat) (ctx : Ctx) (member
             else none
           else none
   | _, _ => none
-termination_by Expr.sizeRecGroup bindings
+termination_by (Expr.sizeRecGroup bindings, 0)
 decreasing_by
   all_goals (try simp only [Expr.sizeRecGroup, Expr.size_openTyVars]; omega)
 end
