@@ -1,66 +1,130 @@
--- Executable guide to the intended Hindley--Milner recursion boundary.
+-- Executable guide to FHM's recursion boundary.
 --
--- Run the active examples with:
+-- Run with:
 --   .lake/build/bin/fhm run scratch/hm-recursion-boundary.fhm
 --
--- The rejected examples at the bottom are commented out so this file itself runs.
--- Copy either block into a separate file (or uncomment it after commenting out the
--- active program) to see the inference failure.
+-- The rule, per recursive dependency group (SCC):
+--
+--   * A definition with a complete type signature is a dependency cut. Inside
+--     the group it is used at its declared scheme, so every use -- including
+--     its own recursive calls -- may instantiate it at a different type.
+--   * Unannotated members are inferred first, together, at one shared
+--     monotype each (ordinary HM), and then generalised.
+--   * Only then are the annotated bodies checked, against the final schemes
+--     of every member.
+--   * After the group, every member is polymorphic for later code.
+--
+-- Each example states its desired and current outcome. Examples that should
+-- be rejected, or that are currently rejected, are commented out so this file
+-- runs; paste one into its own file to see the failure.
 
--- ACCEPTED 1: one recursive SCC, one monotype while its RHS is checked.
--- The annotation is polymorphic at the SCC boundary, but the recursive call uses
--- `polyId` at the same monotype as the current invocation.
+-- Example 1: ordinary recursion, generalised after its group.
+--   Desired: accepted. Current: accepted.
+-- `polyId` calls itself at the same type it was called at. After its group,
+-- `laterG` and `laterH` instantiate it independently.
 let polyId : {a} a -> a =
   \x -> if True then x else polyId x
 
--- `polyId`'s SCC has now exited, so these later functions (separate downstream
--- SCCs) may instantiate its generalized scheme independently. This is the
--- accepted `f` used at Int in `g` and at Bool in `h` shape: it works because
--- neither dependency points back to `polyId`.
 let laterG =
   \n -> polyId n
 
 let laterH =
   \b -> polyId b
 
--- ACCEPTED 2: a genuinely mutual SCC. Every in-SCC call uses the same element
--- type. The annotation does not make `fixedF` polymorphic inside the SCC; it merely
--- checks the scheme exported after the SCC has been solved.
+-- Example 2: a mutual group whose in-group calls all use one element type.
+--   Desired: accepted. Current: accepted.
 let fixedF : {a} Int -> a -> List a =
   \n x -> if n < 1 then Cons x Nil else fixedG (n - 1) x
 
 let fixedG =
   \n x -> Cons x (fixedF n x)
 
-(laterG 41, (laterH True, fixedF 2 5))
+-- Example 3: an unannotated member uses an annotated one at two types.
+--   Desired: accepted. Current: accepted.
+-- `badF`'s signature means its type is known up front, so `badG` can
+-- instantiate it at Int and at List Int inside the group.
+let badF : {a} Int -> a -> Int =
+  \n x -> if n < 1 then 1 else badG (n - 1)
 
--- REJECTED 1: one function in the mutual SCC uses the explicitly polymorphic
--- `badF` at two types. The `{a}` annotation does NOT make `badF` independently
--- instantiable at recursive call sites.
---
--- let badF : {a} Int -> a -> Int =
---   \n x -> if n < 1 then 1 else badG (n - 1)
---
--- let badG =
---   \n -> badF n n + badF n [n]
---
--- (badF 2 5, badF 2 True)
+let badG =
+  \n -> badF n n + badF n [n]
 
--- REJECTED 2: the restriction is per SCC, not per function body. Here `splitG`
--- uses `splitF` only at Int and `splitH` uses it only at Bool, but all three are
--- mutually dependent. Therefore both calls must share `splitF`'s one in-SCC
--- monotype, and the SCC is rejected even though neither caller alone contains two
--- differently typed uses.
+-- Example 4: as example 3, with the two instantiations split across two
+-- unannotated members, all three in one group.
+--   Desired: accepted. Current: accepted.
+let splitF : {a} Int -> a -> a =
+  \n x ->
+    if n < 1 then x
+    else let i = splitG (n - 1) in let b = splitH (n - 1) in x
+
+let splitG =
+  \n -> splitF n 0
+
+let splitH =
+  \n -> splitF n True
+
+-- Example 5: an annotated function calling itself at a different type
+-- (polymorphic recursion): the recursive call is at `List a`.
+--   Desired: accepted. Current: accepted.
+let wrapN : {a} Int -> a -> Int =
+  \n x -> if n < 1 then 0 else 1 + wrapN (n - 1) [x]
+
+-- Example 6: an annotated member uses an unannotated one at two types.
+--   Desired: accepted. Current: accepted.
+-- `helper` is inferred and generalised before `consumer`'s body is checked.
+let consumer : Int -> (Int, Bool) =
+  \n -> (helper n, helper True)
+
+let helper =
+  \x -> if True then x else let ignored = consumer 0 in x
+
+((badF 2 5, badF 2 True),
+  ((laterG 41, (laterH True, fixedF 2 5)),
+    ((splitG 2, splitH 2),
+      (wrapN 3 True, consumer 1))))
+
+-- Example 7: example 5 without the signature (unannotated polymorphic
+-- recursion).
+--   Desired: rejected. Current: rejected.
+-- With no signature there is nothing to cut at, and inferring polymorphic
+-- recursion is undecidable in general. Haskell, OCaml, F#, Elm and SML all
+-- reject this too.
 --
--- let splitF : {a} Int -> a -> a =
---   \n x ->
---     if n < 1 then x
---     else let i = splitG (n - 1) in let b = splitH (n - 1) in x
+-- let unsigned =
+--   \n x -> if n < 1 then 0 else unsigned (n - 1) [x]
 --
--- let splitG =
---   \n -> splitF n 0
+-- unsigned 3 True
+
+-- Example 8: example 6 without the signature.
+--   Desired: rejected. Current: rejected.
+-- Both members are unannotated, so they share one monotype each inside the
+-- group, and `helper2`'s Int and Bool uses conflict.
 --
--- let splitH =
---   \n -> splitF n True
+-- let consumer2 =
+--   \n -> (helper2 n, helper2 True)
 --
--- (splitG 2, splitH 2)
+-- let helper2 =
+--   \x -> if True then x else let ignored = consumer2 0 in x
+--
+-- consumer2 1
+
+-- Example 9: a signature should cut the dependency graph.
+--   Desired: accepted (GHC accepts this). Current: REJECTED -- known gap.
+-- `cutF` is annotated; `cutG` and `cutH` are not. `cutH` only reaches the
+-- cycle through `cutF`, whose type is already known. With the edges into
+-- `cutF` removed, `cutH` does not depend on `cutG` at all, so it can be
+-- generalised first and `cutG` can then use it at Int and Bool (Haskell 2010
+-- report, section 4.5.1). FHM currently infers all unannotated members of a
+-- group together, so `cutH` gets one monotype. See test T5 in
+-- recursion-language-comparison/.
+--
+-- let cutF : {a} a -> a =
+--   \x -> if True then x else let i = cutG 0 in x
+--
+-- let cutG =
+--   \n -> (cutH 1, cutH True)
+--
+-- let cutH =
+--   \x -> if True then x else let i = cutF 0 in x
+--
+-- cutG 0
