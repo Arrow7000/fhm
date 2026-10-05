@@ -9984,6 +9984,95 @@ inductive InferRecStrata.Frozen :
       (∀ p ∈ S₁, ∀ g ∈ p.2.freeVars, g ∉ G) →
       Frozen hrest → Frozen (.cons hcomponent hspecs hG hrest)
 
+theorem InferRecStrata.pool_nodup {rigid bindings Φ ctx specs done G groups Φ' S specs' G'}
+    (h : InferRecStrata rigid bindings Φ ctx specs done G groups Φ' S specs' G')
+    (hG : G.Nodup) : G'.Nodup := by
+  match h with
+  | .nil => exact hG
+  | .cons _ _ heq hrest =>
+    apply InferRecStrata.pool_nodup hrest
+    apply List.nodup_append.mpr
+    refine ⟨hG, ?_, ?_⟩
+    · rw [heq]; exact genGroupVars_nodup
+    · intro g hg g' hc heqg
+      subst g'
+      rw [heq] at hc
+      exact (genGroupVars_spec hc).2.2 (List.mem_append_right _ hg)
+termination_by groups.length
+decreasing_by all_goals (simp_wf; try omega)
+
+theorem InferRecStrata.pool_avoid_rigid {rigid bindings Φ ctx specs done G groups Φ' S specs' G'}
+    (h : InferRecStrata rigid bindings Φ ctx specs done G groups Φ' S specs' G')
+    (hG : ∀ g ∈ G, g ∉ rigid) : ∀ g ∈ G', g ∉ rigid := by
+  match h with
+  | .nil => exact hG
+  | .cons _ _ heq hrest =>
+    apply InferRecStrata.pool_avoid_rigid hrest
+    intro g hg
+    rcases List.mem_append.mp hg with hg | hg
+    · exact hG g hg
+    · rw [heq] at hg
+      exact fun hc => (genGroupVars_spec hg).2.2 (List.mem_append_left _ hc)
+termination_by groups.length
+decreasing_by all_goals (simp_wf; try omega)
+
+theorem InferRecStrata.pool_avoid_env {rigid bindings Φ ctx specs done G groups Φ' S specs' G'}
+    {h : InferRecStrata rigid bindings Φ ctx specs done G groups Φ' S specs' G'}
+    (hfrozen : h.Frozen) (hG : ∀ g ∈ G, ∀ M ∈ ctx.env, g ∉ M.body.freeVars) :
+    ∀ g ∈ G', ∀ M ∈ (S.onCtx ctx).env, g ∉ M.body.freeVars := by
+  match hfrozen with
+  | .nil => simpa only [Subst.onCtx_nil] using hG
+  | .cons _ hran hfr =>
+    expose_names
+    have hin : ∀ g ∈ G ++ Gcurrent, ∀ M ∈ (S₁.onCtx ctx).env, g ∉ M.body.freeVars := by
+      intro g hg
+      rcases List.mem_append.mp hg with hg | hg
+      · exact Subst.onCtx_avoid (hG g hg) (fun p hp hc => hran p hp g hc hg)
+      · rw [hG_1] at hg
+        intro M hM hc
+        exact (genGroupVars_spec hg).2.1 (Env.mem_freeVars_iff.mpr
+          ⟨M, List.mem_append_right _ hM, hc⟩)
+    have htail := InferRecStrata.pool_avoid_env hfr hin
+    simpa only [Subst.onCtx_append] using htail
+termination_by groups.length
+decreasing_by all_goals (simp_wf; try omega)
+
+theorem InferRecStrata.pool_below {rigid bindings Φ ctx specs done G groups Φ' S specs' G'}
+    (h : InferRecStrata rigid bindings Φ ctx specs done G groups Φ' S specs' G')
+    (hctx : CtxBelow Φ ctx) (hspecs : ∀ s ∈ specs, s.BelowFvars Φ)
+    (hbindings : ∀ y ∈ Expr.tyFreeVars.RecGroup.tyFreeVars bindings, y < Φ)
+    (hG : ∀ g ∈ G, g < Φ) : ∀ g ∈ G', g < Φ' := by
+  match h with
+  | .nil => exact hG
+  | .cons hcomponent hspeq hGeq hrest =>
+    expose_names
+    have hle := InferRecComponent.frontier_le hcomponent
+    have hSB := InferRecComponent.belowFvars hcomponent
+      (RecSpecs.algorithmStageCtx_below hctx hspecs done G) hspecs hbindings
+    have hspecs₁B : ∀ s ∈ specs₁, s.BelowFvars Φ₁ := by
+      rw [hspeq]
+      intro s hs; obtain ⟨s0,hs0,rfl⟩ := List.mem_map.mp hs
+      exact RecSpec.BelowFvars.onSubst hSB ((hspecs s0 hs0).mono hle)
+    apply InferRecStrata.pool_below hrest (Subst.onCtx_below hSB hle hctx) hspecs₁B
+      (fun y hy => lt_of_lt_of_le (hbindings y hy) hle)
+    intro g hg
+    rcases List.mem_append.mp hg with hg | hg
+    · exact lt_of_lt_of_le (hG g hg) hle
+    · rw [hGeq] at hg
+      obtain ⟨τ, hτ, hgτ⟩ := Ty.mem_freeVarsList_exists (genGroupVars_spec hg).1
+      obtain ⟨member,_,hlook⟩ := List.mem_filterMap.mp hτ
+      cases hs : specs₁[member]? with
+      | none => simp [hs] at hlook
+      | some spec =>
+        cases spec with
+        | poly σ => simp [hs, RecSpec.monoTy?] at hlook
+        | mono t =>
+          simp only [hs, Option.bind_some, RecSpec.monoTy?, Option.some.injEq] at hlook
+          subst τ
+          exact Ty.BelowFvars.mem_lt (hspecs₁B (.mono t) (List.mem_of_getElem? hs)) g hgτ
+termination_by groups.length
+decreasing_by all_goals (simp_wf; try omega)
+
 /-- A historical stage context survives subsequent strata: its completed
     members remain completed, while all other entries stay monomorphic. -/
 theorem InferRecStrata.transport_history {rigid bindings Φ ctx specs done G groups Φ' S specs' G'}
