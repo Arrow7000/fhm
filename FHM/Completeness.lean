@@ -2185,14 +2185,14 @@ private theorem RecSpecs.selectComponent_getElem?_mono
           cases spec with
           | mono t =>
               simp only [RecSpecs.selectComponent, List.getElem?_cons_succ] at h
-              split at h <;>
-                · have hr := ih h
-                  refine ⟨hr.1, ?_⟩
-                  simpa only [Nat.add_assoc, Nat.add_comm, Nat.add_left_comm] using hr.2
+              have hr := ih h
+              refine ⟨by simpa using hr.1, ?_⟩
+              convert hr.2 using 1 <;> omega
           | poly σ =>
               simp only [RecSpecs.selectComponent, List.getElem?_cons_succ] at h
               have hr := ih h
-              exact ⟨hr.1, by simpa [Nat.add_assoc] using hr.2⟩
+              refine ⟨by simpa using hr.1, ?_⟩
+              convert hr.2 using 1 <;> omega
 
 private theorem RecSpecs.ComponentMonoTyped.selectComponent
     {ctx : Ctx} {members : List Nat} {memberIndex : Nat}
@@ -2206,8 +2206,10 @@ private theorem RecSpecs.ComponentMonoTyped.selectComponent
   have hjb : j < bindings.length := by rw [List.length_zip] at hj; omega
   have hjs : j < (RecSpecs.selectComponent members memberIndex specs).length := by
     rw [List.length_zip] at hj; omega
-  have hb := congrArg Prod.fst hpget
-  have hs := congrArg Prod.snd hpget
+  have hb : bindings[j] = p.1 := by
+    simpa using congrArg Prod.fst hpget
+  have hs : (RecSpecs.selectComponent members memberIndex specs)[j] = p.2 := by
+    simpa using congrArg Prod.snd hpget
   have hbget : bindings[j]? = some p.1 := by
     rw [List.getElem?_eq_getElem hjb, hb]
   have hsel : (RecSpecs.selectComponent members memberIndex specs)[j]? =
@@ -2222,25 +2224,26 @@ private theorem RecSpecs.ComponentMonoTyped.selectComponent
     spine, allowing the mature recursive-group principality proof to be reused
     component-by-component. -/
 theorem InferRecComponent.toInferRecGroup
-    {members : List Nat} {memberIndex Φ : Nat} {ctx : Ctx}
+    {selected : List Nat} {memberIndex Φ : Nat} {ctx : Ctx}
     {bindings : List Expr} {specs : List RecSpec} {Φ' : Nat} {S : Subst}
-    (h : InferRecComponent members memberIndex Φ ctx bindings specs Φ' S) :
+    (h : InferRecComponent selected memberIndex Φ ctx bindings specs Φ' S) :
     InferRecGroup Φ ctx bindings
-      (RecSpecs.selectComponent members memberIndex specs) Φ' S := by
-  induction h with
-  | nil => exact .nil
-  | @consSelected members memberIndex Φ ctx e rest τ specs Φ₁ Φ₂ S₁ S₂ S₃ τ'
-      hselected he huni hrest ih =>
-      simp only [RecSpecs.selectComponent, if_pos hselected]
-      apply InferRecGroup.consMono he huni
-      rw [← RecSpecs.selectComponent_onSubst]
-      exact ih
-  | @skipMono members memberIndex Φ ctx e rest τ specs Φ' S hskip hrest ih =>
-      simp only [RecSpecs.selectComponent, if_neg hskip]
-      exact .skipPoly ih
-  | @skipPoly members memberIndex Φ ctx e rest σ specs Φ' S hrest ih =>
-      simp only [RecSpecs.selectComponent]
-      exact .skipPoly ih
+      (RecSpecs.selectComponent selected memberIndex specs) Φ' S := by
+  induction bindings generalizing memberIndex Φ ctx specs Φ' S with
+  | nil => cases h; exact .nil
+  | cons e rest ih =>
+      cases h with
+      | consSelected hselected he huni hrest =>
+          simp only [RecSpecs.selectComponent, if_pos hselected]
+          apply InferRecGroup.consMono he huni
+          rw [← RecSpecs.selectComponent_onSubst]
+          exact ih hrest
+      | skipMono hskip hrest =>
+          simp only [RecSpecs.selectComponent, if_neg hskip]
+          exact .skipPoly (ih hrest)
+      | skipPoly hrest =>
+          simp only [RecSpecs.selectComponent]
+          exact .skipPoly (ih hrest)
 
 /-- Principality for one selected residual SCC.  This is the positional
     analogue of `InferRecGroup.Principal`: a selected member is compared with
