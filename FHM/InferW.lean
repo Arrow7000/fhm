@@ -6963,6 +6963,110 @@ theorem Expr.ForallOuter.substTyFvars {P : Nat → Prop} {depth : Nat} {e : Expr
     obtain ⟨old, hold, rfl⟩ := List.mem_map.mp hrhs
     exact ihbs old hold (h.1 old hold)
 
+theorem Expr.ForallOuter.erase_iff {P : Nat → Prop} {depth : Nat} (e : Expr) :
+    e.erase.ForallOuter P depth ↔ e.ForallOuter P depth := by
+  induction e using Expr.rec_strong generalizing depth with
+  | primLit _ => simp [Expr.ForallOuter, Expr.rec_strong, Expr.erase]
+  | primBinOp _ => simp [Expr.ForallOuter, Expr.rec_strong, Expr.erase]
+  | ctor _ => simp [Expr.ForallOuter, Expr.rec_strong, Expr.erase]
+  | var _ => simp [Expr.ForallOuter, Expr.rec_strong, Expr.erase]
+  | lambda _ _ ih => simp only [Expr.erase_lambda, Expr.ForallOuter, Expr.rec_strong]; exact ih
+  | app _ _ ihf iha => simp only [Expr.erase_app, Expr.ForallOuter, Expr.rec_strong]; exact and_congr ihf iha
+  | letIn _ _ _ ihr ihb => simp only [Expr.erase_letIn, Expr.ForallOuter, Expr.rec_strong]; exact and_congr ihr ihb
+  | match_ scrut branches ihs ihbr =>
+    simp only [Expr.erase_match, Expr.ForallOuter, Expr.rec_strong]
+    refine and_congr ihs ?_
+    constructor
+    · intro h p b hb
+      exact (ihbr p b hb).mp (h p b.erase (List.mem_map.mpr ⟨(p,b), hb, rfl⟩))
+    · intro h p b hb
+      obtain ⟨⟨p0,b0⟩, hb0, heq⟩ := List.mem_map.mp hb
+      cases heq
+      exact (ihbr p0 b0 hb0).mpr (h p0 b0 hb0)
+  | letRec anns bindings body ihbs ihb =>
+    simp only [Expr.erase_letRec, Expr.ForallOuter, Expr.rec_strong, List.length_map]
+    refine and_congr ?_ ihb
+    constructor
+    · intro h rhs hrhs
+      exact (ihbs rhs hrhs).mp (h rhs.erase (List.mem_map.mpr ⟨rhs,hrhs,rfl⟩))
+    · intro h rhs hrhs
+      obtain ⟨old,hold,rfl⟩ := List.mem_map.mp hrhs
+      exact (ihbs old hold).mpr (h old hold)
+
+theorem Expr.ForallOuter.openTyVars {P : Nat → Prop} {depth : Nat} {e : Expr}
+    (h : e.ForallOuter P depth) (Xs : List Nat) : (e.openTyVars Xs).ForallOuter P depth := by
+  apply (Expr.ForallOuter.erase_iff _).mp
+  rw [Expr.erase_openTyVars]
+  exact (Expr.ForallOuter.erase_iff e).mpr h
+
+theorem Expr.ForallOuter.openBoundTyVars {P : Nat → Prop} {depth : Nat} {e : Expr}
+    (h : e.ForallOuter P depth) (ann : Option PolyTy) (Xs : List Nat) :
+    (e.openBoundTyVars ann Xs).ForallOuter P depth := by
+  apply (Expr.ForallOuter.erase_iff _).mp
+  rw [Expr.erase_openBoundTyVars]
+  exact (Expr.ForallOuter.erase_iff e).mpr h
+
+theorem RecGroupRefs.mem_branches {n depth i : Nat} {pat : MatchPattern} {body : Expr}
+    {branches : List (MatchPattern × Expr)} (hb : (pat,body) ∈ branches)
+    (hi : i ∈ body.recGroupRefs n (depth + pat.bindCount)) :
+    i ∈ RecGroupRefs.branches n depth branches := by
+  induction branches with
+  | nil => simp at hb
+  | cons pb rest ih =>
+    simp only [RecGroupRefs.branches, List.mem_dedup, List.mem_append]
+    rcases List.mem_cons.mp hb with heq | hb
+    · cases heq; exact Or.inl hi
+    · exact Or.inr (ih hb)
+
+theorem RecGroupRefs.mem_bindings {n depth i : Nat} {rhs : Expr} {bindings : List Expr}
+    (hb : rhs ∈ bindings) (hi : i ∈ rhs.recGroupRefs n depth) :
+    i ∈ RecGroupRefs.bindings n depth bindings := by
+  induction bindings with
+  | nil => simp at hb
+  | cons e rest ih =>
+    simp only [RecGroupRefs.bindings, List.mem_dedup, List.mem_append]
+    rcases List.mem_cons.mp hb with heq | hb
+    · cases heq; exact Or.inl hi
+    · exact Or.inr (ih hb)
+
+theorem Expr.ForallOuter.of_recGroupRefs {P : Nat → Prop} {e : Expr} {n depth : Nat}
+    (h : ∀ i ∈ e.recGroupRefs n depth, P i) :
+    e.ForallOuter (fun i => i < n → P i) depth := by
+  induction e using Expr.rec_strong generalizing depth with
+  | primLit _ => simp [Expr.ForallOuter, Expr.rec_strong]
+  | primBinOp _ => simp [Expr.ForallOuter, Expr.rec_strong]
+  | ctor _ => simp [Expr.ForallOuter, Expr.rec_strong]
+  | var i =>
+    simp only [Expr.ForallOuter, Expr.rec_strong]
+    intro hd hi
+    apply h (i-depth)
+    simp [Expr.recGroupRefs, hd, show i < depth+n by omega]
+  | lambda _ _ ih =>
+    simp only [Expr.ForallOuter, Expr.rec_strong]
+    exact ih h
+  | app _ _ ihf iha =>
+    simp only [Expr.ForallOuter, Expr.rec_strong]
+    refine ⟨ihf (fun i hi => h i ?_), iha (fun i hi => h i ?_)⟩
+    · simpa only [Expr.recGroupRefs, List.mem_dedup, List.mem_append] using Or.inl hi
+    · simpa only [Expr.recGroupRefs, List.mem_dedup, List.mem_append] using Or.inr hi
+  | letIn _ _ _ ihr ihb =>
+    simp only [Expr.ForallOuter, Expr.rec_strong]
+    refine ⟨ihr (fun i hi => h i ?_), ihb (fun i hi => h i ?_)⟩
+    · simpa only [Expr.recGroupRefs, List.mem_dedup, List.mem_append] using Or.inl hi
+    · simpa only [Expr.recGroupRefs, List.mem_dedup, List.mem_append] using Or.inr hi
+  | match_ scrut branches ihs ihbr =>
+    simp only [Expr.ForallOuter, Expr.rec_strong]
+    refine ⟨ihs (fun i hi => h i ?_), fun p b hb => ihbr p b hb (fun i hi => h i ?_)⟩
+    · simpa only [Expr.recGroupRefs, List.mem_dedup, List.mem_append] using Or.inl hi
+    · simp only [Expr.recGroupRefs, List.mem_dedup, List.mem_append]
+      exact Or.inr (RecGroupRefs.mem_branches hb hi)
+  | letRec anns bindings body ihbs ihb =>
+    simp only [Expr.ForallOuter, Expr.rec_strong]
+    refine ⟨fun rhs hrhs => ihbs rhs hrhs (fun i hi => h i ?_), ihb (fun i hi => h i ?_)⟩
+    · simp only [Expr.recGroupRefs, List.mem_dedup, List.mem_append]
+      exact Or.inl (RecGroupRefs.mem_bindings hrhs hi)
+    · simpa only [Expr.recGroupRefs, List.mem_dedup, List.mem_append] using Or.inr hi
+
 theorem Expr.recGroupRefs_substTyFvars (S : Subst) (e : Expr) (n depth : Nat) :
     (e.substTyFvars S).recGroupRefs n depth = e.recGroupRefs n depth := by
   induction e using Expr.rec_strong generalizing depth with
@@ -7196,6 +7300,104 @@ theorem TypeOfHM.rec_strong
         hspec.bind_count, hspec.fields, hbodyT, ih⟩
   | wildcard hbodyT ih =>
       exact Or.inr ⟨rfl, hbodyT, ih⟩
+
+theorem Expr.ForallOuter.prepend_env {env env' pre : Env} {e : Expr} {depth : Nat}
+    (h : e.ForallOuter (fun i => env'[i]? = env[i]?) (depth + pre.length)) :
+    e.ForallOuter (fun i => (pre ++ env')[i]? = (pre ++ env)[i]?) depth := by
+  apply h.prepend
+  · intro i hi
+    rw [List.getElem?_append_left hi, List.getElem?_append_left hi]
+  · intro i hi
+    rw [List.getElem?_append_right (by omega), List.getElem?_append_right (by omega)]
+    simpa using hi
+
+/-- Typing only depends on the environment entries actually referenced by the
+    expression. In particular, later residual-group slots may change freely. -/
+theorem TypeOfHM.env_agreement {ctx : Ctx} {e : Expr} {τ : Ty}
+    (h : TypeOfHM ctx e τ) : ∀ env',
+    e.ForallOuter (fun i => env'[i]? = ctx.env[i]?) 0 →
+    TypeOfHM ⟨env', ctx.ctors⟩ e τ := by
+  induction h using TypeOfHM.rec_strong with
+  | primLitUnit => intro _ _; exact .primLitUnit
+  | primLitInt => intro _ _; exact .primLitInt
+  | primLitNat => intro _ _; exact .primLitNat
+  | primLitChar => intro _ _; exact .primLitChar
+  | primBinOpIntAdd => intro _ _; exact .primBinOpIntAdd
+  | primBinOpIntSub => intro _ _; exact .primBinOpIntSub
+  | primBinOpIntLt _ _ ihtrue ihfalse =>
+    intro env' _
+    exact .primBinOpIntLt (ihtrue env' (by simp [Expr.ForallOuter, Expr.rec_strong]))
+      (ihfalse env' (by simp [Expr.ForallOuter, Expr.rec_strong]))
+  | primBinOpCharLt _ _ ihtrue ihfalse =>
+    intro env' _
+    exact .primBinOpCharLt (ihtrue env' (by simp [Expr.ForallOuter, Expr.rec_strong]))
+      (ihfalse env' (by simp [Expr.ForallOuter, Expr.rec_strong]))
+  | var hlook hlc hinst =>
+    intro env' hag
+    simp only [Expr.ForallOuter, Expr.rec_strong, Nat.zero_le, Nat.sub_zero] at hag
+    exact .var (by rw [hag trivial]; exact hlook) hlc hinst
+  | ctor hlook hlc hinst => intro _ _; exact .ctor hlook hlc hinst
+  | app hf ha ihf iha =>
+    intro env' hag
+    simp only [Expr.ForallOuter, Expr.rec_strong] at hag
+    exact .app (ihf env' hag.1) (iha env' hag.2)
+  | lambda hpc hann heq hbody ihbody =>
+    intro env' hag
+    subst heq
+    expose_names
+    simp only [Expr.ForallOuter, Expr.rec_strong, Nat.zero_add] at hag
+    exact .lambda hpc hann rfl (ihbody (PolyTy.mkTrivial paramTy :: env')
+      (Expr.ForallOuter.prepend_env (pre := [PolyTy.mkTrivial paramTy]) hag))
+  | letIn hwf hann hcofin heq hbody ihcofin ihbody =>
+    intro env' hag
+    subst heq
+    expose_names
+    simp only [Expr.ForallOuter, Expr.rec_strong, Nat.zero_add] at hag
+    exact .letIn hwf hann
+      (fun Xs hf => ihcofin Xs hf env' (Expr.ForallOuter.openBoundTyVars
+        (P := fun i => env'[i]? = ctx_1.env[i]?)
+        (e := boundExpr) (depth := 0) hag.1 ann Xs)) rfl
+      (ihbody (M :: env') (Expr.ForallOuter.prepend_env (pre := [M]) hag.2))
+  | match_ hs hne hbrs ihs ihbrs =>
+    intro env' hag
+    simp only [Expr.ForallOuter, Expr.rec_strong, Nat.zero_add] at hag
+    refine .match_ (ihs env' hag.1) hne ?_
+    intro ⟨pat, body⟩ hb
+    rcases ihbrs (pat, body) hb with
+      ⟨ctorr,c,n,tyArgs,instContents,hpat,hlook,hscrut,hpc,hn,hfields,_,ih⟩ |
+      ⟨hpat,_,ih⟩
+    · subst hpat
+      have hlen : instContents.length = n := by
+        have := List.Forall₂.length_eq hfields
+        omega
+      refine .mk ⟨hlook,hscrut,hpc,hn,hfields⟩ rfl ?_
+      apply ih
+      apply Expr.ForallOuter.prepend_env
+      simpa only [List.length_map, Nat.zero_add, hlen, MatchPattern.bindCount] using hag.2 _ _ hb
+    · subst hpat
+      exact .wildcard (ih env' (by simpa only [MatchPattern.bindCount] using hag.2 _ _ hb))
+  | letRec hvalid hwf hmono hpoly heq hbody ihmono ihpoly ihbody =>
+    intro env' hag
+    subst heq
+    expose_names
+    simp only [Expr.ForallOuter, Expr.rec_strong, Nat.zero_add] at hag
+    refine .letRec (specs := specs) (groups := groups) (G := G) (L := L)
+      hvalid hwf ?_ ?_ rfl ?_
+    · intro stage component hc Xs hf member hm rhs τ hrhs hτ
+      apply ihmono stage component hc Xs hf member hm rhs τ hrhs hτ
+      apply Expr.ForallOuter.prepend_env
+      simpa only [List.length_mapIdx, Nat.zero_add, hwf.length] using
+        hag.1 rhs (List.mem_of_getElem? hrhs)
+    · intro p hp σ hσ Ys hYs
+      apply ihpoly p hp σ hσ Ys hYs
+      apply Expr.ForallOuter.prepend_env
+      have h := Expr.ForallOuter.openTyVars (e := p.1) (depth := bindings.length)
+        (P := fun i => env'[i]? = ctx_1.env[i]?)
+        (hag.1 p.1 (List.of_mem_zip hp).1) Ys
+      simpa only [List.length_map, Nat.zero_add, hwf.length] using h
+    · apply ihbody
+      apply Expr.ForallOuter.prepend_env
+      simpa only [List.length_map, Nat.zero_add, hwf.length] using hag.2
 
 /-! Local copies of Core-private auxiliary lemmas needed by the recursive-group
 case of `typ_subst_preservation_uniform`. -/
