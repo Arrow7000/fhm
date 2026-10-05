@@ -9716,6 +9716,80 @@ threads substitutions. These proofs sit after the `TypeOfHM` substitution and
 weakening infrastructure on which they depend. -/
 
 set_option maxRecDepth 10_000 in
+theorem PolyTy.genGroup_append_of_avoid {G H : List Nat} {τ : Ty}
+    (hH : ∀ g ∈ H, g ∉ τ.freeVars) :
+    PolyTy.genGroup (G ++ H) τ = PolyTy.genGroup G τ := by
+  have hf : H.filter (fun g => decide (g ∈ τ.freeVars)) = [] := by
+    apply List.filter_eq_nil_iff.mpr
+    intro g hg
+    simp [hH g hg]
+  simp only [PolyTy.genGroup, Ty.genFilter, List.filter_append, hf, List.append_nil]
+
+theorem Ty.mem_closeOver_freeVars_of_notMem_pool {G : List Nat} {τ : Ty} {g : Nat}
+    (hlc : τ.IsLC) (hg : g ∈ τ.freeVars) (hG : g ∉ G) :
+    g ∈ (Ty.closeOver G τ).freeVars := by
+  have hopen : g ∈ (Ty.openVars G (Ty.closeOver G τ)).freeVars := by
+    rwa [Ty.openVars_closeOver_self hlc]
+  rcases Ty.freeVars_openVars_subset g hopen with h | h
+  · exact h
+  · exact False.elim (hG h)
+
+theorem RecSpecs.genGroup_mem_fixedSchemes {specs : List RecSpec} {done G : List Nat}
+    {member : Nat} {τ : Ty} (hspec : specs[member]? = some (.mono τ))
+    (hdone : member ∈ done) : PolyTy.genGroup G τ ∈ RecSpecs.fixedSchemes specs done G := by
+  unfold RecSpecs.fixedSchemes
+  apply List.mem_filterMap.mpr
+  refine ⟨some (PolyTy.genGroup G τ), ?_, rfl⟩
+  apply List.mem_of_getElem? (i := member)
+  rw [List.getElem?_mapIdx, hspec]
+  simp [hdone]
+
+theorem RecSpecs.newPool_avoids_done {rigid G done : List Nat} {ctx : Ctx}
+    {specs : List RecSpec} {component : List Nat} {member g : Nat} {τ : Ty}
+    (hlc : τ.IsLC) (hspec : specs[member]? = some (.mono τ)) (hdone : member ∈ done)
+    (hg : g ∈ genGroupVars (rigid ++ G)
+      (RecSpecs.generalizationCtx ctx specs done G).env (RecSpecs.monoTysAt specs component)) :
+    g ∉ τ.freeVars := by
+  have hs := genGroupVars_spec hg
+  have hgG : g ∉ G := fun h => hs.2.2 (List.mem_append_right _ h)
+  intro hc
+  apply hs.2.1
+  apply Env.mem_freeVars_iff.mpr
+  refine ⟨PolyTy.genGroup G τ, ?_, ?_⟩
+  · exact List.mem_append_left _ (RecSpecs.genGroup_mem_fixedSchemes hspec hdone)
+  · exact Ty.mem_closeOver_freeVars_of_notMem_pool hlc hc
+      (fun h => hgG (Ty.mem_of_mem_genFilter h))
+
+theorem RecGroups.ValidResidualGroups.refs_available {anns : List (Option PolyTy)}
+    {bindings : List Expr} {groups : List (List Nat)} {specs : List RecSpec}
+    {stage source target : Nat} {component : List Nat} {rhs : Expr} {τ : Ty}
+    (hvalid : RecGroups.ValidResidualGroups anns bindings groups)
+    (hanns : specs.map RecSpec.ann = anns) (hlen : bindings.length = specs.length)
+    (hc : groups[stage]? = some component) (hs : source ∈ component)
+    (hrhs : bindings[source]? = some rhs) (ht : specs[target]? = some (.mono τ))
+    (href : target ∈ rhs.recGroupRefs bindings.length 0) :
+    target ∈ (groups.take stage).flatten ∨ target ∈ component := by
+  have htlt : target < bindings.length := by
+    rw [hlen]
+    exact (List.getElem?_eq_some_iff.mp ht).1
+  have hunsigned : RecGroups.UnsignedAt anns target := by
+    rw [RecGroups.UnsignedAt, ← hanns, List.getElem?_map, ht]
+    rfl
+  have htflat := (hvalid.covers_unsigned target htlt).mpr hunsigned
+  obtain ⟨dep, hdep, htdep⟩ := List.mem_flatten.mp htflat
+  obtain ⟨dependencyStage, hdep⟩ := List.mem_iff_getElem?.mp hdep
+  have hle := hvalid.dependencies_first hc hdep hs htdep hrhs href
+  by_cases heq : dependencyStage = stage
+  · subst dependencyStage
+    have := Option.some.inj (hdep.symm.trans hc)
+    subst dep
+    exact Or.inr htdep
+  · apply Or.inl
+    apply List.mem_flatten.mpr
+    refine ⟨dep, List.mem_iff_getElem?.mpr ⟨dependencyStage, ?_⟩, htdep⟩
+    rw [List.getElem?_take, if_pos (by omega)]
+    exact hdep
+
 private abbrev Infer.SourceSoundAt (e : Expr) : Prop :=
   ∀ {Φ ctx Φ' S τ}, Infer Φ ctx e Φ' S τ →
     CtxWF ctx → CtxBelow Φ ctx → (K : List Nat) → (∀ k ∈ K, k < Φ) →
