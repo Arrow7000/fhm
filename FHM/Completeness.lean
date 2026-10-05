@@ -1422,6 +1422,22 @@ theorem RecSpecs.ceilingSchemes_avoidsItv {lo hi : Nat} {G : List Nat} {S₁ : S
       · exact ih (Nat.le_trans hΦ (Nat.le_succ Φ))
           (fun σ hs => hAvoid σ (List.mem_cons_of_mem _ hs)) M hM
 
+/-- Every environment exposed while processing residual SCCs inherits the
+    interval-avoidance invariant from the outer context and current specs. -/
+private theorem RecSpecs.algorithmStageCtx_avoidsItv {lo hi : Nat} {ctx : Ctx}
+    {specs : List RecSpec}
+    (hctx : ∀ M ∈ ctx.env, ∀ v ∈ M.body.freeVars, v < lo ∨ hi ≤ v)
+    (hspecs : ∀ s ∈ specs, ∀ v ∈ s.freeVars, v < lo ∨ hi ≤ v)
+    (done G : List Nat) :
+    ∀ M ∈ (RecSpecs.algorithmStageCtx ctx specs done G).env,
+      ∀ v ∈ M.body.freeVars, v < lo ∨ hi ≤ v := by
+  intro M hM v hv
+  rcases List.mem_append.mp hM with hM | hM
+  · obtain ⟨i, hi, rfl⟩ := List.mem_mapIdx.mp hM
+    exact hspecs _ (List.getElem_mem hi) v
+      (RecSpec.algorithmStageEntry_freeVars_subset hv)
+  · exact hctx M hM v hv
+
 mutual
 /-- **Gap-avoidance locality** for the source inference relation: a derivation
     whose context env and annotation fvars avoid `[lo, hi)` below the input
@@ -1606,7 +1622,7 @@ theorem Infer.gap_avoid {lo hi : Nat} {Φ ctx e Φ' S τ} (h : Infer Φ ctx e Φ
       · exact hsR p hp
       · exact h3R p hp
   | @letRec Φ ctx anns bindings body Φ₁ Φ₂ Φ₃ S₁ S₂ S₃ τ₃ G specs1 specs2
-      _ hgroup hspecs1 _ hpoly hspecs2 hbody =>
+      _ _ hstrata hpoly hspecs2 hbody =>
     intro hhi hctx htfv
     simp only [Expr.tyFreeVars] at htfv
     have hAnnsAvoid : ∀ σ, some σ ∈ anns → ∀ v ∈ σ.body.freeVars, v < lo ∨ hi ≤ v :=
@@ -1619,23 +1635,16 @@ theorem Infer.gap_avoid {lo hi : Nat} {Φ ctx e Φ' S τ} (h : Infer Φ ctx e Φ
         (List.mem_append.mpr (Or.inl (List.mem_append.mpr (Or.inr hy))))
     have hBodyAvoid : ∀ y ∈ body.tyFreeVars, y < lo ∨ hi ≤ y :=
       fun y hy => htfv y (List.mem_append.mpr (Or.inr hy))
-    have hGroupCtx : ∀ M ∈ ({ ctx with
-        env := (RecSpec.init Φ anns).map (RecSpec.rhsEntry [] []) ++ ctx.env }).env,
-        ∀ v ∈ M.body.freeVars, v < lo ∨ hi ≤ v := by
-      intro M hM
-      rcases List.mem_append.mp hM with hM | hM
-      · obtain ⟨s, hs, rfl⟩ := List.mem_map.mp hM
-        cases s with
-        | mono τ =>
-            simpa [RecSpec.rhsEntry, Ty.renameG, PolyTy.mkTrivial,
-              Ty.substFvars] using init_spec_avoidsItv hhi hAnnsAvoid hs
-        | poly σ => simpa [RecSpec.rhsEntry] using init_spec_avoidsItv hhi hAnnsAvoid hs
-      · exact hctx M hM
     have hGroupTargets : ∀ β ∈ RecSpec.init Φ anns,
-        ∀ v ∈ β.tfvs, v < lo ∨ hi ≤ v :=
-      fun β hb => init_spec_avoidsItv hhi hAnnsAvoid hb
-    obtain ⟨hgD, hgR⟩ := InferRecGroup.gap_avoid hgroup (by omega) hGroupCtx
+        ∀ v ∈ β.freeVars, v < lo ∨ hi ≤ v := by
+      intro β hb
+      simpa [RecSpec.tfvs, RecSpec.freeVars] using
+        (init_spec_avoidsItv hhi hAnnsAvoid hb)
+    obtain ⟨hgD, hgR⟩ := InferRecStrata.gap_avoid hstrata (by omega) hctx
       hGroupTargets hBindAvoid
+    have hspecs1 : specs1 =
+        (RecSpec.init Φ anns).map (RecSpec.onSubst S₁) :=
+      InferRecStrata.specs_eq hstrata
     have hSpecs1Avoid : ∀ s ∈ specs1, ∀ v ∈ s.freeVars,
         v < lo ∨ hi ≤ v := by
       intro s hs v hv
@@ -1657,8 +1666,10 @@ theorem Infer.gap_avoid {lo hi : Nat} {Φ ctx e Φ' S τ} (h : Infer Φ ctx e Φ
         | poly σ => exact hSpecs1Avoid (.poly σ) hs
       · exact Subst.onCtx_avoidsItv hgR hctx M hM
     obtain ⟨hpD, hpR⟩ := InferRecGroupPoly.gap_avoid hpoly
-      (by have := InferRecGroup.frontier_le hgroup; omega) hBodyCtx1
-      (fun β hβ => hSpecs1Avoid β hβ) hBindAvoid
+      (by have := InferRecStrata.frontier_le hstrata; omega) hBodyCtx1
+      (by
+        intro β hβ
+        simpa [RecSpec.tfvs, RecSpec.freeVars] using hSpecs1Avoid β hβ) hBindAvoid
     have hSpecs2Avoid : ∀ s ∈ specs2, ∀ v ∈ s.freeVars,
         v < lo ∨ hi ≤ v := by
       intro s hs v hv
@@ -1680,7 +1691,7 @@ theorem Infer.gap_avoid {lo hi : Nat} {Φ ctx e Φ' S τ} (h : Infer Φ ctx e Φ
       · exact Subst.onCtx_avoidsItv hpR (Subst.onCtx_avoidsItv hgR hctx) M hM
     obtain ⟨hbτ, hbD, hbR⟩ := Infer.gap_avoid hbody
       (le_trans hhi (le_trans (Nat.le_add_right Φ bindings.length)
-        (le_trans (InferRecGroup.frontier_le hgroup)
+        (le_trans (InferRecStrata.frontier_le hstrata)
           (InferRecGroupPoly.frontier_le hpoly)))) hBodyCtx2 hBodyAvoid
     refine ⟨hbτ, ?_, ?_⟩
     · intro p hp; simp only [List.mem_append] at hp
@@ -1763,7 +1774,7 @@ theorem Infer.gap_avoid {lo hi : Nat} {Φ ctx e Φ' S τ} (h : Infer Φ ctx e Φ
       · exact hgR p hp
       · exact hbR p hp
   -/
-termination_by e.size
+termination_by (e.size, 0)
 decreasing_by
   all_goals (try subst_vars)
   all_goals (try simp only [Expr.size, Expr.size_openTyVars])
@@ -1869,9 +1880,120 @@ theorem InferBranches.gap_avoid {lo hi : Nat} {Φ ctx scrutTy ρ brs Φ' S}
       · exact hbR p hp
       · exact h2R p hp
       · exact h3R p hp
-termination_by Expr.sizeBranches brs
+termination_by (Expr.sizeBranches brs, 0)
 decreasing_by
   all_goals (try subst_vars; simp only [Expr.sizeBranches]; omega)
+
+/-- Gap avoidance for one residual SCC. Unselected monomorphic members and
+    annotated members contribute no substitution and are skipped positionally. -/
+theorem InferRecComponent.gap_avoid {lo hi : Nat}
+    {members memberIndex Φ ctx bindings specs Φ' S}
+    (h : InferRecComponent members memberIndex Φ ctx bindings specs Φ' S) :
+    hi ≤ Φ → (∀ M ∈ ctx.env, ∀ v ∈ M.body.freeVars, v < lo ∨ hi ≤ v) →
+    (∀ s ∈ specs, ∀ v ∈ s.freeVars, v < lo ∨ hi ≤ v) →
+    (∀ y ∈ Expr.tyFreeVars.RecGroup.tyFreeVars bindings, y < lo ∨ hi ≤ y) →
+    (∀ p ∈ S, p.1 < lo ∨ hi ≤ p.1) ∧
+      (∀ p ∈ S, ∀ v ∈ p.2.freeVars, v < lo ∨ hi ≤ v) := by
+  cases h with
+  | nil => intro _ _ _ _; exact ⟨by simp, by simp⟩
+  | @consSelected members memberIndex Φ ctx e rest τ specs Φ₁ Φ₂ S₁ S₂ S₃ τ'
+      _ he huni hrest =>
+    intro hhi hctx hspecs htfv
+    simp only [Expr.tyFreeVars.RecGroup.tyFreeVars, List.mem_append] at htfv
+    obtain ⟨hτ', hD₁, hR₁⟩ := Infer.gap_avoid he hhi hctx
+      (fun y hy => htfv y (.inl hy))
+    have hle1 := Infer.frontier_le he
+    have hτav : ∀ v ∈ τ.freeVars, v < lo ∨ hi ≤ v :=
+      hspecs (.mono τ) List.mem_cons_self
+    obtain ⟨hD₂, hR₂⟩ := UnifyRel.gap_avoid huni hτ'
+      (Subst.onTy_avoidsItv hR₁ hτav)
+    have hRboth : ∀ p ∈ S₁ ++ S₂, ∀ v ∈ p.2.freeVars, v < lo ∨ hi ≤ v := by
+      intro p hp
+      rcases List.mem_append.mp hp with hp | hp
+      · exact hR₁ p hp
+      · exact hR₂ p hp
+    obtain ⟨hD₃, hR₃⟩ := InferRecComponent.gap_avoid hrest (by omega)
+      (Subst.onCtx_avoidsItv hR₂ (Subst.onCtx_avoidsItv hR₁ hctx))
+      (by
+        intro s' hs' v hv
+        obtain ⟨s, hs, rfl⟩ := List.mem_map.mp hs'
+        cases s with
+        | mono t =>
+          exact Subst.onTy_avoidsItv hRboth
+            (hspecs (.mono t) (List.mem_cons_of_mem _ hs)) v hv
+        | poly σ => exact hspecs (.poly σ) (List.mem_cons_of_mem _ hs) v hv)
+      (fun y hy => htfv y (.inr hy))
+    refine ⟨?_, ?_⟩
+    · intro p hp
+      simp only [List.mem_append] at hp
+      rcases hp with (hp | hp) | hp
+      · exact hD₁ p hp
+      · exact hD₂ p hp
+      · exact hD₃ p hp
+    · intro p hp
+      simp only [List.mem_append] at hp
+      rcases hp with (hp | hp) | hp
+      · exact hR₁ p hp
+      · exact hR₂ p hp
+      · exact hR₃ p hp
+  | @skipMono members memberIndex Φ ctx e rest τ specs Φ' S _ hrest =>
+    intro hhi hctx hspecs htfv
+    exact InferRecComponent.gap_avoid hrest hhi hctx
+      (fun s hs => hspecs s (List.mem_cons_of_mem _ hs))
+      (fun y hy => htfv y (List.mem_append.mpr (.inr hy)))
+  | @skipPoly members memberIndex Φ ctx e rest σ specs Φ' S hrest =>
+    intro hhi hctx hspecs htfv
+    exact InferRecComponent.gap_avoid hrest hhi hctx
+      (fun s hs => hspecs s (List.mem_cons_of_mem _ hs))
+      (fun y hy => htfv y (List.mem_append.mpr (.inr hy)))
+termination_by (Expr.sizeRecGroup bindings, 0)
+decreasing_by
+  all_goals (try subst_vars)
+  all_goals (try simp only [Expr.sizeRecGroup, List.length_cons])
+  all_goals omega
+
+/-- Gap avoidance threads through dependency-ordered residual SCCs while each
+    completed component is generalized independently. -/
+theorem InferRecStrata.gap_avoid {lo hi : Nat}
+    {rigid bindings Φ ctx specs done G groups Φ' S specs' G'}
+    (h : InferRecStrata rigid bindings Φ ctx specs done G groups Φ' S specs' G') :
+    hi ≤ Φ → (∀ M ∈ ctx.env, ∀ v ∈ M.body.freeVars, v < lo ∨ hi ≤ v) →
+    (∀ s ∈ specs, ∀ v ∈ s.freeVars, v < lo ∨ hi ≤ v) →
+    (∀ y ∈ Expr.tyFreeVars.RecGroup.tyFreeVars bindings, y < lo ∨ hi ≤ y) →
+    (∀ p ∈ S, p.1 < lo ∨ hi ≤ p.1) ∧
+      (∀ p ∈ S, ∀ v ∈ p.2.freeVars, v < lo ∨ hi ≤ v) := by
+  cases h with
+  | nil => intro _ _ _ _; exact ⟨by simp, by simp⟩
+  | @cons rigid bindings Φ ctx specs done G component rest Φ₁ Φ₂ S₁ S₂
+      specs₁ specs₂ Gcurrent Gfinal hcomponent heq _ hrest =>
+    intro hhi hctx hspecs htfv
+    obtain ⟨hD₁, hR₁⟩ := InferRecComponent.gap_avoid hcomponent hhi
+      (RecSpecs.algorithmStageCtx_avoidsItv hctx hspecs done G) hspecs htfv
+    have hle1 := InferRecComponent.frontier_le hcomponent
+    have hspecs₁ : ∀ s ∈ specs₁, ∀ v ∈ s.freeVars,
+        v < lo ∨ hi ≤ v := by
+      intro s hs v hv
+      rw [heq] at hs
+      obtain ⟨s0, hs0, rfl⟩ := List.mem_map.mp hs
+      cases s0 with
+      | mono τ => exact Subst.onTy_avoidsItv hR₁ (hspecs (.mono τ) hs0) v hv
+      | poly σ => exact hspecs (.poly σ) hs0 v hv
+    obtain ⟨hD₂, hR₂⟩ := InferRecStrata.gap_avoid hrest (by omega)
+      (Subst.onCtx_avoidsItv hR₁ hctx) hspecs₁ htfv
+    refine ⟨?_, ?_⟩
+    · intro p hp
+      rcases List.mem_append.mp hp with hp | hp
+      · exact hD₁ p hp
+      · exact hD₂ p hp
+    · intro p hp
+      rcases List.mem_append.mp hp with hp | hp
+      · exact hR₁ p hp
+      · exact hR₂ p hp
+termination_by (Expr.sizeRecGroup bindings, groups.length + 1)
+decreasing_by
+  all_goals (try subst_vars)
+  all_goals (try simp only [Expr.sizeRecGroup, List.length_cons])
+  all_goals omega
 
 theorem InferRecGroupPoly.gap_avoid {lo hi : Nat} {Φ ctx bindings specs Φ' S}
     (h : InferRecGroupPoly Φ ctx bindings specs Φ' S) :
@@ -1932,107 +2054,7 @@ theorem InferRecGroupPoly.gap_avoid {lo hi : Nat} {Φ ctx bindings specs Φ' S}
       · exact hR₁ p hp
       · exact hR₂ p hp
       · exact hR₃ p hp
-termination_by Expr.sizeRecGroup bindings
-decreasing_by
-  all_goals (try subst_vars)
-  all_goals (try simp only [Expr.size, Expr.size_openTyVars, Expr.sizeRecGroup])
-  all_goals omega
-
-theorem InferRecGroup.gap_avoid {lo hi : Nat} {Φ ctx bindings specs Φ' S}
-    (h : InferRecGroup Φ ctx bindings specs Φ' S) :
-    hi ≤ Φ → (∀ M ∈ ctx.env, ∀ v ∈ M.body.freeVars, v < lo ∨ hi ≤ v) →
-    (∀ β ∈ specs, ∀ v ∈ β.tfvs, v < lo ∨ hi ≤ v) →
-    (∀ y ∈ Expr.tyFreeVars.RecGroup.tyFreeVars bindings, y < lo ∨ hi ≤ y) →
-    (∀ p ∈ S, p.1 < lo ∨ hi ≤ p.1) ∧ (∀ p ∈ S, ∀ v ∈ p.2.freeVars, v < lo ∨ hi ≤ v) := by
-  cases h with
-  | nil => intro _ _ _ _; exact ⟨by simp, by simp⟩
-  | @consMono Φ ctx e rest τ specs Φ₁ Φ₂ S₁ S₂ S₃ τ' he huni hrest =>
-    intro hhi hctx hspecs htfv
-    obtain ⟨hτ', hD₁, hR₁⟩ := Infer.gap_avoid he hhi hctx
-      (fun y hy => htfv y (List.mem_append.mpr (Or.inl hy)))
-    have hle1 := Infer.frontier_le he
-    have hτav : ∀ v ∈ τ.freeVars, v < lo ∨ hi ≤ v :=
-      hspecs (.mono τ) List.mem_cons_self
-    obtain ⟨hD₂, hR₂⟩ := UnifyRel.gap_avoid huni hτ' (Subst.onTy_avoidsItv hR₁ hτav)
-    have hRboth : ∀ p ∈ S₁ ++ S₂, ∀ v ∈ p.2.freeVars, v < lo ∨ hi ≤ v := by
-      intro p hp; rcases List.mem_append.mp hp with hp | hp
-      · exact hR₁ p hp
-      · exact hR₂ p hp
-    obtain ⟨hD₃, hR₃⟩ := InferRecGroup.gap_avoid hrest (by omega)
-      (Subst.onCtx_avoidsItv hR₂ (Subst.onCtx_avoidsItv hR₁ hctx))
-      (by
-        intro β hb v hv
-        obtain ⟨s₀, hs₀, rfl⟩ := List.mem_map.mp hb
-        cases s₀ with
-        | mono t₀ =>
-          refine Subst.onTy_avoidsItv (S := S₁ ++ S₂) (τ := t₀) hRboth ?_ v hv
-          exact hspecs _ (List.mem_cons_of_mem _ hs₀)
-        | poly σ₀ => exact hspecs _ (List.mem_cons_of_mem _ hs₀) v hv)
-      (fun y hy => htfv y (List.mem_append.mpr (Or.inr hy)))
-    refine ⟨?_, ?_⟩
-    · intro p hp; simp only [List.mem_append] at hp
-      rcases hp with (hp | hp) | hp
-      · exact hD₁ p hp
-      · exact hD₂ p hp
-      · exact hD₃ p hp
-    · intro p hp; simp only [List.mem_append] at hp
-      rcases hp with (hp | hp) | hp
-      · exact hR₁ p hp
-      · exact hR₂ p hp
-      · exact hR₃ p hp
-  | @skipPoly Φ ctx σ specs e rest Φ' S hrest =>
-    intro hhi hctx hspecs htfv
-    exact InferRecGroup.gap_avoid hrest hhi hctx
-      (fun β hβ => hspecs β (List.mem_cons_of_mem _ hβ))
-      (fun y hy => htfv y (List.mem_append.mpr (Or.inr hy)))
-  /-
-  | @consPoly Φ N ctx σ specs e rest Φ₁ Φ₂ S₁ Schk S₂ τ hN he huni _hesc1 _hesc2 hrest =>
-    intro hhi hctx hspecs htfv
-    set Ys := freshVars N σ.paramCount with hYsdef
-    have hσav : ∀ v ∈ σ.body.freeVars, v < lo ∨ hi ≤ v :=
-      hspecs (.poly σ) List.mem_cons_self
-    simp only [RecSpec.tfvs] at hσav
-    have hrTfv : ∀ y ∈ (e.openTyVars Ys).tyFreeVars, y < lo ∨ hi ≤ y := by
-      intro y hy
-      rcases Expr.tyFreeVars_openTyVars hy with hh | hh
-      · exact htfv y (List.mem_append.mpr (Or.inl hh))
-      · exact Or.inr (by have := freshVars_ge y hh; omega)
-    obtain ⟨hτ, hD₁, hR₁⟩ := Infer.gap_avoid he (by omega) hctx hrTfv
-    have hle1 := Infer.frontier_le he
-    have hσOpenAvoid : ∀ v ∈ (σ.openVars Ys).freeVars, v < lo ∨ hi ≤ v := by
-      intro v hv
-      rcases Ty.freeVars_openVars_subset v hv with hh | hh
-      · exact hσav v hh
-      · exact Or.inr (by have := freshVars_ge v hh; omega)
-    obtain ⟨hD₂, hR₂⟩ := UnifyRel.gap_avoid huni hτ hσOpenAvoid
-    have hRboth : ∀ p ∈ S₁ ++ Schk, ∀ v ∈ p.2.freeVars, v < lo ∨ hi ≤ v := by
-      intro p hp; rcases List.mem_append.mp hp with hp | hp
-      · exact hR₁ p hp
-      · exact hR₂ p hp
-    obtain ⟨hD₃, hR₃⟩ := InferRecGroup.gap_avoid hrest (by omega)
-      (Subst.onCtx_avoidsItv hR₂ (Subst.onCtx_avoidsItv hR₁ hctx))
-      (by
-        intro β hb v hv
-        obtain ⟨s₀, hs₀, rfl⟩ := List.mem_map.mp hb
-        cases s₀ with
-        | mono t₀ =>
-          refine Subst.onTy_avoidsItv (S := S₁ ++ Schk) (τ := t₀) hRboth ?_ v hv
-          exact hspecs _ (List.mem_cons_of_mem _ hs₀)
-        | poly σ₀ => exact hspecs _ (List.mem_cons_of_mem _ hs₀) v hv)
-      (fun y hy => htfv y (List.mem_append.mpr (Or.inr hy)))
-    refine ⟨?_, ?_⟩
-    · intro p hp; simp only [List.mem_append] at hp
-      rcases hp with (hp | hp) | hp
-      · exact hD₁ p hp
-      · exact hD₂ p hp
-      · exact hD₃ p hp
-    · intro p hp; simp only [List.mem_append] at hp
-      rcases hp with (hp | hp) | hp
-      · exact hR₁ p hp
-      · exact hR₂ p hp
-      · exact hR₃ p hp
-  -/
-termination_by Expr.sizeRecGroup bindings
+termination_by (Expr.sizeRecGroup bindings, 0)
 decreasing_by
   all_goals (try subst_vars)
   all_goals (try simp only [Expr.size, Expr.size_openTyVars, Expr.sizeRecGroup])
@@ -6016,12 +6038,12 @@ theorem Infer.principals_mut (n : Nat) :
             refine ⟨R₂, hR₂, hty₂, hR₂K, ?_⟩
             · simpa [List.append_assoc] using hAgree
       | @letRec Φ ctx anns bindings body Φ₁ Φ₂ Φ₃ S₁ S₂ S₃ τ₃ G specs1 specs2
-          hannswf hgroup hspecs1 hG hpoly hspecs2 hbody =>
+          hannswf hgroup hstrata hpoly hspecs2 hbody =>
         exact fun hwf hbelow S₀ τe K hS₀ hKΦ hKe hKfix hty => by
           cases hty with
           | letRec hwfD hmonoD hpolyD hbodyCtxD hbodyD =>
             rename_i dspecs Gdecl L
-            subst hbodyCtxD
+            subst hbodyD
             have hsize_group : Expr.sizeRecGroup bindings < n := by
               simp only [Expr.size] at _hn
               omega
@@ -10605,7 +10627,7 @@ theorem Infer.complete_letRec {anns : List (Option PolyTy)} {bindings : List Exp
   cases hty with
   | letRec hwfD hmonoD hpolyD hbodyCtxD hbodyD =>
       rename_i dspecs Gdecl L
-      subst hbodyCtxD
+        subst hbodyD
       have hKgrp : ∀ y ∈ Expr.tyFreeVars.RecGroup.tyFreeVars bindings, y ∈ K :=
         fun y hy => hKe y (by
           simp only [Expr.tyFreeVars, List.mem_append]
@@ -12848,7 +12870,7 @@ theorem inferCore_complete_letRec {anns : List (Option PolyTy)} {bindings : List
   cases hty with
   | letRec hwfD hmonoD hpolyD hbodyCtxD hbodyD =>
       rename_i dspecs Gdecl L
-      subst hbodyCtxD
+        subst hbodyD
       have hKgrp : ∀ y ∈ Expr.tyFreeVars.RecGroup.tyFreeVars bindings, y ∈ K :=
         fun y hy => hKe y (by
           simp only [Expr.tyFreeVars, List.mem_append]
