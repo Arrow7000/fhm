@@ -141,3 +141,76 @@ Separately, the annotation features go in this order:
   lowering, and a second split of the unannotated members during inference.
   A single SCC pass per scope, ignoring edges into annotated definitions,
   would give the same results with one algorithm.
+
+
+
+## Ideas
+
+### `fails`: code that must not typecheck
+
+- [ ] Sometimes you want code in the codebase that shows an expression does
+  *not* typecheck: documenting where the type system draws a line, or pinning
+  down that a mistake is caught. Today that code has to be commented out or
+  kept in a file outside the build. Instead, something like
+
+  ```
+  fails (1 + True)
+  ```
+
+  would build only if its contents have a **type error**, and would itself be
+  an error if they typecheck.
+
+  Prior art: Idris 2's `failing "expected message"` blocks are almost exactly
+  this. Also TypeScript's `// @ts-expect-error`, Rust's `compile_fail`
+  doctests, and Haskell's `should-not-typecheck` (built on deferred type
+  errors).
+
+  Design notes:
+
+  - **Only type errors count.** Parse errors inside the block are ordinary
+    parse errors, and scope errors (unbound names, unknown type variables)
+    should be too; otherwise `fails (lenght xs)` would pass because of a
+    typo. Type mismatches are the valuable case.
+  - **Expected errors.** Idris-style, a block could also state *which* error
+    it expects, so it can't pass for the wrong reason. With errors as data
+    (see above) that could name an error kind (`fails TypeMismatch (...)`)
+    rather than match a message string. Worth considering once errors are
+    data; type mismatch alone covers the main use.
+  - **Check once, after inference.** The block is checked in its surrounding
+    context but feeds nothing back into inference, and is dropped before Core,
+    so it doesn't affect evaluation or the safety theorems.
+  - **Failures are real.** Inference is proved complete
+    (`typecheck_accepts_iff`), so rejection means no typing exists at all,
+    not that the algorithm gave up.
+  - **Open question: blocks inside functions.** What does the block assume
+    about surrounding variables whose types aren't settled yet? Matching
+    apartness (below) means treating them as flexible ("could these ever
+    unify?"), while type variables from enclosing annotations stay fixed.
+    The simplest start is to allow `fails` only at the top level, where every
+    name has its final type.
+
+### Type apartness, as a library function over `fails`
+
+- [ ] Assert that two expressions *cannot* have the same type: the opposite
+  of the usual "these have the same type" check, and often just as useful to
+  document. The meaning wanted is **apartness**, as in GHC: the two types
+  can't be unified however their type variables are chosen. Types that can
+  be reconciled (`a -> a` and `b -> Int`, say) are not apart.
+
+  This needs no special operator:
+
+  ```
+  let asTypeOf : {a} a -> a -> a = \x y -> x
+
+  fails (asTypeOf e1 e2)   -- e1 and e2 are apart
+  ```
+
+  `asTypeOf e1 e2` typechecks exactly when the two types unify, so the `fails`
+  block holds exactly when they're apart. A wrapper with a nicer name (or an
+  operator such as `<!=>`) can be defined once `fails` exists. (Comparing the
+  *values* isn't part of this: in HM, comparing values of different types is
+  already a type error.)
+
+  Building disequality into inference as a constraint instead (like Prolog's
+  `dif/2`) would be much harder, and a type such as "`x`'s type differs from
+  `y`'s" in `\x y -> x <!=> y` can't be expressed as a plain HM type.
