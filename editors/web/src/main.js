@@ -418,7 +418,7 @@ function themes() {
   for (const dark of [false, true]) {
     const colors = dark
       ? ["a49f92", "e48b65", "d9b87b", "a6bc8f", "93b7bd"]
-      : ["8d887a", "ad482b", "8b682a", "526744", "346c79"];
+      : ["706b61", "ad482b", "8b682a", "526744", "346c79"];
     monaco.editor.defineTheme(`fhm-${dark ? "dark" : "light"}`, {
       base: dark ? "vs-dark" : "vs",
       inherit: true,
@@ -454,6 +454,10 @@ function theme(value) {
   const label = `Switch to ${value === "dark" ? "light" : "dark"} theme`;
   $("theme").setAttribute("aria-label", label);
   $("theme").title = label;
+  $("theme").querySelector("svg").innerHTML =
+    value === "dark"
+      ? '<circle cx="12" cy="12" r="4"/><path d="M12 2v2m0 16v2M2 12h2m16 0h2M5 5l1.5 1.5m11 11L19 19M5 19l1.5-1.5m11-11L19 5"/>'
+      : '<path d="M20.8 13.2A9 9 0 0 1 10.8 3.2 9 9 0 1 0 20.8 13.2Z"/>';
   document.querySelector('meta[name="theme-color"]').content =
     value === "dark" ? "#24231f" : "#f4f1e9";
 }
