@@ -592,7 +592,8 @@ The runtime `letRec` group remains the SCC selected by the Surface pass.  For
 type inference, however, a complete annotation is a dependency cut.  The graph
 below therefore retains edges only between unannotated members.  Annotated
 vertices are isolated by construction and discarded after Kosaraju; the
-remaining components are ordered dependency-first by Kahn.
+remaining components are ordered dependency-first by the proved finite
+reachability ranking in `Scc.rankedSccs`.
 
 This second partition is intentionally derived from Core de Bruijn references,
 not carried as elaboration metadata. -/
@@ -601,6 +602,13 @@ def RecGroup.isUnsignedAt (anns : List (Option PolyTy)) (i : Nat) : Bool :=
   match anns[i]? with
   | some none => true
   | _ => false
+
+theorem RecGroup.isUnsignedAt_eq_true_iff
+    (anns : List (Option PolyTy)) (i : Nat) :
+    RecGroup.isUnsignedAt anns i = true ↔ RecGroups.UnsignedAt anns i := by
+  simp only [RecGroup.isUnsignedAt, RecGroups.UnsignedAt]
+  cases anns[i]? <;> simp
+  case some ann => cases ann <;> simp
 
 def RecGroup.inferenceSucc (anns : List (Option PolyTy))
     (bindings : List Expr) (i : Nat) : List Nat :=
@@ -618,68 +626,201 @@ def RecGroup.inferenceDigraph (anns : List (Option PolyTy))
     ((RecGroup.inferenceSucc anns bindings i.val).filterMap fun j =>
       if h : j < bindings.length then some ⟨j, h⟩ else none).toFinset
 
-private def RecGroup.inferenceSccIndexSets (anns : List (Option PolyTy))
+theorem RecGroup.mem_inferenceDigraph_succ_iff
+    {anns : List (Option PolyTy)} {bindings : List Expr}
+    (source target : Fin bindings.length) :
+    target ∈ (RecGroup.inferenceDigraph anns bindings).succ source ↔
+      target.val ∈ RecGroup.inferenceSucc anns bindings source.val := by
+  simp only [RecGroup.inferenceDigraph, List.mem_toFinset, List.mem_filterMap]
+  constructor
+  · rintro ⟨member, hmember, hsome⟩
+    split at hsome
+    · have hval := congrArg Fin.val (Option.some.inj hsome)
+      simpa [← hval] using hmember
+    · simp at hsome
+  · intro hmember
+    exact ⟨target.val, hmember, by simp [target.isLt]⟩
+
+/-- The fine residual-SCC schedule.  `rankedSccs` orders Kosaraju components
+by a proved finite reachability rank, after which annotated singleton
+components erase to empty and are discarded. -/
+private def RecGroup.projectInferenceComponent (anns : List (Option PolyTy))
+    (component : List (Fin n)) : List Nat :=
+  (component.map Fin.val).filter (fun i => RecGroup.isUnsignedAt anns i)
+
+private def RecGroup.inferenceSccProjected (anns : List (Option PolyTy))
     (bindings : List Expr) : List (List Nat) :=
-  (Scc.kosaraju (RecGroup.inferenceDigraph anns bindings)).map fun component =>
-    (component.map Fin.val).filter (fun i => RecGroup.isUnsignedAt anns i)
+  (Scc.rankedSccs (RecGroup.inferenceDigraph anns bindings)).map
+    (RecGroup.projectInferenceComponent anns)
 
-private def RecGroup.componentDependsOn (succ : Nat → List Nat)
-    (dependent dependency : List Nat) : Bool :=
-  dependent.any fun i => (succ i).any fun j => j ∈ dependency
-
-private def RecGroup.sccBeforeEdges (succ : Nat → List Nat)
-    (components : List (List Nat)) : List (Nat × Nat) :=
-  let count := components.length
-  (List.range count).flatMap fun dependent =>
-    (List.range count).filterMap fun dependency =>
-      if dependent = dependency then none
-      else
-        match components[dependent]?, components[dependency]? with
-        | some dependentMembers, some dependencyMembers =>
-            if RecGroup.componentDependsOn succ dependentMembers dependencyMembers then
-              some (dependency, dependent)
-            else none
-        | _, _ => none
-
-private def RecGroup.indegreeGet (indegrees : List Nat) (i : Nat) : Nat :=
-  indegrees[i]?.getD 0
-
-private def RecGroup.indegreeSet (indegrees : List Nat) (i value : Nat) : List Nat :=
-  indegrees.mapIdx fun j old => if j = i then value else old
-
-private def RecGroup.kahnGo (beforeEdges : List (Nat × Nat)) :
-    Nat → List Nat → List Nat → List Nat → List Nat
-  | 0, _indegrees, _ready, acc => acc
-  | _fuel + 1, _indegrees, [], acc => acc
-  | fuel + 1, indegrees, component :: ready, acc =>
-      let acc' := acc ++ [component]
-      let dependents := beforeEdges.filterMap fun edge =>
-        if edge.1 = component then some edge.2 else none
-      let indegrees' := dependents.foldl (fun state dependent =>
-        RecGroup.indegreeSet state dependent
-          (RecGroup.indegreeGet state dependent - 1)) indegrees
-      let newlyReady := dependents.filter fun dependent =>
-        RecGroup.indegreeGet indegrees' dependent = 0 &&
-          dependent ∉ acc' && dependent ∉ ready
-      RecGroup.kahnGo beforeEdges fuel indegrees' (ready ++ newlyReady) acc'
-
-private def RecGroup.kahnOrder (componentCount : Nat)
-    (beforeEdges : List (Nat × Nat)) : List Nat :=
-  let indegrees := (List.range componentCount).map fun component =>
-    beforeEdges.filter (fun edge => edge.2 = component) |>.length
-  let ready := (List.range componentCount).filter fun component =>
-    RecGroup.indegreeGet indegrees component = 0
-  RecGroup.kahnGo beforeEdges (componentCount + 1) indegrees ready []
-
-/-- Unannotated inference SCCs in dependency-first order.  Complete annotated
-members do not occur in the result and do not induce edges between components. -/
 def RecGroup.inferenceSccs (anns : List (Option PolyTy))
     (bindings : List Expr) : List (List Nat) :=
-  let components := (RecGroup.inferenceSccIndexSets anns bindings).filter (!·.isEmpty)
-  let succ := RecGroup.inferenceSucc anns bindings
-  let order := RecGroup.kahnOrder components.length
-    (RecGroup.sccBeforeEdges succ components)
-  order.filterMap fun i => components[i]?
+  (RecGroup.inferenceSccProjected anns bindings).filter (!·.isEmpty)
+
+private theorem RecGroup.inferenceSccProjected_flatten
+    (anns : List (Option PolyTy)) (bindings : List Expr) :
+    (RecGroup.inferenceSccProjected anns bindings).flatten =
+      ((Scc.rankedSccs (RecGroup.inferenceDigraph anns bindings)).flatten.map Fin.val).filter
+        (fun i => RecGroup.isUnsignedAt anns i) := by
+  simp only [RecGroup.inferenceSccProjected]
+  induction Scc.rankedSccs (RecGroup.inferenceDigraph anns bindings) with
+  | nil => simp
+  | cons component components ih =>
+    simp only [List.map_cons, List.flatten_cons, List.map_append, List.filter_append, ih,
+      RecGroup.projectInferenceComponent]
+
+private theorem RecGroup.inferenceSccs_flatten
+    (anns : List (Option PolyTy)) (bindings : List Expr) :
+    (RecGroup.inferenceSccs anns bindings).flatten =
+      (RecGroup.inferenceSccProjected anns bindings).flatten := by
+  simp only [RecGroup.inferenceSccs]
+  induction RecGroup.inferenceSccProjected anns bindings with
+  | nil => simp
+  | cons component components ih =>
+    cases component <;> simp [ih]
+
+private theorem RecGroup.inferenceSccs_flatten_nodup
+    (anns : List (Option PolyTy)) (bindings : List Expr) :
+    (RecGroup.inferenceSccs anns bindings).flatten.Nodup := by
+  rw [RecGroup.inferenceSccs_flatten, RecGroup.inferenceSccProjected_flatten]
+  have hfin := (Scc.rankedSccs_flatten_nodup
+    (RecGroup.inferenceDigraph anns bindings)).map (fun a b hab => Fin.ext hab)
+  exact hfin.filter _
+
+private theorem RecGroup.inferenceSccs_nonempty
+    (anns : List (Option PolyTy)) (bindings : List Expr) :
+    ∀ component ∈ RecGroup.inferenceSccs anns bindings, component ≠ [] := by
+  intro component hcomponent hempty
+  subst component
+  simp [RecGroup.inferenceSccs] at hcomponent
+
+private theorem RecGroup.inferenceSccs_bounded
+    (anns : List (Option PolyTy)) (bindings : List Expr) :
+    ∀ member ∈ (RecGroup.inferenceSccs anns bindings).flatten,
+      member < bindings.length := by
+  intro member hmember
+  rw [RecGroup.inferenceSccs_flatten,
+    RecGroup.inferenceSccProjected_flatten] at hmember
+  obtain ⟨hmember, _⟩ := List.mem_filter.mp hmember
+  obtain ⟨vertex, _hvertex, hval⟩ := List.mem_map.mp hmember
+  exact hval ▸ vertex.isLt
+
+private theorem RecGroup.mem_inferenceSccs_flatten_iff
+    (anns : List (Option PolyTy)) (bindings : List Expr)
+    {member : Nat} (hbound : member < bindings.length) :
+    member ∈ (RecGroup.inferenceSccs anns bindings).flatten ↔
+      RecGroups.UnsignedAt anns member := by
+  rw [RecGroup.inferenceSccs_flatten,
+    RecGroup.inferenceSccProjected_flatten, List.mem_filter]
+  constructor
+  · intro h
+    exact (RecGroup.isUnsignedAt_eq_true_iff anns member).mp h.2
+  · intro hu
+    refine ⟨?_, (RecGroup.isUnsignedAt_eq_true_iff anns member).mpr hu⟩
+    let vertex : Fin bindings.length := ⟨member, hbound⟩
+    have hcover := (Scc.kosaraju_sound
+      (RecGroup.inferenceDigraph anns bindings)).cover vertex
+    have hranked : vertex ∈
+        (Scc.rankedSccs (RecGroup.inferenceDigraph anns bindings)).flatten := by
+      obtain ⟨component, hcomponent, hvertex⟩ := hcover
+      apply List.mem_flatten.mpr
+      refine ⟨component, (List.Perm.mem_iff
+        (Scc.rankedSccs_perm (RecGroup.inferenceDigraph anns bindings))).mpr hcomponent,
+        hvertex⟩
+    exact List.mem_map.mpr ⟨vertex, hranked, rfl⟩
+
+private def RecGroup.NoForwardEdge (anns : List (Option PolyTy))
+    (bindings : List Expr) (earlier later : List Nat) : Prop :=
+  ∀ source ∈ earlier, ∀ target ∈ later,
+    ∀ (hsource : source < bindings.length) (htarget : target < bindings.length),
+      (⟨target, htarget⟩ : Fin bindings.length) ∉
+        (RecGroup.inferenceDigraph anns bindings).succ ⟨source, hsource⟩
+
+private theorem RecGroup.inferenceSccs_noForward
+    (anns : List (Option PolyTy)) (bindings : List Expr) :
+    (RecGroup.inferenceSccs anns bindings).Pairwise
+      (RecGroup.NoForwardEdge anns bindings) := by
+  let graph := RecGroup.inferenceDigraph anns bindings
+  have hranked : (Scc.rankedSccs graph).Pairwise fun earlier later =>
+      ∀ source ∈ earlier, ∀ target ∈ later, target ∉ graph.succ source := by
+    rw [List.pairwise_iff_getElem]
+    intro i j hi hj hij source hsource target htarget hedge
+    have hbefore := Scc.rankedSccs_dependency_first graph
+      (dependentStage := i) (dependencyStage := j)
+      (dependent := (Scc.rankedSccs graph)[i])
+      (dependency := (Scc.rankedSccs graph)[j])
+      (source := source) (target := target)
+      (List.getElem?_eq_getElem hi) (List.getElem?_eq_getElem hj)
+      hsource htarget hedge
+    omega
+  have hprojected : (RecGroup.inferenceSccProjected anns bindings).Pairwise
+      (RecGroup.NoForwardEdge anns bindings) := by
+    apply hranked.map (RecGroup.projectInferenceComponent anns)
+    intro earlier later hrel source hsource target htarget hsourceBound htargetBound hedge
+    have hsourceMap := (List.mem_filter.mp hsource).1
+    have htargetMap := (List.mem_filter.mp htarget).1
+    obtain ⟨sourceFin, hsourceFin, hsourceVal⟩ := List.mem_map.mp hsourceMap
+    obtain ⟨targetFin, htargetFin, htargetVal⟩ := List.mem_map.mp htargetMap
+    have hedge' : targetFin ∈ graph.succ sourceFin := by
+      have hsEq : sourceFin = ⟨source, hsourceBound⟩ := Fin.ext hsourceVal
+      have htEq : targetFin = ⟨target, htargetBound⟩ := Fin.ext htargetVal
+      simpa [hsEq, htEq, graph] using hedge
+    exact hrel sourceFin hsourceFin targetFin htargetFin hedge'
+  exact hprojected.filter _
+
+/-- The fine residual scheduler always returns a valid dependency-first SCC
+partition.  The only precondition is the constructor's ordinary parallel-list
+length invariant. -/
+theorem RecGroup.inferenceSccs_valid
+    {anns : List (Option PolyTy)} {bindings : List Expr}
+    (hlength : anns.length = bindings.length) :
+    RecGroups.ValidResidualGroups anns bindings
+      (RecGroup.inferenceSccs anns bindings) := by
+  refine {
+    length := hlength
+    nonempty := RecGroup.inferenceSccs_nonempty anns bindings
+    flatten_nodup := RecGroup.inferenceSccs_flatten_nodup anns bindings
+    bounded := RecGroup.inferenceSccs_bounded anns bindings
+    covers_unsigned := ?_
+    dependencies_first := ?_ }
+  · intro member hbound
+    exact RecGroup.mem_inferenceSccs_flatten_iff anns bindings hbound
+  · intro stage dependencyStage component dependencyComponent source target rhs
+      hcomponent hdependencyComponent hsource htarget hrhs href
+    by_contra hnotle
+    have hstageLt : stage < dependencyStage := Nat.lt_of_not_ge hnotle
+    have hsourceFlat : source ∈
+        (RecGroup.inferenceSccs anns bindings).flatten :=
+      List.mem_flatten.mpr ⟨component, List.mem_of_getElem? hcomponent, hsource⟩
+    have htargetFlat : target ∈
+        (RecGroup.inferenceSccs anns bindings).flatten :=
+      List.mem_flatten.mpr
+        ⟨dependencyComponent, List.mem_of_getElem? hdependencyComponent, htarget⟩
+    have hsourceBound := RecGroup.inferenceSccs_bounded anns bindings
+      source hsourceFlat
+    have htargetBound := RecGroup.inferenceSccs_bounded anns bindings
+      target htargetFlat
+    have hsourceUnsigned :=
+      (RecGroup.mem_inferenceSccs_flatten_iff anns bindings hsourceBound).mp
+        hsourceFlat
+    have htargetUnsigned :=
+      (RecGroup.mem_inferenceSccs_flatten_iff anns bindings htargetBound).mp
+        htargetFlat
+    have hsucc : target ∈ RecGroup.inferenceSucc anns bindings source := by
+      have hsourceBool := (RecGroup.isUnsignedAt_eq_true_iff anns source).mpr hsourceUnsigned
+      have htargetBool := (RecGroup.isUnsignedAt_eq_true_iff anns target).mpr htargetUnsigned
+      simp only [RecGroup.inferenceSucc, hsourceBool, if_true, hrhs, List.mem_filter]
+      exact ⟨href, htargetBool⟩
+    have hedge : (⟨target, htargetBound⟩ : Fin bindings.length) ∈
+        (RecGroup.inferenceDigraph anns bindings).succ ⟨source, hsourceBound⟩ :=
+      (RecGroup.mem_inferenceDigraph_succ_iff _ _).mpr hsucc
+    have hpairwise := RecGroup.inferenceSccs_noForward anns bindings
+    have hnoedge := (List.pairwise_iff_getElem.mp hpairwise) stage dependencyStage
+      (List.getElem?_eq_some_iff.mp hcomponent).1
+      (List.getElem?_eq_some_iff.mp hdependencyComponent).1 hstageLt
+    rw [(List.getElem?_eq_some_iff.mp hcomponent).2,
+      (List.getElem?_eq_some_iff.mp hdependencyComponent).2] at hnoedge
+    exact hnoedge source hsource target htarget hsourceBound htargetBound hedge
 
 theorem Expr.mem_flatMap_tyFreeVars_iff_recGroup {bindings : List Expr} {x : Nat} :
     x ∈ bindings.flatMap Expr.tyFreeVars ↔

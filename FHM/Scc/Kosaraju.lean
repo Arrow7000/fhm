@@ -21,7 +21,9 @@ Design notes:
 - Edges are `succ : α → Finset α` (AbstractWalk-style).
 - Executable DFS needs `[LinearOrder α]` so we can `Finset.sort` (computable);
   `Finset.toList` is noncomputable. Spec theorems do **not** need `LinearOrder`.
-- No topo here — condensation ordering stays with Kahn in SurfaceBridge.
+- `kosaraju` itself remains an unordered partition. `rankedSccs` below provides
+  a proved dependency-first order; SurfaceBridge retains its existing Kahn
+  condensation implementation.
 -/
 
 namespace Scc
@@ -3368,6 +3370,193 @@ theorem kosaraju_sound (g : Digraph α) :
     cover := kosaraju_cover g
     sameScc := kosaraju_sameScc g
     maxScc := kosaraju_maxScc g }
+
+/-- A fresh, sufficiently fuelled DFS collect enumerates exactly the vertices
+reachable from its root.  This public interface hides the `ReachIn` machinery
+used internally by the Kosaraju proof and is useful for executable component
+rankings. -/
+theorem mem_dfsCollect_card_empty_iff_reach (g : Digraph α) (root w : α) :
+    w ∈ (dfsCollect g (Fintype.card α) ∅ [] root).2 ↔ Reach g root w := by
+  constructor
+  · intro hw
+    have h := dfsCollect_mem_reach (g := g) (Fintype.card α) ∅ [] root w hw
+    simpa using h
+  · intro hw
+    apply dfsCollect_reachIn_mem (g := g) (Fintype.card α) ∅ root w
+    · simp
+    · simp
+    · simpa [remaining] using (ReachIn_univ (g := g)).mpr hw
+
+/-- A fresh DFS collect never contains duplicates. -/
+theorem dfsCollect_card_empty_nodup (g : Digraph α) (root : α) :
+    (dfsCollect g (Fintype.card α) ∅ [] root).2.Nodup :=
+  (dfsCollect_fresh_props (g := g) (Fintype.card α) ∅ root).1
+
+/-- Executable enumeration of the vertices reachable from `root`. -/
+def reachList (g : Digraph α) (root : α) : List α :=
+  (dfsCollect g (Fintype.card α) ∅ [] root).2
+
+/-- A finite reachability rank.  Along a one-way edge between distinct SCCs,
+this rank strictly decreases. -/
+def reachRank (g : Digraph α) (root : α) : Nat :=
+  (reachList g root).length
+
+theorem mem_reachList_iff (g : Digraph α) (root w : α) :
+    w ∈ reachList g root ↔ Reach g root w :=
+  mem_dfsCollect_card_empty_iff_reach g root w
+
+theorem reachList_nodup (g : Digraph α) (root : α) :
+    (reachList g root).Nodup :=
+  dfsCollect_card_empty_nodup g root
+
+theorem reachRank_lt_of_reach_not_reach (g : Digraph α) {source target : α}
+    (hforward : Reach g source target) (hbackward : ¬ Reach g target source) :
+    reachRank g target < reachRank g source := by
+  have hsubset : (reachList g target).toFinset ⊆ (reachList g source).toFinset := by
+    intro w hw
+    rw [List.mem_toFinset, mem_reachList_iff] at hw ⊢
+    exact Reach_trans hforward hw
+  have hsource_mem : source ∈ (reachList g source).toFinset := by
+    rw [List.mem_toFinset, mem_reachList_iff]
+    exact Reach.refl
+  have hsource_not_mem : source ∉ (reachList g target).toFinset := by
+    rw [List.mem_toFinset, mem_reachList_iff]
+    exact hbackward
+  have hne : (reachList g target).toFinset ≠ (reachList g source).toFinset := by
+    intro heq
+    exact hsource_not_mem (heq ▸ hsource_mem)
+  have hcard := Finset.card_lt_card
+    ((Finset.ssubset_iff_subset_ne).2 ⟨hsubset, hne⟩)
+  simpa only [reachRank, List.toFinset_card_of_nodup (reachList_nodup g target),
+    List.toFinset_card_of_nodup (reachList_nodup g source)] using hcard
+
+theorem reachRank_eq_of_mutual (g : Digraph α) {a b : α}
+    (hmutual : Mutual g a b) : reachRank g a = reachRank g b := by
+  have hsets : (reachList g a).toFinset = (reachList g b).toFinset := by
+    ext w
+    simp only [List.mem_toFinset, mem_reachList_iff]
+    constructor
+    · exact fun haw => Reach_trans hmutual.2 haw
+    · exact fun hbw => Reach_trans hmutual.1 hbw
+  have hcard := congrArg Finset.card hsets
+  simpa only [reachRank, List.toFinset_card_of_nodup (reachList_nodup g a),
+    List.toFinset_card_of_nodup (reachList_nodup g b)] using hcard
+
+/-- Reachability rank of an SCC, represented by any first member. -/
+def componentReachRank (g : Digraph α) : List α → Nat
+  | [] => 0
+  | root :: _ => reachRank g root
+
+/-- SCCs sorted dependency-first by their finite reachability rank. -/
+def rankedSccs (g : Digraph α) : List (List α) :=
+  (kosaraju g).mergeSort fun a b => decide (componentReachRank g a ≤ componentReachRank g b)
+
+theorem rankedSccs_perm (g : Digraph α) :
+    (rankedSccs g).Perm (kosaraju g) :=
+  List.mergeSort_perm _ _
+
+theorem rankedSccs_flatten_nodup (g : Digraph α) :
+    (rankedSccs g).flatten.Nodup := by
+  have hperm := (rankedSccs_perm g).flatten
+  exact hperm.nodup_iff.mpr (kosaraju_flatten_nodup g)
+
+omit [LinearOrder α] in
+private theorem ValidSccPartition.component_unique
+    {g : Digraph α} {components : List (List α)}
+    (hvalid : ValidSccPartition g components)
+    {left right : List α} (hleft : left ∈ components) (hright : right ∈ components)
+    {vertex : α} (hinLeft : vertex ∈ left) (hinRight : vertex ∈ right) :
+    left = right := by
+  obtain ⟨i, hi, hgeti⟩ := List.mem_iff_getElem.mp hleft
+  obtain ⟨j, hj, hgetj⟩ := List.mem_iff_getElem.mp hright
+  by_cases hij : i = j
+  · subst j
+    simpa [hgeti] using hgetj
+  · have hpairwise := (List.nodup_flatten.mp hvalid.flatten_nodup).2
+    rcases Nat.lt_or_gt_of_ne hij with hij | hji
+    · have hdisjoint := (List.pairwise_iff_getElem.mp hpairwise) i j hi hj hij
+      rw [hgeti, hgetj] at hdisjoint
+      exact (List.disjoint_left.mp hdisjoint hinLeft hinRight).elim
+    · have hdisjoint := (List.pairwise_iff_getElem.mp hpairwise) j i hj hi hji
+      rw [hgetj, hgeti] at hdisjoint
+      exact (List.disjoint_left.mp hdisjoint hinRight hinLeft).elim
+
+omit [LinearOrder α] in
+private theorem ValidSccPartition.component_eq_of_mutual
+    {g : Digraph α} {components : List (List α)}
+    (hvalid : ValidSccPartition g components)
+    {left right : List α} (hleft : left ∈ components) (hright : right ∈ components)
+    {a b : α} (ha : a ∈ left) (hb : b ∈ right) (hmutual : Mutual g a b) :
+    left = right := by
+  obtain ⟨component, hcomponent, ha', hb'⟩ := hvalid.maxScc a b hmutual
+  have hleftEq := hvalid.component_unique hleft hcomponent ha ha'
+  have hrightEq := hvalid.component_unique hright hcomponent hb hb'
+  exact hleftEq.trans hrightEq.symm
+
+private theorem componentReachRank_eq_of_mem
+    {g : Digraph α} {components : List (List α)}
+    (hvalid : ValidSccPartition g components)
+    {component : List α} (hcomponent : component ∈ components)
+    {member : α} (hmember : member ∈ component) :
+    componentReachRank g component = reachRank g member := by
+  cases component with
+  | nil => cases hmember
+  | cons root rest =>
+    simp only [componentReachRank]
+    exact reachRank_eq_of_mutual g
+      (hvalid.sameScc (root :: rest) hcomponent root List.mem_cons_self member hmember)
+
+theorem rankedSccs_dependency_first (g : Digraph α) :
+    ∀ {dependentStage dependencyStage : Nat} {dependent dependency : List α}
+      {source target : α},
+      (rankedSccs g)[dependentStage]? = some dependent →
+      (rankedSccs g)[dependencyStage]? = some dependency →
+      source ∈ dependent → target ∈ dependency →
+      target ∈ g.succ source → dependencyStage ≤ dependentStage := by
+  intro dependentStage dependencyStage dependent dependency source target
+    hdependent hdependency hsource htarget hedge
+  have hvalid := kosaraju_sound g
+  have hdependentMem : dependent ∈ kosaraju g :=
+    (List.Perm.mem_iff (rankedSccs_perm g)).mp (List.mem_of_getElem? hdependent)
+  have hdependencyMem : dependency ∈ kosaraju g :=
+    (List.Perm.mem_iff (rankedSccs_perm g)).mp (List.mem_of_getElem? hdependency)
+  by_contra hnotle
+  have hstageLt : dependentStage < dependencyStage := Nat.lt_of_not_ge hnotle
+  have hdepBound := (List.getElem?_eq_some_iff.mp hdependent).1
+  have hdependencyBound := (List.getElem?_eq_some_iff.mp hdependency).1
+  have hsorted : List.Pairwise
+      (fun a b => componentReachRank g a ≤ componentReachRank g b) (rankedSccs g) := by
+    have hsortedB := List.pairwise_mergeSort
+      (le := fun a b : List α => decide (componentReachRank g a ≤ componentReachRank g b))
+      (fun a b c hab hbc => by
+        simp only [decide_eq_true_eq] at hab hbc ⊢
+        exact Nat.le_trans hab hbc)
+      (fun a b => by
+        simp only [Bool.or_eq_true, decide_eq_true_eq]
+        exact Nat.le_total _ _)
+      (kosaraju g)
+    simpa only [rankedSccs, decide_eq_true_eq] using hsortedB
+  have hranks := (List.pairwise_iff_getElem.mp hsorted) dependentStage dependencyStage
+    hdepBound hdependencyBound hstageLt
+  rw [(List.getElem?_eq_some_iff.mp hdependent).2,
+    (List.getElem?_eq_some_iff.mp hdependency).2] at hranks
+  have hforward : Reach g source target := Reach.tail hedge Reach.refl
+  have hbackward : ¬ Reach g target source := by
+    intro hback
+    have heq := hvalid.component_eq_of_mutual hdependentMem hdependencyMem hsource htarget
+      ⟨hforward, hback⟩
+    subst dependency
+    have hnodup := rankedSccs_flatten_nodup g
+    have hpairwise := (List.nodup_flatten.mp hnodup).2
+    have hdisjoint := (List.pairwise_iff_getElem.mp hpairwise)
+      dependentStage dependencyStage hdepBound hdependencyBound hstageLt
+    rw [(List.getElem?_eq_some_iff.mp hdependent).2,
+      (List.getElem?_eq_some_iff.mp hdependency).2] at hdisjoint
+    exact (List.disjoint_left.mp hdisjoint hsource hsource).elim
+  have hrankLt := reachRank_lt_of_reach_not_reach g hforward hbackward
+  rw [componentReachRank_eq_of_mem hvalid hdependentMem hsource,
+    componentReachRank_eq_of_mem hvalid hdependencyMem htarget] at hranks
+  omega
 
 /-! ### Smoke tests (`α := Fin n`) -/
 
