@@ -11546,8 +11546,9 @@ def inferWithTypesCore (K : List Nat) (Φ : Nat) (ctx : Ctx) (e : Expr) :
       -- Complete signatures are dependency cuts: solve unsigned members,
       -- generalise them, then check signed members under the final schemes.
       if hwf : (∀ a ∈ anns, ∀ σ, a = some σ → Ty.bvarsBelow σ.paramCount σ.body = true) then
-        if hgroups : RecGroups.ValidResidualGroups anns bindings
-            (RecGroup.inferenceSccs anns bindings) then
+        if hgroupsB : RecGroups.validResidualGroupsB anns bindings
+            (RecGroup.inferenceSccs anns bindings) = true then
+          let hgroups := RecGroups.validResidualGroupsB_sound hgroupsB
           match inferRecStrataWithTypesCore K (RecGroup.rigidVars anns bindings) bindings
               (Φ + bindings.length) ctx (RecSpec.init Φ anns) [] []
               (RecGroup.inferenceSccs anns bindings) with
