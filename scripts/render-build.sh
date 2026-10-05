@@ -39,7 +39,13 @@ npm --prefix editors/web test
 npm --prefix editors/web run build
 
 if [[ -n "$cache_dir" ]]; then
-  echo "==> Saving Lean toolchain and native Lake artifacts for future deploys"
-  tar -czf "$cache_dir/$cache_key.tar.gz.tmp" .elan .lake
-  mv "$cache_dir/$cache_key.tar.gz.tmp" "$cache_dir/$cache_key.tar.gz"
+  # UI-only deploys restore the same executable. Keep that archive instead of
+  # spending minutes recompressing an unchanged toolchain and native build.
+  if [[ ! -f "$cache_dir/$cache_key.tar.gz" || ".lake/build/bin/fhm" -nt "$cache_dir/$cache_key.tar.gz" ]]; then
+    echo "==> Saving Lean toolchain and native Lake artifacts for future deploys"
+    tar -czf "$cache_dir/$cache_key.tar.gz.tmp" .elan .lake
+    mv "$cache_dir/$cache_key.tar.gz.tmp" "$cache_dir/$cache_key.tar.gz"
+  else
+    echo "==> Native executable unchanged; retaining the existing Lake cache"
+  fi
 fi

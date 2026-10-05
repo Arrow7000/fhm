@@ -638,6 +638,20 @@ async function main() {
     glyphMargin: false,
   });
   theme(storage.get("theme") === "dark" ? "dark" : "light");
+  // Register these inside Monaco too: its insert-line command otherwise eats
+  // Cmd/Ctrl+Enter before the page-level shortcut can see the event.
+  editor.addAction({
+    id: "fhm.run",
+    label: "Run FHM program",
+    keybindings: [monaco.KeyMod.CtrlCmd | monaco.KeyCode.Enter],
+    run: runProgram,
+  });
+  editor.addAction({
+    id: "fhm.share",
+    label: "Share FHM program",
+    keybindings: [monaco.KeyMod.CtrlCmd | monaco.KeyCode.KeyS],
+    run: share,
+  });
   metadata();
   initialOutput();
   save();

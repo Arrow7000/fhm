@@ -28,7 +28,10 @@ async function program(p, text) {
 try {
   await page.goto(url);
   await ready();
-  await page.locator("#run").click();
+  await page.locator(".monaco-editor textarea").focus();
+  await page.keyboard.press(
+    process.platform === "darwin" ? "Meta+Enter" : "Control+Enter",
+  );
   await page.locator(".result-value").waitFor();
   assert.equal(
     await page.locator(".result-value").innerText(),
@@ -36,7 +39,10 @@ try {
   );
   await page.locator("#tab-types").click();
   assert.equal(await page.locator("#types .binding-row").count(), 3);
-  await page.locator("#share").click();
+  await page.locator(".monaco-editor textarea").focus();
+  await page.keyboard.press(
+    process.platform === "darwin" ? "Meta+s" : "Control+s",
+  );
   await page.locator("#share-dialog[open]").waitFor();
   const sharedUrl = await page.locator("#share-link").inputValue();
   assert.equal(
