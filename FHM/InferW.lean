@@ -1865,7 +1865,7 @@ theorem Infer.frontier_le {Φ ctx e Φ' S τ} (h : Infer Φ ctx e Φ' S τ) : Φ
     omega
 termination_by (e.size, 0)
 decreasing_by
-  all_goals (try subst_vars; simp_wf; simp only [Expr.size, Expr.size_openTyVars]; omega)
+  all_goals (try subst_vars; simp only [Expr.size, Expr.size_openTyVars]; omega)
 theorem InferBranches.frontier_le {Φ ctx scrutTy ρ brs Φ' S}
     (h : InferBranches Φ ctx scrutTy ρ brs Φ' S) :
     Φ ≤ Φ' := by
@@ -1877,7 +1877,7 @@ theorem InferBranches.frontier_le {Φ ctx scrutTy ρ brs Φ' S}
     have := Infer.frontier_le hbody; have := InferBranches.frontier_le hrest; omega
 termination_by (Expr.sizeBranches brs, 0)
 decreasing_by
-  all_goals (try subst_vars; simp_wf; simp only [Expr.sizeBranches]; omega)
+  all_goals (try subst_vars; simp only [Expr.sizeBranches]; omega)
 theorem InferRecComponent.frontier_le {members memberIndex Φ ctx bindings specs Φ' S}
     (h : InferRecComponent members memberIndex Φ ctx bindings specs Φ' S) : Φ ≤ Φ' := by
   match h with
@@ -1890,7 +1890,7 @@ theorem InferRecComponent.frontier_le {members memberIndex Φ ctx bindings specs
   | .skipPoly hrest => exact InferRecComponent.frontier_le hrest
 termination_by (Expr.sizeRecGroup bindings, 0)
 decreasing_by
-  all_goals (try subst_vars; simp_wf; simp only [Expr.sizeRecGroup]; omega)
+  all_goals (simp only [Expr.sizeRecGroup]; omega)
 theorem InferRecStrata.frontier_le {rigid bindings Φ ctx specs done G groups Φ' S specs' G'}
     (h : InferRecStrata rigid bindings Φ ctx specs done G groups Φ' S specs' G') : Φ ≤ Φ' := by
   match h with
@@ -1911,7 +1911,7 @@ theorem InferRecGroup.frontier_le {Φ ctx bindings specs Φ' S}
   | .skipPoly hrest => exact InferRecGroup.frontier_le hrest
 termination_by (Expr.sizeRecGroup bindings, 0)
 decreasing_by
-  all_goals (try subst_vars; simp_wf; simp only [Expr.sizeRecGroup]; omega)
+  all_goals (simp only [Expr.sizeRecGroup]; omega)
 theorem InferRecGroupPoly.frontier_le {Φ ctx bindings specs Φ' S}
     (h : InferRecGroupPoly Φ ctx bindings specs Φ' S) : Φ ≤ Φ' := by
   match h with
@@ -1923,7 +1923,7 @@ theorem InferRecGroupPoly.frontier_le {Φ ctx bindings specs Φ' S}
     omega
 termination_by (Expr.sizeRecGroup bindings, 0)
 decreasing_by
-  all_goals (try subst_vars; simp_wf; simp only [Expr.sizeRecGroup, Expr.size_openTyVars]; omega)
+  all_goals (simp only [Expr.sizeRecGroup, Expr.size_openTyVars]; omega)
 end
 
 /-- Component inference walks the aligned binding/specification lists. -/
@@ -2240,7 +2240,7 @@ theorem Infer.lc {Φ ctx e Φ' S τ} (h : Infer Φ ctx e Φ' S τ) :
     · exact hbody_s p hp
 termination_by (e.size, 0)
 decreasing_by
-  all_goals (try subst_vars; simp_wf; try simp only [Expr.size, Expr.size_openTyVars]; omega)
+  all_goals (try subst_vars; try simp only [Expr.size, Expr.size_openTyVars]; omega)
 theorem InferBranches.lc {Φ ctx scrutTy ρ brs Φ' S}
     (h : InferBranches Φ ctx scrutTy ρ brs Φ' S)
     (hctx : CtxWF ctx) (hscrutTy : scrutTy.IsLC) (hρ : ρ.IsLC) :
@@ -2286,7 +2286,7 @@ theorem InferBranches.lc {Φ ctx scrutTy ρ brs Φ' S}
       · exact hS₃ p hp
 termination_by (Expr.sizeBranches brs, 0)
 decreasing_by
-  all_goals (try subst_vars; simp_wf; try simp only [Expr.sizeBranches]; omega)
+  all_goals (try subst_vars; try simp only [Expr.sizeBranches]; omega)
 theorem InferRecComponent.lc {members memberIndex Φ ctx bindings specs Φ' S}
     (h : InferRecComponent members memberIndex Φ ctx bindings specs Φ' S)
     (hctx : CtxWF ctx) (hspecs : ∀ s ∈ specs, s.LC) :
@@ -2316,7 +2316,7 @@ theorem InferRecComponent.lc {members memberIndex Φ ctx bindings specs Φ' S}
       (fun s hs => hspecs s (List.mem_cons_of_mem _ hs))
 termination_by (Expr.sizeRecGroup bindings, 0)
 decreasing_by
-  all_goals (simp_wf; simp only [Expr.sizeRecGroup]; omega)
+  all_goals (simp only [Expr.sizeRecGroup]; omega)
 
 theorem InferRecStrata.lc {rigid bindings Φ ctx specs done G groups Φ' S specs' G'}
     (h : InferRecStrata rigid bindings Φ ctx specs done G groups Φ' S specs' G')
@@ -2368,7 +2368,7 @@ theorem InferRecGroup.lc {Φ ctx bindings specs Φ' S}
       (fun s hs => hspecs s (List.mem_cons_of_mem _ hs))
 termination_by (Expr.sizeRecGroup bindings, 0)
 decreasing_by
-  all_goals (try subst_vars; simp_wf; try simp only [Expr.sizeRecGroup]; omega)
+  all_goals (try simp only [Expr.sizeRecGroup]; omega)
 /-- Local-closedness of the signed checking phase. -/
 theorem InferRecGroupPoly.lc {Φ ctx bindings specs Φ' S}
     (h : InferRecGroupPoly Φ ctx bindings specs Φ' S)
@@ -2397,7 +2397,7 @@ theorem InferRecGroupPoly.lc {Φ ctx bindings specs Φ' S}
     · exact hS₂ p hp
 termination_by (Expr.sizeRecGroup bindings, 0)
 decreasing_by
-  all_goals (try subst_vars; simp_wf; try simp only [Expr.sizeRecGroup, Expr.size_openTyVars]; omega)
+  all_goals (try simp only [Expr.sizeRecGroup, Expr.size_openTyVars]; omega)
 end
 
 private theorem List.forall₂_self_map {α β} {R : α → β → Prop} {f : α → β} :
@@ -3555,7 +3555,7 @@ theorem Infer.belowFvars {Φ ctx e Φ' S τ} (h : Infer Φ ctx e Φ' S τ) :
     · exact hb_s p hp
 termination_by (e.size, 0)
 decreasing_by
-  all_goals (try subst_vars; simp_wf; try simp only [Expr.size, Expr.size_openTyVars]; omega)
+  all_goals (try subst_vars; try simp only [Expr.size, Expr.size_openTyVars]; omega)
 theorem InferBranches.belowFvars {Φ ctx scrutTy ρ brs Φ' S}
     (h : InferBranches Φ ctx scrutTy ρ brs Φ' S)
     (hctx : CtxBelow Φ ctx) (hscrutTy : Ty.BelowFvars Φ scrutTy) (hρ : Ty.BelowFvars Φ ρ)
@@ -3626,7 +3626,7 @@ theorem InferBranches.belowFvars {Φ ctx scrutTy ρ brs Φ' S}
       · exact hS₃ p hp
 termination_by (Expr.sizeBranches brs, 0)
 decreasing_by
-  all_goals (try subst_vars; simp_wf; try simp only [Expr.sizeBranches]; omega)
+  all_goals (try subst_vars; try simp only [Expr.sizeBranches]; omega)
 /-- Frontier bounds for one component and its remaining strata. -/
 theorem InferRecComponent.belowFvars {members memberIndex Φ ctx bindings specs Φ' S}
     (h : InferRecComponent members memberIndex Φ ctx bindings specs Φ' S)
@@ -3665,7 +3665,7 @@ theorem InferRecComponent.belowFvars {members memberIndex Φ ctx bindings specs 
         exact .inr hy))
 termination_by (Expr.sizeRecGroup bindings, 0)
 decreasing_by
-  all_goals (try subst_vars; simp_wf; try simp only [Expr.sizeRecGroup]; omega)
+  all_goals (try simp only [Expr.sizeRecGroup]; omega)
 theorem InferRecStrata.belowFvars {rigid bindings Φ ctx specs done G groups Φ' S specs' G'}
     (h : InferRecStrata rigid bindings Φ ctx specs done G groups Φ' S specs' G')
     (hctx : CtxBelow Φ ctx) (hspecs : ∀ s ∈ specs, s.BelowFvars Φ)
@@ -3727,7 +3727,7 @@ theorem InferRecGroup.belowFvars {Φ ctx bindings specs Φ' S}
         exact .inr hy))
 termination_by (Expr.sizeRecGroup bindings, 0)
 decreasing_by
-  all_goals (try subst_vars; simp_wf; try simp only [Expr.sizeRecGroup]; omega)
+  all_goals (try simp only [Expr.sizeRecGroup]; omega)
 /-- Frontier bound for the signed recursive checking phase. -/
 theorem InferRecGroupPoly.belowFvars {Φ ctx bindings specs Φ' S}
     (h : InferRecGroupPoly Φ ctx bindings specs Φ' S)
@@ -3773,7 +3773,7 @@ theorem InferRecGroupPoly.belowFvars {Φ ctx bindings specs Φ' S}
     · exact hS₂ p hp
 termination_by (Expr.sizeRecGroup bindings, 0)
 decreasing_by
-  all_goals (try subst_vars; simp_wf; try simp only [Expr.sizeRecGroup, Expr.size_openTyVars]; omega)
+  all_goals (try simp only [Expr.sizeRecGroup, Expr.size_openTyVars]; omega)
 end
 
 
@@ -3973,7 +3973,7 @@ theorem Infer.dom_below {Φ ctx e Φ' S τ} (h : Infer Φ ctx e Φ' S τ) :
     · exact hb_dom p hp
 termination_by (e.size, 0)
 decreasing_by
-  all_goals (try subst_vars; simp_wf; try simp only [Expr.size, Expr.size_openTyVars]; omega)
+  all_goals (try subst_vars; try simp only [Expr.size, Expr.size_openTyVars]; omega)
 theorem InferBranches.dom_below {Φ ctx scrutTy ρ brs Φ' S}
     (h : InferBranches Φ ctx scrutTy ρ brs Φ' S)
     (hctx : CtxBelow Φ ctx) (hscrutTy : Ty.BelowFvars Φ scrutTy) (hρ : Ty.BelowFvars Φ ρ)
@@ -4061,7 +4061,7 @@ theorem InferBranches.dom_below {Φ ctx scrutTy ρ brs Φ' S}
     · exact hrest_dom p hp
 termination_by (Expr.sizeBranches brs, 0)
 decreasing_by
-  all_goals (try subst_vars; simp_wf; try simp only [Expr.sizeBranches]; omega)
+  all_goals (try subst_vars; try simp only [Expr.sizeBranches]; omega)
 /-- `InferRecGroup` substitution-domain bound. -/
 theorem InferRecComponent.dom_below {members memberIndex Φ ctx bindings specs Φ' S}
     (h : InferRecComponent members memberIndex Φ ctx bindings specs Φ' S)
@@ -4106,7 +4106,7 @@ theorem InferRecComponent.dom_below {members memberIndex Φ ctx bindings specs �
         exact .inr hy))
 termination_by (Expr.sizeRecGroup bindings, 0)
 decreasing_by
-  all_goals (try subst_vars; simp_wf; try simp only [Expr.sizeRecGroup]; omega)
+  all_goals (try simp only [Expr.sizeRecGroup]; omega)
 theorem InferRecStrata.dom_below {rigid bindings Φ ctx specs done G groups Φ' S specs' G'}
     (h : InferRecStrata rigid bindings Φ ctx specs done G groups Φ' S specs' G')
     (hctx : CtxBelow Φ ctx) (hspecs : ∀ s ∈ specs, s.BelowFvars Φ)
@@ -4175,7 +4175,7 @@ theorem InferRecGroup.dom_below {Φ ctx bindings specs Φ' S}
         exact .inr hy))
 termination_by (Expr.sizeRecGroup bindings, 0)
 decreasing_by
-  all_goals (try subst_vars; simp_wf; try simp only [Expr.sizeRecGroup]; omega)
+  all_goals (try simp only [Expr.sizeRecGroup]; omega)
 /-- Substitution-domain bound for the signed recursive checking phase. -/
 theorem InferRecGroupPoly.dom_below {Φ ctx bindings specs Φ' S}
     (h : InferRecGroupPoly Φ ctx bindings specs Φ' S)
@@ -4229,7 +4229,7 @@ theorem InferRecGroupPoly.dom_below {Φ ctx bindings specs Φ' S}
     · exact hrest_dom p hp
 termination_by (Expr.sizeRecGroup bindings, 0)
 decreasing_by
-  all_goals (try subst_vars; simp_wf; try simp only [Expr.sizeRecGroup, Expr.size_openTyVars]; omega)
+  all_goals (try simp only [Expr.sizeRecGroup, Expr.size_openTyVars]; omega)
 end
 
 /-- A var avoiding both the context env and a substitution's range avoids the
@@ -4749,7 +4749,7 @@ theorem Infer.range_avoid {Φ ctx e Φ' S τ} (h : Infer Φ ctx e Φ' S τ) :
       · exact hbS p hp
 termination_by (e.size, 0)
 decreasing_by
-  all_goals (try subst_vars; simp_wf; try simp only [Expr.size, Expr.size_openTyVars]; omega)
+  all_goals (try subst_vars; try simp only [Expr.size, Expr.size_openTyVars]; omega)
 theorem InferBranches.range_avoid {Φ ctx scrutTy ρ brs Φ' S}
     (h : InferBranches Φ ctx scrutTy ρ brs Φ' S) :
     ∀ {w : Nat}, w < Φ → (∀ M ∈ ctx.env, w ∉ M.body.freeVars) → w ∉ scrutTy.freeVars →
@@ -4832,7 +4832,7 @@ theorem InferBranches.range_avoid {Φ ctx scrutTy ρ brs Φ' S}
     · rw [Subst.onTy_append, Subst.onTy_append]; exact hrρ
 termination_by (Expr.sizeBranches brs, 0)
 decreasing_by
-  all_goals (try subst_vars; simp_wf; try simp only [Expr.sizeBranches]; omega)
+  all_goals (try subst_vars; try simp only [Expr.sizeBranches]; omega)
 /-- `InferRecGroup` locality (avoid form): a var below the input frontier
     that avoids the context, specs, and binding annotation vars is absent from
     the substitution range. -/
@@ -4878,7 +4878,7 @@ theorem InferRecComponent.range_avoid {members memberIndex Φ ctx bindings specs
         exact .inr hc))
 termination_by (Expr.sizeRecGroup bindings, 0)
 decreasing_by
-  all_goals (try subst_vars; simp_wf; try simp only [Expr.sizeRecGroup]; omega)
+  all_goals (try simp only [Expr.sizeRecGroup]; omega)
 theorem InferRecStrata.range_avoid {rigid bindings Φ ctx specs done G groups Φ' S specs' G'}
     (h : InferRecStrata rigid bindings Φ ctx specs done G groups Φ' S specs' G') :
     ∀ {w : Nat}, w < Φ → (∀ M ∈ ctx.env, w ∉ M.body.freeVars) →
@@ -4945,7 +4945,7 @@ theorem InferRecGroup.range_avoid {Φ ctx bindings specs Φ' S}
         exact .inr hc))
 termination_by (Expr.sizeRecGroup bindings, 0)
 decreasing_by
-  all_goals (try subst_vars; simp_wf; try simp only [Expr.sizeRecGroup]; omega)
+  all_goals (try simp only [Expr.sizeRecGroup]; omega)
 /-- Avoid-form locality for the signed recursive checking phase. -/
 theorem InferRecGroupPoly.range_avoid {Φ ctx bindings specs Φ' S}
     (h : InferRecGroupPoly Φ ctx bindings specs Φ' S) :
@@ -4998,7 +4998,7 @@ theorem InferRecGroupPoly.range_avoid {Φ ctx bindings specs Φ' S}
     · exact hrS p hp
 termination_by (Expr.sizeRecGroup bindings, 0)
 decreasing_by
-  all_goals (try subst_vars; simp_wf; try simp only [Expr.sizeRecGroup, Expr.size_openTyVars]; omega)
+  all_goals (try simp only [Expr.sizeRecGroup, Expr.size_openTyVars]; omega)
 end
 
 /-! ### M3: composed idempotency (`Infer.eliminates`)
@@ -5549,7 +5549,7 @@ theorem Infer.eliminates {Φ ctx e Φ' S τ} (h : Infer Φ ctx e Φ' S τ)
             · exact hSbody2 p hp2)).2
     · exact hbR p hp3
 termination_by (e.size, 0)
-decreasing_by all_goals (try subst_vars; simp_wf; try simp only [Expr.size, Expr.size_openTyVars]; omega)
+decreasing_by all_goals (try subst_vars; try simp only [Expr.size, Expr.size_openTyVars]; omega)
 theorem InferBranches.eliminates {Φ ctx scrutTy ρ brs Φ' S}
     (h : InferBranches Φ ctx scrutTy ρ brs Φ' S)
     (hctx : CtxBelow Φ ctx) (hsc : Ty.BelowFvars Φ scrutTy) (hρ : Ty.BelowFvars Φ ρ)
@@ -5713,7 +5713,7 @@ theorem InferBranches.eliminates {Φ ctx scrutTy ρ brs Φ' S}
         (happ2 ρ ▸ hE12 p hp ρ) (hSrestAll p hp)).1 q hq
     exact Subst.eliminates_append hE12 hrestE cross2
 termination_by (Expr.sizeBranches brs, 0)
-decreasing_by all_goals (try subst_vars; simp_wf; try simp only [Expr.sizeBranches]; omega)
+decreasing_by all_goals (try subst_vars; try simp only [Expr.sizeBranches]; omega)
 /-- `InferRecGroup` idempotency: a group-substitution
     domain var never survives in any `S`-image. The scheme-avoidance hypothesis
     `hSsch` covers the poly members (their scoped variables are outer-rigid). -/
@@ -5795,7 +5795,7 @@ theorem InferRecComponent.eliminates {members memberIndex Φ ctx bindings specs 
       (fun p hp hc => hSe p hp (by exact List.mem_append_right _ hc))
       (fun p hp σ hσ => hSsch p hp σ (List.mem_cons_of_mem _ hσ))
 termination_by (Expr.sizeRecGroup bindings, 0)
-decreasing_by all_goals (try subst_vars; simp_wf; try simp only [Expr.sizeRecGroup]; omega)
+decreasing_by all_goals (try simp only [Expr.sizeRecGroup]; omega)
 theorem InferRecStrata.eliminates {rigid bindings Φ ctx specs done G groups Φ' S specs' G'}
     (h : InferRecStrata rigid bindings Φ ctx specs done G groups Φ' S specs' G')
     (hctx : CtxBelow Φ ctx) (hspecs : ∀ s ∈ specs, s.BelowFvars Φ)
@@ -5918,7 +5918,7 @@ theorem InferRecGroup.eliminates {Φ ctx bindings specs Φ' S}
       (fun p hp hc => hSe p hp (by exact List.mem_append_right _ hc))
       (fun p hp σ hσ => hSsch p hp σ (List.mem_cons_of_mem _ hσ))
 termination_by (Expr.sizeRecGroup bindings, 0)
-decreasing_by all_goals (try subst_vars; simp_wf; try simp only [Expr.sizeRecGroup]; omega)
+decreasing_by all_goals (try simp only [Expr.sizeRecGroup]; omega)
 /-- Idempotency of the signed recursive checking phase. -/
 theorem InferRecGroupPoly.eliminates {Φ ctx bindings specs Φ' S}
     (h : InferRecGroupPoly Φ ctx bindings specs Φ' S)
@@ -6016,7 +6016,7 @@ theorem InferRecGroupPoly.eliminates {Φ ctx bindings specs Φ' S}
     exact Subst.eliminates_append hE1Schk hrestE cross2
 termination_by (Expr.sizeRecGroup bindings, 0)
 decreasing_by
-  all_goals (try subst_vars; simp_wf; try simp only [Expr.sizeRecGroup, Expr.size_openTyVars]; omega)
+  all_goals (try simp only [Expr.sizeRecGroup, Expr.size_openTyVars]; omega)
 
 end
 
@@ -6453,7 +6453,6 @@ termination_by (e.size, 0)
 decreasing_by
   all_goals
     try subst_vars
-    simp_wf
     try simp only [Expr.size, Expr.size_openTyVars]
     first
     | omega
@@ -6550,7 +6549,7 @@ theorem InferBranches.dom_avoid {Φ ctx scrutTy ρ brs Φ' S}
     · exact hrdom hc
 termination_by (Expr.sizeBranches brs, 0)
 decreasing_by
-  all_goals (try subst_vars; simp_wf; try simp only [Expr.sizeBranches]; omega)
+  all_goals (try subst_vars; try simp only [Expr.sizeBranches]; omega)
 /-- Fused `InferRecGroup` domain-avoidance: a var below the input frontier that
     avoids the context, the specs and the bindings' annotation vars is not bound
     by the group substitution (mono unifiers touch only spec monotypes and binding
@@ -6600,7 +6599,7 @@ theorem InferRecComponent.dom_avoid {members memberIndex Φ ctx bindings specs �
       (fun hc => hbinds (by exact List.mem_append_right _ hc))
 termination_by (Expr.sizeRecGroup bindings, 0)
 decreasing_by
-  all_goals (try subst_vars; simp_wf; try simp only [Expr.sizeRecGroup]; omega)
+  all_goals (try simp only [Expr.sizeRecGroup]; omega)
 theorem InferRecStrata.dom_avoid {rigid bindings Φ ctx specs done G groups Φ' S specs' G'}
     (h : InferRecStrata rigid bindings Φ ctx specs done G groups Φ' S specs' G') :
     ∀ {w : Nat}, w < Φ → (∀ M ∈ ctx.env, w ∉ M.body.freeVars) →
@@ -6670,7 +6669,7 @@ theorem InferRecGroup.dom_avoid {Φ ctx bindings specs Φ' S}
       (fun hc => hbinds (by exact List.mem_append_right _ hc))
 termination_by (Expr.sizeRecGroup bindings, 0)
 decreasing_by
-  all_goals (try subst_vars; simp_wf; try simp only [Expr.sizeRecGroup]; omega)
+  all_goals (try simp only [Expr.sizeRecGroup]; omega)
 /-- Domain avoidance for the signed recursive checking phase. -/
 theorem InferRecGroupPoly.dom_avoid {Φ ctx bindings specs Φ' S}
     (h : InferRecGroupPoly Φ ctx bindings specs Φ' S) :
@@ -6725,7 +6724,7 @@ theorem InferRecGroupPoly.dom_avoid {Φ ctx bindings specs Φ' S}
     · exact hd3 hc
   termination_by (Expr.sizeRecGroup bindings, 0)
   decreasing_by
-    all_goals (try subst_vars; simp_wf; try simp only [Expr.sizeRecGroup, Expr.size_openTyVars]; omega)
+    all_goals (try simp only [Expr.sizeRecGroup, Expr.size_openTyVars]; omega)
 end
 
 /-- **Survival under substitution.** A free var not in `S`'s domain survives
@@ -6880,7 +6879,7 @@ def Expr.ForallOuter (P : Nat → Prop) (depth : Nat) (e : Expr) : Prop :=
     (fun _ _ _ ihr ihb d => ihr d ∧ ihb (d + 1))
     (fun i d => d ≤ i → P (i - d))
     (fun _ _ => True)
-    (fun _ branches ihs ihbr d =>
+    (fun _ _ ihs ihbr d =>
       ihs d ∧ ∀ pat body h, ihbr pat body h (d + pat.bindCount))
     (fun _ bindings _ ihbs ihb d =>
       (∀ rhs h, ihbs rhs h (d + bindings.length)) ∧ ihb (d + bindings.length)) e depth
@@ -6935,9 +6934,9 @@ theorem Expr.ForallOuter.prepend {P Q : Nat → Prop} {depth count : Nat} {e : E
 theorem Expr.ForallOuter.substTyFvars {P : Nat → Prop} {depth : Nat} {e : Expr}
     (h : e.ForallOuter P depth) (S : Subst) : (e.substTyFvars S).ForallOuter P depth := by
   induction e using Expr.rec_strong generalizing depth with
-  | primLit p => simp only [Expr.ForallOuter, Expr.rec_strong] at h ⊢; induction S <;> simp_all [Expr.substTyFvars, Expr.substTyFvar, Expr.ForallOuter, Expr.rec_strong]
-  | primBinOp p => simp only [Expr.ForallOuter, Expr.rec_strong] at h ⊢; induction S <;> simp_all [Expr.substTyFvars, Expr.substTyFvar, Expr.ForallOuter, Expr.rec_strong]
-  | ctor c => simp only [Expr.ForallOuter, Expr.rec_strong] at h ⊢; induction S <;> simp_all [Expr.substTyFvars, Expr.substTyFvar, Expr.ForallOuter, Expr.rec_strong]
+  | primLit p => simp only [Expr.ForallOuter, Expr.rec_strong] at h ⊢; induction S <;> simp_all [Expr.substTyFvars, Expr.substTyFvar, Expr.rec_strong]
+  | primBinOp p => simp only [Expr.ForallOuter, Expr.rec_strong] at h ⊢; induction S <;> simp_all [Expr.substTyFvars, Expr.substTyFvar, Expr.rec_strong]
+  | ctor c => simp only [Expr.ForallOuter, Expr.rec_strong] at h ⊢; induction S <;> simp_all [Expr.substTyFvars, Expr.substTyFvar, Expr.rec_strong]
   | var i => simp only [Expr.ForallOuter, Expr.rec_strong] at h ⊢; simpa only [Expr.substTyFvars_var, Expr.rec_strong] using h
   | lambda ann body ih => simp only [Expr.ForallOuter, Expr.rec_strong] at h ⊢; rw [Expr.substTyFvars_lambda]; simp only [Expr.rec_strong]; exact ih h
   | app f arg ihf iha => simp only [Expr.ForallOuter, Expr.rec_strong] at h ⊢; rw [Expr.substTyFvars_app]; simp only [Expr.rec_strong]; exact ⟨ihf h.1, iha h.2⟩
@@ -6969,7 +6968,7 @@ theorem Expr.ForallOuter.erase_iff {P : Nat → Prop} {depth : Nat} (e : Expr) :
   | primLit _ => simp [Expr.ForallOuter, Expr.rec_strong, Expr.erase]
   | primBinOp _ => simp [Expr.ForallOuter, Expr.rec_strong, Expr.erase]
   | ctor _ => simp [Expr.ForallOuter, Expr.rec_strong, Expr.erase]
-  | var _ => simp [Expr.ForallOuter, Expr.rec_strong, Expr.erase]
+  | var _ => simp [Expr.ForallOuter, Expr.rec_strong]
   | lambda _ _ ih => simp only [Expr.erase_lambda, Expr.ForallOuter, Expr.rec_strong]; exact ih
   | app _ _ ihf iha => simp only [Expr.erase_app, Expr.ForallOuter, Expr.rec_strong]; exact and_congr ihf iha
   | letIn _ _ _ ihr ihb => simp only [Expr.erase_letIn, Expr.ForallOuter, Expr.rec_strong]; exact and_congr ihr ihb
@@ -7164,7 +7163,7 @@ theorem InferRecComponent.range_dom_avoid_selected_of_infer
         exact Or.inr hc)
 termination_by (Expr.sizeRecGroup bindings, 0)
 decreasing_by
-  all_goals (try subst_vars; simp_wf; try simp only [Expr.sizeRecGroup]; omega)
+  all_goals (try simp only [Expr.sizeRecGroup]; omega)
 
 /-- Conservative lookup-sensitive locality for a nested recursive schedule.
     Its initial specs all avoid an outer variable below the surrounding frontier. -/
@@ -7426,7 +7425,6 @@ termination_by (e.size, 0)
 decreasing_by
   all_goals
     try subst_vars
-    simp_wf
     try simp only [Expr.size, Expr.size_openTyVars]
     try have := Expr.sourceLocality_size_mem (by assumption)
     omega
@@ -7498,7 +7496,7 @@ theorem InferBranches.sourceLocality {Φ ctx scrutTy ρ brs Φ' S}
     have hA := Subst.sourceAvoid_append (Subst.sourceAvoid_append ⟨hbS, hbD⟩ hA₂) ⟨hrS, hrD⟩
     exact ⟨hA.1, by simpa only [Subst.onTy_append] using hrρ, hA.2⟩
 termination_by (Expr.sizeBranches brs, 0)
-decreasing_by all_goals (try subst_vars; simp_wf; simp only [Expr.sizeBranches]; omega)
+decreasing_by all_goals (try subst_vars; simp only [Expr.sizeBranches]; omega)
 
 theorem InferRecGroupPoly.sourceLocality {Φ ctx bindings specs Φ' S}
     (h : InferRecGroupPoly Φ ctx bindings specs Φ' S) :
@@ -7540,7 +7538,7 @@ theorem InferRecGroupPoly.sourceLocality {Φ ctx bindings specs Φ' S}
         (List.mem_cons_of_mem _ (RecSpec.poly_mem_map_onSubst.mp hσ'))) hbinds.2
     exact Subst.sourceAvoid_append hA₁ hA₂
 termination_by (Expr.sizeRecGroup bindings, 0)
-decreasing_by all_goals (try subst_vars; simp_wf; simp only [Expr.sizeRecGroup, Expr.size_openTyVars]; omega)
+decreasing_by all_goals (simp only [Expr.sizeRecGroup, Expr.size_openTyVars]; omega)
 end
 
 theorem Infer.sourceLocality_holds : Infer.SourceLocality :=
@@ -7667,7 +7665,7 @@ theorem RecGroups.ValidResidualGroups.substTyFvars {anns : List (Option PolyTy)}
     simp only [RecGroups.UnsignedAt, List.getElem?_map]
     cases anns[i]? with
     | none => simp
-    | some ann => cases ann <;> simp [RecAnn.substFvars]
+    | some ann => cases ann <;> simp
   · intro e _
     exact Expr.recGroupRefs_substTyFvars S e _ _
 
@@ -10618,7 +10616,7 @@ theorem RecSpecs.PendingSeeds.stage_avoid_pool {base : Nat} {ctx : Ctx}
     cases hspec : specs[i] with
     | poly σ => exact hpoly σ (hspec ▸ List.getElem_mem hi) g hg
     | mono τ =>
-      simp only [hspec, RecSpec.algorithmStageEntry]
+      simp only [RecSpec.algorithmStageEntry]
       split
       · exact PolyTy.genGroup_notMem_pool hg
       · rename_i hindone
@@ -11121,7 +11119,7 @@ theorem InferRecComponent.sourceSoundMono_of {members memberIndex Φ ctx binding
       simpa only [← Subst.onCtx_append, List.append_assoc] using htail
 termination_by Expr.sizeRecGroup bindings
 decreasing_by
-  all_goals (simp_wf; simp only [Expr.sizeRecGroup]; omega)
+  all_goals (simp only [Expr.sizeRecGroup]; omega)
 
 /-- Every processed component is source-typed at its historical stage, rendered
     using the final solved specs and aggregate pool. -/
