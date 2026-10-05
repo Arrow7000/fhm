@@ -5595,6 +5595,58 @@ private theorem InferRecStrata.principal_of
 termination_by groups.length
 decreasing_by all_goals simp_wf
 
+/-- Locality of a freshly produced component at the exact current frozen pool.
+    This is the head-only form needed by producer completeness before the tail
+    strata derivation has itself been constructed. -/
+private theorem InferRecComponent.frozenPool
+    {rigid : List Nat} {bindings : List Expr} {Φ : Nat} {ctx : Ctx}
+    {specs : List RecSpec} {done G component : List Nat} {Φ₁ : Nat} {S₁ : Subst}
+    (hcomponent : InferRecComponent component 0 Φ
+      (RecSpecs.algorithmStageCtx ctx specs done G) bindings specs Φ₁ S₁)
+    {base : Nat} {anns : List (Option PolyTy)} {past rest : List (List Nat)}
+    (hvalid : RecGroups.ValidResidualGroups anns bindings
+      (past ++ component :: rest))
+    (hdone : done = past.flatten)
+    (hbindRigid : ∀ y ∈ Expr.tyFreeVars.RecGroup.tyFreeVars bindings, y ∈ rigid)
+    (hpolyRigid : ∀ σ, .poly σ ∈ specs → ∀ y ∈ σ.body.freeVars, y ∈ rigid)
+    (hpending : RecSpecs.PendingSeeds base ctx specs done)
+    (hGbelow : ∀ g ∈ G, g < Φ) (hGrigid : ∀ g ∈ G, g ∉ rigid)
+    (hGctx : ∀ g ∈ G, ∀ M ∈ ctx.env, g ∉ M.body.freeVars)
+    (hGseed : ∀ member τ, specs[member]? = some (.mono τ) →
+      member ∉ done → base + member ∉ G) :
+    (∀ p ∈ S₁, p.1 ∉ G) ∧
+    (∀ p ∈ S₁, ∀ g ∈ p.2.freeVars, g ∉ G) := by
+  have hcomponent_not_done : ∀ j ∈ component, j ∉ done := by
+    intro j hj hdonej
+    have hnd : (past.flatten ++ (component ++ rest.flatten)).Nodup := by
+      simpa only [List.flatten_append, List.flatten_cons] using hvalid.flatten_nodup
+    exact (List.nodup_append.mp hnd).2.2 j (hdone ▸ hdonej) j
+      (List.mem_append_left _ hj) rfl
+  have hstageAvoid := hpending.stage_avoid_pool hGseed hGctx
+    (fun σ hσ g hg hc => hGrigid g hg (hpolyRigid σ hσ g hc))
+  have havoidG : ∀ g ∈ G,
+      (∀ p ∈ S₁, g ∉ p.2.freeVars) ∧ g ∉ S₁.map Prod.fst := by
+    intro g hg
+    apply InferRecComponent.range_dom_avoid_selected_of_infer hcomponent
+      (fun _ he => Infer.sourceLocality_holds he) (hGbelow g hg)
+    · intro j rhs _ _
+      apply Expr.ForallOuter.of_recGroupRefs_with_outer (n := 0)
+      · intro i _ M hM
+        exact hstageAvoid g hg M (List.mem_of_getElem? hM)
+      · intro i _ M hM
+        exact hstageAvoid g hg M (List.mem_of_getElem? hM)
+    · intro j τ hj hτ
+      rw [hpending.mono j τ hτ (hcomponent_not_done j (by simpa using hj))]
+      simp only [Ty.freeVars, List.mem_singleton]
+      exact fun heq => hGseed j τ hτ
+        (hcomponent_not_done j (by simpa using hj)) (heq ▸ hg)
+    · exact fun hc => hGrigid g hg (hbindRigid g hc)
+  refine ⟨?_, ?_⟩
+  · intro p hp hc
+    exact (havoidG p.1 hc).2 (List.mem_map.mpr ⟨p, hp, rfl⟩)
+  · intro p hp g hg hc
+    exact (havoidG g hc).1 p hp hg
+
 private theorem exists_recgroup_opening {Φ : Nat} {ctx : Ctx} {S₀ : Subst}
     {anns : List (Option PolyTy)} {bindings : List Expr} {specs : List RecSpec}
     {G L K : List Nat}
@@ -7459,20 +7511,18 @@ theorem Infer.principals_mut (n : Nat) :
                   simp only [RecSpec.onSubst, RecSpec.poly.injEq] at heq
                   subst σ₀
                   exact RecSpec.poly_mem_init hs
-            have hGspec : ∀ g ∈ G,
-                g ∈ Ty.freeVarsList (RecSpecs.monoTys specs1) ∧
-                g ∉ (S₁.onCtx ctx).env.freeVars ∧
-                g ∉ RecGroup.rigidVars anns bindings := by
-              intro g hg
-              rw [hG] at hg
-              simp only [genGroupVars, List.mem_filter, Bool.and_eq_true] at hg
-              exact ⟨hg.1, by simpa using hg.2.1, by simpa using hg.2.2⟩
-            have hGτs : ∀ g ∈ G, g ∈ Ty.freeVarsList (RecSpecs.monoTys specs1) :=
-              fun g hg => (hGspec g hg).1
+            have hfrozen := InferRecStrata.frozen_of_sourceLocality hstrata
+              Infer.sourceLocality_holds (past := []) (by simpa using hgroup) rfl
+              (RecSpec.map_ann_init Φ anns) hwf hctxBelow₀ hinitLC hinitB
+              (by omega) (fun y hy => hKΦ y (hKrigid y hy)) hbindRigid
+              hinitPolyRigid hpending (by simp) (by simp) (by simp) (by simp)
             have hGenv : ∀ g ∈ G, g ∉ (S₁.onCtx ctx).env.freeVars :=
-              fun g hg => (hGspec g hg).2.1
+              fun g hg hc => by
+                obtain ⟨M, hM, hgM⟩ := Env.mem_freeVars_iff.mp hc
+                exact InferRecStrata.pool_avoid_env hfrozen (by simp)
+                  g hg M hM hgM
             have hGrigid : ∀ g ∈ G, g ∉ RecGroup.rigidVars anns bindings :=
-              fun g hg => (hGspec g hg).2.2
+              InferRecStrata.pool_avoid_rigid hstrata (by simp)
             have hGanns : ∀ g ∈ G, ∀ σ, some σ ∈ anns → g ∉ σ.body.freeVars := by
               intro g hg σ hσ hc
               exact hGrigid g hg
@@ -7481,31 +7531,10 @@ theorem Infer.principals_mut (n : Nat) :
               intro g hg hc
               exact hGrigid g hg
                 (List.mem_append_right _ (mem_recGroup_tyFreeVars.mp hc))
-            have hGlt : ∀ g ∈ G, g < Φ₁ := by
-              intro g hg
-              have hfvExists : ∀ {ts : List Ty} {x : Nat},
-                  x ∈ Ty.freeVarsList ts → ∃ t ∈ ts, x ∈ t.freeVars := by
-                intro ts x hx
-                induction ts with
-                | nil => simp [Ty.freeVarsList] at hx
-                | cons hd tl ih =>
-                    simp only [Ty.freeVarsList, List.mem_dedup, List.mem_append] at hx
-                    rcases hx with hx | hx
-                    · exact ⟨hd, List.mem_cons_self, hx⟩
-                    · obtain ⟨t, ht, hxt⟩ := ih hx
-                      exact ⟨t, List.mem_cons_of_mem _ ht, hxt⟩
-              obtain ⟨τ, hτ, hgτ⟩ := hfvExists (hGτs g hg)
-              have hs : RecSpec.mono τ ∈ specs1 := by
-                unfold RecSpecs.monoTys at hτ
-                simp only [List.mem_filterMap] at hτ
-                obtain ⟨s, hs, heq⟩ := hτ
-                cases s with
-                | mono t =>
-                    simp only [RecSpec.monoTy?, Option.some.injEq] at heq
-                    subst t
-                    exact hs
-                | poly σ => simp [RecSpec.monoTy?] at heq
-              exact (hspecBel (.mono τ) hs).mem_lt g hgτ
+            have hGlt : ∀ g ∈ G, g < Φ₁ :=
+              InferRecStrata.pool_below hstrata hctxBelow₀ hinitB
+                (fun y hy => lt_of_lt_of_le (hKΦ y (hKgrp y hy)) (by omega))
+                (by simp)
             have hGbodyCtx : ∀ g ∈ G, ∀ M ∈
                 specs1.map (RecSpec.bodyScheme G) ++ (S₁.onCtx ctx).env,
                 g ∉ M.body.freeVars := by
