@@ -321,6 +321,25 @@ function kindBadge(kind) {
 }
 
 /**
+ * Markdown for a hover: the signature as an `fhm` code block, which both
+ * VS Code and Monaco highlight with the registered FHM grammar, plus a prose
+ * line where the payload's `type` is a description rather than a type.
+ * @param {any} hit
+ */
+function hoverMarkdown(hit) {
+  const kind = kindBadge(hit?.kind);
+  const name = String(hit?.name ?? "?");
+  const type = String(hit?.type ?? "?");
+  const block = (code) => "```fhm\n" + code.replace(/`/g, "'") + "\n```";
+  if (kind === "type" || kind === "expr") return block(type);
+  if (kind === "param" && type.startsWith("type variable")) {
+    return block(name) + "\n\n_" + type.replace(/[_*`]/g, "") + "_";
+  }
+  if (kind === "op") return block(`(${name}) : ${type}`);
+  return block(`${name} : ${type}`);
+}
+
+/**
  * @param {any} sym
  */
 function symbolHasUsableType(sym) {
@@ -655,6 +674,7 @@ module.exports = {
   normalizePayload,
   identAtColumn,
   kindBadge,
+  hoverMarkdown,
   clampHoverRange,
   resolveHover,
   diagnosticsToMarkers,

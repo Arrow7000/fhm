@@ -5,7 +5,7 @@ Known bugs and smaller tasks. The bigger picture lives in the
 
 ## Suggested order
 
-Bugs, docs and cleanup can be picked up at any time. The larger items build
+Bugs and cleanup can be picked up at any time. The larger items build
 on each other:
 
 1. **Errors as data**: the foundation for everything below.
@@ -13,7 +13,7 @@ on each other:
 3. **Error recovery**, so one error doesn't take down the rest of the file.
    Needs (1) to collect errors and carry on.
 4. **Richer hovers**: most useful once (3) keeps them working in files with
-   errors. The highlighted-code-block part can be done right away.
+   errors.
 
 Separately, the annotation features go in this order:
 
@@ -96,13 +96,9 @@ Separately, the annotation features go in this order:
 
 ## Editor tooling
 
-- [ ] **Richer hovers.** Hovers are bare and unhighlighted. Look at what Elm's
-  and other high-quality language servers show on hover, and how they format
-  it. Ideas:
-  - Quick win: render the type as a highlighted code block. The VS Code
-    extension builds the hover as inline code (`editors/vscode/extension.js`,
-    `provideHover`); `md.appendCodeblock(..., "fhm")` would highlight it with
-    the extension's own grammar. The web playground can do the same.
+- [ ] **Richer hovers.** Hovers show a highlighted signature but little else.
+  Look at what Elm's and other high-quality language servers show on hover,
+  and how they format it. Ideas:
   - Show a constructor's full declaration, not just its type.
   - Show doc comments (needs a doc-comment syntax).
   - For annotated bindings, show the inferred type when it differs from the
@@ -132,12 +128,8 @@ Separately, the annotation features go in this order:
   annotation). If none is in scope, that's an unknown-type-variable error,
   as it is for complete annotations. Unknown types to be inferred are written
   `_` or `_a`.
-
-## Docs
-
-- [ ] Remove the `fsharp` syntax highlighting from the README's code blocks,
-  and don't use Elm's either: FHM's syntax is too different from both, so
-  leave them unhighlighted.
+- **New type variables on heads.** A head binder introduces new type variables
+  with `{a}`, as in `let f {a} (x : a) y : a = ...`.
 
 ## Cleanup
 

@@ -8,6 +8,7 @@ const path = require("path");
 const {
   normalizePayload,
   resolveHover,
+  hoverMarkdown,
   diagnosticsToMarkers,
   IDENT_RE,
 } = require("../shared/fhmEditorCore.cjs");
@@ -214,12 +215,10 @@ function activate(context) {
           endLine,
           endCol
         );
-        const md = new vscode.MarkdownString();
-        const kind = String(hit.kind || "val").replace(/[`*]/g, "");
-        const name = String(hit.name || "?").replace(/[`*]/g, "");
-        const ty = String(hit.type || "?").replace(/`/g, "'");
-        md.appendMarkdown(`\`${kind}\` **${name}** : \`${ty}\``);
-        return new vscode.Hover(md, hoverRange);
+        return new vscode.Hover(
+          new vscode.MarkdownString(hoverMarkdown(hit)),
+          hoverRange
+        );
       },
     })
   );

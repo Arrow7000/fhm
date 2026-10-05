@@ -8,7 +8,7 @@ playground.
 
 ## A taste of the language
 
-```fsharp
+```
 type Maybe a = Just a | Nothing
 
 type Tree a =

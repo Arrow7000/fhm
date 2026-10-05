@@ -4,6 +4,7 @@ import editorWorker from "monaco-editor/esm/vs/editor/editor.worker?worker";
 import {
   normalizePayload,
   resolveHover,
+  hoverMarkdown,
   diagnosticsToMarkers,
   formatRunOutputHtml,
 } from "@fhm/editor-core";
@@ -299,17 +300,9 @@ async function main() {
           endCol = startCol + Math.max(1, hit.name?.length ?? 1);
         }
 
-        const kind = String(hit.kind || "val").replace(/[`*]/g, "");
-        const name = String(hit.name || "?").replace(/[`*]/g, "");
-        const ty = String(hit.type || "?").replace(/`/g, "'");
-
         return {
           range: new monaco.Range(startLine, startCol, endLine, endCol),
-          contents: [
-            {
-              value: `\`${kind}\` **${name}** : \`${ty}\``,
-            },
-          ],
+          contents: [{ value: hoverMarkdown(hit) }],
         };
       } catch (err) {
         console.warn("[fhm] hover failed", err);
