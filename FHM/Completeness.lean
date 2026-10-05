@@ -4990,6 +4990,262 @@ private theorem RecStrataResidual.componentMonoTyped
   rw [h.connection member algTy declTy halgTy hdeclTy]
   exact htypedNew
 
+private theorem RecSpecs.selectComponent_lc
+    {members : List Nat} {memberIndex : Nat} {specs : List RecSpec}
+    (h : ∀ s ∈ specs, s.LC) :
+    ∀ s ∈ RecSpecs.selectComponent members memberIndex specs, s.LC := by
+  induction specs generalizing memberIndex with
+  | nil => simp [RecSpecs.selectComponent]
+  | cons spec specs ih =>
+      intro s hs
+      cases spec with
+      | mono τ =>
+          simp only [RecSpecs.selectComponent] at hs
+          split at hs
+          · rcases List.mem_cons.mp hs with rfl | hs
+            · exact h (.mono τ) List.mem_cons_self
+            · exact ih (fun t ht => h t (List.mem_cons_of_mem _ ht)) s hs
+          · rcases List.mem_cons.mp hs with rfl | hs
+            · exact ContainsBvarsUpTo.prim
+            · exact ih (fun t ht => h t (List.mem_cons_of_mem _ ht)) s hs
+      | poly σ =>
+          simp only [RecSpecs.selectComponent] at hs
+          rcases List.mem_cons.mp hs with rfl | hs
+          · exact h (.poly σ) List.mem_cons_self
+          · exact ih (fun t ht => h t (List.mem_cons_of_mem _ ht)) s hs
+
+private theorem RecSpecs.selectComponent_mono_below
+    {members : List Nat} {memberIndex Φ : Nat} {specs : List RecSpec}
+    (h : ∀ s ∈ specs, ∀ τ, s = .mono τ → τ.BelowFvars Φ) :
+    ∀ s ∈ RecSpecs.selectComponent members memberIndex specs,
+      ∀ τ, s = .mono τ → τ.BelowFvars Φ := by
+  induction specs generalizing memberIndex with
+  | nil => simp [RecSpecs.selectComponent]
+  | cons spec specs ih =>
+      intro s hs τ hsτ
+      cases spec with
+      | mono t =>
+          simp only [RecSpecs.selectComponent] at hs
+          split at hs
+          · rcases List.mem_cons.mp hs with rfl | hs
+            · exact h (.mono t) List.mem_cons_self τ hsτ
+            · exact ih (fun q hq => h q (List.mem_cons_of_mem _ hq)) s hs τ hsτ
+          · rcases List.mem_cons.mp hs with rfl | hs
+            · cases hsτ
+            · exact ih (fun q hq => h q (List.mem_cons_of_mem _ hq)) s hs τ hsτ
+      | poly σ =>
+          simp only [RecSpecs.selectComponent] at hs
+          rcases List.mem_cons.mp hs with rfl | hs
+          · cases hsτ
+          · exact ih (fun q hq => h q (List.mem_cons_of_mem _ hq)) s hs τ hsτ
+
+private theorem RecSpecs.selectComponent_poly_rigid
+    {members : List Nat} {memberIndex : Nat} {specs : List RecSpec} {K : List Nat}
+    (h : ∀ s ∈ specs, ∀ σ, s = .poly σ →
+      ∀ y ∈ σ.body.freeVars, y ∈ K) :
+    ∀ s ∈ RecSpecs.selectComponent members memberIndex specs,
+      ∀ σ, s = .poly σ → ∀ y ∈ σ.body.freeVars, y ∈ K := by
+  induction specs generalizing memberIndex with
+  | nil => simp [RecSpecs.selectComponent]
+  | cons spec specs ih =>
+      intro s hs σ hsσ y hy
+      cases spec with
+      | mono t =>
+          simp only [RecSpecs.selectComponent] at hs
+          split at hs
+          · rcases List.mem_cons.mp hs with rfl | hs
+            · cases hsσ
+            · exact ih (fun q hq => h q (List.mem_cons_of_mem _ hq)) s hs σ hsσ y hy
+          · rcases List.mem_cons.mp hs with rfl | hs
+            · cases hsσ
+              simp [PolyTy.mkTrivial, Ty.freeVars] at hy
+            · exact ih (fun q hq => h q (List.mem_cons_of_mem _ hq)) s hs σ hsσ y hy
+      | poly σ₀ =>
+          simp only [RecSpecs.selectComponent] at hs
+          rcases List.mem_cons.mp hs with rfl | hs
+          · exact h (.poly σ₀) List.mem_cons_self σ hsσ y hy
+          · exact ih (fun q hq => h q (List.mem_cons_of_mem _ hq)) s hs σ hsσ y hy
+
+private theorem RecStrataResidual.afterComponent
+    {declCtx : Ctx} {declSpecs : List RecSpec} {declG Xs K : List Nat}
+    {rigid : List Nat}
+    {exprs : List Expr} {ctx : Ctx} {specs : List RecSpec} {done G : List Nat}
+    {R : Subst} {component : List Nat} {Φ Φ₁ : Nat} {S₁ R₁ : Subst}
+    {specs₁ : List RecSpec} {Gcurrent : List Nat}
+    (h : RecStrataResidual declCtx declSpecs declG Xs K ctx specs done G R)
+    (hcomponent : InferRecComponent component 0 Φ
+      (RecSpecs.algorithmStageCtx ctx specs done G) exprs specs Φ₁ S₁)
+    (hspecs₁ : specs₁ = specs.map (RecSpec.onSubst S₁))
+    (hGcurrent : Gcurrent = genGroupVars (rigid ++ G)
+      (RecSpecs.generalizationCtx (S₁.onCtx ctx) specs₁ done G).env
+      (RecSpecs.monoTysAt specs₁ component))
+    (hctxWF : CtxWF ctx) (hctxBelow : CtxBelow Φ ctx)
+    (hspecLC : ∀ s ∈ specs, s.LC)
+    (hspecBelow : ∀ s ∈ specs, s.BelowFvars Φ)
+    (hR₁LC : ∀ p ∈ R₁, p.2.IsLC)
+    (hR₁K : ∀ k ∈ K, R₁.onTy (.fvar k) = .fvar k)
+    (hAgree : Subst.AgreesBelow Φ R (S₁ ++ R₁))
+    (hdomG : ∀ p ∈ S₁, p.1 ∉ G)
+    (hranG : ∀ p ∈ S₁, ∀ g ∈ p.2.freeVars, g ∉ G)
+    (hrigidK : ∀ y ∈ rigid, y ∈ K)
+    (hpolyRigid : ∀ σ, .poly σ ∈ specs → ∀ y ∈ σ.body.freeVars, y ∈ rigid)
+    (hXrigid : ∀ x ∈ Xs, x ∉ rigid)
+    (hXdeclEnv : ∀ x ∈ Xs, x ∉ declCtx.env.freeVars) :
+    RecStrataResidual declCtx declSpecs declG Xs K (S₁.onCtx ctx) specs₁
+      (done ++ component) (G ++ Gcurrent) R₁ := by
+  have hstageWF := RecSpecs.algorithmStageCtx_wf hctxWF hspecLC done G
+  have hS₁LC := InferRecComponent.lc hcomponent hstageWF hspecLC
+  have hle := InferRecComponent.frontier_le hcomponent
+  have hspecs₁LC : ∀ s ∈ specs₁, s.LC := by
+    rw [hspecs₁]
+    intro s hs
+    obtain ⟨old, hold, rfl⟩ := List.mem_map.mp hs
+    exact RecSpec.LC.onSubst hS₁LC (hspecLC old hold)
+  refine {
+    lc := hR₁LC
+    fixes := hR₁K
+    ctx_eq := ?_
+    anns_eq := ?_
+    connection := ?_
+    completed_fresh := ?_ }
+  · rw [← Subst.onCtx_append]
+    exact (Subst.onCtx_congr hAgree hctxBelow).symm.trans h.ctx_eq
+  · rw [hspecs₁, RecSpec.map_ann_onSubst]
+    exact h.anns_eq
+  · intro member algTy declTy halg hdecl
+    obtain ⟨oldTy, hold, rfl⟩ :=
+      RecSpec.mono_getElem?_map_onSubst (hspecs₁ ▸ halg)
+    have hcongr := Subst.onTy_congr hAgree
+      (hspecBelow (.mono oldTy) (List.mem_of_getElem? hold))
+    rw [Subst.onTy_append] at hcongr
+    exact hcongr.symm.trans (h.connection member oldTy declTy hold hdecl)
+  · intro member algTy halg hcompleted x hx
+    obtain ⟨oldTy, hold, halgEq⟩ :=
+      RecSpec.mono_getElem?_map_onSubst (hspecs₁ ▸ halg)
+    subst algTy
+    rcases List.mem_append.mp hcompleted with hdone | hcurrent
+    · have hnewAvoid : ∀ g ∈ Gcurrent, g ∉ (S₁.onTy oldTy).freeVars := by
+        intro g hg
+        rw [hGcurrent] at hg
+        exact RecSpecs.newPool_avoids_done
+          (hspecs₁LC (.mono (S₁.onTy oldTy)) (List.mem_of_getElem? halg))
+          halg hdone hg
+      have hschemeEq :
+          R₁.onPolyTy (PolyTy.genGroup (G ++ Gcurrent) (S₁.onTy oldTy)) =
+            R.onPolyTy (PolyTy.genGroup G oldTy) := by
+        rw [PolyTy.genGroup_append_of_avoid hnewAvoid]
+        rw [← Subst.onPolyTy_genGroup hdomG hranG]
+        rw [← Subst.onPolyTy_append]
+        apply congrArg (PolyTy.mk (PolyTy.genGroup G oldTy).paramCount)
+        exact (Subst.onTy_congr hAgree (RecSpec.bodyScheme_belowFvars
+          (hspecBelow (.mono oldTy) (List.mem_of_getElem? hold)))).symm
+      rw [hschemeEq]
+      exact h.completed_fresh member oldTy hold hdone x hx
+    · change x ∉ (R₁.onTy (Ty.closeOver
+          (Ty.genFilter (G ++ Gcurrent) (S₁.onTy oldTy))
+          (S₁.onTy oldTy))).freeVars
+      intro hxout
+      obtain ⟨v, hvclosed, hxv⟩ := Ty.mem_freeVars_onTy_iff.mp hxout
+      have hvTy : v ∈ (S₁.onTy oldTy).freeVars :=
+        Ty.freeVars_closeOver_subset hvclosed
+      have hvPool : v ∉ G ++ Gcurrent := by
+        intro hv
+        exact Ty.not_mem_closeOver_freeVars
+          (by simp only [Ty.genFilter, List.mem_filter, decide_eq_true_eq]
+              exact ⟨hv, hvTy⟩) hvclosed
+      have hvG : v ∉ G := fun hv => hvPool (List.mem_append_left _ hv)
+      have hvCurrent : v ∉ Gcurrent := fun hv => hvPool (List.mem_append_right _ hv)
+      have hvMonoTys : v ∈ Ty.freeVarsList (RecSpecs.monoTysAt specs₁ component) := by
+        unfold RecSpecs.monoTysAt
+        apply Ty.mem_freeVarsList_of_mem
+        · apply List.mem_filterMap.mpr
+          refine ⟨member, hcurrent, ?_⟩
+          rw [halg]
+          rfl
+        · exact hvTy
+      have hvBoundary : v ∈
+          (RecSpecs.generalizationCtx (S₁.onCtx ctx) specs₁ done G).env.freeVars ∨
+          v ∈ rigid := by
+        by_contra hnone
+        push_neg at hnone
+        apply hvCurrent
+        rw [hGcurrent]
+        simp only [genGroupVars, List.mem_filter, Bool.and_eq_true,
+          Bool.not_eq_eq_eq_not, Bool.not_true, List.contains_eq_mem,
+          decide_eq_false_iff_not]
+        exact ⟨hvMonoTys, hnone.1, fun hc =>
+          (List.mem_append.mp hc).elim hnone.2 hvG⟩
+      rcases hvBoundary with hvEnv | hvRigid
+      · obtain ⟨M, hM, hvM⟩ := Env.mem_freeVars_iff.mp hvEnv
+        have hxM : x ∈ (R₁.onPolyTy M).body.freeVars := by
+          exact Ty.mem_freeVars_onTy_iff.mpr ⟨v, hvM, hxv⟩
+        unfold RecSpecs.generalizationCtx at hM
+        rcases List.mem_append.mp hM with hfixed | hambient
+        · unfold RecSpecs.fixedSchemes at hfixed
+          obtain ⟨entry, hentry, hentryOut⟩ := List.mem_filterMap.mp hfixed
+          have hentrySome : entry = some M := hentryOut
+          subst entry
+          obtain ⟨source, hsource⟩ := List.mem_iff_getElem?.mp hentry
+          rw [List.getElem?_mapIdx] at hsource
+          cases hs : specs₁[source]? with
+          | none => simp [hs] at hsource
+          | some spec =>
+              cases spec with
+              | poly σ =>
+                  simp only [hs, Option.map_some, Option.some.injEq] at hsource
+                  have hM : M = σ := hsource.symm
+                  subst M
+                  have hpolyOld := RecSpec.poly_mem_map_onSubst.mp
+                    (hspecs₁ ▸ List.mem_of_getElem? hs)
+                  have hfix := hR₁K
+                  have hσfix : R₁.onPolyTy σ = σ := by
+                    apply congrArg (PolyTy.mk σ.paramCount)
+                    exact Subst.onTy_eq_self_of_fixes (fun y hy =>
+                      hfix y (hrigidK y (hpolyRigid σ hpolyOld y hy)))
+                  rw [hσfix] at hxM
+                  exact hXrigid x hx
+                    (hpolyRigid σ hpolyOld x hxM)
+              | mono t =>
+                  by_cases hdoneSource : source ∈ done
+                  · simp only [hs, Option.map_some, if_pos hdoneSource,
+                        Option.some.injEq] at hsource
+                    have hM : M = PolyTy.genGroup G t := hsource.symm
+                    subst M
+                    obtain ⟨old, hold', ht⟩ :=
+                      RecSpec.mono_getElem?_map_onSubst (hspecs₁ ▸ hs)
+                    subst t
+                    have hnewAvoid : ∀ g ∈ Gcurrent,
+                        g ∉ (S₁.onTy old).freeVars := by
+                      intro g hg
+                      rw [hGcurrent] at hg
+                      exact RecSpecs.newPool_avoids_done
+                        (hspecs₁LC (.mono (S₁.onTy old))
+                          (List.mem_of_getElem? hs)) hs (by assumption) hg
+                    have hschemeEq : R₁.onPolyTy (PolyTy.genGroup G
+                          (S₁.onTy old)) = R.onPolyTy (PolyTy.genGroup G old) := by
+                      rw [← Subst.onPolyTy_genGroup hdomG hranG,
+                        ← Subst.onPolyTy_append]
+                      apply congrArg (PolyTy.mk (PolyTy.genGroup G old).paramCount)
+                      exact (Subst.onTy_congr hAgree
+                        (RecSpec.bodyScheme_belowFvars
+                          (hspecBelow (.mono old) (List.mem_of_getElem? hold')))).symm
+                    rw [hschemeEq] at hxM
+                    exact h.completed_fresh source old hold' hdoneSource x hx hxM
+                  · simp [hs, hdoneSource] at hsource
+        · have hxAmbient : x ∈ (R₁.onCtx (S₁.onCtx ctx)).env.freeVars :=
+            Env.mem_freeVars_iff.mpr ⟨R₁.onPolyTy M,
+              List.mem_map.mpr ⟨M, hambient, rfl⟩, hxM⟩
+          have hctxEq : R₁.onCtx (S₁.onCtx ctx) = declCtx := by
+            rw [← Subst.onCtx_append]
+            exact (Subst.onCtx_congr hAgree hctxBelow).symm.trans h.ctx_eq
+          rw [hctxEq] at hxAmbient
+          exact hXdeclEnv x hx hxAmbient
+      · have hvK : v ∈ K := hrigidK v hvRigid
+        rw [hR₁K v hvK] at hxv
+        simp only [Ty.freeVars, List.mem_singleton] at hxv
+        subst v
+        exact hXrigid x hx hvRigid
+
 private theorem exists_recgroup_opening {Φ : Nat} {ctx : Ctx} {S₀ : Subst}
     {anns : List (Option PolyTy)} {bindings : List Expr} {specs : List RecSpec}
     {G L K : List Nat}
