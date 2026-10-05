@@ -6919,9 +6919,126 @@ abbrev TypeOfHM.BranchMotive
     ∃ hbody : TypeOfHM ctx branch.2 resultTy,
       motive ctx branch.2 resultTy hbody)
 
-/-- Strong induction principle for `TypeOfHM`,
-    packaged with a single motive so the metatheory never touches the mutual
-    recursor / `motive_2` directly. -/
+theorem Expr.recGroupRefs_substTyFvars (S : Subst) (e : Expr) (n depth : Nat) :
+    (e.substTyFvars S).recGroupRefs n depth = e.recGroupRefs n depth := by
+  induction e using Expr.rec_strong generalizing depth with
+  | primLit p => induction S <;> simp_all [Expr.substTyFvars, Expr.substTyFvar, Expr.recGroupRefs]
+  | primBinOp p => induction S <;> simp_all [Expr.substTyFvars, Expr.substTyFvar, Expr.recGroupRefs]
+  | ctor c => induction S <;> simp_all [Expr.substTyFvars, Expr.substTyFvar, Expr.recGroupRefs]
+  | var i => simp [Expr.substTyFvars_var]
+  | lambda ann body ih => simp [Expr.substTyFvars_lambda, Expr.recGroupRefs, ih]
+  | app f arg ihf iha => simp [Expr.substTyFvars_app, Expr.recGroupRefs, ihf, iha]
+  | letIn ann rhs body ihr ihb => simp [Expr.substTyFvars_letIn, Expr.recGroupRefs, ihr, ihb]
+  | match_ scrut branches ihs ihbr =>
+    rw [Expr.substTyFvars_match]
+    simp only [Expr.recGroupRefs, ihs]
+    congr 2
+    induction branches with
+    | nil => rfl
+    | cons pb rest ih =>
+      simp only [List.map_cons, RecGroupRefs.branches]
+      rw [ihbr pb.1 pb.2 List.mem_cons_self, ih (fun p b h => ihbr p b (List.mem_cons_of_mem _ h))]
+  | letRec anns bindings body ihbs ihb =>
+    rw [Expr.substTyFvars_letRec]
+    simp only [Expr.recGroupRefs, List.length_map, ihb]
+    congr 2
+    generalize depth + bindings.length = innerDepth
+    induction bindings generalizing innerDepth with
+    | nil => rfl
+    | cons rhs rest ih =>
+      simp only [List.map_cons, RecGroupRefs.bindings]
+      rw [ihbs rhs List.mem_cons_self, ih (fun e h => ihbs e (List.mem_cons_of_mem _ h)) innerDepth]
+
+theorem RecGroups.ValidResidualGroups.map_bindings {anns anns' : List (Option PolyTy)}
+    {bindings : List Expr} {groups : List (List Nat)}
+    (h : RecGroups.ValidResidualGroups anns bindings groups) (f : Expr → Expr)
+    (hlen : anns'.length = anns.length)
+    (hu : ∀ i, RecGroups.UnsignedAt anns' i ↔ RecGroups.UnsignedAt anns i)
+    (href : ∀ e ∈ bindings, (f e).recGroupRefs bindings.length 0 = e.recGroupRefs bindings.length 0) :
+    RecGroups.ValidResidualGroups anns' (bindings.map f) groups := by
+  refine ⟨by simpa using hlen.trans h.length, h.nonempty, h.flatten_nodup,
+    by simpa using h.bounded, ?_, ?_⟩
+  · intro member hm
+    rw [List.length_map] at hm
+    exact (h.covers_unsigned member hm).trans (hu member).symm
+  · intro stage dependencyStage component dependencyComponent source target rhs
+      hc hd hs ht hrhs href'
+    rw [List.getElem?_map] at hrhs
+    obtain ⟨old, hold, rfl⟩ := Option.map_eq_some_iff.mp hrhs
+    apply h.dependencies_first hc hd hs ht hold
+    rw [List.length_map, href old (List.mem_of_getElem? hold)] at href'
+    exact href'
+
+theorem RecGroups.ValidResidualGroups.substTyFvars {anns : List (Option PolyTy)}
+    {bindings : List Expr} {groups : List (List Nat)}
+    (h : RecGroups.ValidResidualGroups anns bindings groups) (S : Subst) :
+    RecGroups.ValidResidualGroups (anns.map (RecAnn.substFvars S))
+      (bindings.map (Expr.substTyFvars S)) groups := by
+  apply h.map_bindings (Expr.substTyFvars S) (by simp)
+  · intro i
+    simp only [RecGroups.UnsignedAt, List.getElem?_map]
+    cases anns[i]? with
+    | none => simp
+    | some ann => cases ann <;> simp [RecAnn.substFvars]
+  · intro e _
+    exact Expr.recGroupRefs_substTyFvars S e _ _
+
+theorem Expr.recGroupRefs_shiftFrom (e : Expr) (n depth cutoff amount : Nat)
+    (hcutoff : depth + n ≤ cutoff) :
+    (e.shiftFrom cutoff amount).recGroupRefs n depth = e.recGroupRefs n depth := by
+  induction e using Expr.rec_strong generalizing depth cutoff with
+  | primLit p => rfl
+  | primBinOp p => rfl
+  | ctor c => rfl
+  | var i =>
+    simp only [Expr.shiftFrom]
+    split
+    · rfl
+    · simp only [Expr.recGroupRefs]
+      have hhi : ¬ i + amount < depth + n := by omega
+      have hi : ¬ i < depth + n := by omega
+      simp [hhi, hi]
+  | lambda ann body ih => simp only [Expr.shiftFrom, Expr.recGroupRefs]; exact ih _ _ (by omega)
+  | app f arg ihf iha => simp [Expr.shiftFrom, Expr.recGroupRefs, ihf _ _ hcutoff, iha _ _ hcutoff]
+  | letIn ann rhs body ihr ihb =>
+    simp [Expr.shiftFrom, Expr.recGroupRefs, ihr depth cutoff hcutoff,
+      ihb (depth + 1) (cutoff + 1) (by omega)]
+  | match_ scrut branches ihs ihbr =>
+    simp only [Expr.shiftFrom, Expr.recGroupRefs, ihs _ _ hcutoff]
+    congr 2
+    induction branches with
+    | nil => rfl
+    | cons pb rest ih =>
+      change ((pb.2.shiftFrom (cutoff + pb.1.bindCount) amount).recGroupRefs n
+        (depth + pb.1.bindCount) ++ _).dedup = _
+      simp only [RecGroupRefs.branches]
+      rw [ihbr pb.1 pb.2 List.mem_cons_self _ _ (by omega),
+        ih (fun p b h => ihbr p b (List.mem_cons_of_mem _ h))]
+  | letRec anns bindings body ihbs ihb =>
+    simp only [Expr.shiftFrom, RecGroup.shiftFrom_eq_map, Expr.recGroupRefs, List.length_map,
+      ihb (depth + bindings.length) (cutoff + bindings.length) (by omega)]
+    congr 2
+    generalize hd : depth + bindings.length = innerDepth
+    generalize hc : cutoff + bindings.length = innerCutoff
+    have hinner : innerDepth + n ≤ innerCutoff := by omega
+    clear hd hc hcutoff
+    induction bindings generalizing innerDepth innerCutoff with
+    | nil => rfl
+    | cons rhs rest ih =>
+      simp only [List.map_cons, RecGroupRefs.bindings]
+      rw [ihbs rhs List.mem_cons_self _ _ hinner,
+        ih (fun e h => ihbs e (List.mem_cons_of_mem _ h)) innerDepth innerCutoff hinner]
+
+theorem RecGroups.ValidResidualGroups.shiftFrom {anns : List (Option PolyTy)}
+    {bindings : List Expr} {groups : List (List Nat)}
+    (h : RecGroups.ValidResidualGroups anns bindings groups) (cutoff amount : Nat)
+    (hc : bindings.length ≤ cutoff) :
+    RecGroups.ValidResidualGroups anns (bindings.map (Expr.shiftFrom cutoff amount)) groups := by
+  apply h.map_bindings (Expr.shiftFrom cutoff amount) rfl (fun _ => Iff.rfl)
+  intro e _
+  exact Expr.recGroupRefs_shiftFrom e _ _ cutoff amount (by simpa using hc)
+
+/-- Strong induction principle for `TypeOfHM`, packaged with a single motive. -/
 @[elab_as_elim]
 theorem TypeOfHM.rec_strong
     {motive : (ctx : Ctx) → (e : Expr) → (τ : Ty) → TypeOfHM ctx e τ → Prop}
@@ -6990,22 +7107,24 @@ theorem TypeOfHM.rec_strong
       (∀ branch ∈ branches, TypeOfHM.BranchMotive motive ctx branch scrutTy resultTy) →
       motive ctx (.match_ scrutinee branches) resultTy (.match_ hscrut hne hbrs))
     (letRec : ∀ {ctx bodyCtx : Ctx} {anns : List (Option PolyTy)} {bindings : List Expr}
-      {specs : List RecSpec} {G L : List Nat} {body : Expr} {ρ : Ty}
+      {specs : List RecSpec} {groups : List (List Nat)} {G L : List Nat} {body : Expr} {ρ : Ty}
+      (hvalid : RecGroups.ValidResidualGroups anns bindings groups)
       (hwf : RecSpecs.WF anns bindings specs G)
-      (hmono : RecSpecs.MonoTyped TypeOfHM ctx bindings specs G L)
+      (hmono : RecSpecs.StratifiedMonoTyped TypeOfHM ctx bindings specs groups G L)
       (hpoly : RecSpecs.PolyTypedFinal TypeOfHM ctx bindings specs G L)
       (heq : bodyCtx = RecSpecs.bodyCtx ctx specs G)
       (hbody : TypeOfHM bodyCtx body ρ),
-      (∀ Xs (hf : FreshNames L G.length Xs)
-          p (hp : p ∈ bindings.zip specs) τ (hτ : p.2 = .mono τ),
-        motive (RecSpecs.rhsCtx ctx specs G Xs)
-          p.1 (Ty.renameG G Xs τ) (hmono Xs hf p hp τ hτ)) →
+      (∀ stage component (hc : groups[stage]? = some component)
+          Xs (hf : FreshNames L G.length Xs) member (hm : member ∈ component) rhs τ
+          (hrhs : bindings[member]? = some rhs) (hτ : specs[member]? = some (.mono τ)),
+        motive (RecSpecs.stageCtx ctx specs (groups.take stage).flatten G Xs)
+          rhs (Ty.renameG G Xs τ) (hmono stage component hc Xs hf member hm rhs τ hrhs hτ)) →
       (∀ p (hp : p ∈ bindings.zip specs) σ (hσ : p.2 = .poly σ)
           Ys (hfY : FreshNames L σ.paramCount Ys),
         motive (RecSpecs.bodyCtx ctx specs G)
           (p.1.openTyVars Ys) (σ.openVars Ys) (hpoly p hp σ hσ Ys hfY)) →
       motive bodyCtx body ρ hbody →
-      motive ctx (.letRec anns bindings body) ρ (.letRec hwf hmono hpoly heq hbody))
+      motive ctx (.letRec anns bindings body) ρ (.letRec hvalid hwf hmono hpoly heq hbody))
     {ctx : Ctx} {e : Expr} {τ : Ty} (h : TypeOfHM ctx e τ) : motive ctx e τ h := by
   induction h using TypeOfHM.rec
     (motive_2 := fun ctx br scrutTy resultTy _ =>
@@ -7025,8 +7144,8 @@ theorem TypeOfHM.rec_strong
   | var hlook hlc hinst => exact var hlook hlc hinst
   | ctor hlook htyargs hinst => exact ctor hlook htyargs hinst
   | match_ hscrut hne hbrs ihscrut ihbrs => exact match_ hscrut hne hbrs ihscrut ihbrs
-  | letRec hwf hmono hpoly heq hbody ihmono ihpoly ihbody =>
-      exact letRec hwf hmono hpoly heq hbody ihmono ihpoly ihbody
+  | letRec hvalid hwf hmono hpoly heq hbody ihmono ihpoly ihbody =>
+      exact letRec hvalid hwf hmono hpoly heq hbody ihmono ihpoly ihbody
   | mk hspec heq hbodyT ih =>
       subst heq
       exact Or.inl ⟨_, _, _, _, _, rfl, hspec.lookup, hspec.scrut_eq, hspec.arity,
@@ -7351,7 +7470,7 @@ theorem TypeOfHM.typ_subst_preservation_uniform {Z : Nat} {U : Ty} (h_U_lc : U.I
         rw [hScrutEq]; simp [Ty.substFvar, TyList.substFvar_eq_map]
       · subst hpat
         exact TypeOfMatchBranch.wildcard hbodyIH
-  | letRec hwf hmono hpoly heq hbody ihmono ihpoly ihbody =>
+  | letRec hvalid hwf hmono hpoly heq hbody ihmono ihpoly ihbody =>
     -- Fused-node port of Core's `TypeOfElabHM.typ_subst_preservation_uniform`
     -- `letRec` case: pool freshening `G ↦ W`, monotypes transported by
     -- `renameG_substFvar_comm`/`renameG_renameG`/`genGroup_renameG`, schemes
@@ -7375,7 +7494,8 @@ theorem TypeOfHM.typ_subst_preservation_uniform {Z : Nat} {U : Ty} (h_U_lc : U.I
           (List.mem_flatMap.mpr ⟨.mono τ, hτ, hc⟩))
     refine TypeOfHM.letRec
       (specs := specs.map (RecSpec.substFreshened Z U G W))
-      (G := W) (L := Z :: (G ++ W ++ L))
+      (groups := groups) (G := W) (L := Z :: (G ++ W ++ L))
+      (hvalid.substTyFvars [(Z, U)])
       ⟨?_, ?_, hWnodup, ?_, ?_⟩ ?_ ?_ rfl ?_
     · rw [List.map_map, ← hwf.anns_eq, List.map_map]
       apply List.map_congr_left
@@ -7399,7 +7519,7 @@ theorem TypeOfHM.typ_subst_preservation_uniform {Z : Nat} {U : Ty} (h_U_lc : U.I
         rw [← hσσ]
         exact PolyTy.WF.substFvar h_U_lc (hwf.poly_wf σ hs)
     · -- UNANNOTATED members: the historical `letRec` transport
-      intro Xs hfresh p hp τ' hτ'
+      intro stage component hc Xs hfresh member hm rhs τ' hrhs hτ'
       have hXlen : Xs.length = G.length := hfresh.length.trans hWlen0
       have hZXs : Z ∉ Xs := fun hc => hfresh.avoid Z hc List.mem_cons_self
       have hGXs : ∀ g ∈ G, g ∉ Xs := fun g hg hc =>
@@ -7419,27 +7539,36 @@ theorem TypeOfHM.typ_subst_preservation_uniform {Z : Nat} {U : Ty} (h_U_lc : U.I
               (Ty.renameG_isLC (hwf.mono_lc τ hτ)) hWnodup hfresh.length hWXs,
             Ty.renameG_renameG (hwf.mono_lc τ hτ) hwf.nodup hWnodup hWlen0 hXlen hGW
               (hWfree τ hτ) hWXs hGXs]
-      have henv_rhs : (specs.map (RecSpec.substFreshened Z U G W)).map (RecSpec.rhsEntry W Xs)
-          = Env.substFvar Z U (specs.map (RecSpec.rhsEntry G Xs)) := by
-        show _ = (specs.map (RecSpec.rhsEntry G Xs)).map (PolyTy.substFvar Z U)
-        rw [List.map_map, List.map_map]
-        apply List.map_congr_left
-        intro s hs
-        cases s with
-        | mono τ =>
-          show PolyTy.mkTrivial (Ty.renameG W Xs (Ty.substFvar Z U (Ty.renameG G W τ)))
-            = PolyTy.substFvar Z U (PolyTy.mkTrivial (Ty.renameG G Xs τ))
-          rw [key τ hs]
-          rfl
-        | poly σ => rfl
-      obtain ⟨a, b, hab, rfl⟩ := List.mem_zip_map hp
+      have henv_rhs : (specs.map (RecSpec.substFreshened Z U G W)).mapIdx
+          (RecSpec.stageEntry (groups.take stage).flatten W Xs)
+          = Env.substFvar Z U (specs.mapIdx
+            (RecSpec.stageEntry (groups.take stage).flatten G Xs)) := by
+        apply List.ext_getElem?
+        intro i
+        simp only [Env.substFvar, List.getElem?_map, List.getElem?_mapIdx, Option.map_map]
+        cases hs : specs[i]? with
+        | none => rfl
+        | some s =>
+          simp only [Option.map_some, Option.some.injEq, Function.comp_apply]
+          have hsmem := List.mem_of_getElem? hs
+          cases s with
+          | mono τ =>
+            simp only [RecSpec.substFreshened, RecSpec.stageEntry]
+            split
+            · rw [PolyTy.genGroup_renameG (hwf.mono_lc τ hsmem) hWlen0 hwf.nodup hWnodup
+                hGW (hWfree τ hsmem), PolyTy.genGroup_substFvar hZW hUW]
+            · rw [key τ hsmem]; rfl
+          | poly σ => rfl
+      rw [List.getElem?_map] at hrhs hτ'
+      obtain ⟨a, ha, rfl⟩ := Option.map_eq_some_iff.mp hrhs
+      obtain ⟨b, hb, hbs⟩ := Option.map_eq_some_iff.mp hτ'
       cases b with
-      | poly σ => exact RecSpec.noConfusion hτ'
+      | poly σ => exact RecSpec.noConfusion hbs
       | mono τ =>
-        injection hτ' with hττ
-        rw [← hττ, key τ (List.of_mem_zip hab).2]
-        have hIH := ihmono Xs hXsL (a, .mono τ) hab τ rfl
-        simp only [RecSpecs.rhsCtx] at hIH
+        injection hbs with hττ
+        rw [← hττ, key τ (List.mem_of_getElem? hb)]
+        have hIH := ihmono stage component hc Xs hXsL member hm a τ ha hb
+        simp only [RecSpecs.stageCtx] at hIH
         rw [Env.substFvar_append, ← henv_rhs] at hIH
         exact hIH
     · -- Signed members are checked under the final body context.
@@ -7571,7 +7700,7 @@ theorem TypeOfHM.regular : {ctx : Ctx} → {e : Expr} → {τ : Ty} →
   | _, _, _, @TypeOfHM.match_ _ _ _ branches _ hscrut hne hbrs => by
     obtain ⟨hd, tl, rfl⟩ := List.exists_cons_of_ne_nil hne
     exact TypeOfMatchBranch.regular (hbrs hd (List.mem_cons_self ..))
-  | _, _, _, .letRec _ _ _ _ hbody => TypeOfHM.regular hbody
+  | _, _, _, .letRec _ _ _ _ _ hbody => TypeOfHM.regular hbody
 
 theorem TypeOfMatchBranch.regular : {ctx : Ctx} → {br : MatchPattern × Expr} →
     {scrutTy : Ty} → {rt : Ty} →
@@ -7681,7 +7810,7 @@ theorem TypeOfHM.varsBelow {ctx : Ctx} {e : Expr} {τ : Ty}
   | match_ hscrut hne hbrs ihscrut ihbrs =>
     simp only [Expr.varsBelow, Bool.and_eq_true]
     exact ⟨ihscrut, branchList_varsBelow_of_motive _ ihbrs⟩
-  | letRec hwf hmono hpoly heq hbody ihmono ihpoly ihbody =>
+  | letRec hvalid hwf hmono hpoly heq hbody ihmono ihpoly ihbody =>
     expose_names
     subst heq
     simp only [Expr.varsBelow, Bool.and_eq_true]
@@ -7693,8 +7822,20 @@ theorem TypeOfHM.varsBelow {ctx : Ctx} {e : Expr} {τ : Ty}
       obtain ⟨s, hs⟩ := mem_zip_of_mem_left hspecslen hmem
       obtain ⟨Xs, hXlen, hXnodup, hXavoid⟩ := exists_fresh_names L G.length
       rcases s with τ | σ
-      · have hc := ihmono Xs ⟨hXlen, hXnodup, hXavoid⟩ (bnd, .mono τ) hs τ rfl
-        simp only [RecSpecs.rhsCtx, List.length_append, List.length_map] at hc
+      · obtain ⟨member, hpair⟩ := List.mem_iff_getElem?.mp hs
+        rw [List.getElem?_zip_eq_some] at hpair
+        obtain ⟨hrhs, hspec⟩ := hpair
+        have hmember : member < bindings.length :=
+          (List.getElem?_eq_some_iff.mp hrhs).choose
+        have hu : RecGroups.UnsignedAt anns member := by
+          rw [RecGroups.UnsignedAt, ← hwf.anns_eq, List.getElem?_map, hspec]
+          rfl
+        obtain ⟨component, hc, hm⟩ := List.mem_flatten.mp
+          ((hvalid.covers_unsigned member hmember).mpr hu)
+        obtain ⟨stage, hstage⟩ := List.mem_iff_getElem?.mp hc
+        have hc := ihmono stage component hstage Xs ⟨hXlen, hXnodup, hXavoid⟩
+          member hm bnd τ hrhs hspec
+        simp only [RecSpecs.stageCtx, List.length_append, List.length_mapIdx] at hc
         rwa [Nat.add_comm, ← hspecslen] at hc
       · obtain ⟨Ys, hYlen, hYnodup, hYavoid⟩ := exists_fresh_names L σ.paramCount
         have hc := ihpoly (bnd, .poly σ) hs σ rfl Ys ⟨hYlen, hYnodup, hYavoid⟩
@@ -7997,55 +8138,69 @@ side conditions `Infer`'s `letRec` scaffolding already establishes. -/
     annotations keep their meaning. -/
 theorem TypeOfHM.letRec_of_emptyPool {ctx : Ctx} {Lp G : List Nat}
     {anns : List (Option PolyTy)} {bs : List Expr} {specs : List RecSpec}
+    {groups : List (List Nat)}
     {body : Expr} {ρ : Ty}
+    (hvalid : RecGroups.ValidResidualGroups anns bs groups)
     (hwf : RecSpecs.WF anns bs specs G)
     (hG_env : ∀ g ∈ G, g ∉ ctx.env.freeVars)
     (hG_specs : ∀ g ∈ G, ∀ σ, RecSpec.poly σ ∈ specs → g ∉ σ.body.freeVars)
     (hG_bs : ∀ g ∈ G, ∀ e ∈ bs, g ∉ e.tyFreeVars)
-    (hmono : ∀ p ∈ bs.zip specs, ∀ τ, p.2 = RecSpec.mono τ →
-      TypeOfHM ⟨specs.map (RecSpec.rhsEntry [] []) ++ ctx.env, ctx.ctors⟩ p.1 τ)
+    (hmono : ∀ stage component, groups[stage]? = some component →
+      ∀ member ∈ component, ∀ rhs τ,
+      bs[member]? = some rhs → specs[member]? = some (.mono τ) →
+      TypeOfHM (RecSpecs.algorithmStageCtx ctx specs (groups.take stage).flatten G) rhs τ)
     (hpoly : ∀ p ∈ bs.zip specs, ∀ σ, p.2 = RecSpec.poly σ →
       ∀ Ys, FreshNames Lp σ.paramCount Ys →
         TypeOfHM (RecSpecs.bodyCtx ctx specs G)
           (p.1.openTyVars Ys) (σ.openVars Ys))
     (hbody : TypeOfHM (RecSpecs.bodyCtx ctx specs G) body ρ) :
     TypeOfHM ctx (Expr.letRec anns bs body) ρ := by
-  have hctx_eq : ∀ Xs : List Nat,
+  have hctx_eq : ∀ (done Xs : List Nat),
       Subst.onCtx (G.zip (Xs.map (Ty.fvar ·)))
-          ⟨specs.map (RecSpec.rhsEntry [] []) ++ ctx.env, ctx.ctors⟩
-        = RecSpecs.rhsCtx ctx specs G Xs := by
-    intro Xs
-    simp only [Subst.onCtx, Subst.onEnv, RecSpecs.rhsCtx, List.map_append]
+          (RecSpecs.algorithmStageCtx ctx specs done G)
+        = RecSpecs.stageCtx ctx specs done G Xs := by
+    intro done Xs
+    simp only [Subst.onCtx, Subst.onEnv, RecSpecs.algorithmStageCtx, RecSpecs.stageCtx,
+      List.map_append]
     congr 1
     congr 1
-    · rw [List.map_map]
-      apply List.map_congr_left
-      intro s hs
-      cases s with
-      | mono τ =>
-        simp only [Function.comp_apply, RecSpec.rhsEntry]
-        rw [Ty.renameG_nil_pool]
-        rfl
-      | poly σ =>
-        have hfix : Subst.onTy (G.zip (Xs.map (Ty.fvar ·))) σ.body = σ.body :=
-          Ty.substFvars_eq_self_of_no_key (fun p hp hc =>
-            hG_specs p.1 (List.of_mem_zip hp).1 σ hs hc)
-        simp only [Function.comp_apply, RecSpec.rhsEntry]
-        rw [Subst.onPolyTy, hfix]
+    · apply List.ext_getElem?
+      intro i
+      simp only [List.getElem?_map, List.getElem?_mapIdx, Option.map_map]
+      cases hs : specs[i]? with
+      | none => rfl
+      | some s =>
+        simp only [Option.map_some, Option.some.injEq, Function.comp_apply]
+        cases s with
+        | mono τ =>
+          simp only [RecSpec.algorithmStageEntry, RecSpec.stageEntry]
+          split
+          · apply Subst.onPolyTy_eq_self_of_dom_avoids
+            intro p hp hfree
+            have hg := (List.of_mem_zip hp).1
+            have hτ := Ty.freeVars_closeOver_subset hfree
+            exact Ty.not_mem_closeOver_freeVars (by
+              simp only [Ty.genFilter, List.mem_filter]
+              exact ⟨hg, by simpa using hτ⟩) hfree
+          · rfl
+        | poly σ =>
+          apply Subst.onPolyTy_eq_self_of_dom_avoids
+          intro p hp hc
+          exact hG_specs p.1 (List.of_mem_zip hp).1 σ (List.mem_of_getElem? hs) hc
     · simpa only [Subst.onEnv] using
         Subst.onEnv_eq_self_of_fresh (fun p hp => hG_env p.1 (List.of_mem_zip hp).1)
-  refine TypeOfHM.letRec (specs := specs) (G := G) (L := Lp ++ G)
-    hwf ?mono ?poly rfl hbody
-  · intro Xs hXs p hp τ hτ
-    have hctx := hctx_eq Xs
-    have hsrc := hmono p hp τ hτ
+  refine TypeOfHM.letRec (specs := specs) (groups := groups) (G := G) (L := Lp ++ G)
+    hvalid hwf ?mono ?poly rfl hbody
+  · intro stage component hc Xs hXs member hm rhs τ hrhs hτ
+    have hctx := hctx_eq (groups.take stage).flatten Xs
+    have hsrc := hmono stage component hc member hm rhs τ hrhs hτ
     have hLC : ∀ q ∈ G.zip (Xs.map (Ty.fvar ·)), q.2.IsLC := by
       intro q hq
       obtain ⟨x, hx, hxeq⟩ := List.mem_map.mp (List.of_mem_zip hq).2
       rw [← hxeq]; exact ContainsBvarsUpTo.fvar
-    have hfix : p.1.substTyFvars (G.zip (Xs.map (Ty.fvar ·))) = p.1 :=
+    have hfix : rhs.substTyFvars (G.zip (Xs.map (Ty.fvar ·))) = rhs :=
       Expr.substTyFvars_eq_self_of_not_mem_tyFreeVars (fun q hq hc =>
-        hG_bs q.1 (List.of_mem_zip hq).1 p.1 (List.of_mem_zip hp).1 hc)
+        hG_bs q.1 (List.of_mem_zip hq).1 rhs (List.mem_of_getElem? hrhs) hc)
     have hren := TypeOfHM.onSubst_fixed (G.zip (Xs.map (Ty.fvar ·))) hLC hfix hsrc
     rw [hctx] at hren
     simpa [Subst.onTy, Ty.renameG] using hren
@@ -8360,16 +8515,17 @@ theorem TypeOfHM.weaken_scheme {ctors : CtorEnv} {env_post env : Env} {M M' : Po
         simpa only [List.append_assoc] using hbc
       · subst hpat
         exact TypeOfMatchBranch.wildcard (ihbody ep heq)
-    | letRec hwf hmono hpoly heq hbody ihmono ihpoly ihbody =>
+    | letRec hvalid hwf hmono hpoly heq hbody ihmono ihpoly ihbody =>
       intro ep hep
       subst heq
       expose_names
-      refine TypeOfHM.letRec (specs := specs) (G := G) (L := L) hwf ?_ ?_ rfl ?_
-      · intro Xs hfresh p hp τ' hτ'
-        have hc := ihmono Xs hfresh p hp τ' hτ'
-          (specs.map (RecSpec.rhsEntry G Xs) ++ ep)
-          (by simp only [RecSpecs.rhsCtx, hep, List.append_assoc])
-        simp only [RecSpecs.rhsCtx, List.append_assoc] at hc ⊢
+      refine TypeOfHM.letRec (specs := specs) (groups := groups) (G := G) (L := L)
+        hvalid hwf ?_ ?_ rfl ?_
+      · intro stage component hcomponent Xs hfresh member hm rhs τ' hrhs hτ'
+        have hc := ihmono stage component hcomponent Xs hfresh member hm rhs τ' hrhs hτ'
+          (specs.mapIdx (RecSpec.stageEntry (groups.take stage).flatten G Xs) ++ ep)
+          (by simp only [RecSpecs.stageCtx, hep, List.append_assoc])
+        simp only [RecSpecs.stageCtx, List.append_assoc] at hc ⊢
         exact hc
       · intro p hp σ' hσ' Ys hYs
         have hc := ihpoly p hp σ' hσ' Ys hYs
@@ -8519,22 +8675,24 @@ theorem TypeOfHM.weaken_env
       · subst hpat
         simp only [MatchPattern.bindCount, Nat.add_zero]
         exact TypeOfMatchBranch.wildcard (hbodyIH env_pre' hctx)
-  | letRec hwf hmono hpoly heq hbody ihmono ihpoly ihbody =>
+  | letRec hvalid hwf hmono hpoly heq hbody ihmono ihpoly ihbody =>
     intro env_pre' hctx
     subst heq
     expose_names
     simp only [Expr.shiftFrom, RecGroup.shiftFrom_eq_map]
     refine TypeOfHM.letRec (specs := specs) (G := G) (L := L)
+      (groups := groups) (hvalid.shiftFrom _ _ (by omega))
       ⟨hwf.anns_eq, ?_, hwf.nodup, hwf.mono_lc, hwf.poly_wf⟩ ?_ ?_ rfl ?_
     · rw [List.length_map]; exact hwf.length
-    · intro Xs hfresh p hp τ hτ
-      obtain ⟨a, b, _, hq, rfl⟩ := List.mem_zip_map_left hp
-      have hc := ihmono Xs hfresh (a, b) hq τ hτ
-        (specs.map (RecSpec.rhsEntry G Xs) ++ env_pre')
-        (by simp only [RecSpecs.rhsCtx]; rw [hctx, List.append_assoc])
-      simp only [RecSpecs.rhsCtx, List.length_append, List.length_map] at hc
+    · intro stage component hcomponent Xs hfresh member hm rhs τ hrhs hτ
+      rw [List.getElem?_map] at hrhs
+      obtain ⟨a, ha, rfl⟩ := Option.map_eq_some_iff.mp hrhs
+      have hc := ihmono stage component hcomponent Xs hfresh member hm a τ ha hτ
+        (specs.mapIdx (RecSpec.stageEntry (groups.take stage).flatten G Xs) ++ env_pre')
+        (by simp only [RecSpecs.stageCtx]; rw [hctx, List.append_assoc])
+      simp only [RecSpecs.stageCtx, List.length_append, List.length_mapIdx] at hc
       rw [← hwf.length, Nat.add_comm bindings.length env_pre'.length] at hc
-      simp only [RecSpecs.rhsCtx, List.append_assoc] at hc ⊢
+      simp only [RecSpecs.stageCtx, List.append_assoc] at hc ⊢
       exact hc
     · intro p hp σ hσ Ys hYs
       obtain ⟨a, b, _, hq, rfl⟩ := List.mem_zip_map_left hp
@@ -13159,23 +13317,35 @@ def mutualRec : Expr := .letRec [none, none] [.var 1, .var 0] (.var 0)
     `∀a. a` and instantiates at `fvar 0`. -/
 theorem mutualRec_typeable_at (n : Nat) : TypeOfHM ⟨[], []⟩ mutualRec (.fvar n) := by
   refine TypeOfHM.letRec (specs := [.mono (.fvar 100), .mono (.fvar 100)])
-    (G := [100]) (L := []) ⟨rfl, rfl, by simp, ?_, ?_⟩ ?_ ?_ rfl ?_
+    (groups := [[0, 1]]) (G := [100]) (L := [])
+    (RecGroups.validResidualGroupsB_sound (by decide))
+    ⟨rfl, rfl, by simp, ?_, ?_⟩ ?_ ?_ rfl ?_
   · intro τ hτ
     simp only [List.mem_cons, List.not_mem_nil, or_false] at hτ
     rcases hτ with h | h <;> (injection h with h'; rw [h']; exact .fvar)
   · intro σ hσ
     simp only [List.mem_cons, List.not_mem_nil, reduceCtorEq, or_self] at hσ
-  · intro Xs hfresh p hp τ hτ
-    obtain ⟨X, rfl⟩ : ∃ X, Xs = [X] := List.length_eq_one_iff.mp hfresh.length
-    simp only [List.zip_cons_cons, List.zip_nil_right, List.mem_cons, List.not_mem_nil,
-      or_false] at hp
-    rcases hp with rfl | rfl <;> (simp only [RecSpec.mono.injEq] at hτ; subst τ)
-    · show TypeOfHM ⟨[PolyTy.mkTrivial (.fvar X), PolyTy.mkTrivial (.fvar X)], []⟩
-        (.var 1) (.fvar X)
-      exact TypeOfHM.var (instArgs := []) rfl (by simp) .fvar
-    · show TypeOfHM ⟨[PolyTy.mkTrivial (.fvar X), PolyTy.mkTrivial (.fvar X)], []⟩
-        (.var 0) (.fvar X)
-      exact TypeOfHM.var (instArgs := []) rfl (by simp) .fvar
+  · intro stage component hc Xs hfresh member hm rhs τ hrhs hτ
+    cases stage with
+    | succ stage => simp at hc
+    | zero =>
+      simp only [List.getElem?_cons_zero, Option.some.injEq] at hc
+      subst component
+      obtain ⟨X, rfl⟩ : ∃ X, Xs = [X] := List.length_eq_one_iff.mp hfresh.length
+      simp only [List.mem_cons, List.not_mem_nil, or_false] at hm
+      rcases hm with rfl | rfl
+      · simp only [List.getElem?_cons_zero, Option.some.injEq] at hrhs hτ
+        subst rhs
+        cases hτ
+        show TypeOfHM ⟨[PolyTy.mkTrivial (.fvar X), PolyTy.mkTrivial (.fvar X)], []⟩
+          (.var 1) (.fvar X)
+        exact TypeOfHM.var (instArgs := []) rfl (by simp) .fvar
+      · simp only [List.getElem?_cons_succ, List.getElem?_cons_zero, Option.some.injEq] at hrhs hτ
+        subst rhs
+        cases hτ
+        show TypeOfHM ⟨[PolyTy.mkTrivial (.fvar X), PolyTy.mkTrivial (.fvar X)], []⟩
+          (.var 0) (.fvar X)
+        exact TypeOfHM.var (instArgs := []) rfl (by simp) .fvar
   · intro p hp σ hσ Ys hYs
     simp only [List.zip_cons_cons, List.zip_nil_right, List.mem_cons, List.not_mem_nil,
       or_false] at hp
