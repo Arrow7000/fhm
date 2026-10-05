@@ -6870,6 +6870,99 @@ abbrev TypeOfHM.BranchMotive
     ∃ hbody : TypeOfHM ctx branch.2 resultTy,
       motive ctx branch.2 resultTy hbody)
 
+/-- A predicate on the free de Bruijn indices actually used by an expression.
+    `depth` excludes local binders; annotations do not affect term references. -/
+def Expr.ForallOuter (P : Nat → Prop) (depth : Nat) (e : Expr) : Prop :=
+  Expr.rec_strong (motive := fun _ => Nat → Prop)
+    (fun _ _ => True) (fun _ _ => True)
+    (fun _ _ ih d => ih (d + 1))
+    (fun _ _ ihf iha d => ihf d ∧ iha d)
+    (fun _ _ _ ihr ihb d => ihr d ∧ ihb (d + 1))
+    (fun i d => d ≤ i → P (i - d))
+    (fun _ _ => True)
+    (fun _ branches ihs ihbr d =>
+      ihs d ∧ ∀ pat body h, ihbr pat body h (d + pat.bindCount))
+    (fun _ bindings _ ihbs ihb d =>
+      (∀ rhs h, ihbs rhs h (d + bindings.length)) ∧ ihb (d + bindings.length)) e depth
+
+theorem Expr.ForallOuter.mono {P Q : Nat → Prop} {depth : Nat} {e : Expr}
+    (h : e.ForallOuter P depth) (hPQ : ∀ i, P i → Q i) : e.ForallOuter Q depth := by
+  induction e using Expr.rec_strong generalizing depth with
+  | primLit _ => simp only [Expr.ForallOuter, Expr.rec_strong] at h ⊢
+  | primBinOp _ => simp only [Expr.ForallOuter, Expr.rec_strong] at h ⊢
+  | ctor _ => simp only [Expr.ForallOuter, Expr.rec_strong] at h ⊢
+  | var i => simp only [Expr.ForallOuter, Expr.rec_strong] at h ⊢; exact fun hd => hPQ _ (h hd)
+  | lambda _ _ ih => simp only [Expr.ForallOuter, Expr.rec_strong] at h ⊢; exact ih h
+  | app _ _ ihf iha => simp only [Expr.ForallOuter, Expr.rec_strong] at h ⊢; exact ⟨ihf h.1, iha h.2⟩
+  | letIn _ _ _ ihr ihb => simp only [Expr.ForallOuter, Expr.rec_strong] at h ⊢; exact ⟨ihr h.1, ihb h.2⟩
+  | match_ _ _ ihs ihbr => simp only [Expr.ForallOuter, Expr.rec_strong] at h ⊢; exact ⟨ihs h.1, fun p b hb => ihbr p b hb (h.2 p b hb)⟩
+  | letRec _ _ _ ihbs ihb => simp only [Expr.ForallOuter, Expr.rec_strong] at h ⊢; exact ⟨fun rhs hrhs => ihbs rhs hrhs (h.1 rhs hrhs), ihb h.2⟩
+
+theorem Expr.ForallOuter.prepend {P Q : Nat → Prop} {depth count : Nat} {e : Expr}
+    (h : e.ForallOuter P (depth + count))
+    (hbound : ∀ i, i < count → Q i) (houter : ∀ i, P i → Q (count + i)) :
+    e.ForallOuter Q depth := by
+  induction e using Expr.rec_strong generalizing depth with
+  | primLit _ => simp only [Expr.ForallOuter, Expr.rec_strong] at h ⊢
+  | primBinOp _ => simp only [Expr.ForallOuter, Expr.rec_strong] at h ⊢
+  | ctor _ => simp only [Expr.ForallOuter, Expr.rec_strong] at h ⊢
+  | var i =>
+    simp only [Expr.ForallOuter, Expr.rec_strong] at h ⊢
+    intro hi
+    by_cases hib : i < depth + count
+    · exact hbound (i - depth) (by omega)
+    · have hout := houter (i - (depth + count)) (h (by omega))
+      rwa [show count + (i - (depth + count)) = i - depth by omega] at hout
+  | lambda _ _ ih =>
+    simp only [Expr.ForallOuter, Expr.rec_strong] at h ⊢
+    apply ih
+    simpa only [Expr.ForallOuter, show depth + 1 + count = depth + count + 1 by omega] using h
+  | app _ _ ihf iha => simp only [Expr.ForallOuter, Expr.rec_strong] at h ⊢; exact ⟨ihf h.1, iha h.2⟩
+  | letIn _ _ _ ihr ihb =>
+    simp only [Expr.ForallOuter, Expr.rec_strong] at h ⊢
+    refine ⟨ihr h.1, ihb ?_⟩
+    simpa only [Expr.ForallOuter, show depth + 1 + count = depth + count + 1 by omega] using h.2
+  | match_ _ _ ihs ihbr =>
+    simp only [Expr.ForallOuter, Expr.rec_strong] at h ⊢
+    refine ⟨ihs h.1, fun p b hb => ihbr p b hb ?_⟩
+    simpa only [Expr.ForallOuter, show depth + p.bindCount + count = depth + count + p.bindCount by omega] using h.2 p b hb
+  | letRec _ bindings _ ihbs ihb =>
+    simp only [Expr.ForallOuter, Expr.rec_strong] at h ⊢
+    refine ⟨fun rhs hrhs => ihbs rhs hrhs ?_, ihb ?_⟩
+    · simpa only [Expr.ForallOuter, show depth + bindings.length + count = depth + count + bindings.length by omega] using h.1 rhs hrhs
+    · simpa only [Expr.ForallOuter, show depth + bindings.length + count = depth + count + bindings.length by omega] using h.2
+
+theorem Expr.ForallOuter.substTyFvars {P : Nat → Prop} {depth : Nat} {e : Expr}
+    (h : e.ForallOuter P depth) (S : Subst) : (e.substTyFvars S).ForallOuter P depth := by
+  induction e using Expr.rec_strong generalizing depth with
+  | primLit p => simp only [Expr.ForallOuter, Expr.rec_strong] at h ⊢; induction S <;> simp_all [Expr.substTyFvars, Expr.substTyFvar, Expr.ForallOuter, Expr.rec_strong]
+  | primBinOp p => simp only [Expr.ForallOuter, Expr.rec_strong] at h ⊢; induction S <;> simp_all [Expr.substTyFvars, Expr.substTyFvar, Expr.ForallOuter, Expr.rec_strong]
+  | ctor c => simp only [Expr.ForallOuter, Expr.rec_strong] at h ⊢; induction S <;> simp_all [Expr.substTyFvars, Expr.substTyFvar, Expr.ForallOuter, Expr.rec_strong]
+  | var i => simp only [Expr.ForallOuter, Expr.rec_strong] at h ⊢; simpa only [Expr.substTyFvars_var, Expr.rec_strong] using h
+  | lambda ann body ih => simp only [Expr.ForallOuter, Expr.rec_strong] at h ⊢; rw [Expr.substTyFvars_lambda]; simp only [Expr.rec_strong]; exact ih h
+  | app f arg ihf iha => simp only [Expr.ForallOuter, Expr.rec_strong] at h ⊢; rw [Expr.substTyFvars_app]; simp only [Expr.rec_strong]; exact ⟨ihf h.1, iha h.2⟩
+  | letIn ann rhs body ihr ihb => simp only [Expr.ForallOuter, Expr.rec_strong] at h ⊢; rw [Expr.substTyFvars_letIn]; simp only [Expr.rec_strong]; exact ⟨ihr h.1, ihb h.2⟩
+  | match_ scrut branches ihs ihbr =>
+    simp only [Expr.ForallOuter, Expr.rec_strong] at h ⊢
+    rw [Expr.substTyFvars_match]
+    simp only [Expr.rec_strong]
+    refine ⟨ihs h.1, ?_⟩
+    intro p b hb
+    obtain ⟨⟨p0, b0⟩, hb0, heq⟩ := List.mem_map.mp hb
+    cases heq
+    exact ihbr p0 b0 hb0 (h.2 p0 b0 hb0)
+  | letRec anns bindings body ihbs ihb =>
+    simp only [Expr.ForallOuter, Expr.rec_strong] at h ⊢
+    rw [Expr.substTyFvars_letRec]
+    simp only [Expr.rec_strong]
+    change (∀ rhs ∈ bindings.map (Expr.substTyFvars S), rhs.ForallOuter P
+      (depth + (bindings.map (Expr.substTyFvars S)).length)) ∧ _
+    rw [List.length_map]
+    refine ⟨?_, ihb h.2⟩
+    intro rhs hrhs
+    obtain ⟨old, hold, rfl⟩ := List.mem_map.mp hrhs
+    exact ihbs old hold (h.1 old hold)
+
 theorem Expr.recGroupRefs_substTyFvars (S : Subst) (e : Expr) (n depth : Nat) :
     (e.substTyFvars S).recGroupRefs n depth = e.recGroupRefs n depth := by
   induction e using Expr.rec_strong generalizing depth with
