@@ -11428,7 +11428,7 @@ theorem Expr.tyFreeVars_shiftFrom (e : Expr) (threshold n : Nat)
     simp only [Expr.shiftFrom, Expr.tyFreeVars] at *
   | var i =>
     simp only [Expr.shiftFrom]
-    split <;> simpa [Expr.tyFreeVars] using h
+    split <;> simp [Expr.tyFreeVars]
   | lambda ann body ih =>
     simp only [Expr.shiftFrom, Expr.tyFreeVars, List.append_eq_nil_iff] at h ⊢
     exact ⟨h.1, ih (threshold + 1) h.2⟩
