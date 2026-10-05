@@ -18,7 +18,7 @@ const expectedRejects = new Set([
 // because they had the same extension.
 const files = [
   "hm-hover.fhm",
-  "scoped-tyvars.fhm",
+  "language-guide.fhm",
   "live.fhm",
   "polyrec-generalize-after-scc.fhm",
   "polyrec-groups-nested.fhm",
