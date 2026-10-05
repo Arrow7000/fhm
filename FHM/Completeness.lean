@@ -3248,6 +3248,27 @@ private theorem RecGroups.ValidResidualGroups.stage_unique
       (List.getElem?_eq_some_iff.mp hleft).2] at hdisjoint
     exact (List.disjoint_left.mp hdisjoint hmemRight hmemLeft).elim
 
+private theorem RecGroups.ValidResidualGroups.not_mem_take_of_mem
+    {anns : List (Option PolyTy)} {bindings : List Expr}
+    {groups : List (List Nat)}
+    (h : RecGroups.ValidResidualGroups anns bindings groups)
+    {stage member : Nat} {component : List Nat}
+    (hcomponent : groups[stage]? = some component) (hmember : member ∈ component) :
+    member ∉ (groups.take stage).flatten := by
+  intro hprefix
+  obtain ⟨prior, hpriorIn, hmemberPrior⟩ := List.mem_flatten.mp hprefix
+  obtain ⟨priorStage, hpriorStage⟩ := List.mem_iff_getElem?.mp hpriorIn
+  have hpriorLt : priorStage < stage := by
+    have := (List.getElem?_eq_some_iff.mp hpriorStage).1
+    simp only [List.length_take] at this
+    have hstageBound := (List.getElem?_eq_some_iff.mp hcomponent).1
+    omega
+  have hpriorOriginal : groups[priorStage]? = some prior := by
+    rw [List.getElem?_take, if_pos hpriorLt] at hpriorStage
+    exact hpriorStage
+  have heq := h.stage_unique hpriorOriginal hcomponent hmemberPrior hmember
+  omega
+
 private theorem RecGroups.ValidResidualGroups.stage_of_unsigned
     {anns : List (Option PolyTy)} {bindings : List Expr}
     {groups : List (List Nat)}
@@ -4542,6 +4563,7 @@ private structure RecStrataResidual (declCtx : Ctx) (declSpecs : List RecSpec)
   lc : ∀ p ∈ R, p.2.IsLC
   fixes : ∀ k ∈ K, R.onTy (.fvar k) = .fvar k
   ctx_eq : R.onCtx ctx = declCtx
+  anns_eq : specs.map RecSpec.ann = declSpecs.map RecSpec.ann
   connection : ∀ (member : Nat) (algTy declTy : Ty),
     specs[member]? = some (RecSpec.mono algTy) →
     declSpecs[member]? = some (RecSpec.mono declTy) →
@@ -4661,6 +4683,7 @@ private theorem RecGroupOpeningCore.initialResidual
     lc := o.lc
     fixes := o.fixes
     ctx_eq := (Subst.onCtx_congr o.agrees hbelow)
+    anns_eq := by rw [RecSpec.map_ann_init, hwf.anns_eq]
     connection := ?_
     completed_fresh := ?_ }
   · intro member algTy declTy halg hdecl
@@ -4676,6 +4699,296 @@ private theorem RecGroupOpeningCore.initialResidual
     exact o.block member hmember declTy hdeclVal
   · intro member algTy _ hdone
     exact (List.not_mem_nil hdone).elim
+
+private theorem RecStrataResidual.completed_generalizes
+    {declAnns : List (Option PolyTy)} {bindings : List Expr}
+    {declCtx : Ctx} {declSpecs : List RecSpec} {declG Xs K : List Nat}
+    {ctx : Ctx} {specs : List RecSpec} {done G : List Nat} {R : Subst}
+    (h : RecStrataResidual declCtx declSpecs declG Xs K ctx specs done G R)
+    (hdeclWF : RecSpecs.WF declAnns bindings declSpecs declG)
+    (hspecLC : ∀ s ∈ specs, s.LC)
+    (hXlen : Xs.length = declG.length) (hXnodup : Xs.Nodup)
+    (hXG : ∀ g ∈ declG, g ∉ Xs)
+    (hXmono : ∀ x ∈ Xs, ∀ τ, .mono τ ∈ declSpecs → x ∉ τ.freeVars)
+    {member : Nat} {algTy declTy : Ty}
+    (halg : specs[member]? = some (.mono algTy))
+    (hdecl : declSpecs[member]? = some (.mono declTy))
+    (hdone : member ∈ done) :
+    (R.onPolyTy (PolyTy.genGroup G algTy)).Generalizes
+      (PolyTy.genGroup declG declTy) := by
+  apply genGroup_generalizes_renameG
+  · exact hspecLC (.mono algTy) (List.mem_of_getElem? halg)
+  · exact hdeclWF.mono_lc declTy (List.mem_of_getElem? hdecl)
+  · exact h.lc
+  · exact hdeclWF.nodup
+  · exact hXlen
+  · exact hXnodup
+  · exact hXG
+  · intro x hx
+    exact hXmono x hx declTy (List.mem_of_getElem? hdecl)
+  · exact h.connection member algTy declTy halg hdecl
+  · exact h.completed_fresh member algTy halg hdone
+
+private theorem RecStrataResidual.completed_generalizes_opened
+    {declAnns : List (Option PolyTy)} {bindings : List Expr}
+    {declCtx : Ctx} {declSpecs : List RecSpec} {declG Xs K : List Nat}
+    {ctx : Ctx} {specs : List RecSpec} {done G : List Nat} {R : Subst}
+    (h : RecStrataResidual declCtx declSpecs declG Xs K ctx specs done G R)
+    (hdeclWF : RecSpecs.WF declAnns bindings declSpecs declG)
+    (hspecLC : ∀ s ∈ specs, s.LC)
+    (hXlen : Xs.length = declG.length) (hXnodup : Xs.Nodup)
+    (hXG : ∀ g ∈ declG, g ∉ Xs)
+    (hXmono : ∀ x ∈ Xs, ∀ τ, .mono τ ∈ declSpecs → x ∉ τ.freeVars)
+    {member : Nat} {algTy declTy : Ty}
+    (halg : specs[member]? = some (.mono algTy))
+    (hdecl : declSpecs[member]? = some (.mono declTy))
+    (hdone : member ∈ done) :
+    (R.onPolyTy (PolyTy.genGroup G algTy)).Generalizes
+      (PolyTy.mkTrivial (Ty.renameG declG Xs declTy)) := by
+  exact PolyTy.Generalizes.trans
+    (h.completed_generalizes hdeclWF hspecLC hXlen hXnodup hXG hXmono
+      halg hdecl hdone)
+    (genGroup_generalizes_trivial_renameG
+      (hdeclWF.mono_lc declTy (List.mem_of_getElem? hdecl))
+      hdeclWF.nodup hXlen hXnodup hXG
+      (fun x hx => hXmono x hx declTy (List.mem_of_getElem? hdecl)))
+
+private theorem RecStrataResidual.decl_mono_of_mono
+    {declCtx : Ctx} {declSpecs : List RecSpec} {declG Xs K : List Nat}
+    {ctx : Ctx} {specs : List RecSpec} {done G : List Nat} {R : Subst}
+    (h : RecStrataResidual declCtx declSpecs declG Xs K ctx specs done G R)
+    {member : Nat} {algTy : Ty}
+    (halg : specs[member]? = some (.mono algTy)) :
+    ∃ declTy, declSpecs[member]? = some (.mono declTy) := by
+  have hann := congrArg (fun xs => xs[member]?) h.anns_eq
+  simp only [List.getElem?_map, halg, Option.map_some, RecSpec.ann] at hann
+  cases hdecl : declSpecs[member]? with
+  | none => rw [hdecl] at hann; cases hann
+  | some declSpec =>
+      rw [hdecl] at hann
+      cases declSpec with
+      | mono declTy => exact ⟨declTy, rfl⟩
+      | poly σ => cases hann
+
+private theorem RecStrataResidual.decl_poly_of_poly
+    {declCtx : Ctx} {declSpecs : List RecSpec} {declG Xs K : List Nat}
+    {ctx : Ctx} {specs : List RecSpec} {done G : List Nat} {R : Subst}
+    (h : RecStrataResidual declCtx declSpecs declG Xs K ctx specs done G R)
+    {member : Nat} {σ : PolyTy}
+    (halg : specs[member]? = some (.poly σ)) :
+    declSpecs[member]? = some (.poly σ) := by
+  have hann := congrArg (fun xs => xs[member]?) h.anns_eq
+  simp only [List.getElem?_map, halg, Option.map_some, RecSpec.ann] at hann
+  cases hdecl : declSpecs[member]? with
+  | none => rw [hdecl] at hann; cases hann
+  | some declSpec =>
+      rw [hdecl] at hann
+      cases declSpec with
+      | mono declTy => cases hann
+      | poly σ' =>
+          have heq : σ = σ' := Option.some.inj (Option.some.inj hann)
+          subst σ'
+          rfl
+
+private theorem RecStrataResidual.onPolyTy_eq_of_rigid
+    {declCtx : Ctx} {declSpecs : List RecSpec} {declG Xs K : List Nat}
+    {ctx : Ctx} {specs : List RecSpec} {done G : List Nat} {R : Subst}
+    (h : RecStrataResidual declCtx declSpecs declG Xs K ctx specs done G R)
+    {σ : PolyTy} (hrigid : ∀ y ∈ σ.body.freeVars, y ∈ K) :
+    R.onPolyTy σ = σ := by
+  apply congrArg (PolyTy.mk σ.paramCount)
+  exact Subst.onTy_eq_self_of_fixes (fun y hy => h.fixes y (hrigid y hy))
+
+private def schemeHybrid (e : Expr) (old new : List PolyTy) : List PolyTy :=
+  old.mapIdx fun member oldScheme =>
+    if member ∈ e.recGroupRefs old.length 0 then
+      oldScheme
+    else
+      new[member]?.getD oldScheme
+
+private theorem schemeHybrid_getElem {e : Expr} {old new : List PolyTy}
+    (hlen : old.length = new.length) (member : Nat)
+    (hold : member < old.length) (hnew : member < new.length) :
+    (schemeHybrid e old new)[member]'(by simpa [schemeHybrid] using hold) =
+      if member ∈ e.recGroupRefs old.length 0 then
+        old[member]'hold else new[member]'hnew := by
+  simp only [schemeHybrid, List.getElem_mapIdx]
+  split
+  · rfl
+  · rw [List.getElem?_eq_getElem hnew, Option.getD_some]
+
+/-- Scheme weakening localized to the recursive slots actually referenced by
+    an RHS.  Unreferenced positions are first changed by environment agreement;
+    ordinary pointwise scheme weakening then handles precisely the live slots. -/
+private theorem TypeOfHM.weaken_recGroupRefs {ctx : Ctx} {e : Expr} {τ : Ty}
+    {old new : List PolyTy} (hlen : old.length = new.length)
+    (hgen : ∀ member (hold : member < old.length) (hnew : member < new.length),
+      member ∈ e.recGroupRefs old.length 0 →
+      (new[member]'hnew).Generalizes (old[member]'hold))
+    (hty : TypeOfHM ⟨old ++ ctx.env, ctx.ctors⟩ e τ) :
+    TypeOfHM ⟨new ++ ctx.env, ctx.ctors⟩ e τ := by
+  let hybrid := schemeHybrid e old new
+  have hlenHybrid : hybrid.length = old.length := by simp [hybrid, schemeHybrid]
+  have htyHybrid : TypeOfHM ⟨hybrid ++ ctx.env, ctx.ctors⟩ e τ := by
+    apply TypeOfHM.env_agreement hty
+    apply Expr.ForallOuter.of_recGroupRefs_with_outer (n := old.length)
+    · intro member href
+      by_cases hmember : member < old.length
+      · rw [List.getElem?_append_left (by simpa [hlenHybrid] using hmember),
+          List.getElem?_append_left hmember]
+        have hnew : member < new.length := by omega
+        rw [List.getElem?_eq_getElem (by simpa [hlenHybrid] using hmember),
+          schemeHybrid_getElem hlen member hmember hnew, if_pos href,
+          List.getElem?_eq_getElem hmember]
+      · have hmember' : old.length ≤ member := by omega
+        rw [List.getElem?_append_right (by simpa [hlenHybrid] using hmember'),
+          List.getElem?_append_right hmember']
+        simp only [hlenHybrid]
+    · intro member hmember
+      rw [List.getElem?_append_right (by simpa [hlenHybrid] using hmember),
+        List.getElem?_append_right hmember]
+      simp only [hlenHybrid]
+  apply TypeOfHM.weaken_schemes (Ms := hybrid) (Ms' := new) ?_ htyHybrid
+  apply forall₂_of_getElem
+  · omega
+  · intro member hnew hhybrid
+    rw [schemeHybrid_getElem hlen member (by omega) hnew]
+    split
+    · exact hgen member (by omega) hnew (by assumption)
+    · exact PolyTy.Generalizes.refl new[member]
+
+private theorem RecStrataResidual.componentMonoTyped
+    {anns : List (Option PolyTy)} {bindings : List Expr}
+    {declarativeGroups : List (List Nat)}
+    {algorithmStage : Nat} {component : List Nat}
+    {declCtx : Ctx} {declSpecs : List RecSpec} {declG declL Xs K : List Nat}
+    {ctx : Ctx} {specs : List RecSpec} {done G : List Nat} {R : Subst}
+    (h : RecStrataResidual declCtx declSpecs declG Xs K ctx specs done G R)
+    (hvalidAlgorithm : RecGroups.ValidResidualGroups anns bindings
+      (RecGroup.inferenceSccs anns bindings))
+    (halgorithm : (RecGroup.inferenceSccs anns bindings)[algorithmStage]? = some component)
+    (hdone : done = ((RecGroup.inferenceSccs anns bindings).take algorithmStage).flatten)
+    (hvalidDecl : RecGroups.ValidResidualGroups anns bindings declarativeGroups)
+    (hdeclWF : RecSpecs.WF anns bindings declSpecs declG)
+    (hmonoDecl : RecSpecs.StratifiedMonoTyped TypeOfHM declCtx bindings declSpecs
+      declarativeGroups declG declL)
+    (hspecLC : ∀ s ∈ specs, s.LC)
+    (hXs : FreshNames declL declG.length Xs)
+    (hXG : ∀ g ∈ declG, g ∉ Xs)
+    (hXmono : ∀ x ∈ Xs, ∀ τ, .mono τ ∈ declSpecs → x ∉ τ.freeVars)
+    (hpolyRigid : ∀ σ, .poly σ ∈ specs → ∀ y ∈ σ.body.freeVars, y ∈ K) :
+    ∀ member rhs algTy,
+      bindings[member]? = some rhs → specs[member]? = some (.mono algTy) →
+      member ∈ component →
+      TypeOfHM (R.onCtx (RecSpecs.algorithmStageCtx ctx specs done G))
+        rhs (R.onTy algTy) := by
+  intro member rhs algTy hrhs halgTy hmember
+  obtain ⟨declTy, hdeclTy⟩ := h.decl_mono_of_mono halgTy
+  obtain ⟨declStage, declComponent, hdeclComponent, hcontained⟩ :=
+    hvalidDecl.inference_component_contained halgorithm
+  have hmemberDecl : member ∈ declComponent := hcontained member hmember
+  have htypedDecl := hmonoDecl declStage declComponent hdeclComponent Xs hXs
+    member hmemberDecl rhs declTy hrhs hdeclTy
+  let declDone := (declarativeGroups.take declStage).flatten
+  let oldEntries := declSpecs.mapIdx (RecSpec.stageEntry declDone declG Xs)
+  let newEntries := specs.mapIdx fun i spec =>
+    R.onPolyTy (RecSpec.algorithmStageEntry done G i spec)
+  have hlenSpecs : specs.length = declSpecs.length := by
+    have := congrArg List.length h.anns_eq
+    simpa using this
+  have hlenEntries : oldEntries.length = newEntries.length := by
+    simp [oldEntries, newEntries, hlenSpecs]
+  have hlenCurrent : bindings.length = specs.length := by
+    rw [hlenSpecs]
+    exact hdeclWF.length
+  have hannsCurrent : specs.map RecSpec.ann = anns := h.anns_eq.trans hdeclWF.anns_eq
+  have htypedDecl' : TypeOfHM ⟨oldEntries ++ declCtx.env, declCtx.ctors⟩
+      rhs (Ty.renameG declG Xs declTy) := by
+    simpa [oldEntries, declDone, RecSpecs.stageCtx] using htypedDecl
+  have htypedNew : TypeOfHM ⟨newEntries ++ declCtx.env, declCtx.ctors⟩
+      rhs (Ty.renameG declG Xs declTy) := by
+    apply TypeOfHM.weaken_recGroupRefs hlenEntries ?_ htypedDecl'
+    intro target hold hnew href
+    have htargetBound : target < specs.length := by
+      have : target < declSpecs.length := by
+        simpa [oldEntries] using hold
+      omega
+    have htarget : specs[target]? = some specs[target] :=
+      List.getElem?_eq_getElem htargetBound
+    cases hs : specs[target] with
+    | poly σ =>
+        have htargetPoly : specs[target]? = some (.poly σ) := by simpa [hs] using htarget
+        have hdeclPoly := h.decl_poly_of_poly htargetPoly
+        have hfixPoly := h.onPolyTy_eq_of_rigid
+          (hpolyRigid σ (List.mem_of_getElem? htargetPoly))
+        simpa [oldEntries, newEntries, declDone, List.getElem_mapIdx,
+          RecSpec.stageEntry, RecSpec.algorithmStageEntry, hs,
+          (List.getElem?_eq_some_iff.mp hdeclPoly).2, hfixPoly] using
+          PolyTy.Generalizes.refl σ
+    | mono targetTy =>
+        have htargetMono : specs[target]? = some (.mono targetTy) := by
+          simpa [hs] using htarget
+        obtain ⟨declTargetTy, hdeclTarget⟩ := h.decl_mono_of_mono htargetMono
+        have href' : target ∈ rhs.recGroupRefs bindings.length 0 := by
+          simpa [oldEntries, hdeclWF.length] using href
+        have havailable := hvalidAlgorithm.refs_available hannsCurrent hlenCurrent
+          halgorithm hmember hrhs htargetMono href'
+        rcases havailable with htargetDone | htargetCurrent
+        · have htargetDone' : target ∈ done := hdone.symm ▸ htargetDone
+          by_cases htargetDeclDone : target ∈ declDone
+          · simpa [oldEntries, newEntries, declDone, List.getElem_mapIdx,
+                RecSpec.stageEntry, RecSpec.algorithmStageEntry, hs,
+                (List.getElem?_eq_some_iff.mp hdeclTarget).2,
+                htargetDone',
+                htargetDeclDone] using
+              h.completed_generalizes hdeclWF hspecLC hXs.length hXs.nodup
+                hXG hXmono htargetMono hdeclTarget
+                htargetDone'
+          · simpa [oldEntries, newEntries, declDone, List.getElem_mapIdx,
+                RecSpec.stageEntry, RecSpec.algorithmStageEntry, hs,
+                (List.getElem?_eq_some_iff.mp hdeclTarget).2,
+                htargetDone',
+                htargetDeclDone] using
+              h.completed_generalizes_opened hdeclWF hspecLC hXs.length hXs.nodup
+                hXG hXmono htargetMono hdeclTarget
+                htargetDone'
+        · have htargetNotDone : target ∉ done := by
+            rw [hdone]
+            exact hvalidAlgorithm.not_mem_take_of_mem halgorithm htargetCurrent
+          have htargetNotDeclDone : target ∉ declDone := by
+            exact hvalidDecl.not_mem_take_of_mem hdeclComponent
+              (hcontained target htargetCurrent)
+          have hconnection := h.connection target targetTy declTargetTy
+            htargetMono hdeclTarget
+          simpa [oldEntries, newEntries, declDone, List.getElem_mapIdx,
+              RecSpec.stageEntry, RecSpec.algorithmStageEntry, hs,
+              (List.getElem?_eq_some_iff.mp hdeclTarget).2, htargetNotDone,
+              htargetNotDeclDone, Subst.onPolyTy, PolyTy.mkTrivial,
+              hconnection] using
+            PolyTy.Generalizes.refl (PolyTy.mkTrivial
+              (Ty.renameG declG Xs declTargetTy))
+  have hctxEq : R.onCtx (RecSpecs.algorithmStageCtx ctx specs done G) =
+      ⟨newEntries ++ declCtx.env, declCtx.ctors⟩ := by
+    have henv := congrArg Ctx.env h.ctx_eq
+    have hctors := congrArg Ctx.ctors h.ctx_eq
+    apply congrArg₂ Ctx.mk
+    · simp only [RecSpecs.algorithmStageCtx, Subst.onCtx, Subst.onEnv,
+        List.map_append, newEntries]
+      have hmap : List.map R.onPolyTy
+          (List.mapIdx (RecSpec.algorithmStageEntry done G) specs) =
+          List.mapIdx (fun i spec => R.onPolyTy
+            (RecSpec.algorithmStageEntry done G i spec)) specs := by
+        apply List.ext_getElem
+        · simp
+        · intro i hi₁ hi₂
+          simp only [List.getElem_map, List.getElem_mapIdx]
+      rw [hmap]
+      exact congrArg (newEntries ++ ·)
+        (by simpa [Subst.onCtx, Subst.onEnv] using henv)
+    · simpa [Subst.onCtx] using hctors
+  rw [hctxEq]
+  rw [h.connection member algTy declTy halgTy hdeclTy]
+  exact htypedNew
 
 private theorem exists_recgroup_opening {Φ : Nat} {ctx : Ctx} {S₀ : Subst}
     {anns : List (Option PolyTy)} {bindings : List Expr} {specs : List RecSpec}
