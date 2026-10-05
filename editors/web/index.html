@@ -1,26 +1,299 @@
-<!DOCTYPE html>
-<html lang="en">
+<!doctype html>
+<html lang="en" data-theme="light">
   <head>
     <meta charset="UTF-8" />
     <meta name="viewport" content="width=device-width, initial-scale=1.0" />
-    <title>FHM Playground</title>
-    <link rel="stylesheet" href="/src/style.css" />
+    <meta name="theme-color" content="#f4f1e9" />
+    <meta
+      name="description"
+      content="Write, run, and share FHM programs. Explore type inference, pattern matching, and polymorphic recursion in your browser."
+    />
+    <title>FHM — playground</title>
+    <link
+      rel="icon"
+      href="data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 64 64'%3E%3Crect width='64' height='64' rx='10' fill='%23b64b2a'/%3E%3Ctext x='32' y='48' text-anchor='middle' font-family='Georgia,serif' font-style='italic' font-size='54' fill='%23fff9ed'%3Ef%3C/text%3E%3C/svg%3E"
+    />
   </head>
   <body>
-    <header class="top">
-      <div class="brand">
-        <span class="name">FHM</span>
-        <span class="tag">playground</span>
-      </div>
-      <div class="actions">
-        <span id="status" class="status">idle</span>
-        <button id="run" type="button">Run</button>
-      </div>
+    <a class="skip-link" href="#editor">Skip to the editor</a>
+    <header class="masthead">
+      <a class="brand" href="/" aria-label="FHM playground home"
+        ><span class="wordmark">fhm<span>.</span></span
+        ><span class="brand-label">playground</span></a
+      >
+      <nav class="header-actions" aria-label="Resources">
+        <button id="guide" class="quiet-button">A quick guide</button>
+        <a
+          class="quiet-button repository"
+          href="https://github.com/Arrow7000/fhm"
+          target="_blank"
+          rel="noopener noreferrer"
+          >Source <span aria-hidden="true">↗</span></a
+        >
+        <button
+          id="theme"
+          class="icon-button"
+          aria-label="Switch to dark theme"
+          title="Switch to dark theme"
+        >
+          <svg viewBox="0 0 24 24" aria-hidden="true">
+            <path d="M20.8 13.2A9 9 0 0 1 10.8 3.2 9 9 0 1 0 20.8 13.2Z" />
+          </svg>
+        </button>
+      </nav>
     </header>
-    <main class="panes">
-      <div id="editor" class="pane editor"></div>
-      <pre id="output" class="pane output" aria-live="polite"></pre>
+    <div class="toolbar">
+      <div class="program-controls">
+        <button id="examples" class="outlined-button" aria-haspopup="dialog">
+          Examples <span aria-hidden="true">⌄</span></button
+        ><span id="program-title" class="program-title"
+          >One function, many types</span
+        >
+      </div>
+      <div class="toolbar-actions">
+        <button
+          id="download"
+          class="quiet-button"
+          title="Download the program as a .fhm file"
+        >
+          Download <span aria-hidden="true">↓</span>
+        </button>
+        <button
+          id="share"
+          class="outlined-button"
+          aria-keyshortcuts="Control+s Meta+s"
+        >
+          Share
+          <svg viewBox="0 0 20 20" aria-hidden="true">
+            <path
+              d="M7 13l6-6M7.5 6l1.7-1.7a3.5 3.5 0 0 1 5 5L12.5 11M7.5 9L5.8 10.7a3.5 3.5 0 0 0 5 5l1.7-1.7"
+            />
+          </svg>
+        </button>
+        <button
+          id="run"
+          class="run-button"
+          aria-keyshortcuts="Control+Enter Meta+Enter"
+        >
+          <svg viewBox="0 0 20 20" aria-hidden="true">
+            <path d="m7 4 8 6-8 6Z" /></svg
+          ><span id="run-label">Run</span><kbd class="run-shortcut">⌘ ↵</kbd>
+        </button>
+      </div>
+    </div>
+    <main class="workspace" id="workspace">
+      <section class="source-pane" aria-label="Program editor">
+        <div class="pane-heading">
+          <span class="file-label"
+            ><span aria-hidden="true">λ</span>
+            <span id="filename">polymorphism.fhm</span></span
+          ><span id="draft-status" class="subtle">Saved in this browser</span>
+        </div>
+        <div id="editor" tabindex="-1"></div>
+        <div class="editor-footer">
+          <span id="status" class="status" role="status">Starting…</span
+          ><span id="cursor" class="cursor">Ln 1, Col 1</span>
+        </div>
+      </section>
+      <div
+        id="divider"
+        class="divider"
+        role="separator"
+        tabindex="0"
+        aria-label="Resize editor and output"
+        aria-orientation="vertical"
+        aria-valuemin="30"
+        aria-valuemax="75"
+        aria-valuenow="60"
+      ></div>
+      <section class="inspector" aria-label="Program feedback">
+        <div class="inspector-heading">
+          <div role="tablist" aria-label="Output views" class="tabs">
+            <button
+              id="tab-result"
+              role="tab"
+              aria-selected="true"
+              aria-controls="panel-result"
+              data-tab="result"
+            >
+              Result
+            </button>
+            <button
+              id="tab-types"
+              role="tab"
+              aria-selected="false"
+              aria-controls="panel-types"
+              data-tab="types"
+              tabindex="-1"
+            >
+              Types <span id="type-count" class="tab-count"></span>
+            </button>
+            <button
+              id="tab-problems"
+              role="tab"
+              aria-selected="false"
+              aria-controls="panel-problems"
+              data-tab="problems"
+              tabindex="-1"
+            >
+              Problems <span id="problem-count" class="tab-count"></span>
+            </button>
+          </div>
+        </div>
+        <section
+          id="panel-result"
+          role="tabpanel"
+          aria-labelledby="tab-result"
+          class="feedback-panel"
+        >
+          <div id="output" aria-live="polite"></div>
+        </section>
+        <section
+          id="panel-types"
+          role="tabpanel"
+          aria-labelledby="tab-types"
+          class="feedback-panel"
+          hidden
+        >
+          <div id="types"></div>
+        </section>
+        <section
+          id="panel-problems"
+          role="tabpanel"
+          aria-labelledby="tab-problems"
+          class="feedback-panel"
+          hidden
+        >
+          <div id="problems"></div>
+        </section>
+        <div class="inspector-footer">
+          <span id="result-status">Ready when you are.</span
+          ><button id="copy-result" class="text-button" hidden>
+            Copy result
+          </button>
+        </div>
+      </section>
     </main>
+    <footer class="colophon">
+      <span>Hindley–Milner. A little further.</span
+      ><span class="editor-tip"
+        >Hover for types <span class="footer-dot">·</span>
+        <span class="shortcut-label">⌘</span> Enter to run</span
+      ><button id="new-program" class="text-button">
+        New program <span aria-hidden="true">↗</span>
+      </button>
+    </footer>
+    <div id="toast" class="toast" role="status" hidden></div>
+    <dialog
+      id="examples-dialog"
+      class="examples-dialog"
+      aria-labelledby="examples-title"
+    >
+      <div class="dialog-heading">
+        <div>
+          <p class="eyebrow">Try something</p>
+          <h2 id="examples-title">Small programs. Big ideas.</h2>
+        </div>
+        <button class="dialog-close icon-button" aria-label="Close examples">
+          ×
+        </button>
+      </div>
+      <div id="example-list" class="example-list"></div>
+      <div class="dialog-footnote">
+        Loading an example keeps your previous program in this browser.
+      </div>
+    </dialog>
+    <dialog id="share-dialog" aria-labelledby="share-title">
+      <div class="dialog-heading">
+        <div>
+          <p class="eyebrow">Pass it on</p>
+          <h2 id="share-title">Share this program</h2>
+        </div>
+        <button class="dialog-close icon-button" aria-label="Close sharing">
+          ×
+        </button>
+      </div>
+      <p>
+        This link opens a copy of your program. Your next edit won't change what
+        you've shared.
+      </p>
+      <label class="field-label" for="share-link">Program link</label>
+      <div class="share-field">
+        <input id="share-link" type="text" readonly spellcheck="false" /><button
+          id="copy-link"
+          class="run-button"
+        >
+          Copy link
+        </button>
+      </div>
+      <p id="share-note" class="dialog-footnote">
+        Anyone with the link can open and edit their own copy.
+      </p>
+    </dialog>
+    <dialog
+      id="guide-dialog"
+      class="guide-dialog"
+      aria-labelledby="guide-title"
+    >
+      <div class="dialog-heading">
+        <div>
+          <p class="eyebrow">A little orientation</p>
+          <h2 id="guide-title">FHM, in a minute</h2>
+        </div>
+        <button class="dialog-close icon-button" aria-label="Close guide">
+          ×
+        </button>
+      </div>
+      <p>
+        FHM is a functional language with Hindley–Milner type inference, custom
+        datatypes, and annotated polymorphic recursion. Write a few definitions,
+        then finish with the expression you want to evaluate.
+      </p>
+      <div class="guide-reference">
+        <div>
+          <h3>A function</h3>
+          <code>let id = \x -> x</code>
+          <p>
+            No signature needed. Hover over a name to see its inferred type.
+          </p>
+        </div>
+        <div>
+          <h3>A signature</h3>
+          <code>let id : {a} a -> a = \x -> x</code>
+          <p>
+            The variable <code>a</code> is also in scope inside the function's
+            body.
+          </p>
+        </div>
+        <div>
+          <h3>Data & patterns</h3>
+          <code>type Maybe a = Just a | Nothing</code>
+          <p>
+            Use <code>match value with</code> and <code>| Just x -> …</code> to
+            inspect a value.
+          </p>
+        </div>
+        <div>
+          <h3>Recursion</h3>
+          <p>
+            Definitions can call themselves and each other. Add a complete
+            signature when a recursive call needs a different type.
+          </p>
+        </div>
+      </div>
+      <div class="guide-shortcuts">
+        <span><kbd class="shortcut-label">⌘</kbd> <kbd>Enter</kbd> Run</span
+        ><span><kbd class="shortcut-label">⌘</kbd> <kbd>S</kbd> Share</span
+        ><span><kbd>Esc</kbd> Close a dialog</span>
+      </div>
+      <a
+        class="guide-link"
+        href="https://github.com/Arrow7000/fhm/blob/main/scratch/language-guide.fhm"
+        target="_blank"
+        rel="noopener noreferrer"
+        >Read the language guide <span aria-hidden="true">↗</span></a
+      >
+    </dialog>
     <script type="module" src="/src/main.js"></script>
   </body>
 </html>
