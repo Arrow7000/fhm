@@ -3002,6 +3002,40 @@ theorem RecGroups.validResidualGroupsB_sound
     simp only [hrhs, href, if_true, decide_eq_true_eq] at htarget'
     exact htarget'
 
+theorem RecGroups.validResidualGroupsB_complete
+    {anns : List (Option PolyTy)} {bindings : List Expr} {groups : List (List Nat)}
+    (hvalid : RecGroups.ValidResidualGroups anns bindings groups) :
+    RecGroups.validResidualGroupsB anns bindings groups = true := by
+  simp only [RecGroups.validResidualGroupsB, Bool.and_eq_true,
+    decide_eq_true_eq, List.all_eq_true]
+  refine ⟨⟨⟨⟨⟨hvalid.length, ?_⟩, hvalid.flatten_nodup⟩, ?_⟩, ?_⟩, ?_⟩
+  · intro component hcomponent
+    simpa using hvalid.nonempty component hcomponent
+  · intro member hmember
+    exact hvalid.bounded member hmember
+  · intro member hmember
+    apply beq_iff_eq.mpr
+    apply Bool.eq_iff_iff.mpr
+    simpa only [decide_eq_true_eq, RecGroups.unsignedAtB_eq_true_iff] using
+      hvalid.covers_unsigned member (List.mem_range.mp hmember)
+  · simp only [RecGroups.dependenciesFirstB, List.all_eq_true]
+    intro stage hstage dependencyStage hdependencyStage
+    have hstageLt := List.mem_range.mp hstage
+    have hdependencyStageLt := List.mem_range.mp hdependencyStage
+    simp only [List.getElem?_eq_getElem hstageLt,
+      List.getElem?_eq_getElem hdependencyStageLt]
+    intro source hsource target htarget
+    cases hrhs : bindings[source]? with
+    | none => simp
+    | some rhs =>
+        by_cases href : target ∈ rhs.recGroupRefs bindings.length 0
+        · simp only [href, if_true, decide_eq_true_eq]
+          exact hvalid.dependencies_first
+            (List.getElem?_eq_getElem hstageLt)
+            (List.getElem?_eq_getElem hdependencyStageLt)
+            hsource htarget hrhs href
+        · simp [href]
+
 /-- Well-formed derivation data for a recursion group: the (rule-internal)
     `specs` match the STORED annotations `anns` one-to-one, there is one spec per
     binding, the gen-var pool is duplicate-free, unannotated members' shared

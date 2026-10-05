@@ -14098,7 +14098,7 @@ private theorem inferRecComponentWithTypesCore_isSome_of_masked
                               ((RecSpecs.selectComponent members (memberIndex + 1) specs).map
                                 (RecSpec.onSubst (Se ++ Su))) with
                           | none => simp [ho] at h
-                          | some out => simp [ho]
+                          | some out => rfl
                         have ht : (inferRecGroupWithTypesCore K Φe
                             (Su.onCtx (Se.onCtx ctx)) (memberIndex + 1) rest
                             (RecSpecs.selectComponent members (memberIndex + 1)
@@ -14109,7 +14109,9 @@ private theorem inferRecComponentWithTypesCore_isSome_of_masked
                           (memberIndex := memberIndex + 1) (Φ := Φe)
                           (ctx := Su.onCtx (Se.onCtx ctx)) ht
                         obtain ⟨out, hout⟩ := Option.isSome_iff_exists.mp hn
-                        simp [he, hu, hout]
+                        rcases out with ⟨tail, htail, hav⟩
+                        cases tail
+                        simp [hu, hout]
               · rw [inferRecComponentWithTypesCore, dif_neg hm]
                 rw [RecSpecs.selectComponent, if_neg hm,
                   inferRecGroupWithTypesCore] at h
@@ -14118,7 +14120,7 @@ private theorem inferRecComponentWithTypesCore_isSome_of_masked
                   cases ho : inferRecGroupWithTypesCore K Φ ctx (memberIndex + 1)
                       rest (RecSpecs.selectComponent members (memberIndex + 1) specs) with
                   | none => simp [ho] at h
-                  | some out => simp [ho]
+                  | some out => rfl
                 have hn := ih (specs := specs) (memberIndex := memberIndex + 1)
                   (Φ := Φ) (ctx := ctx) ht
                 obtain ⟨out, hout⟩ := Option.isSome_iff_exists.mp hn
@@ -14132,7 +14134,7 @@ private theorem inferRecComponentWithTypesCore_isSome_of_masked
                 cases ho : inferRecGroupWithTypesCore K Φ ctx (memberIndex + 1)
                     rest (RecSpecs.selectComponent members (memberIndex + 1) specs) with
                 | none => simp [ho] at h
-                | some out => simp [ho]
+                | some out => rfl
               have hn := ih (specs := specs) (memberIndex := memberIndex + 1)
                 (Φ := Φ) (ctx := ctx) ht
               obtain ⟨out, hout⟩ := Option.isSome_iff_exists.mp hn
@@ -14359,6 +14361,19 @@ private theorem inferRecStrataWithTypesCore_isSome_of
       simp [htailEq]
 termination_by groups.length
 decreasing_by all_goals simp_wf
+
+private theorem inferRecStrataWithTypesCore_unpack
+    {K rigid : List Nat} {bindings : List Expr} {Φ : Nat} {ctx : Ctx}
+    {specs : List RecSpec} {done G : List Nat} {groups : List (List Nat)}
+    (h : (inferRecStrataWithTypesCore K rigid bindings Φ ctx specs done G groups).isSome) :
+    ∃ Φ' S specs' G' nodeTypes binderSchemes,
+      ∃ (hrel : InferRecStrata rigid bindings Φ ctx specs done G groups
+          Φ' S specs' G') (hav : ∀ p ∈ S, p.1 ∉ K),
+        inferRecStrataWithTypesCore K rigid bindings Φ ctx specs done G groups =
+          some ⟨⟨Φ', S, specs', G', nodeTypes, binderSchemes⟩, hrel, hav⟩ := by
+  obtain ⟨out, hout⟩ := Option.isSome_iff_exists.mp h
+  rcases out with ⟨⟨Φ', S, specs', G', nodeTypes, binderSchemes⟩, hrel, hav⟩
+  exact ⟨Φ', S, specs', G', nodeTypes, binderSchemes, hrel, hav, hout⟩
 
 private theorem poly_worker_isSome_of_let {K : List Nat} {Φ memberIndex : Nat}
     {ctx : Ctx} {e : Expr} {σ : PolyTy}
@@ -14626,9 +14641,9 @@ theorem inferCore_complete_letRec {anns : List (Option PolyTy)} {bindings : List
   have hty : TypeOfHM (S₀.onCtx ctx) (.letRec anns bindings body) τ₀ :=
     Infer.sourceSound hinf hwf hbelow K hKΦ hKe hSK
   cases hty with
-  | letRec hwfD hmonoD hpolyD hbodyCtxD hbodyD =>
-      rename_i dspecs Gdecl L
-        subst hbodyD
+  | letRec hvalidD hwfD hmonoD hpolyD hbodyCtxD hbodyD =>
+      rename_i dbodyCtx dspecs dgroups Gdecl L
+      subst dbodyCtx
       have hKgrp : ∀ y ∈ Expr.tyFreeVars.RecGroup.tyFreeVars bindings, y ∈ K :=
         fun y hy => hKe y (by
           simp only [Expr.tyFreeVars, List.mem_append]
@@ -14655,8 +14670,8 @@ theorem inferCore_complete_letRec {anns : List (Option PolyTy)} {bindings : List
             simp only [RecSpec.ann, Option.some.injEq] at heq
             subst σ'
             exact hwfD.poly_wf σ hs
-      obtain ⟨o⟩ := exists_recgroup_opening hwfD hbelow hS₀ hKΦ hKfix
-        hKrigid hmonoD
+      obtain ⟨o⟩ := exists_recgroup_opening_core (L := L)
+        hwfD hbelow hS₀ hKΦ hKfix hKrigid
       have hlen : anns.length = bindings.length := by
         have h := congrArg List.length hwfD.anns_eq
         simpa [hwfD.length] using h.symm
@@ -14696,61 +14711,79 @@ theorem inferCore_complete_letRec {anns : List (Option PolyTy)} {bindings : List
         · have hσσ : σ = σ' := RecSpec.poly.inj heq
           rw [hσσ]
           exact hKσ σ' hσ'
-      obtain ⟨groupOut, Rg, hegroup, hAgreeR, hRglc, hRgK⟩ :=
-        inferRecGroupWithTypesCore_complete_mono 0
-        (fun rhs _ => Infer.complete rhs) ihbindings
-        (by rw [RecSpec.init_length, hlen]) hctxgWF hctxgBelow
-        o.lc (fun k hk => lt_of_lt_of_le (hKΦ k hk) (by omega))
-        hKgrp o.fixes hinitLC
-        (fun s hs τ heq => by subst s; exact hinitB (.mono τ) hs)
-        o.mono
-      rcases groupOut with
-        ⟨⟨Φ₁, S₁, bindingTypes, bindingSchemes⟩, hgroup, hS₁K⟩
+      have hbindRigid : ∀ y ∈ Expr.tyFreeVars.RecGroup.tyFreeVars bindings,
+          y ∈ RecGroup.rigidVars anns bindings :=
+        fun y hy => List.mem_append_right _ (mem_recGroup_tyFreeVars.mp hy)
+      have hinitPolyRigid : ∀ σ, .poly σ ∈ RecSpec.init Φ anns →
+          ∀ y ∈ σ.body.freeVars, y ∈ RecGroup.rigidVars anns bindings :=
+        fun σ hσ y hy => List.mem_append_left _
+          (Expr.scheme_body_mem_annList_tyFreeVars (RecSpec.poly_mem_init hσ) hy)
+      have hctxBelow₀ : CtxBelow (Φ + bindings.length) ctx :=
+        fun M hM => (hbelow M hM).mono (by omega)
+      have hpending := RecSpecs.PendingSeeds.init hbelow
+        (fun σ hσ => Ty.BelowFvars.of_freeVars_lt
+          (fun y hy => hKΦ y (hKσ σ hσ y hy)))
+      have hres₀ := o.initialResidual hwfD hbelow
+      have hstrataSome := inferRecStrataWithTypesCore_isSome_of
+        (fun rhs _ => Infer.complete rhs) ihbindings (past := [])
+        (groups := RecGroup.inferenceSccs anns bindings) (by simp) rfl
+        hvalidD hwfD hmonoD hwf hctxBelow₀ hinitLC hinitB
+        (fun k hk => lt_of_lt_of_le (hKΦ k hk) (by omega)) hKgrp
+        (by omega) (fun y hy => hKΦ y (hKrigid y hy)) hbindRigid
+        hKrigid hinitPolyRigid hpending (by simp) (by simp) (by simp) (by simp)
+        o.fresh o.disjoint o.mono_fresh o.rigid_fresh o.env_fresh hres₀
+      obtain ⟨Φ₁, S₁, specs1, G, bindingTypes, bindingSchemes,
+          hstrata, hS₁K, hestrata⟩ :=
+        inferRecStrataWithTypesCore_unpack hstrataSome
+      have horacle : InferRecComponent.PrincipalOracle bindings := by
+        intro members Ψ c ss Ψ' T hc _ _
+        exact InferRecGroup.principal hc.toInferRecGroup
+      obtain ⟨Rg, hRglc, hRgK, hAgreeR, hresFinal⟩ :=
+        InferRecStrata.principal_of hstrata horacle
+          (past := []) (by simp) rfl hvalidD hwfD hmonoD
+          hwf hctxBelow₀ hinitLC hinitB
+          (fun k hk => lt_of_lt_of_le (hKΦ k hk) (by omega)) hKgrp
+          (by omega) (fun y hy => hKΦ y (hKrigid y hy)) hbindRigid
+          hKrigid hinitPolyRigid hpending (by simp) (by simp) (by simp) (by simp)
+          o.fresh o.disjoint o.mono_fresh o.rigid_fresh o.env_fresh hres₀
       have hAgree : Subst.AgreesBelow Φ S₀ (S₁ ++ Rg) := fun v hv =>
         (o.agrees v hv).symm.trans (hAgreeR v (by omega))
-      have hgle : Φ + bindings.length ≤ Φ₁ := InferRecGroup.frontier_le hgroup
-      have hS₁lc := InferRecGroup.lc hgroup hctxgWF hinitLC
-      have hS₁bel := InferRecGroup.belowFvars hgroup hctxgBelow hinitB
+      have hgle : Φ + bindings.length ≤ Φ₁ := InferRecStrata.frontier_le hstrata
+      have hS₁lc := InferRecStrata.lc hstrata hwf hinitLC
+      have hS₁bel := InferRecStrata.belowFvars hstrata hctxBelow₀ hinitB
         (fun y hy => lt_of_lt_of_le (hKΦ y (hKgrp y hy)) (by omega))
+      have hspecs1 : specs1 =
+          (RecSpec.init Φ anns).map (RecSpec.onSubst S₁) :=
+        InferRecStrata.specs_eq hstrata
       have hKΦ₁ : ∀ k ∈ K, k < Φ₁ :=
         fun k hk => lt_of_lt_of_le (hKΦ k hk) (by omega)
-      have hctxS₁ : Rg.onCtx (S₁.onCtx ctx) = S₀.onCtx ctx := by
-        rw [← Subst.onCtx_append]
-        exact (Subst.onCtx_congr hAgree hbelow).symm
-      have hσfix : ∀ σ, some σ ∈ anns → Rg.onPolyTy σ = σ := by
-        intro σ hσ
-        apply congrArg (PolyTy.mk σ.paramCount)
-        exact Subst.onTy_eq_self_of_fixes
-          (fun y hy => hRgK y (hKσ σ hσ y hy))
-      have hconn : ∀ j (hj : j < dspecs.length) τ, dspecs[j]'hj = .mono τ →
-          Rg.onTy (S₁.onTy (.fvar (Φ + j))) = Ty.renameG Gdecl o.Xs τ := by
-        intro j hj τ hs
-        have hjb : j < bindings.length := by rwa [hwfD.length]
-        calc
-          _ = o.R.onTy (.fvar (Φ + j)) := by
-            symm
-            simpa only [Subst.onTy_append] using hAgreeR (Φ + j) (by omega)
-          _ = _ := o.block j hj τ hs
-      let specs1 := (RecSpec.init Φ anns).map (RecSpec.onSubst S₁)
-      let G := genGroupVars (RecGroup.rigidVars anns bindings) (S₁.onCtx ctx).env
-        (RecSpecs.monoTys specs1)
-      have hbodyAlg0 := letRecFused_body_retype_preSc
-        (Φ := Φ) (ctx := ctx) (S₁ := S₁) (R₁ := Rg) (S₀ := S₀)
-        (anns := anns) (bindings := bindings) (body := body) (dspecs := dspecs)
-        (G := Gdecl) (Xs := o.Xs) (τ₀ := τ₀) (K := K)
-        hwfD.anns_eq hwfD.mono_lc hwfD.nodup o.fresh.length o.fresh.nodup
-        o.disjoint o.mono_fresh o.env_fresh o.rigid_fresh hS₁lc hRglc
-        hctxS₁ hKrigid hRgK hσfix hconn hbodyD
       have hbodyAlg : TypeOfHM (Rg.onCtx
           { S₁.onCtx ctx with env := specs1.map (RecSpec.bodyScheme G) ++
               (S₁.onCtx ctx).env }) body τ₀ := by
-        simpa only [RecSpecs.ceilingSchemes_solved_init] using hbodyAlg0
+        exact hresFinal.retypeBodyCtx (RecGroup.inferenceSccs_valid hlen)
+          (by simp) hwfD (by
+            intro s hs
+            rw [hspecs1] at hs
+            obtain ⟨s₀, hs₀, rfl⟩ := List.mem_map.mp hs
+            exact RecSpec.LC.onSubst hS₁lc (hinitLC s₀ hs₀))
+          o.fresh o.disjoint o.mono_fresh (by
+            intro σ hσ y hy
+            rw [hspecs1] at hσ
+            obtain ⟨s₀, hs₀, heq⟩ := List.mem_map.mp hσ
+            cases s₀ with
+            | mono τ => simp [RecSpec.onSubst] at heq
+            | poly σ₀ =>
+                simp only [RecSpec.onSubst, RecSpec.poly.injEq] at heq
+                subst σ₀
+                exact hKsch σ hs₀ y hy) hbodyD
       have hspecLC : ∀ s ∈ specs1, s.LC := by
         intro s hs
+        rw [hspecs1] at hs
         obtain ⟨s₀, hs₀, rfl⟩ := List.mem_map.mp hs
         exact RecSpec.LC.onSubst hS₁lc (hinitLC s₀ hs₀)
       have hspecBel : ∀ s ∈ specs1, s.BelowFvars Φ₁ := by
         intro s hs
+        rw [hspecs1] at hs
         obtain ⟨s₀, hs₀, rfl⟩ := List.mem_map.mp hs
         exact RecSpec.BelowFvars.onSubst hS₁bel ((hinitB s₀ hs₀).mono hgle)
       have hwfB : CtxWF
@@ -14783,9 +14816,10 @@ theorem inferCore_complete_letRec {anns : List (Option PolyTy)} {bindings : List
         have hsnd := congrArg Prod.snd hpEq
         have hsnd' : specs1[j]'hjs = p.2 := by simpa using hsnd
         have hjsInit : j < (RecSpec.init Φ anns).length := by
-          simpa [RecSpec.init_length, specs1] using hjs
+          rw [hspecs1] at hjs
+          simpa [RecSpec.init_length] using hjs
         have hsndInit : RecSpec.onSubst S₁ ((RecSpec.init Φ anns)[j]'hjsInit) = p.2 := by
-          simpa only [specs1, List.getElem_map] using hsnd'
+          simpa only [hspecs1, List.getElem_map] using hsnd'
         cases hd : dspecs[j]'hjd with
         | mono τd =>
             have hi := RecSpec.init_getElem_of_specs (Φ := Φ) hwfD.anns_eq j hjd
@@ -14814,31 +14848,35 @@ theorem inferCore_complete_letRec {anns : List (Option PolyTy)} {bindings : List
           ⟨hYs.length, hYs.nodup,
             fun x hx hL => hYs.avoid x hx (List.mem_append_left _ hL)⟩
         have hd := hpolyDecl p hp σ hpσ Ys hYsL
-        have hr := letRecFused_body_retype_preSc
-          (Φ := Φ) (ctx := ctx) (S₁ := S₁) (R₁ := Rg) (S₀ := S₀)
-          (anns := anns) (bindings := bindings) (body := p.1.openTyVars Ys)
-          (dspecs := dspecs) (G := Gdecl) (Xs := o.Xs) (τ₀ := σ.openVars Ys) (K := K)
-          hwfD.anns_eq hwfD.mono_lc hwfD.nodup o.fresh.length o.fresh.nodup
-          o.disjoint o.mono_fresh o.env_fresh o.rigid_fresh hS₁lc hRglc
-          hctxS₁ hKrigid hRgK hσfix hconn hd
-        simpa only [RecSpecs.ceilingSchemes_solved_init] using hr
-      have hKsch1 : ∀ σ, .poly σ ∈ specs1 →
+        exact hresFinal.retypeBodyCtx (RecGroup.inferenceSccs_valid hlen)
+          (by simp) hwfD hspecLC o.fresh o.disjoint o.mono_fresh
+          (fun σ hσ y hy => by
+            rw [hspecs1] at hσ
+            obtain ⟨s₀, hs₀, heq⟩ := List.mem_map.mp hσ
+            cases s₀ with
+            | mono τ => simp [RecSpec.onSubst] at heq
+            | poly σ₀ =>
+                simp only [RecSpec.onSubst, RecSpec.poly.injEq] at heq
+                subst σ₀
+                exact hKsch σ hs₀ y hy) hd
+      have hKsch1 : ∀ s ∈ specs1, ∀ σ, s = .poly σ →
           ∀ y ∈ σ.body.freeVars, y ∈ K := by
-        intro σ hσ
-        dsimp [specs1] at hσ
-        obtain ⟨s₀, hs₀, heq⟩ := List.mem_map.mp hσ
+        intro s hs σ hsσ y hy
+        rw [hspecs1] at hs
+        obtain ⟨s₀, hs₀, rfl⟩ := List.mem_map.mp hs
         cases s₀ with
-        | mono τ => simp [RecSpec.onSubst] at heq
+        | mono τ => simp [RecSpec.onSubst] at hsσ
         | poly σ₀ =>
-            simp only [RecSpec.onSubst, RecSpec.poly.injEq] at heq
+            have heq : σ₀ = σ := by simpa [RecSpec.onSubst] using hsσ
             subst σ₀
-            exact hKsch σ hs₀
+            exact hKsch σ hs₀ y hy
       have hpolySome := inferRecGroupPolyWithTypesCore_complete
         (L := L ++ o.Xs) 0 ihbindings ihopen
-        (by simp [specs1, RecSpec.init_length, hlen]) hwfB hbelowB hRglc hKΦ₁
+        (by rw [hspecs1, List.length_map, RecSpec.init_length, hlen])
+        hwfB hbelowB hRglc hKΦ₁
         hKgrp hRgK hspecLC
         (fun s hs τ heq => by subst s; exact hspecBel (.mono τ) hs)
-        (fun s hs σ heq => by subst s; exact hKsch1 σ hs) hpolyAlg
+        hKsch1 hpolyAlg
       obtain ⟨polyOut, hepoly⟩ := Option.isSome_iff_exists.mp hpolySome
       rcases polyOut with
         ⟨⟨Φ₂, S₂, polyTypes, polySchemes⟩, hpoly, hS₂K⟩
@@ -14846,7 +14884,7 @@ theorem inferCore_complete_letRec {anns : List (Option PolyTy)} {bindings : List
         InferRecGroupPoly.principal hpoly hwfB hbelowB Rg (L ++ o.Xs) K Rg
           hRglc hKΦ₁ hKgrp hRgK hspecLC
           (fun s hs τ heq => by subst s; exact hspecBel (.mono τ) hs)
-          (fun s hs σ heq => by subst s; exact hKsch1 σ hs)
+          hKsch1
           hRglc hRgK (fun _ _ => rfl) hpolyAlg
       have hS₂lc := InferRecGroupPoly.lc hpoly hwfB hspecLC
       have hS₂bel := InferRecGroupPoly.belowFvars hpoly hbelowB hspecBel
@@ -14864,7 +14902,7 @@ theorem inferCore_complete_letRec {anns : List (Option PolyTy)} {bindings : List
         (S₂.onCtx (S₁.onCtx ctx)).env, (S₂.onCtx (S₁.onCtx ctx)).ctors⟩
       have hpolyMemAnns : ∀ σ, RecSpec.poly σ ∈ specs1 → some σ ∈ anns := by
         intro σ hσ
-        dsimp [specs1] at hσ
+        rw [hspecs1] at hσ
         obtain ⟨s, hs, heq⟩ := List.mem_map.mp hσ
         cases s with
         | mono τ => simp [RecSpec.onSubst] at heq
@@ -14872,47 +14910,30 @@ theorem inferCore_complete_letRec {anns : List (Option PolyTy)} {bindings : List
             simp only [RecSpec.onSubst, RecSpec.poly.injEq] at heq
             subst σ₀
             exact RecSpec.poly_mem_init hs
-      have hGspec : ∀ g ∈ G,
-          g ∈ Ty.freeVarsList (RecSpecs.monoTys specs1) ∧
-          g ∉ (S₁.onCtx ctx).env.freeVars ∧
-          g ∉ RecGroup.rigidVars anns bindings := by
-        intro g hg
-        dsimp [G] at hg
-        simp only [genGroupVars, List.mem_filter, Bool.and_eq_true] at hg
-        exact ⟨hg.1, by simpa using hg.2.1, by simpa using hg.2.2⟩
+      have hfrozen := InferRecStrata.frozen_of_sourceLocality hstrata
+        Infer.sourceLocality_holds (past := [])
+        (by simpa using (RecGroup.inferenceSccs_valid hlen)) rfl
+        (RecSpec.map_ann_init Φ anns) hwf hctxBelow₀ hinitLC hinitB
+        (by omega) (fun y hy => hKΦ y (hKrigid y hy)) hbindRigid
+        hinitPolyRigid hpending (by simp) (by simp) (by simp) (by simp)
+      have hGenv : ∀ g ∈ G, g ∉ (S₁.onCtx ctx).env.freeVars :=
+        fun g hg hc => by
+          obtain ⟨M, hM, hgM⟩ := Env.mem_freeVars_iff.mp hc
+          exact InferRecStrata.pool_avoid_env hfrozen (by simp) g hg M hM hgM
+      have hGrigid : ∀ g ∈ G, g ∉ RecGroup.rigidVars anns bindings :=
+        InferRecStrata.pool_avoid_rigid hstrata (by simp)
       have hGanns : ∀ g ∈ G, ∀ σ, some σ ∈ anns → g ∉ σ.body.freeVars := by
         intro g hg σ hσ hc
-        exact (hGspec g hg).2.2
+        exact hGrigid g hg
           (List.mem_append_left _ (Expr.scheme_body_mem_annList_tyFreeVars hσ hc))
       have hGbind : ∀ g ∈ G, g ∉ Expr.tyFreeVars.RecGroup.tyFreeVars bindings := by
         intro g hg hc
-        exact (hGspec g hg).2.2
+        exact hGrigid g hg
           (List.mem_append_right _ (mem_recGroup_tyFreeVars.mp hc))
-      have hGlt : ∀ g ∈ G, g < Φ₁ := by
-        intro g hg
-        have hfvExists : ∀ {ts : List Ty} {x : Nat},
-            x ∈ Ty.freeVarsList ts → ∃ t ∈ ts, x ∈ t.freeVars := by
-          intro ts x hx
-          induction ts with
-          | nil => simp [Ty.freeVarsList] at hx
-          | cons hd tl ih =>
-              simp only [Ty.freeVarsList, List.mem_dedup, List.mem_append] at hx
-              rcases hx with hx | hx
-              · exact ⟨hd, List.mem_cons_self, hx⟩
-              · obtain ⟨t, ht, hxt⟩ := ih hx
-                exact ⟨t, List.mem_cons_of_mem _ ht, hxt⟩
-        obtain ⟨τ, hτ, hgτ⟩ := hfvExists (hGspec g hg).1
-        have hs : RecSpec.mono τ ∈ specs1 := by
-          unfold RecSpecs.monoTys at hτ
-          simp only [List.mem_filterMap] at hτ
-          obtain ⟨s, hs, heq⟩ := hτ
-          cases s with
-          | mono t =>
-              simp only [RecSpec.monoTy?, Option.some.injEq] at heq
-              subst t
-              exact hs
-          | poly σ => simp [RecSpec.monoTy?] at heq
-        exact (hspecBel (.mono τ) hs).mem_lt g hgτ
+      have hGlt : ∀ g ∈ G, g < Φ₁ :=
+        InferRecStrata.pool_below hstrata hctxBelow₀ hinitB
+          (fun y hy => lt_of_lt_of_le (hKΦ y (hKgrp y hy)) (by omega))
+          (by simp)
       have hGbodyCtx : ∀ g ∈ G, ∀ M ∈
           specs1.map (RecSpec.bodyScheme G) ++ (S₁.onCtx ctx).env,
           g ∉ M.body.freeVars := by
@@ -14928,7 +14949,7 @@ theorem inferCore_complete_letRec {anns : List (Option PolyTy)} {bindings : List
                       exact ⟨hg, hgτ⟩) hc
               · exact hgτ (Ty.freeVars_closeOver_subset hc)
           | poly σ => exact hGanns g hg σ (hpolyMemAnns σ hs) hc
-        · exact (hGspec g hg).2.1 (Env.mem_freeVars_iff.mpr ⟨M, hM, hc⟩)
+        · exact hGenv g hg (Env.mem_freeVars_iff.mpr ⟨M, hM, hc⟩)
       have hGpoly : ∀ g ∈ G, ∀ σ, RecSpec.poly σ ∈ specs1 →
           g ∉ σ.body.freeVars :=
         fun g hg σ hσ => hGanns g hg σ (hpolyMemAnns σ hσ)
@@ -14952,7 +14973,8 @@ theorem inferCore_complete_letRec {anns : List (Option PolyTy)} {bindings : List
                 simp only [Function.comp_apply, RecSpec.bodyScheme, RecSpec.onSubst]
                 rw [Subst.onPolyTy_genGroup hS₂G hS₂Gran]
             | poly σ =>
-                have hσK : ∀ y ∈ σ.body.freeVars, y ∈ K := hKsch1 σ hs
+                have hσK : ∀ y ∈ σ.body.freeVars, y ∈ K :=
+                  hKsch1 (.poly σ) hs σ rfl
                 have hRgσ : Rg.onPolyTy σ = σ := by
                   apply congrArg (PolyTy.mk σ.paramCount)
                   exact Subst.onTy_eq_self_of_fixes (fun y hy => hRgK y (hσK y hy))
@@ -15004,13 +15026,15 @@ theorem inferCore_complete_letRec {anns : List (Option PolyTy)} {bindings : List
           Ty.bvarsBelow σ.paramCount σ.body = true := by
         intro a ha σ heq
         exact PolyTy.wf_iff_bvarsBelow.mpr (hannsWF σ (heq ▸ ha))
-      simp only [groupCtx, RecSpecs.rhsCtx] at hegroup
-      rw [inferWithTypesCore, dif_pos hannsWFB]
-      simp only [hegroup]
-      simp only [specs1, G] at hepoly
-      simp only [hepoly]
-      simp only [postCtx, specs2, specs1, G] at hebody
-      simpa only [hebody, Option.isSome_some]
+      have hgroupsB : RecGroups.validResidualGroupsB anns bindings
+          (RecGroup.inferenceSccs anns bindings) = true :=
+        RecGroups.validResidualGroupsB_complete
+          (RecGroup.inferenceSccs_valid hlen)
+      simp only [List.flatten_nil] at hestrata
+      rw [inferWithTypesCore, dif_pos hannsWFB, dif_pos hgroupsB]
+      simp only [hestrata, hepoly]
+      simp only [postCtx, specs2] at hebody
+      simp only [hebody, Option.isSome_some]
 
 /-- The concrete metadata-producing inference worker accepts every well-scoped
     relational inference derivation for a source expression.  As for
