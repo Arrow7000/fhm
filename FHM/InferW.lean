@@ -9892,6 +9892,140 @@ theorem RecGroups.ValidResidualGroups.refs_available {anns : List (Option PolyTy
     rw [List.getElem?_take, if_pos (by omega)]
     exact hdep
 
+theorem RecSpecs.algorithmStageCtx_onSubst {S : Subst} {ctx : Ctx}
+    {specs : List RecSpec} {done G : List Nat}
+    (hdom : ∀ p ∈ S, p.1 ∉ G) (hran : ∀ p ∈ S, ∀ g ∈ p.2.freeVars, g ∉ G)
+    (hpoly : ∀ σ, .poly σ ∈ specs → ∀ p ∈ S, p.1 ∉ σ.body.freeVars) :
+    S.onCtx (RecSpecs.algorithmStageCtx ctx specs done G) =
+      RecSpecs.algorithmStageCtx (S.onCtx ctx) (specs.map (RecSpec.onSubst S)) done G := by
+  simp only [Subst.onCtx, Subst.onEnv, RecSpecs.algorithmStageCtx, List.map_append]
+  congr 1
+  · congr 1
+    apply List.ext_getElem?
+    intro i
+    simp only [List.getElem?_map, List.getElem?_mapIdx, Option.map_map]
+    cases hi : specs[i]? with
+    | none => rfl
+    | some spec =>
+      simp only [Option.map_some]
+      cases spec with
+      | mono τ =>
+        simp only [Function.comp_apply, RecSpec.algorithmStageEntry, RecSpec.onSubst]
+        split
+        · rw [Subst.onPolyTy_genGroup hdom hran]
+        · rfl
+      | poly σ =>
+        simp only [Function.comp_apply, RecSpec.algorithmStageEntry, RecSpec.onSubst, Subst.onPolyTy]
+        rw [show S.onTy σ.body = σ.body from
+          Ty.substFvars_eq_self_of_no_key
+            (fun p hp => hpoly σ (List.mem_of_getElem? hi) p hp)]
+
+theorem RecSpecs.algorithmStageCtx_pool_append {ctx : Ctx} {specs : List RecSpec}
+    {done G H : List Nat}
+    (hH : ∀ member τ, specs[member]? = some (.mono τ) → member ∈ done →
+      ∀ g ∈ H, g ∉ τ.freeVars) :
+    RecSpecs.algorithmStageCtx ctx specs done (G ++ H) =
+      RecSpecs.algorithmStageCtx ctx specs done G := by
+  simp only [RecSpecs.algorithmStageCtx]
+  congr 1
+  · congr 1
+    apply List.ext_getElem?
+    intro member
+    simp only [List.getElem?_mapIdx]
+    cases hs : specs[member]? with
+    | none => rfl
+    | some spec =>
+      simp only [Option.map_some]
+      cases spec with
+      | poly σ => rfl
+      | mono τ =>
+        simp only [RecSpec.algorithmStageEntry]
+        split
+        · rw [PolyTy.genGroup_append_of_avoid (hH member τ hs (by assumption))]
+        · rfl
+
+/-- Per-stage frozen-pool certificate. This is only proof bookkeeping: the
+    executable relation remains unchanged. -/
+inductive InferRecStrata.Frozen :
+    {rigid : List Nat} → {bindings : List Expr} → {Φ : Nat} → {ctx : Ctx} →
+    {specs : List RecSpec} → {done G : List Nat} → {groups : List (List Nat)} →
+    {Φ' : Nat} → {S : Subst} → {specs' : List RecSpec} → {G' : List Nat} →
+    InferRecStrata rigid bindings Φ ctx specs done G groups Φ' S specs' G' → Prop
+  | nil {rigid bindings Φ ctx specs done G} :
+      Frozen (@InferRecStrata.nil rigid bindings Φ ctx specs done G)
+  | cons {rigid bindings Φ ctx specs done G component rest Φ₁ Φ₂ S₁ S₂ specs₁ specs₂ Gcurrent Gfinal}
+      {hcomponent : InferRecComponent component 0 Φ
+        (RecSpecs.algorithmStageCtx ctx specs done G) bindings specs Φ₁ S₁}
+      {hspecs : specs₁ = specs.map (RecSpec.onSubst S₁)}
+      {hG : Gcurrent = genGroupVars (rigid ++ G)
+        (RecSpecs.generalizationCtx (S₁.onCtx ctx) specs₁ done G).env
+        (RecSpecs.monoTysAt specs₁ component)}
+      {hrest : InferRecStrata rigid bindings Φ₁ (S₁.onCtx ctx) specs₁
+        (done ++ component) (G ++ Gcurrent) rest Φ₂ S₂ specs₂ Gfinal} :
+      (∀ p ∈ S₁, p.1 ∉ G) →
+      (∀ p ∈ S₁, ∀ g ∈ p.2.freeVars, g ∉ G) →
+      Frozen hrest → Frozen (.cons hcomponent hspecs hG hrest)
+
+/-- A historical stage context survives subsequent strata: its completed
+    members remain completed, while all other entries stay monomorphic. -/
+theorem InferRecStrata.transport_history {rigid bindings Φ ctx specs done G groups Φ' S specs' G'}
+    {h : InferRecStrata rigid bindings Φ ctx specs done G groups Φ' S specs' G'}
+    (hfrozen : h.Frozen)
+    (hctx : CtxWF ctx) (hbelow : CtxBelow Φ ctx)
+    (hspecs : ∀ s ∈ specs, s.LC) (hspecsB : ∀ s ∈ specs, s.BelowFvars Φ)
+    (K : List Nat) (hKΦ : ∀ k ∈ K, k < Φ)
+    (hKbr : ∀ y ∈ Expr.tyFreeVars.RecGroup.tyFreeVars bindings, y ∈ K)
+    (hKpoly : ∀ σ, .poly σ ∈ specs → ∀ y ∈ σ.body.freeVars, y ∈ K)
+    (hSK : ∀ p ∈ S, p.1 ∉ K)
+    {history : List Nat} (hhistory : ∀ member ∈ history, member ∈ done)
+    {rhs : Expr} {τ : Ty} (hrhs : rhs ∈ bindings)
+    (htyped : TypeOfHM (RecSpecs.algorithmStageCtx ctx specs history G) rhs τ) :
+    TypeOfHM (RecSpecs.algorithmStageCtx (S.onCtx ctx) specs' history G') rhs (S.onTy τ) := by
+  match hfrozen with
+  | .nil => simpa only [Subst.onCtx_nil, Subst.onTy_nil] using htyped
+  | .cons hdom hran hfr =>
+    expose_names
+    have hstageWF := RecSpecs.algorithmStageCtx_wf hctx hspecs done G
+    have hstageB := RecSpecs.algorithmStageCtx_below hbelow hspecsB done G
+    have hS₁LC := InferRecComponent.lc hcomponent hstageWF hspecs
+    have hle := InferRecComponent.frontier_le hcomponent
+    have hS₁B := InferRecComponent.belowFvars hcomponent hstageB hspecsB
+      (fun y hy => hKΦ y (hKbr y hy))
+    have hspecs₁LC : ∀ s ∈ specs₁, s.LC := by
+      rw [hspecs_1]
+      intro s hs
+      obtain ⟨old,hold,rfl⟩ := List.mem_map.mp hs
+      exact RecSpec.LC.onSubst hS₁LC (hspecs old hold)
+    have hspecs₁B : ∀ s ∈ specs₁, s.BelowFvars Φ₁ := by
+      rw [hspecs_1]
+      intro s hs
+      obtain ⟨old,hold,rfl⟩ := List.mem_map.mp hs
+      exact RecSpec.BelowFvars.onSubst hS₁B ((hspecsB old hold).mono hle)
+    have hS₁K : ∀ p ∈ S₁, p.1 ∉ K := fun p hp => hSK p (List.mem_append_left _ hp)
+    have hS₂K : ∀ p ∈ S₂, p.1 ∉ K := fun p hp => hSK p (List.mem_append_right _ hp)
+    have hfix : rhs.substTyFvars S₁ = rhs :=
+      Expr.substTyFvars_eq_self_of_not_mem_tyFreeVars
+        (fun p hp hc => hS₁K p hp (hKbr p.1 (Expr.mem_recGroupTyFreeVars_of hrhs hc)))
+    have htyped₁ := TypeOfHM.onSubst_fixed S₁ hS₁LC hfix htyped
+    rw [RecSpecs.algorithmStageCtx_onSubst hdom hran
+      (fun σ hσ p hp hc => hS₁K p hp (hKpoly σ hσ p.1 hc)), ← hspecs_1] at htyped₁
+    have hpool : RecSpecs.algorithmStageCtx (S₁.onCtx ctx) specs₁ history (G ++ Gcurrent) =
+        RecSpecs.algorithmStageCtx (S₁.onCtx ctx) specs₁ history G := by
+      apply RecSpecs.algorithmStageCtx_pool_append
+      intro member t ht hm g hg
+      apply RecSpecs.newPool_avoids_done (hspecs₁LC (.mono t) (List.mem_of_getElem? ht))
+        ht (hhistory member hm)
+      rwa [hG] at hg
+    rw [← hpool] at htyped₁
+    have htail := InferRecStrata.transport_history hfr
+      (Subst.onCtx_wf hS₁LC hctx) (Subst.onCtx_below hS₁B hle hbelow)
+      hspecs₁LC hspecs₁B K (fun k hk => lt_of_lt_of_le (hKΦ k hk) hle) hKbr
+      (fun σ hσ => hKpoly σ (RecSpec.poly_mem_map_onSubst.mp (hspecs_1 ▸ hσ)))
+      hS₂K (fun member hm => List.mem_append_left _ (hhistory member hm)) hrhs htyped₁
+    simpa only [Subst.onTy_append, Subst.onCtx_append] using htail
+termination_by groups.length
+decreasing_by all_goals (simp_wf; try omega)
+
 private abbrev Infer.SourceSoundAt (e : Expr) : Prop :=
   ∀ {Φ ctx Φ' S τ}, Infer Φ ctx e Φ' S τ →
     CtxWF ctx → CtxBelow Φ ctx → (K : List Nat) → (∀ k ∈ K, k < Φ) →
@@ -10006,6 +10140,81 @@ theorem InferRecComponent.sourceSoundMono_of {members memberIndex Φ ctx binding
 termination_by Expr.sizeRecGroup bindings
 decreasing_by
   all_goals (simp_wf; simp only [Expr.sizeRecGroup]; omega)
+
+/-- Every processed component is source-typed at its historical stage, rendered
+    using the final solved specs and aggregate pool. -/
+theorem InferRecStrata.sourceSoundMono_of {rigid bindings Φ ctx specs done G groups Φ' S specs' G'}
+    {h : InferRecStrata rigid bindings Φ ctx specs done G groups Φ' S specs' G'}
+    (hfrozen : h.Frozen) (hsound : ∀ rhs ∈ bindings, Infer.SourceSoundAt rhs)
+    (hctx : CtxWF ctx) (hbelow : CtxBelow Φ ctx)
+    (hspecs : ∀ s ∈ specs, s.LC) (hspecsB : ∀ s ∈ specs, s.BelowFvars Φ)
+    (K : List Nat) (hKΦ : ∀ k ∈ K, k < Φ)
+    (hKbr : ∀ y ∈ Expr.tyFreeVars.RecGroup.tyFreeVars bindings, y ∈ K)
+    (hKpoly : ∀ σ, .poly σ ∈ specs → ∀ y ∈ σ.body.freeVars, y ∈ K)
+    (hSK : ∀ p ∈ S, p.1 ∉ K) :
+    ∀ stage component, groups[stage]? = some component →
+      ∀ member rhs τ, member ∈ component → bindings[member]? = some rhs →
+      specs[member]? = some (.mono τ) →
+      TypeOfHM (RecSpecs.algorithmStageCtx (S.onCtx ctx) specs'
+        (done ++ (groups.take stage).flatten) G') rhs (S.onTy τ) := by
+  match hfrozen with
+  | .nil => intro stage component hc; simp at hc
+  | .cons hdom hran hfr =>
+    expose_names
+    have hstageWF := RecSpecs.algorithmStageCtx_wf hctx hspecs done G
+    have hstageB := RecSpecs.algorithmStageCtx_below hbelow hspecsB done G
+    have hS₁LC := InferRecComponent.lc hcomponent hstageWF hspecs
+    have hle := InferRecComponent.frontier_le hcomponent
+    have hS₁B := InferRecComponent.belowFvars hcomponent hstageB hspecsB
+      (fun y hy => hKΦ y (hKbr y hy))
+    have hspecs₁LC : ∀ s ∈ specs₁, s.LC := by
+      rw [hspecs_1]
+      intro s hs; obtain ⟨old,hold,rfl⟩ := List.mem_map.mp hs
+      exact RecSpec.LC.onSubst hS₁LC (hspecs old hold)
+    have hspecs₁B : ∀ s ∈ specs₁, s.BelowFvars Φ₁ := by
+      rw [hspecs_1]
+      intro s hs; obtain ⟨old,hold,rfl⟩ := List.mem_map.mp hs
+      exact RecSpec.BelowFvars.onSubst hS₁B ((hspecsB old hold).mono hle)
+    have hS₁K : ∀ p ∈ S₁, p.1 ∉ K := fun p hp => hSK p (List.mem_append_left _ hp)
+    have hS₂K : ∀ p ∈ S₂, p.1 ∉ K := fun p hp => hSK p (List.mem_append_right _ hp)
+    have hKpoly₁ : ∀ σ, .poly σ ∈ specs₁ → ∀ y ∈ σ.body.freeVars, y ∈ K :=
+      fun σ hσ => hKpoly σ (RecSpec.poly_mem_map_onSubst.mp (hspecs_1 ▸ hσ))
+    intro stage component_1 hc member rhs τ hm hrhs hτ
+    have hτ₁ : specs₁[member]? = some (.mono (S₁.onTy τ)) := by
+      rw [hspecs_1, List.getElem?_map, hτ]
+      rfl
+    cases stage with
+    | zero =>
+      simp only [List.getElem?_cons_zero, Option.some.injEq] at hc
+      subst component_1
+      have htyped := InferRecComponent.sourceSoundMono_of hcomponent hsound hstageWF hstageB
+        hspecs hspecsB K hKΦ hKbr hS₁K member rhs (S₁.onTy τ) (by simpa using hm) hrhs
+        (by rw [List.getElem?_map, hτ]; rfl)
+      rw [RecSpecs.algorithmStageCtx_onSubst hdom hran
+        (fun σ hσ p hp hc => hS₁K p hp (hKpoly σ hσ p.1 hc)), ← hspecs_1] at htyped
+      have hpool : RecSpecs.algorithmStageCtx (S₁.onCtx ctx) specs₁ done (G ++ Gcurrent) =
+          RecSpecs.algorithmStageCtx (S₁.onCtx ctx) specs₁ done G := by
+        apply RecSpecs.algorithmStageCtx_pool_append
+        intro i t ht hi g hg
+        apply RecSpecs.newPool_avoids_done (hspecs₁LC (.mono t) (List.mem_of_getElem? ht)) ht hi
+        rwa [hG] at hg
+      rw [← hpool] at htyped
+      have htail := InferRecStrata.transport_history hfr
+        (Subst.onCtx_wf hS₁LC hctx) (Subst.onCtx_below hS₁B hle hbelow)
+        hspecs₁LC hspecs₁B K (fun k hk => lt_of_lt_of_le (hKΦ k hk) hle) hKbr
+        hKpoly₁ hS₂K (fun i hi => List.mem_append_left _ hi)
+        (List.mem_of_getElem? hrhs) htyped
+      simpa only [Subst.onTy_append, Subst.onCtx_append, List.take_zero,
+        List.flatten_nil, List.append_nil] using htail
+    | succ stage =>
+      have htail := InferRecStrata.sourceSoundMono_of hfr hsound
+        (Subst.onCtx_wf hS₁LC hctx) (Subst.onCtx_below hS₁B hle hbelow)
+        hspecs₁LC hspecs₁B K (fun k hk => lt_of_lt_of_le (hKΦ k hk) hle) hKbr
+        hKpoly₁ hS₂K stage component_1 (by simpa using hc) member rhs (S₁.onTy τ) hm hrhs hτ₁
+      simpa only [Subst.onTy_append, Subst.onCtx_append, List.take_succ_cons,
+        List.flatten_cons, List.append_assoc] using htail
+termination_by groups.length
+decreasing_by all_goals (simp_wf; try omega)
 
 set_option maxHeartbeats 800_000 in
 mutual
