@@ -1,29 +1,35 @@
 #!/usr/bin/env bash
-# Symlink this extension into Cursor's (or VS Code's) extensions folder.
+# Symlink editors/vscode/ into an editor's extensions folder.
 #
 # Usage:
-#   scripts/install-fhm-extension.sh           # Cursor
-#   scripts/install-fhm-extension.sh code      # VS Code
-#   scripts/install-fhm-extension.sh cursor --reload-hint
+#   scripts/install-editor-extension.sh vscode
+#   scripts/install-editor-extension.sh cursor
 #
-# After install: Developer: Reload Window (or restart Cursor).
+# Prefer the wrappers scripts/install-vscode-extension.sh and
+# scripts/install-cursor-extension.sh.
+#
+# After install: Developer: Reload Window (or restart the editor).
 # Highlighting works immediately. Parse squiggles need:
 #   lake build fhm
 set -euo pipefail
 
 ROOT="$(cd "$(dirname "$0")/.." && pwd)"
 EXT_SRC="$ROOT/editors/vscode"
-APP="${1:-cursor}"
+if [[ $# -ne 1 ]]; then
+  echo "usage: $0 <vscode|cursor>" >&2
+  exit 2
+fi
+APP="$1"
 
 case "$APP" in
   cursor)
     EXT_DIR="${CURSOR_EXTENSIONS_DIR:-$HOME/.cursor/extensions}"
     ;;
-  code|vscode)
+  vscode)
     EXT_DIR="${VSCODE_EXTENSIONS_DIR:-$HOME/.vscode/extensions}"
     ;;
   *)
-    echo "usage: $0 [cursor|code]" >&2
+    echo "usage: $0 <vscode|cursor>" >&2
     exit 2
     ;;
 esac

@@ -9,14 +9,14 @@
 
 Scoped head-type-variable sugar is still unsupported; prefer explicit schemes and ordinary lambdas.
 
-## Install via symlink (Cursor)
+## Install via symlink (Cursor or VS Code)
 
 From the repo root:
 
 ```bash
 scripts/gen-fhm-tmgrammar.sh          # once / when Lex keyword tables change
 lake build fhm               # for parse squiggles + hover types
-scripts/install-fhm-extension.sh      # ln -s into ~/.cursor/extensions
+scripts/install-cursor-extension.sh   # or scripts/install-vscode-extension.sh
 ```
 
 Then **Developer: Reload Window**.
