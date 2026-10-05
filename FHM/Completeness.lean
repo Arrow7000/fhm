@@ -61,7 +61,7 @@ theorem UnifyRel.range_within_rhs {K : List Nat} :
       exact hb x hx
   | _, _, _, @UnifyRel.fvarR n t _ _, hav, hb, p, hp, x, hx => by
       have hn : n ∈ K := hb n (by simp [Ty.freeVars])
-      exact False.elim (hav (n, t) (by simpa using hp) hn)
+      exact False.elim (hav (n, t) (by simp) hn)
   | _, _, _, @UnifyRel.arrow a b c d S₁ S₂ h₁ h₂, hav, hright, p, hp, x, hx => by
       have hc : ∀ y ∈ c.freeVars, y ∈ K :=
         fun y hy => hright y (Ty.mem_freeVars_arrowL hy)
@@ -1449,12 +1449,12 @@ theorem Infer.gap_avoid {lo hi : Nat} {Φ ctx e Φ' S τ} (h : Infer Φ ctx e Φ
     (∀ v ∈ τ.freeVars, v < lo ∨ hi ≤ v) ∧ (∀ p ∈ S, p.1 < lo ∨ hi ≤ p.1) ∧
       (∀ p ∈ S, ∀ v ∈ p.2.freeVars, v < lo ∨ hi ≤ v) := by
   cases h with
-  | primLitUnit => intro _ _ _; refine ⟨?_, by simp, by simp⟩; intro v hv; simp [Ty.freeVars, TyList.freeVars] at hv
-  | primLitInt => intro _ _ _; refine ⟨?_, by simp, by simp⟩; intro v hv; simp [Ty.freeVars, TyList.freeVars] at hv
-  | primLitNat => intro _ _ _; refine ⟨?_, by simp, by simp⟩; intro v hv; simp [Ty.freeVars, TyList.freeVars] at hv
-  | primLitChar => intro _ _ _; refine ⟨?_, by simp, by simp⟩; intro v hv; simp [Ty.freeVars, TyList.freeVars] at hv
-  | primBinOpIntAdd => intro _ _ _; refine ⟨?_, by simp, by simp⟩; intro v hv; simp [Ty.freeVars, TyList.freeVars] at hv
-  | primBinOpIntSub => intro _ _ _; refine ⟨?_, by simp, by simp⟩; intro v hv; simp [Ty.freeVars, TyList.freeVars] at hv
+  | primLitUnit => intro _ _ _; refine ⟨?_, by simp, by simp⟩; intro v hv; simp [Ty.freeVars] at hv
+  | primLitInt => intro _ _ _; refine ⟨?_, by simp, by simp⟩; intro v hv; simp [Ty.freeVars] at hv
+  | primLitNat => intro _ _ _; refine ⟨?_, by simp, by simp⟩; intro v hv; simp [Ty.freeVars] at hv
+  | primLitChar => intro _ _ _; refine ⟨?_, by simp, by simp⟩; intro v hv; simp [Ty.freeVars] at hv
+  | primBinOpIntAdd => intro _ _ _; refine ⟨?_, by simp, by simp⟩; intro v hv; simp [Ty.freeVars] at hv
+  | primBinOpIntSub => intro _ _ _; refine ⟨?_, by simp, by simp⟩; intro v hv; simp [Ty.freeVars] at hv
   | primBinOpIntLt => intro _ _ _; refine ⟨?_, by simp, by simp⟩; intro v hv; simp [Ty.freeVars, TyList.freeVars] at hv
   | primBinOpCharLt => intro _ _ _; refine ⟨?_, by simp, by simp⟩; intro v hv; simp [Ty.freeVars, TyList.freeVars] at hv
   | @lambda Φ ctx ann paramTy body Φ₀ Φ' S τb hseed hbody =>
@@ -2013,7 +2013,6 @@ theorem InferRecGroupPoly.gap_avoid {lo hi : Nat} {Φ ctx bindings specs Φ' S}
     set Ys := freshVars N σ.paramCount with hYsdef
     have hσav : ∀ v ∈ σ.body.freeVars, v < lo ∨ hi ≤ v :=
       hspecs (.poly σ) List.mem_cons_self
-    simp only [RecSpec.tfvs] at hσav
     have hrTfv : ∀ y ∈ (e.openTyVars Ys).tyFreeVars, y < lo ∨ hi ≤ y := by
       intro y hy
       rcases Expr.tyFreeVars_openTyVars hy with hh | hh
@@ -2057,7 +2056,7 @@ theorem InferRecGroupPoly.gap_avoid {lo hi : Nat} {Φ ctx bindings specs Φ' S}
 termination_by (Expr.sizeRecGroup bindings, 0)
 decreasing_by
   all_goals (try subst_vars)
-  all_goals (try simp only [Expr.size, Expr.size_openTyVars, Expr.sizeRecGroup])
+  all_goals (try simp only [Expr.size_openTyVars, Expr.sizeRecGroup])
   all_goals omega
 
 end
@@ -2317,7 +2316,7 @@ def InferRecComponent.Principal {Φ₀ Φ : Nat} {ctx : Ctx} {members : List Nat
     {memberIndex : Nat} {bindings : List Expr} {specs : List RecSpec}
     {Φ' : Nat} {S : Subst}
     (_h : InferRecComponent members memberIndex Φ ctx bindings specs Φ' S)
-    (hle : Φ₀ ≤ Φ) : Prop :=
+    (_hle : Φ₀ ≤ Φ) : Prop :=
   CtxWF ctx → CtxBelow Φ ctx →
   ∀ (S₀ : Subst) (K : List Nat) (R₀ : Subst),
     (∀ p ∈ S₀, p.2.IsLC) → (∀ k ∈ K, k < Φ₀) →
@@ -2338,7 +2337,7 @@ def InferRecComponent.Principal {Φ₀ Φ : Nat} {ctx : Ctx} {members : List Nat
     under the final recursive environment. -/
 def InferRecGroupPoly.Principal {Φ₀ Φ : Nat} {ctx : Ctx} {bindings : List Expr}
     {specs : List RecSpec} {Φ' : Nat} {S : Subst}
-    (_h : InferRecGroupPoly Φ ctx bindings specs Φ' S) (hle : Φ₀ ≤ Φ) : Prop :=
+    (_h : InferRecGroupPoly Φ ctx bindings specs Φ' S) (_hle : Φ₀ ≤ Φ) : Prop :=
   CtxWF ctx → CtxBelow Φ ctx →
   ∀ (S₀ : Subst) (L K : List Nat) (R₀ : Subst),
     (∀ p ∈ S₀, p.2.IsLC) → (∀ k ∈ K, k < Φ₀) →
@@ -2830,7 +2829,6 @@ private theorem Subst.exists_proxy_unifier
   · change (proxy ++ R ++ breal).onTy τ = (proxy ++ R ++ breal).onTy target
     simp only [Subst.onTy_append]
     rw [hproxy, hRcomm, hreal]
-    change target = breal.onTy (R.onTy (proxy.onTy target))
     apply Eq.symm
     calc
       breal.onTy (R.onTy (proxy.onTy target)) = breal.onTy (R.onTy target) := by
@@ -4260,7 +4258,7 @@ private theorem letRecFused_body_retype_preSc
       = ⟨algEntries ++ envS₁.map R₁.onPolyTy,
           (S₀.onCtx ctx).ctors⟩ := by
     apply congrArg₂ Ctx.mk
-    · simp only [Subst.onCtx, Subst.onEnv, List.map_append]
+    · simp only [Subst.onEnv, List.map_append]
       rw [halg_def]
     · simpa [Rer] using congrArg Ctx.ctors hctxS₁
   change TypeOfHM (R₁.onCtx ⟨RecSpecs.ceilingSchemes Ginf anns solved ++ envS₁,
@@ -4672,7 +4670,7 @@ private theorem exists_recgroup_opening_core {Φ : Nat} {ctx : Ctx} {S₀ : Subs
     dsimp [vs] at h
     simp only [List.getElem?_map] at h
     have hf : (freshVars Φ bindings.length)[j]? = some (Φ + j) := by
-      simp [freshVars, List.getElem?_map, List.getElem?_range, hjb]
+      simp [freshVars, hjb]
     rw [hf, List.getElem?_eq_getElem hj] at h
     exact Option.some.inj h
   have hσK : ∀ σ, .poly σ ∈ specs → ∀ k ∈ σ.body.freeVars, k ∈ K := by
@@ -4848,7 +4846,7 @@ private def schemeHybrid (e : Expr) (old new : List PolyTy) : List PolyTy :=
       new[member]?.getD oldScheme
 
 private theorem schemeHybrid_getElem {e : Expr} {old new : List PolyTy}
-    (hlen : old.length = new.length) (member : Nat)
+    (member : Nat)
     (hold : member < old.length) (hnew : member < new.length) :
     (schemeHybrid e old new)[member]'(by simpa [schemeHybrid] using hold) =
       if member ∈ e.recGroupRefs old.length 0 then
@@ -4879,7 +4877,7 @@ private theorem TypeOfHM.weaken_recGroupRefs {ctx : Ctx} {e : Expr} {τ : Ty}
           List.getElem?_append_left hmember]
         have hnew : member < new.length := by omega
         rw [List.getElem?_eq_getElem (by simpa [hlenHybrid] using hmember),
-          schemeHybrid_getElem hlen member hmember hnew, if_pos href,
+          schemeHybrid_getElem member hmember hnew, if_pos href,
           List.getElem?_eq_getElem hmember]
       · have hmember' : old.length ≤ member := by omega
         rw [List.getElem?_append_right (by simpa [hlenHybrid] using hmember'),
@@ -4893,7 +4891,7 @@ private theorem TypeOfHM.weaken_recGroupRefs {ctx : Ctx} {e : Expr} {τ : Ty}
   apply forall₂_of_getElem
   · omega
   · intro member hnew hhybrid
-    rw [schemeHybrid_getElem hlen member (by omega) hnew]
+    rw [schemeHybrid_getElem member (by omega) hnew]
     split
     · exact hgen member (by omega) hnew (by assumption)
     · exact PolyTy.Generalizes.refl new[member]
@@ -5013,7 +5011,7 @@ private theorem RecStrataResidual.componentMonoTyped
     have henv := congrArg Ctx.env h.ctx_eq
     have hctors := congrArg Ctx.ctors h.ctx_eq
     apply congrArg₂ Ctx.mk
-    · simp only [RecSpecs.algorithmStageCtx, Subst.onCtx, Subst.onEnv,
+    · simp only [RecSpecs.algorithmStageCtx, Subst.onEnv,
         List.map_append, newEntries]
       have hmap : List.map R.onPolyTy
           (List.mapIdx (RecSpec.algorithmStageEntry done G) specs) =
@@ -5109,7 +5107,7 @@ private theorem RecStrataResidual.retypeBodyCtx
     have henv := congrArg Ctx.env h.ctx_eq
     have hctors := congrArg Ctx.ctors h.ctx_eq
     apply congrArg₂ Ctx.mk
-    · simp only [RecSpecs.bodyCtx, Subst.onCtx, Subst.onEnv,
+    · simp only [RecSpecs.bodyCtx, Subst.onEnv,
         List.map_append, newEntries, List.map_map]
       exact congrArg (newEntries ++ ·)
         (by simpa [Subst.onCtx, Subst.onEnv] using henv)
@@ -6285,7 +6283,7 @@ theorem Infer.principals_mut (n : Nat) :
                       (Subst.conj (swapNat Φ W) S₀ ++ [(Φ, Ty.rename (swapNat Φ W) paramTyD)])
                       (PolyTy.mkTrivial (.fvar Φ) :: ctx.env)))
                     ( ctx.ctors)
-                simp only [Ctx.mk.injEq, true_and]
+                simp only [Ctx.mk.injEq]
                 constructor
                 · -- head: the pinned scheme's erased value is the same on both sides
                   have hh :  (Subst.onPolyTy (swapSubst Φ W c)
@@ -6505,7 +6503,7 @@ theorem Infer.principals_mut (n : Nat) :
                     (
                       (Subst.onEnv S₀ (PolyTy.mkTrivial paramTy :: ctx.env)))
                     ( ctx.ctors)
-                simp only [Ctx.mk.injEq, true_and]
+                simp only [Ctx.mk.injEq]
                 constructor
                 · show
                       (PolyTy.mkTrivial paramTy
@@ -6513,8 +6511,7 @@ theorem Infer.principals_mut (n : Nat) :
                     =
                         (Subst.onEnv S₀
                           (PolyTy.mkTrivial paramTy :: ctx.env))
-                  simp [Subst.onEnv,  List.map_cons, Subst.onPolyTy,  PolyTy.mkTrivial, hself,
-                    List.map_map]
+                  simp [Subst.onEnv, List.map_cons, Subst.onPolyTy, PolyTy.mkTrivial, hself]
                 · trivial
               have e1 := hbodyD
               rw [heqC] at e1
@@ -8759,9 +8756,9 @@ private theorem Ty.mem_freeVars_closeOver_of_not_mem
       | none =>
           simp only [Ty.freeVars, List.mem_singleton] at hz
           subst hz
-          simpa [Ty.closeOver, hidx, Ty.freeVars]
-  | prim p => simp [Ty.closeOver, Ty.freeVars] at hz
-  | bvar i => simp [Ty.closeOver, Ty.freeVars] at hz
+          simp [Ty.freeVars]
+  | prim p => simp [Ty.freeVars] at hz
+  | bvar i => simp [Ty.freeVars] at hz
   | arrow a b iha ihb =>
       simp only [Ty.closeOver, Ty.freeVars, List.mem_dedup, List.mem_append] at hz ⊢
       rcases hz with hz | hz
@@ -8806,7 +8803,7 @@ private theorem Subst.mem_freeVars_onTy_of_fixes
     y ∈ (S.onTy t).freeVars := by
   rw [Ty.mem_freeVars_onTy_iff]
   refine ⟨y, hy, ?_⟩
-  simpa [hfix, Ty.freeVars]
+  simp [hfix, Ty.freeVars]
 
 /-- When recursive-ceiling checks protect only the non-generalised portion of
     an ambient rigid set, their committed projection nevertheless avoids the
@@ -9492,7 +9489,7 @@ theorem Infer.complete_prim {p : PrimLitExpr} : Infer.CompleteAt (.primLit p) :=
     | primLitUnit =>
       refine ⟨Φ, [], .prim .unit, S₀, .primLitUnit, ?_, ?_, ?_, ?_, ?_⟩
       · intro v hv; rfl
-      · simp [Eq]
+      · simp
       · exact hS₀
       · exact hKfix
       · simp
@@ -9501,7 +9498,7 @@ theorem Infer.complete_prim {p : PrimLitExpr} : Infer.CompleteAt (.primLit p) :=
     | primLitInt =>
       refine ⟨Φ, [], .prim .int, S₀, .primLitInt, ?_, ?_, ?_, ?_, ?_⟩
       · intro v hv; rfl
-      · simp [Eq]
+      · simp
       · exact hS₀
       · exact hKfix
       · simp
@@ -9510,7 +9507,7 @@ theorem Infer.complete_prim {p : PrimLitExpr} : Infer.CompleteAt (.primLit p) :=
     | primLitNat =>
       refine ⟨Φ, [], .prim .nat, S₀, .primLitNat, ?_, ?_, ?_, ?_, ?_⟩
       · intro v hv; rfl
-      · simp [Eq]
+      · simp
       · exact hS₀
       · exact hKfix
       · simp
@@ -9519,7 +9516,7 @@ theorem Infer.complete_prim {p : PrimLitExpr} : Infer.CompleteAt (.primLit p) :=
     | primLitChar =>
       refine ⟨Φ, [], .prim .char, S₀, .primLitChar, ?_, ?_, ?_, ?_, ?_⟩
       · intro v hv; rfl
-      · simp [Eq]
+      · simp
       · exact hS₀
       · exact hKfix
       · simp
@@ -9535,7 +9532,7 @@ theorem Infer.complete_primBinOp {op : PrimBinOp} :
       refine ⟨Φ, [], .arrow (.prim .int) (.arrow (.prim .int) (.prim .int)), S₀,
         .primBinOpIntAdd, ?_, ?_, ?_, ?_, ?_⟩
       · intro v hv; rfl
-      · simp [Eq]
+      · simp
       · exact hS₀
       · exact hKfix
       · simp
@@ -9545,7 +9542,7 @@ theorem Infer.complete_primBinOp {op : PrimBinOp} :
       refine ⟨Φ, [], .arrow (.prim .int) (.arrow (.prim .int) (.prim .int)), S₀,
         .primBinOpIntSub, ?_, ?_, ?_, ?_, ?_⟩
       · intro v hv; rfl
-      · simp [Eq]
+      · simp
       · exact hS₀
       · exact hKfix
       · simp
@@ -9561,7 +9558,7 @@ theorem Infer.complete_primBinOp {op : PrimBinOp} :
         .arrow (.prim .int) (.arrow (.prim .int) (.customTy ⟨"Bool"⟩ [])), S₀,
         .primBinOpIntLt hlookT hbT hlookF hbF, ?_, ?_, ?_, ?_, ?_⟩
       · intro v hv; rfl
-      · simp [Eq]
+      · simp
       · exact hS₀
       · exact hKfix
       · simp
@@ -9577,7 +9574,7 @@ theorem Infer.complete_primBinOp {op : PrimBinOp} :
         .arrow (.prim .char) (.arrow (.prim .char) (.customTy ⟨"Bool"⟩ [])), S₀,
         .primBinOpCharLt hlookT hbT hlookF hbF, ?_, ?_, ?_, ?_, ?_⟩
       · intro v hv; rfl
-      · simp [Eq]
+      · simp
       · exact hS₀
       · exact hKfix
       · simp
@@ -12900,7 +12897,6 @@ theorem inferCore_complete_letIn_none {rhs body : Expr}
   intro Φ ctx Φ' S τ K hwf hbelow hKΦ hKe hSK h
   have hSlc : ∀ p ∈ S, p.2.IsLC := (Infer.lc h hwf).2
   have hlet := Infer.sourceSound h hwf hbelow K hKΦ hKe hSK
-  simp only [  Option.map_none] at hlet
   cases h with
   | @letIn _ _ _ _ Φ₁d Φ₂d S₁d S₂d τ₁d τ₂ hrhs hbodyRel =>
       cases hlet with
@@ -13075,7 +13071,7 @@ theorem inferCore_complete_letIn_some {σ : PolyTy} {rhs body : Expr}
         exact typeOfHM_at_block
           (ctx := (S.onCtx ctx)) (rhs := rhs)
           (σ :=  σ) (L := L) (Ys := Ys)
-          (by simpa [Ys] using (freshVars_length Φ σ.paramCount)) hcofin'
+          (by simp [Ys]) hcofin'
       obtain ⟨_, _, _, _, Drhs, _, _, _, _, hSrhsK⟩ :=
         (Infer.complete (rhs.openTyVars Ys))
           (K ++ Ys) hwf hbelowN hSlc hKΦ' hKe' hKfix' htyYs
