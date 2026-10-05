@@ -7025,6 +7025,108 @@ theorem Expr.ForallOuter.lookupAvoid_onSubst {e : Expr} {depth w : Nat}
     subst M
     simpa only [Subst.onPolyTy] using Subst.notMemOnTy hS (hi M₀ hlookup)
 
+/-- Component locality needs only the monotype targets selected for this
+    component. The inference premise is phrased as a reusable source-sensitive
+    single-expression locality rule. -/
+theorem InferRecComponent.range_dom_avoid_selected_of_infer
+    {members memberIndex Φ ctx bindings specs Φ' S}
+    (h : InferRecComponent members memberIndex Φ ctx bindings specs Φ' S)
+    (hInfer : ∀ {Ψ c e Ψ' T τ}, Infer Ψ c e Ψ' T τ →
+      ∀ {w}, w < Ψ →
+      e.ForallOuter
+        (fun i => ∀ M, c.env[i]? = some M → w ∉ M.body.freeVars) 0 →
+      w ∉ e.tyFreeVars →
+      (∀ p ∈ T, w ∉ p.2.freeVars) ∧ w ∉ τ.freeVars ∧ w ∉ T.map Prod.fst) :
+    ∀ {w}, w < Φ →
+    (∀ j e, memberIndex + j ∈ members → bindings[j]? = some e →
+      e.ForallOuter
+        (fun i => ∀ M, ctx.env[i]? = some M → w ∉ M.body.freeVars) 0) →
+    (∀ j τ, memberIndex + j ∈ members → specs[j]? = some (.mono τ) →
+      w ∉ τ.freeVars) →
+    w ∉ Expr.tyFreeVars.RecGroup.tyFreeVars bindings →
+    (∀ p ∈ S, w ∉ p.2.freeVars) ∧ w ∉ S.map Prod.fst := by
+  match h with
+  | .nil => intro w _ _ _ _; exact ⟨by simp, by simp⟩
+  | .consSelected hsel he huni hrest =>
+    intro w hwΦ hrefs htargets hbinds
+    expose_names
+    simp only [Expr.tyFreeVars.RecGroup.tyFreeVars, List.mem_append, not_or] at hbinds
+    have hle := Infer.frontier_le he
+    have heRefs := hrefs 0 e (by simpa using hsel) rfl
+    obtain ⟨heS, heτ, heD⟩ := hInfer he hwΦ heRefs hbinds.1
+    have hτA : w ∉ τ.freeVars := htargets 0 τ (by simpa using hsel) rfl
+    have hS₂ : ∀ p ∈ S₂, w ∉ p.2.freeVars := by
+      intro p hp hwp
+      rcases UnifyRel.range_mem huni p hp w hwp with h | h
+      · exact heτ h
+      · exact Subst.notMemOnTy heS hτA h
+    have hS₂D : w ∉ S₂.map Prod.fst := by
+      intro hc
+      obtain ⟨p, hp, hpw⟩ := List.mem_map.mp hc
+      rcases UnifyRel.dom_mem huni p hp with h | h
+      · rw [hpw] at h; exact heτ h
+      · rw [hpw] at h; exact Subst.notMemOnTy heS hτA h
+    have hS₁₂ : ∀ p ∈ S₁ ++ S₂, w ∉ p.2.freeVars := by
+      intro p hp
+      exact (List.mem_append.mp hp).elim (heS p) (hS₂ p)
+    have hrestRefs : ∀ j e', memberIndex + 1 + j ∈ members → rest[j]? = some e' →
+        e'.ForallOuter
+          (fun i => ∀ M, (S₂.onCtx (S₁.onCtx ctx)).env[i]? = some M →
+            w ∉ M.body.freeVars) 0 := by
+      intro j e' hj he'
+      have horig := hrefs (j + 1) e'
+        (by simpa only [Nat.add_assoc, Nat.add_comm 1 j] using hj)
+        (by simpa only [List.getElem?_cons_succ] using he')
+      simpa only [Subst.onCtx_append] using
+        Expr.ForallOuter.lookupAvoid_onSubst (S := S₁ ++ S₂) horig hS₁₂
+    have hrestTargets : ∀ j τ', memberIndex + 1 + j ∈ members →
+        (specs_1.map (RecSpec.onSubst (S₁ ++ S₂)))[j]? = some (.mono τ') →
+        w ∉ τ'.freeVars := by
+      intro j τ' hj hτ'
+      simp only [List.getElem?_map] at hτ'
+      cases hs : specs_1[j]? with
+      | none => simp [hs] at hτ'
+      | some s =>
+        cases s with
+        | poly σ => simp [hs, RecSpec.onSubst] at hτ'
+        | mono τ₀ =>
+          simp only [hs, Option.map_some, RecSpec.onSubst, Option.some.injEq,
+            RecSpec.mono.injEq] at hτ'
+          subst τ'
+          exact Subst.notMemOnTy hS₁₂
+            (htargets (j + 1) τ₀
+              (by simpa only [Nat.add_assoc, Nat.add_comm 1 j] using hj)
+              (by simpa only [List.getElem?_cons_succ] using hs))
+    obtain ⟨hrS, hrD⟩ :=
+      InferRecComponent.range_dom_avoid_selected_of_infer hrest hInfer
+        (w := w) (by omega) hrestRefs hrestTargets hbinds.2
+    refine ⟨?_, ?_⟩
+    · intro p hp
+      rw [List.mem_append, List.mem_append] at hp
+      rcases hp with (hp | hp) | hp
+      · exact heS p hp
+      · exact hS₂ p hp
+      · exact hrS p hp
+    · simpa only [List.map_append, List.mem_append, not_or] using
+        And.intro (And.intro heD hS₂D) hrD
+  | .skipMono _ hrest | .skipPoly hrest =>
+    intro w hwΦ hrefs htargets hbinds
+    apply InferRecComponent.range_dom_avoid_selected_of_infer hrest hInfer hwΦ
+    · intro j e hj he
+      exact hrefs (j + 1) e
+        (by simpa only [Nat.add_assoc, Nat.add_comm 1 j] using hj)
+        (by simpa only [List.getElem?_cons_succ] using he)
+    · intro j τ hj hτ
+      exact htargets (j + 1) τ
+        (by simpa only [Nat.add_assoc, Nat.add_comm 1 j] using hj)
+        (by simpa only [List.getElem?_cons_succ] using hτ)
+    · exact fun hc => hbinds (by
+        simp only [Expr.tyFreeVars.RecGroup.tyFreeVars, List.mem_append]
+        exact Or.inr hc)
+termination_by (Expr.sizeRecGroup bindings, 0)
+decreasing_by
+  all_goals (try subst_vars; simp_wf; try simp only [Expr.sizeRecGroup]; omega)
+
 theorem RecGroupRefs.mem_branches {n depth i : Nat} {pat : MatchPattern} {body : Expr}
     {branches : List (MatchPattern × Expr)} (hb : (pat,body) ∈ branches)
     (hi : i ∈ body.recGroupRefs n (depth + pat.bindCount)) :
