@@ -10985,6 +10985,63 @@ theorem InferRecStrata.frozen_of_sourceLocality
     hctx hbelow hspecs hspecsB hbase hrigid hbindRigid hpolyRigid hpending
     hGbelow hGrigid hGctx hGseed [] (by simp) (by simp) (by simp)).1
 
+/-- Exact head locality for one concrete residual-strata constructor.  Unlike
+    eliminating `Frozen`, this statement retains the constructor's actual
+    `S₁`; the total output substitution `S₁ ++ S₂` does not determine that
+    prefix by list injectivity. -/
+theorem InferRecStrata.head_frozen_of_sourceLocality
+    {rigid bindings Φ ctx specs done G component rest Φ₁ Φ₂ S₁ S₂ specs₁ specs₂
+      Gcurrent Gfinal}
+    (hcomponent : InferRecComponent component 0 Φ
+      (RecSpecs.algorithmStageCtx ctx specs done G) bindings specs Φ₁ S₁)
+    (_hrest : InferRecStrata rigid bindings Φ₁ (S₁.onCtx ctx) specs₁
+      (done ++ component) (G ++ Gcurrent) rest Φ₂ S₂ specs₂ Gfinal)
+    (hInfer : Infer.SourceLocality)
+    {base : Nat} {anns : List (Option PolyTy)} {past : List (List Nat)}
+    (hvalid : RecGroups.ValidResidualGroups anns bindings
+      (past ++ component :: rest))
+    (hdone : done = past.flatten)
+    (hbindRigid : ∀ y ∈ Expr.tyFreeVars.RecGroup.tyFreeVars bindings, y ∈ rigid)
+    (hpolyRigid : ∀ σ, .poly σ ∈ specs → ∀ y ∈ σ.body.freeVars, y ∈ rigid)
+    (hpending : RecSpecs.PendingSeeds base ctx specs done)
+    (hGbelow : ∀ g ∈ G, g < Φ) (hGrigid : ∀ g ∈ G, g ∉ rigid)
+    (hGctx : ∀ g ∈ G, ∀ M ∈ ctx.env, g ∉ M.body.freeVars)
+    (hGseed : ∀ member τ, specs[member]? = some (.mono τ) →
+      member ∉ done → base + member ∉ G) :
+    (∀ p ∈ S₁, p.1 ∉ G) ∧
+    (∀ p ∈ S₁, ∀ g ∈ p.2.freeVars, g ∉ G) := by
+  have hlen := InferRecComponent.length_eq hcomponent
+  have hcomponent_not_done : ∀ j ∈ component, j ∉ done := by
+    intro j hj hdonej
+    have hnd : (past.flatten ++ (component ++ rest.flatten)).Nodup := by
+      simpa only [List.flatten_append, List.flatten_cons] using hvalid.flatten_nodup
+    exact (List.nodup_append.mp hnd).2.2 j (hdone ▸ hdonej) j
+      (List.mem_append_left _ hj) rfl
+  have hstageAvoid := hpending.stage_avoid_pool hGseed hGctx
+    (fun σ hσ g hg hc => hGrigid g hg (hpolyRigid σ hσ g hc))
+  have havoidG : ∀ g ∈ G,
+      (∀ p ∈ S₁, g ∉ p.2.freeVars) ∧ g ∉ S₁.map Prod.fst := by
+    intro g hg
+    apply InferRecComponent.range_dom_avoid_selected_of_infer hcomponent
+      (fun _ he => hInfer he) (hGbelow g hg)
+    · intro j rhs _ _
+      apply Expr.ForallOuter.of_recGroupRefs_with_outer (n := 0)
+      · intro i _ M hM
+        exact hstageAvoid g hg M (List.mem_of_getElem? hM)
+      · intro i _ M hM
+        exact hstageAvoid g hg M (List.mem_of_getElem? hM)
+    · intro j τ hj hτ
+      rw [hpending.mono j τ hτ (hcomponent_not_done j (by simpa using hj))]
+      simp only [Ty.freeVars, List.mem_singleton]
+      exact fun heq => hGseed j τ hτ
+        (hcomponent_not_done j (by simpa using hj)) (heq ▸ hg)
+    · exact fun hc => hGrigid g hg (hbindRigid g hc)
+  refine ⟨?_, ?_⟩
+  · intro p hp hc
+    exact (havoidG p.1 hc).2 (List.mem_map.mpr ⟨p, hp, rfl⟩)
+  · intro p hp g hg hc
+    exact (havoidG g hc).1 p hp hg
+
 /-- A historical stage context survives subsequent strata: its completed
     members remain completed, while all other entries stay monomorphic. -/
 theorem InferRecStrata.transport_history {rigid bindings Φ ctx specs done G groups Φ' S specs' G'}
