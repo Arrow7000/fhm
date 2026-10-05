@@ -2131,6 +2131,117 @@ def RecSpecs.ComponentMonoTyped (TypeOf : Ctx → Expr → Ty → Prop) (ctx : C
     bindings[j]? = some rhs → specs[j]? = some (.mono τ) →
     memberIndex + j ∈ members → TypeOf ctx rhs τ
 
+/-- Mask the monomorphic members not selected by one residual component as
+    inert signed slots.  The legacy mixed-group relation then has exactly the
+    same operational spine as `InferRecComponent`: selected monomorphic slots
+    are inferred, while all other positions are skipped.  The particular dummy
+    scheme is unobservable because the corresponding constructor is a skip. -/
+def RecSpecs.selectComponent (members : List Nat) :
+    Nat → List RecSpec → List RecSpec
+  | _, [] => []
+  | memberIndex, .mono τ :: specs =>
+      (if memberIndex ∈ members then .mono τ
+       else .poly (PolyTy.mkTrivial (.prim .unit))) ::
+        RecSpecs.selectComponent members (memberIndex + 1) specs
+  | memberIndex, .poly σ :: specs =>
+      .poly σ :: RecSpecs.selectComponent members (memberIndex + 1) specs
+
+private theorem RecSpecs.selectComponent_onSubst (members : List Nat)
+    (memberIndex : Nat) (S : Subst) (specs : List RecSpec) :
+    RecSpecs.selectComponent members memberIndex
+        (specs.map (RecSpec.onSubst S)) =
+      (RecSpecs.selectComponent members memberIndex specs).map
+        (RecSpec.onSubst S) := by
+  induction specs generalizing memberIndex with
+  | nil => rfl
+  | cons spec specs ih =>
+      cases spec with
+      | mono τ =>
+          simp only [List.map_cons, RecSpec.onSubst, RecSpecs.selectComponent]
+          split <;> simp only [RecSpec.onSubst, List.map_cons, ih]
+      | poly σ =>
+          simp only [List.map_cons, RecSpec.onSubst, RecSpecs.selectComponent, ih]
+
+private theorem RecSpecs.selectComponent_getElem?_mono
+    {members : List Nat} {memberIndex j : Nat} {specs : List RecSpec} {τ : Ty}
+    (h : (RecSpecs.selectComponent members memberIndex specs)[j]? =
+      some (.mono τ)) :
+    specs[j]? = some (.mono τ) ∧ memberIndex + j ∈ members := by
+  induction specs generalizing memberIndex j with
+  | nil => simp [RecSpecs.selectComponent] at h
+  | cons spec specs ih =>
+      cases j with
+      | zero =>
+          cases spec with
+          | mono t =>
+              simp only [RecSpecs.selectComponent, List.getElem?_cons_zero] at h
+              split at h
+              · simp only [Option.some.injEq, RecSpec.mono.injEq] at h
+                subst t
+                exact ⟨rfl, by assumption⟩
+              · simp at h
+          | poly σ => simp [RecSpecs.selectComponent] at h
+      | succ j =>
+          cases spec with
+          | mono t =>
+              simp only [RecSpecs.selectComponent, List.getElem?_cons_succ] at h
+              split at h <;>
+                · have hr := ih h
+                  refine ⟨hr.1, ?_⟩
+                  simpa only [Nat.add_assoc, Nat.add_comm, Nat.add_left_comm] using hr.2
+          | poly σ =>
+              simp only [RecSpecs.selectComponent, List.getElem?_cons_succ] at h
+              have hr := ih h
+              exact ⟨hr.1, by simpa [Nat.add_assoc] using hr.2⟩
+
+private theorem RecSpecs.ComponentMonoTyped.selectComponent
+    {ctx : Ctx} {members : List Nat} {memberIndex : Nat}
+    {bindings : List Expr} {specs : List RecSpec}
+    (h : RecSpecs.ComponentMonoTyped TypeOfHM ctx members memberIndex bindings specs) :
+    ∀ p ∈ bindings.zip (RecSpecs.selectComponent members memberIndex specs),
+      ∀ τ, p.2 = .mono τ → TypeOfHM ctx p.1 τ := by
+  intro p hp τ hpτ
+  obtain ⟨j, hj, hpget⟩ := List.mem_iff_getElem.mp hp
+  rw [List.getElem_zip] at hpget
+  have hjb : j < bindings.length := by rw [List.length_zip] at hj; omega
+  have hjs : j < (RecSpecs.selectComponent members memberIndex specs).length := by
+    rw [List.length_zip] at hj; omega
+  have hb := congrArg Prod.fst hpget
+  have hs := congrArg Prod.snd hpget
+  have hbget : bindings[j]? = some p.1 := by
+    rw [List.getElem?_eq_getElem hjb, hb]
+  have hsel : (RecSpecs.selectComponent members memberIndex specs)[j]? =
+      some (.mono τ) := by
+    rw [List.getElem?_eq_getElem hjs, hs, hpτ]
+  obtain ⟨hspec, hmember⟩ :=
+    RecSpecs.selectComponent_getElem?_mono hsel
+  exact h j p.1 τ hbget hspec hmember
+
+/-- `InferRecComponent` is the selected-position presentation of the existing
+    mixed group thread.  Masking unselected monotypes exposes that common
+    spine, allowing the mature recursive-group principality proof to be reused
+    component-by-component. -/
+theorem InferRecComponent.toInferRecGroup
+    {members : List Nat} {memberIndex Φ : Nat} {ctx : Ctx}
+    {bindings : List Expr} {specs : List RecSpec} {Φ' : Nat} {S : Subst}
+    (h : InferRecComponent members memberIndex Φ ctx bindings specs Φ' S) :
+    InferRecGroup Φ ctx bindings
+      (RecSpecs.selectComponent members memberIndex specs) Φ' S := by
+  induction h with
+  | nil => exact .nil
+  | @consSelected members memberIndex Φ ctx e rest τ specs Φ₁ Φ₂ S₁ S₂ S₃ τ'
+      hselected he huni hrest ih =>
+      simp only [RecSpecs.selectComponent, if_pos hselected]
+      apply InferRecGroup.consMono he huni
+      rw [← RecSpecs.selectComponent_onSubst]
+      exact ih
+  | @skipMono members memberIndex Φ ctx e rest τ specs Φ' S hskip hrest ih =>
+      simp only [RecSpecs.selectComponent, if_neg hskip]
+      exact .skipPoly ih
+  | @skipPoly members memberIndex Φ ctx e rest σ specs Φ' S hrest ih =>
+      simp only [RecSpecs.selectComponent]
+      exact .skipPoly ih
+
 /-- Principality for one selected residual SCC.  This is the positional
     analogue of `InferRecGroup.Principal`: a selected member is compared with
     its declarative monotype, while skipped members merely advance the original
