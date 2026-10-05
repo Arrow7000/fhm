@@ -38,6 +38,71 @@ open PatComp
 
 namespace SurfaceBridge
 
+private def oneResidualGroup (anns : List (Option PolyTy)) : List (List Nat) :=
+  let members := (List.range anns.length).filter (RecGroups.unsignedAtB anns)
+  if members = [] then [] else [members]
+
+private theorem mem_oneResidualGroupMembers {anns : List (Option PolyTy)} {i : Nat} :
+    i ∈ (List.range anns.length).filter (RecGroups.unsignedAtB anns) ↔
+      i < anns.length ∧ RecGroups.UnsignedAt anns i := by
+  simp [RecGroups.unsignedAtB_eq_true_iff]
+
+private theorem oneResidualGroup_valid {anns : List (Option PolyTy)}
+    {bindings : List Expr} (hlen : anns.length = bindings.length) :
+    RecGroups.ValidResidualGroups anns bindings (oneResidualGroup anns) := by
+  let members := (List.range anns.length).filter (RecGroups.unsignedAtB anns)
+  have hmembers_nodup : members.Nodup := by
+    exact (List.nodup_range _).filter _
+  have hmembers_spec (i : Nat) :
+      i ∈ members ↔ i < anns.length ∧ RecGroups.UnsignedAt anns i := by
+    exact mem_oneResidualGroupMembers
+  refine {
+    length := hlen
+    nonempty := ?_
+    flatten_nodup := ?_
+    bounded := ?_
+    covers_unsigned := ?_
+    dependencies_first := ?_ }
+  · intro component hcomponent
+    by_cases hm : members = []
+    · simp [oneResidualGroup, members, hm] at hcomponent
+    · simp [oneResidualGroup, members, hm] at hcomponent
+      simp only [List.mem_singleton] at hcomponent
+      subst component
+      exact hm
+  · by_cases hm : members = []
+    · simp [oneResidualGroup, members, hm]
+    · simpa [oneResidualGroup, members, hm] using hmembers_nodup
+  · intro member hmember
+    by_cases hm : members = []
+    · simp [oneResidualGroup, members, hm] at hmember
+    · simp [oneResidualGroup, members, hm] at hmember
+      have hmem := (hmembers_spec member).mp hmember
+      omega
+  · intro member hbound
+    by_cases hm : members = []
+    · constructor
+      · intro hgroup
+        simp [oneResidualGroup, members, hm] at hgroup
+      · intro hu
+        have hmem : member ∈ members :=
+          (hmembers_spec member).mpr ⟨by omega, hu⟩
+        simp [hm] at hmem
+    · simp [oneResidualGroup, members, hm]
+      constructor
+      · intro hgroup
+        exact (hmembers_spec member).mp hgroup |>.2
+      · intro hu
+        exact (hmembers_spec member).mpr ⟨by omega, hu⟩
+  · intro stage dependencyStage component dependencyComponent source target rhs
+      hcomponent hdependencyComponent hsource htarget hrhs href
+    by_cases hm : members = []
+    · simp [oneResidualGroup, members, hm] at hcomponent
+    · simp [oneResidualGroup, members, hm] at hcomponent hdependencyComponent
+      have hs : stage = 0 := Option.some.inj hcomponent.1
+      have hd : dependencyStage = 0 := Option.some.inj hdependencyComponent.1
+      omega
+
 
 /-! ## 1. The prelude contract (canonical special type/ctor names)
 
@@ -10765,7 +10830,7 @@ theorem TypeOfHM.tyBvarBounded {ctx : Ctx} {e : Expr} {τ : Ty}
     rw [Expr.TyBvarBounded.BranchList_iff]
     intro p b hmem
     exact ihbrs (p, b) hmem
-  | letRec hwf hmono hpoly heq hbody ihmono ihpoly ihbody =>
+  | letRec hgroups hwf hmono hpoly heq hbody ihmono ihpoly ihbody =>
     expose_names
     refine ⟨?_, ?_, ihbody⟩
     · intro σ hσ
@@ -10790,7 +10855,25 @@ theorem TypeOfHM.tyBvarBounded {ctx : Ctx} {e : Expr} {τ : Ty}
         simpa only [List.getElem_map] using hann
       cases hs : specs[i]'hiS with
       | mono τm =>
-          have hb0 := ihmono Xs hfresh (e, .mono τm) (hs ▸ hmem) τm rfl
+          have hannNone : annO = none := by
+            simpa [hs, RecSpec.ann] using hann'.symm
+          have hunsigned : RecGroups.UnsignedAt anns i := by
+            rw [RecGroups.UnsignedAt, ← hwf.anns_eq]
+            simpa [List.getElem?_eq_getElem, hiS, hs, RecSpec.ann, hannNone]
+          have hmemGroups : i ∈ groups.flatten := by
+            exact (hgroups.covers_unsigned i hi).2 hunsigned
+          obtain ⟨component, hcomponentMem, hiComponent⟩ :=
+            List.mem_flatten.mp hmemGroups
+          obtain ⟨stage, hstage, hcomponentEq⟩ :=
+            List.mem_iff_getElem.mp hcomponentMem
+          have hcomponent : groups[stage]? = some component := by
+            simpa [List.getElem?_eq_getElem, hstage, hcomponentEq]
+          have hbinding : bindings[i]? = some e := by
+            simpa [List.getElem?_eq_getElem, hi, heq]
+          have hspec : specs[i]? = some (.mono τm) := by
+            simpa [List.getElem?_eq_getElem, hiS, hs]
+          have hb0 := ihmono stage component hcomponent Xs hfresh i hiComponent e τm
+            hbinding hspec
           exact Expr.TyBvarBounded.mono hb0 (Nat.zero_le _)
       | poly σ =>
           obtain ⟨Ys, hYlen, hYnodup, hYavoid⟩ :=
@@ -11003,6 +11086,11 @@ theorem TypeOfHM_of_lowerExpr_of_SurfaceWTExpr {ctors : CtorEnv} {ke : KindEnv}
     set specs : List RecSpec := τs.map RecSpec.mono with hspecs
     have hanns_eq : specs.map RecSpec.ann = annsL := by
       simpa [specs, hlen, anns_eq] using RecSpec.map_ann_mono τs
+    have hgroups : RecGroups.ValidResidualGroups annsL bindings'
+        (oneResidualGroup annsL) := oneResidualGroup_valid hlenB
+    have hgroups_eq : oneResidualGroup annsL =
+        if bindings'.length = 0 then [] else [List.range bindings'.length] := by
+      simp [oneResidualGroup, anns_eq, hlenB, RecGroups.unsignedAtB]
     have hscope_i : ∀ (i : Nat) (hi : i < binds.length),
         bindingLowerTyScope (binds[i]'hi) tvs' =
           letRhsTyScope (binds[i]'hi).tyParams (binds[i]'hi).params
@@ -11038,38 +11126,31 @@ theorem TypeOfHM_of_lowerExpr_of_SurfaceWTExpr {ctors : CtorEnv} {ke : KindEnv}
         simp only [specs, List.mem_map] at hσ
         obtain ⟨_, _, hcontrad⟩ := hσ
         cases hcontrad
-    refine TypeOfHM.letRec (specs := specs) (G := []) (L := [])
-      hwf ?mono ?poly rfl ?body
-    · intro Xs hXs p hp τm hτm
-      have hXs_nil : Xs = [] := List.eq_nil_of_length_eq_zero hXs.length
-      subst hXs_nil
-      simp only [RecSpecs.rhsCtx, Ty.renameG_nil_pool]
-      have hzip_len : bindings'.length = τs.length := by
-        simpa [specs, List.length_map] using hwf.length
-      have hzip_len' : bindings'.length = specs.length := hwf.length
-      obtain ⟨i, hi, hb_eq, hs_eq⟩ := List.mem_zip_getElem hzip_len' hp
-      have hτs : τs[i]'(by omega) = τm := by
-        have hsτ : specs[i]'(by omega) = .mono τm := hs_eq.trans hτm
-        simpa only [specs, List.getElem_map, RecSpec.mono.injEq] using hsτ
-      rw [← hb_eq]
-      have henv : (τs.map RecSpec.mono).map (RecSpec.rhsEntry [] []) = τs.map PolyTy.mkTrivial := by
-        simp only [List.map_map]
-        exact List.map_congr_left fun _ _ => RecSpec.rhsEntry_nil_mono
-      rw [henv, ← hτs]
-      obtain ⟨rhsCore, hr, hwrap⟩ := hgetB i (by omega)
-      have hr' :
-          lowerExpr ke (letRhsTyScope (binds[i]'(by omega)).tyParams
-              (binds[i]'(by omega)).params (none : Option Surface.PolyTy) tvs')
-            (letRhsTermScope (binds[i]'(by omega)).params (binds.map (·.name) ++ vs'))
-            (binds[i]'(by omega)).rhs = some rhsCore := by
-        simpa [hscope_i i (by omega), letRhsTermScope] using hr
-      have hwrap' :
-          wrapCoreParams ke (letRhsTyScope (binds[i]'(by omega)).tyParams
-              (binds[i]'(by omega)).params (none : Option Surface.PolyTy) tvs')
-            (binds[i]'(by omega)).params rhsCore = some (bindings'[i]'hi) := by
-        simpa [hscope_i i (by omega)] using hwrap
-      have hTyW := wrapCoreParams_TypeOfHM (hLL i (by omega)) hwrap' (hrhs_ih i (by omega) hr')
-      simpa [← hτbinds i (by omega)] using hTyW
+    refine TypeOfHM.letRec (specs := specs) (groups := oneResidualGroup annsL)
+      (G := []) (L := []) hgroups hwf ?mono ?poly rfl ?body
+    · intro stage component hcomponent Xs hXs member hmember rhs τm hrhs hτm
+      rw [hgroups_eq] at hcomponent
+      have hzero : bindings'.length ≠ 0 := by
+        intro hz
+        simp [hz] at hcomponent
+      simp [hzero] at hcomponent
+      rcases hcomponent with ⟨rfl, rfl⟩
+      have hiB : member < bindings'.length := List.mem_range.mp hmember
+      have hrhs' := List.getElem?_eq_some_iff.mp hrhs
+      have hiRhs : member < bindings'.length := hrhs'.1
+      have hrhsEq : bindings'[member]'hiRhs = rhs := hrhs'.2
+      have hspec' : τs[member]? = some τm := by
+        simpa only [specs, List.getElem?_map, Option.map_some, Option.some.injEq,
+          RecSpec.mono.injEq] using hτm
+      have hτs' := List.getElem?_eq_some_iff.mp hspec'
+      have hiTy : member < τs.length := hτs'.1
+      have hτsEq : τs[member]'hiTy = τm := hτs'.2
+      have hpair : (rhs, τm) ∈ bindings'.zip τs := by
+        have hp := List.getElem_mem_zip hiRhs hiTy
+        simpa [hrhsEq, hτsEq] using hp
+      have hmonoTy := hmono [] hXs (rhs, τm) hpair τm rfl
+      simpa [RecSpecs.stageCtx, RecSpecs.rhsCtx, specs, RecSpecs.stageEntry,
+        RecSpecs.rhsEntry_nil_mono] using hmonoTy
     · intro p hp σ hσ
       have hs : p.2 ∈ specs := (List.of_mem_zip hp).2
       rw [hσ] at hs
@@ -11096,30 +11177,49 @@ theorem TypeOfHM_of_lowerExpr_of_SurfaceWTExpr {ctors : CtorEnv} {ke : KindEnv}
     have anns_eq : annsL = anns' := Option.some.inj (hannL.symm.trans hannIn)
     have hwf : RecSpecs.WF annsL bindings' specs G :=
       ⟨anns_eq ▸ hanns_eq, hlenB.trans hlen, hnodup, hmono_lc, hpoly_wf⟩
-    refine TypeOfHM.letRec (specs := specs) (G := G) (L := L)
-      hwf ?_ ?_ rfl ?_
-    · intro Xs hfresh p hp τm hτm
-      obtain ⟨i, hi, hb_eq, hs_eq⟩ := List.mem_zip_getElem hwf.length hp
-      have hiB : i < binds.length := by omega
-      have hspec : specs[i]'(Nat.lt_of_lt_of_eq hiB hlen) = .mono τm := hs_eq.trans hτm
-      obtain ⟨rhsCore, hr, hwrap⟩ := hgetB i hiB
+    have hgroups : RecGroups.ValidResidualGroups annsL bindings'
+        (oneResidualGroup annsL) := oneResidualGroup_valid hlenB
+    refine TypeOfHM.letRec (specs := specs) (groups := oneResidualGroup annsL)
+      (G := G) (L := L) hgroups hwf ?_ ?_ rfl ?_
+    · intro stage component hcomponent Xs hfresh member hmember rhs τm hrhs hτm
+      let members := (List.range annsL.length).filter (RecGroups.unsignedAtB annsL)
+      have hmembers_ne : members ≠ [] := by
+        intro hnil
+        simp [oneResidualGroup, members, hnil] at hcomponent
+      simp only [oneResidualGroup, members, hmembers_ne] at hcomponent
+      rcases hcomponent with ⟨rfl, rfl⟩
+      have hiCore : member < bindings'.length := hgroups.bounded member (by
+        simpa [oneResidualGroup, members, hmembers_ne] using hmember)
+      have hiB : member < binds.length := by omega
+      have hiSpec : member < specs.length := by
+        rw [← hwf.length]
+        exact hiCore
+      have hspecLookup := List.getElem?_eq_some_iff.mp hτm
+      have hspec : specs[member]'hiSpec = .mono τm := hspecLookup.2
+      have hrhsLookup := List.getElem?_eq_some_iff.mp hrhs
+      have hrhsEq : bindings'[member]'hrhsLookup.1 = rhs := hrhsLookup.2
+      obtain ⟨rhsCore, hr, hwrap⟩ := hgetB member hiB
       have hr' :
-          lowerExpr ke (letRhsTyScope (binds[i]'hiB).tyParams (binds[i]'hiB).params
-              (binds[i]'hiB).ann [])
-            (letRhsTermScope (binds[i]'hiB).params (binds.map (·.name) ++ vs'))
-            (binds[i]'hiB).rhs = some rhsCore := by
+          lowerExpr ke (letRhsTyScope (binds[member]'hiB).tyParams (binds[member]'hiB).params
+              (binds[member]'hiB).ann [])
+            (letRhsTermScope (binds[member]'hiB).params (binds.map (·.name) ++ vs'))
+            (binds[member]'hiB).rhs = some rhsCore := by
         simpa [bindingLowerTyScope, letRhsTyScope, letRhsTermScope, paramTermScope] using hr
       have hwrap' :
-          wrapCoreParams ke (letRhsTyScope (binds[i]'hiB).tyParams (binds[i]'hiB).params
-              (binds[i]'hiB).ann []) (binds[i]'hiB).params rhsCore =
-            some (bindings'[i]'hi) := by
+          wrapCoreParams ke (letRhsTyScope (binds[member]'hiB).tyParams (binds[member]'hiB).params
+              (binds[member]'hiB).ann []) (binds[member]'hiB).params rhsCore =
+            some (bindings'[member]'hiCore) := by
         simpa [bindingLowerTyScope, letRhsTyScope] using hwrap
-      have hTyR := hmono_ih Xs hfresh i hiB τm hspec hr'
+      have hTyR := hmono_ih Xs hfresh member hiB τm hspec hr'
       have hTyW := wrapCoreParams_TypeOfHM
-        (hLLMono Xs hfresh i hiB τm hspec) hwrap' hTyR
-      have harr := hτbindsMono Xs hfresh i hiB τm hspec
-      have hp1 : p.1 = bindings'[i]'hi := hb_eq.symm
-      simpa [RecSpecs.rhsCtx, hp1, ← harr] using hTyW
+        (hLLMono Xs hfresh member hiB τm hspec) hwrap' hTyR
+      have harr := hτbindsMono Xs hfresh member hiB τm hspec
+      have hTyW' : TypeOfHM (RecSpecs.stageCtx ⟨Γ, ctors⟩ specs
+          (oneResidualGroup annsL |>.take 0).flatten G Xs) rhs
+          (Ty.renameG G Xs τm) := by
+        simpa [RecSpecs.stageCtx, RecSpecs.stageEntry, RecSpecs.rhsCtx,
+          RecSpecs.rhsEntry, ← harr, hrhsEq] using hTyW
+      exact hTyW'
     · intro p hp σ hσ Ys hYs
       obtain ⟨i, hi, hb_eq, hs_eq⟩ := List.mem_zip_getElem hwf.length hp
       have hiB : i < binds.length := by omega
