@@ -1,0 +1,5 @@
+-- T1: a complete annotation lets a function call itself at a new type.
+let wrapN : {a} Int -> a -> Int =
+  \n x -> if n < 1 then 0 else 1 + wrapN (n - 1) [x]
+
+wrapN 3 True

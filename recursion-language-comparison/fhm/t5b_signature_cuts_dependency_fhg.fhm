@@ -1,0 +1,11 @@
+-- T5b: T5 with definition order f, h, g.
+let f : {a} a -> a =
+  \x -> if True then x else let i = g 0 in x
+
+let h =
+  \x -> if True then x else let i = f 0 in x
+
+let g =
+  \n -> (h 1, h True)
+
+g 0

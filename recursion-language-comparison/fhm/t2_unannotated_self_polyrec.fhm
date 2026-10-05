@@ -1,0 +1,5 @@
+-- T2: without an annotation, self-recursion stays monomorphic.
+let bad =
+  \n x -> if n < 1 then 0 else bad (n - 1) [x]
+
+bad 3 True

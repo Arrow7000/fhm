@@ -1,0 +1,10 @@
+-- T6: polymorphic recursion through a nested datatype.
+type Nested a = Flat a | Nest (Nested (List a))
+
+let depth : {a} Nested a -> Int =
+  \t ->
+    match t with
+    | Flat _ -> 0
+    | Nest inner -> 1 + depth inner
+
+depth (Nest (Nest (Flat [[1, 2]])))

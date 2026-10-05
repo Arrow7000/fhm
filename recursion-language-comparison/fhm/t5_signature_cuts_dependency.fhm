@@ -1,0 +1,12 @@
+-- T5: f signed; g, h unsigned. After cutting f, h does not depend on g, so
+-- GHC generalises h before g and accepts g's two uses of h.
+let f : {a} a -> a =
+  \x -> if True then x else let i = g 0 in x
+
+let g =
+  \n -> (h 1, h True)
+
+let h =
+  \x -> if True then x else let i = f 0 in x
+
+g 0

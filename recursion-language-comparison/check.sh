@@ -1,88 +1,130 @@
 #!/usr/bin/env bash
+# Run every case listed in expected.tsv and compare the actual outcome with the
+# expected one.
+#
+#   bash recursion-language-comparison/check.sh            # all languages
+#   bash recursion-language-comparison/check.sh fhm elm    # a subset
+#   VERBOSE=1 bash recursion-language-comparison/check.sh  # also print diagnostics
+#
+# The external compilers come from shell.nix; the script re-enters itself inside
+# nix-shell when they are not already on PATH. FHM uses the repository's built
+# binary (override with FHM=/path/to/fhm); it is not rebuilt here.
 set -u
 
 root="$(cd "$(dirname "$0")" && pwd)"
+manifest="$root/expected.tsv"
+fhm="${FHM:-$(cd "$root/.." && pwd)/.lake/build/bin/fhm}"
+languages=("$@")
+[ "${#languages[@]}" -eq 0 ] && languages=(haskell ocaml fsharp elm sml fhm)
+
+wanted() {
+  local lang
+  for lang in "${languages[@]}"; do [ "$lang" = "$1" ] && return 0; done
+  return 1
+}
+
+needs_nix=0
+for lang in "${languages[@]}"; do [ "$lang" != fhm ] && needs_nix=1; done
+if [ "$needs_nix" -eq 1 ] && [ -z "${RECURSION_COMPARISON_IN_NIX:-}" ]; then
+  for tool in ghc ocaml dotnet elm poly; do
+    if ! command -v "$tool" >/dev/null 2>&1; then
+      exec nix-shell "$root/shell.nix" --run \
+        "RECURSION_COMPARISON_IN_NIX=1 bash '$root/check.sh' ${languages[*]}"
+    fi
+  done
+fi
+
+export DOTNET_CLI_TELEMETRY_OPTOUT=1 DOTNET_NOLOGO=1 DOTNET_SKIP_FIRST_TIME_EXPERIENCE=1
+
 tmp="$(mktemp -d "${TMPDIR:-/tmp}/fhm-recursion-comparison.XXXXXX")"
-trap 'find "$tmp" -depth -delete' EXIT
+trap 'rm -rf "$tmp"' EXIT
 
-failures=0
-
-version_line() {
-  local name="$1"
-  shift
-  printf '%-8s %s\n' "$name" "$($@ 2>&1 | head -n 1)"
-}
-
-expect_pass() {
-  local name="$1"
-  shift
-  local log="$tmp/${name//[^a-zA-Z0-9]/_}.log"
-  if "$@" >"$log" 2>&1; then
-    printf 'PASS  %s\n' "$name"
-  else
-    printf 'FAIL  %s (unexpected rejection)\n' "$name"
-    sed -n '1,100p' "$log"
-    failures=$((failures + 1))
-  fi
-}
-
-expect_fail() {
-  local name="$1"
-  shift
-  local log="$tmp/${name//[^a-zA-Z0-9]/_}.log"
-  if "$@" >"$log" 2>&1; then
-    printf 'FAIL  %s (unexpected acceptance)\n' "$name"
-    failures=$((failures + 1))
-  else
-    printf 'PASS  %s (rejected as expected)\n' "$name"
-    sed -n '1,100p' "$log" | sed 's/^/      /'
-  fi
-}
-
-printf '%s\n' 'Compiler versions'
-version_line OCaml ocamlc -version
-version_line GHC ghc --numeric-version
-version_line FSharp dotnet fsi --version
-version_line Elm elm --version
-version_line PolyML poly --version
+printf '%s\n' 'Versions'
+wanted haskell && printf '  %-7s %s\n' GHC "$(ghc --numeric-version 2>&1 | head -n 1)"
+wanted ocaml   && printf '  %-7s %s\n' OCaml "$(ocamlc -version 2>&1 | head -n 1)"
+wanted fsharp  && printf '  %-7s %s\n' 'F#' "$(dotnet fsi --version 2>&1 | head -n 1)"
+wanted elm     && printf '  %-7s %s\n' Elm "$(elm --version 2>&1 | head -n 1)"
+wanted sml     && printf '  %-7s %s\n' PolyML "$(poly -v </dev/null 2>&1 | head -n 1)"
+wanted fhm     && printf '  %-7s %s\n' FHM "$fhm"
 printf '\n'
 
-expect_pass 'OCaml explicit forall permits recursive polymorphic uses' \
-  ocamlc -i "$root/ocaml/positive_explicit_forall.ml"
-expect_fail 'OCaml ordinary annotation remains monomorphic recursively' \
-  ocamlc -i "$root/ocaml/negative_ordinary_annotation.ml"
+if wanted elm; then
+  cp -R "$root/elm" "$tmp/elm"
+fi
 
-mkdir -p "$tmp/ghc-positive" "$tmp/ghc-negative"
-expect_pass 'Haskell signature permits recursive polymorphic uses' \
-  ghc -v0 -fno-code -fforce-recomp -outputdir "$tmp/ghc-positive" \
-    "$root/haskell/PositiveSignature.hs"
-expect_fail 'Haskell missing signature makes recursive uses monomorphic' \
-  ghc -v0 -fno-code -fforce-recomp -outputdir "$tmp/ghc-negative" \
-    "$root/haskell/NegativeNoSignature.hs"
+# run_case LANG FILE LOG: exit status 0 means the program was accepted.
+# For FHM the evaluated value is written to $tmp/value.
+run_case() {
+  local lang="$1" file="$2" log="$3"
+  case "$lang" in
+    haskell)
+      mkdir -p "$tmp/ghc/$file"
+      ghc -v0 -fno-code -fforce-recomp -outputdir "$tmp/ghc/$file" \
+        "$root/haskell/$file" >"$log" 2>&1 ;;
+    ocaml)
+      ocamlc -i "$root/ocaml/$file" >"$log" 2>&1 ;;
+    fsharp)
+      dotnet fsi --nologo --exec "$root/fsharp/$file" >"$log" 2>&1 ;;
+    elm)
+      (cd "$tmp/elm" && elm make "src/$file" --output=/dev/null) >"$log" 2>&1 ;;
+    sml)
+      poly --error-exit --script "$root/sml/$file" >"$log" 2>&1 ;;
+    fhm)
+      if [ ! -x "$fhm" ]; then
+        printf 'FHM binary not found at %s (run lake build in the repo root)\n' "$fhm" >"$log"
+        return 2
+      fi
+      "$fhm" run "$root/fhm/$file" >"$log" 2>&1
+      local status=$?
+      sed -n 's/^⟹  //p' "$log" >"$tmp/value"
+      if [ "$status" -ne 0 ]; then
+        "$fhm" diagnose "$root/fhm/$file" 2>/dev/null \
+          | sed -n 's/.*"message": "\(.*\)",$/  \1/p' >>"$log"
+      fi
+      return "$status" ;;
+    *)
+      printf 'unknown language %s\n' "$lang" >"$log"
+      return 2 ;;
+  esac
+}
 
-expect_pass 'FSharp explicit type parameter permits recursive polymorphic uses' \
-  dotnet fsi --exec "$root/fsharp/positive_explicit_type_parameter.fsx"
-expect_fail 'FSharp ordinary annotation is constrained by recursive uses' \
-  dotnet fsi --exec "$root/fsharp/negative_ordinary_annotation.fsx"
+failures=0
+total=0
+printf '%-7s %-58s %-8s %-8s %s\n' LANG CASE EXPECTED ACTUAL RESULT
+while IFS=$'\t' read -r lang file expected value; do
+  case "$lang" in ''|'#'*) continue ;; esac
+  wanted "$lang" || continue
+  total=$((total + 1))
+  log="$tmp/$lang-$file.log"
+  : >"$tmp/value"
+  if run_case "$lang" "$file" "$log" </dev/null; then actual=accept; else actual=reject; fi
 
-cp -R "$root/elm" "$tmp/elm"
-expect_pass 'Elm annotated sibling uses may instantiate differently' \
-  bash -c "cd '$tmp/elm' && elm make src/PositiveMutual.elm --output=/dev/null"
-expect_fail 'Elm annotated direct self-use remains monomorphic' \
-  bash -c "cd '$tmp/elm' && elm make src/NegativeSelf.elm --output=/dev/null"
-expect_fail 'Elm unannotated mutual uses remain monomorphic' \
-  bash -c "cd '$tmp/elm' && elm make src/NegativeMutualUnannotated.elm --output=/dev/null"
+  verdict=ok
+  detail=''
+  if [ "$actual" != "$expected" ]; then
+    verdict=MISMATCH
+  elif [ "$lang" = fhm ] && [ "$actual" = accept ]; then
+    got="$(cat "$tmp/value")"
+    detail="= $got"
+    if [ "$value" != - ] && [ "$got" != "$value" ]; then
+      verdict=MISMATCH
+      detail="= $got (expected $value)"
+    fi
+  fi
 
-expect_pass 'Standard ML generalizes after recursive declaration exits' \
-  poly --error-exit --script "$root/sml/positive_after_group.sml"
-expect_fail 'Standard ML recursive uses share the declaration monotype' \
-  poly --error-exit --script "$root/sml/negative_in_group.sml"
+  printf '%-7s %-58s %-8s %-8s %s %s\n' "$lang" "$file" "$expected" "$actual" "$verdict" "$detail"
+  if [ "$verdict" != ok ]; then
+    failures=$((failures + 1))
+    sed -n '1,40p' "$log" | sed 's/^/        /'
+  elif [ -n "${VERBOSE:-}" ] && [ "$actual" = reject ]; then
+    sed -n '1,40p' "$log" | sed 's/^/        /'
+  fi
+done <"$manifest"
 
 printf '\n'
 if [ "$failures" -eq 0 ]; then
-  printf '%s\n' 'All comparison cases matched their expected boundary.'
+  printf 'All %d cases matched expected.tsv.\n' "$total"
   exit 0
 fi
-
-printf '%s\n' "$failures comparison case(s) disagreed with the expected boundary."
+printf '%d of %d cases disagreed with expected.tsv.\n' "$failures" "$total"
 exit 1

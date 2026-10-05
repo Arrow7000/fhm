@@ -1,4 +1,4 @@
-module PositiveSignature where
+module T0SignatureTwoUses where
 
 f :: a -> a
 f x =

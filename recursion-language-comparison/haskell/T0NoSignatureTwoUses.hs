@@ -1,4 +1,4 @@
-module NegativeNoSignature where
+module T0NoSignatureTwoUses where
 
 f x =
   if True then x

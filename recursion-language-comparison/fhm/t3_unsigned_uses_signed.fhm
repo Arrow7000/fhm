@@ -1,0 +1,8 @@
+-- T3: unsigned useF instantiates signed f at Int and Bool (one SCC).
+let f : {a} a -> a =
+  \x -> if True then x else let ignored = useF 0 in x
+
+let useF =
+  \ignored -> (f 1, f True)
+
+useF 0

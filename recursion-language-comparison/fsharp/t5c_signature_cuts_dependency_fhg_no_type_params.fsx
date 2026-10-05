@@ -1,0 +1,5 @@
+// T5b order but f written without explicit <'a> (only 'a annotations)
+let rec f (x: 'a) : 'a = if true then x else (let _ = g 0 in x)
+and h x = if true then x else (let _ = f 0 in x)
+and g n = (h 1, h true)
+printfn "%A %c" (g 0) (f 'c')

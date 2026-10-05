@@ -1,0 +1,8 @@
+-- T4: signed consumer uses unsigned helper at Int and Bool (one SCC).
+let consumer : Int -> (Int, Bool) =
+  \n -> (helper n, helper True)
+
+let helper =
+  \x -> if True then x else let ignored = consumer 0 in x
+
+consumer 5

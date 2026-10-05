@@ -1,24 +1,17 @@
-module NegativeMutualUnannotated exposing (main)
+module T0SelfTwoUses exposing (main)
 
 import Html exposing (text)
 
 
+f : a -> a
 f x =
     if True then
         x
 
     else
-        case ( g (), h () ) of
+        case ( f 0, f True ) of
             _ ->
                 x
-
-
-g () =
-    f 0
-
-
-h () =
-    f True
 
 
 main =

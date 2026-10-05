@@ -1,17 +1,24 @@
-module NegativeSelf exposing (main)
+module T0UnannotatedSiblingsTwoUses exposing (main)
 
 import Html exposing (text)
 
 
-f : a -> a
 f x =
     if True then
         x
 
     else
-        case ( f 0, f True ) of
+        case ( g (), h () ) of
             _ ->
                 x
+
+
+g () =
+    f 0
+
+
+h () =
+    f True
 
 
 main =
