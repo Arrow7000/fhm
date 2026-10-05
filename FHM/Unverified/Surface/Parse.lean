@@ -906,11 +906,12 @@ partial def letBinding (indentCol : Nat) :
     return ((blockCol, .mk name, tyParams, params, annPoly, rhs, sRhs),
       bsName ++ bsTyParams ++ bsParams ++ bsAnn ++ bsRhs)
 
-/-- A local `let` block is SCC-sorted when it contains recursive references.
-Acyclic blocks retain their lexical source order and ordinary `.letIn`s;
-recursive singleton and mutual components become `.letRecIn`s. Thus local
-mutual recursion has the same SCC meaning as its top-level counterpart, while
-ordinary HM let-generalization keeps using the non-recursive node.
+/-- A unique-name local `let` block is SCC-sorted in dependency order.
+Acyclic singleton components become ordinary `.letIn`s; recursive singleton
+and mutual components become `.letRecIn`s. Thus acyclic forward references and
+local mutual recursion have the same SCC meaning as their top-level
+counterparts, while ordinary HM let-generalization keeps using the
+non-recursive node.
 
 Duplicate names retain the old lexical nesting semantics: SCC construction is
 ambiguous in their presence, but ordinary shadowing is not. -/
@@ -934,6 +935,7 @@ partial def letExpr : PE :=
         sRhs)
     let binds : List Binding := bindsWithSpans.map (·.1)
     let bsRest := concatBinders rest
+    let bindingBinders := bs0 ++ bsRest
     let lexical : Expr × SpannedExpr :=
       bindsWithSpans.foldr
         (fun (entry : Binding × SpannedExpr) (accPair : Expr × SpannedExpr) =>
@@ -949,30 +951,36 @@ partial def letExpr : PE :=
       match SurfaceBridge.sccGroups binds with
       | none => lexical
       | some groups =>
-        let recursive := groups.any fun group =>
-          group.length > 1 || group.any fun b => SurfaceBridge.Binding.refersTo b b.name
-        if recursive then
-          let rhsSpan (b : Binding) : SpannedExpr :=
-            ((bindsWithSpans.find? fun (p : Binding × SpannedExpr) => p.1.name == b.name).map
-              (fun (p : Binding × SpannedExpr) => p.2)).getD
-              (.leaf Span.empty)
-          groups.foldr (fun (group : List Binding) ((acc, accS) : Expr × SpannedExpr) =>
-            let rhss : List SpannedExpr := group.map rhsSpan
-            let sp := (Span.hull (rhss.map (fun (s : SpannedExpr) => s.span))).map
-                (Span.union · accS.span)
-              |>.getD accS.span
-            match group with
-            | [] => (acc, accS)
-            | [b] =>
-              let sRhs := rhsSpan b
-              if !(SurfaceBridge.Binding.refersTo b b.name) then
-                (Expr.letIn b.name b.tyParams b.params b.ann b.rhs acc,
-                  SpannedExpr.letIn sp sRhs accS)
-              else
-                (Expr.letRecIn [b] acc, SpannedExpr.letRecIn sp [sRhs] accS)
-            | _ => (Expr.letRecIn group acc, SpannedExpr.letRecIn sp rhss accS))
-            (body, sBody)
-        else lexical
+        let rhsSpan (b : Binding) : SpannedExpr :=
+          ((bindsWithSpans.find? fun (p : Binding × SpannedExpr) => p.1.name == b.name).map
+            (fun (p : Binding × SpannedExpr) => p.2)).getD
+            (.leaf Span.empty)
+        let binderSpan (b : Binding) (sRhs : SpannedExpr) : Option Span :=
+          let name := match b.name with | .mk s => s
+          (bindingBinders.filter fun (bs : BinderSpan) =>
+            let beforeRhs :=
+              bs.span.endLine < sRhs.span.startLine ||
+                (bs.span.endLine == sRhs.span.startLine &&
+                  bs.span.endCol ≤ sRhs.span.startCol)
+            bs.name == name && bs.kind == BinderKind.val && bs.scope?.isNone && beforeRhs).getLast?.map
+              (fun (bs : BinderSpan) => bs.span)
+        groups.foldr (fun (group : List Binding) ((acc, accS) : Expr × SpannedExpr) =>
+          let rhss : List SpannedExpr := group.map rhsSpan
+          let headers := group.zip rhss |>.filterMap fun (b, sRhs) => binderSpan b sRhs
+          let sp := (Span.hull (headers ++ rhss.map (fun (s : SpannedExpr) => s.span))).map
+              (Span.union · accS.span)
+            |>.getD accS.span
+          match group with
+          | [] => (acc, accS)
+          | [b] =>
+            let sRhs := rhsSpan b
+            if !(SurfaceBridge.Binding.refersTo b b.name) then
+              (Expr.letIn b.name b.tyParams b.params b.ann b.rhs acc,
+                SpannedExpr.letIn sp sRhs accS)
+            else
+              (Expr.letRecIn [b] acc, SpannedExpr.letRecIn sp [sRhs] accS)
+          | _ => (Expr.letRecIn group acc, SpannedExpr.letRecIn sp rhss accS))
+          (body, sBody)
     let spanAll := Span.union (Span.ofTok letTok) sBody.span
     let s' :=
       match s with
@@ -1455,10 +1463,18 @@ def parseTyEq (src : String) (expected : Ty) : Bool :=
         .var (.mk "a"))]) => true
   | _ => false)
 
--- multi-line acyclic let: same-column sibling bindings → nested letIn
+-- Multi-line independent bindings remain nested letIns; their order is free.
 #guard (match parseExpr "let x = 1\n    y = 2\nin x" with
   | .ok (.letIn (.mk "x") [] [] none (.primLit (.int 1))
       (.letIn (.mk "y") [] [] none (.primLit (.int 2)) (.var (.mk "x")))) => true
+  | .ok (.letIn (.mk "y") [] [] none (.primLit (.int 2))
+      (.letIn (.mk "x") [] [] none (.primLit (.int 1)) (.var (.mk "x")))) => true
+  | _ => false)
+
+-- Acyclic forward references are dependency-sorted, but remain ordinary letIns.
+#guard (match parseExpr "let x = y\n    y = 1\nin x" with
+  | .ok (.letIn (.mk "y") [] [] none (.primLit (.int 1))
+      (.letIn (.mk "x") [] [] none (.var (.mk "y")) (.var (.mk "x")))) => true
   | _ => false)
 
 -- mutually recursive siblings become one local SCC (member order is immaterial)

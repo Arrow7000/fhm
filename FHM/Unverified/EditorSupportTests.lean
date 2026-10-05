@@ -119,6 +119,28 @@ def nestedShadow : String :=
         (hasSub inner.type_ "Bool" || inner.type_ == "Bool")
     | _, _ => false)
 
+-- 5b. Local acyclic forward references are SCC-ordered for lowering while
+-- binder and use-site locations remain attached to their source tokens.
+def localForwardRef : String :=
+  "let result =\n" ++
+  "  let x = y\n" ++
+  "      y = 1\n" ++
+  "  in x\n" ++
+  "result\n"
+
+#guard (match hoverSyms localForwardRef with
+  | none => false
+  | some syms =>
+    match symbolAt syms 2 7, symbolAt syms 3 7,
+        symbolAt syms 2 11, symbolAt syms 4 6 with
+    | some xBinder, some yBinder, some yUse, some xUse =>
+        xBinder.name == "x" && yBinder.name == "y" &&
+        yUse.name == "y" && xUse.name == "x" &&
+        xBinder.kind == "val" && yBinder.kind == "val" &&
+        hasSub xBinder.type_ "Int" && hasSub yBinder.type_ "Int" &&
+        hasSub yUse.type_ "Int" && hasSub xUse.type_ "Int"
+    | _, _, _, _ => false)
+
 -- 6. Pattern binds (`h` / `t`) from scrutinee + patBindTys
 def patBindSrc : String :=
   "let xs : List Int = [1]\n" ++
