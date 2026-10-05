@@ -383,6 +383,36 @@ private theorem bodySchemes_generalize_rhsEntries_runtime
           (fun ty hty => hmonoLC ty (List.mem_cons_of_mem _ hty))
           (fun ty hty => hXsMono ty (List.mem_cons_of_mem _ hty))
 
+/-- Every intermediate residual environment can be widened to the final
+schemes. Completed members already have their final scheme; pending members
+use the same fresh-opening generalization as the original mixed rule. -/
+private theorem bodySchemes_generalize_stageEntries_runtime
+    {specs : List RecSpec} {G Xs done : List Nat}
+    (hG : G.Nodup) (hXsLen : Xs.length = G.length)
+    (hXsNodup : Xs.Nodup)
+    (hmonoLC : ∀ ty, RecSpec.mono ty ∈ specs → ty.IsLC)
+    (hGXs : ∀ g ∈ G, g ∉ Xs)
+    (hXsMono : ∀ ty, RecSpec.mono ty ∈ specs →
+      ∀ x ∈ Xs, x ∉ ty.freeVars) :
+    List.Forall₂ PolyTy.Generalizes
+      (specs.map (RecSpec.bodyScheme G))
+      (specs.mapIdx (RecSpec.stageEntry done G Xs)) := by
+  apply List.forall₂_of_length_eq_of_get (by simp)
+  intro i hfinal hstage
+  have hi : i < specs.length := by simpa using hfinal
+  simp only [List.get_eq_getElem, List.getElem_map, List.getElem_mapIdx]
+  cases hspec : specs[i]'hi with
+  | mono ty =>
+      simp only [RecSpec.bodyScheme, RecSpec.stageEntry]
+      split
+      · exact PolyTy.Generalizes.refl _
+      · apply PolyTy.genGroup_generalizes_renameG_runtime
+          (hmonoLC ty (by rw [← hspec]; exact List.getElem_mem hi))
+          hG hXsLen hXsNodup hGXs
+          (hXsMono ty (by rw [← hspec]; exact List.getElem_mem hi))
+  | poly scheme =>
+      exact PolyTy.Generalizes.refl _
+
 end RuntimeTyping
 
 /-- Checking the annotated source first justifies its completely erased runtime
@@ -436,7 +466,7 @@ theorem TypeOfHM.erase_preserves_typing {ctx : Ctx} {e : Expr} {τ : Ty}
       · intro branch' hmem'
         obtain ⟨⟨pat, branchBody⟩, hmem, rfl⟩ := List.mem_map.mp hmem'
         exact ihbranches (pat, branchBody) hmem
-  | letRec hwf _ _ heq _ ihmono ihpoly ihbody =>
+  | letRec hgroups hwf _ _ heq _ ihstrat ihpoly ihbody =>
       expose_names
       subst heq
       let runtimeAvoid := L ++ G ++ specs.flatMap RecSpec.monoFreeVars
@@ -450,14 +480,26 @@ theorem TypeOfHM.erase_preserves_typing {ctx : Ctx} {e : Expr} {τ : Ty}
         ?_ ?_ ihbody
       · intro Xs hfresh pair hpair ty heq
         obtain ⟨binding, spec, _, hpair', rfl⟩ := List.mem_zip_map_left hpair
+        have hmono : spec = .mono ty := heq
+        obtain ⟨member, hzip⟩ := List.mem_iff_getElem?.mp hpair'
+        obtain ⟨hbinding, hspec⟩ := List.getElem?_zip_eq_some.mp hzip
+        rw [hmono] at hspec
+        have hbound : member < bindings.length := by
+          exact (List.getElem?_eq_some_iff.mp hbinding).1
+        have hunsigned : RecGroups.UnsignedAt anns member := by
+          simp only [RecGroups.UnsignedAt, ← hwf.anns_eq,
+            List.getElem?_map, hspec, Option.map_some, RecSpec.ann]
+        have hcovered := (hgroups.covers_unsigned member hbound).2 hunsigned
+        obtain ⟨component, hcomponent, hmember⟩ := List.mem_flatten.mp hcovered
+        obtain ⟨stage, hstage⟩ := List.mem_iff_getElem?.mp hcomponent
         have hfreshSource : FreshNames L G.length Xs := by
           refine ⟨hfresh.length, hfresh.nodup, ?_⟩
           intro x hx hL
           exact hfresh.avoid x hx (by
             simp only [runtimeAvoid, List.mem_append]
             exact .inl (.inl hL))
-        have hrhs := ihmono Xs hfreshSource
-          (binding, spec) hpair' ty heq
+        have hrhs := ihstrat stage component hstage Xs hfreshSource
+          member hmember binding ty hbinding hspec
         have hGXs : ∀ g ∈ G, g ∉ Xs := by
           intro g hg hmem
           exact hfresh.avoid g hmem (by
@@ -471,10 +513,11 @@ theorem TypeOfHM.erase_preserves_typing {ctx : Ctx} {e : Expr} {τ : Ty}
             exact .inr (List.mem_flatMap.mpr
               ⟨.mono monoTy, hmember, hfree⟩))
         have hgens :=
-          RuntimeTyping.bodySchemes_generalize_rhsEntries_runtime
+          RuntimeTyping.bodySchemes_generalize_stageEntries_runtime
+            (done := (groups.take stage).flatten)
             hwf.nodup hfresh.length hfresh.nodup hwf.mono_lc hGXs hXsMono
         have hfinal := RuntimeTyping.RunWT.weaken_schemes hgens hrhs
-        simpa only [RecSpecs.rhsCtx, RecSpecs.bodyCtx] using hfinal
+        simpa only [RecSpecs.stageCtx, RecSpecs.bodyCtx] using hfinal
       · intro pair hpair scheme heq Ys hfreshY
         obtain ⟨binding, spec, _, hpair', rfl⟩ := List.mem_zip_map_left hpair
         have hfreshSource : FreshNames L scheme.paramCount Ys := by
@@ -2100,18 +2143,31 @@ call. Its complete annotation is checked before the machine sees the term. -/
 theorem annotated_polySelf_typed :
     TypeOfHM ⟨[], []⟩ (.letRec [some polyId] polySelfBindings (.var 0))
       (.arrow (.prim .unit) (.prim .unit)) := by
-  refine TypeOfHM.letRec (specs := [.poly polyId]) (G := []) (L := [])
-    ⟨rfl, rfl, by simp, ?_, ?_⟩ ?_ ?_ rfl ?_
+  refine TypeOfHM.letRec (specs := [.poly polyId]) (groups := [])
+    (G := []) (L := []) ?_ ⟨rfl, rfl, by simp, ?_, ?_⟩ ?_ ?_ rfl ?_
+  · refine ⟨by simp [polySelfBindings], ?_, ?_, ?_, ?_, ?_⟩
+    · intro component hcomponent
+      simp at hcomponent
+    · simp
+    · intro member hmember
+      simp at hmember
+    · intro member hbound
+      have hzero : member = 0 := by
+        simp [polySelfBindings] at hbound
+        omega
+      subst member
+      simp [RecGroups.UnsignedAt]
+    · intro stage dependencyStage component dependencyComponent source target rhs
+        hstage _ _ _ _ _
+      simp at hstage
   · intro ty hty
     simp at hty
   · intro scheme hscheme
     simp only [List.mem_singleton, RecSpec.poly.injEq] at hscheme
     subst scheme
     exact polyId_wf
-  · intro Xs hXs pair hpair ty hmono
-    simp [polySelfBindings] at hpair
-    subst pair
-    simp at hmono
+  · intro stage component hstage
+    simp at hstage
   · intro pair hpair scheme hscheme Ys hYs
     simp [polySelfBindings] at hpair
     subst pair
