@@ -602,6 +602,13 @@ def RecGroup.isUnsignedAt (anns : List (Option PolyTy)) (i : Nat) : Bool :=
   | some none => true
   | _ => false
 
+theorem RecGroup.isUnsignedAt_eq_true_iff
+    (anns : List (Option PolyTy)) (i : Nat) :
+    RecGroup.isUnsignedAt anns i = true ↔ RecGroups.UnsignedAt anns i := by
+  simp only [RecGroup.isUnsignedAt, RecGroups.UnsignedAt]
+  cases anns[i]? <;> simp
+  case some ann => cases ann <;> simp
+
 def RecGroup.inferenceSucc (anns : List (Option PolyTy))
     (bindings : List Expr) (i : Nat) : List Nat :=
   if RecGroup.isUnsignedAt anns i then
@@ -622,6 +629,10 @@ private def RecGroup.inferenceSccIndexSets (anns : List (Option PolyTy))
     (bindings : List Expr) : List (List Nat) :=
   (Scc.kosaraju (RecGroup.inferenceDigraph anns bindings)).map fun component =>
     (component.map Fin.val).filter (fun i => RecGroup.isUnsignedAt anns i)
+
+private def RecGroup.inferenceComponents (anns : List (Option PolyTy))
+    (bindings : List Expr) : List (List Nat) :=
+  (RecGroup.inferenceSccIndexSets anns bindings).filter (!·.isEmpty)
 
 private def RecGroup.componentDependsOn (succ : Nat → List Nat)
     (dependent dependency : List Nat) : Bool :=
@@ -675,11 +686,190 @@ private def RecGroup.kahnOrder (componentCount : Nat)
 members do not occur in the result and do not induce edges between components. -/
 def RecGroup.inferenceSccs (anns : List (Option PolyTy))
     (bindings : List Expr) : List (List Nat) :=
-  let components := (RecGroup.inferenceSccIndexSets anns bindings).filter (!·.isEmpty)
+  let components := RecGroup.inferenceComponents anns bindings
   let succ := RecGroup.inferenceSucc anns bindings
   let order := RecGroup.kahnOrder components.length
     (RecGroup.sccBeforeEdges succ components)
   order.filterMap fun i => components[i]?
+
+/-! #### Structural adequacy of the residual partition
+
+The executable scheduler has two logically separate jobs: Kosaraju partitions
+the unsigned vertices, then Kahn orders those components dependency-first.  The
+lemmas in this section isolate the first job.  In particular, they do not rely
+on any property of Kahn's order, and are therefore reusable by any future
+condensation ordering implementation. -/
+
+private theorem RecGroup.inferenceSccIndexSets_bounded
+    (anns : List (Option PolyTy)) (bindings : List Expr) :
+    ∀ component ∈ RecGroup.inferenceSccIndexSets anns bindings,
+      ∀ member ∈ component, member < bindings.length := by
+  intro component hcomponent member hmember
+  simp only [RecGroup.inferenceSccIndexSets, List.mem_map] at hcomponent
+  obtain ⟨raw, hraw, rfl⟩ := hcomponent
+  simp only [List.mem_filter] at hmember
+  obtain ⟨hmember, _⟩ := hmember
+  simp only [List.mem_map] at hmember
+  obtain ⟨vertex, _hvertex, rfl⟩ := hmember
+  exact vertex.isLt
+
+private theorem RecGroup.inferenceSccIndexSets_flatten_nodup
+    (anns : List (Option PolyTy)) (bindings : List Expr) :
+    (RecGroup.inferenceSccIndexSets anns bindings).flatten.Nodup := by
+  let graph := RecGroup.inferenceDigraph anns bindings
+  have hraw : (Scc.kosaraju graph).flatten.Nodup :=
+    (Scc.kosaraju_sound graph).flatten_nodup
+  have hvals : ((Scc.kosaraju graph).flatten.map Fin.val).Nodup :=
+    hraw.map (by
+      intro a b hab
+      exact Fin.ext hab)
+  have hfiltered := hvals.filter (fun i => RecGroup.isUnsignedAt anns i)
+  have heq :
+      (RecGroup.inferenceSccIndexSets anns bindings).flatten =
+        ((Scc.kosaraju graph).flatten.map Fin.val).filter
+          (fun i => RecGroup.isUnsignedAt anns i) := by
+    simp only [RecGroup.inferenceSccIndexSets, graph]
+    induction Scc.kosaraju graph with
+    | nil => simp
+    | cons component components ih =>
+      simp only [List.map_cons, List.flatten_cons, List.map_append,
+        List.filter_append, ih]
+  rw [heq]
+  exact hfiltered
+
+private theorem RecGroup.mem_inferenceSccIndexSets_flatten_iff
+    (anns : List (Option PolyTy)) (bindings : List Expr)
+    {member : Nat} (hmember : member < bindings.length) :
+    member ∈ (RecGroup.inferenceSccIndexSets anns bindings).flatten ↔
+      RecGroups.UnsignedAt anns member := by
+  let graph := RecGroup.inferenceDigraph anns bindings
+  constructor
+  · intro h
+    obtain ⟨component, hcomponent, hin⟩ := List.mem_flatten.mp h
+    simp only [RecGroup.inferenceSccIndexSets, List.mem_map] at hcomponent
+    obtain ⟨raw, _hraw, rfl⟩ := hcomponent
+    have hu := (List.mem_filter.mp hin).2
+    exact (RecGroup.isUnsignedAt_eq_true_iff anns member).mp hu
+  · intro hu
+    let vertex : Fin bindings.length := ⟨member, hmember⟩
+    obtain ⟨raw, hraw, hvertex⟩ := (Scc.kosaraju_sound graph).cover vertex
+    apply List.mem_flatten.mpr
+    refine ⟨(raw.map Fin.val).filter (fun i => RecGroup.isUnsignedAt anns i), ?_, ?_⟩
+    · simp only [RecGroup.inferenceSccIndexSets, List.mem_map]
+      exact ⟨raw, hraw, rfl⟩
+    · apply List.mem_filter.mpr
+      refine ⟨?_, (RecGroup.isUnsignedAt_eq_true_iff anns member).mpr hu⟩
+      exact List.mem_map.mpr ⟨vertex, hvertex, rfl⟩
+
+private theorem RecGroup.inferenceComponents_flatten
+    (anns : List (Option PolyTy)) (bindings : List Expr) :
+    (RecGroup.inferenceComponents anns bindings).flatten =
+      (RecGroup.inferenceSccIndexSets anns bindings).flatten := by
+  simp only [RecGroup.inferenceComponents]
+  induction RecGroup.inferenceSccIndexSets anns bindings with
+  | nil => simp
+  | cons component components ih =>
+    cases component with
+    | nil => simp [ih]
+    | cons member members => simp [ih]
+
+private theorem RecGroup.inferenceComponents_nonempty
+    (anns : List (Option PolyTy)) (bindings : List Expr) :
+    ∀ component ∈ RecGroup.inferenceComponents anns bindings, component ≠ [] := by
+  intro component hcomponent
+  have h := (List.mem_filter.mp hcomponent).2
+  intro hempty
+  subst component
+  simp at h
+
+private theorem RecGroup.inferenceComponents_flatten_nodup
+    (anns : List (Option PolyTy)) (bindings : List Expr) :
+    (RecGroup.inferenceComponents anns bindings).flatten.Nodup := by
+  rw [RecGroup.inferenceComponents_flatten]
+  exact RecGroup.inferenceSccIndexSets_flatten_nodup anns bindings
+
+private theorem RecGroup.inferenceComponents_bounded
+    (anns : List (Option PolyTy)) (bindings : List Expr) :
+    ∀ member ∈ (RecGroup.inferenceComponents anns bindings).flatten,
+      member < bindings.length := by
+  intro member hmember
+  rw [RecGroup.inferenceComponents_flatten] at hmember
+  obtain ⟨component, hcomponent, hin⟩ := List.mem_flatten.mp hmember
+  exact RecGroup.inferenceSccIndexSets_bounded anns bindings component hcomponent member hin
+
+private theorem RecGroup.mem_inferenceComponents_flatten_iff
+    (anns : List (Option PolyTy)) (bindings : List Expr)
+    {member : Nat} (hmember : member < bindings.length) :
+    member ∈ (RecGroup.inferenceComponents anns bindings).flatten ↔
+      RecGroups.UnsignedAt anns member := by
+  rw [RecGroup.inferenceComponents_flatten]
+  exact RecGroup.mem_inferenceSccIndexSets_flatten_iff anns bindings hmember
+
+private theorem RecGroup.range_filterMap_getElem {alpha : Type}
+    (items : List alpha) :
+    (List.range items.length).filterMap (fun i => items[i]?) = items := by
+  induction items with
+  | nil => simp
+  | cons item items ih =>
+    simp only [List.length_cons, List.range_succ_eq_map, List.filterMap_cons,
+      List.getElem?_cons_zero, List.filterMap_map]
+    change item :: (List.range items.length).filterMap
+      (fun i => (item :: items)[i + 1]?) = item :: items
+    simp only [List.getElem?_cons_succ, ih]
+
+private theorem RecGroup.filterMap_getElem_perm {alpha : Type}
+    {items : List alpha} {order : List Nat}
+    (horder : order.Perm (List.range items.length)) :
+    (order.filterMap (fun i => items[i]?)).Perm items := by
+  have h := horder.filterMap (fun i => items[i]?)
+  simpa only [RecGroup.range_filterMap_getElem] using h
+
+/-- The one remaining coverage obligation for the executable Kahn pass.  It is
+kept separate from the already-proved Kosaraju partition facts: a future topo
+implementation can discharge this predicate without reproving those facts. -/
+def RecGroup.InferenceOrderComplete (anns : List (Option PolyTy))
+    (bindings : List Expr) : Prop :=
+  let components := RecGroup.inferenceComponents anns bindings
+  let order := RecGroup.kahnOrder components.length
+    (RecGroup.sccBeforeEdges (RecGroup.inferenceSucc anns bindings) components)
+  order.Perm (List.range components.length)
+
+private theorem RecGroup.inferenceSccs_perm_components
+    (anns : List (Option PolyTy)) (bindings : List Expr)
+    (hcomplete : RecGroup.InferenceOrderComplete anns bindings) :
+    (RecGroup.inferenceSccs anns bindings).Perm
+      (RecGroup.inferenceComponents anns bindings) := by
+  simp only [RecGroup.InferenceOrderComplete] at hcomplete
+  simp only [RecGroup.inferenceSccs]
+  exact RecGroup.filterMap_getElem_perm hcomplete
+
+/-- Assuming only that Kahn emits every component, the final residual schedule
+is already a partition of exactly the unsigned members.  Dependency ordering is
+orthogonal and proved separately. -/
+theorem RecGroup.inferenceSccs_partition
+    (anns : List (Option PolyTy)) (bindings : List Expr)
+    (hcomplete : RecGroup.InferenceOrderComplete anns bindings) :
+    (∀ component ∈ RecGroup.inferenceSccs anns bindings, component ≠ []) ∧
+    (RecGroup.inferenceSccs anns bindings).flatten.Nodup ∧
+    (∀ member ∈ (RecGroup.inferenceSccs anns bindings).flatten,
+      member < bindings.length) ∧
+    (∀ member, member < bindings.length →
+      (member ∈ (RecGroup.inferenceSccs anns bindings).flatten ↔
+        RecGroups.UnsignedAt anns member)) := by
+  have hperm := RecGroup.inferenceSccs_perm_components anns bindings hcomplete
+  have hflat := hperm.flatten
+  refine ⟨?_, ?_, ?_, ?_⟩
+  · intro component hcomponent
+    exact RecGroup.inferenceComponents_nonempty anns bindings component
+      ((List.Perm.mem_iff hperm).mp hcomponent)
+  · exact (hflat.nodup_iff).mpr
+      (RecGroup.inferenceComponents_flatten_nodup anns bindings)
+  · intro member hmember
+    exact RecGroup.inferenceComponents_bounded anns bindings member
+      ((List.Perm.mem_iff hflat).mp hmember)
+  · intro member hmember
+    rw [List.Perm.mem_iff hflat]
+    exact RecGroup.mem_inferenceComponents_flatten_iff anns bindings hmember
 
 theorem Expr.mem_flatMap_tyFreeVars_iff_recGroup {bindings : List Expr} {x : Nat} :
     x ∈ bindings.flatMap Expr.tyFreeVars ↔
