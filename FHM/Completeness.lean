@@ -2267,6 +2267,47 @@ theorem InferRecComponent.toInferRecGroup
           simp only [RecSpecs.selectComponent]
           exact .skipPoly (ih hrest)
 
+/-- Conversely, a mixed-group derivation over the positional component mask
+    is a component derivation over the original specifications. -/
+private theorem InferRecGroup.toInferRecComponent
+    {selected : List Nat} {memberIndex Φ : Nat} {ctx : Ctx}
+    {bindings : List Expr} {specs : List RecSpec} {Φ' : Nat} {S : Subst}
+    (h : InferRecGroup Φ ctx bindings
+      (RecSpecs.selectComponent selected memberIndex specs) Φ' S)
+    (hlen : bindings.length = specs.length) :
+    InferRecComponent selected memberIndex Φ ctx bindings specs Φ' S := by
+  induction bindings generalizing memberIndex Φ ctx specs Φ' S with
+  | nil =>
+      cases specs with
+      | nil => cases h; exact .nil
+      | cons spec specs => simp at hlen
+  | cons e rest ih =>
+      cases specs with
+      | nil => simp at hlen
+      | cons spec specs =>
+          have hlenRest : rest.length = specs.length := by simpa using hlen
+          cases spec with
+          | mono τ =>
+              by_cases hm : memberIndex ∈ selected
+              · simp only [RecSpecs.selectComponent, if_pos hm] at h
+                cases h with
+                | consMono he huni hrest =>
+                    apply InferRecComponent.consSelected hm he huni
+                    apply ih (specs := specs.map (RecSpec.onSubst _))
+                    · rw [RecSpecs.selectComponent_onSubst]
+                      exact hrest
+                    · simp [hlenRest]
+              · simp only [RecSpecs.selectComponent, if_neg hm] at h
+                cases h with
+                | skipPoly hrest =>
+                    exact InferRecComponent.skipMono hm
+                      (ih hrest hlenRest)
+          | poly σ =>
+              simp only [RecSpecs.selectComponent] at h
+              cases h with
+              | skipPoly hrest =>
+                  exact InferRecComponent.skipPoly (ih hrest hlenRest)
+
 /-- Principality for one selected residual SCC.  This is the positional
     analogue of `InferRecGroup.Principal`: a selected member is compared with
     its declarative monotype, while skipped members merely advance the original
