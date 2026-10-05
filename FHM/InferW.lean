@@ -7043,13 +7043,32 @@ theorem Expr.ForallOuter.lookupAvoid_prepend {e : Expr} {depth w : Nat}
     rw [List.getElem?_append_right (by omega)] at hM
     exact hi M (by simpa using hM)
 
+/-- The recursive stage prefix avoids `w` whenever its underlying specs do. -/
+theorem RecSpecs.algorithmStageEntries_avoid {specs : List RecSpec} {w : Nat}
+    (hspecs : ∀ s ∈ specs, w ∉ s.freeVars) (done G : List Nat) :
+    ∀ M ∈ specs.mapIdx (RecSpec.algorithmStageEntry done G),
+      w ∉ M.body.freeVars := by
+  intro M hM
+  obtain ⟨i, hi, rfl⟩ := List.mem_mapIdx.mp hM
+  exact fun hc =>
+    hspecs _ (List.getElem_mem hi) (RecSpec.algorithmStageEntry_freeVars_subset hc)
+
+/-- Lookup-sensitive range, result, and domain locality for one inference. -/
+def Infer.SourceLocality : Prop :=
+  ∀ {Ψ c e Ψ' T τ}, Infer Ψ c e Ψ' T τ →
+    ∀ {w}, w < Ψ →
+    e.ForallOuter
+      (fun i => ∀ M, c.env[i]? = some M → w ∉ M.body.freeVars) 0 →
+    w ∉ e.tyFreeVars →
+    (∀ p ∈ T, w ∉ p.2.freeVars) ∧ w ∉ τ.freeVars ∧ w ∉ T.map Prod.fst
+
 /-- Component locality needs only the monotype targets selected for this
     component. The inference premise is phrased as a reusable source-sensitive
     single-expression locality rule. -/
 theorem InferRecComponent.range_dom_avoid_selected_of_infer
     {members memberIndex Φ ctx bindings specs Φ' S}
     (h : InferRecComponent members memberIndex Φ ctx bindings specs Φ' S)
-    (hInfer : ∀ {Ψ c e Ψ' T τ}, Infer Ψ c e Ψ' T τ →
+    (hInfer : ∀ {Ψ c e Ψ' T τ}, e ∈ bindings → Infer Ψ c e Ψ' T τ →
       ∀ {w}, w < Ψ →
       e.ForallOuter
         (fun i => ∀ M, c.env[i]? = some M → w ∉ M.body.freeVars) 0 →
@@ -7071,7 +7090,7 @@ theorem InferRecComponent.range_dom_avoid_selected_of_infer
     simp only [Expr.tyFreeVars.RecGroup.tyFreeVars, List.mem_append, not_or] at hbinds
     have hle := Infer.frontier_le he
     have heRefs := hrefs 0 e (by simpa using hsel) rfl
-    obtain ⟨heS, heτ, heD⟩ := hInfer he hwΦ heRefs hbinds.1
+    obtain ⟨heS, heτ, heD⟩ := hInfer List.mem_cons_self he hwΦ heRefs hbinds.1
     have hτA : w ∉ τ.freeVars := htargets 0 τ (by simpa using hsel) rfl
     have hS₂ : ∀ p ∈ S₂, w ∉ p.2.freeVars := by
       intro p hp hwp
@@ -7116,7 +7135,8 @@ theorem InferRecComponent.range_dom_avoid_selected_of_infer
               (by simpa only [Nat.add_assoc, Nat.add_comm 1 j] using hj)
               (by simpa only [List.getElem?_cons_succ] using hs))
     obtain ⟨hrS, hrD⟩ :=
-      InferRecComponent.range_dom_avoid_selected_of_infer hrest hInfer
+      InferRecComponent.range_dom_avoid_selected_of_infer hrest
+        (fun hm => hInfer (List.mem_cons_of_mem _ hm))
         (w := w) (by omega) hrestRefs hrestTargets hbinds.2
     refine ⟨?_, ?_⟩
     · intro p hp
@@ -7129,7 +7149,8 @@ theorem InferRecComponent.range_dom_avoid_selected_of_infer
         And.intro (And.intro heD hS₂D) hrD
   | .skipMono _ hrest | .skipPoly hrest =>
     intro w hwΦ hrefs htargets hbinds
-    apply InferRecComponent.range_dom_avoid_selected_of_infer hrest hInfer hwΦ
+    apply InferRecComponent.range_dom_avoid_selected_of_infer hrest
+      (fun hm => hInfer (List.mem_cons_of_mem _ hm)) hwΦ
     · intro j e hj he
       exact hrefs (j + 1) e
         (by simpa only [Nat.add_assoc, Nat.add_comm 1 j] using hj)
@@ -7144,6 +7165,386 @@ theorem InferRecComponent.range_dom_avoid_selected_of_infer
 termination_by (Expr.sizeRecGroup bindings, 0)
 decreasing_by
   all_goals (try subst_vars; simp_wf; try simp only [Expr.sizeRecGroup]; omega)
+
+/-- Conservative lookup-sensitive locality for a nested recursive schedule.
+    Its initial specs all avoid an outer variable below the surrounding frontier. -/
+theorem InferRecStrata.range_dom_avoid_outer_of_infer
+    {rigid bindings Φ ctx specs done G groups Φ' S specs' G'}
+    (h : InferRecStrata rigid bindings Φ ctx specs done G groups Φ' S specs' G')
+    (hInfer : ∀ {Ψ c e Ψ' T τ}, e ∈ bindings → Infer Ψ c e Ψ' T τ →
+      ∀ {w}, w < Ψ →
+      e.ForallOuter
+        (fun i => ∀ M, c.env[i]? = some M → w ∉ M.body.freeVars) 0 →
+      w ∉ e.tyFreeVars →
+      (∀ p ∈ T, w ∉ p.2.freeVars) ∧ w ∉ τ.freeVars ∧ w ∉ T.map Prod.fst) :
+    ∀ {w}, w < Φ → (∀ s ∈ specs, w ∉ s.freeVars) →
+    (∀ e ∈ bindings,
+      e.ForallOuter
+        (fun i => ∀ M, ctx.env[i]? = some M → w ∉ M.body.freeVars)
+        bindings.length) →
+    w ∉ Expr.tyFreeVars.RecGroup.tyFreeVars bindings →
+    (∀ p ∈ S, w ∉ p.2.freeVars) ∧ w ∉ S.map Prod.fst := by
+  match h with
+  | .nil => intro w _ _ _ _; exact ⟨by simp, by simp⟩
+  | .cons hcomponent heq _ hrest =>
+    intro w hwΦ hspecs hrefs hbinds
+    expose_names
+    have hle := InferRecComponent.frontier_le hcomponent
+    have hlen := InferRecComponent.length_eq hcomponent
+    have hstage : ∀ j e, 0 + j ∈ component → bindings[j]? = some e →
+        e.ForallOuter
+          (fun i => ∀ M,
+            (RecSpecs.algorithmStageCtx ctx specs done G).env[i]? = some M →
+            w ∉ M.body.freeVars) 0 := by
+      intro j e _ he
+      have heRefs := hrefs e (List.mem_of_getElem? he)
+      apply Expr.ForallOuter.lookupAvoid_prepend
+        (by simpa only [hlen, List.length_mapIdx, Nat.zero_add] using heRefs)
+      exact RecSpecs.algorithmStageEntries_avoid hspecs done G
+    obtain ⟨hS₁, hD₁⟩ :=
+      InferRecComponent.range_dom_avoid_selected_of_infer hcomponent hInfer
+        (w := w) hwΦ hstage
+        (by intro j τ _ hτ
+            exact hspecs (.mono τ) (List.mem_of_getElem? hτ)) hbinds
+    have hspecs₁ : ∀ s ∈ specs₁, w ∉ s.freeVars := by
+      rw [heq]
+      intro s hs
+      obtain ⟨s₀, hs₀, rfl⟩ := List.mem_map.mp hs
+      exact RecSpec.notMem_freeVars_onSubst hS₁ (hspecs s₀ hs₀)
+    have hrefs₁ : ∀ e ∈ bindings,
+        e.ForallOuter
+          (fun i => ∀ M, (S₁.onCtx ctx).env[i]? = some M →
+            w ∉ M.body.freeVars) bindings.length := by
+      intro e he
+      exact Expr.ForallOuter.lookupAvoid_onSubst (hrefs e he) hS₁
+    obtain ⟨hS₂, hD₂⟩ :=
+      InferRecStrata.range_dom_avoid_outer_of_infer hrest hInfer
+        (w := w) (lt_of_lt_of_le hwΦ hle) hspecs₁ hrefs₁ hbinds
+    refine ⟨?_, ?_⟩
+    · intro p hp
+      exact (List.mem_append.mp hp).elim (hS₁ p) (hS₂ p)
+    · simpa only [List.map_append, List.mem_append, not_or] using And.intro hD₁ hD₂
+termination_by (Expr.sizeRecGroup bindings, groups.length)
+decreasing_by
+  all_goals (simp_wf; try omega)
+
+private theorem UnifyRel.sourceAvoid {t u : Ty} {S : Subst} {w : Nat}
+    (h : UnifyRel t u S) (ht : w ∉ t.freeVars) (hu : w ∉ u.freeVars) :
+    (∀ p ∈ S, w ∉ p.2.freeVars) ∧ w ∉ S.map Prod.fst := by
+  constructor
+  · intro p hp hw
+    exact (h.range_mem p hp w hw).elim ht hu
+  · intro hw
+    obtain ⟨p, hp, heq⟩ := List.mem_map.mp hw
+    have hm := h.dom_mem p hp
+    rw [heq] at hm
+    exact hm.elim ht hu
+
+private theorem Subst.sourceAvoid_append {S T : Subst} {w : Nat}
+    (hS : (∀ p ∈ S, w ∉ p.2.freeVars) ∧ w ∉ S.map Prod.fst)
+    (hT : (∀ p ∈ T, w ∉ p.2.freeVars) ∧ w ∉ T.map Prod.fst) :
+    (∀ p ∈ S ++ T, w ∉ p.2.freeVars) ∧ w ∉ (S ++ T).map Prod.fst := by
+  exact ⟨fun p hp => (List.mem_append.mp hp).elim (hS.1 p) (hT.1 p),
+    by simpa only [List.map_append, List.mem_append, not_or] using And.intro hS.2 hT.2⟩
+
+private theorem Expr.sourceLocality_size_mem {e : Expr} {es : List Expr} (h : e ∈ es) :
+    e.size ≤ Expr.sizeRecGroup es := by
+  induction es with
+  | nil => simp at h
+  | cons a es ih =>
+    simp only [Expr.sizeRecGroup]
+    rcases List.mem_cons.mp h with rfl | h
+    · omega
+    · have := ih h; omega
+
+mutual
+/-- Inference only touches old variables present in annotations or in the
+    environment entries selected by the source expression. -/
+theorem Infer.sourceLocality {Φ ctx e Φ' S τ} (h : Infer Φ ctx e Φ' S τ) :
+    ∀ {w}, w < Φ →
+    e.ForallOuter (fun i => ∀ M, ctx.env[i]? = some M → w ∉ M.body.freeVars) 0 →
+    w ∉ e.tyFreeVars →
+    (∀ p ∈ S, w ∉ p.2.freeVars) ∧ w ∉ τ.freeVars ∧ w ∉ S.map Prod.fst := by
+  match h with
+  | .primLitUnit | .primLitInt | .primLitNat | .primLitChar
+  | .primBinOpIntAdd | .primBinOpIntSub | .primBinOpIntLt _ _ _ _
+  | .primBinOpCharLt _ _ _ _ =>
+    intro w _ _ _; simp [Ty.freeVars, TyList.freeVars]
+  | .var hlook =>
+    intro w hw hrefs _
+    refine ⟨by simp, ?_, by simp⟩
+    intro hc
+    rcases Ty.freeVars_openVars_subset w hc with h | h
+    · simp only [Expr.ForallOuter, Expr.rec_strong, Nat.zero_le, Nat.sub_zero] at hrefs
+      exact hrefs (by trivial) _ hlook h
+    · have := freshVars_ge w h; omega
+  | .ctor hlook =>
+    intro w hw _ _
+    refine ⟨by simp, ?_, by simp⟩
+    intro hc
+    rcases Ty.freeVars_openVars_subset w hc with h | h
+    · exact (Ctor.toTy_body_noFreeVars _).not_mem_freeVars w h
+    · have := freshVars_ge w h; omega
+  | .lambda hseed hbody =>
+    intro w hw hrefs hwe
+    simp only [Expr.ForallOuter, Expr.rec_strong, Nat.zero_add] at hrefs
+    cases hseed with
+    | none =>
+      simp only [Expr.tyFreeVars, Option.elim_none, List.nil_append] at hwe
+      have hp : w ∉ (Ty.fvar Φ).freeVars := by simp only [Ty.freeVars, List.mem_singleton]; omega
+      have hbrefs := Expr.ForallOuter.lookupAvoid_prepend
+        (pre := [PolyTy.mkTrivial (.fvar Φ)]) hrefs
+        (by intro M hM; rcases List.mem_singleton.mp hM with rfl; exact hp)
+      obtain ⟨hbS, hbτ, hbD⟩ := Infer.sourceLocality hbody (by omega) hbrefs hwe
+      exact ⟨hbS, by simpa only [Ty.freeVars, List.mem_dedup, List.mem_append, not_or]
+        using And.intro (Subst.notMemOnTy hbS hp) hbτ, hbD⟩
+    | some T hT =>
+      simp only [Expr.tyFreeVars, Option.elim_some, List.mem_append, not_or] at hwe
+      have hbrefs := Expr.ForallOuter.lookupAvoid_prepend
+        (pre := [PolyTy.mkTrivial _]) hrefs
+        (by intro M hM; rcases List.mem_singleton.mp hM with rfl; exact hwe.1)
+      obtain ⟨hbS, hbτ, hbD⟩ := Infer.sourceLocality hbody hw hbrefs hwe.2
+      exact ⟨hbS, by simpa only [Ty.freeVars, List.mem_dedup, List.mem_append, not_or]
+        using And.intro (Subst.notMemOnTy hbS hwe.1) hbτ, hbD⟩
+  | .app hf ha hu =>
+    intro w hw hrefs hwe
+    expose_names
+    simp only [Expr.ForallOuter, Expr.rec_strong] at hrefs
+    simp only [Expr.tyFreeVars, List.mem_append, not_or] at hwe
+    obtain ⟨hfS, hfτ, hfD⟩ := Infer.sourceLocality hf hw hrefs.1 hwe.1
+    have hfle := Infer.frontier_le hf
+    have hale := Infer.frontier_le ha
+    obtain ⟨haS, haτ, haD⟩ := Infer.sourceLocality ha (by omega)
+      (Expr.ForallOuter.lookupAvoid_onSubst hrefs.2 hfS) hwe.2
+    have hnew : w ∉ (Ty.fvar Φ₂).freeVars := by simp only [Ty.freeVars, List.mem_singleton]; omega
+    have huA := hu.sourceAvoid (Subst.notMemOnTy haS hfτ)
+      (by simpa only [Ty.freeVars, List.mem_dedup, List.mem_append, not_or] using And.intro haτ hnew)
+    have hA := Subst.sourceAvoid_append (Subst.sourceAvoid_append ⟨hfS, hfD⟩ ⟨haS, haD⟩) huA
+    exact ⟨hA.1, Subst.notMemOnTy huA.1 hnew, hA.2⟩
+  | .letIn hr hb =>
+    intro w hw hrefs hwe
+    expose_names
+    simp only [Expr.ForallOuter, Expr.rec_strong, Nat.zero_add] at hrefs
+    simp only [Expr.tyFreeVars, Option.elim_none, List.nil_append, List.mem_append, not_or] at hwe
+    obtain ⟨hrS, hrτ, hrD⟩ := Infer.sourceLocality hr hw hrefs.1 hwe.1
+    have hrle := Infer.frontier_le hr
+    have hp : w ∉ (genScheme rhs.tyFreeVars (S₁.onCtx ctx).env τ₁).body.freeVars :=
+      fun hc => hrτ (Ty.freeVars_closeOver_subset hc)
+    have hbrefs := Expr.ForallOuter.lookupAvoid_prepend
+      (pre := [genScheme rhs.tyFreeVars (S₁.onCtx ctx).env τ₁])
+      (Expr.ForallOuter.lookupAvoid_onSubst hrefs.2 hrS)
+      (by intro M hM; rcases List.mem_singleton.mp hM with rfl; exact hp)
+    obtain ⟨hbS, hbτ, hbD⟩ := Infer.sourceLocality hb (by omega) hbrefs hwe.2
+    have hA := Subst.sourceAvoid_append ⟨hrS, hrD⟩ ⟨hbS, hbD⟩
+    exact ⟨hA.1, hbτ, hA.2⟩
+  | .letInAnn hσ hΦN hr hu _ _ hb =>
+    intro w hw hrefs hwe
+    expose_names
+    simp only [Expr.ForallOuter, Expr.rec_strong, Nat.zero_add] at hrefs
+    simp only [Expr.tyFreeVars, Option.elim_some, List.mem_append, not_or] at hwe
+    have hrle := Infer.frontier_le hr
+    obtain ⟨hrS, hrτ, hrD⟩ := Infer.sourceLocality hr (by omega)
+      (Expr.ForallOuter.openTyVars (e := rhs) (depth := 0)
+        (P := fun i => ∀ M, ctx.env[i]? = some M → w ∉ M.body.freeVars) hrefs.1 _) (by
+        intro hc; rcases Expr.tyFreeVars_openTyVars hc with h | h
+        · exact hwe.1.2 h
+        · have := freshVars_ge w h; omega)
+    have hσopen : w ∉ (σ.openVars (freshVars N σ.paramCount)).freeVars := by
+      intro hc; rcases Ty.freeVars_openVars_subset w hc with h | h
+      · exact hwe.1.1 h
+      · have := freshVars_ge w h; omega
+    have huA := hu.sourceAvoid hrτ hσopen
+    have hbrefs := Expr.ForallOuter.lookupAvoid_prepend (pre := [σ])
+      (Expr.ForallOuter.lookupAvoid_onSubst
+        (Expr.ForallOuter.lookupAvoid_onSubst hrefs.2 hrS) huA.1)
+      (by intro M hM; rcases List.mem_singleton.mp hM with rfl; exact hwe.1.1)
+    obtain ⟨hbS, hbτ, hbD⟩ := Infer.sourceLocality hb (by omega) hbrefs hwe.2
+    have hA := Subst.sourceAvoid_append (Subst.sourceAvoid_append ⟨hrS, hrD⟩ huA) ⟨hbS, hbD⟩
+    exact ⟨hA.1, hbτ, hA.2⟩
+  | .match_ hs _ hbr =>
+    intro w hw hrefs hwe
+    expose_names
+    simp only [Expr.ForallOuter, Expr.rec_strong, Nat.zero_add] at hrefs
+    simp only [Expr.tyFreeVars, List.mem_append, not_or] at hwe
+    obtain ⟨hsS, hsτ, hsD⟩ := Infer.sourceLocality hs hw hrefs.1 hwe.1
+    have hsle := Infer.frontier_le hs
+    have hnew : w ∉ (Ty.fvar Φ₁).freeVars := by simp only [Ty.freeVars, List.mem_singleton]; omega
+    obtain ⟨hbS, hbτ, hbD⟩ := InferBranches.sourceLocality hbr (by omega)
+      (by intro p b hb; exact Expr.ForallOuter.lookupAvoid_onSubst (hrefs.2 p b hb) hsS)
+      hsτ hnew hwe.2
+    have hA := Subst.sourceAvoid_append ⟨hsS, hsD⟩ ⟨hbS, hbD⟩
+    exact ⟨hA.1, hbτ, hA.2⟩
+  | .letRec hwf _ hg hp heq hb =>
+    intro w hw hrefs hwe
+    expose_names
+    subst specs2
+    simp only [Expr.ForallOuter, Expr.rec_strong, Nat.zero_add] at hrefs
+    simp only [Expr.tyFreeVars, List.mem_append, not_or] at hwe
+    have hgle := InferRecStrata.frontier_le hg
+    have hinit : ∀ s ∈ RecSpec.init Φ anns, w ∉ s.freeVars := by
+      intro s hs
+      rcases RecSpec.mem_init hs with ⟨m, hm, _, rfl⟩ | ⟨σ, hσ, rfl⟩
+      · simp only [RecSpec.freeVars, Ty.freeVars, List.mem_singleton]; omega
+      · exact fun hc => hwe.1.1 (Expr.scheme_body_mem_annList_tyFreeVars hσ hc)
+    obtain ⟨hgS, hgD⟩ := InferRecStrata.range_dom_avoid_outer_of_infer hg
+      (fun hem hi => Infer.sourceLocality hi) (by omega) hinit hrefs.1 hwe.1.2
+    have hspecs : ∀ s ∈ specs1, w ∉ s.freeVars := by
+      rw [InferRecStrata.specs_eq hg]
+      intro s hs; obtain ⟨s₀, hs₀, rfl⟩ := List.mem_map.mp hs
+      exact RecSpec.notMem_freeVars_onSubst hgS (hinit s₀ hs₀)
+    have hlen : specs1.length = bindings.length := by
+      exact (InferRecGroupPoly.length_eq hp).symm
+    have hprefs : ∀ e ∈ bindings,
+        e.ForallOuter (fun i => ∀ M,
+          (specs1.map (RecSpec.bodyScheme G) ++ (S₁.onCtx ctx).env)[i]? = some M →
+          w ∉ M.body.freeVars) 0 := by
+      intro e he
+      apply Expr.ForallOuter.lookupAvoid_prepend
+        (by simpa only [List.length_map, hlen, Nat.zero_add] using
+          Expr.ForallOuter.lookupAvoid_onSubst (hrefs.1 e he) hgS)
+      intro M hM; obtain ⟨s, hs, rfl⟩ := List.mem_map.mp hM
+      exact fun hc => hspecs s hs (RecSpec.mem_bodyScheme_freeVars hc)
+    obtain ⟨hpS, hpD⟩ := InferRecGroupPoly.sourceLocality hp (by omega) hprefs
+      (fun σ hσ => hspecs (.poly σ) hσ) hwe.1.2
+    have hple := InferRecGroupPoly.frontier_le hp
+    have hspecs₂ : ∀ s ∈ specs1.map (RecSpec.onSubst S₂), w ∉ s.freeVars := by
+      intro s hs; obtain ⟨s₀, hs₀, rfl⟩ := List.mem_map.mp hs
+      exact RecSpec.notMem_freeVars_onSubst hpS (hspecs s₀ hs₀)
+    have hbrefs := Expr.ForallOuter.lookupAvoid_prepend
+      (e := body) (depth := 0) (w := w)
+      (env := (S₂.onCtx (S₁.onCtx ctx)).env)
+      (pre := (specs1.map (RecSpec.onSubst S₂)).map (RecSpec.bodyScheme G))
+      (by simpa only [List.length_map, hlen, Nat.zero_add] using
+        (Expr.ForallOuter.lookupAvoid_onSubst
+          (Expr.ForallOuter.lookupAvoid_onSubst hrefs.2 hgS) hpS))
+      (by intro M hM; obtain ⟨s, hs, rfl⟩ := List.mem_map.mp hM
+          exact fun hc => hspecs₂ s hs (RecSpec.mem_bodyScheme_freeVars hc))
+    obtain ⟨hbS, hbτ, hbD⟩ := Infer.sourceLocality hb (by omega) hbrefs hwe.2
+    have hA := Subst.sourceAvoid_append (Subst.sourceAvoid_append ⟨hgS, hgD⟩ ⟨hpS, hpD⟩) ⟨hbS, hbD⟩
+    exact ⟨hA.1, hbτ, hA.2⟩
+termination_by (e.size, 0)
+decreasing_by
+  all_goals
+    try subst_vars
+    simp_wf
+    try simp only [Expr.size, Expr.size_openTyVars]
+    try have := Expr.sourceLocality_size_mem (by assumption)
+    omega
+
+theorem InferBranches.sourceLocality {Φ ctx scrutTy ρ brs Φ' S}
+    (h : InferBranches Φ ctx scrutTy ρ brs Φ' S) :
+    ∀ {w}, w < Φ →
+    (∀ p b, (p,b) ∈ brs → b.ForallOuter
+      (fun i => ∀ M, ctx.env[i]? = some M → w ∉ M.body.freeVars) p.bindCount) →
+    w ∉ scrutTy.freeVars → w ∉ ρ.freeVars →
+    w ∉ Expr.tyFreeVars.BranchList.tyFreeVars brs →
+    (∀ p ∈ S, w ∉ p.2.freeVars) ∧ w ∉ (S.onTy ρ).freeVars ∧ w ∉ S.map Prod.fst := by
+  match h with
+  | .nil => intro w _ _ _ hρ _; exact ⟨by simp, by simpa using hρ, by simp⟩
+  | .cons hlook hn hu₀ hb hu hr =>
+    intro w hw hrefs hscrut hρ hbrs
+    expose_names
+    simp only [Expr.tyFreeVars.BranchList.tyFreeVars, List.mem_append, not_or] at hbrs
+    have hcustom : w ∉ (Ty.customTy ctor.tyName ((freshVars Φ ctor.paramCount).map Ty.fvar)).freeVars := by
+      intro hc; simp only [Ty.freeVars] at hc; rw [mem_TyList_freeVars] at hc
+      obtain ⟨t, ht, hwt⟩ := hc; obtain ⟨x, hx, rfl⟩ := List.mem_map.mp ht
+      simp only [Ty.freeVars, List.mem_singleton] at hwt
+      have := freshVars_ge x hx; omega
+    have hA₀ := hu₀.sourceAvoid hscrut hcustom
+    have hta : ∀ t ∈ ((freshVars Φ ctor.paramCount).map Ty.fvar).map S₀.onTy, w ∉ t.freeVars := by
+      intro t ht; obtain ⟨t₀, ht₀, rfl⟩ := List.mem_map.mp ht
+      obtain ⟨x, hx, rfl⟩ := List.mem_map.mp ht₀
+      apply Subst.notMemOnTy hA₀.1
+      simp only [Ty.freeVars, List.mem_singleton]; have := freshVars_ge x hx; omega
+    have hbrefs : body.ForallOuter
+        (fun i => ∀ M,
+          ((ctor.contents.map (Ty.openWith (((freshVars Φ ctor.paramCount).map Ty.fvar).map S₀.onTy))).map PolyTy.mkTrivial
+            ++ (S₀.onCtx ctx).env)[i]? = some M → w ∉ M.body.freeVars) 0 := by
+      apply Expr.ForallOuter.lookupAvoid_prepend
+        (by simpa only [List.length_map, Nat.zero_add, MatchPattern.bindCount, hn] using
+          Expr.ForallOuter.lookupAvoid_onSubst (hrefs (.named c n) body List.mem_cons_self) hA₀.1)
+      intro M hM; obtain ⟨t, ht, rfl⟩ := List.mem_map.mp hM
+      obtain ⟨t₀, ht₀, rfl⟩ := List.mem_map.mp ht
+      exact Ty.not_mem_freeVars_openWith hta ((ctor.closed t₀ ht₀).not_mem_freeVars w)
+    obtain ⟨hbS, hbτ, hbD⟩ := Infer.sourceLocality hb (by omega) hbrefs hbrs.1
+    have hble := Infer.frontier_le hb
+    have hA₂ := hu.sourceAvoid hbτ (Subst.notMemOnTy hbS (Subst.notMemOnTy hA₀.1 hρ))
+    obtain ⟨hrS, hrρ, hrD⟩ := InferBranches.sourceLocality hr (by omega)
+      (by
+        intro p b hm
+        exact Expr.ForallOuter.lookupAvoid_onSubst
+          (Expr.ForallOuter.lookupAvoid_onSubst
+            (Expr.ForallOuter.lookupAvoid_onSubst (hrefs p b (List.mem_cons_of_mem _ hm)) hA₀.1) hbS) hA₂.1)
+      (Subst.notMemOnTy hA₂.1 (Subst.notMemOnTy hbS (Subst.notMemOnTy hA₀.1 hscrut)))
+      (Subst.notMemOnTy hA₂.1 (Subst.notMemOnTy hbS (Subst.notMemOnTy hA₀.1 hρ))) hbrs.2
+    have hA := Subst.sourceAvoid_append
+      (Subst.sourceAvoid_append (Subst.sourceAvoid_append hA₀ ⟨hbS, hbD⟩) hA₂) ⟨hrS, hrD⟩
+    exact ⟨hA.1, by simpa only [Subst.onTy_append] using hrρ, hA.2⟩
+  | .consWild hb hu hr =>
+    intro w hw hrefs hscrut hρ hbrs
+    expose_names
+    simp only [Expr.tyFreeVars.BranchList.tyFreeVars, List.mem_append, not_or] at hbrs
+    obtain ⟨hbS, hbτ, hbD⟩ := Infer.sourceLocality hb hw
+      (hrefs .wildcard body List.mem_cons_self) hbrs.1
+    have hble := Infer.frontier_le hb
+    have hA₂ := hu.sourceAvoid hbτ (Subst.notMemOnTy hbS hρ)
+    obtain ⟨hrS, hrρ, hrD⟩ := InferBranches.sourceLocality hr (by omega)
+      (by
+        intro p b hm
+        exact Expr.ForallOuter.lookupAvoid_onSubst
+          (Expr.ForallOuter.lookupAvoid_onSubst (hrefs p b (List.mem_cons_of_mem _ hm)) hbS) hA₂.1)
+      (Subst.notMemOnTy hA₂.1 (Subst.notMemOnTy hbS hscrut))
+      (Subst.notMemOnTy hA₂.1 (Subst.notMemOnTy hbS hρ)) hbrs.2
+    have hA := Subst.sourceAvoid_append (Subst.sourceAvoid_append ⟨hbS, hbD⟩ hA₂) ⟨hrS, hrD⟩
+    exact ⟨hA.1, by simpa only [Subst.onTy_append] using hrρ, hA.2⟩
+termination_by (Expr.sizeBranches brs, 0)
+decreasing_by all_goals (try subst_vars; simp_wf; simp only [Expr.sizeBranches]; omega)
+
+theorem InferRecGroupPoly.sourceLocality {Φ ctx bindings specs Φ' S}
+    (h : InferRecGroupPoly Φ ctx bindings specs Φ' S) :
+    ∀ {w}, w < Φ →
+    (∀ e ∈ bindings, e.ForallOuter
+      (fun i => ∀ M, ctx.env[i]? = some M → w ∉ M.body.freeVars) 0) →
+    (∀ σ, RecSpec.poly σ ∈ specs → w ∉ σ.body.freeVars) →
+    w ∉ Expr.tyFreeVars.RecGroup.tyFreeVars bindings →
+    (∀ p ∈ S, w ∉ p.2.freeVars) ∧ w ∉ S.map Prod.fst := by
+  match h with
+  | .nil => intro w _ _ _ _; exact ⟨by simp, by simp⟩
+  | .skipMono hr =>
+    intro w hw hrefs hspecs hbinds
+    apply InferRecGroupPoly.sourceLocality hr hw
+      (fun e he => hrefs e (List.mem_cons_of_mem _ he))
+      (fun σ hσ => hspecs σ (List.mem_cons_of_mem _ hσ))
+    exact fun hc => hbinds (by simp only [Expr.tyFreeVars.RecGroup.tyFreeVars, List.mem_append]; exact Or.inr hc)
+  | .consPoly hΦN hi hu _ _ hr =>
+    intro w hw hrefs hspecs hbinds
+    expose_names
+    simp only [Expr.tyFreeVars.RecGroup.tyFreeVars, List.mem_append, not_or] at hbinds
+    have hσbody := hspecs σ List.mem_cons_self
+    obtain ⟨hiS, hiτ, hiD⟩ := Infer.sourceLocality hi (by omega)
+      (Expr.ForallOuter.openTyVars (hrefs e List.mem_cons_self) _) (by
+        intro hc; rcases Expr.tyFreeVars_openTyVars hc with h | h
+        · exact hbinds.1 h
+        · have := freshVars_ge w h; omega)
+    have hile := Infer.frontier_le hi
+    have hσopen : w ∉ (σ.openVars (freshVars N σ.paramCount)).freeVars := by
+      intro hc; rcases Ty.freeVars_openVars_subset w hc with h | h
+      · exact hσbody h
+      · have := freshVars_ge w h; omega
+    have hchk := hu.sourceAvoid hiτ hσopen
+    have hA₁ := Subst.sourceAvoid_append ⟨hiS, hiD⟩ hchk
+    have hA₂ := InferRecGroupPoly.sourceLocality hr (by omega)
+      (fun e he => Expr.ForallOuter.lookupAvoid_onSubst
+        (Expr.ForallOuter.lookupAvoid_onSubst (hrefs e (List.mem_cons_of_mem _ he)) hiS) hchk.1)
+      (fun σ' hσ' => hspecs σ'
+        (List.mem_cons_of_mem _ (RecSpec.poly_mem_map_onSubst.mp hσ'))) hbinds.2
+    exact Subst.sourceAvoid_append hA₁ hA₂
+termination_by (Expr.sizeRecGroup bindings, 0)
+decreasing_by all_goals (try subst_vars; simp_wf; simp only [Expr.sizeRecGroup, Expr.size_openTyVars]; omega)
+end
+
+theorem Infer.sourceLocality_holds : Infer.SourceLocality :=
+  fun h => h.sourceLocality
 
 theorem RecGroupRefs.mem_branches {n depth i : Nat} {pat : MatchPattern} {body : Expr}
     {branches : List (MatchPattern × Expr)} (hb : (pat,body) ∈ branches)
