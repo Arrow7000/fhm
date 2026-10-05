@@ -52,7 +52,7 @@ private theorem oneResidualGroup_valid {anns : List (Option PolyTy)}
     RecGroups.ValidResidualGroups anns bindings (oneResidualGroup anns) := by
   let members := (List.range anns.length).filter (RecGroups.unsignedAtB anns)
   have hmembers_nodup : members.Nodup := by
-    exact (List.nodup_range _).filter _
+    exact List.nodup_range.filter _
   have hmembers_spec (i : Nat) :
       i ∈ members ↔ i < anns.length ∧ RecGroups.UnsignedAt anns i := by
     exact mem_oneResidualGroupMembers
@@ -66,8 +66,8 @@ private theorem oneResidualGroup_valid {anns : List (Option PolyTy)}
   · intro component hcomponent
     by_cases hm : members = []
     · simp [oneResidualGroup, members, hm] at hcomponent
-    · simp [oneResidualGroup, members, hm] at hcomponent
-      simp only [List.mem_singleton] at hcomponent
+    · have hc : component = members := by
+        simpa [oneResidualGroup, members, hm] using hcomponent
       subst component
       exact hm
   · by_cases hm : members = []
@@ -76,9 +76,11 @@ private theorem oneResidualGroup_valid {anns : List (Option PolyTy)}
   · intro member hmember
     by_cases hm : members = []
     · simp [oneResidualGroup, members, hm] at hmember
-    · simp [oneResidualGroup, members, hm] at hmember
-      have hmem := (hmembers_spec member).mp hmember
+    · have hmem : member ∈ members := by
+        simpa [oneResidualGroup, members, hm] using hmember
+      have hmem := (hmembers_spec member).mp hmem
       omega
+
   · intro member hbound
     by_cases hm : members = []
     · constructor
@@ -91,17 +93,29 @@ private theorem oneResidualGroup_valid {anns : List (Option PolyTy)}
     · simp [oneResidualGroup, members, hm]
       constructor
       · intro hgroup
-        exact (hmembers_spec member).mp hgroup |>.2
+        exact (RecGroups.unsignedAtB_eq_true_iff anns member).mp hgroup.2
       · intro hu
-        exact (hmembers_spec member).mpr ⟨by omega, hu⟩
+        exact ⟨by omega, (RecGroups.unsignedAtB_eq_true_iff anns member).mpr hu⟩
   · intro stage dependencyStage component dependencyComponent source target rhs
       hcomponent hdependencyComponent hsource htarget hrhs href
     by_cases hm : members = []
     · simp [oneResidualGroup, members, hm] at hcomponent
-    · simp [oneResidualGroup, members, hm] at hcomponent hdependencyComponent
-      have hs : stage = 0 := Option.some.inj hcomponent.1
-      have hd : dependencyStage = 0 := Option.some.inj hdependencyComponent.1
+    · have hs : stage = 0 := by
+        simpa [oneResidualGroup, members, hm] using congrArg Option.isSome hcomponent
+      have hd : dependencyStage = 0 := by
+        simpa [oneResidualGroup, members, hm] using congrArg Option.isSome hdependencyComponent
       omega
+
+private theorem stageEntries_none_eq_rhsEntries (specs : List RecSpec)
+    (G Xs : List Nat) :
+    specs.mapIdx (RecSpec.stageEntry [] G Xs) =
+      specs.map (RecSpec.rhsEntry G Xs) := by
+  apply List.ext_getElem
+  · simp
+  · intro i hi₁ hi₂
+    have hi : i < specs.length := by simpa using hi₂
+    generalize hs : specs[i]'hi = spec
+    cases spec <;> simp_all [RecSpec.stageEntry, RecSpec.rhsEntry]
 
 
 /-! ## 1. The prelude contract (canonical special type/ctor names)
@@ -11086,11 +11100,25 @@ theorem TypeOfHM_of_lowerExpr_of_SurfaceWTExpr {ctors : CtorEnv} {ke : KindEnv}
     set specs : List RecSpec := τs.map RecSpec.mono with hspecs
     have hanns_eq : specs.map RecSpec.ann = annsL := by
       simpa [specs, hlen, anns_eq] using RecSpec.map_ann_mono τs
+    have hanns_len : annsL.length = bindings'.length := by
+      simpa [anns_eq] using hlenB.symm
     have hgroups : RecGroups.ValidResidualGroups annsL bindings'
-        (oneResidualGroup annsL) := oneResidualGroup_valid hlenB
+        (oneResidualGroup annsL) := oneResidualGroup_valid hanns_len
     have hgroups_eq : oneResidualGroup annsL =
         if bindings'.length = 0 then [] else [List.range bindings'.length] := by
-      simp [oneResidualGroup, anns_eq, hlenB, RecGroups.unsignedAtB]
+      subst annsL
+      rw [oneResidualGroup]
+      simp only [List.length_replicate]
+      have hfilter :
+          List.filter (RecGroups.unsignedAtB (List.replicate binds.length none))
+              (List.range binds.length) = List.range binds.length := by
+        apply List.filter_eq_self.mpr
+        intro member hmember
+        have hbound := List.mem_range.mp hmember
+        simp [RecGroups.unsignedAtB, hbound]
+      rw [hfilter]
+      rw [hlenB]
+      by_cases hnil : binds.length = 0 <;> simp [hnil]
     have hscope_i : ∀ (i : Nat) (hi : i < binds.length),
         bindingLowerTyScope (binds[i]'hi) tvs' =
           letRhsTyScope (binds[i]'hi).tyParams (binds[i]'hi).params
@@ -11133,24 +11161,46 @@ theorem TypeOfHM_of_lowerExpr_of_SurfaceWTExpr {ctors : CtorEnv} {ke : KindEnv}
       have hzero : bindings'.length ≠ 0 := by
         intro hz
         simp [hz] at hcomponent
-      simp [hzero] at hcomponent
-      rcases hcomponent with ⟨rfl, rfl⟩
+      rw [if_neg hzero] at hcomponent
+      have hlookup := List.getElem?_eq_some_iff.mp hcomponent
+      have hstageLt : stage < 1 := by simpa using hlookup.1
+      have hstage : stage = 0 := by omega
+      subst stage
+      have hcomponent_eq : component = List.range bindings'.length := by
+        simpa using hlookup.2.symm
+      subst component
       have hiB : member < bindings'.length := List.mem_range.mp hmember
       have hrhs' := List.getElem?_eq_some_iff.mp hrhs
       have hiRhs : member < bindings'.length := hrhs'.1
       have hrhsEq : bindings'[member]'hiRhs = rhs := hrhs'.2
       have hspec' : τs[member]? = some τm := by
-        simpa only [specs, List.getElem?_map, Option.map_some, Option.some.injEq,
-          RecSpec.mono.injEq] using hτm
+        cases hopt : τs[member]? with
+        | none => simp [specs, hopt] at hτm
+        | some τ' =>
+          have heq : τ' = τm := by simpa [specs, hopt] using hτm
+          simpa [heq] using hopt
       have hτs' := List.getElem?_eq_some_iff.mp hspec'
       have hiTy : member < τs.length := hτs'.1
       have hτsEq : τs[member]'hiTy = τm := hτs'.2
-      have hpair : (rhs, τm) ∈ bindings'.zip τs := by
-        have hp := List.getElem_mem_zip hiRhs hiTy
-        simpa [hrhsEq, hτsEq] using hp
-      have hmonoTy := hmono [] hXs (rhs, τm) hpair τm rfl
-      simpa [RecSpecs.stageCtx, RecSpecs.rhsCtx, specs, RecSpecs.stageEntry,
-        RecSpecs.rhsEntry_nil_mono] using hmonoTy
+      have hiBind : member < binds.length := by omega
+      obtain ⟨rhsCore, hr, hwrap⟩ := hgetB member hiBind
+      have hr' :
+          lowerExpr ke (letRhsTyScope (binds[member]'hiBind).tyParams
+              (binds[member]'hiBind).params (none : Option Surface.PolyTy) tvs')
+            (letRhsTermScope (binds[member]'hiBind).params (binds.map (·.name) ++ vs'))
+            (binds[member]'hiBind).rhs = some rhsCore := by
+        simpa [hscope_i member hiBind, letRhsTermScope] using hr
+      have hwrap' :
+          wrapCoreParams ke (letRhsTyScope (binds[member]'hiBind).tyParams
+              (binds[member]'hiBind).params (none : Option Surface.PolyTy) tvs')
+            (binds[member]'hiBind).params rhsCore = some (bindings'[member]'hiRhs) := by
+        simpa [hscope_i member hiBind] using hwrap
+      have hTyW := wrapCoreParams_TypeOfHM
+        (hLL member hiBind) hwrap' (hrhs_ih member hiBind hr')
+      simp only [List.take_zero, List.flatten_nil, RecSpecs.stageCtx]
+      rw [stageEntries_none_eq_rhsEntries]
+      simpa [RecSpecs.rhsCtx, RecSpec.rhsEntry, specs, hrhsEq,
+        ← hτsEq, ← hτbinds member hiBind] using hTyW
     · intro p hp σ hσ
       have hs : p.2 ∈ specs := (List.of_mem_zip hp).2
       rw [hσ] at hs
@@ -11177,8 +11227,13 @@ theorem TypeOfHM_of_lowerExpr_of_SurfaceWTExpr {ctors : CtorEnv} {ke : KindEnv}
     have anns_eq : annsL = anns' := Option.some.inj (hannL.symm.trans hannIn)
     have hwf : RecSpecs.WF annsL bindings' specs G :=
       ⟨anns_eq ▸ hanns_eq, hlenB.trans hlen, hnodup, hmono_lc, hpoly_wf⟩
+    have hanns_len : annsL.length = bindings'.length := by
+      calc
+        annsL.length = specs.length := by
+          simpa using congrArg List.length hwf.anns_eq |>.symm
+        _ = bindings'.length := hwf.length.symm
     have hgroups : RecGroups.ValidResidualGroups annsL bindings'
-        (oneResidualGroup annsL) := oneResidualGroup_valid hlenB
+        (oneResidualGroup annsL) := oneResidualGroup_valid hanns_len
     refine TypeOfHM.letRec (specs := specs) (groups := oneResidualGroup annsL)
       (G := G) (L := L) hgroups hwf ?_ ?_ rfl ?_
     · intro stage component hcomponent Xs hfresh member hmember rhs τm hrhs hτm
@@ -11187,7 +11242,13 @@ theorem TypeOfHM_of_lowerExpr_of_SurfaceWTExpr {ctors : CtorEnv} {ke : KindEnv}
         intro hnil
         simp [oneResidualGroup, members, hnil] at hcomponent
       simp only [oneResidualGroup, members, hmembers_ne] at hcomponent
-      rcases hcomponent with ⟨rfl, rfl⟩
+      have hlookup := List.getElem?_eq_some_iff.mp hcomponent
+      have hstageLt : stage < 1 := by simpa using hlookup.1
+      have hstage : stage = 0 := by omega
+      subst stage
+      have hcomponent_eq : component = members := by
+        simpa using hlookup.2.symm
+      subst component
       have hiCore : member < bindings'.length := hgroups.bounded member (by
         simpa [oneResidualGroup, members, hmembers_ne] using hmember)
       have hiB : member < binds.length := by omega
@@ -11217,8 +11278,9 @@ theorem TypeOfHM_of_lowerExpr_of_SurfaceWTExpr {ctors : CtorEnv} {ke : KindEnv}
       have hTyW' : TypeOfHM (RecSpecs.stageCtx ⟨Γ, ctors⟩ specs
           (oneResidualGroup annsL |>.take 0).flatten G Xs) rhs
           (Ty.renameG G Xs τm) := by
-        simpa [RecSpecs.stageCtx, RecSpecs.stageEntry, RecSpecs.rhsCtx,
-          RecSpecs.rhsEntry, ← harr, hrhsEq] using hTyW
+        simp only [List.take_zero, List.flatten_nil, RecSpecs.stageCtx]
+        rw [stageEntries_none_eq_rhsEntries]
+        simpa [RecSpecs.rhsCtx, ← harr, hrhsEq] using hTyW
       exact hTyW'
     · intro p hp σ hσ Ys hYs
       obtain ⟨i, hi, hb_eq, hs_eq⟩ := List.mem_zip_getElem hwf.length hp
