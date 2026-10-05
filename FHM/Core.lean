@@ -2913,6 +2913,95 @@ structure RecGroups.ValidResidualGroups (anns : List (Option PolyTy))
       target ∈ rhs.recGroupRefs bindings.length 0 →
       dependencyStage ≤ stage
 
+/-! The executable inference pass computes residual groups and then validates
+them before using them.  Keeping this checker in Core makes the trusted bridge
+small: inference need not carry an implementation-specific SCC proof, only the
+certificate produced by this finite check. -/
+
+def RecGroups.unsignedAtB (anns : List (Option PolyTy)) (member : Nat) : Bool :=
+  match anns[member]? with
+  | some none => true
+  | _ => false
+
+theorem RecGroups.unsignedAtB_eq_true_iff
+    (anns : List (Option PolyTy)) (member : Nat) :
+    RecGroups.unsignedAtB anns member = true ↔ RecGroups.UnsignedAt anns member := by
+  simp only [RecGroups.unsignedAtB, RecGroups.UnsignedAt]
+  cases anns[member]? <;> simp
+  case some ann => cases ann <;> simp
+
+private def RecGroups.dependenciesFirstB (bindings : List Expr)
+    (groups : List (List Nat)) : Bool :=
+  (List.range groups.length).all fun stage =>
+    (List.range groups.length).all fun dependencyStage =>
+      let component := groups[stage]?.getD []
+      let dependencyComponent := groups[dependencyStage]?.getD []
+      component.all fun source =>
+        dependencyComponent.all fun target =>
+          match bindings[source]? with
+          | none => true
+          | some rhs =>
+              if target ∈ rhs.recGroupRefs bindings.length 0 then
+                decide (dependencyStage ≤ stage)
+              else true
+
+/-- Decidable certificate checker for residual inference groups.  This mirrors
+`ValidResidualGroups` field-for-field and is intentionally defensive about
+out-of-bounds members. -/
+def RecGroups.validResidualGroupsB (anns : List (Option PolyTy))
+    (bindings : List Expr) (groups : List (List Nat)) : Bool :=
+  decide (anns.length = bindings.length) &&
+  groups.all (fun component => !component.isEmpty) &&
+  decide groups.flatten.Nodup &&
+  groups.flatten.all (fun member => decide (member < bindings.length)) &&
+  (List.range bindings.length).all (fun member =>
+    decide (member ∈ groups.flatten) == RecGroups.unsignedAtB anns member) &&
+  RecGroups.dependenciesFirstB bindings groups
+
+theorem RecGroups.validResidualGroupsB_sound
+    {anns : List (Option PolyTy)} {bindings : List Expr} {groups : List (List Nat)}
+    (hvalid : RecGroups.validResidualGroupsB anns bindings groups = true) :
+    RecGroups.ValidResidualGroups anns bindings groups := by
+  simp only [RecGroups.validResidualGroupsB, Bool.and_eq_true, decide_eq_true_eq,
+    List.all_eq_true] at hvalid
+  rcases hvalid with ⟨⟨⟨⟨⟨hlength, hnonempty⟩, hnodup⟩, hbounded⟩, hcovers⟩,
+    hdependencies⟩
+  refine {
+    length := hlength
+    nonempty := ?_
+    flatten_nodup := hnodup
+    bounded := ?_
+    covers_unsigned := ?_
+    dependencies_first := ?_ }
+  · intro component hcomponent
+    have h := hnonempty component hcomponent
+    simpa using h
+  · intro member hmember
+    exact hbounded member hmember
+  · intro member hmember
+    have h := hcovers member (List.mem_range.mpr hmember)
+    have heq := beq_iff_eq.mp h
+    constructor
+    · intro hmem
+      apply (RecGroups.unsignedAtB_eq_true_iff anns member).mp
+      rw [← heq]
+      exact decide_eq_true hmem
+    · intro hu
+      apply of_decide_eq_true
+      rw [heq]
+      exact (RecGroups.unsignedAtB_eq_true_iff anns member).mpr hu
+  · intro stage dependencyStage component dependencyComponent source target rhs
+      hcomponent hdependencyComponent hsource htarget hrhs href
+    simp only [RecGroups.dependenciesFirstB, List.all_eq_true] at hdependencies
+    have hstage := hdependencies stage (List.mem_range.mpr (List.getElem?_eq_some_iff.mp hcomponent).1)
+    have hdependencyStage := hstage dependencyStage
+      (List.mem_range.mpr (List.getElem?_eq_some_iff.mp hdependencyComponent).1)
+    simp only [hcomponent, hdependencyComponent, Option.getD_some] at hdependencyStage
+    have hsource' := hdependencyStage source hsource
+    have htarget' := hsource' target htarget
+    simp only [hrhs, href, if_true, decide_eq_true_eq] at htarget'
+    exact htarget'
+
 /-- Well-formed derivation data for a recursion group: the (rule-internal)
     `specs` match the STORED annotations `anns` one-to-one, there is one spec per
     binding, the gen-var pool is duplicate-free, unannotated members' shared
