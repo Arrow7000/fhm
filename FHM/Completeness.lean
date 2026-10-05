@@ -4990,6 +4990,92 @@ private theorem RecStrataResidual.componentMonoTyped
   rw [h.connection member algTy declTy halgTy hdeclTy]
   exact htypedNew
 
+/-- Once every residual component has been processed, the schemes produced by
+    the fine SCC pass are pointwise at least as general as the corresponding
+    declarative body schemes.  Thus both the source body and signed RHSs can be
+    transported to the final algorithmic body context in one step. -/
+private theorem RecStrataResidual.retypeBodyCtx
+    {anns : List (Option PolyTy)} {bindings : List Expr}
+    {declCtx : Ctx} {declSpecs : List RecSpec} {declG Xs K : List Nat}
+    {ctx : Ctx} {specs : List RecSpec} {done G : List Nat} {R : Subst}
+    (h : RecStrataResidual declCtx declSpecs declG Xs K ctx specs done G R)
+    (hvalid : RecGroups.ValidResidualGroups anns bindings
+      (RecGroup.inferenceSccs anns bindings))
+    (hdone : done = (RecGroup.inferenceSccs anns bindings).flatten)
+    (hdeclWF : RecSpecs.WF anns bindings declSpecs declG)
+    (hspecLC : ∀ s ∈ specs, s.LC)
+    (hXs : FreshNames declL declG.length Xs)
+    (hXG : ∀ g ∈ declG, g ∉ Xs)
+    (hXmono : ∀ x ∈ Xs, ∀ τ, .mono τ ∈ declSpecs → x ∉ τ.freeVars)
+    (hpolyRigid : ∀ σ, .poly σ ∈ specs → ∀ y ∈ σ.body.freeVars, y ∈ K)
+    {e : Expr} {t : Ty}
+    (hty : TypeOfHM (RecSpecs.bodyCtx declCtx declSpecs declG) e t) :
+    TypeOfHM (R.onCtx (RecSpecs.bodyCtx ctx specs G)) e t := by
+  let oldEntries := declSpecs.map (RecSpec.bodyScheme declG)
+  let newEntries := specs.map fun s => R.onPolyTy (RecSpec.bodyScheme G s)
+  have hlenSpecs : specs.length = declSpecs.length := by
+    have := congrArg List.length h.anns_eq
+    simpa using this
+  have hlenEntries : oldEntries.length = newEntries.length := by
+    simp [oldEntries, newEntries, hlenSpecs]
+  have hlenCurrent : bindings.length = specs.length := by
+    rw [hlenSpecs]
+    exact hdeclWF.length
+  have hannsCurrent : specs.map RecSpec.ann = anns :=
+    h.anns_eq.trans hdeclWF.anns_eq
+  have hgen : List.Forall₂ PolyTy.Generalizes newEntries oldEntries := by
+    apply forall₂_of_getElem
+    · exact hlenEntries.symm
+    · intro member hnew hold
+      have hmember : member < specs.length := by
+        simpa [newEntries] using hnew
+      have hcurrent : specs[member]? = some specs[member] :=
+        List.getElem?_eq_getElem hmember
+      cases hs : specs[member] with
+      | poly σ =>
+          have hcurrentPoly : specs[member]? = some (.poly σ) := by
+            simpa [hs] using hcurrent
+          have hdeclPoly := h.decl_poly_of_poly hcurrentPoly
+          have hfix := h.onPolyTy_eq_of_rigid
+            (hpolyRigid σ (List.mem_of_getElem? hcurrentPoly))
+          simpa [oldEntries, newEntries, List.getElem_map, hs,
+              RecSpec.bodyScheme,
+              (List.getElem?_eq_some_iff.mp hdeclPoly).2, hfix] using
+            PolyTy.Generalizes.refl σ
+      | mono algTy =>
+          have hcurrentMono : specs[member]? = some (.mono algTy) := by
+            simpa [hs] using hcurrent
+          obtain ⟨declTy, hdeclTy⟩ := h.decl_mono_of_mono hcurrentMono
+          have hunsigned : RecGroups.UnsignedAt anns member := by
+            rw [RecGroups.UnsignedAt, ← hannsCurrent, List.getElem?_map,
+              hcurrentMono]
+            rfl
+          have hmemberDone : member ∈ done := by
+            rw [hdone]
+            apply (hvalid.covers_unsigned member ?_).2 hunsigned
+            rw [hlenCurrent]
+            exact hmember
+          simpa [oldEntries, newEntries, List.getElem_map, hs,
+              RecSpec.bodyScheme,
+              (List.getElem?_eq_some_iff.mp hdeclTy).2] using
+            h.completed_generalizes hdeclWF hspecLC hXs.length hXs.nodup
+              hXG hXmono hcurrentMono hdeclTy hmemberDone
+  have htypedNew : TypeOfHM ⟨newEntries ++ declCtx.env, declCtx.ctors⟩ e t := by
+    apply TypeOfHM.weaken_schemes hgen
+    simpa [oldEntries, RecSpecs.bodyCtx] using hty
+  have hctxEq : R.onCtx (RecSpecs.bodyCtx ctx specs G) =
+      ⟨newEntries ++ declCtx.env, declCtx.ctors⟩ := by
+    have henv := congrArg Ctx.env h.ctx_eq
+    have hctors := congrArg Ctx.ctors h.ctx_eq
+    apply congrArg₂ Ctx.mk
+    · simp only [RecSpecs.bodyCtx, Subst.onCtx, Subst.onEnv,
+        List.map_append, newEntries, List.map_map]
+      exact congrArg (newEntries ++ ·)
+        (by simpa [Subst.onCtx, Subst.onEnv] using henv)
+    · simpa [Subst.onCtx] using hctors
+  rw [hctxEq]
+  exact htypedNew
+
 private theorem RecSpecs.selectComponent_lc
     {members : List Nat} {memberIndex : Nat} {specs : List RecSpec}
     (h : ∀ s ∈ specs, s.LC) :
