@@ -1,0 +1,315 @@
+-- Executable language guide: scoped type variables and recursive inference.
+--
+-- Run with:
+--   .lake/build/bin/fhm run scratch/scoped-tyvars.fhm
+--
+-- This file is both documentation and a positive regression fixture: every
+-- active definition must typecheck, and the final expression must evaluate.
+-- Rejection boundaries are recorded as commented programs at the end; paste
+-- one into a separate file to observe its type error.
+--
+-- Scoped variables
+-- ----------------
+-- Type variables quantified by a `let` annotation (`{a b} ...`) are rigid
+-- skolems in scope throughout that binding's RHS. Lambda annotations and
+-- nested binding annotations may therefore mention them. This works both for
+-- top-level definitions and nested `let ... in` expressions, independently
+-- of whether lowering represents a particular binding with `let` or `let rec`.
+--
+-- Recursive inference
+-- -------------------
+-- Runtime recursion follows the SCCs produced during lowering. During type
+-- inference, a complete annotation is a dependency cut: annotated schemes are
+-- available immediately, residual unannotated SCCs are inferred and
+-- generalised in dependency order, and annotated RHSs are checked last.
+-- Unannotated recursive SCCs remain ordinary monomorphic-in-block HM.
+--
+-- Out of scope here: head-binder sugar (`let f {a} (x : a) : a = ...`) and
+-- annotations on patterns (`Just (x : a)`); neither is supported syntax.
+
+type Maybe a = Just a | Nothing
+
+-- 01: top-level; the scoped `a` is used in a lambda-parameter annotation.
+let idParam : {a} a -> a =
+  \(x : a) -> x
+
+-- 02: top-level; the scoped `a` is used in an inner `let` annotation.
+let idLet : {a} a -> a =
+  \x ->
+    let y : a = x in
+    y
+
+-- 03: the motivating case. `f` closes over `x : a`, so it cannot be
+-- generalised; its type is only expressible using the outer `a` and `b`.
+let constHelper : {a b} a -> b -> a =
+  \x y ->
+    let f : b -> a = \z -> x in
+    f y
+
+-- 04: the scoped variable used inside a compound type (a pair).
+let dup : {a} a -> (a, a) =
+  \x ->
+    let mk : a -> (a, a) = \y -> (y, y) in
+    mk x
+
+-- 05: the scoped variable annotating a pattern-bound variable in a match branch.
+let firstOr : {a} a -> List a -> a =
+  \fallback xs ->
+    match xs with
+    | [] -> fallback
+    | h :: _ ->
+      let picked : a = h in
+      picked
+
+-- 06: an inner *recursive* helper whose annotation mentions the outer `a`.
+let reverse : {a} List a -> List a =
+  \xs ->
+    let go : List a -> List a -> List a =
+      \acc ys ->
+        match ys with
+        | [] -> acc
+        | h :: t -> go (h :: acc) t
+    in
+    go [] xs
+
+-- 07: a mutually recursive top-level group. Both members have complete
+-- contracts, each with its own scoped `a`; their RHSs are checked under the
+-- final scheme environment, so recursive calls may instantiate those contracts.
+let evensF : {a} Int -> a -> List a =
+  \n (x : a) -> if n < 1 then [] else x :: evensG (n - 1) x
+
+let evensG : {a} Int -> a -> List a =
+  \n x ->
+    let rest : List a = evensF (n - 1) x in
+    rest
+
+-- 08: the scoped variable inside a user-defined data type, in an inner `let`.
+let toList : {a} Maybe a -> List a =
+  \m ->
+    let empty : List a = [] in
+    match m with
+    | Nothing -> empty
+    | Just x -> [x]
+
+-- 09 (already works; keep it working): an inner annotation that re-binds
+-- {a} shadows the outer `a`.
+let shadow : {a} a -> a =
+  \x ->
+    let id : {a} a -> a = \(z : a) -> z in
+    id x
+
+-- 10: the same scoping rule inside a nested `let ... in` expression rather
+-- than a top-level binding.
+let nestedBlock =
+  let outer : {a b} a -> b -> (a, b) =
+    \x y ->
+      let p : (a, b) = (x, y) in
+      p
+  in outer 1 True
+
+-- 11: an inner polymorphic binding whose scheme mixes its own `b` with the
+-- outer, rigid `a`; then a use of it at a type mentioning the outer `a`.
+let nested : {a} a -> a =
+  \x ->
+    let inner : {b} b -> (a, b) = \(y : b) -> (x, y) in
+    let r : (a, Bool) = inner True in
+    x
+
+-- Recursive groups
+-- ----------------
+-- A complete annotation is a dependency cut. Unannotated members are first
+-- inferred under the annotated contracts and generalized; annotated RHSs are
+-- then checked under that final scheme environment.
+
+-- 12: ordinary unannotated mutual recursion. Members have one monotype apiece
+-- inside the SCC and are generalised only after the whole SCC is inferred.
+let ordinaryF =
+  \n x -> if n < 1 then [x] else ordinaryG (n - 1) x
+
+let ordinaryG =
+  \n x -> x :: ordinaryF n x
+
+-- 13: after an unannotated recursive SCC has been inferred, its members are
+-- generalised normally and may be instantiated independently by later code.
+let ordinaryId =
+  \x -> if True then x else ordinaryId x
+
+let ordinaryIdInt = ordinaryId 1
+let ordinaryIdBool = ordinaryId True
+
+-- 14: a complete annotation permits genuine polymorphic recursion. Here the
+-- recursive call instantiates `a` with `List a`.
+let wrapN : {a} Int -> a -> Int =
+  \n x -> if n < 1 then 0 else 1 + wrapN (n - 1) [x]
+
+-- 15: acyclic forward references inside one authored block are accepted. The
+-- outer dependency analysis orders `y` before `x`; no recursive knot is needed.
+let forwardReference =
+  let
+    x = y
+    y = 1
+  in x
+
+-- 16: annotation monotonicity. The all-unannotated f/g cycle is ordinary HM;
+-- adding f's principal annotation must not make it fail merely because f's
+-- rigid `a` passes through unannotated g. The dead branch keeps the dependency
+-- real while making the executable regression terminate.
+let contractF : {a} a -> a =
+  \x -> if True then x else contractG x
+
+let contractG =
+  \x -> contractF x
+
+-- 17: an annotated RHS may use an inferred sibling polymorphically.
+-- contractConsumer uses the inferred
+-- sibling contractHelper at Int and Bool in its annotated RHS. Conversely,
+-- contractHelper mentions contractConsumer, so this is one genuine SCC rather
+-- than two definitions that surface dependency analysis could separate.
+let contractConsumer : Int -> (Int, Bool) =
+  \n -> (contractHelper n, contractHelper True)
+
+let contractHelper =
+  \x -> if True then x else let ignored = contractConsumer 0 in x
+
+-- 18: the complementary direction. These consecutive definitions are one
+-- recursive block after SCC analysis. `f` has a complete contract, so while
+-- `useF` is inferred its two calls are independent instantiations:
+--
+--   f 1     : Int
+--   f True  : Bool
+--
+-- The dependency back from f to useF is in a dead branch: it makes this a
+-- genuine SCC without making evaluation diverge. After useF is inferred and
+-- generalized, f's RHS is checked under the final schemes.
+let f : {a} a -> a =
+  \x -> if True then x else let ignored = useF 0 in x
+
+let useF =
+  \ignored -> (f 1, f True)
+
+-- 19: the two instantiations may also be distributed across different inferred
+-- siblings. All three definitions are in one SCC: f mentions both siblings,
+-- and each sibling mentions f. No individual inferred RHS is polymorphically
+-- recursive; each simply instantiates f's declared contract at its own type.
+let distributedF : {a} a -> a =
+  \x ->
+    if True then x
+    else let i = distributedInt 0 in let b = distributedBool 0 in x
+
+let distributedInt =
+  \n -> if True then distributedF 1 else n
+
+let distributedBool =
+  \n -> if True then distributedF True else True
+
+-- Force the annotation-cut examples through evaluation as well as typechecking.
+let contractStratifiedResults =
+  ((contractF 1, contractG True),
+   (contractConsumer 1,
+    (useF 0, (distributedInt 0, distributedBool 0))))
+
+-- 20: a complete contract cuts the *type-inference* dependency graph without
+-- cutting the runtime recursion knot.  The outer SCC still contains f_, g_,
+-- and h_: f_ refers to g_, g_ refers to h_, and h_ refers to f_.  But f_'s
+-- complete contract is known before inference starts, so removing f_ from the
+-- residual inference graph leaves the dependency order
+--
+--   h_  (inferred and generalized first)
+--   g_  (then inferred with polymorphic h_ in scope)
+--
+-- Consequently these two differently typed uses are both legal *inside the
+-- authored recursive block*:
+--
+--   h_ 1     : Int
+--   h_ True  : Bool
+--
+-- f_'s RHS is checked last, under the final schemes for g_ and h_.  Its call
+-- to g_ is in a dead branch only so evaluating this fixture terminates.
+let f_ : {a} a -> a =
+  \x -> if True then x else let ignored = g_ 0 in x
+
+let g_ =
+  \ignored -> (h_ 1, h_ True)
+
+let h_ =
+  \x -> if True then x else let ignored = f_ 0 in x
+
+-- Force the positive case through evaluation as well as typechecking.
+let annotationCutResult = g_ 0
+
+-- Results. Uses at multiple types ensure that the definitions really are
+-- generalised after their inference group; evaluating the recursive examples
+-- also guards against accidentally changing the runtime knot.
+let scopedResults =
+  ((idParam 1, idParam True),
+   (idLet True,
+    (constHelper 1 True,
+     (dup 1,
+      (firstOr 0 [1, 2],
+       ((reverse [1, 2, 3], reverse [True, False]),
+        (evensF 3 True,
+         (toList (Just 3),
+          (shadow 1, (nestedBlock, nested 1))))))))))
+
+let ordinaryRecursionResults =
+  (ordinaryF 2 5,
+   (ordinaryIdInt,
+    (ordinaryIdBool, (wrapN 3 True, forwardReference))))
+
+(scopedResults,
+ (ordinaryRecursionResults,
+  (contractStratifiedResults, annotationCutResult)))
+
+-- Rejection boundaries
+-- --------------------
+
+-- Each program below must fail during typechecking, rather than during parsing
+-- or lowering. Paste one into its own file to check it.
+--
+-- F1: a scoped `a` is rigid; it cannot be specialised to Int.
+--   let bad1 : {a} a -> a =
+--     \x -> let y : a = 5 in y
+--   bad1 1
+--
+-- F2: `b` and `a` are distinct rigid variables.
+--   let bad2 : {a b} a -> b -> a =
+--     \x y -> let f : b -> a = \z -> z in f y
+--   bad2 1 True
+--
+-- F3: a lambda parameter annotated with the scoped `a` cannot be used at Int.
+--   let bad3 : {a} a -> a =
+--     \(x : a) -> x + 1
+--   bad3 1
+--
+-- F4: a type variable that no enclosing annotation binds is still an error.
+--   let bad4 : {a} a -> a =
+--     \x -> let y : c = x in y
+--   bad4 1
+--
+-- F5: without a complete contract there is no dependency cut. An unannotated
+-- recursive member still cannot use itself polymorphically.
+--   let bad5 =
+--     \x -> if True then x else bad5 [x]
+--   bad5 1
+--
+-- F6: this is case 18 with the complete annotation removed. Now both members
+-- are in the unsigned HM sub-group, so `bad6F` has one shared in-block
+-- monotype. Its Int and Bool uses conflict.
+--   let bad6F =
+--     \x -> if True then x else let ignored = bad6UseF 0 in x
+--
+--   let bad6UseF =
+--     \ignored -> (bad6F 1, bad6F True)
+--
+--   bad6UseF 0
+--
+-- F7: without any complete contract, all three members form one residual SCC.
+-- `bad7H` therefore has one monotype throughout `bad7G`'s RHS and cannot
+-- accept both Int and Bool.
+--   let bad7F =
+--     \x -> if True then x else let ignored = bad7G 0 in x
+--   let bad7G =
+--     \ignored -> (bad7H 1, bad7H True)
+--   let bad7H =
+--     \x -> if True then x else let ignored = bad7F 0 in x
+--   bad7G 0

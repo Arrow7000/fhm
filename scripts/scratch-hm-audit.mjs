@@ -8,13 +8,9 @@ import { spawnSync } from "node:child_process";
 const root = fileURLToPath(new URL("../", import.meta.url));
 const binary = process.env.FHM || path.join(root, ".lake/build/bin/fhm");
 const expectedRejects = new Set([
-  "polyrec-groups-nested.fhm",
   "polyrec-head-binder-scoped-must-fail.fhm",
-  "polyrec-inner-poly-calls.fhm",
   "polyrec-inner-poly-unannotated-must-fail.fhm",
   "polyrec-mixed-conflict-must-fail.fhm",
-  "polyrec-mixed-group.fhm",
-  "polyrec-nested.fhm",
   "polyrec-unannotated-must-fail.fhm",
 ]);
 // This is deliberately an explicit language-contract manifest. Bounds experiments
@@ -22,7 +18,7 @@ const expectedRejects = new Set([
 // because they had the same extension.
 const files = [
   "hm-hover.fhm",
-  "hm-recursion-boundary.fhm",
+  "scoped-tyvars.fhm",
   "live.fhm",
   "polyrec-generalize-after-scc.fhm",
   "polyrec-groups-nested.fhm",
@@ -49,7 +45,7 @@ for (const file of files) {
     const payload = JSON.parse(response.stdout);
     assert.equal(payload.version, 3);
     if (expectedRejects.has(file)) {
-      assert.equal(response.status, 1, "Expected D2/scoped-sugar rejection");
+      assert.equal(response.status, 1, "Expected typechecking or unsupported-syntax rejection");
       assert.ok(payload.diagnostics.length > 0);
       for (const d of payload.diagnostics) {
         assert.ok(d.endLine > d.line || d.endCol > d.col, "Empty diagnostic range");
