@@ -1,9 +1,5 @@
-import FHM.Core
-import FHM.SurfaceLang
 import FHM.Decls
 import FHM.PatComp
-import FHM.InferW
-import FHM.Scc.Kosaraju
 
 /-! # The surface → Core bridge
 

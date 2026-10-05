@@ -1,5 +1,5 @@
 import FHM.Surface.Token
-import Lean.Data.Json
+import Lean.Data.Json.Printer
 
 /-!
 # TextMate grammar exporter

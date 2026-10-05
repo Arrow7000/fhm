@@ -1,12 +1,7 @@
-import FHM.Unverified.Surface.Parse
-import FHM.SurfaceBridge
-import FHM.InferW
-import FHM.Pretty
 import FHM.Unverified.EvaluateUnsafe
 import FHM.Unverified.HMDisplay
-import FHM.Unverified.HMArtifacts
 import FHM.Unverified.HMReport
-import Lean.Data.Json
+import FHM.Unverified.Surface.Parse
 
 /-!
 # Live pipeline driver

@@ -1,10 +1,4 @@
-import Mathlib.Data.Fintype.Basic
-import Mathlib.Data.Fintype.Card
-import Mathlib.Data.Finset.Basic
-import Mathlib.Data.Finset.Card
 import Mathlib.Data.Finset.Sort
-import Mathlib.Data.List.Basic
-import Mathlib.Data.List.Nodup
 
 /-! # Kosaraju SCC (abstract digraph)
 

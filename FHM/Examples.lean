@@ -1,6 +1,4 @@
-import FHM.InferW
 import FHM.Pretty
-import FHM.Decls
 import FHM.SurfaceBridge
 
 /-! # End-to-end demos

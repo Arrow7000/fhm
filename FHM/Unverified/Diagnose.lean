@@ -1,5 +1,4 @@
 import FHM.Unverified.EditorSupport
-import Lean.Data.Json
 
 /-!
 # Editor diagnostics + hover symbols driver

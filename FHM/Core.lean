@@ -2,9 +2,7 @@ import Mathlib.Algebra.GroupWithZero.Nat
 import Mathlib.Algebra.Order.Group.Nat
 import Mathlib.Algebra.Order.Sub.Basic
 import Mathlib.Algebra.Order.ZeroLEOne
-import Mathlib.Data.List.Pairwise
-import Mathlib.Data.List.NodupEquivFin
-import Mathlib.Data.Finset.Card
+import Mathlib.Data.List.Dedup
 
 /-- Name of a type -/
 inductive TyName

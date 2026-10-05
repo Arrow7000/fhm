@@ -1,4 +1,3 @@
-import FHM.CorePath
 import FHM.PatComp
 
 /-! # Construction trace for pattern compilation

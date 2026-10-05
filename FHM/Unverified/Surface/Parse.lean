@@ -1,7 +1,6 @@
-import Parser
+import Parser.Basic
 import FHM.Unverified.Surface.Lex
 import FHM.Surface.Span
-import FHM.SurfaceLang
 import FHM.SurfaceBridge
 
 namespace Surface.Parse

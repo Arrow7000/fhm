@@ -1,13 +1,5 @@
-import FHM.Unverified.Surface.Parse
-import FHM.Surface.Span
-import FHM.Unverified.Surface.Lex
-import FHM.SurfaceBridge
-import FHM.Unverified.HMArtifacts
 import FHM.Unverified.HMDisplay
-import FHM.InferW
-import FHM.Pretty
-import FHM.Decls
-import Lean.Data.Json
+import FHM.Unverified.Surface.Parse
 
 /-!
 # Editor support helpers

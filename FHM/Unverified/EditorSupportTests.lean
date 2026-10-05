@@ -1,6 +1,4 @@
 import FHM.Unverified.EditorSupport
-import FHM.Unverified.Surface.Parse
-import FHM.Surface.Span
 
 /-!
 # Editor hover canaries (span + scope / use-site)

@@ -1,4 +1,3 @@
-import FHM.Core
 import FHM.SurfaceLang
 
 /-! # Pretty-printers for the Core language
