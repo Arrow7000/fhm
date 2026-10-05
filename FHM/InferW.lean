@@ -10533,7 +10533,7 @@ theorem InferRecComponent.pending_seed_avoid_of_infer
       member ∉ rhs.recGroupRefs specs.length 0)
     (hbinds : base + member ∉ Expr.tyFreeVars.RecGroup.tyFreeVars bindings) :
     (∀ p ∈ S, base + member ∉ p.2.freeVars) ∧ base + member ∉ S.map Prod.fst := by
-  apply InferRecComponent.range_dom_avoid_selected_of_infer h hInfer hwΦ
+  apply InferRecComponent.range_dom_avoid_selected_of_infer h (fun _ he => hInfer he) hwΦ
   · intro j rhs hj hrhs
     exact hseeds.stage_lookupAvoid_of_no_ref ht hdone (href j rhs (by simpa using hj) hrhs)
   · intro j t hj hτ
@@ -10740,7 +10740,7 @@ theorem InferRecStrata.frozen_of_sourceLocality
       (fun σ hσ g hg hc => hGrigid g hg (hpolyRigid σ hσ g hc))
     have havoidG : ∀ g ∈ G, (∀ p ∈ S₁, g ∉ p.2.freeVars) ∧ g ∉ S₁.map Prod.fst := by
       intro g hg
-      apply InferRecComponent.range_dom_avoid_selected_of_infer hcomponent hInfer (hGbelow g hg)
+      apply InferRecComponent.range_dom_avoid_selected_of_infer hcomponent (fun _ he => hInfer he) (hGbelow g hg)
       · intro j rhs _ _
         apply Expr.ForallOuter.of_recGroupRefs_with_outer (n := 0)
         · intro i _ M hM
