@@ -295,10 +295,12 @@ example (ctors : CtorEnv) :
 
 /-! ### Annotated polymorphic `letRecIn`
 
-The structural constructor exposes the same two phases as Core: unsigned members
-are typed under the shared monotype opening, while signed members are checked under
-the final scheme environment. The closed monomorphic contract below keeps the
-cofinite openings computationally small while exercising `letRecInAnn`. -/
+The structural constructor exposes the same contract boundary as Core: unsigned
+members are monomorphic within the residual component currently being checked,
+completed dependency components may already be generalized, and signed members are
+checked under the final scheme environment. The closed monomorphic contract below
+uses a single residual component, keeping the cofinite openings computationally
+small while exercising `letRecInAnn`. -/
 
 /-! ### Packing B — annotated mono + head binders
 

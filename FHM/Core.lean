@@ -283,9 +283,10 @@ inductive Expr
 
       `anns` carries one `Option PolyTy` per binding (PARALLEL to `bindings`;
       the length invariant lives in the typing rule, not the constructor).
-      An UNANNOTATED member (`none`) has one shared monotype while the unsigned
-      sub-group is inferred (Damas–Milner monomorphic recursion), then is
-      generalised. An ANNOTATED member (`some σ`) contributes a complete
+      An UNANNOTATED member (`none`) has one shared monotype within its residual
+      dependency SCC (Damas–Milner monomorphic recursion). Residual SCCs are
+      inferred dependency-first and each is generalised before later SCCs are
+      inferred. An ANNOTATED member (`some σ`) contributes a complete
       dependency-cut contract. Signed RHSs and the body are checked under the
       resulting final scheme environment. -/
   | letRec (anns : List (Option PolyTy)) (bindings : List Expr) (body : Expr)
@@ -2661,11 +2662,13 @@ def PolyTy.openGroup : List PolyTy → List Nat → List Ty
 
 /-! ### `letRec` unsigned-member generalisation helpers.
 
-The `letRec` rule infers every unsigned member at a shared monotype `τⱼ`, then
-generalises each one over the group's gen-var pool `G`. `renameG` is the shared
-opening (rename `G ↦ Xs` everywhere — the SAME `Xs` for every unsigned binding,
-so mutual recursion's type-sharing stays linked); `genGroup G τⱼ` is its final
-scheme `∀ (G ∩ ftv τⱼ). τⱼ`. Signed members already carry complete schemes. -/
+The `letRec` rule gives every unsigned member a monotype `τⱼ`, but solves the
+residual dependency SCCs in dependency order. Each completed SCC contributes
+fresh variables to the aggregate gen-var pool `G` and becomes polymorphic before
+later SCCs are checked. `renameG` opens that aggregate pool consistently
+(`G ↦ Xs` everywhere), preserving type sharing within each recursive SCC;
+`genGroup G τⱼ` is member `j`'s final scheme
+`∀ (G ∩ ftv τⱼ). τⱼ`. Signed members already carry complete schemes. -/
 
 /-- Rename the group's gen-vars `G` to fresh names `Xs` throughout a monotype: the
     *shared* opening used by the cofinite `letRec` premise. -/
@@ -2689,11 +2692,12 @@ theorem PolyTy.genGroup_wf {G : List Nat} {τ : Ty} (hτ : τ.IsLC) :
 /-! ### Per-binding recursion-group specs (the `letRec` rule's internals).
 
 The `letRec` rule carries one derivation-internal `RecSpec` per binding: an
-UNANNOTATED member's shared monotype `τ`, or an ANNOTATED member's declared
+UNANNOTATED member's solved monotype `τ`, or an ANNOTATED member's declared
 scheme `σ` (pinned to the stored annotation via `RecSpec.ann`). `bodyScheme`
-describes the binding exported to the body. Recursive RHSs see annotated
-members at their declared schemes and unannotated members at their shared
-monotypes. -/
+describes the binding exported to the body. During residual inference,
+`algorithmStageEntry` exposes completed SCCs at their generalized schemes while
+the current and later SCCs remain monomorphic; annotated members always expose
+their declared schemes. -/
 
 /-- Derivation-internal per-binding datum for a recursion group. -/
 inductive RecSpec
@@ -2707,8 +2711,9 @@ def RecSpec.ann : RecSpec → Option PolyTy
   | .mono _ => none
   | .poly σ => some σ
 
-/-- Render a spec in the recursive RHS environment: unannotated members use
-    shared monotypes, while annotated members expose their complete schemes. -/
+/-- Render the one-shot/initial recursive RHS environment: unannotated members
+    use monotypes under one common pool opening, while annotated members expose
+    their complete schemes. Staged inference uses `algorithmStageEntry` instead. -/
 def RecSpec.rhsEntry (G Xs : List Nat) : RecSpec → PolyTy
   | .mono τ => PolyTy.mkTrivial (Ty.renameG G Xs τ)
   | .poly σ => σ
@@ -3038,7 +3043,7 @@ theorem RecGroups.validResidualGroupsB_complete
 
 /-- Well-formed derivation data for a recursion group: the (rule-internal)
     `specs` match the STORED annotations `anns` one-to-one, there is one spec per
-    binding, the gen-var pool is duplicate-free, unannotated members' shared
+    binding, the aggregate gen-var pool is duplicate-free, unannotated members'
     monotypes are locally closed, and annotated members' declared schemes are
     well-formed. -/
 structure RecSpecs.WF (anns : List (Option PolyTy)) (bindings : List Expr)
@@ -3070,9 +3075,10 @@ def RecSpecs.MonoTypedInit (TypeOf : Ctx → Expr → Ty → Prop) (ctx : Ctx)
     ∀ p ∈ bindings.zip τs,
       TypeOf (RecSpecs.rhsCtx ctx (τs.map RecSpec.mono) G Xs) p.1 (Ty.renameG G Xs p.2)
 
-/-- Cofinite checking for ordinary HM members of a mixed recursive group.
-Every `.mono τ` member shares the same pool opening `G ↦ Xs`; annotated
-siblings are already present at their complete schemes in `rhsCtx`. -/
+/-- Legacy one-shot cofinite checking for ordinary HM members of a mixed
+recursive group. Every `.mono τ` member shares the same pool opening `G ↦ Xs`;
+annotated siblings are already present at their complete schemes in `rhsCtx`.
+The production `letRec` rule instead uses `StratifiedMonoTyped`. -/
 def RecSpecs.MonoTyped (TypeOf : Ctx → Expr → Ty → Prop) (ctx : Ctx)
     (bindings : List Expr) (specs : List RecSpec) (G L : List Nat) : Prop :=
   ∀ Xs, FreshNames L G.length Xs →

@@ -526,9 +526,10 @@ the enclosing skolem and closes it back, so the whole thing infers `∀ a. a →
 
 The `letRec` node carries per-binding optional annotations, so one group can mix
 annotated and inferred members. A complete annotation makes that member available
-at its declared scheme while the unsigned sub-group is inferred. Unannotated members
-share ordinary HM monotypes during that phase, are then generalized, and their final
-schemes are available while annotated RHSs and the group body are checked. -/
+at its declared scheme and cuts the residual type-dependency graph. Unannotated
+members share ordinary HM monotypes within each residual SCC; SCCs are inferred and
+generalized dependency-first. Their final schemes are available while annotated
+RHSs and the group body are checked. -/
 
 /-- `∀a. a → a`. -/
 private def selfSig : PolyTy := ⟨1, .arrow (.bvar 0) (.bvar 0)⟩

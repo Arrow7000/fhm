@@ -1,20 +1,23 @@
 # Annotated in-block polymorphism with erased execution
 
-**Status:** production implementation complete on `annotated-polyrec-erased`, 2026-10-03
+**Status:** production implementation complete on `annotated-polyrec-erased`, 2026-10-05
 
 **Current implementation baseline:** a recursive member with a complete explicit
-scheme is polymorphic inside its SCC, while an unannotated member remains
-monomorphic while the unsigned sub-group is inferred, then is generalized before
-the signed RHSs and group body are checked. Complete signatures therefore act as
-dependency cuts. Runtime terms remain completely type-erased.
+scheme is polymorphic throughout its authored recursive block. Complete signatures
+act as cuts in the **type-inference** dependency graph without cutting the runtime
+recursive knot. After removing those signed vertices, the remaining unannotated
+members are partitioned into dependency-ordered SCCs. Each SCC is inferred with one
+monotype per member and generalized before downstream SCCs are inferred. Finally,
+the signed RHSs and group body are checked under the final scheme environment.
+Runtime terms remain completely type-erased.
 [`FHM/Core.lean`](../FHM/Core.lean) specifies this stratified source rule;
-[`FHM/InferW.lean`](../FHM/InferW.lean) implements separate unsigned-inference and
-signed-checking phases; and [`FHM/RuntimeTyping.lean`](../FHM/RuntimeTyping.lean) provides the
-proof-only mixed runtime judgment over the real Core `Expr`/`Ctx` types. The latter
-proves preservation for the complete real `Step` relation, including recursive
-unfolding and constructor match reduction. Soundness crosses from source `TypeOfHM`
-to erased `RunWT`; source principality and completeness deliberately stay on
-`TypeOfHM`.
+[`FHM/InferW.lean`](../FHM/InferW.lean) implements residual-SCC inference followed
+by signed checking; and [`FHM/RuntimeTyping.lean`](../FHM/RuntimeTyping.lean)
+provides the proof-only mixed runtime judgment over the real Core `Expr`/`Ctx`
+types. The latter proves preservation for the complete real `Step` relation,
+including recursive unfolding and constructor match reduction. Soundness crosses
+from source `TypeOfHM` to erased `RunWT`; source principality and completeness
+deliberately stay on `TypeOfHM`.
 
 The structural and scoped-opening gates are now present in
 [`FHM/AnnotatedPolyRecErasure.lean`](../FHM/AnnotatedPolyRecErasure.lean). It is a
@@ -117,9 +120,10 @@ Here `a` belongs to `f`, while `c` is the rigid type of the current invocation o
 `outer`. Recursive occurrences of `f` may instantiate `a` differently, but they must
 retain that same `c`.
 
-This is stronger than the HM-only language selected by the reset. In the selected
-language every occurrence of every recursive member within one SCC shares one
-monotype, regardless of annotations.
+FHM now implements this annotation-directed exception. Without a complete
+annotation, every occurrence of a member within its residual SCC still shares one
+monotype. Complete annotations are the only way to cut that inference SCC and make
+a recursive member polymorphic before the whole authored block has finished.
 
 Three cases were historically conflated:
 
@@ -367,11 +371,12 @@ inductive CheckRecGroup :
 ```
 
 Term scope remains simultaneous, but source checking is contract-stratified:
-complete schemes are assumed while unannotated members are inferred monomorphically;
-those inferred results are generalized before annotated RHSs are checked. Only
-explicit complete schemes enable polymorphic self-recursion. An unannotated member
-cannot use itself or another member of the unsigned sub-group polymorphically during
-the inference phase.
+complete schemes are assumed, then the residual graph of unannotated members is
+inferred one dependency SCC at a time. A component's results are generalized before
+downstream components are inferred; annotated RHSs are checked after all residual
+components. Only explicit complete schemes enable polymorphic self-recursion. An
+unannotated member cannot use itself or another member of its own residual SCC
+polymorphically during that component's inference.
 
 The existing Algorithm-W relation need not necessarily be rewritten wholesale as a
 bidirectional system. An annotated-recursive-group checking mode can be embedded in
@@ -591,20 +596,28 @@ The implementation branch fixes the formerly open choices as follows:
 | Complete annotation, differently typed calls from siblings | Accept |
 | Mixed SCC: annotated member used polymorphically by an unannotated sibling | Accept |
 | Unannotated member used at different types inside its SCC | Reject |
-| Annotated member passes its rigid variable through an unannotated sibling | Accept when the unsigned sub-group has an ordinary HM solution |
+| Annotated member passes its rigid variable through an unannotated sibling | Accept when every residual SCC has an ordinary HM solution |
 | Annotated RHS uses an inferred sibling at several types | Accept; infer and generalize unsigned members first |
 | Annotated scheme mentioning an enclosing scoped variable | Accept |
 | Partial annotation, type holes, or head-binder scheme sugar | Unsupported |
 
 Groups remain simultaneous for term scope and runtime recursion, but complete
-signatures cut the static dependency graph. First, all unannotated members are
-inferred together by ordinary Damas--Milner recursion while annotated siblings are
-available at their written schemes. The resulting monotypes are then generalized.
-Second, each annotated RHS is checked at a fresh rigid opening of its own scheme
-under the **final** environment, where inferred siblings are now available at those
-generalized schemes. The body uses that same final environment. The written scheme
-is the recursive and exported interface; an implementation may be more general so
-long as it checks against that interface.
+signatures cut the static dependency graph. The residual graph containing only
+unannotated members is decomposed into SCCs and processed dependency-first. Within
+one SCC, ordinary Damas--Milner recursion assigns one monotype to each member;
+annotated siblings and previously completed SCCs are already available at their
+schemes. The component's monotypes are generalized immediately, so downstream
+acyclic dependants may use them polymorphically. After all residual SCCs, each
+annotated RHS is checked at a fresh rigid opening of its own scheme under the
+**final** environment. The body uses that same final environment. The written
+scheme is the recursive and exported interface; an implementation may be more
+general so long as it checks against that interface.
+
+This inner schedule is purely static. Surface lowering still performs the outer
+term-dependency SCC pass that chooses compact Core `letIn` versus `letRec` nodes;
+that pass preserves simultaneous authored-block scope (including acyclic forward
+references) and avoids wrapping every value in an unnecessarily large runtime
+recursive knot. The inner residual SCCs neither split nor reorder the runtime group.
 
 The questions below are retained as the historical checklist that led to those
 decisions:
@@ -660,10 +673,11 @@ The active implementation deliberately begins without altering `Expr` or `Step`.
 4. **Audit theorem boundaries.** **Done.** Algorithm-W completeness and principality
    remain about source `TypeOfHM`; operational soundness crosses by erasure into
    proof-only `RunWT`. No completeness theorem is claimed for arbitrary `RunWT`.
-5. **Choose checker organization.** **Done.** Use two focused passes rather than
-   turning the whole inferencer into a bidirectional calculus: infer the unsigned
-   sub-group (skipping signed positions), then check signed RHSs (skipping unsigned
-   positions) under the finalized schemes. Runtime syntax remains unchanged.
+5. **Choose checker organization.** **Done.** Keep the outer runtime SCCs, but
+   remove signed vertices from the static dependency graph and infer its residual
+   SCCs dependency-first. Then check signed RHSs under the finalized schemes rather
+   than turning the whole inferencer into a bidirectional calculus. Runtime syntax
+   remains unchanged.
 6. **Integrate after the mixed spike gate.** **Done.** The real-Core source rule,
    focused checker, proof-only runtime relation, surface bridge, soundness boundary,
    principality, relational and executable completeness, and acceptance fixtures now
@@ -673,6 +687,13 @@ The active implementation deliberately begins without altering `Expr` or `Step`.
    the independent constructor instantiations that meet at match reduction, a fully
    erased direct-self unfolding witness, scoped annotations, and public node-type
    metadata that closes temporary checking skolems back to source bound variables.
+
+The executable surface pipeline is `lowerProgram` followed by Core `typecheck`, so
+it receives the full residual-SCC behavior above. `SurfaceWTExpr.letRecInAnn` remains
+a sufficient hand-built structural surface rule whose monomorphic premises can be
+embedded as one residual component; it is not the compiler acceptance relation.
+Strengthening that auxiliary constructor to expose fine SCC stages would be a
+separate surface-specification change, not a runtime or checker limitation.
 
 The stop condition for the spike is important: if the supposedly small calculus once
 again demands type arguments on runtime variables, term-level `Λ`, or an elaborated
@@ -694,10 +715,11 @@ group checking into two phases:
 1. `RecSpec.init` maps `none` to a fresh `.mono β` and `some σ` to `.poly σ`.
 2. The initial recursive environment renders `.mono β` as a trivial scheme and
    `.poly σ` as the complete declared contract.
-3. The unsigned phase skips `.poly` positions and performs ordinary
-   Damas--Milner inference for every `.mono` member, sharing one monotype per member
-   throughout that phase.
-4. Solved `.mono` members are generalized, producing the final environment.
+3. The unsigned phase skips `.poly` positions, computes SCCs of the residual
+   `.mono` dependency graph, and performs ordinary Damas--Milner inference for one
+   SCC at a time, sharing one monotype per member within that component.
+4. Each solved component is generalized before downstream components are inferred;
+   the accumulated schemes produce the final environment.
 5. The signed phase skips `.mono` positions. For every `.poly σ`, it opens the
    member's scoped variables at fresh rigid skolems, checks the opened RHS against
    the corresponding opening of `σ`, and performs the usual escape checks under the
@@ -756,7 +778,7 @@ HM behavior as the default:
 
 ```text
 unannotated member: monomorphic inside the SCC, generalized afterwards
-complete annotated member: dependency-cut contract, checked after unsigned generalization
+complete annotated member: dependency-cut contract, checked after residual-SCC generalization
 all members: erased at runtime
 ```
 
