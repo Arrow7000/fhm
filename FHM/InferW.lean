@@ -10610,6 +10610,84 @@ theorem RecSpecs.PendingSeeds.stage_avoid_pool {base : Nat} {ctx : Ctx}
         exact fun heq => hseed i τ ht hindone (heq ▸ hg)
   · exact hctx g hg M hM
 
+theorem InferRecComponent.newPool_avoid_rigidSet
+    {component Φ ctx bindings specs Φ' S base done G rigid} {K : List Nat}
+    (h : InferRecComponent component 0 Φ (RecSpecs.algorithmStageCtx ctx specs done G)
+      bindings specs Φ' S)
+    (hpending : RecSpecs.PendingSeeds base ctx specs done)
+    (hnotDone : ∀ member ∈ component, member ∉ done)
+    (hbase : base ≤ Φ) (hK : ∀ g ∈ K, g < base)
+    (hSK : ∀ p ∈ S, p.1 ∉ K)
+    (hdomG : ∀ p ∈ S, p.1 ∉ G) (hranG : ∀ p ∈ S, ∀ g ∈ p.2.freeVars, g ∉ G)
+    (hbindRigid : ∀ g ∈ Expr.tyFreeVars.RecGroup.tyFreeVars bindings, g ∈ rigid)
+    (hpolyRigid : ∀ σ, .poly σ ∈ specs → ∀ g ∈ σ.body.freeVars, g ∈ rigid) :
+    ∀ g ∈ genGroupVars (rigid ++ G)
+      (RecSpecs.generalizationCtx (S.onCtx ctx) (specs.map (RecSpec.onSubst S)) done G).env
+      (RecSpecs.monoTysAt (specs.map (RecSpec.onSubst S)) component), g ∉ K := by
+  intro g hg hgK
+  have hgen := genGroupVars_spec hg
+  have hgRigid : g ∉ rigid := fun hc => hgen.2.2 (List.mem_append_left _ hc)
+  have hgDom : ∀ p ∈ S, p.1 ≠ g := fun p hp heq => hSK p hp (heq ▸ hgK)
+  have hstage : ∀ M ∈ (RecSpecs.algorithmStageCtx ctx specs done G).env, g ∉ M.body.freeVars := by
+    intro M hM hc
+    rcases List.mem_append.mp hM with hM | hM
+    · obtain ⟨i,hi,rfl⟩ := List.mem_mapIdx.mp hM
+      have hlook : specs[i]? = some specs[i] := List.getElem?_eq_getElem hi
+      cases hs : specs[i] with
+      | poly σ =>
+        simp only [hs, RecSpec.algorithmStageEntry] at hc
+        exact hgRigid (hpolyRigid σ (hs ▸ List.getElem_mem hi) g hc)
+      | mono τ =>
+        simp only [hs, RecSpec.algorithmStageEntry] at hc
+        split at hc
+        · rename_i hdone
+          have hlook' : (specs.map (RecSpec.onSubst S))[i]? = some (.mono (S.onTy τ)) := by
+            have ht : specs[i]? = some (.mono τ) := hs ▸ hlook
+            rw [List.getElem?_map, ht]; rfl
+          have hmem := RecSpecs.genGroup_mem_fixedSchemes (G := G) hlook' hdone
+          apply hgen.2.1
+          apply Env.mem_freeVars_iff.mpr
+          refine ⟨PolyTy.genGroup G (S.onTy τ), List.mem_append_left _ hmem, ?_⟩
+          have hsurv := Ty.mem_freeVars_onTy_of_not_dom hc hgDom
+          change g ∈ (S.onPolyTy (PolyTy.genGroup G τ)).body.freeVars at hsurv
+          rwa [Subst.onPolyTy_genGroup hdomG hranG] at hsurv
+        · rename_i hdone
+          rw [hpending.mono i τ (hs ▸ hlook) hdone] at hc
+          simp only [PolyTy.mkTrivial, Ty.freeVars, List.mem_singleton] at hc
+          have := hK g hgK
+          omega
+    · apply hgen.2.1
+      exact Env.mem_freeVars_iff.mpr ⟨S.onPolyTy M,
+        List.mem_append_right _ (List.mem_map.mpr ⟨M,hM,rfl⟩),
+        Ty.mem_freeVars_onTy_of_not_dom hc hgDom⟩
+  have htargets : ∀ j τ, j ∈ component → specs[j]? = some (.mono τ) → g ∉ τ.freeVars := by
+    intro j τ hj hτ
+    rw [hpending.mono j τ hτ (hnotDone j hj)]
+    simp only [Ty.freeVars, List.mem_singleton]
+    have := hK g hgK
+    omega
+  have hav := InferRecComponent.range_dom_avoid_selected_of_infer h
+    (fun _ he => Infer.sourceLocality he) (w := g) (by have := hK g hgK; omega)
+    (by
+      intro j rhs _ _
+      apply Expr.ForallOuter.of_recGroupRefs_with_outer (n := 0)
+      · intro i _ M hM; exact hstage M (List.mem_of_getElem? hM)
+      · intro i _ M hM; exact hstage M (List.mem_of_getElem? hM))
+    (fun j τ hj hτ => htargets j τ (by simpa using hj) hτ)
+    (fun hc => hgRigid (hbindRigid g hc))
+  obtain ⟨τ,hτ,hgτ⟩ := Ty.mem_freeVarsList_exists hgen.1
+  obtain ⟨member,hm,hlook⟩ := List.mem_filterMap.mp hτ
+  cases hs : (specs.map (RecSpec.onSubst S))[member]? with
+  | none => simp [hs] at hlook
+  | some spec =>
+    cases spec with
+    | poly σ => simp [hs, RecSpec.monoTy?] at hlook
+    | mono t =>
+      simp only [hs, Option.bind_some, RecSpec.monoTy?, Option.some.injEq] at hlook
+      subst τ
+      obtain ⟨old, hold, rfl⟩ := RecSpec.mono_getElem?_map_onSubst hs
+      exact Subst.notMemOnTy hav.1 (htargets member old hm hold) hgτ
+
 theorem InferRecStrata.pool_nodup {rigid bindings Φ ctx specs done G groups Φ' S specs' G'}
     (h : InferRecStrata rigid bindings Φ ctx specs done G groups Φ' S specs' G')
     (hG : G.Nodup) : G'.Nodup := by
@@ -10702,7 +10780,7 @@ decreasing_by all_goals (simp_wf; try omega)
 set_option maxHeartbeats 1_000_000 in
 /-- Dependency-first scheduling preserves untouched pending seeds, so each
     incoming generalisation pool is frozen during the next component. -/
-theorem InferRecStrata.frozen_of_sourceLocality
+theorem InferRecStrata.frozen_and_pool_avoid_of_sourceLocality
     {rigid bindings Φ ctx specs done G groups Φ' S specs' G'}
     (h : InferRecStrata rigid bindings Φ ctx specs done G groups Φ' S specs' G')
     (hInfer : ∀ {Ψ c e Ψ' T τ}, Infer Ψ c e Ψ' T τ →
@@ -10723,10 +10801,11 @@ theorem InferRecStrata.frozen_of_sourceLocality
     (hGbelow : ∀ g ∈ G, g < Φ)
     (hGrigid : ∀ g ∈ G, g ∉ rigid)
     (hGctx : ∀ g ∈ G, ∀ M ∈ ctx.env, g ∉ M.body.freeVars)
-    (hGseed : ∀ member τ, specs[member]? = some (.mono τ) → member ∉ done → base + member ∉ G) :
-    h.Frozen := by
+    (hGseed : ∀ member τ, specs[member]? = some (.mono τ) → member ∉ done → base + member ∉ G)
+    (K : List Nat) (hKbelow : ∀ g ∈ K, g < base) (hSK : ∀ p ∈ S, p.1 ∉ K)
+    (hGset : ∀ g ∈ G, g ∉ K) : h.Frozen ∧ ∀ g ∈ G', g ∉ K := by
   match h with
-  | .nil => exact .nil
+  | .nil => exact ⟨.nil,hGset⟩
   | .cons hcomponent hspecEq hGeq hrest =>
     expose_names
     have hlen := InferRecComponent.length_eq hcomponent
@@ -10806,9 +10885,16 @@ theorem InferRecStrata.frozen_of_sourceLocality
         exact RecSpecs.PendingSeeds.seed_notMem_newPool (G := G) (rigid := rigid ++ G)
           (boundaryDone := done) (component := component) hseeds₁ ht hm
           (fun j hj => List.mem_append_right _ hj) hc
-    apply InferRecStrata.Frozen.cons (hcomponent := hcomponent) (hspecs := hspecEq)
-      (hG := hGeq) hdom hran
-    apply InferRecStrata.frozen_of_sourceLocality hrest hInfer
+    have hS₁K : ∀ p ∈ S₁, p.1 ∉ K := fun p hp => hSK p (List.mem_append_left _ hp)
+    have hS₂K : ∀ p ∈ S₂, p.1 ∉ K := fun p hp => hSK p (List.mem_append_right _ hp)
+    have hGnextSet : ∀ g ∈ G ++ Gcurrent, g ∉ K := by
+      intro g hg
+      rcases List.mem_append.mp hg with hg | hg
+      · exact hGset g hg
+      · rw [hGeq, hspecEq] at hg
+        exact InferRecComponent.newPool_avoid_rigidSet hcomponent hpending hcomponent_not_done
+          (by omega) hKbelow hS₁K hdom hran hbindRigid hpolyRigid g hg
+    have htail := InferRecStrata.frozen_and_pool_avoid_of_sourceLocality hrest hInfer
       (past := past ++ [component])
       (by simpa only [List.append_assoc, List.singleton_append] using hvalid)
       (by simp only [List.flatten_append, List.flatten_cons, List.flatten_nil, List.append_nil, hdone])
@@ -10816,9 +10902,33 @@ theorem InferRecStrata.frozen_of_sourceLocality
       (Subst.onCtx_wf hS₁LC hctx) (Subst.onCtx_below hS₁B hle hbelow) hspecs₁LC hspecs₁B
       (by omega) hrigid hbindRigid
       (fun σ hσ => hpolyRigid σ (RecSpec.poly_mem_map_onSubst.mp (hspecEq ▸ hσ)))
-      hseeds₁ hGnextBelow hGnextRigid hGnextCtx hGnextSeed
+      hseeds₁ hGnextBelow hGnextRigid hGnextCtx hGnextSeed K hKbelow hS₂K hGnextSet
+    exact ⟨InferRecStrata.Frozen.cons (hcomponent := hcomponent) (hspecs := hspecEq)
+      (hG := hGeq) hdom hran htail.1, htail.2⟩
 termination_by groups.length
 decreasing_by all_goals (simp_wf; try omega)
+
+theorem InferRecStrata.frozen_of_sourceLocality
+    {rigid bindings Φ ctx specs done G groups Φ' S specs' G'}
+    (h : InferRecStrata rigid bindings Φ ctx specs done G groups Φ' S specs' G')
+    (hInfer : Infer.SourceLocality)
+    {base : Nat} {anns : List (Option PolyTy)} {past : List (List Nat)}
+    (hvalid : RecGroups.ValidResidualGroups anns bindings (past ++ groups))
+    (hdone : done = past.flatten) (hanns : specs.map RecSpec.ann = anns)
+    (hctx : CtxWF ctx) (hbelow : CtxBelow Φ ctx)
+    (hspecs : ∀ s ∈ specs, s.LC) (hspecsB : ∀ s ∈ specs, s.BelowFvars Φ)
+    (hbase : base + bindings.length ≤ Φ)
+    (hrigid : ∀ y ∈ rigid, y < base)
+    (hbindRigid : ∀ y ∈ Expr.tyFreeVars.RecGroup.tyFreeVars bindings, y ∈ rigid)
+    (hpolyRigid : ∀ σ, .poly σ ∈ specs → ∀ y ∈ σ.body.freeVars, y ∈ rigid)
+    (hpending : RecSpecs.PendingSeeds base ctx specs done)
+    (hGbelow : ∀ g ∈ G, g < Φ) (hGrigid : ∀ g ∈ G, g ∉ rigid)
+    (hGctx : ∀ g ∈ G, ∀ M ∈ ctx.env, g ∉ M.body.freeVars)
+    (hGseed : ∀ member τ, specs[member]? = some (.mono τ) → member ∉ done → base + member ∉ G) :
+    h.Frozen :=
+  (InferRecStrata.frozen_and_pool_avoid_of_sourceLocality h hInfer hvalid hdone hanns
+    hctx hbelow hspecs hspecsB hbase hrigid hbindRigid hpolyRigid hpending
+    hGbelow hGrigid hGctx hGseed [] (by simp) (by simp) (by simp)).1
 
 /-- A historical stage context survives subsequent strata: its completed
     members remain completed, while all other entries stay monomorphic. -/
