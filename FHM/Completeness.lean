@@ -4532,6 +4532,25 @@ private structure RecGroupOpening (Φ : Nat) (ctx : Ctx) (S₀ : Subst)
     TypeOfHM (R.onCtx (RecSpecs.rhsCtx ctx (RecSpec.init Φ anns) [] []))
       p.1 (R.onTy τ)
 
+/-- Fixed-opening residual carried through fine residual SCC inference.  It
+    connects every live algorithmic monotype to the one shared declarative
+    opening and records precisely the freshness needed to generalize completed
+    components without changing that opening. -/
+private structure RecStrataResidual (declCtx : Ctx) (declSpecs : List RecSpec)
+    (declG Xs K : List Nat) (ctx : Ctx) (specs : List RecSpec)
+    (done G : List Nat) (R : Subst) : Prop where
+  lc : ∀ p ∈ R, p.2.IsLC
+  fixes : ∀ k ∈ K, R.onTy (.fvar k) = .fvar k
+  ctx_eq : R.onCtx ctx = declCtx
+  connection : ∀ (member : Nat) (algTy declTy : Ty),
+    specs[member]? = some (RecSpec.mono algTy) →
+    declSpecs[member]? = some (RecSpec.mono declTy) →
+    R.onTy algTy = Ty.renameG declG Xs declTy
+  completed_fresh : ∀ (member : Nat) (algTy : Ty),
+    specs[member]? = some (RecSpec.mono algTy) → member ∈ done →
+    ∀ x ∈ Xs,
+      x ∉ (R.onPolyTy (PolyTy.genGroup G algTy)).body.freeVars
+
 private theorem exists_recgroup_opening_core {Φ : Nat} {ctx : Ctx} {S₀ : Subst}
     {anns : List (Option PolyTy)} {bindings : List Expr} {specs : List RecSpec}
     {G L K : List Nat}
@@ -4629,6 +4648,34 @@ private theorem exists_recgroup_opening_core {Φ : Nat} {ctx : Ctx} {S₀ : Subs
     ?_⟩⟩
   · intro j hj τ hs
     simpa [target, hs] using hblock j hj
+
+private theorem RecGroupOpeningCore.initialResidual
+    {Φ : Nat} {ctx : Ctx} {S₀ : Subst}
+    {anns : List (Option PolyTy)} {bindings : List Expr} {specs : List RecSpec}
+    {G L K : List Nat}
+    (o : RecGroupOpeningCore Φ ctx S₀ anns bindings specs G L K)
+    (hwf : RecSpecs.WF anns bindings specs G) (hbelow : CtxBelow Φ ctx) :
+    RecStrataResidual (S₀.onCtx ctx) specs G o.Xs K ctx
+      (RecSpec.init Φ anns) [] [] o.R := by
+  refine {
+    lc := o.lc
+    fixes := o.fixes
+    ctx_eq := (Subst.onCtx_congr o.agrees hbelow)
+    connection := ?_
+    completed_fresh := ?_ }
+  · intro member algTy declTy halg hdecl
+    have hmember : member < specs.length :=
+      (List.getElem?_eq_some_iff.mp hdecl).1
+    have hinit := RecSpec.init_getElem_of_specs (Φ := Φ) hwf.anns_eq
+      member hmember
+    have halgVal := (List.getElem?_eq_some_iff.mp halg).2
+    have hdeclVal := (List.getElem?_eq_some_iff.mp hdecl).2
+    rw [halgVal, hdeclVal] at hinit
+    have halgTy : algTy = .fvar (Φ + member) := by simpa using hinit
+    subst algTy
+    exact o.block member hmember declTy hdeclVal
+  · intro member algTy _ hdone
+    exact (List.not_mem_nil hdone).elim
 
 private theorem exists_recgroup_opening {Φ : Nat} {ctx : Ctx} {S₀ : Subst}
     {anns : List (Option PolyTy)} {bindings : List Expr} {specs : List RecSpec}
