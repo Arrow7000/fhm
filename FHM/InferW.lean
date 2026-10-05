@@ -1,5 +1,6 @@
 import FHM.CorePath
 import FHM.RuntimeTyping
+import FHM.Scc.Kosaraju
 
 -- These pure `Ty`-level lemmas now live in `Core` (they were originally developed
 -- here). Core declares them without `@[simp]`, but the InferW proofs below rely on
@@ -585,6 +586,101 @@ def genGroupSchemes (rigid : List Nat) (env : Env) (τs : List Ty) : List PolyTy
 def RecGroup.rigidVars (anns : List (Option PolyTy)) (bindings : List Expr) : List Nat :=
   Expr.tyFreeVars.AnnList.tyFreeVars anns ++ bindings.flatMap Expr.tyFreeVars
 
+/-! ### Residual dependency SCCs for recursive inference
+
+The runtime `letRec` group remains the SCC selected by the Surface pass.  For
+type inference, however, a complete annotation is a dependency cut.  The graph
+below therefore retains edges only between unannotated members.  Annotated
+vertices are isolated by construction and discarded after Kosaraju; the
+remaining components are ordered dependency-first by Kahn.
+
+This second partition is intentionally derived from Core de Bruijn references,
+not carried as elaboration metadata. -/
+
+def RecGroup.isUnsignedAt (anns : List (Option PolyTy)) (i : Nat) : Bool :=
+  match anns[i]? with
+  | some none => true
+  | _ => false
+
+def RecGroup.inferenceSucc (anns : List (Option PolyTy))
+    (bindings : List Expr) (i : Nat) : List Nat :=
+  if RecGroup.isUnsignedAt anns i then
+    match bindings[i]? with
+    | none => []
+    | some rhs =>
+        (rhs.recGroupRefs bindings.length 0).filter
+          (fun j => RecGroup.isUnsignedAt anns j)
+  else []
+
+def RecGroup.inferenceDigraph (anns : List (Option PolyTy))
+    (bindings : List Expr) : Scc.Digraph (Fin bindings.length) where
+  succ := fun i =>
+    ((RecGroup.inferenceSucc anns bindings i.val).filterMap fun j =>
+      if h : j < bindings.length then some ⟨j, h⟩ else none).toFinset
+
+private def RecGroup.inferenceSccIndexSets (anns : List (Option PolyTy))
+    (bindings : List Expr) : List (List Nat) :=
+  (Scc.kosaraju (RecGroup.inferenceDigraph anns bindings)).map fun component =>
+    (component.map Fin.val).filter (fun i => RecGroup.isUnsignedAt anns i)
+
+private def RecGroup.componentDependsOn (succ : Nat → List Nat)
+    (dependent dependency : List Nat) : Bool :=
+  dependent.any fun i => (succ i).any fun j => j ∈ dependency
+
+private def RecGroup.sccBeforeEdges (succ : Nat → List Nat)
+    (components : List (List Nat)) : List (Nat × Nat) :=
+  let count := components.length
+  (List.range count).flatMap fun dependent =>
+    (List.range count).filterMap fun dependency =>
+      if dependent = dependency then none
+      else
+        match components[dependent]?, components[dependency]? with
+        | some dependentMembers, some dependencyMembers =>
+            if RecGroup.componentDependsOn succ dependentMembers dependencyMembers then
+              some (dependency, dependent)
+            else none
+        | _, _ => none
+
+private def RecGroup.indegreeGet (indegrees : List Nat) (i : Nat) : Nat :=
+  indegrees[i]?.getD 0
+
+private def RecGroup.indegreeSet (indegrees : List Nat) (i value : Nat) : List Nat :=
+  indegrees.mapIdx fun j old => if j = i then value else old
+
+private def RecGroup.kahnGo (beforeEdges : List (Nat × Nat)) :
+    Nat → List Nat → List Nat → List Nat → List Nat
+  | 0, _indegrees, _ready, acc => acc
+  | _fuel + 1, _indegrees, [], acc => acc
+  | fuel + 1, indegrees, component :: ready, acc =>
+      let acc' := acc ++ [component]
+      let dependents := beforeEdges.filterMap fun edge =>
+        if edge.1 = component then some edge.2 else none
+      let indegrees' := dependents.foldl (fun state dependent =>
+        RecGroup.indegreeSet state dependent
+          (RecGroup.indegreeGet state dependent - 1)) indegrees
+      let newlyReady := dependents.filter fun dependent =>
+        RecGroup.indegreeGet indegrees' dependent = 0 &&
+          dependent ∉ acc' && dependent ∉ ready
+      RecGroup.kahnGo beforeEdges fuel indegrees' (ready ++ newlyReady) acc'
+
+private def RecGroup.kahnOrder (componentCount : Nat)
+    (beforeEdges : List (Nat × Nat)) : List Nat :=
+  let indegrees := (List.range componentCount).map fun component =>
+    beforeEdges.filter (fun edge => edge.2 = component) |>.length
+  let ready := (List.range componentCount).filter fun component =>
+    RecGroup.indegreeGet indegrees component = 0
+  RecGroup.kahnGo beforeEdges (componentCount + 1) indegrees ready []
+
+/-- Unannotated inference SCCs in dependency-first order.  Complete annotated
+members do not occur in the result and do not induce edges between components. -/
+def RecGroup.inferenceSccs (anns : List (Option PolyTy))
+    (bindings : List Expr) : List (List Nat) :=
+  let components := (RecGroup.inferenceSccIndexSets anns bindings).filter (!·.isEmpty)
+  let succ := RecGroup.inferenceSucc anns bindings
+  let order := RecGroup.kahnOrder components.length
+    (RecGroup.sccBeforeEdges succ components)
+  order.filterMap fun i => components[i]?
+
 theorem Expr.mem_flatMap_tyFreeVars_iff_recGroup {bindings : List Expr} {x : Nat} :
     x ∈ bindings.flatMap Expr.tyFreeVars ↔
       x ∈ Expr.tyFreeVars.RecGroup.tyFreeVars bindings := by
@@ -629,6 +725,39 @@ def RecSpec.monoTy? : RecSpec → Option Ty
 /-- The solved monotypes of a group's specs, in order — the pool `genGroupVars`
     ranges over (annotated members contribute nothing). -/
 def RecSpecs.monoTys (specs : List RecSpec) : List Ty := specs.filterMap RecSpec.monoTy?
+
+/-- Monotypes belonging to one residual component, selected in the component's
+original recursive-group coordinates. -/
+def RecSpecs.monoTysAt (specs : List RecSpec) (members : List Nat) : List Ty :=
+  members.filterMap fun member => (specs[member]?).bind RecSpec.monoTy?
+
+/-- Algorithmic environment entry while residual components are processed.
+Completed inferred members are schemes; annotated members are always schemes;
+current and later inferred members retain their positional monotypes. -/
+def RecSpec.algorithmStageEntry (done G : List Nat) (member : Nat)
+    (spec : RecSpec) : PolyTy :=
+  match spec with
+  | .poly σ => σ
+  | .mono τ =>
+      if member ∈ done then PolyTy.genGroup G τ else PolyTy.mkTrivial τ
+
+def RecSpecs.algorithmStageCtx (ctx : Ctx) (specs : List RecSpec)
+    (done G : List Nat) : Ctx :=
+  { ctx with env := specs.mapIdx (RecSpec.algorithmStageEntry done G) ++ ctx.env }
+
+/-- Only contracts and already-completed components constrain generalisation of
+the next residual SCC. Current/later monotype placeholders retain positions in
+the inference environment but are excluded from this free-variable boundary. -/
+def RecSpecs.fixedSchemes (specs : List RecSpec) (done G : List Nat) : List PolyTy :=
+  specs.mapIdx (fun member spec =>
+    match spec with
+    | .poly σ => some σ
+    | .mono τ => if member ∈ done then some (PolyTy.genGroup G τ) else none)
+  |>.filterMap id
+
+def RecSpecs.generalizationCtx (ctx : Ctx) (specs : List RecSpec)
+    (done G : List Nat) : Ctx :=
+  { ctx with env := RecSpecs.fixedSchemes specs done G ++ ctx.env }
 
 /-- Well-formedness of a single algorithmic `RecSpec`: an unannotated member's
     solved monotype is locally closed; an annotated member's declared scheme is
@@ -1229,6 +1358,60 @@ theorem RecCeilingConstraints.fixes_annotations {K rigid G Φ anns specs S}
   intro p hp hfv
   exact (h.dom_avoids p hp).2.1 (h.annotation_fv_rigid σ hσ p.1 hfv)
 
+/-! ### Residual-SCC recursive inference relations
+
+These relations are parameterised by the ambient expression-inference
+relation. This lets the main `Infer` rule recurse through component RHSs without
+adding another mutually generated recursor to every existing proof. -/
+
+abbrev InferRelation := Nat → Ctx → Expr → Nat → Subst → Ty → Prop
+
+/-- Infer exactly one residual component, retaining original member positions.
+Unselected monomorphic members and every annotated member are skipped. -/
+inductive InferRecComponent (InferExpr : InferRelation) (members : List Nat) :
+    Nat → Nat → Ctx → List Expr → List RecSpec → Nat → Subst → Prop
+  | nil {memberIndex Φ ctx} :
+      InferRecComponent InferExpr members memberIndex Φ ctx [] [] Φ []
+  | consSelected {memberIndex Φ ctx e rest τ specs Φ₁ Φ₂ S₁ S₂ S₃ τ'} :
+      memberIndex ∈ members →
+      InferExpr Φ ctx e Φ₁ S₁ τ' →
+      UnifyRel τ' (S₁.onTy τ) S₂ →
+      InferRecComponent InferExpr members (memberIndex + 1) Φ₁
+        (S₂.onCtx (S₁.onCtx ctx)) rest
+        (specs.map (RecSpec.onSubst (S₁ ++ S₂))) Φ₂ S₃ →
+      InferRecComponent InferExpr members memberIndex Φ ctx
+        (e :: rest) (.mono τ :: specs) Φ₂ (S₁ ++ S₂ ++ S₃)
+  | skipMono {memberIndex Φ ctx e rest τ specs Φ' S} :
+      memberIndex ∉ members →
+      InferRecComponent InferExpr members (memberIndex + 1) Φ ctx rest specs Φ' S →
+      InferRecComponent InferExpr members memberIndex Φ ctx
+        (e :: rest) (.mono τ :: specs) Φ' S
+  | skipPoly {memberIndex Φ ctx e rest σ specs Φ' S} :
+      InferRecComponent InferExpr members (memberIndex + 1) Φ ctx rest specs Φ' S →
+      InferRecComponent InferExpr members memberIndex Φ ctx
+        (e :: rest) (.poly σ :: specs) Φ' S
+
+/-- Process residual components dependency-first. `done` records completed
+member indices and `G` the frozen aggregate generalisation pool. -/
+inductive InferRecStrata (InferExpr : InferRelation) (rigid : List Nat)
+    (bindings : List Expr) :
+    Nat → Ctx → List RecSpec → List Nat → List Nat → List (List Nat) →
+      Nat → Subst → List RecSpec → List Nat → Prop
+  | nil { Φ ctx specs done G } :
+      InferRecStrata InferExpr rigid bindings Φ ctx specs done G [] Φ [] specs G
+  | cons { Φ ctx specs done G component rest Φ₁ Φ₂ S₁ S₂ specs₁ specs₂ Gcurrent Gfinal } :
+      InferRecComponent InferExpr component 0 Φ
+        (RecSpecs.algorithmStageCtx ctx specs done G)
+        bindings specs Φ₁ S₁ →
+      specs₁ = specs.map (RecSpec.onSubst S₁) →
+      Gcurrent = genGroupVars (rigid ++ G)
+        (RecSpecs.generalizationCtx (S₁.onCtx ctx) specs₁ done G).env
+        (RecSpecs.monoTysAt specs₁ component) →
+      InferRecStrata InferExpr rigid bindings Φ₁ (S₁.onCtx ctx) specs₁
+        (done ++ component) (G ++ Gcurrent) rest Φ₂ S₂ specs₂ Gfinal →
+      InferRecStrata InferExpr rigid bindings Φ ctx specs done G
+        (component :: rest) Φ₂ (S₁ ++ S₂) specs₂ Gfinal
+
 /-! Algorithm W as a type-directed inference relation over the source `Expr`.
     Its outputs are only the fresh-variable frontier, substitution, and inferred
     monotype; runtime execution uses the independently defined erased source term.
@@ -1575,7 +1758,7 @@ theorem InferRecGroup.frontier_le {Φ ctx bindings specs Φ' S}
   | skipPoly hrest => exact InferRecGroup.frontier_le hrest
 termination_by Expr.sizeRecGroup bindings
 decreasing_by
-  all_goals (try subst_vars; try simp only [Expr.sizeRecGroup, Expr.size_openTyVars]; omega)
+  all_goals (try subst_vars; try simp only [Expr.sizeRecGroup]; omega)
 theorem InferRecGroupPoly.frontier_le {Φ ctx bindings specs Φ' S}
     (h : InferRecGroupPoly Φ ctx bindings specs Φ' S) : Φ ≤ Φ' := by
   cases h with
@@ -1600,7 +1783,7 @@ theorem InferRecGroup.length_eq {Φ ctx bindings specs Φ' S}
     | consMono _ _ hrest =>
       have := ih hrest; simp only [List.length_cons, List.length_map] at this ⊢; omega
     | skipPoly hrest =>
-      have := ih hrest; simp only [List.length_cons, List.length_map] at this ⊢; omega
+      have := ih hrest; simp only [List.length_cons] at this ⊢; omega
 
 theorem InferRecGroupPoly.length_eq {Φ ctx bindings specs Φ' S}
     (h : InferRecGroupPoly Φ ctx bindings specs Φ' S) : bindings.length = specs.length := by
@@ -1943,7 +2126,7 @@ theorem InferRecGroup.lc {Φ ctx bindings specs Φ' S}
       (fun s hs => hspecs s (List.mem_cons_of_mem _ hs))
 termination_by Expr.sizeRecGroup bindings
 decreasing_by
-  all_goals (try subst_vars; try simp only [Expr.sizeRecGroup, Expr.size_openTyVars]; omega)
+  all_goals (try subst_vars; try simp only [Expr.sizeRecGroup]; omega)
 /-- Local-closedness of the signed checking phase. -/
 theorem InferRecGroupPoly.lc {Φ ctx bindings specs Φ' S}
     (h : InferRecGroupPoly Φ ctx bindings specs Φ' S)
@@ -3232,7 +3415,7 @@ theorem InferRecGroup.belowFvars {Φ ctx bindings specs Φ' S}
         exact .inr hy))
 termination_by Expr.sizeRecGroup bindings
 decreasing_by
-  all_goals (try subst_vars; try simp only [Expr.sizeRecGroup, Expr.size_openTyVars]; omega)
+  all_goals (try subst_vars; try simp only [Expr.sizeRecGroup]; omega)
 /-- Frontier bound for the signed recursive checking phase. -/
 theorem InferRecGroupPoly.belowFvars {Φ ctx bindings specs Φ' S}
     (h : InferRecGroupPoly Φ ctx bindings specs Φ' S)
@@ -3621,7 +3804,7 @@ theorem InferRecGroup.dom_below {Φ ctx bindings specs Φ' S}
         exact .inr hy))
 termination_by Expr.sizeRecGroup bindings
 decreasing_by
-  all_goals (try subst_vars; try simp only [Expr.sizeRecGroup, Expr.size_openTyVars]; omega)
+  all_goals (try subst_vars; try simp only [Expr.sizeRecGroup]; omega)
 /-- Substitution-domain bound for the signed recursive checking phase. -/
 theorem InferRecGroupPoly.dom_below {Φ ctx bindings specs Φ' S}
     (h : InferRecGroupPoly Φ ctx bindings specs Φ' S)
@@ -4309,7 +4492,7 @@ theorem InferRecGroup.range_avoid {Φ ctx bindings specs Φ' S}
         exact .inr hc))
 termination_by Expr.sizeRecGroup bindings
 decreasing_by
-  all_goals (try subst_vars; try simp only [Expr.sizeRecGroup, Expr.size_openTyVars]; omega)
+  all_goals (try subst_vars; try simp only [Expr.sizeRecGroup]; omega)
 /-- Avoid-form locality for the signed recursive checking phase. -/
 theorem InferRecGroupPoly.range_avoid {Φ ctx bindings specs Φ' S}
     (h : InferRecGroupPoly Φ ctx bindings specs Φ' S) :
@@ -5171,7 +5354,7 @@ theorem InferRecGroup.eliminates {Φ ctx bindings specs Φ' S}
       (fun p hp hc => hSe p hp (by exact List.mem_append_right _ hc))
       (fun p hp σ hσ => hSsch p hp σ (List.mem_cons_of_mem _ hσ))
 termination_by Expr.sizeRecGroup bindings
-decreasing_by all_goals (try subst_vars; try simp only [Expr.sizeRecGroup, Expr.size_openTyVars]; omega)
+decreasing_by all_goals (try subst_vars; try simp only [Expr.sizeRecGroup]; omega)
 /-- Idempotency of the signed recursive checking phase. -/
 theorem InferRecGroupPoly.eliminates {Φ ctx bindings specs Φ' S}
     (h : InferRecGroupPoly Φ ctx bindings specs Φ' S)
@@ -5717,7 +5900,6 @@ decreasing_by
     try simp only [Expr.size, Expr.size_openTyVars]
     first
     | omega
-    | exact lt_of_le_of_lt (Expr.length_le_sizeRecGroup _) (by omega)
 theorem InferBranches.dom_avoid {Φ ctx scrutTy ρ brs Φ' S}
     (h : InferBranches Φ ctx scrutTy ρ brs Φ' S) :
     ∀ {w : Nat}, w < Φ → (∀ M ∈ ctx.env, w ∉ M.body.freeVars) → w ∉ scrutTy.freeVars →
@@ -5861,7 +6043,7 @@ theorem InferRecGroup.dom_avoid {Φ ctx bindings specs Φ' S}
       (fun hc => hbinds (by exact List.mem_append_right _ hc))
 termination_by Expr.sizeRecGroup bindings
 decreasing_by
-  all_goals (try subst_vars; try simp only [Expr.sizeRecGroup, Expr.size_openTyVars]; omega)
+  all_goals (try subst_vars; try simp only [Expr.sizeRecGroup]; omega)
 /-- Domain avoidance for the signed recursive checking phase. -/
 theorem InferRecGroupPoly.dom_avoid {Φ ctx bindings specs Φ' S}
     (h : InferRecGroupPoly Φ ctx bindings specs Φ' S) :
@@ -10015,7 +10197,7 @@ theorem InferRecGroup.sourceSoundMono {Φ ctx bindings specs Φ' S}
       rwa [hctx_eq] at htail
 termination_by Expr.sizeRecGroup bindings
 decreasing_by
-  all_goals (try subst_vars; try simp only [Expr.sizeRecGroup, Expr.size_openTyVars]; omega)
+  all_goals (try subst_vars; try simp only [Expr.sizeRecGroup]; omega)
 
 /- Source soundness of the signed recursive-group phase. -/
 theorem InferRecGroupPoly.sourceSoundPoly {Φ ctx bindings specs Φ' S}
@@ -11515,7 +11697,7 @@ def inferRecGroupWithTypesCore (K : List Nat) (Φ : Nat) (ctx : Ctx) (memberInde
   | _, _ => none
 termination_by Expr.sizeRecGroup bindings
 decreasing_by
-  all_goals (try simp only [Expr.sizeRecGroup, Expr.size_openTyVars]; omega)
+  all_goals (try simp only [Expr.sizeRecGroup]; omega)
 
 /-- Second recursion-group phase: check signed members under the final scheme
     environment and skip unsigned members, again preserving source indices. -/

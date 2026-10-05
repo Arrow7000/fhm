@@ -100,9 +100,9 @@ theorem Expr.atCorePath_append (e : Expr) : ∀ basePath suffix,
           cases step <;> try simp [Expr.atCorePath, ihs]
           rename_i index
           cases atIndex : branches[index]? with
-          | none => simp [Expr.atCorePath, atIndex]
+          | none => simp
           | some br =>
-              simpa [Expr.atCorePath, atIndex] using
+              simpa [atIndex] using
                 ihb br.1 br.2 (List.mem_of_getElem? atIndex) rest suffix
   | letRec ann rhss body ihr ihb =>
       intro basePath suffix
@@ -112,9 +112,9 @@ theorem Expr.atCorePath_append (e : Expr) : ∀ basePath suffix,
           cases step <;> try simp [Expr.atCorePath, ihb]
           rename_i index
           cases atIndex : rhss[index]? with
-          | none => simp [Expr.atCorePath, atIndex]
+          | none => simp
           | some rhs =>
-              simpa [Expr.atCorePath, atIndex] using
+              simpa [atIndex] using
                 ihr rhs (List.mem_of_getElem? atIndex) rest suffix
 
 #print axioms Expr.atCorePath_append

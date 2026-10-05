@@ -614,6 +614,55 @@ decreasing_by
        simp only [Prod.mk.sizeOf_spec] at h
        omega)
 
+/-! ## References to an enclosing recursive group
+
+`Expr.recGroupRefs n depth e` collects the indices of the `n` members of an
+*enclosing* `letRec` group that occur free in `e`. `depth` counts term binders
+introduced between `e` and that group. Thus a variable `i` names group member
+`i - depth` exactly when `depth ≤ i < depth + n`.
+
+This is deliberately a Core operation rather than Surface metadata: recursive
+inference also applies to nested and directly-constructed Core terms. Inner
+binders merely raise `depth`; an inner `letRec` does not hide the outer group,
+it shifts its indices by the inner group's size. -/
+
+mutual
+
+def Expr.recGroupRefs (groupSize depth : Nat) : Expr → List Nat
+  | .var i =>
+      if depth ≤ i && i < depth + groupSize then [i - depth] else []
+  | .primLit _ => []
+  | .primBinOp _ => []
+  | .ctor _ => []
+  | .lambda _ body => body.recGroupRefs groupSize (depth + 1)
+  | .app f arg =>
+      (f.recGroupRefs groupSize depth ++ arg.recGroupRefs groupSize depth).dedup
+  | .letIn _ rhs body =>
+      (rhs.recGroupRefs groupSize depth ++
+        body.recGroupRefs groupSize (depth + 1)).dedup
+  | .match_ scrut branches =>
+      (scrut.recGroupRefs groupSize depth ++
+        RecGroupRefs.branches groupSize depth branches).dedup
+  | .letRec _ bindings body =>
+      let innerDepth := depth + bindings.length
+      (RecGroupRefs.bindings groupSize innerDepth bindings ++
+        body.recGroupRefs groupSize innerDepth).dedup
+
+def RecGroupRefs.branches (groupSize depth : Nat) :
+    List (MatchPattern × Expr) → List Nat
+  | [] => []
+  | (pat, body) :: rest =>
+      (body.recGroupRefs groupSize (depth + pat.bindCount) ++
+        RecGroupRefs.branches groupSize depth rest).dedup
+
+def RecGroupRefs.bindings (groupSize depth : Nat) : List Expr → List Nat
+  | [] => []
+  | rhs :: rest =>
+      (rhs.recGroupRefs groupSize depth ++
+        RecGroupRefs.bindings groupSize depth rest).dedup
+
+end
+
 mutual
 
 /-- Replace all `.bvar`s with some other `Ty` -/
@@ -2820,6 +2869,50 @@ def RecSpecs.rhsCtx (ctx : Ctx) (specs : List RecSpec) (G Xs : List Nat) : Ctx :
 def RecSpecs.bodyCtx (ctx : Ctx) (specs : List RecSpec) (G : List Nat) : Ctx :=
   { ctx with env := specs.map (RecSpec.bodyScheme G) ++ ctx.env }
 
+/-- Render one recursive member while the unannotated residual SCCs are being
+processed. Annotated contracts are always schemes. A completed unannotated
+component is also available at its generalized scheme; current and later
+components remain at one shared opening of their monotypes. -/
+def RecSpec.stageEntry (done G Xs : List Nat) (member : Nat) (spec : RecSpec) : PolyTy :=
+  match spec with
+  | .poly σ => σ
+  | .mono τ =>
+      if member ∈ done then PolyTy.genGroup G τ
+      else PolyTy.mkTrivial (Ty.renameG G Xs τ)
+
+/-- Positional recursive environment at one inference stratum. Keeping every
+entry preserves the Core de Bruijn coordinates even for later components that
+the current component cannot reference. -/
+def RecSpecs.stageCtx (ctx : Ctx) (specs : List RecSpec) (done G Xs : List Nat) : Ctx :=
+  { ctx with env := specs.mapIdx (RecSpec.stageEntry done G Xs) ++ ctx.env }
+
+/-- An annotation slot is an ordinary inferred member rather than a complete
+contract. -/
+def RecGroups.UnsignedAt (anns : List (Option PolyTy)) (member : Nat) : Prop :=
+  anns[member]? = some none
+
+/-- A dependency-first partition of exactly the unannotated members of one
+runtime recursive group. Components need not carry an algorithm-specific SCC
+certificate: coverage plus the topological edge condition already prevents a
+dependency cycle from being split across components. -/
+structure RecGroups.ValidResidualGroups (anns : List (Option PolyTy))
+    (bindings : List Expr) (groups : List (List Nat)) : Prop where
+  length : anns.length = bindings.length
+  nonempty : ∀ component ∈ groups, component ≠ []
+  flatten_nodup : groups.flatten.Nodup
+  bounded : ∀ member ∈ groups.flatten, member < bindings.length
+  covers_unsigned : ∀ member, member < bindings.length →
+    (member ∈ groups.flatten ↔ RecGroups.UnsignedAt anns member)
+  dependencies_first :
+    ∀ {stage dependencyStage : Nat} {component dependencyComponent : List Nat}
+      {source target : Nat} {rhs : Expr},
+      groups[stage]? = some component →
+      groups[dependencyStage]? = some dependencyComponent →
+      source ∈ component → target ∈ dependencyComponent →
+      bindings[source]? = some rhs →
+      target ∈ rhs.recGroupRefs bindings.length 0 →
+      dependencyStage ≤ stage
+
 /-- Well-formed derivation data for a recursion group: the (rule-internal)
     `specs` match the STORED annotations `anns` one-to-one, there is one spec per
     binding, the gen-var pool is duplicate-free, unannotated members' shared
@@ -2862,6 +2955,21 @@ def RecSpecs.MonoTyped (TypeOf : Ctx → Expr → Ty → Prop) (ctx : Ctx)
   ∀ Xs, FreshNames L G.length Xs →
     ∀ pair ∈ bindings.zip specs, ∀ τ, pair.2 = .mono τ →
       TypeOf (RecSpecs.rhsCtx ctx specs G Xs) pair.1 (Ty.renameG G Xs τ)
+
+/-- Cofinite typing of ordinary HM members one residual dependency SCC at a
+time. Earlier components are generalized in `stageCtx`; the current component
+and syntactically unreachable later components remain monomorphic. -/
+def RecSpecs.StratifiedMonoTyped (TypeOf : Ctx → Expr → Ty → Prop) (ctx : Ctx)
+    (bindings : List Expr) (specs : List RecSpec) (groups : List (List Nat))
+    (G L : List Nat) : Prop :=
+  ∀ stage component, groups[stage]? = some component →
+    ∀ Xs, FreshNames L G.length Xs →
+      ∀ member ∈ component, ∀ rhs τ,
+        bindings[member]? = some rhs →
+        specs[member]? = some (.mono τ) →
+        TypeOf
+          (RecSpecs.stageCtx ctx specs (groups.take stage).flatten G Xs)
+          rhs (Ty.renameG G Xs τ)
 
 /-- Cofinite scheme-relative checking for completely annotated members after
 the ordinary HM members have been solved and generalised.  Complete signatures
