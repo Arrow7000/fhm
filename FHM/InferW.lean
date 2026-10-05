@@ -705,6 +705,45 @@ private theorem RecGroup.inferenceSccs_bounded
   obtain ⟨vertex, _hvertex, hval⟩ := List.mem_map.mp hmember
   exact hval ▸ vertex.isLt
 
+/-- Members projected into the same executable residual component are mutually
+    reachable in the unsigned dependency graph.  Completeness uses this public
+    SCC fact to show that an arbitrary valid declarative partition cannot split
+    one of the algorithm's fine components. -/
+theorem RecGroup.inferenceSccs_sameScc
+    (anns : List (Option PolyTy)) (bindings : List Expr)
+    {stage : Nat} {component : List Nat} {left right : Nat}
+    (hcomponent : (RecGroup.inferenceSccs anns bindings)[stage]? = some component)
+    (hleft : left ∈ component) (hright : right ∈ component)
+    (hleftBound : left < bindings.length) (hrightBound : right < bindings.length) :
+    Scc.Mutual (RecGroup.inferenceDigraph anns bindings)
+      ⟨left, hleftBound⟩ ⟨right, hrightBound⟩ := by
+  have hcomponentMem : component ∈ RecGroup.inferenceSccs anns bindings :=
+    List.mem_of_getElem? hcomponent
+  simp only [RecGroup.inferenceSccs, List.mem_filter] at hcomponentMem
+  obtain ⟨hprojected, _⟩ := hcomponentMem
+  simp only [RecGroup.inferenceSccProjected, List.mem_map] at hprojected
+  obtain ⟨sourceComponent, hsourceMem, hproject⟩ := hprojected
+  have hleftProjected : left ∈ RecGroup.projectInferenceComponent anns sourceComponent := by
+    simpa [hproject] using hleft
+  have hrightProjected : right ∈ RecGroup.projectInferenceComponent anns sourceComponent := by
+    simpa [hproject] using hright
+  simp only [RecGroup.projectInferenceComponent, List.mem_filter] at hleftProjected
+  simp only [RecGroup.projectInferenceComponent, List.mem_filter] at hrightProjected
+  obtain ⟨hleftMap, _⟩ := hleftProjected
+  obtain ⟨hrightMap, _⟩ := hrightProjected
+  obtain ⟨leftFin, hleftFinMem, hleftVal⟩ := List.mem_map.mp hleftMap
+  obtain ⟨rightFin, hrightFinMem, hrightVal⟩ := List.mem_map.mp hrightMap
+  have hsourceKosaraju : sourceComponent ∈
+      Scc.kosaraju (RecGroup.inferenceDigraph anns bindings) :=
+    (List.Perm.mem_iff (Scc.rankedSccs_perm
+      (RecGroup.inferenceDigraph anns bindings))).mp hsourceMem
+  have hmutual := (Scc.kosaraju_sound
+    (RecGroup.inferenceDigraph anns bindings)).sameScc
+      sourceComponent hsourceKosaraju leftFin hleftFinMem rightFin hrightFinMem
+  have hleftEq : leftFin = ⟨left, hleftBound⟩ := Fin.ext hleftVal
+  have hrightEq : rightFin = ⟨right, hrightBound⟩ := Fin.ext hrightVal
+  simpa [hleftEq, hrightEq] using hmutual
+
 private theorem RecGroup.mem_inferenceSccs_flatten_iff
     (anns : List (Option PolyTy)) (bindings : List Expr)
     {member : Nat} (hbound : member < bindings.length) :
