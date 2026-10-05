@@ -142,8 +142,6 @@ Separately, the annotation features go in this order:
   A single SCC pass per scope, ignoring edges into annotated definitions,
   would give the same results with one algorithm.
 
-
-
 ## Ideas
 
 ### `fails`: code that must not typecheck
@@ -151,7 +149,7 @@ Separately, the annotation features go in this order:
 - [ ] Sometimes you want code in the codebase that shows an expression does
   *not* typecheck: documenting where the type system draws a line, or pinning
   down that a mistake is caught. Today that code has to be commented out or
-  kept in a file outside the build. Instead, something like
+  kept in a file outside the build. Instead, a top-level declaration like
 
   ```
   fails (1 + True)
@@ -167,6 +165,13 @@ Separately, the annotation features go in this order:
 
   Design notes:
 
+  - **A declaration, not an expression or function.** Whether something
+    typechecks is a property of an expression in its context, not of any
+    value, so no function type could describe `fails`; giving it a type like
+    `()` would misrepresent it. Like Idris's `failing`, it is a static
+    assertion, in the same family as a type annotation (or Lean's `example`,
+    or Rust's `const _: () = assert!(...)`). It has no runtime meaning, so
+    purity is untouched.
   - **Only type errors count.** Parse errors inside the block are ordinary
     parse errors, and scope errors (unbound names, unknown type variables)
     should be too; otherwise `fails (lenght xs)` would pass because of a
@@ -176,20 +181,25 @@ Separately, the annotation features go in this order:
     (see above) that could name an error kind (`fails TypeMismatch (...)`)
     rather than match a message string. Worth considering once errors are
     data; type mismatch alone covers the main use.
-  - **Check once, after inference.** The block is checked in its surrounding
-    context but feeds nothing back into inference, and is dropped before Core,
-    so it doesn't affect evaluation or the safety theorems.
+  - **Checked after inference.** Each block is recorded with its context
+    during inference and checked once the whole program has been inferred,
+    under the final substitution. Nothing flows back into inference, so this
+    can be a separate pass (a side condition on the program) rather than
+    part of the verified `Infer` relation. Blocks are dropped before Core and
+    don't affect evaluation or the safety theorems.
+  - **Leftover type variables are flexible.** Some types never become
+    concrete, because the code really is polymorphic. Matching apartness
+    (below), such variables are flexible: the block holds only if no choice
+    of them makes its contents typecheck. Type variables bound by enclosing
+    annotations stay fixed.
   - **Failures are real.** Inference is proved complete
     (`typecheck_accepts_iff`), so rejection means no typing exists at all,
     not that the algorithm gave up.
-  - **Open question: blocks inside functions.** What does the block assume
-    about surrounding variables whose types aren't settled yet? Matching
-    apartness (below) means treating them as flexible ("could these ever
-    unify?"), while type variables from enclosing annotations stay fixed.
-    The simplest start is to allow `fails` only at the top level, where every
-    name has its final type.
+  - **Start at the top level.** Top-level `fails` declarations, where every
+    name has its final type, avoid most of the questions about surrounding
+    local variables. Nested blocks can come later, using the rules above.
 
-### Type apartness, as a library function over `fails`
+### Type apartness via `fails`
 
 - [ ] Assert that two expressions *cannot* have the same type: the opposite
   of the usual "these have the same type" check, and often just as useful to
@@ -197,7 +207,7 @@ Separately, the annotation features go in this order:
   can't be unified however their type variables are chosen. Types that can
   be reconciled (`a -> a` and `b -> Int`, say) are not apart.
 
-  This needs no special operator:
+  No new type-system machinery is needed:
 
   ```
   let asTypeOf : {a} a -> a -> a = \x y -> x
@@ -206,8 +216,13 @@ Separately, the annotation features go in this order:
   ```
 
   `asTypeOf e1 e2` typechecks exactly when the two types unify, so the `fails`
-  block holds exactly when they're apart. A wrapper with a nicer name (or an
-  operator such as `<!=>`) can be defined once `fails` exists. (Comparing the
+  block holds exactly when they're apart.
+
+  This can't be wrapped in a user-defined function: inside
+  `let apart = \a b -> fails (asTypeOf a b)`, the parameters `a` and `b` are
+  just flexible type variables, so `asTypeOf a b` typechecks and the
+  definition is itself an error. A nicer spelling (such as `e1 <!=> e2`) would
+  have to be notation that expands to the `fails` idiom. (Comparing the
   *values* isn't part of this: in HM, comparing values of different types is
   already a type error.)
 
