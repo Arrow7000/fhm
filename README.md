@@ -1,255 +1,135 @@
-# FHM: Formalised Hindley-Milner
+# FHM: Formalised Hindley–Milner
 
-A formalisation of a language with a Hindley-Milner type system, plus a concrete frontend that can actually run programs. Includes some additional features, like:
+FHM is a small, Elm-flavoured functional language with Hindley–Milner type
+inference, formalised in Lean 4. The type system is proved sound, inference is
+proved complete and to compute principal types, and the same verified pipeline
+runs real programs through a command-line tool, a watch mode, and a browser
+playground.
 
-- type annotations on let bindings and lambda variables (not part of core HM)
-- annotations can reference [type variables quantified in outer scopes](https://www.microsoft.com/en-us/research/publication/lexically-scoped-type-variables/)
-- nested pattern matching (with wildcards)
-- mutually recursive let bindings with optional type annotations on each; every member
-  has one monotype inside its dependency SCC and is generalised only after the SCC
-  exits; grouping uses a verified Kosaraju pass plus Kahn ordering on the condensation
-- algebraic data declarations (`type Maybe a = Just a | Nothing`, …)
-- primitive arithmetic and comparison ops (`+`, `-`, `<`), as ordinary curried functions – a partial application is a value; a saturated one δ-reduces on literals
+## A taste of the language
 
-There's a full lexer and parser for an Elm-flavoured concrete syntax, and a live watch driver that re-runs the whole pipeline whenever you save a `.fhm` file.
+```fsharp
+type Maybe a = Just a | Nothing
 
-## Architecture
+type Tree a =
+  | Leaf
+  | Node a (Tree a) (Tree a)
 
-Production `partial def` implementations live under [`FHM/Unverified/`](./FHM/Unverified/README.md). The default `lake build` keeps those operational modules outside the verified import closure; the CLI and editor targets opt into them. Run `bash scripts/check-unverified-boundary.sh` to check that boundary.
+-- No annotation needed: the most general type is inferred.
+let map = \f xs ->
+  match xs with
+  | [] -> []
+  | x :: rest -> f x :: map f rest
 
-A high-level overview of the pipeline:
+let head = \xs ->
+  match xs with
+  | [] -> Nothing
+  | x :: _ -> Just x
+
+-- Annotations are optional, and checked when given.
+let insert : Int -> Tree Int -> Tree Int = \n t ->
+  match t with
+  | Leaf -> Node n Leaf Leaf
+  | Node m l r ->
+    if n < m then Node m (insert n l) r
+    else Node m l (insert n r)
+
+-- The last expression is the program's result.
+(map (\n -> n + 1) [1, 2, 3], (head [True, False], insert 2 (insert 3 Leaf)))
+```
+
+Running it with `fhm run` prints the inferred types, then the result:
 
 ```text
-.fhm text
-→ lex
-→ parse
-→ Surface AST
-→ lower
-    · desugar / name-resolve
-    · compile nested matches → flat Core matches
-    · group recursive bindings (Kosaraju SCCs + condensation topo)
-→ Infer → erase → runnable Core
-  + check exhaustiveness   (separate check; both needed)
-→ evaluate
+  insert  :  Int → Tree Int → Tree Int
+  head  :  ∀ a. List a → Maybe a
+  map  :  ∀ a b. (a → b) → List a → List b
+  <program>  :  (List Int, (Maybe Bool, Tree Int))
+
+⟹  ([2, 3, 4], (Just True, Node 3 (Node 2 Leaf Leaf) Leaf))
 ```
 
-In a bit more detail:
-
-- A surface language (`Surface.Expr` / `Surface.Program`) – named AST, data decls, sugar for pairs/lists/`if`; what the parser builds
-- A core language (`Core.lean`'s `Expr`) that surface is lowered into – de Bruijn indices for terms and types, flat matches, explicit constructors
-- The Hindley-Milner typing relation (`TypeOfHM`) — decoration-blind: a polymorphic use instantiates its scheme existentially, so types never live in terms
-- An inference relation (`Infer`) over source programs: Algorithm-W-style, producing a substitution and a principal monotype (annotations are ceilings; recursion inside `let rec` groups is Damas-Milner monomorphic)
-  - This doubles as the algorithm-oriented spec for typechecking (as opposed to `TypeOfHM`, which is non-algorithmic and _declarative_)
-- A small-step operational semantics (`SmallStep.Step`) that runs **type-erased** terms — its rules never inspect a type
-
-There is no elaboration phase. Inference computes types; nothing writes them back into the program. Erasure drops all annotations before evaluation, which is what makes scoped type variables safe under substitution (nothing left to orphan) and keeps the machine fully type-free.
-
-Representation choices:
-
-- terms use de Bruijn indices for their bound variables
-- type variables use a locally-nameless representation with cofinite quantification, following [Charguéraud's formalisation of mini-ML](https://github.com/charguer/formalmetacoq/blob/master/ln/ML_Definitions.v)
-- types split into monotypes and `∀`-quantified schemes
-- typing contexts are indexed by de Bruijn position
-
-### [`Core.lean`](./FHM/Core.lean)
-
-This is where the language lives and where we say, abstractly, what it means for a program to be well-typed. It doesn't compute anything; it just lays down the rules.
-
-- `Expr`: the term language – applications, lambdas, lets (including mutually recursive ones, optionally annotated), constructors, matches, primitives.
-- `TypeOfHM`: the declarative HM typing relation. Decoration-blind: a polymorphic variable may be used at any instance of its scheme, chosen existentially per use.
-- `SmallStep.Step`: a small-step semantics over erased terms. Reduction never computes with types.
-
-### [`InferW.lean`](./FHM/InferW.lean)
-
-This is where we actually work out a program's type, instead of just declaring which types are valid. It's the algorithmic side, and it's also where the erased-term dynamics metatheory lives.
-
-- `Infer`: a relation specifying type inference. From a source program it produces a substitution and an inferred monotype.
-- `infer` and `inferCore`: the executable versions of that relation.
-- `typecheck`: the whole-program entry point. It runs from the empty context and generalises the result into a closed scheme.
-
-### [`SurfaceLang.lean`](./FHM/SurfaceLang.lean), [`Surface/Token.lean`](./FHM/Surface/Token.lean), [`Unverified/Surface/Lex.lean`](./FHM/Unverified/Surface/Lex.lean), [`Unverified/Surface/Parse.lean`](./FHM/Unverified/Surface/Parse.lean)
-
-This is what the language looks like to a user: real string names, data declarations, and syntactic sugar for pairs, lists, `if`, and so on. Lex and Parse turn source text into that AST – Elm-flavoured concrete syntax, with F#-style `match` and `{a b} τ` schemes for polymorphism. Infix like `+`/`-`/`<`/`::` and multi-arg lambdas are desugared during parsing. Lexer/parser _correctness_ is deliberately not proven; the verified story starts at the Surface AST.
-
-### [`SurfaceBridge.lean`](./FHM/SurfaceBridge.lean)
-
-The front end proper: lowers Surface into Core, groups flat bindings into SCCs, checks exhaustiveness, and proves the end-to-end claim – a well-typed, exhaustive surface program lowers and erases to Core that is type-safe and never gets stuck.
-
-- `Lowers` / `lower`: declarative vs executable lowering. At match there isn't a unique correct Core term – different decision trees can implement the same surface match equivalently – so the relation allows any of them, and the function picks one.
-- `SurfaceWT` / `SurfaceWTExpr`: a declarative surface typing relation – at match it requires the branches themselves to be well-typed under the binders the patterns introduce, rather than just “whatever Core the lowerer emitted typechecks.”
-- `checkExhaustive`: executable coverage checker, proved sound against the declarative coverage predicate that type safety needs.
-- `program_type_safe` / `surface_type_safe`: the “doesn't go wrong” theorems at program and expression level.
-
-### [`Scc/Kosaraju.lean`](./FHM/Scc/Kosaraju.lean)
-
-Verified Kosaraju strongly-connected-components on abstract finite digraphs (`Digraph α` with `succ : α → Finset α`).
-
-- Declarative spec: `Reach`, `Mutual`, `ValidSccPartition` (partition + same-SCC + maximal-SCC properties).
-- Executable `kosaraju` (fuelled DFS on the graph and its transpose).
-- Main adequacy theorems: `kosaraju_sound` and `ValidSccPartition.eqv_mutual` (any two valid partitions agree up to reordering).
-- Wired into `SurfaceBridge.sccGroups` for letrec dependency grouping (`bindDigraph` on binding indices, then Kahn topo on the condensation). `sccGroups_sound` / `_complete` prove the pipeline matches the declarative `ValidBindingGroups` spec.
-
-### [`PatComp.lean`](./FHM/PatComp.lean)
-
-Verified pattern-match compilation. Surface has nested patterns; Core only has flat single-constructor switches.
-
-- Compiles via a [Maranget](https://dl.acm.org/doi/10.1145/1411204.1411211)-style pattern matrix (specialisation / default), leftmost column, no heuristics.
-- Builds a decision tree, then emits nested Core matches.
-- Proved against a trusted first-match surface semantics: same branch, same captures.
-- Adequacy: the emitted Core actually reduces to that branch with the right bindings.
-- Exhaustiveness is checked separately – typechecking alone never gives you coverage.
-
-### [`Decls.lean`](./FHM/Decls.lean)
-
-Data-declaration elaboration: surface `type` decls become the Core constructor environment, with soundness and completeness against the declarative specs.
-
-### [`Headlines.lean`](./FHM/Headlines.lean)
-
-A single entry point that re-exports the main theorems with plain-English glosses, plus the safe pipeline helpers `elaborateSafe` / `runSafe`. Also keeps a living `#print axioms` guard. Worth reading first if you're new to the project.
-
-### [`Unverified/EvaluateUnsafe.lean`](./FHM/Unverified/EvaluateUnsafe.lean), [`Unverified/Live.lean`](./FHM/Unverified/Live.lean), [`Unverified/Diagnose.lean`](./FHM/Unverified/Diagnose.lean)
-
-The formal evaluator is fuelled. For actually running programs – including naive recursion that blows past any fixed fuel – there's an unbounded evaluator. The unified `fhm` CLI (see `FHM/Unverified/Cli.lean`) exposes:
-
-- `fhm` / `fhm run` — parse, lower, infer (print binding and body types), exhaustiveness, evaluate (`Live.lean`; `--json` for machine output)
-- `fhm diagnose [path]` — diagnostics + hover symbols as JSON for editors (`Diagnose.lean` / `EditorSupport.lean`)
-
-The batch CLI consumes `inferWithTypes`, reads
-validated declarations or inferred group-exit schemes by binder identity, and
-joins its path-indexed `NodeTypeMap` with the separate provenance map. There is one
-HM language mode. The retired `BL` and Nat/count-binder syntax is rejected by the
-front end rather than erased into ordinary lists.
-
-An annotation is a ceiling on the binding's exported scheme, not necessarily
-an expected type pushed into an otherwise unconstrained RHS. Definition hovers
-show that validated scheme; RHS hovers show the monotypes actually synthesized.
-Explicit schemes such as `let id : {a} a -> a = \\x -> x` work. Scoped header
-type-variable sugar such as `let id {a} (x : a) : a = x` is still unsupported by
-the D2 front end; use the explicit scheme form for now.
-
-Operational regression checks:
-
-```sh
-lake build FHMEditorTests fhm
-node scripts/hm-editor-smoke.mjs
-node scripts/scratch-hm-audit.mjs
-node editors/web/scripts/hover-sweep.mjs editors/web/fixtures/hover-rich.fhm
-bash scripts/check-unverified-boundary.sh
-```
-
-Editor types use readable alpha names rather than internal metavariable IDs,
-and preserve authored signature names where their correspondence is valid.
-For a small expression-hover playground, open `scratch/hm-hover.fhm` and hover
-the whitespace inside `keep [1, 2]` or `wrap True`. Expression hover requires a
-successfully checked buffer; partial hover recovery after errors is not yet
-implemented. Rebuild `fhm`, then reload the editor or edit the buffer to refresh
-cached results. The scratch and recursion audits are recorded in
-`briefs/scratch-hm-audit.md` and `briefs/recursion-hm-audit.md`.
-
-Pair `fhm run` with `scripts/watch-live.sh` and a `.fhm` file (see `scratch/live.fhm`) for a save-triggered, REPL-like loop. The Monaco playground under `editors/web/` talks to the same binary over HTTP.
-
-### [`Pretty.lean`](./FHM/Pretty.lean), [`Examples.lean`](./FHM/Examples.lean)
-
-`Pretty.lean` prints Core and Surface terms readably, and `Examples.lean` collects
-runnable `#eval` demos: ordinary let polymorphism, monomorphic recursive SCCs,
-polymorphism after SCC exit, surface-to-evaluation walks, and ill-typed programs that
-must be rejected.
-
-### Proven theorems
-
-All of these are fully proved. The theorems only use the standard axioms and are completely free of `sorry`s. `Headlines.lean` gathers them in one place if you want a single entry point.
-
-**Inference soundness** (`InferW.lean`):
-
-- `Infer.sound` / `InferBranches.sound` / `InferRecGroup.sound`: if inference succeeds, the **erased** term really has the inferred type under `TypeOfHM` — the coherence theorem tying the checker to the machine relation. Axiom-clean.
-- `principalType_sound` / `typecheck_sound`: a computed principal type types the erased program, packaged up for a whole program.
-
-**Unification** (`InferW.lean`):
-
-- `unify_sound`: whenever the unifier returns a substitution, it really is a most-general unifier of its inputs.
-
-**Recursive bindings** (`InferW.lean`):
-
-- `InferRecGroup.sound`: inference is sound for mutually recursive groups — unannotated members are checked monomorphically and then generalised for the group body (Damas-Milner); the annotations on annotated members act as ceilings that must cover what the group inferred.
-
-**Pattern compilation** (`PatComp.lean`):
-
-- `PatComp.compile_correct_surface`: on any scrutinee value, the compiled decision tree selects exactly the branch (and captures) that first-match surface semantics would.
-- `PatComp.lowerMatch_adequate_of_typed`: under typing hypotheses, the emitted Core reduces to that branch body with the right substitution.
-
-**Exhaustiveness** (`SurfaceBridge.lean`):
-
-- `checkExhaustive_sound`: if the executable coverage checker says yes, the declarative coverage predicate that type safety needs holds.
-- Exhaustiveness is preserved through lowering and erasure.
-
-**Surface / program safety** (`SurfaceBridge.lean`):
-
-- `surface_type_safe` / `program_type_safe`: a well-typed, exhaustive surface expression / program lowers and erases to Core that never gets stuck.
-
-**Data declarations & binding groups**:
-
-- `lowerDataDecls_sound` / `_complete`, `elabDecls_sound` / `_complete`: surface data decls elaborate exactly as the declarative specs allow.
-- `sccGroups_sound` / `_complete`: the SCC grouping of a flat binding list matches the declarative validity predicate for binding groups.
-
-**Kosaraju SCC** (`Scc/Kosaraju.lean`):
-
-- `kosaraju_sound`: the executable Kosaraju partition satisfies `ValidSccPartition`.
-- `ValidSccPartition.eqv_mutual`: any two valid SCC partitions of the same graph agree (components are mutual-reachability classes, up to reordering).
-
-**Runtime safety** (`InferW.lean`, over erased terms):
-
-- `TypeOfHM.progress`: a well-typed erased program is either a finished value or it can take another step.
-- `TypeOfHM.preservation`: taking a step never changes a program's type.
-- `TypeOfHM.type_safety` / `type_safety_star`: putting those together, a well-typed program never gets stuck – including under iterated stepping.
-
-**Safe pipeline** (`Headlines.lean`):
-
-- `elaborateSafe`: if a surface program typechecks and is exhaustive, returns the **erased** Core term together with proofs of both.
-- `runSafe`: given those proofs, evaluates under fuel. The only thing that can go "wrong" is nontermination – unavoidable in a Turing-complete language.
-
-## Why type-erased semantics for a Hindley-Milner language
-
-I first implemented a simple language without type annotations at all. Then I wanted to support type annotations that could mention type variables (skolems) from a higher enclosing scope. That caused a problem because when a let binding reduces, those skolems can end up orphaned, pointing at a scope that no longer exists. This would break type preservation, as stepping would result in an invalid, ill-scoped type variable reference.
-
-My first fix was the opposite of erasure: keep every type in the term and run a [type-passing](https://doi.org/10.1017/S0956796801004282) semantics, with inference elaborating each program into fully-annotated form before evaluation. That worked, but it had real costs: variables carried their instantiation types at runtime, generalisation had to be written into the program as term-level Λ-nesting (making `let rec` elaboration quadratic), and the whole story needed a second typing relation for the post-elaboration reading plus a second soundness proof tying it back to plain HM.
-
-Then I wanted _polymorphic_ mutual recursion, and combining it with scoped type variables under type-passing forced exactly the machinery I was trying to avoid. The resolution was to accept textbook Damas-Milner semantics inside `let rec` groups (members are used monomorphically within the group and generalised for its body). With that cut, annotations become runtime-inert — so the migration could go back to my original instinct: **erase all types before running**, define every evaluation theorem against erased terms, and let inference stay a pure type computation with no elaborated output. Scoped type variables still check statically; there is simply nothing left in terms to dangle at runtime. `Infer.sound` is the theorem that makes this coherent: what the checker accepts is exactly what the (type-free) machine runs safely.
-
-The old type-passing design is preserved in this repo's git history (and in `briefs/design-memo-erasure-migration.md`, which records why each piece was removed).
-
-## Building
-
-Requires the Lean toolchain pinned in `lean-toolchain` (`leanprover/lean4:v4.26.0`,
-managed by `elan`). On a fresh clone:
+Ill-typed programs and non-exhaustive matches are rejected before anything runs.
+
+## Language features
+
+- **Hindley–Milner type inference** with let-polymorphism. No annotations are
+  required.
+- **Optional type annotations** on `let` bindings (`let id : {a} a -> a = …`)
+  and lambda parameters (`\(n : Int) -> …`). Annotations are checked, not
+  trusted. The type variables an annotation introduces are in scope throughout
+  the definition's body, so inner annotations can refer to them.
+- **Algebraic data types**, including parameterised and recursive ones.
+- **Nested pattern matching** with wildcards. Matches must be exhaustive.
+- **Recursion and mutual recursion** between definitions written in any order.
+  Unannotated recursive definitions follow standard HM. A definition with a
+  type annotation can be used at different types anywhere in its recursive
+  group, including in its own body (polymorphic recursion), following the
+  same rules as Haskell.
+- Built-in `Int`, `Bool`, pairs, and lists, with `+`, `-`, `<`, `::`, list
+  literals, `if`/`then`/`else`, and `let … in` blocks.
+
+[`scratch/language-guide.fhm`](./scratch/language-guide.fhm) walks through
+annotations and recursion with runnable examples, and
+[`recursion-language-comparison/`](./recursion-language-comparison/) compares
+FHM's recursion rules with GHC, OCaml, F#, Elm and Standard ML.
+
+## What is proved
+
+All of the following are machine-checked, with no `sorry` and only Lean's
+standard axioms. [`FHM/Headlines.lean`](./FHM/Headlines.lean) gathers the main
+theorems in one place, each with a plain-English explanation, and is the best
+starting point for reading the proofs.
+
+| Claim | Main theorems |
+|---|---|
+| **Type safety:** a well-typed program never gets stuck. It is either a value or can take another step, and its type is preserved. | `TypeOfHM.progress`, `TypeOfHM.preservation`, `TypeOfHM.type_safety_star` |
+| **End-to-end safety:** a well-typed, exhaustive *surface* program lowers to Core that never gets stuck. | `program_type_safe`, `surface_type_safe` |
+| **Inference is sound:** any type Algorithm W infers is a valid type for the program. | `Infer.sound`, `Infer.sourceSound` |
+| **Inference is complete and principal:** if a program has *any* type, inference succeeds, and every valid type is an instance of the inferred one. | `typecheck_accepts_iff`, `typecheck_principal`, `Infer.complete` |
+| **Pattern compilation is correct:** nested matches compile to decision trees that select the same branch with the same bindings. | `PatComp.compile_correct_surface`, `PatComp.lowerMatch_adequate_of_typed` |
+| **Exhaustiveness checking is sound:** if the checker accepts a match, the match is exhaustive. | `checkExhaustive_sound` |
+| **Recursive grouping is correct:** dependency analysis splits definitions into exactly their strongly connected components. | `sccGroups_sound`, `sccGroups_complete`, `kosaraju_sound` |
+| **Data declarations elaborate correctly**, matching their declarative spec. | `lowerDataDecls_sound`/`_complete`, `elabDecls_sound`/`_complete` |
+
+**What is not verified:** the lexer, parser, CLI, editor tooling, and the
+unbounded evaluator used by `fhm run`. These live under
+[`FHM/Unverified/`](./FHM/Unverified/README.md) and are kept out of the
+verified build. The verified story starts at the parsed syntax tree. The
+verified evaluator (`runSafe` in `Headlines.lean`) is fuel-bounded, because the
+language allows non-terminating programs.
+
+## Getting started
+
+You need [`elan`](https://github.com/leanprover/elan); the pinned Lean version
+is in [`lean-toolchain`](./lean-toolchain).
 
 ```bash
-lake exe cache get   # download prebuilt Mathlib oleans (don't recompile Mathlib!)
-lake build
+lake exe cache get   # download prebuilt Mathlib (avoids compiling it locally)
+lake build           # check all the proofs
+lake build fhm       # build the fhm executable
 ```
 
-### Live watch (terminal)
-
-Save a `.fhm` file and re-run the full pipeline (types, then eval) on each save:
+### Running programs
 
 ```bash
-lake build fhm                         # builds .lake/build/bin/fhm
-scripts/watch-live.sh                  # watches scratch/live.fhm by default
-scripts/watch-live.sh path/to/foo.fhm  # or point it at another file
+.lake/build/bin/fhm run path/to/program.fhm          # infer types, then evaluate
+.lake/build/bin/fhm --json path/to/program.fhm       # the same, as JSON
+.lake/build/bin/fhm diagnose path/to/program.fhm     # diagnostics and hover info for editors
 ```
 
-Needs `entr` (preferred) or `fswatch`; otherwise it falls back to polling. The script only rebuilds `fhm` when pipeline Lean sources change (not every file under `FHM/`).
-
-Manual one-shots without the watcher:
+For a REPL-like loop that re-runs the program every time you save:
 
 ```bash
-.lake/build/bin/fhm scratch/live.fhm           # human Ansi output
-.lake/build/bin/fhm --json scratch/live.fhm    # JSON (same as the web /api/run)
-.lake/build/bin/fhm diagnose scratch/live.fhm  # editor diagnostics / hover JSON
+scripts/watch-live.sh                     # watches scratch/live.fhm
+scripts/watch-live.sh path/to/program.fhm
 ```
 
-### Web playground
+This uses `entr` or `fswatch` if available and falls back to polling.
 
-Local Monaco editor + output pane; debounced `fhm diagnose` on edit, Run for `fhm --json`.
+### Browser playground
+
+A Monaco editor with inline errors, hover types, and a Run button:
 
 ```bash
 lake build fhm
@@ -258,11 +138,81 @@ npm install
 npm run dev          # http://localhost:5173
 ```
 
-If the editor pane stays blank or imports look stale after changing `editors/shared/`, use `npm run dev:clean` (clears Vite’s optimize-deps cache) and hard-refresh the browser.
+### VS Code / Cursor
 
-Optional checks: `npm run hover-sweep`, `npm run verify-playground` (Playwright).
+[`editors/vscode/`](./editors/vscode/) provides syntax highlighting,
+diagnostics, and hover types:
 
-The Cursor/VS Code extension under `editors/vscode/` also talks to `fhm diagnose` (see `scripts/install-fhm-extension.sh`). Syntax highlighting is generated from the live lexer tables via `fhm_grammar` (`scripts/gen-fhm-tmgrammar.sh`).
+```bash
+scripts/install-vscode-extension.sh   # VS Code
+scripts/install-cursor-extension.sh   # Cursor
+```
+
+## How it works
+
+```text
+source text
+  → parse                   (unverified)
+  → surface syntax tree
+  → lower to Core           name resolution, desugaring,
+                             pattern compilation, recursive grouping
+  → infer types             Algorithm W
+  → check exhaustiveness
+  → erase type annotations
+  → evaluate                small-step semantics
+```
+
+The surface language has names, nested patterns, and syntactic sugar. Core is
+a smaller language with de Bruijn indices and only flat, one-constructor-deep
+matches. Every step after parsing is covered by the theorems above. The
+exception is the unbounded evaluator that `fhm run` uses for convenience.
+
+The design choices that matter most:
+
+- **Evaluation is type-free.** Annotations are used only for type checking and
+  are erased before the program runs. No type information exists at runtime.
+- **Declarative and algorithmic typing are kept separate.** `TypeOfHM` defines
+  which programs are well-typed. Algorithm W (`Infer`, implemented by
+  `typecheck`) computes types and is proved sound and complete with respect to
+  `TypeOfHM`.
+- **Type variables use a locally nameless representation** with cofinite
+  quantification, following
+  [Charguéraud's formalisation of mini-ML](https://github.com/charguer/formalmetacoq).
+- **Pattern compilation** uses a [Maranget](https://dl.acm.org/doi/10.1145/1411204.1411211)-style
+  pattern matrix. Recursive groups are found with a verified Kosaraju SCC
+  algorithm.
+
+### Repository map
+
+| Module | Contents |
+|---|---|
+| [`Core.lean`](./FHM/Core.lean) | Types, Core terms, the typing relation `TypeOfHM`, small-step semantics |
+| [`InferW.lean`](./FHM/InferW.lean) | Unification, Algorithm W, inference soundness, progress and preservation |
+| [`Completeness.lean`](./FHM/Completeness.lean) | Completeness and principality of inference |
+| [`RuntimeTyping.lean`](./FHM/RuntimeTyping.lean) | Typing for erased runtime terms, used to prove progress and preservation |
+| [`SurfaceLang.lean`](./FHM/SurfaceLang.lean) | Surface syntax tree |
+| [`SurfaceBridge.lean`](./FHM/SurfaceBridge.lean) | Lowering surface to Core, exhaustiveness checking, end-to-end safety |
+| [`PatComp.lean`](./FHM/PatComp.lean) | Pattern-match compiler and its correctness proofs |
+| [`Scc/Kosaraju.lean`](./FHM/Scc/Kosaraju.lean) | Verified strongly connected components |
+| [`Decls.lean`](./FHM/Decls.lean) | Data declaration checking |
+| [`Headlines.lean`](./FHM/Headlines.lean) | Main theorems in one place, plus the verified `elaborateSafe`/`runSafe` pipeline |
+| [`Examples.lean`](./FHM/Examples.lean) | Worked examples of programs that typecheck and programs that are rejected |
+| [`Unverified/`](./FHM/Unverified/README.md) | Lexer, parser, CLI, editor support, unbounded evaluator |
+
+## Roadmap
+
+Near term:
+
+- **Better error messages.** Type errors are currently reported without a
+  location or explanation.
+- **Signatures on function heads** (`let f (x : Int) (y : a) : a = …`) and
+  **partial annotations** with holes (`Int -> _ -> Bool`).
+- **Pattern lambdas** (`\(x, y) -> …`) and **string literals**.
+
+Further out:
+
+- **Row types** and records.
+- **Type system experiments** of my own, built on this foundation.
 
 ## My motivation
 
@@ -286,7 +236,6 @@ This workflow has been very fruitful, both in getting this formalisation to the 
 - Fritz Henglein. _Type inference with polymorphic recursion._ ACM TOPLAS 15(2):253–289, 1993. <https://doi.org/10.1145/169701.169692>
 - A. J. Kfoury, J. Tiuryn, and P. Urzyczyn. _Type reconstruction in the presence of polymorphic recursion._ ACM TOPLAS 15(2):290–311, 1993. <https://doi.org/10.1145/169701.169687>
 - Simon Peyton Jones and Mark Shields. _Lexically scoped type variables._ Microsoft Research, 2002. <https://www.microsoft.com/en-us/research/publication/lexically-scoped-type-variables/>
-- Karl Crary, Stephanie Weirich, and Greg Morrisett. _Intensional polymorphism in type-erasure semantics._ Journal of Functional Programming 12(6):567–600, 2002 (ICFP 1998). <https://doi.org/10.1017/S0956796801004282>
 - Luc Maranget. _Compiling pattern matching to good decision trees._ ML Workshop 2008. <https://dl.acm.org/doi/10.1145/1411204.1411211>
 - François Pottier and Didier Rémy. _The essence of ML type inference._ In B. C. Pierce (ed.), Advanced Topics in Types and Programming Languages, ch. 10, 389–489. MIT Press, 2005. <https://pauillac.inria.fr/~fpottier/publis/emlti-final.pdf>
 - Brian Aydemir, Arthur Charguéraud, Benjamin C. Pierce, Randy Pollack, and Stephanie Weirich. _Engineering formal metatheory._ POPL 2008, 3–15. <https://doi.org/10.1145/1328438.1328443>
