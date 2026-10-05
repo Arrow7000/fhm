@@ -5166,6 +5166,39 @@ private theorem RecSpecs.selectComponent_mono_below
           · cases hsτ
           · exact ih (fun q hq => h q (List.mem_cons_of_mem _ hq)) s hs τ hsτ
 
+private theorem RecSpecs.selectComponent_length
+    (members : List Nat) (memberIndex : Nat) (specs : List RecSpec) :
+    (RecSpecs.selectComponent members memberIndex specs).length = specs.length := by
+  induction specs generalizing memberIndex with
+  | nil => rfl
+  | cons spec specs ih =>
+      cases spec <;> simp only [RecSpecs.selectComponent, List.length_cons, ih]
+
+private theorem RecSpecs.selectComponent_below
+    {members : List Nat} {memberIndex Φ : Nat} {specs : List RecSpec}
+    (h : ∀ s ∈ specs, s.BelowFvars Φ) :
+    ∀ s ∈ RecSpecs.selectComponent members memberIndex specs,
+      s.BelowFvars Φ := by
+  induction specs generalizing memberIndex with
+  | nil => simp [RecSpecs.selectComponent]
+  | cons spec specs ih =>
+      intro s hs
+      cases spec with
+      | mono τ =>
+          simp only [RecSpecs.selectComponent] at hs
+          split at hs
+          · rcases List.mem_cons.mp hs with rfl | hs
+            · exact h (.mono τ) List.mem_cons_self
+            · exact ih (fun q hq => h q (List.mem_cons_of_mem _ hq)) s hs
+          · rcases List.mem_cons.mp hs with rfl | hs
+            · exact Ty.BelowFvars.prim
+            · exact ih (fun q hq => h q (List.mem_cons_of_mem _ hq)) s hs
+      | poly σ =>
+          simp only [RecSpecs.selectComponent] at hs
+          rcases List.mem_cons.mp hs with rfl | hs
+          · exact h (.poly σ) List.mem_cons_self
+          · exact ih (fun q hq => h q (List.mem_cons_of_mem _ hq)) s hs
+
 private theorem RecSpecs.selectComponent_poly_rigid
     {members : List Nat} {memberIndex : Nat} {specs : List RecSpec} {K : List Nat}
     (h : ∀ s ∈ specs, ∀ σ, s = .poly σ →
@@ -11704,6 +11737,222 @@ theorem InferRecGroup.complete_mixed
             hR₂lc, hR₂K, ?_⟩
           intro p hp
           exact (List.mem_append.mp hp).elim (hShK p) (hStK p)
+
+/-- Producer completeness for the dependency-ordered unsigned phase. -/
+private theorem InferRecStrata.complete_of
+    {rigid : List Nat} {bindings : List Expr} {Φ : Nat} {ctx : Ctx}
+    {specs : List RecSpec} {done G : List Nat} {groups : List (List Nat)}
+    (ih : ∀ e ∈ bindings, Infer.CompleteAt e)
+    {anns : List (Option PolyTy)} {declarativeGroups : List (List Nat)}
+    {declCtx : Ctx} {declSpecs : List RecSpec} {declG declL Xs K : List Nat}
+    {base : Nat} {past : List (List Nat)} {R : Subst}
+    (hpast : past ++ groups = RecGroup.inferenceSccs anns bindings)
+    (hdone : done = past.flatten)
+    (hvalidDecl : RecGroups.ValidResidualGroups anns bindings declarativeGroups)
+    (hdeclWF : RecSpecs.WF anns bindings declSpecs declG)
+    (hmonoDecl : RecSpecs.StratifiedMonoTyped TypeOfHM declCtx bindings declSpecs
+      declarativeGroups declG declL)
+    (hctxWF : CtxWF ctx) (hctxBelow : CtxBelow Φ ctx)
+    (hspecLC : ∀ s ∈ specs, s.LC)
+    (hspecBelow : ∀ s ∈ specs, s.BelowFvars Φ)
+    (hKΦ : ∀ k ∈ K, k < Φ)
+    (hbindK : ∀ y ∈ Expr.tyFreeVars.RecGroup.tyFreeVars bindings, y ∈ K)
+    (hbase : base + bindings.length ≤ Φ)
+    (hrigid : ∀ y ∈ rigid, y < base)
+    (hbindRigid : ∀ y ∈ Expr.tyFreeVars.RecGroup.tyFreeVars bindings, y ∈ rigid)
+    (hrigidK : ∀ y ∈ rigid, y ∈ K)
+    (hpolyRigid : ∀ σ, .poly σ ∈ specs → ∀ y ∈ σ.body.freeVars, y ∈ rigid)
+    (hpending : RecSpecs.PendingSeeds base ctx specs done)
+    (hGbelow : ∀ g ∈ G, g < Φ)
+    (hGrigid : ∀ g ∈ G, g ∉ rigid)
+    (hGctx : ∀ g ∈ G, ∀ M ∈ ctx.env, g ∉ M.body.freeVars)
+    (hGseed : ∀ member τ, specs[member]? = some (.mono τ) →
+      member ∉ done → base + member ∉ G)
+    (hXs : FreshNames declL declG.length Xs)
+    (hXG : ∀ g ∈ declG, g ∉ Xs)
+    (hXmono : ∀ x ∈ Xs, ∀ τ, .mono τ ∈ declSpecs → x ∉ τ.freeVars)
+    (hXrigid : ∀ x ∈ Xs, x ∉ rigid)
+    (hXdeclEnv : ∀ x ∈ Xs, x ∉ declCtx.env.freeVars)
+    (hres : RecStrataResidual declCtx declSpecs declG Xs K
+      ctx specs done G R) :
+    ∃ Φ' S specs' G' Rout,
+      InferRecStrata rigid bindings Φ ctx specs done G groups Φ' S specs' G' ∧
+      (∀ p ∈ Rout, p.2.IsLC) ∧
+      (∀ k ∈ K, Rout.onTy (.fvar k) = .fvar k) ∧
+      Subst.AgreesBelow Φ R (S ++ Rout) ∧
+      RecStrataResidual declCtx declSpecs declG Xs K
+        (S.onCtx ctx) specs' (done ++ groups.flatten) G' Rout := by
+  match groups with
+  | [] =>
+      refine ⟨Φ, [], specs, G, R, .nil, hres.lc, hres.fixes, ?_, ?_⟩
+      · intro v hv
+        simp only [List.nil_append]
+      · simpa only [Subst.onCtx_nil, List.flatten_nil, List.append_nil] using hres
+  | component :: rest =>
+      have hvalidAlgorithm := RecGroup.inferenceSccs_valid hvalidDecl.length
+      have hvalidCurrent : RecGroups.ValidResidualGroups anns bindings
+          (past ++ component :: rest) := by
+        rw [hpast]
+        exact hvalidAlgorithm
+      have halgorithm : (RecGroup.inferenceSccs anns bindings)[past.length]? =
+          some component := by
+        rw [← hpast]
+        simp
+      have hdoneStage : done =
+          ((RecGroup.inferenceSccs anns bindings).take past.length).flatten := by
+        rw [← hpast, List.take_left]
+        exact hdone
+      have hstageWF := RecSpecs.algorithmStageCtx_wf hctxWF hspecLC done G
+      have hstageBelow := RecSpecs.algorithmStageCtx_below
+        hctxBelow hspecBelow done G
+      have htyped := hres.componentMonoTyped hvalidAlgorithm halgorithm hdoneStage
+        hvalidDecl hdeclWF hmonoDecl hspecLC hXs hXG hXmono
+        (fun σ hσ y hy => hrigidK y (hpolyRigid σ hσ y hy))
+      have hselected : ∀ p ∈ bindings.zip
+          (RecSpecs.selectComponent component 0 specs), ∀ τ,
+          p.2 = .mono τ →
+          TypeOfHM (R.onCtx (RecSpecs.algorithmStageCtx ctx specs done G))
+            p.1 (R.onTy τ) := by
+        intro p hp τ hpτ
+        obtain ⟨j, hj, hpget⟩ := List.mem_iff_getElem.mp hp
+        rw [List.getElem_zip] at hpget
+        have hjb : j < bindings.length := by rw [List.length_zip] at hj; omega
+        have hjs : j < (RecSpecs.selectComponent component 0 specs).length := by
+          rw [List.length_zip] at hj; omega
+        have hb : bindings[j]? = some p.1 := by
+          rw [List.getElem?_eq_getElem hjb, ← congrArg Prod.fst hpget]
+        have hsnd : (RecSpecs.selectComponent component 0 specs)[j] = p.2 := by
+          simpa using congrArg Prod.snd hpget
+        have hsel : (RecSpecs.selectComponent component 0 specs)[j]? =
+            some (.mono τ) := by
+          rw [List.getElem?_eq_getElem hjs, hsnd, hpτ]
+        obtain ⟨hspec, hmember⟩ := RecSpecs.selectComponent_getElem?_mono hsel
+        exact htyped j p.1 τ hb hspec (by simpa using hmember)
+      have hselectLC := RecSpecs.selectComponent_lc (members := component)
+        (memberIndex := 0) hspecLC
+      have hselectBelow := RecSpecs.selectComponent_below
+        (members := component) (memberIndex := 0) hspecBelow
+      have hlenCurrent : bindings.length = specs.length := by
+        have hs := congrArg List.length hres.anns_eq
+        simpa [hdeclWF.length] using hs.symm
+      have hmaskLen : bindings.length =
+          (RecSpecs.selectComponent component 0 specs).length := by
+        rw [RecSpecs.selectComponent_length]
+        exact hlenCurrent
+      obtain ⟨Φ₁, S₁, R₁, hmasked, hAgree₁, hR₁LC, hR₁K, _⟩ :=
+        InferRecGroup.complete_mixed ih hmaskLen hstageWF hstageBelow
+          hres.lc hKΦ hbindK hres.fixes hselectLC hselectBelow hselected
+      have hcomponent : InferRecComponent component 0 Φ
+          (RecSpecs.algorithmStageCtx ctx specs done G)
+          bindings specs Φ₁ S₁ :=
+        hmasked.toInferRecComponent hlenCurrent
+      let specs₁ := specs.map (RecSpec.onSubst S₁)
+      let Gcurrent := genGroupVars (rigid ++ G)
+        (RecSpecs.generalizationCtx (S₁.onCtx ctx) specs₁ done G).env
+        (RecSpecs.monoTysAt specs₁ component)
+      obtain ⟨hdomG, hranG⟩ := hcomponent.frozenPool hvalidCurrent hdone
+        hbindRigid hpolyRigid hpending hGbelow hGrigid hGctx hGseed
+      have hS₁LC := InferRecComponent.lc hcomponent hstageWF hspecLC
+      have hle := InferRecComponent.frontier_le hcomponent
+      have hbindBelow : ∀ y ∈ Expr.tyFreeVars.RecGroup.tyFreeVars bindings,
+          y < Φ := fun y hy => hKΦ y (hbindK y hy)
+      have hS₁Below := InferRecComponent.belowFvars hcomponent hstageBelow
+        hspecBelow hbindBelow
+      have hspecs₁LC : ∀ s ∈ specs₁, s.LC := by
+        intro s hs
+        obtain ⟨old, hold, rfl⟩ := List.mem_map.mp hs
+        exact RecSpec.LC.onSubst hS₁LC (hspecLC old hold)
+      have hspecs₁Below : ∀ s ∈ specs₁, s.BelowFvars Φ₁ := by
+        intro s hs
+        obtain ⟨old, hold, rfl⟩ := List.mem_map.mp hs
+        exact RecSpec.BelowFvars.onSubst hS₁Below ((hspecBelow old hold).mono hle)
+      have hctx₁WF := Subst.onCtx_wf hS₁LC hctxWF
+      have hctx₁Below := Subst.onCtx_below hS₁Below hle hctxBelow
+      have hres₁ := hres.afterComponent hcomponent rfl rfl hctxWF hctxBelow
+        hspecLC hspecBelow hR₁LC hR₁K hAgree₁ hdomG hranG
+        hrigidK hpolyRigid hXrigid hXdeclEnv
+      have hcomponent_not_done : ∀ j ∈ component, j ∉ done := by
+        intro j hj hdonej
+        have hnd : (past.flatten ++ (component ++ rest.flatten)).Nodup := by
+          simpa only [List.flatten_append, List.flatten_cons] using
+            hvalidCurrent.flatten_nodup
+        exact (List.nodup_append.mp hnd).2.2 j (hdone ▸ hdonej) j
+          (List.mem_append_left _ hj) rfl
+      have havoidSeeds : ∀ member τ, specs[member]? = some (.mono τ) →
+          member ∉ done ++ component →
+          (∀ p ∈ S₁, base + member ∉ p.2.freeVars) ∧
+            base + member ∉ S₁.map Prod.fst := by
+        intro member τ ht hm
+        have hmDone : member ∉ done := fun hc => hm (List.mem_append_left _ hc)
+        have hmComp : member ∉ component := fun hc => hm (List.mem_append_right _ hc)
+        have hwΦ : base + member < Φ := by
+          have hmlt := (List.getElem?_eq_some_iff.mp ht).1
+          rw [← InferRecComponent.length_eq hcomponent] at hmlt
+          omega
+        apply InferRecComponent.pending_seed_avoid_of_infer hcomponent
+          Infer.sourceLocality_holds hpending ht hmDone hmComp hwΦ
+        · intro j rhs hj hrhs
+          apply hvalidCurrent.pending_no_ref
+            (hres.anns_eq.trans hdeclWF.anns_eq)
+            (InferRecComponent.length_eq hcomponent) hj hrhs ht
+          simpa only [← hdone] using hm
+        · intro hc
+          have := hrigid (base + member) (hbindRigid _ hc)
+          omega
+      have hpending₁ : RecSpecs.PendingSeeds base (S₁.onCtx ctx) specs₁
+          (done ++ component) := by
+        exact hpending.onSubst (fun j hj => List.mem_append_left _ hj) havoidSeeds
+      have hstep : InferRecStrata rigid bindings Φ ctx specs done G [component]
+          Φ₁ (S₁ ++ []) specs₁ (G ++ Gcurrent) :=
+        .cons hcomponent rfl rfl .nil
+      have hfrozenStep : hstep.Frozen :=
+        .cons (hcomponent := hcomponent) (hspecs := rfl) (hG := rfl)
+          hdomG hranG .nil
+      have hGnextBelow := InferRecStrata.pool_below hstep hctxBelow hspecBelow
+        hbindBelow hGbelow
+      have hGnextRigid := InferRecStrata.pool_avoid_rigid hstep hGrigid
+      have hGnextCtx : ∀ g ∈ G ++ Gcurrent,
+          ∀ M ∈ (S₁.onCtx ctx).env, g ∉ M.body.freeVars := by
+        simpa only [List.append_nil] using
+          InferRecStrata.pool_avoid_env hfrozenStep hGctx
+      have hGnextSeed : ∀ member τ,
+          specs₁[member]? = some (.mono τ) → member ∉ done ++ component →
+          base + member ∉ G ++ Gcurrent := by
+        intro member τ ht hm hc
+        rcases List.mem_append.mp hc with hc | hc
+        · obtain ⟨old, hold, _⟩ := RecSpec.mono_getElem?_map_onSubst ht
+          exact hGseed member old hold
+            (fun hd => hm (List.mem_append_left _ hd)) hc
+        · dsimp [Gcurrent] at hc
+          exact RecSpecs.PendingSeeds.seed_notMem_newPool (G := G)
+            (rigid := rigid ++ G) (boundaryDone := done) (component := component)
+            hpending₁ ht hm (fun j hj => List.mem_append_right _ hj) hc
+      have hpast₁ : (past ++ [component]) ++ rest =
+          RecGroup.inferenceSccs anns bindings := by
+        simpa only [List.append_assoc, List.singleton_append] using hpast
+      have hdone₁ : done ++ component = (past ++ [component]).flatten := by
+        simp only [List.flatten_append, List.flatten_cons, List.flatten_nil,
+          List.append_nil, hdone]
+      have hpolyRigid₁ : ∀ σ, .poly σ ∈ specs₁ →
+          ∀ y ∈ σ.body.freeVars, y ∈ rigid := by
+        intro σ hσ
+        exact hpolyRigid σ (RecSpec.poly_mem_map_onSubst.mp hσ)
+      obtain ⟨Φ₂, S₂, specs₂, Gfinal, R₂, hrest, hR₂LC, hR₂K,
+          hAgree₂, hres₂⟩ :=
+        InferRecStrata.complete_of ih hpast₁ hdone₁ hvalidDecl hdeclWF hmonoDecl
+          hctx₁WF hctx₁Below hspecs₁LC hspecs₁Below
+          (fun k hk => lt_of_lt_of_le (hKΦ k hk) hle) hbindK
+          (by omega) hrigid hbindRigid hrigidK hpolyRigid₁ hpending₁
+          hGnextBelow hGnextRigid hGnextCtx hGnextSeed
+          hXs hXG hXmono hXrigid hXdeclEnv hres₁
+      refine ⟨Φ₂, S₁ ++ S₂, specs₂, Gfinal, R₂, ?_, hR₂LC, hR₂K, ?_, ?_⟩
+      · exact .cons hcomponent rfl rfl hrest
+      · simpa only [List.append_assoc] using
+          (Subst.AgreesBelow.trans_append hle hAgree₁ hS₁Below hAgree₂)
+      · simpa only [Subst.onCtx_append, List.flatten_cons,
+          List.append_assoc] using hres₂
+termination_by groups.length
+decreasing_by all_goals simp_wf
 
 /-- Completeness of the signed checking phase.  Monomorphic members are already
     solved and are skipped; complete signatures are checked under the final
