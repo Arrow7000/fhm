@@ -58,7 +58,7 @@ fhm	t1_annotated_self_polyrec.fhm	accept	3
 fhm	t2_unannotated_self_polyrec.fhm	reject	-
 fhm	t3_unsigned_uses_signed.fhm	accept	(1, True)
 fhm	t4_signed_uses_unsigned.fhm	accept	(5, True)
-fhm	t5_signature_cuts_dependency.fhm	reject	-
-fhm	t5b_signature_cuts_dependency_fhg.fhm	reject	-
+fhm	t5_signature_cuts_dependency.fhm	accept	(1, True)
+fhm	t5b_signature_cuts_dependency_fhg.fhm	accept	(1, True)
 fhm	t6_nested_datatype.fhm	accept	2
 fhm	t7_signed_mutual.fhm	accept	(4, 4)

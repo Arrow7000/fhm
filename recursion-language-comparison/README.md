@@ -61,16 +61,18 @@ verifies.
 | T2 unannotated self polyrec | R | R | R | R | R | R |
 | T3 unsigned uses signed at 2 types | A | A | A | A | R | A `(1, True)` |
 | T4 signed uses unsigned at 2 types | A | R | R (A if helper is defined first) | A | R | A `(5, True)` |
-| **T5** signature cuts dependency | **A** | R | R | R | R | R |
-| T5b T5, order f, h, g | A | R | A | R | R | R |
+| **T5** signature cuts dependency | **A** | R | R | R | R | **A** `(1, True)` |
+| T5b T5, order f, h, g | A | R | A | R | R | A `(1, True)` |
 | T6 nested datatype | A | A | A | R | R | A `2` |
 | T7 signed mutual polyrec | A | A | A | A | R | A `(4, 4)` |
 
-Only GHC implements full Haskell-style dependency analysis, where a signature removes
-the incoming edges and the remainder is re-split into SCCs. FHM, like Elm, treats
-annotated members as polymorphic contracts but checks all unannotated members of an
-SCC as one monomorphic HM block. FHM differs from Elm by also allowing direct
-polymorphic self-recursion (T1 and T6).
+GHC and FHM implement full Haskell-style dependency analysis (Haskell 2010
+report, section 4.5.1): an annotation removes the edges into its definition, the
+unannotated remainder is re-split into SCCs, and those are inferred and generalised
+in dependency order before annotated bodies are checked. FHM matches GHC on every
+test here. Elm treats annotated members as polymorphic to the rest of their group
+but checks all unannotated members of an SCC as one monomorphic block, and does not
+allow direct polymorphic self-recursion (T1 and T6).
 
 The `t0_*` / `T0*` files are the older per-language boundary probes. Each uses a
 recursive `f` at Int and Bool from inside its own group, once with the language's
