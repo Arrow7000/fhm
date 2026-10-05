@@ -7006,6 +7006,25 @@ theorem Expr.ForallOuter.openBoundTyVars {P : Nat → Prop} {depth : Nat} {e : E
   rw [Expr.erase_openBoundTyVars]
   exact (Expr.ForallOuter.erase_iff e).mpr h
 
+/-- Avoidance at the environment slots a source expression actually reads is
+    preserved when an avoiding substitution is threaded through the context. -/
+theorem Expr.ForallOuter.lookupAvoid_onSubst {e : Expr} {depth w : Nat}
+    {ctx : Ctx} {S : Subst}
+    (h : e.ForallOuter
+      (fun i => ∀ M, ctx.env[i]? = some M → w ∉ M.body.freeVars) depth)
+    (hS : ∀ p ∈ S, w ∉ p.2.freeVars) :
+    e.ForallOuter
+      (fun i => ∀ M, (S.onCtx ctx).env[i]? = some M → w ∉ M.body.freeVars) depth := by
+  apply h.mono
+  intro i hi M hM
+  simp only [Subst.onCtx, Subst.onEnv, List.getElem?_map] at hM
+  cases hlookup : ctx.env[i]? with
+  | none => simp [hlookup] at hM
+  | some M₀ =>
+    simp only [hlookup, Option.map_some, Option.some.injEq] at hM
+    subst M
+    simpa only [Subst.onPolyTy] using Subst.notMemOnTy hS (hi M₀ hlookup)
+
 theorem RecGroupRefs.mem_branches {n depth i : Nat} {pat : MatchPattern} {body : Expr}
     {branches : List (MatchPattern × Expr)} (hb : (pat,body) ∈ branches)
     (hi : i ∈ body.recGroupRefs n (depth + pat.bindCount)) :
