@@ -10873,7 +10873,7 @@ theorem TypeOfHM.tyBvarBounded {ctx : Ctx} {e : Expr} {τ : Ty}
             simpa [hs, RecSpec.ann] using hann'.symm
           have hunsigned : RecGroups.UnsignedAt anns i := by
             rw [RecGroups.UnsignedAt, ← hwf.anns_eq]
-            simpa [List.getElem?_eq_getElem, hiS, hs, RecSpec.ann, hannNone]
+            simp [hiS, hs, RecSpec.ann]
           have hmemGroups : i ∈ groups.flatten := by
             exact (hgroups.covers_unsigned i hi).2 hunsigned
           obtain ⟨component, hcomponentMem, hiComponent⟩ :=
@@ -10881,11 +10881,11 @@ theorem TypeOfHM.tyBvarBounded {ctx : Ctx} {e : Expr} {τ : Ty}
           obtain ⟨stage, hstage, hcomponentEq⟩ :=
             List.mem_iff_getElem.mp hcomponentMem
           have hcomponent : groups[stage]? = some component := by
-            simpa [List.getElem?_eq_getElem, hstage, hcomponentEq]
+            simp [hstage, hcomponentEq]
           have hbinding : bindings[i]? = some e := by
-            simpa [List.getElem?_eq_getElem, hi, heq]
+            simp [hi, heq]
           have hspec : specs[i]? = some (.mono τm) := by
-            simpa [List.getElem?_eq_getElem, hiS, hs]
+            simp [hiS, hs]
           have hb0 := ihmono stage component hcomponent Xs hfresh i hiComponent e τm
             hbinding hspec
           exact Expr.TyBvarBounded.mono hb0 (Nat.zero_le _)
@@ -11178,7 +11178,7 @@ theorem TypeOfHM_of_lowerExpr_of_SurfaceWTExpr {ctors : CtorEnv} {ke : KindEnv}
         | none => simp [specs, hopt] at hτm
         | some τ' =>
           have heq : τ' = τm := by simpa [specs, hopt] using hτm
-          simpa [heq] using hopt
+          exact congrArg some heq
       have hτs' := List.getElem?_eq_some_iff.mp hspec'
       have hiTy : member < τs.length := hτs'.1
       have hτsEq : τs[member]'hiTy = τm := hτs'.2

@@ -1949,7 +1949,7 @@ theorem InferRecComponent.gap_avoid {lo hi : Nat}
 termination_by (Expr.sizeRecGroup bindings, 0)
 decreasing_by
   all_goals (try subst_vars)
-  all_goals (try simp only [Expr.sizeRecGroup, List.length_cons])
+  all_goals (try simp only [Expr.sizeRecGroup])
   all_goals omega
 
 /-- Gap avoidance threads through dependency-ordered residual SCCs while each
@@ -1992,7 +1992,7 @@ theorem InferRecStrata.gap_avoid {lo hi : Nat}
 termination_by (Expr.sizeRecGroup bindings, groups.length + 1)
 decreasing_by
   all_goals (try subst_vars)
-  all_goals (try simp only [Expr.sizeRecGroup, List.length_cons])
+  all_goals (try simp only [List.length_cons])
   all_goals omega
 
 theorem InferRecGroupPoly.gap_avoid {lo hi : Nat} {Φ ctx bindings specs Φ' S}
@@ -2099,7 +2099,7 @@ def Infer.Principal {Φ : Nat} {ctx : Ctx} {e : Expr} {Φ' : Nat} {S : Subst} {�
     the structural equalities required by `TypeOfMatchBranch`. -/
 def InferBranches.Principal {Φ : Nat} {ctx : Ctx} {scrutTy : Ty} {ρ : Ty}
     {brs : List (MatchPattern × Expr)} {Φ' : Nat} {S : Subst}
-    (_h : InferBranches Φ ctx scrutTy ρ brs Φ' S) (hne : brs ≠ []) : Prop :=
+    (_h : InferBranches Φ ctx scrutTy ρ brs Φ' S) (_hne : brs ≠ []) : Prop :=
   CtxWF ctx → CtxBelow Φ ctx →
   ∀ (S₀ : Subst) (scruT₀ ρe : Ty) (K : List Nat),
     (∀ p ∈ S₀, p.2.IsLC) → scruT₀.IsLC → scrutTy.IsLC → ρ.IsLC →
@@ -2124,9 +2124,9 @@ def InferBranches.Principal {Φ : Nat} {ctx : Ctx} {scrutTy : Ty} {ρ : Ty}
     share monomorphic targets. -/
 def InferRecGroup.Principal {Φ₀ Φ : Nat} {ctx : Ctx} {bindings : List Expr}
     {specs : List RecSpec} {Φ' : Nat} {S : Subst}
-    (_h : InferRecGroup Φ ctx bindings specs Φ' S) (hle : Φ₀ ≤ Φ) : Prop :=
+    (_h : InferRecGroup Φ ctx bindings specs Φ' S) (_hle : Φ₀ ≤ Φ) : Prop :=
   CtxWF ctx → CtxBelow Φ ctx →
-  ∀ (S₀ : Subst) (L K : List Nat) (R₀ : Subst),
+  ∀ (S₀ : Subst) (_L K : List Nat) (R₀ : Subst),
     (∀ p ∈ S₀, p.2.IsLC) → (∀ k ∈ K, k < Φ₀) →
     (∀ y ∈ Expr.tyFreeVars.RecGroup.tyFreeVars bindings, y ∈ K) →
     (∀ k ∈ K, S₀.onTy (.fvar k) = .fvar k) →
@@ -2180,7 +2180,7 @@ private theorem RecSpecs.selectComponent_onSubst (members : List Nat)
       cases spec with
       | mono τ =>
           simp only [List.map_cons, RecSpec.onSubst, RecSpecs.selectComponent]
-          split <;> simp only [RecSpec.onSubst, List.map_cons, ih]
+          split <;> simp only [ih]
       | poly σ =>
           simp only [List.map_cons, RecSpec.onSubst, RecSpecs.selectComponent, ih]
 
@@ -2209,12 +2209,12 @@ private theorem RecSpecs.selectComponent_getElem?_mono
               simp only [RecSpecs.selectComponent, List.getElem?_cons_succ] at h
               have hr := ih h
               refine ⟨by simpa using hr.1, ?_⟩
-              convert hr.2 using 1 <;> omega
+              convert hr.2 using 1; omega
           | poly σ =>
               simp only [RecSpecs.selectComponent, List.getElem?_cons_succ] at h
               have hr := ih h
               refine ⟨by simpa using hr.1, ?_⟩
-              convert hr.2 using 1 <;> omega
+              convert hr.2 using 1; omega
 
 private theorem RecSpecs.ComponentMonoTyped.selectComponent
     {ctx : Ctx} {members : List Nat} {memberIndex : Nat}
