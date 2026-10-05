@@ -138,6 +138,26 @@ npm install
 npm run dev          # http://localhost:5173
 ```
 
+The hosted playground runs as one Render web service: `render.yaml` configures
+the free `fhm-playground` service in Frankfurt. `scripts/render-build.sh` installs
+the pinned Lean toolchain, fetches the required mathlib cache, builds `fhm`, and
+bundles the frontend. The server listens on Render's `PORT`; `/api/health` checks
+that the compiler binary is available. Free services sleep after idle periods.
+
+To check production serving locally after `lake build fhm`:
+
+```bash
+cd editors/web
+npm ci
+npm test
+npm run build
+npm start
+```
+
+Requests are limited to 128 KiB of source, two concurrent compiler processes,
+4 MiB of combined output per process, and 15 seconds for diagnostics or 20 seconds
+for execution. Snapshot sharing is not implemented yet.
+
 ### VS Code / Cursor
 
 [`editors/vscode/`](./editors/vscode/) provides syntax highlighting,

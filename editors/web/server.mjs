@@ -1,9 +1,8 @@
 import express from "express";
-import { spawn } from "node:child_process";
 import fs from "node:fs";
 import path from "node:path";
 import { fileURLToPath } from "node:url";
-import { createServer as createViteServer } from "vite";
+import { createRunner } from "./child-runner.mjs";
 
 const __dirname = path.dirname(fileURLToPath(import.meta.url));
 const REPO_ROOT = path.resolve(__dirname, "../..");
@@ -13,7 +12,8 @@ const DIAGNOSE_TIMEOUT_MS = 15_000;
 const RUN_TIMEOUT_MS = 20_000;
 
 const PORT = Number(process.env.PORT || 5173);
-const STATIC_ONLY = process.env.FHM_WEB_STATIC === "1";
+const STATIC_ONLY = process.env.FHM_WEB_STATIC === "1" || process.env.NODE_ENV === "production";
+const runBin = createRunner();
 
 function resolveFhmBin() {
   for (const fromEnv of [
@@ -25,57 +25,6 @@ function resolveFhmBin() {
   }
   const candidate = path.join(BIN_DIR, "fhm");
   return fs.existsSync(candidate) ? candidate : null;
-}
-
-/**
- * @param {string} bin
- * @param {string[]} args
- * @param {string} source
- * @param {number} timeoutMs
- * @returns {Promise<{ stdout: string, stderr: string, code: number | null }>}
- */
-function runBin(bin, args, source, timeoutMs) {
-  return new Promise((resolve, reject) => {
-    const child = spawn(bin, args, {
-      stdio: ["pipe", "pipe", "pipe"],
-      env: { ...process.env, NO_COLOR: "1" },
-    });
-    let stdout = "";
-    let stderr = "";
-    let settled = false;
-
-    const timer = setTimeout(() => {
-      child.kill("SIGKILL");
-      if (!settled) {
-        settled = true;
-        reject(new Error(`timeout after ${timeoutMs}ms`));
-      }
-    }, timeoutMs);
-
-    child.stdout.on("data", (c) => {
-      stdout += c.toString("utf8");
-    });
-    child.stderr.on("data", (c) => {
-      stderr += c.toString("utf8");
-    });
-    child.on("error", (err) => {
-      clearTimeout(timer);
-      if (!settled) {
-        settled = true;
-        reject(err);
-      }
-    });
-    child.on("close", (code) => {
-      clearTimeout(timer);
-      if (!settled) {
-        settled = true;
-        resolve({ stdout, stderr, code });
-      }
-    });
-
-    child.stdin.write(source, "utf8");
-    child.stdin.end();
-  });
 }
 
 /**
@@ -106,8 +55,8 @@ async function createApp() {
 
   app.get("/api/health", (_req, res) => {
     const bin = resolveFhmBin();
-    res.json({
-      ok: true,
+    res.status(bin ? 200 : 503).json({
+      ok: Boolean(bin),
       diagnose: Boolean(bin),
       live: Boolean(bin),
     });
@@ -150,7 +99,7 @@ async function createApp() {
         });
       }
     } catch (err) {
-      res.status(504).json({ error: String(err) });
+      res.status(err.status || 502).json({ error: String(err) });
     }
   });
 
@@ -182,7 +131,7 @@ async function createApp() {
         });
       }
     } catch (err) {
-      res.status(504).json({ error: String(err) });
+      res.status(err.status || 502).json({ error: String(err) });
     }
   });
 
@@ -193,6 +142,7 @@ async function createApp() {
       res.sendFile(path.join(dist, "index.html"));
     });
   } else {
+    const { createServer: createViteServer } = await import("vite");
     const vite = await createViteServer({
       root: __dirname,
       configFile: path.join(__dirname, "vite.config.js"),
@@ -206,7 +156,7 @@ async function createApp() {
 }
 
 const app = await createApp();
-app.listen(PORT, () => {
+app.listen(PORT, "0.0.0.0", () => {
   const bin = resolveFhmBin();
   console.log(`FHM playground  http://localhost:${PORT}`);
   console.log(`  fhm: ${bin || "(missing)"}`);

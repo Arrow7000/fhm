@@ -1,0 +1,14 @@
+services:
+  - type: web
+    name: fhm-playground
+    runtime: node
+    plan: free
+    region: frankfurt
+    buildCommand: bash scripts/render-build.sh
+    startCommand: npm --prefix editors/web start
+    healthCheckPath: /api/health
+    envVars:
+      - key: NODE_VERSION
+        value: 22.20.0
+      - key: NODE_ENV
+        value: production

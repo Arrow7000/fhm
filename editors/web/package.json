@@ -5,6 +5,8 @@
   "description": "FHM online playground — Monaco editor + diagnose/run over local binaries",
   "type": "module",
   "scripts": {
+    "start": "FHM_WEB_STATIC=1 node server.mjs",
+    "test": "node --test tests/*.test.mjs",
     "dev": "node server.mjs",
     "dev:clean": "rm -rf node_modules/.vite && node server.mjs",
     "build": "vite build",

@@ -1,3 +1,6 @@
 /.lake
+/.elan
+/editors/web/node_modules/
+/editors/web/dist/
 .env
 elm-letrec-test/elm-stuff/
