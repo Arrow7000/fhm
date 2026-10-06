@@ -334,6 +334,32 @@ def locateLowerFail (src : String) (p : Surface.Program) (sp : SpannedProgram) :
       "expression lowering failed (rejected sugar, bad annotation, or pattern λ)"
       (some (bodyDiagSpan sp.body))
 
+/-- The first `match` (outermost first, in source order) that isn't
+    exhaustive, found by walking the program alongside its span tree. Each
+    match is judged by `checkExhaustive` on the match alone, with its scrutinee
+    and arm bodies replaced by `()`. -/
+partial def firstNonExhaustive (ctors : CtorEnv) : Surface.Expr → SpannedExpr → Option Span
+  | .pair a b, .pair _ sa sb | .cons a b, .cons _ sa sb | .app a b, .app _ sa sb =>
+      firstNonExhaustive ctors a sa <|> firstNonExhaustive ctors b sb
+  | .list es, .list _ ses => firstIn (es.zip ses)
+  | .lambda _ _ body, .lambda _ sbody => firstNonExhaustive ctors body sbody
+  | .letIn _ _ _ _ rhs body, .letIn _ srhs sbody =>
+      firstNonExhaustive ctors rhs srhs <|> firstNonExhaustive ctors body sbody
+  | .letRecIn binds body, .letRecIn _ rhss sbody =>
+      firstIn ((binds.map (·.rhs)).zip rhss) <|> firstNonExhaustive ctors body sbody
+  | .ife c t f, .ife _ sc st sf =>
+      firstIn [(c, sc), (t, st), (f, sf)]
+  | .match_ scrut arms, .match_ span sscrut sarms =>
+      let alone := Surface.Expr.match_ (.primLit .unit) (arms.map fun (p, _) => (p, .primLit .unit))
+      firstNonExhaustive ctors scrut sscrut <|>
+        (if checkExhaustive ctors alone then none else some span) <|>
+        firstIn ((arms.map (·.2)).zip sarms)
+  | _, _ => none
+where
+  firstIn : List (Surface.Expr × SpannedExpr) → Option Span
+    | [] => none
+    | (e, se) :: rest => firstNonExhaustive ctors e se <|> firstIn rest
+
 def locateDeclFail (sp : SpannedProgram) (msg : String) : HoverDiag :=
   match sp.declSpans with
   | s :: _ => diagAtSpan msg (some s)
@@ -425,9 +451,15 @@ def collectHover (src : String) (p : Surface.Program) (binders : List BinderSpan
               let prelude := (preludeTypeCtorSymbols ctors scope ++ primTypeSymbols scope).filter fun s =>
                 !(syntaxSyms.any fun b => b.name == s.name && b.kind == s.kind)
               let sugarOps := (collectLitOpSymbols src ctors).filter fun s => s.name == "::"
+              -- Typing succeeded, so hovers stay available alongside this error.
+              let exhaustiveness :=
+                if checkExhaustive ctors p.term then []
+                else [diagAtSpan "match not exhaustive"
+                  ((firstNonExhaustive ctors p.term tree).orElse fun _ => some (bodyDiagSpan sp.body))]
               { symbols := prelude ++ syntaxSyms ++ values ++ sugarOps ++ occurrences
                 programTy := FHM.Unverified.HMDisplay.scheme {} []
-                  (genScheme [] [] typed.inference.ty) }
+                  (genScheme [] [] typed.inference.ty)
+                diagnostics := exhaustiveness }
 
 def parseDiagJson (e : ParseError) : Lean.Json :=
   Lean.Json.mkObj [

@@ -28,12 +28,6 @@ And patterns in bindings:
 
 ## Bugs
 
-- [ ] **`fhm run --json` reports type errors at 1:1.** When typechecking fails,
-  the run JSON's `line`/`col` are the `PipelineErr` defaults rather than the
-  failing expression's span; `fhm diagnose` reports the right location. The
-  playground only shows positions from `diagnose`, so this affects other
-  `--json` consumers.
-
 - [ ] **Exhaustiveness checker rejects complete nested matches.**
   `checkExhaustive` is sound (it never accepts an incomplete match) but not
   complete: some matches whose patterns go more than one constructor deep are
@@ -137,9 +131,10 @@ And patterns in bindings:
   verified functions currently return `Option`; moving them to `Except` means
   restating their theorems in terms of `.ok` rather than `some`, which is
   mechanical but touches a lot of code.
-- [ ] **Better error messages.** `fhm run` reports only
-  `[typecheck] typechecking failed`, and `fhm diagnose` adds just the name of
-  the failing definition; neither gives a location or a reason. Lowering
+- [ ] **Better error messages.** A type error is reported as
+  `typechecking failed`, plus the name of the failing definition, located at
+  that definition (by `fhm run` and `fhm diagnose` alike); there's no reason
+  and no position inside the definition. Lowering
   errors are a single generic message: `lowering failed (unbound name, bad
   decl, or rejected sugar)`.
 - [ ] **Error recovery.** A single lowering or typechecking error currently

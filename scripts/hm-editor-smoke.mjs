@@ -165,5 +165,26 @@ test("annotated mutual SCC exports polymorphism but forbids polymorphic recursiv
   assert.ok(rejected.payload.diagnostics.length > 0);
 });
 
+test("run --json reports errors where diagnose does", () => {
+  const sources = {
+    typecheck: "let f = \\x -> x + 1\nf True\n",
+    lower: "let f = \\x -> y\nf 1\n",
+    exhaustiveness: "let f = \\xs ->\n  match xs with\n  | [] -> 0\nf [1]\n",
+  };
+  for (const [stage, source] of Object.entries(sources)) {
+    const editor = cli(["diagnose"], source);
+    assert.equal(editor.status, 1, `${stage}: diagnose reports an error`);
+    const [first] = editor.payload.diagnostics;
+    const runner = cli(["run", "--json"], source);
+    assert.equal(runner.payload.stage, stage);
+    assert.deepEqual(
+      [runner.payload.message, runner.payload.line, runner.payload.col, runner.payload.endLine, runner.payload.endCol],
+      [first.message, first.line, first.col, first.endLine, first.endCol],
+      `${stage}: run and diagnose agree`,
+    );
+    assert.ok(runner.payload.line > 1 || runner.payload.col > 1, `${stage}: not the 1:1 default`);
+  }
+});
+
 console.log(`${tests - failures}/${tests} HM CLI/editor semantic smoke checks passed.`);
 process.exitCode = failures ? 1 : 0;

@@ -627,3 +627,14 @@ def typeHover (src : String) (name : String) : Option String :=
 
 #guard typeHover "type Maybe a =\n  /-- No value.\n      Really none. -/\n  | Nothing\n  | Just a\n1\n" "Maybe" =
   some "type Maybe a =\n  --- No value.\n  --- Really none.\n  | Nothing\n  | Just a"
+
+-- A non-exhaustive match is reported where it is (here the inner one), and
+-- hovers stay available since typing succeeded.
+def diagSites (src : String) : Option (List (String × Nat × Nat)) :=
+  (hoverReport src).map (·.diagnostics.map fun d => (d.message, d.line, d.col))
+
+def innerNonExhaustive : String :=
+  "type Maybe a = Just a | Nothing\nlet g = \\m ->\n  match m with\n  | Nothing -> 0\n  | Just xs ->\n    match xs with\n    | [] -> 0\ng (Just [1])\n"
+
+#guard diagSites innerNonExhaustive = some [("match not exhaustive", 6, 5)]
+#guard ((hoverReport innerNonExhaustive).map (·.symbols.isEmpty)) = some false

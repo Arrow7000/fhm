@@ -1,6 +1,7 @@
 import FHM.Unverified.EvaluateUnsafe
 import FHM.Unverified.HMDisplay
 import FHM.Unverified.HMReport
+import FHM.Unverified.EditorSupport
 import FHM.Unverified.Surface.Parse
 
 /-!
@@ -185,6 +186,15 @@ private def topBindingTypes (groups : List (List Surface.Binding))
           pure (here ++ later)
   go groups []
 
+/-- A `stage` error with the message and position `fhm diagnose` gives the
+    program's first error, so both commands agree. -/
+def diagnosedErr (stage : PipelineStage) (d? : Option HoverDiag) (fallback : String) :
+    PipelineErr :=
+  match d? with
+  | some d => { stage, message := d.message, line := d.line, col := d.col,
+                endLine := d.endLine, endCol := d.endCol }
+  | none => { stage, message := fallback }
+
 /-- Parse → provenance-aware lower → path-keyed HM inference → exhaustiveness →
 fully erased execution. -/
 def checkPipeline (src : String) :
@@ -202,16 +212,11 @@ def checkPipeline (src : String) :
         }
     | .ok parsed => pure parsed
 
+  -- On failure, `collectHover` reruns the editor pipeline to locate the error.
+  let firstDiag := fun () => (collectHover src p binders sp).diagnostics.head?
   let (ctors, _) ← match lowerProgram p with
-    | none =>
-        -- Prefer a concrete free-name message when possible (editor path has spans).
-        let free := freeNamesD [] p.term
-        let message :=
-          match free with
-          | ⟨n⟩ :: _ => s!"unbound name `{n}`"
-          | [] =>
-              "lowering failed (unbound name, bad decl, or rejected sugar)"
-        return .error { stage := .lower, message }
+    | none => return .error (diagnosedErr .lower (firstDiag ())
+        "lowering failed (unbound name, bad decl, or rejected sugar)")
     | some x => pure x
 
   let scope :=
@@ -228,7 +233,7 @@ def checkPipeline (src : String) :
     | none => return .error { stage := .lower, message := "provenance-aware lowering failed" }
     | some lowered => pure lowered
   let typed ← match SurfaceBridge.Provenance.inferWithProvenance ctors lowered with
-    | none => return .error { stage := .typecheck, message := "typechecking failed" }
+    | none => return .error (diagnosedErr .typecheck (firstDiag ()) "typechecking failed")
     | some typed => pure typed
   let τ := typed.inference.ty
   let inference := typed.inference
@@ -251,7 +256,9 @@ def checkPipeline (src : String) :
       programSynthPretty? := some (FHM.Unverified.HMDisplay.scheme {} [] bodyσ) }
 
   if !(checkExhaustive ctors p.term) then
-    return .error { stage := .exhaustiveness, message := "match not exhaustive" }
+    return .error (diagnosedErr .exhaustiveness
+      ((firstNonExhaustive ctors p.term tree).map (diagAtSpan "match not exhaustive" ∘ some))
+      "match not exhaustive")
 
   let e := lowered.expr.erase
 
