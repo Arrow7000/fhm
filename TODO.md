@@ -20,6 +20,12 @@ Separately, the annotation features go in this order:
 5. **Type holes**, then **named holes**.
 6. **Head-binder syntax**, which needs (5) for anything not fully annotated.
 
+And patterns in bindings:
+
+7. **Nested-match exhaustiveness** (under Bugs), which otherwise rejects
+   tuple patterns such as `\((a, b), c) -> …` straight away.
+8. **Patterns in lambda parameters**, then **pattern lets**.
+
 ## Bugs
 
 - [ ] **`fhm run --json` reports type errors at 1:1.** When typechecking fails,
@@ -32,6 +38,17 @@ Separately, the annotation features go in this order:
   `checkExhaustive` is sound (it never accepts an incomplete match) but not
   complete: some matches whose patterns go more than one constructor deep are
   rejected with `match not exhaustive` even though they cover every case.
+  The simplest case is a nested tuple, which has only one case to cover:
+
+  ```
+  let f = \p ->
+    match p with
+    | ((a, b), c) -> a
+
+  f ((1, 2), 3)
+  ```
+
+  `(a, (b, c))` fails the same way. With constructors:
 
   ```
   type Maybe a = Just a | Nothing
@@ -84,6 +101,47 @@ Separately, the annotation features go in this order:
   (`dataCtor` / `ctorField` in `FHM/Unverified/Surface/Parse.lean`) should
   stop at the end of the declaration's layout block.
 
+- [ ] **Value recursion overflows the evaluator's stack.** A recursive
+  definition that isn't a function crashes `fhm run` with `Stack overflow
+  detected. Aborting.`, even with `--fuel`, so the step budget doesn't count
+  this kind of recursion. Ordinary infinite recursion (`let loop = \n -> loop
+  (n + 1)`) does stop at the budget.
+
+  ```
+  let x = x + 1
+
+  x
+  ```
+
+  Local `let`s are recursive too, so `let x = x + 1 in x` inside a function
+  does the same. Either the evaluator should spend fuel here, or definitions
+  like this should be rejected, as OCaml rejects `let rec x = x + 1` ("This
+  kind of expression is not allowed as right-hand side of let rec").
+
+- [ ] **Parse errors inside a `match` arm lose their message and location.**
+  `infix chaining requires parentheses` is reported correctly for
+  `\x -> x + x + x`, but inside a match arm it becomes `unexpected token` at
+  the start of the definition's right-hand side (here 1:9):
+
+  ```
+  let f = \p ->
+    match p with
+    | x -> x + x + x
+
+  f 1
+  ```
+
+  Probably backtracking out of the arm and reporting the outermost failure.
+
+- [ ] **A type and a constructor with the same name are confused by hover and
+  go to definition.** With `type Box a = Box a`, the `Box` in an annotation
+  such as `Box a -> a` is resolved by name to the constructor, so hover shows
+  `∀ a. a → Box a` and go to definition jumps to the constructor. The editor
+  only knows the name and scope. The parser should record type-name and
+  constructor references with their kind, as it does for binders. The
+  `hover-syntax` snapshot (`editors/web/fixtures/`) pins the current
+  behaviour.
+
 ## Errors and diagnostics
 
 - [ ] **Errors as data.** Replace the stringly typed errors throughout the
@@ -112,7 +170,6 @@ Separately, the annotation features go in this order:
   Look at what Elm's and other high-quality language servers show on hover,
   and how they format it. Ideas:
   - Show a constructor's full declaration, not just its type.
-  - Show doc comments (needs a doc-comment syntax).
   - For annotated bindings, show the inferred type when it differs from the
     annotation.
   - With error recovery, show something like "type unknown (error in `g`)"
@@ -120,8 +177,18 @@ Separately, the annotation features go in this order:
 
 - [ ] **Missing-case witnesses.** When a match isn't exhaustive, name the
   missing patterns (`missing: Just Nothing`) instead of only saying so, in
-  `fhm diagnose` and the language server. The playground shows `diagnose`
-  output, so it gets this for free. Also wants errors as data.
+  `fhm diagnose` and the editors. The playground shows `diagnose` output, so
+  it gets this for free. Once patterns are allowed in lambdas and lets, the
+  same witnesses explain why a refutable one is rejected. Also wants errors
+  as data.
+
+- [ ] **Formatter**: an elm-format equivalent. One canonical layout for FHM
+  source, as `fhm format`, with format-on-save in the editors. Hovers would
+  reuse its printer for declarations and long signatures. Today a type's hover
+  uses a fixed one-constructor-per-line layout (so constructor docs fit), and
+  long signatures stay on one line. The printer has to keep comments where
+  they were, so the parser needs to keep them with their positions; the lexer
+  already emits them as tokens.
 
 ## Playground
 
@@ -140,6 +207,41 @@ Separately, the annotation features go in this order:
   of the syntax is that each parameter and the return type can be annotated or
   not, independently. A fully annotated head can already be lowered, but
   anything less is a partial annotation, so this needs type holes.
+
+- [ ] **Patterns in lambda parameters**, e.g. `\(a, b) -> a`. The AST
+  already allows a pattern, and lowering has a `@TODO(pattern-λ)` hook
+  (`FHM/SurfaceBridge.lean`). Desugar `\p -> b` to `\x -> match x with
+  p -> b`, reusing `lowerMatch` as `if` does. Touches the parser (only names
+  and `_` parse today), `lowerExpr` and `LowersExpr`, the soundness,
+  completeness and uniqueness proofs (a pattern lambda counts as a match),
+  `SurfaceCovers`/`checkExhaustive`, and hover spans for the pattern's
+  binders. A refutable pattern (`\(Just x) -> x`) is rejected by the
+  exhaustiveness check, as an incomplete `match` is. Needs the nested-match
+  exhaustiveness fix first.
+- [ ] **Pattern lets**, e.g. `let (q, r) = divMod n 10`, locally and at the
+  top level.
+  - **Generalised, name by name.** Desugar `let p = e in b` to
+    `let t = e in let x₁ = match t with p -> x₁ in … in b`, one `let` per
+    name `xᵢ` that `p` binds, with `t` a hidden name that source can't
+    write. This is the Haskell Report's translation (§4.4.3.2), made
+    strict: `e` is evaluated once, and each `match` re-reads `t`, which
+    can't fail since `p` is exhaustive. Each `xᵢ` is an ordinary `let`, so
+    it's generalised as usual: `let (f, n) = (\x -> x, 1)` gives
+    `f : ∀ a. a → a` and `n : Int`. No new typing rules. Generalising is
+    safe because FHM is pure; OCaml, F# and SML restrict it only because of
+    mutable references (the value restriction).
+  - **Not recursive.** `e` can't mention the names `p` binds, and a pattern
+    binding can't join a recursive group with other definitions; that's an
+    error naming the cycle, like Elm's.
+  - **Refutable patterns are rejected** by the exhaustiveness check, as for
+    pattern lambdas.
+  - **Top level:** the same translation, with `t` and each `xᵢ` as
+    top-level bindings.
+
+  [`recursion-language-comparison/FINDINGS-pattern-bindings.md`](./recursion-language-comparison/FINDINGS-pattern-bindings.md)
+  compares GHC, OCaml, F#, SML and Elm. Every strict language rejects
+  recursive pattern bindings. Generalising matches Haskell and Elm, the
+  pure ones; Elm doesn't allow pattern bindings at the top level at all.
 
 **Design decisions for partial annotations:**
 
@@ -253,3 +355,12 @@ Separately, the annotation features go in this order:
   Building disequality into inference as a constraint instead (like Prolog's
   `dif/2`) would be much harder, and a type such as "`x`'s type differs from
   `y`'s" in `\x y -> x <!=> y` can't be expressed as a plain HM type.
+
+### Row types
+
+- [ ] Investigate row types (extensible records, maybe variants) before
+  building anything: what changes in `Ty`, unification (Rémy's rows or
+  Leijen's scoped labels), the inference algorithm and above all its
+  completeness proof (`typecheck_accepts_iff`), and whether pattern
+  compilation has to know about records. Write it up as a brief with an
+  estimate. Worth doing after errors as data.
