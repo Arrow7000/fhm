@@ -3,11 +3,13 @@ import assert from "node:assert/strict";
 import { chromium } from "playwright";
 import { examples } from "../src/examples.mjs";
 import { sourceFromHash } from "../src/share.mjs";
-const url = process.argv[2] || "http://localhost:5173";
+const url = (process.argv[2] || "http://localhost:5173").replace(/\/$/, "");
+const mod = process.platform === "darwin" ? "Meta" : "Control";
 const browser = await chromium.launch({ headless: true });
 const errors = [];
 const context = await browser.newContext({
   viewport: { width: 1440, height: 900 },
+  permissions: ["clipboard-read", "clipboard-write"],
 });
 const page = await context.newPage();
 page.on("pageerror", (error) => errors.push(String(error)));
@@ -15,102 +17,99 @@ page.on("console", (message) => {
   if (message.type() === "error") errors.push(message.text());
 });
 page.setDefaultTimeout(60000);
-async function ready(p = page) {
-  await p.locator("#status.ok").waitFor();
-}
+const ready = (p = page) => p.locator("#status.ok").waitFor();
+const hash = (p = page) => p.evaluate(() => location.hash);
+const draft = (p = page) =>
+  p.evaluate(() => JSON.parse(localStorage.getItem("fhm.draft")).source);
 async function program(p, text) {
   await p.locator(".monaco-editor textarea").focus();
-  await p.keyboard.press(
-    process.platform === "darwin" ? "Meta+A" : "Control+A",
-  );
+  await p.keyboard.press(`${mod}+A`);
   await p.keyboard.insertText(text);
+}
+async function example(p, title) {
+  await p.locator("#examples").click();
+  await p.locator("#examples-menu button").filter({ hasText: title }).click();
 }
 try {
   await page.goto(url);
   await ready();
+  // A fresh visitor sees the first example, named in the URL.
+  assert.equal(await hash(), `#example=${examples[0].id}`);
   await page.locator(".monaco-editor textarea").focus();
-  await page.keyboard.press(
-    process.platform === "darwin" ? "Meta+Enter" : "Control+Enter",
-  );
+  await page.keyboard.press(`${mod}+Enter`);
   await page.locator(".result-value").waitFor();
   assert.equal(
     await page.locator(".result-value").innerText(),
     examples[0].result,
   );
-  await page.locator("#tab-types").click();
-  assert.equal(await page.locator("#types .binding-row").count(), 3);
-  await page.locator(".monaco-editor textarea").focus();
-  await page.keyboard.press(
-    process.platform === "darwin" ? "Meta+s" : "Control+s",
-  );
-  await page.locator("#share-dialog[open]").waitFor();
-  const sharedUrl = await page.locator("#share-link").inputValue();
-  assert.equal(
-    await sourceFromHash(new URL(sharedUrl).hash),
-    examples[0].source,
-  );
-  await page.locator("#share-dialog .dialog-close").click();
+  assert.equal(await page.locator("#types .bindings button.name").count(), 3);
+
   const downloadEvent = page.waitForEvent("download");
   await page.locator("#download").click();
-  assert.equal((await downloadEvent).suggestedFilename(), "polymorphism.fhm");
+  assert.equal(
+    (await downloadEvent).suggestedFilename(),
+    `${examples[0].id}.fhm`,
+  );
+
   await page.locator("#divider").focus();
   await page.keyboard.press("ArrowLeft");
   assert.equal(
     await page.locator("#divider").getAttribute("aria-valuenow"),
     "58",
   );
-  await page.locator("#tab-types").focus();
-  await page.keyboard.press("ArrowRight");
-  assert.equal(
-    await page.locator("#tab-problems").getAttribute("aria-selected"),
-    "true",
-  );
+
+  // Editing keeps the address bar in sync, and marks the old result stale.
   const edited = "-- a saved draft\nlet answer = 42\nanswer\n";
   await program(page, edited);
   await ready();
-  await page.waitForFunction(() =>
-    document.getElementById("draft-status").textContent.includes("Saved"),
-  );
-  await page.reload();
+  await page.waitForFunction(() => location.hash.startsWith("#code="));
+  assert.equal(await sourceFromHash(await hash()), edited);
+  assert.ok(await page.locator("#result.stale").count());
+
+  // Share copies the live URL rather than opening a dialog.
+  await page.locator(".monaco-editor textarea").focus();
+  await page.keyboard.press(`${mod}+s`);
+  await page.locator("#share-label", { hasText: "Link copied" }).waitFor();
+  const sharedUrl = await page.evaluate(() => navigator.clipboard.readText());
+  assert.equal(sharedUrl, await page.evaluate(() => location.href));
+  assert.equal(await page.locator("dialog[open]").count(), 0);
+
+  // The draft survives a visit without a hash.
+  await page.goto(url);
   await ready();
-  assert.equal(
-    await page.evaluate(
-      () => JSON.parse(localStorage.getItem("fhm.draft")).source,
-    ),
-    edited,
-  );
-  await page.goto(sharedUrl);
+  assert.equal(await draft(), edited);
+  assert.ok((await hash()).startsWith("#code="));
+
+  // Opening someone else's link replaces the draft but keeps it restorable.
+  await page.goto(`${url}/#example=lists`);
   await ready();
-  assert.equal(
-    await page.evaluate(
-      () => JSON.parse(localStorage.getItem("fhm.draft")).source,
-    ),
-    examples[0].source,
-  );
-  await page.locator("#examples").click();
-  await page
-    .locator(".example-option")
-    .filter({ hasText: "When types don't fit" })
-    .click();
+  assert.equal(await draft(), examples[1].source);
+  await example(page, "Restore previous program");
+  await ready();
+  assert.equal(await draft(), edited);
+
+  await example(page, "A type error");
   await page.locator("#status.err").waitFor();
-  await page.locator("#tab-problems").click();
-  assert.ok(await page.locator(".problem-item").count());
-  await page.locator(".problem-item").first().click();
-  await page.locator("#examples").click();
-  await page
-    .locator(".example-option")
-    .filter({ hasText: "Your previous program" })
-    .click();
-  await ready();
+  assert.ok(await page.locator(".problem").count());
+  await page.locator(".problem").first().click();
+  await page.locator("#run").click();
+  await page.locator(".run-error").waitFor();
+
   await page.locator("#theme").click();
   assert.equal(await page.locator("html").getAttribute("data-theme"), "dark");
   if (process.env.FHM_SCREENSHOTS)
     await page.screenshot({ path: `${process.env.FHM_SCREENSHOTS}-dark.png` });
   await page.locator("#theme").click();
+  await example(page, examples[0].title);
   await page.locator("#run").click();
   await page.locator(".result-value").waitFor();
   if (process.env.FHM_SCREENSHOTS)
     await page.screenshot({ path: `${process.env.FHM_SCREENSHOTS}-light.png` });
+
+  await page.locator("#help").click();
+  await page.locator("#help-dialog[open]").waitFor();
+  await page.keyboard.press("Escape");
+
   await page.setViewportSize({ width: 390, height: 844 });
   await page.waitForTimeout(300);
   assert.equal(
@@ -127,17 +126,16 @@ try {
     await page.screenshot({
       path: `${process.env.FHM_SCREENSHOTS}-mobile.png`,
     });
+
   const fresh = await browser.newContext();
   const other = await fresh.newPage();
   await other.goto(sharedUrl);
   await ready(other);
   await other.locator("#run").click();
   await other.locator(".result-value").waitFor();
-  assert.equal(
-    await other.locator(".result-value").innerText(),
-    examples[0].result,
-  );
+  assert.equal(await other.locator(".result-value").innerText(), "42");
   await fresh.close();
+
   const unavailable = await browser.newContext();
   await unavailable.addInitScript(() => {
     Object.defineProperty(window, "localStorage", {
@@ -156,15 +154,10 @@ try {
   const blocked = await unavailable.newPage();
   await blocked.goto(url);
   await ready(blocked);
-  assert.match(
-    await blocked.locator("#draft-status").innerText(),
-    /Session only/,
-  );
   await blocked.locator("#share").click();
-  await blocked.locator("#share-dialog[open]").waitFor();
-  await blocked.locator("#copy-link").click();
-  assert.match(await blocked.locator("#toast").innerText(), /manually/);
+  await blocked.locator("#share-label", { hasText: "address bar" }).waitFor();
   await unavailable.close();
+
   assert.deepEqual(errors, []);
   console.log(
     JSON.stringify({
@@ -173,14 +166,17 @@ try {
       checks: [
         "evaluation",
         "inferred types",
-        "snapshot sharing",
         "download",
-        "keyboard resize & tabs",
+        "keyboard resize",
+        "live URL",
+        "stale result",
+        "share copies URL",
         "draft restore",
-        "shared link precedence",
+        "link precedence & restore previous",
         "problem navigation",
-        "previous program",
+        "run error",
         "theme",
+        "help",
         "mobile layout",
         "fresh-browser share",
         "blocked storage & clipboard fallback",

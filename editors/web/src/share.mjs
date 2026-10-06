@@ -86,9 +86,6 @@ export async function sourceFromHash(hash) {
   return decodeSource(hash.slice(6));
 }
 
-export async function shareUrl(source, location) {
-  const url = new URL(location);
-  url.search = "";
-  url.hash = `code=${await encodeSource(source)}`;
-  return url.toString();
+export async function hashFor(source) {
+  return `#code=${await encodeSource(source)}`;
 }

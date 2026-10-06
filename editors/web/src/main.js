@@ -1,7 +1,5 @@
 import * as monaco from "monaco-editor/esm/vs/editor/edcore.main.js";
 import "monaco-editor/min/vs/editor/editor.main.css";
-import "@fontsource/ibm-plex-mono/latin-400.css";
-import "@fontsource/ibm-plex-mono/latin-500.css";
 import "./style.css";
 import editorWorker from "monaco-editor/esm/vs/editor/editor.worker?worker";
 import {
@@ -9,13 +7,15 @@ import {
   resolveHover,
   hoverMarkdown,
   diagnosticsToMarkers,
+  formatNs,
 } from "@fhm/editor-core";
 import langConfig from "../../vscode/language-configuration.json";
 import { examples, exampleFromId } from "./examples.mjs";
-import { shareUrl, sourceFromHash } from "./share.mjs";
+import { hashFor, sourceFromHash } from "./share.mjs";
 
 self.MonacoEnvironment = { getWorker: () => new editorWorker() };
 const $ = (id) => document.getElementById(id);
+const mac = /Mac|iPhone|iPad/.test(navigator.platform);
 const storage = {
   get(key) {
     try {
@@ -27,10 +27,7 @@ const storage = {
   set(key, value) {
     try {
       localStorage.setItem(`fhm.${key}`, JSON.stringify(value));
-      return true;
-    } catch {
-      return false;
-    }
+    } catch {}
   },
 };
 function node(tag, className, text) {
@@ -39,103 +36,113 @@ function node(tag, className, text) {
   if (text !== undefined) element.textContent = text;
   return element;
 }
-let editor,
-  ranged = [],
-  currentId = "polymorphism",
-  title = examples[0].title;
-let diagnoseTimer,
-  diagnoseAbort,
-  saveTimer,
-  toastTimer,
-  runSource,
-  copyValue = "";
+
+let editor;
+let ranged = [];
+// The example the program was loaded from, if any. While the program is
+// unmodified the URL names the example instead of embedding its source.
+let currentId = "";
+let lastRun = null;
+let lastDiagnosis = null;
 let running = false;
-function toast(message) {
-  $("toast").textContent = message;
-  $("toast").hidden = false;
-  clearTimeout(toastTimer);
-  toastTimer = setTimeout(() => {
-    $("toast").hidden = true;
-  }, 4000);
-}
+let diagnoseTimer, diagnoseAbort, saveTimer, urlTimer, shareTimer;
+
 function status(text, kind = "") {
   $("status").textContent = text;
   $("status").className = `status ${kind}`;
 }
-function empty(target, heading, message, symbol = "") {
-  const box = node("div", "empty-state");
-  if (symbol) box.append(node("span", "empty-symbol", symbol));
-  box.append(node("h2", "", heading), node("p", "", message));
-  target.replaceChildren(box);
-  return box;
+
+function jump(line, column = 1) {
+  editor.setPosition({ lineNumber: line, column });
+  editor.revealLineInCenterIfOutsideViewport(line);
+  editor.focus();
 }
-function tab(name) {
-  for (const button of document.querySelectorAll("[data-tab]")) {
-    const selected = button.dataset.tab === name;
-    button.setAttribute("aria-selected", String(selected));
-    button.tabIndex = selected ? 0 : -1;
-    $(`panel-${button.dataset.tab}`).hidden = !selected;
-  }
+
+// Types are shown with the editor's own highlighting.
+async function colorized(text) {
+  const span = node("span", "type");
+  span.textContent = text;
+  try {
+    span.innerHTML = (await monaco.editor.colorize(text, "fhm", {})).replace(
+      /<br\/?>$/,
+      "",
+    );
+  } catch {}
+  return span;
 }
-function metadata() {
-  $("program-title").textContent = title;
-  $("filename").textContent = `${currentId || "program"}.fhm`;
-}
+
+/* URL and local draft */
+
 function save() {
-  const saved = storage.set("draft", {
-    source: editor.getValue(),
-    id: currentId,
-    title,
-  });
-  $("draft-status").textContent = saved
-    ? "Saved in this browser"
-    : "Session only · storage unavailable";
+  storage.set("draft", { source: editor.getValue(), id: currentId });
 }
-function remember() {
-  storage.set("previous", { source: editor.getValue(), id: currentId, title });
+
+// The address bar always holds the current program, so it is the share link.
+async function syncUrl() {
+  clearTimeout(urlTimer);
+  const source = editor.getValue();
+  const example = exampleFromId(currentId);
+  let hash = "";
+  try {
+    hash =
+      example?.source === source
+        ? `#example=${example.id}`
+        : await hashFor(source);
+  } catch {
+    // Too large for a link; leave a bare URL rather than a stale program.
+  }
+  if (source !== editor.getValue()) return false;
+  if (location.hash !== hash)
+    history.replaceState(null, "", location.pathname + hash);
+  return hash !== "";
 }
+
+async function share() {
+  const label = $("share-label");
+  clearTimeout(shareTimer);
+  if (!(await syncUrl())) {
+    label.textContent = "Too large to link";
+    status(
+      "This program is over the 128 KiB link limit. Use Download instead.",
+      "err",
+    );
+  } else {
+    try {
+      await navigator.clipboard.writeText(location.href);
+      label.textContent = "Link copied";
+    } catch {
+      label.textContent = "Link in address bar";
+    }
+  }
+  shareTimer = setTimeout(() => (label.textContent = "Share"), 2000);
+}
+
 function replaceProgram(program) {
-  remember();
+  const current = editor.getValue();
+  if (current !== program.source)
+    storage.set("previous", { source: current, id: currentId });
   currentId = program.id || "";
-  title = program.title || "Untitled program";
   editor.pushUndoStop();
   editor.executeEdits("load-program", [
     { range: editor.getModel().getFullModelRange(), text: program.source },
   ]);
   editor.pushUndoStop();
   editor.setPosition({ lineNumber: 1, column: 1 });
-  metadata();
+  editor.setScrollTop(0);
+  lastRun = null;
+  renderResult();
   save();
-  editor.focus();
-  runSource = undefined;
-  $("copy-result").hidden = true;
-  initialOutput();
-  $("result-status").textContent = "Ready when you are.";
-}
-function initialOutput() {
-  const box = empty(
-    $("output"),
-    "A small experiment?",
-    "Edit the program on the left, then run it. Types are checked as you write; hover over a name to take a closer look.",
-    "λ",
-  );
-  const action = node("button", "inline-run", "Run this program →");
-  action.onclick = runProgram;
-  box.append(action);
-}
-function jump(line, column = 1) {
-  editor.setPosition({ lineNumber: line, column });
-  editor.revealLineInCenter(line);
+  void syncUrl();
   editor.focus();
 }
+
+/* Talking to the compiler */
+
 // An idle Render free instance can need a minute to wake. Execution itself is
 // still bounded separately by the server's much shorter compiler timeouts.
 async function post(url, source, controller, timeout = 90000) {
   const timer = setTimeout(
-    () =>
-      controller.abort(
-        new Error("The compiler took too long. Please try again."),
-      ),
+    () => controller.abort(new Error("The compiler took too long to respond.")),
     timeout,
   );
   try {
@@ -150,72 +157,104 @@ async function post(url, source, controller, timeout = 90000) {
       throw new Error(
         response.status === 503
           ? "The compiler is busy. Try again in a moment."
-          : payload.error || "Couldn't reach the compiler.",
+          : payload.error || `Compiler request failed (${response.status}).`,
       );
     return payload;
   } finally {
     clearTimeout(timer);
   }
 }
-function showTypes(raw, source) {
+
+const WAKING =
+  "Waiting for the compiler (the free server can take up to a minute to start)…";
+
+// Top-level definition sites: a name directly after `let`/`and` whose scope
+// runs to the end of the program. Local `let … in` bindings end sooner.
+function topLevelBindings(symbols, source) {
   const lines = source.split("\n");
-  const symbols = (raw.symbols || []).filter(
-    (s) =>
-      s.endCol > s.startCol &&
-      ((s.kind === "val" &&
-        /\b(?:let|and)\s+(?:\(\s*)?$/.test(
-          (lines[s.startLine - 1] || "").slice(0, s.startCol - 1),
-        )) ||
-        s.kind === "type"),
-  );
+  const end = (s) => [s.scopeEndLine, s.scopeEndCol];
+  let last = [0, 0];
+  for (const s of symbols) {
+    const [l, c] = end(s);
+    if (l > last[0] || (l === last[0] && c > last[1])) last = [l, c];
+  }
   const seen = new Set();
-  const bindings = symbols.filter((s) => {
-    const key = `${s.startLine}:${s.startCol}`;
-    if (seen.has(key)) return false;
-    seen.add(key);
-    return true;
-  });
-  $("type-count").textContent = bindings.length || "";
-  $("types").replaceChildren(node("p", "section-caption", "INFERRED TYPES"));
-  for (const binding of bindings) {
-    const row = node("div", "binding-row");
-    const name = node("button", "binding-location", binding.name);
-    name.title = `Go to line ${binding.startLine}`;
-    name.onclick = () => jump(binding.startLine, binding.startCol);
-    row.append(name, node("span", "binding-type", binding.type));
-    $("types").append(row);
+  return symbols
+    .filter((s) => {
+      if (s.kind !== "val" || s.endCol <= s.startCol) return false;
+      if (s.scopeEndLine !== last[0] || s.scopeEndCol !== last[1]) return false;
+      const before = (lines[s.startLine - 1] || "").slice(0, s.startCol - 1);
+      if (!/\b(?:let|and)\s+(?:\(\s*)?$/.test(before)) return false;
+      const key = `${s.startLine}:${s.startCol}`;
+      if (seen.has(key)) return false;
+      seen.add(key);
+      return true;
+    })
+    .sort((a, b) => a.startLine - b.startLine || a.startCol - b.startCol);
+}
+
+async function renderTypes(raw, source) {
+  const bindings = topLevelBindings(raw.symbols || [], source);
+  const block = $("types");
+  if (!bindings.length && !raw.programTy) return block.replaceChildren();
+  const grid = node("div", "bindings");
+  for (const b of bindings) {
+    const name = node("button", "name", b.name);
+    name.title = `Line ${b.startLine}`;
+    name.onclick = () => jump(b.startLine, b.startCol);
+    grid.append(name, node("span", "colon", ":"), await colorized(b.type));
   }
   if (raw.programTy) {
-    const expression = node("div", "expression-type");
-    expression.append(
-      node("p", "section-caption", "FINAL EXPRESSION"),
-      node("code", "", raw.programTy),
+    const name = node("span", "name", "<program>");
+    grid.append(
+      name,
+      node("span", "colon", ":"),
+      await colorized(raw.programTy),
     );
-    $("types").append(expression);
-  } else if (!bindings.length)
-    empty(
-      $("types"),
-      "Types appear here.",
-      "Finish a valid definition to see its inferred type.",
-    );
+  }
+  block.replaceChildren(node("h2", "heading", "Types"), grid);
 }
+
+function renderProblems(markers) {
+  const block = $("problems");
+  block.hidden = !markers.length;
+  block.replaceChildren();
+  if (!markers.length) return;
+  block.append(
+    node(
+      "h2",
+      "heading",
+      markers.length === 1 ? "1 problem" : `${markers.length} problems`,
+    ),
+  );
+  for (const m of markers) {
+    const item = node("button", "problem");
+    item.append(
+      node("span", "loc", `${m.startLineNumber}:${m.startColumn}`),
+      node("span", "msg", m.message),
+    );
+    item.onclick = () => jump(m.startLineNumber, m.startColumn);
+    block.append(item);
+  }
+}
+
 async function diagnose() {
   diagnoseAbort?.abort();
   const controller = new AbortController();
   diagnoseAbort = controller;
-  const model = editor.getModel(),
-    version = model.getVersionId(),
-    source = model.getValue();
-  status("Checking types…", "busy");
+  const model = editor.getModel();
+  const version = model.getVersionId();
+  const source = model.getValue();
+  status("Checking…");
   const wake = setTimeout(() => {
-    if (!controller.signal.aborted)
-      status("Waiting for compiler · free hosting can take a moment…", "busy");
+    if (!controller.signal.aborted) status(WAKING);
   }, 4000);
   try {
     const raw = await post("/api/diagnose", source, controller);
     if (version !== model.getVersionId() || controller.signal.aborted) return;
     const normalized = normalizePayload(raw);
     ranged = normalized.ranged;
+    lastDiagnosis = { raw, source };
     const markers = diagnosticsToMarkers(normalized.diagnostics).map((m) => ({
       severity:
         m.severity === "warning"
@@ -228,147 +267,102 @@ async function diagnose() {
       endColumn: m.endCol0 + 1,
     }));
     monaco.editor.setModelMarkers(model, "fhm", markers);
-    $("problem-count").textContent = markers.length || "";
-    $("problem-count").classList.toggle("error-count", !!markers.length);
-    $("problems").replaceChildren();
-    if (!markers.length)
-      empty(
-        $("problems"),
-        "Nothing to fix.",
-        "Your program passes the type checker.",
-        "✓",
-      );
-    for (const marker of markers) {
-      const button = node("button", "problem-item");
-      button.append(
-        node(
-          "span",
-          "problem-location",
-          `Line ${marker.startLineNumber}, column ${marker.startColumn}`,
-        ),
-        node("span", "problem-message", marker.message),
-      );
-      button.onclick = () => jump(marker.startLineNumber, marker.startColumn);
-      $("problems").append(button);
-    }
-    showTypes(raw, source);
+    renderProblems(markers);
+    await renderTypes(raw, source);
     status(
       markers.length
         ? `${markers.length} problem${markers.length === 1 ? "" : "s"}`
-        : "Types checked",
+        : "No problems",
       markers.length ? "err" : "ok",
     );
   } catch (error) {
+    if (version !== model.getVersionId()) return;
     if (
-      version !== model.getVersionId() ||
-      (controller.signal.aborted &&
-        !controller.signal.reason?.message?.includes("too long"))
+      controller.signal.aborted &&
+      !/too long/.test(controller.signal.reason?.message)
     )
       return;
-    status("Compiler unavailable · edit or run to retry", "err");
-    empty(
-      $("problems"),
-      "Couldn't check this yet.",
-      error.message || "Check your connection, then try again.",
+    status(
+      `${error.message || "Couldn't reach the compiler."} Edit or run to retry.`,
+      "err",
     );
   } finally {
     clearTimeout(wake);
   }
 }
+
+function renderResult() {
+  const block = $("result");
+  block.replaceChildren();
+  block.classList.remove("stale");
+  if (!lastRun) {
+    const hint = node("p", "note", "Run ");
+    hint.append(
+      node("kbd", "", mac ? "⌘↵" : "Ctrl+Enter"),
+      " to evaluate the final expression.",
+    );
+    return block.append(hint);
+  }
+  const { payload, source } = lastRun;
+  const heading = node("h2", "heading", "Result");
+  block.append(heading);
+  if (source !== editor.getValue()) {
+    block.classList.add("stale");
+    heading.textContent = "Result (program edited since this run)";
+  }
+  if (payload.ok === false) {
+    // Positions are listed under problems, from the more precise diagnose pass.
+    const box = node("div", "run-error");
+    box.append(
+      node(
+        "pre",
+        "",
+        `Not run: ${payload.message || payload.error || "failed"}`,
+      ),
+    );
+    block.append(box);
+    return;
+  }
+  block.append(node("pre", "result-value", String(payload.result ?? "")));
+  const t = payload.timings || {};
+  if (typeof t.checkNs === "number" && typeof t.evalNs === "number")
+    block.append(
+      node(
+        "p",
+        "note",
+        `Checked in ${formatNs(t.checkNs)}, evaluated in ${formatNs(t.evalNs)}`,
+      ),
+    );
+}
+
 async function runProgram() {
   if (running) return;
   running = true;
   $("run").disabled = true;
   $("run-label").textContent = "Running…";
-  tab("result");
   const source = editor.getValue();
-  runSource = source;
-  $("copy-result").hidden = true;
-  $("result-status").textContent = "Running…";
-  const waiting = setTimeout(() => {
-    $("result-status").textContent =
-      "Waiting for compiler · the free server may be waking up…";
-  }, 4000);
-  empty(
-    $("output"),
-    "Evaluating…",
-    "Checking the program, then evaluating its final expression.",
-  );
+  const waiting = setTimeout(() => status(WAKING), 4000);
   try {
     const payload = await post("/api/run", source, new AbortController());
-    $("output").replaceChildren();
-    if (payload.ok === false) {
-      $("output").append(
-        node("h2", "error-heading", "This program couldn't run."),
-        node(
-          "pre",
-          "error-message",
-          payload.message || payload.error || JSON.stringify(payload),
-        ),
-      );
-      const action = node(
-        "button",
-        "outlined-button error-actions",
-        "Show problems →",
-      );
-      action.onclick = () => tab("problems");
-      $("output").append(action);
-    } else {
-      copyValue = String(payload.result ?? "");
-      const block = node("div", "result-block");
-      block.append(
-        node("p", "result-eyebrow", "RESULT"),
-        node(
-          "pre",
-          `result-value${copyValue.length > 70 ? " long" : ""}`,
-          copyValue,
-        ),
-        node("div", "result-type", payload.programTy || ""),
-      );
-      $("output").append(block);
-      const timings = payload.timings || {};
-      $("output").append(
-        node(
-          "div",
-          "result-meta",
-          `Checked & evaluated in ${((Number(timings.checkNs || 0) + Number(timings.evalNs || 0)) / 1e6).toFixed(2)} ms`,
-        ),
-      );
-      if (payload.bindings?.length) {
-        const bindings = node("div", "result-bindings");
-        bindings.append(node("p", "section-caption", "DEFINITIONS"));
-        for (const binding of payload.bindings) {
-          const row = node("div", "binding-row");
-          row.append(
-            node("span", "binding-name", binding.name),
-            node("span", "binding-type", binding.type),
-          );
-          bindings.append(row);
-        }
-        $("output").append(bindings);
-      }
-      $("copy-result").hidden = false;
-    }
-    $("result-status").textContent =
-      source === editor.getValue()
-        ? payload.ok === false
-          ? "Not evaluated · see the error above"
-          : "Evaluation complete"
-        : "Previous run · program has changed";
+    lastRun = { source, payload };
+    renderResult();
   } catch (error) {
-    empty(
-      $("output"),
-      "Couldn't run this yet.",
-      error.message || "Check your connection, then try again.",
-    );
-    $("result-status").textContent = "Run again to retry";
+    lastRun = {
+      source,
+      payload: { ok: false, stage: "error", message: error.message },
+    };
+    renderResult();
   } finally {
     clearTimeout(waiting);
     running = false;
     $("run").disabled = false;
     $("run-label").textContent = "Run";
+    if (/Waiting/.test($("status").textContent)) void diagnose();
   }
 }
+
+/* Editor setup */
+
 async function syntax() {
   const [onig, tm, wasm, grammar] = await Promise.all([
     import("vscode-oniguruma"),
@@ -416,143 +410,172 @@ async function syntax() {
     },
   });
 }
-function themes() {
-  for (const dark of [false, true]) {
-    const colors = dark
-      ? ["a49f92", "e48b65", "d9b87b", "a6bc8f", "93b7bd"]
-      : ["706b61", "ad482b", "8b682a", "526744", "346c79"];
-    monaco.editor.defineTheme(`fhm-${dark ? "dark" : "light"}`, {
-      base: dark ? "vs-dark" : "vs",
+
+function defineThemes() {
+  const palettes = {
+    light: {
+      base: "vs",
+      bg: "#ffffff",
+      fg: "#1f2328",
+      muted: "#59636e",
+      line: "#f6f8fa",
+      numbers: "#8c959f",
+      select: "#cfe3ff",
+      cursor: "#1f2328",
+      keyword: "cf222e",
+      type: "953800",
+      constant: "0550ae",
+      string: "0a3069",
+    },
+    dark: {
+      base: "vs-dark",
+      bg: "#0d1117",
+      fg: "#e6edf3",
+      muted: "#9198a1",
+      line: "#151b23",
+      numbers: "#6e7681",
+      select: "#264f78",
+      cursor: "#e6edf3",
+      keyword: "ff7b72",
+      type: "ffa657",
+      constant: "79c0ff",
+      string: "a5d6ff",
+    },
+  };
+  for (const [name, p] of Object.entries(palettes))
+    monaco.editor.defineTheme(`fhm-${name}`, {
+      base: p.base,
       inherit: true,
       rules: [
-        ...[
-          ["comment", 0],
-          ["keyword", 1],
-          ["storage", 1],
-          ["entity.name.type", 2],
-          ["entity.name.function", 4],
-          ["constant", 2],
-          ["string", 3],
-        ].map(([token, i]) => ({ token, foreground: colors[i] })),
-        { token: "variable", foreground: dark ? "e7e2d5" : "302e29" },
-        { token: "punctuation", foreground: dark ? "a49f92" : "78756c" },
+        { token: "comment", foreground: p.muted.slice(1) },
+        { token: "keyword", foreground: p.keyword },
+        { token: "storage", foreground: p.keyword },
+        { token: "entity.name.type", foreground: p.type },
+        { token: "constant", foreground: p.constant },
+        { token: "string", foreground: p.string },
+        { token: "variable", foreground: p.fg.slice(1) },
+        { token: "punctuation", foreground: p.fg.slice(1) },
       ],
       colors: {
-        "editor.background": dark ? "#24231f" : "#faf8f3",
-        "editor.foreground": dark ? "#e7e2d5" : "#302e29",
-        "editorLineNumber.foreground": dark ? "#797568" : "#b2ad9f",
-        "editorLineNumber.activeForeground": dark ? "#d2caba" : "#78756c",
-        "editor.selectionBackground": dark ? "#554939" : "#e8dcc6",
-        "editor.lineHighlightBackground": dark ? "#2b2923" : "#f3efe5",
-        "editorCursor.foreground": dark ? "#e48b65" : "#ad482b",
+        "editor.background": p.bg,
+        "editor.foreground": p.fg,
+        "editorLineNumber.foreground": p.numbers,
+        "editorLineNumber.activeForeground": p.fg,
+        "editor.lineHighlightBackground": p.line,
+        "editor.lineHighlightBorder": p.line,
+        "editor.selectionBackground": p.select,
+        "editorCursor.foreground": p.cursor,
+        "editorIndentGuide.background1": p.line,
+        "editorWidget.background": p.line,
+        "editorHoverWidget.background": p.bg,
       },
     });
+}
+
+const darkQuery = matchMedia("(prefers-color-scheme: dark)");
+function effectiveTheme() {
+  return (
+    document.documentElement.dataset.theme ||
+    (darkQuery.matches ? "dark" : "light")
+  );
+}
+function applyTheme() {
+  monaco.editor.setTheme(`fhm-${effectiveTheme()}`);
+}
+
+/* Examples menu */
+
+function examplesMenu() {
+  const button = $("examples");
+  const menu = $("examples-menu");
+  const items = () => [...menu.querySelectorAll("button")];
+  function close(focus = false) {
+    menu.hidden = true;
+    button.setAttribute("aria-expanded", "false");
+    if (focus) button.focus();
   }
-}
-function theme(value) {
-  document.documentElement.dataset.theme = value;
-  monaco.editor.setTheme(`fhm-${value}`);
-  storage.set("theme", value);
-  const label = `Switch to ${value === "dark" ? "light" : "dark"} theme`;
-  $("theme").setAttribute("aria-label", label);
-  $("theme").title = label;
-  $("theme").querySelector("svg").innerHTML =
-    value === "dark"
-      ? '<circle cx="12" cy="12" r="4"/><path d="M12 2v2m0 16v2M2 12h2m16 0h2M5 5l1.5 1.5m11 11L19 19M5 19l1.5-1.5m11-11L19 5"/>'
-      : '<path d="M20.8 13.2A9 9 0 0 1 10.8 3.2 9 9 0 1 0 20.8 13.2Z"/>';
-  document.querySelector('meta[name="theme-color"]').content =
-    value === "dark" ? "#24231f" : "#f4f1e9";
-}
-function showExamples() {
-  $("example-list").replaceChildren();
-  const previous = storage.get("previous");
-  const options = [
-    ...examples,
-    ...(previous?.source !== undefined
-      ? [
-          {
-            ...previous,
-            title: "Your previous program",
-            description:
-              "Go back to the program you had before loading an example.",
-            previous: true,
-          },
-        ]
-      : []),
-  ];
-  options.forEach((example, i) => {
-    const button = node("button", "example-option");
-    const text = node("span");
-    text.append(
-      node("strong", "", example.title),
-      node("span", "example-description", example.description),
+  function item(label, onSelect, checked) {
+    const entry = node("button");
+    entry.setAttribute(
+      "role",
+      checked === undefined ? "menuitem" : "menuitemradio",
     );
-    button.append(
-      node(
-        "span",
-        "example-number",
-        example.previous ? "↶" : String(i + 1).padStart(2, "0"),
-      ),
-      text,
-      node(
-        "span",
-        "example-current",
-        !example.previous && currentId === example.id ? "✓" : "",
-      ),
-    );
-    button.onclick = () => {
-      $("examples-dialog").close();
-      replaceProgram(example.previous ? previous : example);
+    if (checked !== undefined)
+      entry.setAttribute("aria-checked", String(checked));
+    entry.tabIndex = -1;
+    entry.textContent = label;
+    entry.onclick = () => {
+      close();
+      onSelect();
     };
-    $("example-list").append(button);
+    return entry;
+  }
+  function open() {
+    const source = editor.getValue();
+    menu.replaceChildren(
+      ...examples.map((example) =>
+        item(
+          example.title,
+          () => replaceProgram(example),
+          currentId === example.id && example.source === source,
+        ),
+      ),
+      node("hr"),
+      item("Blank program", () => replaceProgram({ source: "" })),
+    );
+    const previous = storage.get("previous");
+    if (typeof previous?.source === "string" && previous.source !== source)
+      menu.append(
+        item("Restore previous program", () => replaceProgram(previous)),
+      );
+    menu.hidden = false;
+    button.setAttribute("aria-expanded", "true");
+    (menu.querySelector('[aria-checked="true"]') || items()[0]).focus();
+  }
+  button.onclick = () => (menu.hidden ? open() : close());
+  menu.onkeydown = (event) => {
+    const list = items();
+    const i = list.indexOf(document.activeElement);
+    const next = {
+      ArrowDown: (i + 1) % list.length,
+      ArrowUp: (i - 1 + list.length) % list.length,
+      Home: 0,
+      End: list.length - 1,
+    }[event.key];
+    if (next !== undefined) {
+      event.preventDefault();
+      list[next].focus();
+    } else if (event.key === "Escape" || event.key === "Tab") {
+      event.preventDefault();
+      close(true);
+    }
+  };
+  document.addEventListener("pointerdown", (event) => {
+    if (!menu.hidden && !event.target.closest(".menu-wrap")) close();
   });
-  $("examples-dialog").showModal();
 }
-async function share() {
-  try {
-    const url = await shareUrl(editor.getValue(), location.href);
-    $("share-link").value = url;
-    $("share-note").textContent =
-      url.length > 8000
-        ? "This is a long link; some messaging apps may truncate it. Download the file if sharing fails."
-        : "Code lives in the link, not a sharing database. Anyone with the link can open their own copy.";
-    if (!$("share-dialog").open) $("share-dialog").showModal();
-    $("share-link").select();
-  } catch (error) {
-    toast(error.message);
-  }
-}
-async function copy(text, input) {
-  try {
-    await navigator.clipboard.writeText(text);
-    toast("Copied.");
-  } catch {
-    if (input) {
-      input.focus();
-      input.select();
-      toast("Select and copy the link manually.");
-    } else toast("Clipboard unavailable. Select the result to copy it.");
-  }
-}
+
+/* Resizable split */
+
 function splitter() {
-  const divider = $("divider"),
-    workspace = $("workspace"),
-    mobile = matchMedia("(max-width: 760px)");
+  const divider = $("divider");
+  const workspace = $("workspace");
+  const narrow = matchMedia("(max-width: 760px)");
   let size = storage.get("split") || 60;
   function set(value) {
-    size = Math.max(30, Math.min(75, value));
+    size = Math.max(25, Math.min(80, value));
     workspace.style.setProperty("--editor-size", `${size}%`);
     divider.setAttribute("aria-valuenow", String(Math.round(size)));
   }
   function orientation() {
     divider.setAttribute(
       "aria-orientation",
-      mobile.matches ? "horizontal" : "vertical",
+      narrow.matches ? "horizontal" : "vertical",
     );
     set(size);
   }
   orientation();
-  mobile.addEventListener("change", orientation);
+  narrow.addEventListener("change", orientation);
   divider.onpointerdown = (event) => {
     divider.setPointerCapture(event.pointerId);
     divider.classList.add("dragging");
@@ -561,103 +584,119 @@ function splitter() {
     if (!divider.hasPointerCapture(event.pointerId)) return;
     const rect = workspace.getBoundingClientRect();
     set(
-      mobile.matches
+      narrow.matches
         ? ((event.clientY - rect.top) / rect.height) * 100
         : ((event.clientX - rect.left) / rect.width) * 100,
     );
   };
   divider.onpointerup = (event) => {
     divider.releasePointerCapture(event.pointerId);
-    divider.classList.remove("dragging");
     storage.set("split", size);
   };
   divider.onlostpointercapture = () => divider.classList.remove("dragging");
+  divider.ondblclick = () => {
+    set(60);
+    storage.set("split", size);
+  };
   divider.onkeydown = (event) => {
-    const negative = mobile.matches ? "ArrowUp" : "ArrowLeft",
-      positive = mobile.matches ? "ArrowDown" : "ArrowRight";
-    if (![negative, positive, "Home", "End"].includes(event.key)) return;
+    const less = narrow.matches ? "ArrowUp" : "ArrowLeft";
+    const more = narrow.matches ? "ArrowDown" : "ArrowRight";
+    if (![less, more, "Home", "End"].includes(event.key)) return;
     event.preventDefault();
     set(
       event.key === "Home"
-        ? 30
+        ? 25
         : event.key === "End"
-          ? 75
-          : size + (event.key === negative ? -2 : 2),
+          ? 80
+          : size + (event.key === less ? -2 : 2),
     );
     storage.set("split", size);
   };
 }
-async function main() {
-  let source = examples[0].source,
-    notice;
+
+/* Startup */
+
+// What to open: a program in the URL, else this browser's draft, else the
+// first example. Opening a link keeps the draft restorable from Examples.
+async function initialProgram() {
   const draft = storage.get("draft");
-  if (typeof draft?.source === "string") {
-    source = draft.source;
-    currentId = draft.id || "";
-    title = draft.title || "Your program";
-  }
+  const hasDraft = typeof draft?.source === "string";
   try {
     const shared = await sourceFromHash(location.hash);
     if (shared !== null) {
-      if (draft) storage.set("previous", draft);
-      source = shared;
-      currentId = "";
-      title = "Shared program";
-    } else if (location.hash.startsWith("#example=")) {
-      const example = exampleFromId(location.hash.slice(9));
-      if (example) {
-        source = example.source;
-        currentId = example.id;
-        title = example.title;
-      }
+      if (hasDraft && draft.source !== shared) storage.set("previous", draft);
+      return { source: shared };
     }
   } catch (error) {
-    notice = `Couldn't open shared program: ${error.message}`;
+    return { ...(hasDraft ? draft : examples[0]), notice: error.message };
   }
+  const example = location.hash.startsWith("#example=")
+    ? exampleFromId(location.hash.slice(9))
+    : null;
+  if (example) {
+    if (hasDraft && draft.source !== example.source)
+      storage.set("previous", draft);
+    return example;
+  }
+  return hasDraft ? draft : examples[0];
+}
+
+async function main() {
+  const program = await initialProgram();
+  currentId = program.id || "";
   monaco.languages.register({ id: "fhm", extensions: [".fhm"] });
   monaco.languages.setLanguageConfiguration("fhm", langConfig);
-  themes();
+  defineThemes();
   editor = monaco.editor.create($("editor"), {
-    value: source,
+    value: program.source,
     language: "fhm",
-    theme: "fhm-light",
+    theme: `fhm-${effectiveTheme()}`,
     automaticLayout: true,
     minimap: { enabled: false },
+    fontFamily: getComputedStyle(document.documentElement).getPropertyValue(
+      "--mono",
+    ),
     fontSize: 14,
-    lineHeight: 25,
-    fontFamily: '"IBM Plex Mono", monospace',
+    lineHeight: 21,
     tabSize: 2,
     scrollBeyondLastLine: false,
-    renderLineHighlight: "line",
-    padding: { top: 22, bottom: 22 },
+    padding: { top: 12, bottom: 12 },
     overviewRulerBorder: false,
     hideCursorInOverviewRuler: true,
-    wordWrap: "on",
-    folding: true,
+    renderLineHighlightOnlyWhenFocus: true,
     lineNumbersMinChars: 3,
     glyphMargin: false,
+    fixedOverflowWidgets: true,
+    occurrencesHighlight: "off",
+    "bracketPairColorization.enabled": false,
   });
-  theme(storage.get("theme") === "dark" ? "dark" : "light");
+  const narrow = matchMedia("(max-width: 760px)");
+  const wrap = () =>
+    editor.updateOptions({ wordWrap: narrow.matches ? "on" : "off" });
+  wrap();
+  narrow.addEventListener("change", wrap);
+  darkQuery.addEventListener("change", applyTheme);
   // Register these inside Monaco too: its insert-line command otherwise eats
   // Cmd/Ctrl+Enter before the page-level shortcut can see the event.
   editor.addAction({
     id: "fhm.run",
-    label: "Run FHM program",
+    label: "Run program",
     keybindings: [monaco.KeyMod.CtrlCmd | monaco.KeyCode.Enter],
     run: runProgram,
   });
   editor.addAction({
     id: "fhm.share",
-    label: "Share FHM program",
+    label: "Copy link to program",
     keybindings: [monaco.KeyMod.CtrlCmd | monaco.KeyCode.KeyS],
     run: share,
   });
-  metadata();
-  initialOutput();
-  save();
-  void syntax().catch((error) =>
-    console.warn("Syntax highlighting unavailable", error),
-  );
+  void syntax()
+    .then(() => {
+      // Re-render so the output panel picks up highlighting too.
+      if (lastDiagnosis?.source === editor.getValue())
+        void renderTypes(lastDiagnosis.raw, lastDiagnosis.source);
+    })
+    .catch((error) => console.warn("Syntax highlighting unavailable", error));
   monaco.languages.registerHoverProvider("fhm", {
     provideHover(model, position) {
       const hit = resolveHover(
@@ -667,88 +706,64 @@ async function main() {
         model.getLineContent(position.lineNumber),
       );
       if (!hit) return null;
-      const line = hit.startLine0 + 1,
-        col = hit.startCol0 + 1;
+      const line = hit.startLine0 + 1;
+      const col = hit.startCol0 + 1;
+      const endCol =
+        hit.endLine0 === hit.startLine0
+          ? hit.endCol0 + 1
+          : col + hit.name.length;
       return {
         range: new monaco.Range(
           line,
           col,
           line,
-          Math.max(
-            col + 1,
-            Math.min(
-              col + 128,
-              hit.endLine0 === hit.startLine0
-                ? hit.endCol0 + 1
-                : col + hit.name.length,
-            ),
-          ),
+          Math.max(col + 1, Math.min(col + 128, endCol)),
         ),
         contents: [{ value: hoverMarkdown(hit) }],
       };
     },
   });
+
   editor.onDidChangeModelContent(() => {
     diagnoseAbort?.abort();
     ranged = [];
-    monaco.editor.setModelMarkers(editor.getModel(), "fhm", []);
-    $("type-count").textContent = "";
-    $("problem-count").textContent = "";
-    empty(
-      $("types"),
-      "Checking types…",
-      "Feedback will update when you pause typing.",
-    );
-    empty(
-      $("problems"),
-      "Checking…",
-      "Feedback will update when you pause typing.",
-    );
-    if (runSource !== undefined)
-      $("result-status").textContent = "Previous run · program has changed";
-    if (location.hash)
-      history.replaceState(null, "", location.pathname + location.search);
-    $("draft-status").textContent = "Saving…";
+    if (lastRun) renderResult();
     clearTimeout(saveTimer);
     saveTimer = setTimeout(save, 250);
+    clearTimeout(urlTimer);
+    urlTimer = setTimeout(syncUrl, 400);
     clearTimeout(diagnoseTimer);
-    diagnoseTimer = setTimeout(diagnose, 450);
-    status("Waiting for edits…");
+    diagnoseTimer = setTimeout(diagnose, 350);
   });
   editor.onDidChangeCursorPosition(({ position }) => {
     $("cursor").textContent =
       `Ln ${position.lineNumber}, Col ${position.column}`;
   });
   window.addEventListener("pagehide", save);
-  let navigation = 0;
+  // Fired when someone pastes a different link into the address bar; our own
+  // URL updates use replaceState and don't trigger it.
   window.addEventListener("hashchange", async () => {
-    const generation = ++navigation;
-    status("Opening program…", "busy");
     try {
       const shared = await sourceFromHash(location.hash);
-      if (generation !== navigation) return;
       const example = location.hash.startsWith("#example=")
         ? exampleFromId(location.hash.slice(9))
         : null;
-      if (shared !== null)
-        replaceProgram({ source: shared, title: "Shared program" });
+      if (shared !== null) replaceProgram({ source: shared });
       else if (example) replaceProgram(example);
-      else void diagnose();
     } catch (error) {
-      toast(error.message);
-      void diagnose();
+      status(error.message, "err");
     }
   });
+
   $("run").onclick = runProgram;
-  $("examples").onclick = showExamples;
-  $("guide").onclick = () => $("guide-dialog").showModal();
   $("share").onclick = share;
-  $("theme").onclick = () =>
-    theme(document.documentElement.dataset.theme === "dark" ? "light" : "dark");
-  $("copy-link").onclick = () => copy($("share-link").value, $("share-link"));
-  $("copy-result").onclick = () => copy(copyValue);
-  $("new-program").onclick = () =>
-    replaceProgram({ source: "", title: "Untitled program" });
+  $("help").onclick = () => $("help-dialog").showModal();
+  $("theme").onclick = () => {
+    const next = effectiveTheme() === "dark" ? "light" : "dark";
+    document.documentElement.dataset.theme = next;
+    storage.set("theme", next);
+    applyTheme();
+  };
   $("download").onclick = () => {
     const url = URL.createObjectURL(
       new Blob([editor.getValue()], { type: "text/plain;charset=utf-8" }),
@@ -759,51 +774,17 @@ async function main() {
     link.click();
     setTimeout(() => URL.revokeObjectURL(url), 1000);
   };
-  for (const dialog of document.querySelectorAll("dialog")) {
-    dialog.querySelector(".dialog-close").onclick = () => dialog.close();
-    dialog.addEventListener("click", (event) => {
-      const rect = dialog.getBoundingClientRect();
-      if (
-        event.target === dialog &&
-        (event.clientX < rect.left ||
-          event.clientX > rect.right ||
-          event.clientY < rect.top ||
-          event.clientY > rect.bottom)
-      )
-        dialog.close();
-    });
+  const dialog = $("help-dialog");
+  dialog.querySelector(".dialog-close").onclick = () => dialog.close();
+  dialog.addEventListener("click", (event) => {
+    if (event.target === dialog) dialog.close();
+  });
+  for (const kbd of document.querySelectorAll("kbd.shortcut")) {
+    const key = kbd.dataset.shortcut;
+    kbd.textContent = mac ? `⌘${key === "Enter" ? "↵" : key}` : `Ctrl+${key}`;
   }
-  const tabs = [...document.querySelectorAll("[data-tab]")];
-  tabs.forEach((button, i) => {
-    button.onclick = () => tab(button.dataset.tab);
-    button.onkeydown = (event) => {
-      const index =
-        event.key === "ArrowRight"
-          ? (i + 1) % tabs.length
-          : event.key === "ArrowLeft"
-            ? (i + tabs.length - 1) % tabs.length
-            : event.key === "Home"
-              ? 0
-              : event.key === "End"
-                ? tabs.length - 1
-                : -1;
-      if (index < 0) return;
-      event.preventDefault();
-      tab(tabs[index].dataset.tab);
-      tabs[index].focus();
-    };
-  });
-  const mac = /Mac|iPhone|iPad/.test(navigator.platform);
-  document.querySelectorAll(".shortcut-label").forEach((label) => {
-    label.textContent = mac ? "⌘" : "Ctrl";
-  });
-  document.querySelector(".run-shortcut").textContent = mac ? "⌘ ↵" : "Ctrl ↵";
   window.addEventListener("keydown", (event) => {
-    if (
-      !(event.metaKey || event.ctrlKey) ||
-      document.querySelector("dialog[open]")
-    )
-      return;
+    if (!(event.metaKey || event.ctrlKey) || dialog.open) return;
     if (event.key === "Enter") {
       event.preventDefault();
       void runProgram();
@@ -812,14 +793,16 @@ async function main() {
       void share();
     }
   });
-  document.querySelector(".skip-link").onclick = (event) => {
-    event.preventDefault();
-    editor.focus();
-  };
+  examplesMenu();
   splitter();
-  void diagnose();
-  if (notice) toast(notice);
+  renderResult();
+  save();
+  await syncUrl();
+  await diagnose();
+  if (program.notice)
+    status(`Couldn't open the link: ${program.notice}`, "err");
 }
+
 main().catch((error) => {
   console.error(error);
   status("Couldn't start the editor. Please reload.", "err");

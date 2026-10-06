@@ -4,7 +4,7 @@ import {
   encodeSource,
   decodeSource,
   sourceFromHash,
-  shareUrl,
+  hashFor,
   MAX_SOURCE_BYTES,
 } from "../src/share.mjs";
 
@@ -19,13 +19,10 @@ test("snapshots round-trip empty, Unicode, and punctuation-rich programs", async
     assert.equal(await sourceFromHash(`#code=${encoded}`), source);
   }
 });
-test("share URLs contain a stable snapshot and drop unrelated query parameters", async () => {
-  const url = new URL(
-    await shareUrl("42", "https://fhm.example/?utm_source=test#old"),
-  );
-  assert.equal(url.search, "");
-  assert.equal(await sourceFromHash(url.hash), "42");
+test("program hashes round-trip and other hashes are ignored", async () => {
+  assert.equal(await sourceFromHash(await hashFor("42")), "42");
   assert.equal(await sourceFromHash("#example=lists"), null);
+  assert.equal(await sourceFromHash(""), null);
 });
 test("invalid links and unknown versions fail clearly", async () => {
   for (const encoded of ["2.abc", "1.%%%", "1.YWJj", "0._w", "1.a.b"])

@@ -1,9 +1,7 @@
 export const examples = [
   {
     id: "polymorphism",
-    title: "One function, many types",
-    topic: "Polymorphism",
-    description: "An identity function works for numbers, booleans, and more.",
+    title: "Polymorphic identity",
     result: "(42, True)",
     source: String.raw`-- Hover over id: one definition, many possible types.
 let id = \x -> x
@@ -17,9 +15,7 @@ let truth = id True
   },
   {
     id: "lists",
-    title: "A little map",
-    topic: "Lists & functions",
-    description: "Transform a list with a function of your choosing.",
+    title: "Map over a list",
     result: "[2, 4, 6, 8]",
     source: String.raw`let map = \f xs ->
   match xs with
@@ -34,9 +30,7 @@ map double [1, 2, 3, 4]
   },
   {
     id: "patterns",
-    title: "Something or nothing",
-    topic: "Pattern matching",
-    description: "Define a datatype, then take it apart with a match.",
+    title: "Maybe and pattern matching",
     result: "(42, 0)",
     source: String.raw`type Maybe a = Just a | Nothing
 
@@ -50,9 +44,7 @@ let withDefault = \fallback value ->
   },
   {
     id: "recursion",
-    title: "Count down, add up",
-    topic: "Recursion",
-    description: "A definition can call itself. Its type is inferred.",
+    title: "Recursion",
     result: "15",
     source: String.raw`let sumTo = \n ->
   if n < 1 then
@@ -65,9 +57,7 @@ sumTo 5
   },
   {
     id: "scoped",
-    title: "Types with a scope",
-    topic: "Scoped type variables",
-    description: "A signature's type variables stay in scope inside its body.",
+    title: "Scoped type variables",
     result: "(7, True)",
     source: String.raw`let keep : {a b} a -> b -> a =
   \x y ->
@@ -80,9 +70,7 @@ sumTo 5
   },
   {
     id: "polyrec",
-    title: "Recursion that changes type",
-    topic: "Polymorphic recursion",
-    description: "Each recursive step wraps the element type in another list.",
+    title: "Polymorphic recursion",
     result: "3",
     source: String.raw`type Nested a =
   | Elem a
@@ -100,9 +88,7 @@ size (Group (Group (Elem [[5]])))
   },
   {
     id: "mutual",
-    title: "Taking turns",
-    topic: "Mutual recursion",
-    description: "Definitions can refer forward to each other.",
+    title: "Mutual recursion",
     result: "(True, False)",
     source: String.raw`let even = \n ->
   if n < 1 then True else odd (n - 1)
@@ -115,9 +101,7 @@ let odd = \n ->
   },
   {
     id: "errors",
-    title: "When types don't fit",
-    topic: "A useful error",
-    description: "Make a deliberate mistake, then fix it to see the feedback.",
+    title: "A type error",
     fails: true,
     source: String.raw`let addOne = \n -> n + 1
 
