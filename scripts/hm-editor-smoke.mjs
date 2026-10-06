@@ -8,7 +8,7 @@ import { createRequire } from "node:module";
 import { fileURLToPath } from "node:url";
 
 const require = createRequire(import.meta.url);
-const { normalizePayload, resolveHover } = require("../editors/shared/fhmEditorCore.cjs");
+const { normalizePayload, resolveHover, resolveDefinition } = require("../editors/shared/fhmEditorCore.cjs");
 const binary = process.env.FHM || fileURLToPath(new URL("../.lake/build/bin/fhm", import.meta.url));
 let failures = 0;
 let tests = 0;
@@ -163,6 +163,73 @@ test("annotated mutual SCC exports polymorphism but forbids polymorphic recursiv
   const rejected = cli(["diagnose"], bad);
   assert.equal(rejected.status, 1);
   assert.ok(rejected.payload.diagnostics.length > 0);
+});
+
+test("type and constructor references with the same name resolve separately", () => {
+  const source = "type Box a = Box a\ntype Wrap a = Wrap (Box a)\nlet unbox : {a} Box a -> a = \\b -> match b with | Box x -> x\nlet ignore = \\(_ : Box Int) -> 0\nunbox (Box 3)\n";
+  const { ranged, tokens } = normalizePayload(diagnose(source));
+  for (const [line0, kind, occurrence, defCol0] of [
+    [0, "type", 0, 5], [0, "ctor", 1, 13],
+    [1, "type", 0, 5], [2, "type", 0, 5],
+    [2, "ctor", 1, 13], [3, "type", 0, 5], [4, "ctor", 0, 13],
+  ]) {
+    const line = source.split("\n")[line0];
+    const col0 = [...line.matchAll(/\bBox\b/g)][occurrence].index;
+    for (let offset = 0; offset < 3; offset++) {
+      assert.equal(resolveHover(ranged, line0, col0 + offset, line, tokens)?.kind, kind);
+      const target = resolveDefinition(ranged, line0, col0 + offset, line, tokens);
+      assert.deepEqual([target?.startLine0, target?.startCol0], [0, defCol0]);
+    }
+  }
+});
+
+test("complete nested patterns check and run; nested gaps remain rejected", () => {
+  const cases = [
+    ["let f = \\p -> match p with | ((a, b), c) -> a\nf ((1, 2), 3)\n", "1"],
+    ["let f = \\p -> match p with | (a, (b, c)) -> c\nf (1, (2, 3))\n", "3"],
+    ["type Maybe a = Just a | Nothing\nlet g = \\m -> match m with | Nothing -> 0 | Just Nothing -> 0 | Just (Just x) -> x\ng (Just (Just 3))\n", "3"],
+    ["let h = \\xs -> match xs with | [] -> 0 | [] :: _ -> 1 | (y :: _) :: _ -> y\nh [[5]]\n", "5"],
+  ];
+  for (const [source, result] of cases) {
+    diagnose(source);
+    run(source, result);
+  }
+  for (const source of [
+    "type Maybe a = Just a | Nothing\nlet g = \\m -> match m with | Nothing -> 0 | Just (Just x) -> x\ng (Just Nothing)\n",
+    "let h = \\xs -> match xs with | [] -> 0 | [] :: _ -> 1\nh [[5]]\n",
+  ]) {
+    for (const args of [["diagnose"], ["run", "--json"]]) {
+      const response = cli(args, source);
+      assert.equal(response.status, 1);
+      assert.match(JSON.stringify(response.payload), /match not exhaustive/);
+    }
+  }
+});
+
+test("application errors expose stable codes and precise matching CLI/editor spans", () => {
+  const cases = [
+    ["let bad = \\n -> n + True\nbad 1\n", "type.argumentMismatch", "type mismatch: expected Int, got Bool", "True", 0],
+    ["let f = \\n -> n + 1\nf True\n", "type.argumentMismatch", "type mismatch: expected Int, got Bool", "True", 1],
+    ["let f : Int -> Int = \\n -> n + True\nf 1\n", "type.argumentMismatch", "type mismatch: expected Int, got Bool", "True", 0],
+    ["let f = \\n -> let id = \\x -> x in id True + n\nf 1\n", "type.argumentMismatch", "type mismatch: expected Int, got Bool", "id True", 0],
+    ["1 True\n", "type.notFunction", "cannot apply a value of type Int as a function", "1", 0],
+    ["\\x -> x x\n", "type.infiniteType", "infinite type: a would have to equal a → b", "x x", 0],
+  ];
+  for (const [source, code, message, highlighted, line0] of cases) {
+    const editor = cli(["diagnose"], source);
+    const runner = cli(["run", "--json"], source);
+    assert.equal(editor.status, 1);
+    assert.equal(runner.status, 1);
+    const [diag] = editor.payload.diagnostics;
+    assert.equal(diag.code, code);
+    assert.equal(diag.message, message);
+    const col = source.split("\n")[line0].indexOf(highlighted) + 1;
+    assert.deepEqual([diag.line, diag.col, diag.endLine, diag.endCol],
+      [line0 + 1, col, line0 + 1, col + highlighted.length]);
+    for (const key of ["code", "message", "line", "col", "endLine", "endCol"]) {
+      assert.equal(runner.payload[key], diag[key], key);
+    }
+  }
 });
 
 test("run --json reports errors where diagnose does", () => {

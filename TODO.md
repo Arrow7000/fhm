@@ -28,10 +28,11 @@ And patterns in bindings:
 
 ## Bugs
 
-- [ ] **Exhaustiveness checker rejects complete nested matches.**
-  `checkExhaustive` is sound (it never accepts an incomplete match) but not
-  complete: some matches whose patterns go more than one constructor deep are
-  rejected with `match not exhaustive` even though they cover every case.
+- [x] **Exhaustiveness checker rejects complete nested matches.**
+  Fixed: infer candidate type arguments from constructor patterns across all
+  branches, then use the existing proved decision-tree coverage checker.
+  Nested tuples, parameterised constructors and lists now work; missing inner
+  cases are still rejected. Regression cases:
   The simplest case is a nested tuple, which has only one case to cover:
 
   ```
@@ -42,7 +43,7 @@ And patterns in bindings:
   f ((1, 2), 3)
   ```
 
-  `(a, (b, c))` fails the same way. With constructors:
+  `(a, (b, c))` is covered too. With constructors:
 
   ```
   type Maybe a = Just a | Nothing
@@ -56,7 +57,7 @@ And patterns in bindings:
   g (Just (Just 3))
   ```
 
-  The same happens with nested lists:
+  And nested lists:
 
   ```
   let h = \xs ->
@@ -68,9 +69,8 @@ And patterns in bindings:
   h [[5]]
   ```
 
-  Suspected cause: when the checker guesses a nested scrutinee's type
-  arguments (`tyArgsGuess` in `FHM/SurfaceBridge.lean`), it uses placeholders
-  that fail closed.
+  The cause was `tyArgsGuess` in `FHM/SurfaceBridge.lean` using `Unit`
+  placeholders, which erased the type structure needed by nested switches.
 
 - [x] **Self-referential constructor fields only parsed last.** In a type
   without parameters, `type T = Leaf | Node T Int T` was read as
@@ -125,14 +125,12 @@ And patterns in bindings:
   right-hand side of let rec"); FHM could reject non-function recursive
   definitions too.
 
-- [ ] **A type and a constructor with the same name are confused by hover and
-  go to definition.** With `type Box a = Box a`, the `Box` in an annotation
-  such as `Box a -> a` is resolved by name to the constructor, so hover shows
-  `∀ a. a → Box a` and go to definition jumps to the constructor. The editor
-  only knows the name and scope. The parser should record type-name and
-  constructor references with their kind, as it does for binders. The
-  `hover-syntax` snapshot (`editors/web/fixtures/`) pins the current
-  behaviour.
+- [x] **A type and a constructor with the same name are confused by hover and
+  go to definition.** Fixed: the parser records type-name, type-variable and
+  pattern-constructor references with their namespace. With `type Box a = Box a`,
+  annotations and constructor fields resolve to the type, while expressions
+  and patterns resolve to the constructor. The shared editor resolver respects
+  occurrence kinds; `hover-syntax` and CLI/editor canaries cover the fix.
 
 ## Errors and diagnostics
 
@@ -142,10 +140,17 @@ And patterns in bindings:
   verified functions currently return `Option`; moving them to `Except` means
   restating their theorems in terms of `.ok` rather than `some`, which is
   mechanical but touches a lot of code.
-- [ ] **Better error messages.** A type error is reported as
+  First slice done: application failures carry a reason ADT and Core path in
+  `FHM/Unverified/TypeDiagnostics.lean`, with stable JSON diagnostic codes shared
+  by CLI and editor output. This is an explanatory probe after verified
+  rejection; the verified workers still return `Option`. Migrating their own
+  failure results remains future work.
+- [ ] **Better error messages.** Application argument mismatches now report
+  expected and actual types at the argument span. Non-function applications
+  and infinite application types also have explanations and precise spans.
+  Recursive groups, match failures and other unsupported cases still use
   `typechecking failed`, plus the name of the failing definition, located at
-  that definition (by `fhm run` and `fhm diagnose` alike); there's no reason
-  and no position inside the definition. Lowering
+  that definition (by `fhm run` and `fhm diagnose` alike). Lowering
   errors are a single generic message: `lowering failed (unbound name, bad
   decl, or rejected sugar)`.
 - [ ] **Error recovery.** A single lowering or typechecking error currently
@@ -188,7 +193,7 @@ And patterns in bindings:
 - [ ] **Embeds and "Open in playground" links.** Let the README, the language
   guide and other docs link each code block into the playground (a share
   link built at docs-build time), and maybe an embeddable read-only/runnable
-  view for iframes.
+  view for iframes. Deferred until the playground has been battle-tested.
 
 ## Language features
 
@@ -252,10 +257,11 @@ And patterns in bindings:
 
 ## Cleanup
 
-- [ ] `FHM/AnnotatedPolyRecErasure.lean` and `FHM/AnnotatedPolyRecHybrid.lean`
+- [x] `FHM/AnnotatedPolyRecErasure.lean` and `FHM/AnnotatedPolyRecHybrid.lean`
   are prototype proofs from the annotated polymorphic recursion work, still in
-  the default build. Move them somewhere clearly archival, or drop them from
-  the build.
+  the tree as historical artifacts. Removed from the default build; either
+  module can still be checked explicitly with `lake build FHM.AnnotatedPolyRecErasure`
+  or `lake build FHM.AnnotatedPolyRecHybrid`.
 - [ ] Recursive grouping currently happens in two places: SCC analysis during
   lowering, and a second split of the unannotated members during inference.
   A single SCC pass per scope, ignoring edges into annotated definitions,

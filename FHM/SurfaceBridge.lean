@@ -4572,11 +4572,45 @@ def matchExhaustiveB (ctors : CtorEnv) (T : TyName) (tyArgs : List Ty)
     (ps : List Surface.Pattern) : Bool :=
   dTreeExhaustiveB ctors [([], .customTy T tyArgs)] (compile [[]] (initMatrix ps))
 
-/-- Guess `tyArgs` length from any ctor of `T` (placeholders; fail-closed for nested ADTs
-    when placeholders don't instantiate field ADTs — soundness still holds). -/
-private def tyArgsGuess (ctors : CtorEnv) (T : TyName) : List Ty :=
+mutual
+
+/-- Infer only the type constraints contributed by constructor tests. Wildcards
+    and binders impose none. This proposes a coverage witness; acceptance still
+    goes through `matchExhaustiveB` and its soundness theorem. -/
+private def constrainCoveragePat (ctors : CtorEnv) :
+    GPat → Ty → Nat → Subst → Option (Nat × Subst)
+  | .gbind, _, next, S | .gwild, _, next, S => some (next, S)
+  | .gctor name pats, expected, next, S => do
+      let ctor ← LookupList.get? ctors name
+      let args := (List.range ctor.paramCount).map fun i => Ty.fvar (next + i)
+      let U ← unify (S.onTy expected) (.customTy ctor.tyName args)
+      constrainCoveragePats ctors pats (ctor.contents.map (Ty.openWith args))
+        (next + ctor.paramCount) (S ++ U)
+
+private def constrainCoveragePats (ctors : CtorEnv) :
+    List GPat → List Ty → Nat → Subst → Option (Nat × Subst)
+  | [], [], next, S => some (next, S)
+  | p :: ps, t :: ts, next, S => do
+      let (next, S) ← constrainCoveragePat ctors p t next S
+      constrainCoveragePats ctors ps ts next S
+  | _, _, _, _ => none
+
+end
+
+/-- Recover nested type arguments from all branch patterns, sharing root type
+    variables across rows and freshening each constructor's parameters. Unlike
+    `Unit` placeholders, these retain the ADT structure needed by nested switches.
+    The existing tree checker remains the final, proved acceptance gate. -/
+private def tyArgsGuess (ctors : CtorEnv) (T : TyName)
+    (ps : List Surface.Pattern) : List Ty :=
   match ctors.find? fun ⟨_, ctor⟩ => ctor.tyName == T with
-  | some ⟨_, ctor⟩ => List.replicate ctor.paramCount (.prim .unit)
+  | some ⟨_, ctor⟩ =>
+      let args := (List.range ctor.paramCount).map Ty.fvar
+      let root := Ty.customTy T args
+      match constrainCoveragePats ctors (ps.map norm) (List.replicate ps.length root)
+          ctor.paramCount [] with
+      | some (_, S) => args.map S.onTy
+      | none => List.replicate ctor.paramCount (.prim .unit)
   | none => []
 
 /-- Top-level ctor name in a pattern, if any (incl. List/Pair sugar). -/
@@ -4681,7 +4715,7 @@ def checkExhaustive (ctors : CtorEnv) : Surface.Expr → Bool
         checkExhaustiveBranches ctors brs &&
         match tyNameFromPatterns ctors (brs.map Prod.fst) with
         | some T =>
-          matchExhaustiveB ctors T (tyArgsGuess ctors T) (brs.map Prod.fst)
+          matchExhaustiveB ctors T (tyArgsGuess ctors T (brs.map Prod.fst)) (brs.map Prod.fst)
         | none =>
           matchExhaustiveB ctors nBool [] (brs.map Prod.fst)
 termination_by s => surfaceExprSize s
@@ -5076,7 +5110,7 @@ theorem checkExhaustive_sound {ctors : CtorEnv} :
       cases hT : tyNameFromPatterns ctors (brs.map Prod.fst) with
       | some T =>
         simp only [hT] at hexh
-        refine .match_ (T := T) (tyArgs := tyArgsGuess ctors T) (ih scrut hscrut hs) ?_ ?_
+        refine .match_ (T := T) (tyArgs := tyArgsGuess ctors T (brs.map Prod.fst)) (ih scrut hscrut hs) ?_ ?_
         · intro p b hb
           have heq := checkExhaustiveBranches_get brs hbrs (p, b) hb
           have hle : surfaceExprSize b ≤ n :=
@@ -5112,6 +5146,31 @@ example : checkExhaustive ctorsDemo (.primLit (.int 0)) = true →
   (.match_ (.var (.mk "xs"))
     [(.list [], .primLit (.int 0)),
      (.cons (.name (.mk "h")) (.name (.mk "t")), .primLit (.int 1))]) = true
+
+-- Nested parameter positions must retain the types imposed by their patterns.
+example : checkExhaustive ctorsDemo
+    (.match_ (.var (.mk "p"))
+      [(.pair (.pair .wildcard .wildcard) .wildcard, .primLit (.int 0))]) = true := by
+  native_decide
+
+example : checkExhaustive ctorsDemo
+    (.match_ (.var (.mk "p"))
+      [(.pair .wildcard (.pair .wildcard .wildcard), .primLit (.int 0))]) = true := by
+  native_decide
+
+example : checkExhaustive ctorsDemo
+    (.match_ (.var (.mk "xs"))
+      [(.list [], .primLit (.int 0)),
+       (.cons (.list []) .wildcard, .primLit (.int 1)),
+       (.cons (.cons .wildcard .wildcard) .wildcard, .primLit (.int 2))]) = true := by
+  native_decide
+
+-- Covering the outer List does not excuse an uncovered nonempty inner List.
+example : checkExhaustive ctorsDemo
+    (.match_ (.var (.mk "xs"))
+      [(.list [], .primLit (.int 0)),
+       (.cons (.list []) .wildcard, .primLit (.int 1))]) = false := by
+  native_decide
 
 /-! ## 6. The `Lowers` relation (spec — deterministic, pins `lowerMatch`)
 

@@ -61,7 +61,7 @@
 25 │ let unbox : {a} Box a -> a = \b ->
     5-9     "unbox"        val   unbox : ∀ a. Box a → a  → def 25:5
     14      "a"            param a : type variable (scheme binder)  → def 25:14
-    17-19   "Box"          ctor  Box : ∀ a. a → Box a  → def 6:14
+    17-19   "Box"          type  Box : type Box a =⏎   | Box a  → def 6:6
     21      "a"            param a : type variable (scheme binder)  → def 25:14
     26      "a"            param a : type variable (scheme binder)  → def 25:14
     30      "\\"           expr  Box a → a  ⟦\b ->⟧

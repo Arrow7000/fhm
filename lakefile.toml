@@ -21,8 +21,6 @@ roots = [
   "FHM.Scc.Kosaraju",
   "FHM.Examples",
   "FHM.Headlines",
-  "FHM.AnnotatedPolyRecErasure",
-  "FHM.AnnotatedPolyRecHybrid",
   "FHM.RuntimeTyping",
 ]
 
@@ -33,6 +31,7 @@ roots = [
   "FHM.Unverified.HMArtifacts",
   "FHM.Unverified.HMDisplay",
   "FHM.Unverified.HMReport",
+  "FHM.Unverified.TypeDiagnostics",
   "FHM.Unverified.Surface.Lex",
   "FHM.Unverified.Surface.Parse",
   "FHM.Unverified.Surface.Provenance",

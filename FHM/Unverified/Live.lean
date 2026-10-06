@@ -111,6 +111,7 @@ def formatTiming (a : Ansi) (label : String) (ns : Nat) : String :=
 structure PipelineErr where
   stage : PipelineStage
   message : String
+  code? : Option String := none
   /-- Steps taken before evaluation stopped, for an exhausted step budget. -/
   steps? : Option Nat := none
   line : Nat := 1
@@ -191,7 +192,7 @@ private def topBindingTypes (groups : List (List Surface.Binding))
 def diagnosedErr (stage : PipelineStage) (d? : Option HoverDiag) (fallback : String) :
     PipelineErr :=
   match d? with
-  | some d => { stage, message := d.message, line := d.line, col := d.col,
+  | some d => { stage, message := d.message, code? := d.code?, line := d.line, col := d.col,
                 endLine := d.endLine, endCol := d.endCol }
   | none => { stage, message := fallback }
 
@@ -343,7 +344,8 @@ def PipelineErr.toJson (e : PipelineErr) : Lean.Json :=
     ("col", Lean.Json.num e.col),
     ("endLine", Lean.Json.num e.endLine),
     ("endCol", Lean.Json.num e.endCol)
-  ] ++ (e.steps?.map fun n => ("steps", Lean.Json.num n)).toList
+  ] ++ (e.steps?.map fun n => ("steps", Lean.Json.num n)).toList ++
+    (e.code?.map fun code => ("code", Lean.Json.str code)).toList
 
 /-- Parse CLI: optional `--json` and one optional path. -/
 def parseArgs (args : List String) : Except String LiveArgs :=

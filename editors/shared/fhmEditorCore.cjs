@@ -672,7 +672,15 @@ function resolveDefinition(ranged, line0, col0, lineText, tokens) {
   if (!at || !at.token || at.token.kind !== "ident") return undefined;
   const word = tokenText(at.token, lineText);
   if (!word) return undefined;
-  const defs = (rangedByName(ranged).get(word) || []).filter((s) => s.def === true);
+  // Parsed occurrences carry their namespace, so `Box` in a type annotation
+  // resolves to the type even when a constructor has the same spelling.
+  const occurrence = smallestSpan(
+    ranged.filter((s) => s.name === word && s.kind !== "expr" &&
+      spanContains(s, line0 + 1, col0 + 1))
+  );
+  const defs = (rangedByName(ranged).get(word) || []).filter(
+    (s) => s.def === true && (!occurrence || s.kind === occurrence.kind)
+  );
   const def =
     defs.find(
       (s) => s.startLine === at.token.startLine && s.startCol === at.token.startCol

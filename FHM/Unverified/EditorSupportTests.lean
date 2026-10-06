@@ -93,6 +93,26 @@ def maybeSrc : String :=
         hasSub a.type_ "type variable" && hasSub a.type_ "Maybe"
     | none => false)
 
+-- A type and its constructor occupy separate namespaces at use sites,
+-- including nested annotations, wildcard parameters and constructor fields.
+def sameNameSrc : String :=
+  "type Box a = Box a\n" ++
+  "type Wrap a = Wrap (Box a)\n" ++
+  "let unbox : {a} Box a -> a = \\b -> match b with | Box x -> x\n" ++
+  "let ignore = \\(_ : Box Int) -> 0\n" ++
+  "unbox (Box 3)\n"
+
+#guard (match hoverSyms sameNameSrc with
+  | none => false
+  | some syms =>
+    match symbolAt syms 2 21, symbolAt syms 3 17,
+        symbolAt syms 3 51, symbolAt syms 4 20, symbolAt syms 5 8 with
+    | some field, some ann, some pat, some wildcardAnn, some value =>
+        field.kind == "type" && ann.kind == "type" &&
+        wildcardAnn.kind == "type" && hasSub ann.type_ "type Box a" &&
+        pat.kind == "ctor" && value.kind == "ctor"
+    | _, _, _, _, _ => false)
+
 -- 4. Binder span count / name order canary
 def binderCanarySrc : String :=
   "type Maybe a = Just a | Nothing\nlet id = \\x -> x\n"
@@ -462,7 +482,7 @@ def typeMapMismatchSrc : String :=
           hasSub d.message "List Int"
       | _ => false)
 
--- E9. Type error only in body: point at body, not first line.
+-- E9. An argument mismatch identifies the argument inside the body.
 def typeBodySrc : String :=
   "let a = 1\na + True\n"
 
@@ -471,9 +491,10 @@ def typeBodySrc : String :=
   | some r =>
       match r.diagnostics with
       | [d] =>
-          hasSub d.message "typechecking failed" &&
+          d.message == "type mismatch: expected Int, got Bool" &&
+          d.code? == some "type.argumentMismatch" &&
           d.line == 2 &&  -- body line, not file top
-          d.endCol > d.col + 1  -- full `a + True`, not one column
+          d.col == 5 && d.endCol == 9  -- `True`
       | _ => false)
 
 -- E11. Unbound multi-char name underlines the whole identifier.
@@ -619,7 +640,8 @@ def docSites (src : String) : List (String × Nat × Nat × String) :=
 
 #guard docSites "type Box a =\n  --- Holds one value.\n  | Box a\n/-- Opens a box. -/\nlet unbox = \\b -> match b with | Box x -> x\nunbox (Box 1)\n" =
   [("Box", 3, 5, "Holds one value."), ("unbox", 5, 5, "Opens a box."),
-   ("unbox", 6, 1, "Opens a box."), ("Box", 6, 8, "Holds one value.")]
+   ("unbox", 6, 1, "Opens a box."), ("Box", 6, 8, "Holds one value."),
+   ("Box", 5, 34, "Holds one value.")]
 
 -- A type's hover lists its constructors one per line, under their docs.
 def typeHover (src : String) (name : String) : Option String :=

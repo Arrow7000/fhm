@@ -1,4 +1,5 @@
 import FHM.Unverified.HMDisplay
+import FHM.Unverified.TypeDiagnostics
 import FHM.Unverified.Surface.Parse
 
 /-!
@@ -201,6 +202,7 @@ def collectLitOpSymbols (src : String) (ctors : CtorEnv) : List RangedSymbol :=
 
 structure HoverDiag where
   message : String
+  code? : Option String := none
   line : Nat := 1
   col : Nat := 1
   endLine : Nat := 1
@@ -208,14 +210,14 @@ structure HoverDiag where
   deriving Repr
 
 def HoverDiag.toJson (d : HoverDiag) : Lean.Json :=
-  Lean.Json.mkObj [
+  Lean.Json.mkObj <| [
     ("severity", Lean.Json.str "error"),
     ("message", Lean.Json.str d.message),
     ("line", Lean.Json.num d.line),
     ("col", Lean.Json.num d.col),
     ("endLine", Lean.Json.num d.endLine),
     ("endCol", Lean.Json.num d.endCol)
-  ]
+  ] ++ (d.code?.map fun code => ("code", Lean.Json.str code)).toList
 
 structure HoverReport where
   symbols : List RangedSymbol
@@ -385,7 +387,11 @@ def collectHover (src : String) (p : Surface.Program) (binders : List BinderSpan
         | none => fail (locateLowerFail src p sp)
         | some lowered =>
           match SurfaceBridge.Provenance.inferWithProvenance ctors lowered with
-          | none => fail (locateTypecheckFail ctors ke p binders sp)
+          | none =>
+            match FHM.Unverified.TypeDiagnostics.explain ctors lowered with
+            | some (reason, span) =>
+                fail { diagAtSpan reason.message (some span) with code? := some reason.code }
+            | none => fail (locateTypecheckFail ctors ke p binders sp)
           | some typed =>
             if !lowered.provenanceTotal || !typed.nodeTypesTotal || !typed.sourceTypesTotal ||
                 !typed.patternBinderTypesTotal then
@@ -450,13 +456,22 @@ def collectHover (src : String) (p : Surface.Program) (binders : List BinderSpan
                 else none).map fun s => { s with isDef := true, doc := docAt s.span }
               let prelude := (preludeTypeCtorSymbols ctors scope ++ primTypeSymbols scope).filter fun s =>
                 !(syntaxSyms.any fun b => b.name == s.name && b.kind == s.kind)
+              let references := sp.references.filterMap fun ref => do
+                let kind := match ref.kind with
+                  | .type => "type"
+                  | .typeVar => "param"
+                  | .ctor => "ctor"
+                let candidates := (prelude ++ syntaxSyms).filter fun s =>
+                  s.kind == kind
+                let target ← symbolAtUseSite candidates ref.span.startLine ref.span.startCol ref.name
+                pure { target with span := ref.span, scope := ref.span, isDef := false }
               let sugarOps := (collectLitOpSymbols src ctors).filter fun s => s.name == "::"
               -- Typing succeeded, so hovers stay available alongside this error.
               let exhaustiveness :=
                 if checkExhaustive ctors p.term then []
                 else [diagAtSpan "match not exhaustive"
                   ((firstNonExhaustive ctors p.term tree).orElse fun _ => some (bodyDiagSpan sp.body))]
-              { symbols := prelude ++ syntaxSyms ++ values ++ sugarOps ++ occurrences
+              { symbols := prelude ++ syntaxSyms ++ values ++ sugarOps ++ occurrences ++ references
                 programTy := FHM.Unverified.HMDisplay.scheme {} []
                   (genScheme [] [] typed.inference.ty)
                 diagnostics := exhaustiveness }

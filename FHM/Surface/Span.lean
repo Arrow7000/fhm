@@ -89,6 +89,19 @@ def SpannedExpr.span : SpannedExpr → Span
   | .ife s .. => s
   | .match_ s .. => s
 
+/-- Syntactic namespace of a name occurrence, independent of its spelling. -/
+inductive ReferenceKind
+  | type
+  | typeVar
+  | ctor
+  deriving Repr, DecidableEq, BEq
+
+structure NameReference where
+  name : String
+  kind : ReferenceKind
+  span : Span
+  deriving Repr, BEq
+
 /-- Spanned top-level program: RHS hulls per binding in group order + body.
     `declSpans` are full surface extents of each `type` decl (for tyvar scopes).
     `sourceNames` is top-level binding names in **parse / source order** (pre-SCC);
@@ -98,6 +111,7 @@ structure SpannedProgram where
   body : SpannedExpr
   declSpans : List Span := []
   sourceNames : List String := []
+  references : List NameReference := []
   deriving Repr
 
 instance : Inhabited SpannedProgram := ⟨{ groups := [], body := default }⟩

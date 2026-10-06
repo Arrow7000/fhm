@@ -267,32 +267,38 @@ Same parse walk records binder locations and a `SpannedExpr` mirror without
 changing the Surface AST. Failed/`withBacktracking` branches discard their
 lists (unlike StateT, which would leak across backtracks).
 
-Expression parsers return `Expr × List BinderSpan × SpannedExpr`.
+Expression parsers return `Expr × List ParsedNameSpan × SpannedExpr`.
 -/
 
-abbrev PB (α : Type) := P (α × List BinderSpan)
-abbrev PE := P (Expr × List BinderSpan × SpannedExpr)
+/-- Internal writer entry: definitions and references travel together so
+    backtracking discards both. Public APIs keep returning definition spans. -/
+structure ParsedNameSpan extends BinderSpan where
+  isDef : Bool := true
+  deriving Repr, BEq
 
-def mkBinder (kind : BinderKind) (tok : Tok) (name : String) : BinderSpan :=
+abbrev PB (α : Type) := P (α × List ParsedNameSpan)
+abbrev PE := P (Expr × List ParsedNameSpan × SpannedExpr)
+
+def mkBinder (kind : BinderKind) (tok : Tok) (name : String) : ParsedNameSpan :=
   { name, kind, span := Span.ofTok tok }
 
 /-- Note: return types use `P (α × _)` (not `PB α`) so do-notation binds `P`, not a phantom `PB` monad. -/
-def pbPure (a : α) : P (α × List BinderSpan) :=
+def pbPure (a : α) : P (α × List ParsedNameSpan) :=
   pure (a, [])
 
-def liftP (p : P α) : P (α × List BinderSpan) := do
+def liftP (p : P α) : P (α × List ParsedNameSpan) := do
   let a ← p
   pure (a, [])
 
-def pbMap (f : α → β) (m : P (α × List BinderSpan)) : P (β × List BinderSpan) := do
+def pbMap (f : α → β) (m : P (α × List ParsedNameSpan)) : P (β × List ParsedNameSpan) := do
   let (a, bs) ← m
   pure (f a, bs)
 
 /-- Flatten binder lists from an array of Writer results. -/
-def concatBinders {α} (xs : Array (α × List BinderSpan)) : List BinderSpan :=
+def concatBinders {α} (xs : Array (α × List ParsedNameSpan)) : List ParsedNameSpan :=
   xs.toList.flatMap (·.2)
 
-def concatBinders3 {α} (xs : Array (α × List BinderSpan × SpannedExpr)) : List BinderSpan :=
+def concatBinders3 {α} (xs : Array (α × List ParsedNameSpan × SpannedExpr)) : List ParsedNameSpan :=
   xs.toList.flatMap (·.2.1)
 
 /-! ## Layout helpers (Tigris-style column guards) -/
@@ -405,9 +411,23 @@ partial def ty : P Ty :=
 
 end
 
+/-- Name references from a successfully parsed type fragment. -/
+def typeWithReferences (p : P Ty) : P (Ty × List ParsedNameSpan) := do
+  let (t, start, stop) ← withCapture p
+  let stream ← getStream
+  let refs := (stream.array.extract start stop).toList.filterMap fun tok =>
+    match tok.token with
+    | .ident name upper => some ({
+        name := name
+        kind := if upper then .type else .param
+        span := Span.ofTok tok
+        isDef := false } : ParsedNameSpan)
+    | _ => none
+  return (t, refs)
+
 /-- Scheme: `{a b} body` or bare `ty`. Type foralls emit `.param` binders
 scoped over the complete scheme. -/
-partial def polyTy : P (PolyTy × List BinderSpan) :=
+partial def polyTy : P (PolyTy × List ParsedNameSpan) :=
   withErrorMessage "expected type scheme" do
     skipComments
     match ← option? (withBacktracking (punct .lbrace)) with
@@ -430,17 +450,17 @@ partial def polyTy : P (PolyTy × List BinderSpan) :=
       skipComments
       let tyNames := tyToks.map (·.2)
       let startBody ← getPosition
-      let body ← ty
+      let (body, refs) ← typeWithReferences ty
       let stopBody ← getPosition
       let bodySpan ← spanOfConsumed startBody stopBody
       let polySpan := Span.union (Span.ofTok lb) bodySpan
       let bsTys := tyToks.map fun (t, n) =>
         ({ name := n, kind := .param, span := Span.ofTok t, scope? := some polySpan } :
-          BinderSpan)
-      return ({ foralls := tyNames.map ValName.mk, body }, bsTys)
+          ParsedNameSpan)
+      return ({ foralls := tyNames.map ValName.mk, body }, bsTys ++ refs)
     | none =>
-      let body ← ty
-      return ({ foralls := [], body }, [])
+      let (body, refs) ← typeWithReferences ty
+      return ({ foralls := [], body }, refs)
 
 /-! ## Expression helpers -/
 
@@ -455,7 +475,7 @@ instance : Inhabited (Nat × ValName × List ValName × List (ValName × Option 
   ⟨(0, default, [], [], none, default, default)⟩
 instance : Inhabited (Pattern × Expr) := ⟨(default, default)⟩
 instance : Inhabited (Pattern × Expr × SpannedExpr) := ⟨(default, default, default)⟩
-instance : Inhabited (Expr × List BinderSpan × SpannedExpr) :=
+instance : Inhabited (Expr × List ParsedNameSpan × SpannedExpr) :=
   ⟨(default, [], default)⟩
 
 def applyBinOp (op : BinOpToken) (a b : Expr) : Expr :=
@@ -480,7 +500,7 @@ def applyBinOpSpanned (opTok : Tok) (op : BinOpToken)
 
 /-- Simple λ/let binder: name or `_`. No type annotation (avoids `->` ambiguity).
     Also returns the binder token span (for λ hulls). -/
-def simpleBinder : P (Pattern × List BinderSpan × Span) :=
+def simpleBinder : P (Pattern × List ParsedNameSpan × Span) :=
   withErrorMessage "expected binder" do
     skipComments
     first [
@@ -493,7 +513,7 @@ def simpleBinder : P (Pattern × List BinderSpan × Span) :=
     ]
 
 /-- Optional `{ tyParam+ }` after a binding name (nonempty if `{` present). -/
-def tyParamBinders : P (List ValName × List BinderSpan) :=
+def tyParamBinders : P (List ValName × List ParsedNameSpan) :=
   withErrorMessage "expected type parameters" do
     skipComments
     match ← option? (withBacktracking (punct .lbrace)) with
@@ -510,7 +530,7 @@ def tyParamBinders : P (List ValName × List BinderSpan) :=
       return (tps, bs)
 
 /-- One value parameter: bare `lowerIdent` or `( lowerIdent : ty )`. -/
-def valueParam : P ((ValName × Option Ty) × List BinderSpan) :=
+def valueParam : P ((ValName × Option Ty) × List ParsedNameSpan) :=
   withErrorMessage "expected value parameter" do
     skipComments
     first [
@@ -523,19 +543,19 @@ def valueParam : P ((ValName × Option Ty) × List BinderSpan) :=
             skipComments
             let _ ← punct .colon
             skipComments
-            let t ← ty
+            let (t, refs) ← typeWithReferences ty
             skipComments
             let _ ← punct .rparen
-            return ((.mk "_", some t), []),
+            return ((.mk "_", some t), refs),
           do
             let (tok, name) ← lowerIdentTok
             skipComments
             let _ ← punct .colon
             skipComments
-            let t ← ty
+            let (t, refs) ← typeWithReferences ty
             skipComments
             let _ ← punct .rparen
-            return ((.mk name, some t), [mkBinder .param tok name])
+            return ((.mk name, some t), mkBinder .param tok name :: refs)
         ],
       do
         let (tok, name) ← lowerIdentTok
@@ -543,7 +563,7 @@ def valueParam : P ((ValName × Option Ty) × List BinderSpan) :=
     ]
 
 /-- Zero or more value params; peek stops at `:` / `=` (ann or RHS). -/
-def valueParams : P (List (ValName × Option Ty) × List BinderSpan) := do
+def valueParams : P (List (ValName × Option Ty) × List ParsedNameSpan) := do
   let ps ← takeMany (withBacktracking do
     skipComments
     let t ← nextTok
@@ -554,7 +574,7 @@ def valueParams : P (List (ValName × Option Ty) × List BinderSpan) := do
   return (ps.toList.map (·.1), ps.toList.flatMap (·.2))
 
 /-- λ binder: `(name : ty)` / `(_ : ty)` or simple name / `_`. -/
-def lambdaBinder : P (Pattern × Option Ty × List BinderSpan × Span) :=
+def lambdaBinder : P (Pattern × Option Ty × List ParsedNameSpan × Span) :=
   withErrorMessage "expected lambda binder" do
     skipComments
     first [
@@ -567,19 +587,19 @@ def lambdaBinder : P (Pattern × Option Ty × List BinderSpan × Span) :=
             skipComments
             let _ ← punct .colon
             skipComments
-            let τ ← ty
+            let (τ, refs) ← typeWithReferences ty
             skipComments
             let t1 ← punct .rparen
-            return (.wildcard, some τ, [], Span.union (Span.ofTok t0) (Span.ofTok t1)),
+            return (.wildcard, some τ, refs, Span.union (Span.ofTok t0) (Span.ofTok t1)),
           do
             let (tok, name) ← lowerIdentTok
             skipComments
             let _ ← punct .colon
             skipComments
-            let τ ← ty
+            let (τ, refs) ← typeWithReferences ty
             skipComments
             let t1 ← punct .rparen
-            return (.name (.mk name), some τ, [mkBinder .param tok name],
+            return (.name (.mk name), some τ, mkBinder .param tok name :: refs,
               Span.union (Span.ofTok t0) (Span.ofTok t1))
         ],
       do
@@ -604,7 +624,7 @@ def boolLitPattern : P Pattern :=
 
 mutual
 
-partial def patAtom : P (Pattern × List BinderSpan) :=
+partial def patAtom : P (Pattern × List ParsedNameSpan) :=
   withErrorMessage "expected pattern atom" do
     skipComments
     first [
@@ -651,22 +671,24 @@ partial def patAtom : P (Pattern × List BinderSpan) :=
           return (.list (hd :: tl.toList.map (·.1)), bsHd ++ concatBinders tl),
       -- bare upper ctor (no args); apps handled in `patApp`
       do
-        let name ← upperIdent
-        return (.ctor (.mk name) [], [])
+        let (tok, name) ← upperIdentTok
+        return (.ctor (.mk name) [],
+          [{ name, kind := .ctor, span := Span.ofTok tok, isDef := false }])
     ]
 
 /-- Ctor application: `Just x` / `Cons a b`, or a non-ctor atom. -/
-partial def patApp : P (Pattern × List BinderSpan) :=
+partial def patApp : P (Pattern × List ParsedNameSpan) :=
   withErrorMessage "expected pattern" do
     skipComments
-    match ← option? (withBacktracking upperIdent) with
-    | some name =>
+    match ← option? (withBacktracking upperIdentTok) with
+    | some (tok, name) =>
       let args ← takeMany (withBacktracking patAtom)
-      return (.ctor (.mk name) (args.toList.map (·.1)), concatBinders args)
+      return (.ctor (.mk name) (args.toList.map (·.1)),
+        { name, kind := .ctor, span := Span.ofTok tok, isDef := false } :: concatBinders args)
     | none => patAtom
 
 /-- Right-associative cons: `a :: b :: rest` ≡ `cons a (cons b rest)`. -/
-partial def pattern : P (Pattern × List BinderSpan) :=
+partial def pattern : P (Pattern × List ParsedNameSpan) :=
   withErrorMessage "expected pattern" do
     let (left, bsL) ← patApp
     skipComments
@@ -869,7 +891,7 @@ explicit lambda in the RHS meanwhile.
     strictly right of it. -/
 partial def letBinding (indentCol : Nat) :
     P ((Nat × ValName × List ValName × List (ValName × Option Ty) × Option PolyTy ×
-        Expr × SpannedExpr) × List BinderSpan) :=
+        Expr × SpannedExpr) × List ParsedNameSpan) :=
   withErrorMessage "expected let binding" do
     skipComments
     let (tok, name) ← lowerIdentTok
@@ -956,13 +978,13 @@ partial def letExpr : PE :=
             (.leaf Span.empty)
         let binderSpan (b : Binding) (sRhs : SpannedExpr) : Option Span :=
           let name := match b.name with | .mk s => s
-          (bindingBinders.filter fun (bs : BinderSpan) =>
+          (bindingBinders.filter fun (bs : ParsedNameSpan) =>
             let beforeRhs :=
               bs.span.endLine < sRhs.span.startLine ||
                 (bs.span.endLine == sRhs.span.startLine &&
                   bs.span.endCol ≤ sRhs.span.startCol)
             bs.name == name && bs.kind == BinderKind.val && bs.scope?.isNone && beforeRhs).getLast?.map
-              (fun (bs : BinderSpan) => bs.span)
+              (fun (bs : ParsedNameSpan) => bs.span)
         groups.foldr (fun (group : List Binding) ((acc, accS) : Expr × SpannedExpr) =>
           let rhss : List SpannedExpr := group.map rhsSpan
           let headers := group.zip rhss |>.filterMap fun (b, sRhs) => binderSpan b sRhs
@@ -1007,7 +1029,7 @@ partial def ifExpr : PE :=
     return (.ife c t f, bsC ++ bsT ++ bsF, .ife span sC sT sF)
 
 /-- One match arm: `pattern -> expr`. -/
-partial def matchArm : P ((Pattern × Expr × SpannedExpr) × List BinderSpan) := do
+partial def matchArm : P ((Pattern × Expr × SpannedExpr) × List ParsedNameSpan) := do
   skipComments
   let (pat, bsPat) ← pattern
   skipComments
@@ -1088,7 +1110,7 @@ end
 /-- Ctor field: `(name : ty)` discards `name`; bare fields are atoms, as in
     Haskell and Elm, so `Node T Int T` has three fields even when `T` takes no
     parameters. Applied types and arrows need parens: `C (List a) (Int -> T)`. -/
-def ctorField : P Ty :=
+def ctorField : P (Ty × List ParsedNameSpan) :=
   withErrorMessage "expected constructor field" do
     skipComments
     first [
@@ -1099,27 +1121,28 @@ def ctorField : P Ty :=
         skipComments
         let _ ← punct .colon
         skipComments
-        let t ← ty
+        let (t, refs) ← typeWithReferences ty
         skipComments
         let _ ← punct .rparen
-        return t,
-      tyAtom
+        return (t, refs),
+      typeWithReferences tyAtom
     ]
 
 /-- A constructor and its fields. A field on a later line must be indented past
     `declCol`, the declaration's `type` keyword, so the declaration ends at the
     next unindented line (e.g. the program's body). -/
-def dataCtor (declCol : Nat) : P ((CtorName × List Ty) × List BinderSpan) :=
+def dataCtor (declCol : Nat) : P ((CtorName × List Ty) × List ParsedNameSpan) :=
   withErrorMessage "expected constructor" do
     skipComments
     let (tok, name) ← upperIdentTok
     let fields ← takeMany (withBacktracking do
       colGt declCol
       ctorField)
-    return ((.mk name, fields.toList), [mkBinder .ctor tok name])
+    return ((.mk name, fields.toList.map (·.1)),
+      mkBinder .ctor tok name :: fields.toList.flatMap (·.2))
 
 /-- `type T a = …` plus binder spans and the full decl source span (tyvar scope). -/
-def typeDecl : P (DataDecl × List BinderSpan × Span) :=
+def typeDecl : P (DataDecl × List ParsedNameSpan × Span) :=
   withErrorMessage "expected type declaration" do
     skipComments
     let ((d, bs), seg) ← withCapture do
@@ -1151,7 +1174,7 @@ def typeDecl : P (DataDecl × List BinderSpan × Span) :=
     return (d, bs, declSpan)
 
 /-- Top-level `let` binding (F# style — `let` required; no `in`). -/
-def topLet : P ((Binding × SpannedExpr) × List BinderSpan) :=
+def topLet : P ((Binding × SpannedExpr) × List ParsedNameSpan) :=
   withErrorMessage "expected top-level let" do
     skipComments
     let letTok ← keyword .«let»
@@ -1163,7 +1186,7 @@ def topLet : P ((Binding × SpannedExpr) × List BinderSpan) :=
 **not** `type`/`let` (so `takeMany` can stop). Once the keyword is seen, the
 item parse is **committed** — RHS errors keep their real site/message instead of
 being swallowed by `foldl`/`takeMany` and re-reported as `unexpected` on `let`. -/
-def programItem : P (Sum (DataDecl × Span) (Binding × SpannedExpr) × List BinderSpan) := do
+def programItem : P (Sum (DataDecl × Span) (Binding × SpannedExpr) × List ParsedNameSpan) := do
   skipComments
   let t ← nextTok
   match t.token with
@@ -1177,10 +1200,10 @@ def programItem : P (Sum (DataDecl × Span) (Binding × SpannedExpr) × List Bin
 
 /-- Zero or more committed top-level items. Stops at the first non-`type`/`let`
 token (or EOF) without discarding a real item error. -/
-partial def programItems : P (Array (Sum (DataDecl × Span) (Binding × SpannedExpr) × List BinderSpan)) :=
+partial def programItems : P (Array (Sum (DataDecl × Span) (Binding × SpannedExpr) × List ParsedNameSpan)) :=
   go #[]
 where
-  go (acc : Array (Sum (DataDecl × Span) (Binding × SpannedExpr) × List BinderSpan)) := do
+  go (acc : Array (Sum (DataDecl × Span) (Binding × SpannedExpr) × List ParsedNameSpan)) := do
     skipComments
     -- EOF → done (peek/nextTok fails only if stream empty after skipComments).
     match ← option? (withBacktracking do
@@ -1197,7 +1220,7 @@ where
 /-- Interleaved `type` / `let`, then optional body expr (default unit).
     Groups via `SurfaceBridge.Program.ofFlat` (SCC); fails on duplicate names.
     Also returns a `SpannedProgram` aligned with group/body structure. -/
-def program : P (Program × List BinderSpan × SpannedProgram) :=
+def program : P (Program × List ParsedNameSpan × SpannedProgram) :=
   withErrorMessage "expected program" do
     skipComments
     let items ← programItems
@@ -1308,11 +1331,13 @@ def parseExpr (src : String) : Except ParseError Expr :=
   (runLexParse expr src).map (·.1)
 
 def parseExprWithBinders (src : String) : Except ParseError (Expr × List BinderSpan) :=
-  (runLexParse expr src).map fun (e, bs, _) => (e, bs)
+  (runLexParse expr src).map fun (e, bs, _) =>
+    (e, bs.filterMap fun b => if b.isDef then some b.toBinderSpan else none)
 
 def parseExprWithSpans (src : String) :
     Except ParseError (Expr × List BinderSpan × SpannedExpr) :=
-  runLexParse expr src
+  (runLexParse expr src).map fun (e, bs, sp) =>
+    (e, bs.filterMap (fun b => if b.isDef then some b.toBinderSpan else none), sp)
 
 /-- Parse with binder spans (carrying doc comments) + spanned program (expr
     hulls for scopes). -/
@@ -1322,8 +1347,18 @@ def parseProgramWithSpans (src : String) :
   | .error e => .error (lexToParse e)
   | .ok toks => do
     let (p, bs, sp) ← runTokP program toks
-    let bs ← attachDocs bs toks.toList
-    pure (p, bs, sp)
+    let refs := bs.filterMap fun b =>
+      if b.isDef then none else
+        some ({
+          name := b.name
+          span := b.span
+          kind := match b.kind with
+            | .type => .type
+            | .ctor => .ctor
+            | _ => .typeVar } : Surface.Span.NameReference)
+    let defs := bs.filterMap fun b => if b.isDef then some b.toBinderSpan else none
+    let defs ← attachDocs defs toks.toList
+    pure (p, defs, { sp with references := refs })
 
 def parseProgramWithBinders (src : String) : Except ParseError (Program × List BinderSpan) :=
   parseProgramWithSpans src |>.map fun (p, bs, _) => (p, bs)

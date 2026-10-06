@@ -208,8 +208,9 @@ Known bugs and smaller tasks are tracked in [`TODO.md`](./TODO.md).
 
 Near term:
 
-- **Better error messages.** Type errors are currently reported without a
-  location or explanation.
+- **Better error messages.** Application errors explain mismatches at the
+  offending expression; extend these diagnostics to recursive groups, matches
+  and the rest of the pipeline.
 - **Signatures on function heads** (`let f (x : Int) (y : a) : a = …`) and
   **partial annotations** with holes (`Int -> _ -> Bool`).
 - **Pattern lambdas** (`\(x, y) -> …`) and **string literals**.
