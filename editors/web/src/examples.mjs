@@ -330,7 +330,3 @@ let small = Less (Num 2) (Num 3)
 `,
   },
 ];
-
-export function exampleFromId(id) {
-  return examples.find((example) => example.id === id);
-}

@@ -9,7 +9,7 @@ import {
   formatNs,
 } from "@fhm/editor-core";
 import langConfig from "../../vscode/language-configuration.json";
-import { examples, exampleFromId } from "./examples.mjs";
+import { examples } from "./examples.mjs";
 import { hashFor, sourceFromHash } from "./share.mjs";
 
 self.MonacoEnvironment = { getWorker: () => new editorWorker() };
@@ -38,8 +38,7 @@ function node(tag, className, text) {
 
 let editor;
 let ranged = [];
-// The example the program was loaded from, if any. While the program is
-// unmodified the URL names the example instead of embedding its source.
+// The example the program was loaded from, if any, so the menu can mark it.
 let currentId = "";
 // The latest evaluation, kept (dimmed) while newer edits are being checked.
 let lastRun = null;
@@ -80,13 +79,9 @@ function save() {
 async function syncUrl() {
   clearTimeout(urlTimer);
   const source = editor.getValue();
-  const example = exampleFromId(currentId);
   let hash = "";
   try {
-    hash =
-      example?.source === source
-        ? `#example=${example.id}`
-        : await hashFor(source);
+    hash = await hashFor(source);
   } catch {
     // Too large for a link; leave a bare URL rather than a stale program.
   }
@@ -101,10 +96,7 @@ async function share() {
   clearTimeout(shareTimer);
   if (!(await syncUrl())) {
     label.textContent = "Too large to link";
-    status(
-      "This program is over the 128 KiB link limit. Use Download instead.",
-      "err",
-    );
+    status("This program is over the 128 KiB link limit.", "err");
   } else {
     try {
       await navigator.clipboard.writeText(location.href);
@@ -114,31 +106,6 @@ async function share() {
     }
   }
   shareTimer = setTimeout(() => (label.textContent = "Share"), 2000);
-}
-
-// Name downloads after the program's contents, so different programs don't
-// overwrite each other and the same program always gets the same name.
-async function download() {
-  const source = editor.getValue();
-  let name = "program";
-  try {
-    const digest = await crypto.subtle.digest(
-      "SHA-256",
-      new TextEncoder().encode(source),
-    );
-    const hex = [...new Uint8Array(digest)].map((b) =>
-      b.toString(16).padStart(2, "0"),
-    );
-    name = `program-${hex.join("").slice(0, 7)}`;
-  } catch {}
-  const url = URL.createObjectURL(
-    new Blob([source], { type: "text/plain;charset=utf-8" }),
-  );
-  const link = node("a");
-  link.href = url;
-  link.download = `${name}.fhm`;
-  link.click();
-  setTimeout(() => URL.revokeObjectURL(url), 1000);
 }
 
 function replaceProgram(program) {
@@ -695,14 +662,6 @@ async function initialProgram() {
   } catch (error) {
     return { ...(hasDraft ? draft : examples[0]), notice: error.message };
   }
-  const example = location.hash.startsWith("#example=")
-    ? exampleFromId(location.hash.slice(9))
-    : null;
-  if (example) {
-    if (hasDraft && draft.source !== example.source)
-      storage.set("previous", draft);
-    return example;
-  }
   return hasDraft ? draft : examples[0];
 }
 
@@ -810,11 +769,7 @@ async function main() {
   window.addEventListener("hashchange", async () => {
     try {
       const shared = await sourceFromHash(location.hash);
-      const example = location.hash.startsWith("#example=")
-        ? exampleFromId(location.hash.slice(9))
-        : null;
       if (shared !== null) replaceProgram({ source: shared });
-      else if (example) replaceProgram(example);
     } catch (error) {
       status(error.message, "err");
     }
@@ -828,7 +783,6 @@ async function main() {
     storage.set("theme", next);
     applyTheme();
   };
-  $("download").onclick = download;
   const dialog = $("help-dialog");
   dialog.querySelector(".dialog-close").onclick = () => dialog.close();
   dialog.addEventListener("click", (event) => {

@@ -2,7 +2,7 @@
 import assert from "node:assert/strict";
 import { chromium } from "playwright";
 import { examples } from "../src/examples.mjs";
-import { sourceFromHash } from "../src/share.mjs";
+import { hashFor, sourceFromHash } from "../src/share.mjs";
 const url = (process.argv[2] || "http://localhost:5173").replace(/\/$/, "");
 const mod = process.platform === "darwin" ? "Meta" : "Control";
 const browser = await chromium.launch({ headless: true });
@@ -33,8 +33,8 @@ async function example(p, title) {
 try {
   await page.goto(url);
   await ready();
-  // A fresh visitor sees the first example, named in the URL.
-  assert.equal(await hash(), `#example=${examples[0].id}`);
+  // A fresh visitor sees the first example, with its source in the URL.
+  assert.equal(await sourceFromHash(await hash()), examples[0].source);
   // The program is evaluated without pressing anything.
   await page.locator(".result-value").waitFor();
   assert.equal(
@@ -42,10 +42,6 @@ try {
     examples[0].result,
   );
   assert.equal(await page.locator("#types .bindings button.name").count(), 3);
-
-  const downloadEvent = page.waitForEvent("download");
-  await page.locator("#download").click();
-  assert.match((await downloadEvent).suggestedFilename(), /^program-[0-9a-f]{7}\.fhm$/);
 
   await page.locator("#divider").focus();
   await page.keyboard.press("ArrowLeft");
@@ -85,7 +81,7 @@ try {
   assert.ok((await hash()).startsWith("#code="));
 
   // Opening someone else's link replaces the draft but keeps it restorable.
-  await page.goto(`${url}/#example=lists`);
+  await page.goto(`${url}/${await hashFor(examples[1].source)}`);
   await ready();
   assert.equal(await draft(), examples[1].source);
   await example(page, "Restore previous program");
@@ -166,7 +162,6 @@ try {
       checks: [
         "evaluation",
         "inferred types",
-        "download",
         "keyboard resize",
         "live URL",
         "live evaluation",

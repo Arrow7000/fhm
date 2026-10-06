@@ -1,10 +1,10 @@
 import { deflateSync, Inflate } from "fflate";
-import { DICTIONARY_V2 } from "./share-dictionary-v2.mjs";
+import { DICTIONARY } from "./share-dictionary.mjs";
 
 export const MAX_SOURCE_BYTES = 128 * 1024;
 const MAX_ENCODED_CHARS = 256 * 1024;
 const encoder = new TextEncoder();
-const dictionary = encoder.encode(DICTIONARY_V2);
+const dictionary = encoder.encode(DICTIONARY);
 const tooLarge = () =>
   new Error("This program exceeds the 128 KiB playground limit.");
 
@@ -24,27 +24,6 @@ function fromBase64(text) {
     throw new Error("This share link is incomplete or invalid.");
   const binary = atob(text.replace(/-/g, "+").replace(/_/g, "/"));
   return Uint8Array.from(binary, (char) => char.charCodeAt(0));
-}
-
-async function readBounded(stream, limit) {
-  const reader = stream.getReader();
-  const chunks = [];
-  let size = 0;
-  try {
-    while (true) {
-      const { done, value } = await reader.read();
-      if (done) break;
-      size += value.byteLength;
-      if (size > limit) {
-        await reader.cancel();
-        throw tooLarge();
-      }
-      chunks.push(value);
-    }
-  } finally {
-    reader.releaseLock();
-  }
-  return concat(chunks, size);
 }
 
 function concat(chunks, size) {
@@ -73,37 +52,20 @@ function inflateBounded(bytes, limit) {
   return concat(chunks, size);
 }
 
-/*
- * Link formats, as `<version>.<base64url payload>`:
- *   0  raw UTF-8 (written by older browsers without CompressionStream)
- *   1  gzip
- *   2  raw DEFLATE with the preset dictionary in share-dictionary-v2.mjs
- * Only version 2 is written now; older links still open.
- */
+// Links are `1.<base64url>`: raw DEFLATE with the preset dictionary in
+// share-dictionary.mjs. The version leaves room for a new dictionary later.
 export async function encodeSource(source) {
   const bytes = encoder.encode(source);
   if (bytes.length > MAX_SOURCE_BYTES) throw tooLarge();
-  return `2.${toBase64(deflateSync(bytes, { level: 9, dictionary }))}`;
+  return `1.${toBase64(deflateSync(bytes, { level: 9, dictionary }))}`;
 }
 
 export async function decodeSource(encoded) {
   const [version, ...parts] = encoded.split(".");
-  if (!["0", "1", "2"].includes(version) || parts.length !== 1)
+  if (version !== "1" || parts.length !== 1)
     throw new Error("This share link uses an unknown format.");
-  if (version === "0" && parts[0] === "") return "";
   try {
-    const bytes = fromBase64(parts[0]);
-    const decoded =
-      version === "2"
-        ? inflateBounded(bytes, MAX_SOURCE_BYTES)
-        : await readBounded(
-            version === "1"
-              ? new Blob([bytes])
-                  .stream()
-                  .pipeThrough(new DecompressionStream("gzip"))
-              : new Blob([bytes]).stream(),
-            MAX_SOURCE_BYTES,
-          );
+    const decoded = inflateBounded(fromBase64(parts[0]), MAX_SOURCE_BYTES);
     return new TextDecoder("utf-8", { fatal: true }).decode(decoded);
   } catch (err) {
     if (err.message?.includes("128 KiB")) throw err;

@@ -61,6 +61,12 @@ Separately, the annotation features go in this order:
   arguments (`tyArgsGuess` in `FHM/SurfaceBridge.lean`), it uses placeholders
   that fail closed.
 
+- [x] **Self-referential constructor fields only parsed last.** In a type
+  without parameters, `type T = Leaf | Node T Int T` was read as
+  `Node (T Int T)`, and parentheses didn't help. Fixed in 897be46: constructor
+  fields are now type atoms, as in Haskell and Elm. Worth a look at what else
+  the field parser accepts too eagerly (see the next entry).
+
 - [ ] **Parser swallows a bare program body after a `type` declaration.** If
   a `type` declaration is followed directly by the program's final
   expression, the parser reads that expression as an extra constructor field
@@ -111,6 +117,18 @@ Separately, the annotation features go in this order:
     annotation.
   - With error recovery, show something like "type unknown (error in `g`)"
     instead of nothing.
+
+- [ ] **Missing-case witnesses.** When a match isn't exhaustive, name the
+  missing patterns (`missing: Just Nothing`) instead of only saying so, in
+  `fhm diagnose` and the language server. The playground shows `diagnose`
+  output, so it gets this for free. Also wants errors as data.
+
+## Playground
+
+- [ ] **Embeds and "Open in playground" links.** Let the README, the language
+  guide and other docs link each code block into the playground (a share
+  link built at docs-build time), and maybe an embeddable read-only/runnable
+  view for iframes.
 
 ## Language features
 
