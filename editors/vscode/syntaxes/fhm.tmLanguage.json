@@ -22,17 +22,17 @@
   "comments":
   {"patterns":
    [{"name": "comment.line.double-dash.fhm", "match": "--.*$"},
-    {"patterns":
-     [{"name": "comment.block.fhm", "match": "\\{-"},
-      {"name": "comment.block.fhm", "match": "-\\}"}],
-     "name": "comment.block.fhm",
-     "end": "-\\}",
-     "begin": "\\{-"}]},
+    {"include": "#blockComment"}]},
   "chars":
   {"name": "string.quoted.single.fhm",
    "match": "'(?:[^'\\\\]|\\\\[ntr\\\\\"'])'"},
   "booleans":
-  {"name": "constant.language.boolean.fhm", "match": "\\b(?:True|False)\\b"}},
+  {"name": "constant.language.boolean.fhm", "match": "\\b(?:True|False)\\b"},
+  "blockComment":
+  {"patterns": [{"include": "#blockComment"}],
+   "name": "comment.block.fhm",
+   "end": "-/",
+   "begin": "/-"}},
  "patterns":
  [{"include": "#comments"},
   {"include": "#strings"},

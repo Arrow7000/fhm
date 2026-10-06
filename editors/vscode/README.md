@@ -3,7 +3,7 @@
 ## What you get (no Core / InferW / SurfaceLang changes)
 
 - **Syntax highlighting** for `.fhm` via a TextMate grammar generated from `Surface.Lex`
-- **Language config** — `--` / `{- -}` comments, brackets, auto-close
+- **Language config** — `--` / `/- -/` comments, brackets, auto-close
 - **Parse, lowering, and HM diagnostics on edit** (debounced) via `fhm diagnose`.
 - **Type-on-hover** (v3) from actual inferred artifacts and a separate source/Core provenance map. Definitions show validated declarations or inferred schemes; occurrences show independently instantiated monotypes. Lambda/pattern binders and authored compound expressions are covered. Exact spans win before name/scope fallback.
 

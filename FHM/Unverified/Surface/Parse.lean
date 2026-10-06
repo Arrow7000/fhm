@@ -25,7 +25,7 @@ def lexToParse : LexError → ParseError
   | .unexpectedChar c line col =>
       { msg := s!"unexpected character {repr c}", line, col, endLine := line, endCol := col + 1 }
   | .unfinishedBlockComment line col =>
-      -- Point at `/*` start; half-open end covers two columns when possible.
+      -- Point at the opening `/-`; half-open end covers two columns when possible.
       { msg := "unfinished block comment", line, col, endLine := line, endCol := col + 2 }
   | .badEscape line col =>
       { msg := "bad escape sequence", line, col, endLine := line, endCol := col + 1 }
@@ -1308,7 +1308,7 @@ def parseProgram (src : String) : Except ParseError Program :=
   | .ok (.customTy (.mk "Nat") []) => true | _ => false)
 
 -- comments skipped
-#guard (match parseTy "Int {- x -} -> Bool" with
+#guard (match parseTy "Int /- x -/ -> Bool" with
   | .ok (.arrow (.prim .int) (.prim .bool)) => true | _ => false)
 #guard (match parseTy "-- c\nInt" with
   | .ok (.prim .int) => true | _ => false)
@@ -1429,7 +1429,7 @@ def parseTyEq (src : String) (expected : Ty) : Bool :=
 #guard (match parseExpr "a :: b :: c" with | .error _ => true | _ => false)
 
 -- comments skipped
-#guard (match parseExpr "1 {- x -} + 2" with
+#guard (match parseExpr "1 /- x -/ + 2" with
   | .ok (.app (.app (.primBinOp .intAdd) (.primLit (.int 1))) (.primLit (.int 2))) => true
   | _ => false)
 

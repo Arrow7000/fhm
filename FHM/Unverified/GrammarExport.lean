@@ -60,21 +60,16 @@ def tmLanguage : Json :=
             ("name", Json.str "comment.line.double-dash.fhm"),
             ("match", Json.str "--.*$")
           ],
-          Json.mkObj [
-            ("name", Json.str "comment.block.fhm"),
-            ("begin", Json.str "\\{-"),
-            ("end", Json.str "-\\}"),
-            ("patterns", Json.arr #[
-              Json.mkObj [
-                ("match", Json.str "\\{-"),
-                ("name", Json.str "comment.block.fhm")
-              ],
-              Json.mkObj [
-                ("match", Json.str "-\\}"),
-                ("name", Json.str "comment.block.fhm")
-              ]
-            ])
-          ]
+          Json.mkObj [("include", Json.str "#blockComment")]
+        ])
+      ]),
+      -- Block comments nest (as in the lexer), so the rule includes itself.
+      ("blockComment", Json.mkObj [
+        ("name", Json.str "comment.block.fhm"),
+        ("begin", Json.str "/-"),
+        ("end", Json.str "-/"),
+        ("patterns", Json.arr #[
+          Json.mkObj [("include", Json.str "#blockComment")]
         ])
       ]),
       ("strings", Json.mkObj [

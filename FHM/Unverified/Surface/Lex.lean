@@ -13,21 +13,21 @@ partial def takeLineComment (cs : List Char) (line col : Nat) (acc : String) :
     let (line', col') := bump line col c
     takeLineComment rest line' col' (acc.push c)
 
-/-- Nested `{- … -}`; `depth` starts at 1 after the opening `{-`. -/
+/-- Nested `/- … -/` block comment; `depth` starts at 1, just after the opener. -/
 partial def takeBlockComment (cs : List Char) (line col : Nat) (depth : Nat) (acc : String)
     (startLine startCol : Nat) :
     Except LexError (String × List Char × Nat × Nat) :=
   match cs with
   | [] => .error (.unfinishedBlockComment startLine startCol)
   | '\t' :: _ => .error (.tab line col)
-  | '{' :: '-' :: rest =>
-    takeBlockComment rest line (col + 2) (depth + 1) (acc.push '{' |>.push '-')
+  | '/' :: '-' :: rest =>
+    takeBlockComment rest line (col + 2) (depth + 1) (acc.push '/' |>.push '-')
       startLine startCol
-  | '-' :: '}' :: rest =>
+  | '-' :: '/' :: rest =>
     if depth == 1 then
       .ok (acc, rest, line, col + 2)
     else
-      takeBlockComment rest line (col + 2) (depth - 1) (acc.push '-' |>.push '}')
+      takeBlockComment rest line (col + 2) (depth - 1) (acc.push '-' |>.push '/')
         startLine startCol
   | c :: rest =>
     let (line', col') := bump line col c
@@ -78,7 +78,7 @@ partial def lex (input : String) : Except LexError (Array TokenWithSource) :=
       | .ok (text, rest', line', col') =>
         go rest' line' col'
           (acc.push (mkTok (.lineComment text) line col line' col'))
-    | '{' :: '-' :: rest =>
+    | '/' :: '-' :: rest =>
       match takeBlockComment rest line (col + 2) 1 "" line col with
       | .error e => .error e
       | .ok (text, rest', line', col') =>
@@ -188,7 +188,9 @@ private def expectToks (input : String) (expected : Array Token) : Bool :=
 #guard (match lex "\t" with | .error (.tab 1 1) => true | _ => false)
 
 #guard expectToks "-- hi\nlet" #[.lineComment " hi", .keyword .«let»]
-#guard expectToks "{- a {- b -} c -}" #[.blockComment " a {- b -} c "]
+#guard expectToks "/- a /- b -/ c -/" #[.blockComment " a /- b -/ c "]
+#guard expectToks "/- a\n b -/x" #[.blockComment " a\n b ", .ident "x" false]
+#guard expectToks "{-1}" #[.punct .lbrace, .intLit (-1), .punct .rbrace]
 
 #guard expectToks "foo" #[.ident "foo" false]
 #guard expectToks "Foo" #[.ident "Foo" true]
@@ -224,7 +226,7 @@ private def expectToks (input : String) (expected : Array Token) : Bool :=
 
 #guard expectToks ": :" #[.punct .colon, .punct .colon]
 #guard (match lex "- >" with | .error (.unexpectedChar '>' 1 3) => true | _ => false)
-#guard (match lex "{- unclosed" with
+#guard (match lex "/- unclosed" with
   | .error (.unfinishedBlockComment 1 1) => true | _ => false)
 
 end Surface.Lex
