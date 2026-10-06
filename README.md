@@ -65,6 +65,11 @@ Ill-typed programs and non-exhaustive matches are rejected before anything runs.
   `\((x, y), z) -> y`. Applied constructors need parentheses (`\(Box x) -> x`);
   refutable parameters such as `\(Just x) -> x` are rejected with missing cases.
   Whole patterns can be annotated: `\((x, y) : (Int, Bool)) -> x`.
+- **Pattern lets**, locally and at top level: `let (f, n) = (\x -> x, 1)`.
+  Each name is generalised independently; `f` can be used at both `Int` and
+  `Bool`. Patterns must be exhaustive and cannot participate in recursion.
+  Like ordinary lets, evaluation is call-by-name: unused RHSs are skipped,
+  and multiple uses may repeat work. Shared call-by-need evaluation is deferred.
 - **Recursion and mutual recursion** between definitions written in any order.
   Unannotated recursive definitions follow standard HM. A definition with a
   type annotation can be used at different types anywhere in its recursive
@@ -217,7 +222,7 @@ Near term:
   and the rest of the pipeline.
 - **Signatures on function heads** (`let f (x : Int) (y : a) : a = …`) and
   **partial annotations** with holes (`Int -> _ -> Bool`).
-- **Pattern lets** (`let (x, y) = …`) and **string literals**.
+- **String literals**.
 
 Further out:
 

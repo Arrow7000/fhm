@@ -379,5 +379,104 @@ test("refutable lambda parameters reuse missing-case diagnostics and preserve ho
   }
 });
 
+test("top-level pattern lets generalise each name and preserve binder/use hovers", () => {
+  const source = "let (identity, number) = (\\x -> x, 7)\nlet integer = identity number\nlet truth = identity True\n(integer, truth)\n";
+  const payload = diagnose(source);
+  hover(payload, source, 0, "number", "Int");
+  hover(payload, source, 1, "identity", "Int → Int");
+  hover(payload, source, 2, "identity", "Bool → Bool");
+  const { ranged, tokens } = normalizePayload(payload);
+  const line = source.split("\n")[2];
+  const def = resolveDefinition(ranged, 2, line.indexOf("identity"), line, tokens);
+  assert.deepEqual([def?.startLine0, def?.startCol0], [0, 5]);
+  assert.ok(!payload.symbols.some(s => s.name.startsWith("$pattern/")));
+  const response = run(source, "(7, True)");
+  assert.deepEqual(response.bindings.map(b => b.name).sort(), ["identity", "integer", "number", "truth"]);
+  assert.match(response.bindings.find(b => b.name === "identity")?.type || "", /^∀ /);
+});
+
+test("local pattern lets generalise independently while retaining outer type constraints", () => {
+  run("let answer = let (f, n) = (\\x -> x, 3) in (f n, f True)\nanswer\n", "(3, True)");
+  run("let make = \\captured -> let (f, n) = (\\x -> captured, 0) in (f True, f n)\nmake 7\n", "(7, 7)");
+  run("let x = False\nlet answer = let (x, y) = (3, True) in (x, y)\n(x, answer)\n", "(False, (3, True))");
+  run("let answer = let (x, y) = (1, 2)\n                 x = True\n             in (x, y)\nanswer\n", "(True, 2)");
+  const bad = cli(["run", "--json"], "let bad = \\f -> let (g, n) = (f, 0) in (g 1, g True)\nbad (\\x -> x)\n");
+  assert.notEqual(bad.status, 0, "A projection cannot generalise an outer lambda's type variables");
+  assert.equal(bad.payload.stage, "typecheck");
+});
+
+test("nested, constructor, annotated and forward-referenced pattern lets work", () => {
+  run("type Box a = Box a\nlet Box ((a, b), c) = Box ((3, True), 4)\n(a, (b, c))\n", "(3, (True, 4))");
+  run("let (a, b) : (Int, Bool) = (3, True)\n(b, a)\n", "(True, 3)");
+  run("let (identity, n) : {a} (a -> a, Int) = (\\(x : a) -> x, 7)\n(identity n, identity True)\n", "(7, True)");
+  run("let answer = f True\nlet (f, n) = (\\x -> x, 7)\n(answer, n)\n", "(True, 7)");
+  run("let answer = let result = f True\n                 (f, n) = (\\x -> x, 7)\n             in (result, n)\nanswer\n", "(True, 7)");
+});
+
+test("unused/refutable pattern lets are still checked and explain missing cases", () => {
+  const sources = [
+    ["type Maybe a = Just a | Nothing\nlet Just x = Just 3\nx\n", "Nothing"],
+    ["let (True, _) = (True, 3)\n0\n", "(False, _)"],
+    ["let [] = []\n0\n", "_ :: _"],
+    ["let (head :: tail) = [3]\nhead\n", "[]"],
+  ];
+  for (const [source, missing] of sources) {
+    const editor = cli(["diagnose"], source);
+    const diagnostic = editor.payload.diagnostics[0];
+    assert.equal(diagnostic?.code, "match.notExhaustive");
+    assert.ok(diagnostic.missingPatterns.includes(missing), JSON.stringify(diagnostic));
+    const runner = cli(["run", "--json"], source);
+    assert.notEqual(runner.status, 0);
+    assert.deepEqual(runner.payload.missingPatterns, diagnostic.missingPatterns);
+  }
+  run("let _ = (3, True)\n0\n", "0");
+  const mismatch = cli(["run", "--json"], "let (_, _) = 3\n0\n");
+  assert.notEqual(mismatch.status, 0, "A capture-free pattern must still constrain the RHS type");
+  assert.equal(mismatch.payload.stage, "typecheck");
+  assert.ok(!mismatch.payload.message.includes("$pattern/"));
+});
+
+test("call-by-name pattern lets skip undemanded RHSs and respect fuel when demanded", () => {
+  const loop = "let loop = \\n -> loop (n + 1)\n";
+  run(loop + "let _ = loop 0\n42\n", "42", ["--fuel", "200"]);
+  run(loop + "let (x, y) = loop 0\n42\n", "42", ["--fuel", "200"]);
+  run(loop + "let (x, y) = loop 0\nif True then 42 else x\n", "42", ["--fuel", "200"]);
+  const demanded = cli(["run", "--json", "--fuel", "200"],
+    loop + "let (x, y) = loop 0\nx\n");
+  assert.equal(demanded.payload.stage, "eval");
+  assert.equal(demanded.payload.steps, 200);
+});
+
+test("pattern-let docs attach to captures and cycle diagnostics select the affected head", () => {
+  const source = "/-- Components of a pair. -/\nlet (identity, number) = (\\x -> x, 7)\n(identity True, number)\n";
+  const payload = diagnose(source);
+  for (const name of ["identity", "number"]) {
+    const definition = payload.symbols.find(s => s.name === name && s.def);
+    assert.equal(definition?.doc, "Components of a pair.");
+  }
+  const bad = cli(["diagnose"], "let (a, b) = (1, 2)\nlet (x, y) = (x, 0)\nx\n");
+  assert.match(bad.payload.diagnostics[0]?.message || "", /recursive pattern binding.*x/);
+  assert.equal(bad.payload.diagnostics[0].line, 2);
+  assert.equal(bad.payload.diagnostics[0].col, 5);
+});
+
+test("pattern lets reject duplicate captures and self/mutual cycles by name", () => {
+  for (const source of [
+    "let (x, y) = (x, 0)\nx\n",
+    "let (x, y) = (f 1, 0)\nlet f = \\n -> x\nx\n",
+    "let (x, y) = (f 1, 0)\nlet f : Int -> Int = \\n -> x\nx\n",
+    "let answer = let (x, y) = (x, 0) in x\nanswer\n",
+  ]) {
+    const editor = cli(["diagnose"], source);
+    assert.match(editor.payload.diagnostics[0]?.message || "", /recursive pattern binding.*x/);
+    assert.ok(!editor.payload.diagnostics[0].message.includes("$pattern/"));
+    const runner = cli(["run", "--json"], source);
+    assert.notEqual(runner.status, 0);
+    assert.equal(runner.payload.stage, "parse");
+  }
+  const duplicate = cli(["diagnose"], "let (x, x) = (1, 2)\nx\n");
+  assert.match(duplicate.payload.diagnostics[0]?.message || "", /duplicate names in let pattern/);
+});
+
 console.log(`${tests - failures}/${tests} HM CLI/editor semantic smoke checks passed.`);
 process.exitCode = failures ? 1 : 0;

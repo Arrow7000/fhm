@@ -158,6 +158,23 @@ Error recovery and formatter work remain separate from these batches.
   and patterns resolve to the constructor. The shared editor resolver respects
   occurrence kinds; `hover-syntax` and CLI/editor canaries cover the fix.
 
+## Future evaluation strategy
+
+- [ ] **Call-by-need for ordinary and pattern lets.** Desired future behavior:
+  defer a binding's RHS until its first actual use, then cache and share the
+  result. An unused `loop 0` binding should not block returning `42`, including
+  a binding mentioned only in a branch that is never taken; multiple demanded
+  projections should not repeat RHS work.
+
+  **Decision: defer this larger project.** For now, ordinary and pattern lets
+  use call-by-name: unused computations can be discarded, but uses may repeat
+  evaluation. Do not make pattern lets strict as an interim step. Call-by-need
+  needs explicit shared runtime cells/environments, recursive-binding handling,
+  and machine safety proofs; the HM typing rules and per-name generalisation
+  can remain the same. Consider an explicit continuation stack alongside this
+  work to address the native-stack overflow. Function-argument strictness is a
+  separate decision. This does not replace the near-term evaluator depth guard.
+
 ## Errors and diagnostics
 
 - [ ] **Errors as data.** Replace the stringly typed errors throughout the
@@ -244,15 +261,15 @@ Error recovery and formatter work remain separate from these batches.
   pattern annotations (`\((x, y) : (Int, Bool)) -> x`). Constructor applications
   and cons patterns require parentheses. Refutable parameters are rejected with
   missing-case examples; pattern binders retain inferred hovers and definitions.
-- [ ] **Pattern lets**, e.g. `let (q, r) = divMod n 10`, locally and at the
+- [x] **Pattern lets**, e.g. `let (q, r) = divMod n 10`, locally and at the
   top level.
   - **Generalised, name by name.** Desugar `let p = e in b` to
     `let t = e in let x₁ = match t with p -> x₁ in … in b`, one `let` per
     name `xᵢ` that `p` binds, with `t` a hidden name that source can't
-    write. This is the Haskell Report's translation (§4.4.3.2), made
-    strict: `e` is evaluated once, and each `match` re-reads `t`, which
-    can't fail since `p` is exhaustive. Each `xᵢ` is an ordinary `let`, so
-    it's generalised as usual: `let (f, n) = (\x -> x, 1)` gives
+    write. This uses the Haskell Report's projection translation (§4.4.3.2),
+    with FHM's existing **call-by-name** evaluation: unused bindings are skipped,
+    and demanded projections may evaluate `e` again. Each `xᵢ` is an ordinary
+    `let`, so it's generalised as usual: `let (f, n) = (\x -> x, 1)` gives
     `f : ∀ a. a → a` and `n : Int`. No new typing rules. Generalising is
     safe because FHM is pure; OCaml, F# and SML restrict it only because of
     mutable references (the value restriction).

@@ -810,4 +810,22 @@ private def sNestedPatternLam : Surface.Program :=
 example : SurfaceCovers ((elabDecls preludeDecls).getD []) sNestedPatternLam.term :=
   checkExhaustive_sound _ (by native_decide)
 
+
+-- Pattern bindings are built entirely from ordinary lets and singleton matches.
+-- Each projected function is generalised independently by the existing checker.
+private def sPatternLet : Surface.Program :=
+  let pat := Surface.Pattern.pair (.name ⟨"id"⟩) (.name ⟨"n"⟩)
+  let rhs := Surface.Expr.pair
+    (.lambda (.name ⟨"x"⟩) none (.var ⟨"x"⟩)) (.primLit (.int 7))
+  let binds := Surface.patternBindings ⟨"$pattern/demo"⟩ pat rhs
+  ⟨[], binds.map (fun b => [b]), .pair
+    (.app (.var ⟨"id"⟩) (.var ⟨"n"⟩))
+    (.app (.var ⟨"id"⟩) (.primLit (.bool true)))⟩
+#guard evalProgram sPatternLet = "(7, True)"
+#guard (match lowerProgram sPatternLet with
+  | some (ctors, c) => (typecheck ctors c).isSome
+  | none => false)
+example : SurfaceCovers ((elabDecls preludeDecls).getD []) sPatternLet.term :=
+  checkExhaustive_sound _ (by native_decide)
+
 end SurfacePipelineDemo

@@ -37,7 +37,9 @@ def Locations.append (a b : Locations) : Locations :=
   ⟨a.binders ++ b.binders, a.occurrences ++ b.occurrences, a.displays ++ b.displays⟩
 
 def Locations.withExpr (a : Locations) (source : SourceNode) : Locations :=
-  { a with occurrences := ⟨source.id, "expression", "expr"⟩ :: a.occurrences }
+  if source.authored then
+    { a with occurrences := ⟨source.id, "expression", "expr"⟩ :: a.occurrences }
+  else a
 
 def displayNames (ann : Option Surface.PolyTy) : List String :=
   (ann.map (fun a => a.foralls.map (fun | .mk s => s))).getD []
@@ -79,9 +81,11 @@ def bindingLocations (bs : List BinderSpan) (owner : SourceNode) (member : Nat)
 
 mutual
 partial def collect (bs : List BinderSpan) : Surface.Expr → IdentifiedExpr → Locations
-  | .var name, .leaf n => ⟨[], [⟨n.id, (match name with | .mk s => s), "val"⟩], []⟩
+  | .var name, .leaf n =>
+      if n.authored then ⟨[], [⟨n.id, (match name with | .mk s => s), "val"⟩], []⟩ else {}
   | .ctor name, .leaf n => ⟨[], [⟨n.id, (match name with | .mk s => s), "ctor"⟩], []⟩
-  | .primLit _, .leaf n => ⟨[], [⟨n.id, "literal", "lit"⟩], []⟩
+  | .primLit _, .leaf n =>
+      if n.authored then ⟨[], [⟨n.id, "literal", "lit"⟩], []⟩ else {}
   | .primBinOp _, .leaf n => ⟨[], [⟨n.id, "operator", "op"⟩], []⟩
   -- `a + b` parses as `(+ a) b`. The section `(+ a)` can't be written in the
   -- surface language, so it gets no expression hover of its own.

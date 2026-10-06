@@ -20,9 +20,10 @@ abbrev SourceId := Nat
 structure SourceNode where
   id : SourceId
   span : Span
+  authored : Bool := true
   deriving Repr, DecidableEq, BEq
 
-instance : Inhabited SourceNode := ⟨⟨0, Span.empty⟩⟩
+instance : Inhabited SourceNode := ⟨⟨0, Span.empty, true⟩⟩
 
 /-- The spanned parse mirror after a deterministic preorder ID pass. -/
 inductive IdentifiedExpr where
@@ -45,52 +46,76 @@ def IdentifiedExpr.source : IdentifiedExpr → SourceNode
   | .app n .. | .letIn n .. | .letRecIn n .. | .ife n .. | .match_ n .. => n
 
 mutual
+private def IdentifiedExpr.asGenerated : IdentifiedExpr → IdentifiedExpr
+  | .leaf n => .leaf { n with authored := false }
+  | .pair n a b => .pair { n with authored := false } a.asGenerated b.asGenerated
+  | .cons n a b => .cons { n with authored := false } a.asGenerated b.asGenerated
+  | .app n a b => .app { n with authored := false } a.asGenerated b.asGenerated
+  | .letIn n a b => .letIn { n with authored := false } a.asGenerated b.asGenerated
+  | .list n items => .list { n with authored := false } (generatedList items)
+  | .lambda n body => .lambda { n with authored := false } body.asGenerated
+  | .letRecIn n rhss body => .letRecIn { n with authored := false }
+      (generatedList rhss) body.asGenerated
+  | .ife n c t f => .ife { n with authored := false }
+      c.asGenerated t.asGenerated f.asGenerated
+  | .match_ n scrut arms => .match_ { n with authored := false }
+      scrut.asGenerated (generatedList arms)
+
+private def generatedList : List IdentifiedExpr → List IdentifiedExpr
+  | [] => []
+  | e :: es => e.asGenerated :: generatedList es
+end
+
+mutual
 def identifyFrom (next : SourceId) : SpannedExpr → SourceId × IdentifiedExpr
-  | .leaf span => (next + 1, .leaf ⟨next, span⟩)
+  | .generated expr =>
+      let (next, identified) := identifyFrom next expr
+      (next, identified.asGenerated)
+  | .leaf span => (next + 1, .leaf ⟨next, span, true⟩)
   | .pair span a b =>
       let root := next
       let (next, a') := identifyFrom (next + 1) a
       let (next, b') := identifyFrom next b
-      (next, .pair ⟨root, span⟩ a' b')
+      (next, .pair ⟨root, span, true⟩ a' b')
   | .cons span h t =>
       let root := next
       let (next, h') := identifyFrom (next + 1) h
       let (next, t') := identifyFrom next t
-      (next, .cons ⟨root, span⟩ h' t')
+      (next, .cons ⟨root, span, true⟩ h' t')
   | .list span items =>
       let root := next
       let (next, items') := identifyListFrom (next + 1) items
-      (next, .list ⟨root, span⟩ items')
+      (next, .list ⟨root, span, true⟩ items')
   | .lambda span body =>
       let root := next
       let (next, body') := identifyFrom (next + 1) body
-      (next, .lambda ⟨root, span⟩ body')
+      (next, .lambda ⟨root, span, true⟩ body')
   | .app span fn arg =>
       let root := next
       let (next, fn') := identifyFrom (next + 1) fn
       let (next, arg') := identifyFrom next arg
-      (next, .app ⟨root, span⟩ fn' arg')
+      (next, .app ⟨root, span, true⟩ fn' arg')
   | .letIn span rhs body =>
       let root := next
       let (next, rhs') := identifyFrom (next + 1) rhs
       let (next, body') := identifyFrom next body
-      (next, .letIn ⟨root, span⟩ rhs' body')
+      (next, .letIn ⟨root, span, true⟩ rhs' body')
   | .letRecIn span rhss body =>
       let root := next
       let (next, rhss') := identifyListFrom (next + 1) rhss
       let (next, body') := identifyFrom next body
-      (next, .letRecIn ⟨root, span⟩ rhss' body')
+      (next, .letRecIn ⟨root, span, true⟩ rhss' body')
   | .ife span cond then_ else_ =>
       let root := next
       let (next, cond') := identifyFrom (next + 1) cond
       let (next, then') := identifyFrom next then_
       let (next, else') := identifyFrom next else_
-      (next, .ife ⟨root, span⟩ cond' then' else')
+      (next, .ife ⟨root, span, true⟩ cond' then' else')
   | .match_ span scrut arms =>
       let root := next
       let (next, scrut') := identifyFrom (next + 1) scrut
       let (next, arms') := identifyListFrom next arms
-      (next, .match_ ⟨root, span⟩ scrut' arms')
+      (next, .match_ ⟨root, span, true⟩ scrut' arms')
 
 def identifyListFrom (next : SourceId) : List SpannedExpr → SourceId × List IdentifiedExpr
   | [] => (next, [])
@@ -143,6 +168,7 @@ inductive GenerationReason where
   | listPartialApp (spineIndex : Nat)
   | listTailApp (spineIndex : Nat)
   | valueParamLambda (paramIndex : Nat)
+  | patternBinding
   | patternLambdaScrutinee
   | patternCompilation (node : PatComp.GeneratedNode)
   deriving Repr, DecidableEq, BEq
@@ -209,7 +235,7 @@ def authoredRoot (source : SourceNode) (expr : Expr) : Lowered :=
   { expr
     sourceNodes := [source]
     sourceTargets := [(source.id, .present [[]])]
-    coreOrigins := [([], ⟨source, .authored⟩)]
+    coreOrigins := [([], ⟨source, if source.authored then .authored else .generated .patternBinding⟩)]
     binderTargets := [] }
 
 def generatedOrigin (source : SourceNode) (path : CorePath) (reason : GenerationReason) :
@@ -222,7 +248,7 @@ def combineAuthored (source : SourceNode) (expr : Expr) (parts : List Lowered)
   { expr
     sourceNodes := source :: children.sourceNodes
     sourceTargets := (source.id, .present [[]]) :: children.sourceTargets
-    coreOrigins := ([], ⟨source, .authored⟩) :: generated ++ children.coreOrigins
+    coreOrigins := ([], ⟨source, if source.authored then .authored else .generated .patternBinding⟩) :: generated ++ children.coreOrigins
     binderTargets := binders ++ children.binderTargets }
 
 mutual

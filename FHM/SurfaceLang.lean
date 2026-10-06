@@ -301,6 +301,41 @@ end
 def Binding.refersTo (b : Binding) (n : ValName) : Bool :=
   n ∈ freeNames (b.params.map (·.1)) b.rhs
 
+/-- Parser-generated storage names use a prefix that source identifiers cannot
+    contain. They must be omitted from user-facing binding reports. -/
+def internalBindingName (name : ValName) : Bool :=
+  match name with | .mk name => name.startsWith "$pattern/"
+
+/-- Independently generalised pattern-binding expansion. `storage` is fresh and
+    inaccessible to source syntax. The RHS occurs once in the expansion; each
+    capture is an ordinary let whose RHS projects through the same singleton
+    match. Evaluation follows ordinary call-by-name lets: unused bindings are
+    skipped, and demanded projections may evaluate the RHS again.
+    A pattern with no captures still has a check binding, so its shape is typed
+    and checked for exhaustiveness even when its value is unused. -/
+def patternBindings (storage : ValName) (pat : Pattern) (rhs : Expr) : List Binding :=
+  let stored : Binding := { name := storage, ann := none, rhs }
+  let projections := (patVars pat).map fun name =>
+    ({ name, ann := none, rhs := .match_ (.var storage) [(pat, .var name)] } : Binding)
+  let checkName := match storage with | .mk name => ValName.mk (name ++ "/check")
+  stored :: if projections.isEmpty then
+    [{ name := checkName, ann := none,
+       rhs := .match_ (.var storage) [(pat, .primLit .unit)] }]
+    else projections
+
+/-- The first binding stores the original RHS. -/
+theorem patternBindings_head (storage : ValName) (pat : Pattern) (rhs : Expr) :
+    (patternBindings storage pat rhs).head? =
+      some ({ name := storage, ann := none, rhs } : Binding) := by
+  simp [patternBindings]
+
+/-- Every authored capture becomes an ordinary let candidate. No new Core
+    typing rule is needed to generalise its projection independently. -/
+theorem patternBindings_names (storage : ValName) (pat : Pattern) (rhs : Expr)
+    (hne : patVars pat ≠ []) :
+    (patternBindings storage pat rhs).map (·.name) = storage :: patVars pat := by
+  simp [patternBindings, hne, Function.comp_def]
+
 /-- A surface program: user data declarations, dependency SCCs
     (author-supplied, or from `SurfaceBridge.Program.ofFlat` / `sccGroups`),
     and a body. Acyclic singleton SCCs are ordinary `let`; cyclic SCCs are

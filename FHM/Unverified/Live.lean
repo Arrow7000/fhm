@@ -250,7 +250,7 @@ def checkPipeline (src : String) :
         message := "internal inference artifact error: missing top-level binder scheme"
       }
   let report : ProgramReport :=
-    { bindings := bindings.map fun (name, hm) =>
+    { bindings := (bindings.filter fun (name, _) => !Surface.internalBindingName name).map fun (name, hm) =>
         let binding := (p.groups.flatMap id).find? (fun b => b.name == name)
         let ann := binding.bind (fun b => finalizeAnn b.tyParams b.params b.ann)
         let names := FHM.Unverified.HMArtifacts.displayNames ann

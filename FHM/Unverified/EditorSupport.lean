@@ -296,9 +296,10 @@ def stripBindingAnn (b : Surface.Binding) : Surface.Binding :=
 def explainTypeMismatch (ctors : CtorEnv) (ke : KindEnv)
     (acc : List (List Surface.Binding)) (g : List Surface.Binding)
     (b : Surface.Binding) : String :=
-  let nm := prettySurfaceName b.name
+  let target := if Surface.internalBindingName b.name then "pattern binding"
+    else s!"`{prettySurfaceName b.name}`"
   match b.ann with
-  | none => s!"typechecking failed in `{nm}`"
+  | none => s!"typechecking failed in {target}"
   | some σs =>
       let σs := (finalizeAnn b.tyParams b.params (some σs)).getD σs
       let wantStr :=
@@ -308,10 +309,10 @@ def explainTypeMismatch (ctors : CtorEnv) (ke : KindEnv)
       let g' := g.map fun b' => if b'.name == b.name then stripBindingAnn b' else b'
       let probe := Surface.desugarGroups (acc ++ [g']) (.var b.name)
       match hmInfer ctors probe with
-      | none => s!"typechecking failed in `{nm}` (ascribed {wantStr}; RHS also fails without ascription)"
+      | none => s!"typechecking failed in {target} (ascribed {wantStr}; RHS also fails without ascription)"
       | some (_, ty) =>
           let got := genScheme [] [] ty
-          s!"type mismatch in `{nm}`: expected {wantStr}, got {FHM.Unverified.HMDisplay.scheme {} [] got}"
+          s!"type mismatch in {target}: expected {wantStr}, got {FHM.Unverified.HMDisplay.scheme {} [] got}"
 
 def locateTypecheckFail (ctors : CtorEnv) (ke : KindEnv) (p : Surface.Program)
     (binders : List BinderSpan) (sp : SpannedProgram) : HoverDiag :=

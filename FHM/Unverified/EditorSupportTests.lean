@@ -691,3 +691,23 @@ def innerNonExhaustive : String :=
   | some r => (r.diagnostics.any fun d => d.code? == some "match.notExhaustive" &&
       d.missingPatterns == ["Nothing"]) && !r.symbols.isEmpty
   | none => false)
+
+
+-- Pattern-let captures are ordinary generalised values, with authored token spans.
+def patternLetSrc : String :=
+  "let (identity, number) = (\\x -> x, 7)\nlet integer = identity number\nlet truth = identity True\n(integer, truth)\n"
+#guard (match hoverReport patternLetSrc with
+  | some r => r.diagnostics.isEmpty &&
+      (match symbolAt r.symbols 1 6, symbolAt r.symbols 1 16,
+          symbolAt r.symbols 2 15, symbolAt r.symbols 3 13 with
+        | some f, some n, some intUse, some boolUse =>
+            f.kind == "val" && hasSub f.type_ "∀" && n.type_ == "Int" &&
+            intUse.type_ == "Int → Int" && boolUse.type_ == "Bool → Bool"
+        | _, _, _, _ => false) &&
+      !(r.symbols.any fun s => s.name.startsWith "$pattern/")
+  | none => false)
+
+#guard (match hoverReport "let (True, _) = (True, 3)\n0\n" with
+  | some r => r.diagnostics.any fun d => d.code? == some "match.notExhaustive" &&
+      d.missingPatterns == ["(False, _)"]
+  | none => false)

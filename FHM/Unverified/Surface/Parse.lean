@@ -693,6 +693,35 @@ def lambdaBinder : P (Pattern × Option Ty × List ParsedNameSpan × Span) :=
       | _ => bs
     return (pat, ann, bs, span)
 
+/-- One authored binding can expand into storage plus independent projections. -/
+structure ParsedLetBinding where
+  column : Nat := 0
+  entries : List (Binding × SpannedExpr) := []
+  patternToken? : Option Tok := none
+  deriving Inhabited
+
+/-- Pattern bindings cannot participate in any syntactic dependency cycle,
+    including one cut by an annotation for ordinary inference SCCs. -/
+def checkPatternBindingCycles (entries : List (Binding × SpannedExpr))
+    (tokens : List Tok) (lexicalDuplicates : Bool := false) : P Unit := do
+  if tokens.isEmpty then return ()
+  let binds := entries.map (·.1)
+  let names := binds.map (·.name)
+  if names.eraseDups.length != names.length then
+    if lexicalDuplicates then return ()
+    throwUnexpectedWithMessage tokens.head?
+      "duplicate binding names in a pattern let block"
+  let groups := (SurfaceBridge.sccGroups (binds.map fun b => { b with ann := none })).getD []
+  for group in groups do
+    if group.any (fun b => Surface.internalBindingName b.name) &&
+        (group.length > 1 || group.any (fun b => b.refersTo b.name)) then
+      let names := (group.filter fun b => !Surface.internalBindingName b.name).map
+        fun b => match b.name with | .mk name => name
+      let site := (tokens.find? fun t => group.any fun b =>
+        b.name == ValName.mk s!"$pattern/{t.startLine}/{t.startCol}").or tokens.head?
+      throwUnexpectedWithMessage site
+        ("recursive pattern binding involving: " ++ String.intercalate ", " names)
+
 /-! ## Expression grammar
 
 * `atom` — lit, var/ctor, `()`, `(e)`, `(e, e)`, `[es]`, `\ binders -> e`
@@ -752,6 +781,7 @@ partial def atom : PE := do
           let span := Span.union (Span.ofTok t0) (Span.ofTok t1)
           let sa' :=
             match sa with
+            | .generated e => .generated e
             | .leaf _ => SpannedExpr.leaf span
             | .pair _ x y => .pair span x y
             | .cons _ x y => .cons span x y
@@ -871,53 +901,64 @@ partial def infixExpr : PE :=
         let (e, s) := applyBinOpSpanned opTok op left sL right sR
         return (e, bsL ++ bsR, s)
 
-/-- One `let` binding: `name [: polyTy] = expr`.
-
-The grammar still recognizes type/value head binders far enough to give a
-specific diagnostic, but deliberately rejects them. Partial head annotations
-need real type holes before this sugar can be supported coherently; write an
-explicit lambda in the RHS meanwhile.
-
-    Returns binder column. `indentCol` is the column of the introducing `let`
-    (or of the first binder, for sibling bindings): a newline RHS must start
-    strictly right of it. -/
-partial def letBinding (indentCol : Nat) :
-    P ((Nat × ValName × List ValName × List (ValName × Option Ty) × Option PolyTy ×
-        Expr × SpannedExpr) × List ParsedNameSpan) :=
+/-- Named lets retain ordinary recursive/SCC semantics. A pattern head
+    expands to ordinary call-by-name storage and independently generalised projections. -/
+partial def letBinding (indentCol : Nat) : P (ParsedLetBinding × List ParsedNameSpan) :=
   withErrorMessage "expected let binding" do
     skipComments
-    let (tok, name) ← lowerIdentTok
-    let blockCol := tok.startCol
-    let bsName := [mkBinder .val tok name]
+    let headTok ← nextTok
+    let name? ← option? (withBacktracking lowerIdentTok)
+    let (pat, bsHead, tyParams, params) ← match name? with
+      | some (tok, name) => do
+          skipComments
+          let (tyParams, bsTyParams) ← tyParamBinders
+          skipComments
+          let (params, bsParams) ← valueParams
+          if !tyParams.isEmpty || !params.isEmpty then
+            throwUnexpectedWithMessage (some tok)
+              "let head binders are not supported; write an explicit lambda in the RHS"
+          pure (.name (.mk name), [mkBinder .val tok name] ++ bsTyParams ++ bsParams,
+            tyParams, params)
+      | none => do
+          let (pat, bs) ← pattern
+          let names := patVars pat
+          if names.eraseDups.length != names.length then
+            throwUnexpectedWithMessage (some headTok) "duplicate names in let pattern"
+          let bs := bs.map fun b =>
+            if b.isDef && b.kind == .pat then { b with kind := .val } else b
+          pure (pat, bs, [], [])
     skipComments
-    let (tyParams, bsTyParams) ← tyParamBinders
-    skipComments
-    let (params, bsParams) ← valueParams
-    if !tyParams.isEmpty || !params.isEmpty then
-      throwUnexpectedWithMessage (some tok)
-        "let head binders are not supported; write an explicit lambda in the RHS"
-    skipComments
-    -- Once `:` is seen, commit to `polyTy`.
-    let annRaw ←
-      match ← option? (withBacktracking (punct .colon)) with
+    let annRaw ← match ← option? (withBacktracking (punct .colon)) with
       | none => pure none
-      | some _ =>
+      | some _ => do
           skipComments
           some <$> polyTy
     skipComments
     let eqTok ← punct .eq
     skipComments
-    -- RHS: same line as `=`, or indented past `indentCol`
     let t ← nextTok
-    if t.startLine > eqTok.startLine then
-      colGt indentCol
+    if t.startLine > eqTok.startLine then colGt indentCol
     let (rhs, bsRhs, sRhs) ← expr
-    let (annPoly, bsAnn) :=
-      match annRaw with
+    let recursiveNames := (patVars pat).filter fun name => (freeNames [] rhs).contains name
+    if name?.isNone && !recursiveNames.isEmpty then
+      let names := recursiveNames.map fun | .mk name => name
+      throwUnexpectedWithMessage (some headTok)
+        ("recursive pattern binding involving: " ++ String.intercalate ", " names)
+    let (ann, bsAnn) := match annRaw with
       | some (σ, bs) => (some σ, bs)
       | none => (none, [])
-    return ((blockCol, .mk name, tyParams, params, annPoly, rhs, sRhs),
-      bsName ++ bsTyParams ++ bsParams ++ bsAnn ++ bsRhs)
+    let entries := match name? with
+      | some (_, name) => [(({ name := .mk name, tyParams, params, ann, rhs } : Binding), sRhs)]
+      | none =>
+          let storage := ValName.mk s!"$pattern/{headTok.startLine}/{headTok.startCol}"
+          (Surface.patternBindings storage pat rhs).mapIdx fun i binding =>
+            if i == 0 then ({ binding with ann := ann }, sRhs)
+            else (binding, .generated (.match_ sRhs.span (.leaf sRhs.span) [.leaf sRhs.span]))
+    let parsed : ParsedLetBinding := {
+      column := headTok.startCol
+      entries := entries
+      patternToken? := if name?.isSome then none else some headTok }
+    pure (parsed, bsHead ++ bsAnn ++ bsRhs)
 
 /-- A unique-name local `let` block is SCC-sorted in dependency order.
 Acyclic singleton components become ordinary `.letIn`s; recursive singleton
@@ -932,20 +973,17 @@ partial def letExpr : PE :=
   withErrorMessage "expected let expression" do
     skipComments
     let letTok ← keyword .«let»
-    let ((blockCol, n0, tyPs0, ps0, ann0, rhs0, s0), bs0) ← letBinding letTok.startCol
+    let (first, bs0) ← letBinding letTok.startCol
     let rest ← takeMany (withBacktracking do
-      colEq blockCol
-      pbMap (fun (_, n, tyPs, ps, ann, rhs, s) => (n, tyPs, ps, ann, rhs, s))
-        (letBinding blockCol))
+      colEq first.column
+      letBinding first.column)
+    let parsed := first :: rest.toList.map (·.1)
+    let bindsWithSpans := parsed.flatMap (·.entries)
+    checkPatternBindingCycles bindsWithSpans (parsed.filterMap (·.patternToken?)) true
     skipComments
     let _ ← keyword .«in»
     skipComments
     let (body, bsBody, sBody) ← expr
-    let parsed := (n0, tyPs0, ps0, ann0, rhs0, s0) :: rest.toList.map (·.1)
-    let bindsWithSpans : List (Binding × SpannedExpr) :=
-      parsed.map fun (n, tyPs, ps, ann, rhs, sRhs) =>
-      (({ name := n, tyParams := tyPs, params := ps, ann, rhs } : Binding),
-        sRhs)
     let binds : List Binding := bindsWithSpans.map (·.1)
     let bsRest := concatBinders rest
     let bindingBinders := bs0 ++ bsRest
@@ -1095,7 +1133,7 @@ end
 
 * `ctorField` — `(name : ty)` (name discarded) or bare `tyApp`
 * `typeDecl` — `type T a = C ty | D (n : ty) ty`
-* `topLet` — `let name [: scheme] = expr` (no `in`); head binders are rejected
+* `topLet` — `let name/pattern [: scheme] = expr` (no `in`); function heads remain rejected
 * `program` — interleaved type/let decls, optional body (default `()`)
 -/
 
@@ -1165,20 +1203,18 @@ def typeDecl : P (DataDecl × List ParsedNameSpan × Span) :=
     let declSpan ← spanOfConsumed seg.1 seg.2
     return (d, bs, declSpan)
 
-/-- Top-level `let` binding (F# style — `let` required; no `in`). -/
-def topLet : P ((Binding × SpannedExpr) × List ParsedNameSpan) :=
+/-- Top-level named or pattern let (no `in`). -/
+def topLet : P (ParsedLetBinding × List ParsedNameSpan) :=
   withErrorMessage "expected top-level let" do
     skipComments
     let letTok ← keyword .«let»
-    let ((_, name, tyParams, params, ann, rhs, sRhs), bs) ←
-      letBinding letTok.startCol
-    return (({ name, tyParams, params, ann, rhs }, sRhs), bs)
+    letBinding letTok.startCol
 
 /-- One top-level `type` / `let` item. Soft-fails only when the next token is
 **not** `type`/`let` (so `takeMany` can stop). Once the keyword is seen, the
 item parse is **committed** — RHS errors keep their real site/message instead of
 being swallowed by `foldl`/`takeMany` and re-reported as `unexpected` on `let`. -/
-def programItem : P (Sum (DataDecl × Span) (Binding × SpannedExpr) × List ParsedNameSpan) := do
+def programItem : P (Sum (DataDecl × Span) ParsedLetBinding × List ParsedNameSpan) := do
   skipComments
   let t ← nextTok
   match t.token with
@@ -1192,10 +1228,10 @@ def programItem : P (Sum (DataDecl × Span) (Binding × SpannedExpr) × List Par
 
 /-- Zero or more committed top-level items. Stops at the first non-`type`/`let`
 token (or EOF) without discarding a real item error. -/
-partial def programItems : P (Array (Sum (DataDecl × Span) (Binding × SpannedExpr) × List ParsedNameSpan)) :=
+partial def programItems : P (Array (Sum (DataDecl × Span) ParsedLetBinding × List ParsedNameSpan)) :=
   go #[]
 where
-  go (acc : Array (Sum (DataDecl × Span) (Binding × SpannedExpr) × List ParsedNameSpan)) := do
+  go (acc : Array (Sum (DataDecl × Span) ParsedLetBinding × List ParsedNameSpan)) := do
     skipComments
     -- EOF → done (peek/nextTok fails only if stream empty after skipComments).
     match ← option? (withBacktracking do
@@ -1229,9 +1265,13 @@ def program : P (Program × List ParsedNameSpan × SpannedProgram) :=
     let declSpans := items.toList.filterMap fun
       | (.inl (_, sp), _) => some sp
       | (.inr _, _) => none
-    let bindsWithSpans := items.toList.filterMap fun
+    let bindsWithSpans := items.toList.flatMap fun
+      | (.inl _, _) => []
+      | (.inr b, _) => b.entries
+    let patternTokens := items.toList.filterMap fun
       | (.inl _, _) => none
-      | (.inr b, _) => some b
+      | (.inr b, _) => b.patternToken?
+    checkPatternBindingCycles bindsWithSpans patternTokens
     let binds := bindsWithSpans.map (·.1)
     let bsItems := concatBinders items
     match SurfaceBridge.Program.ofFlat decls binds body with
@@ -1276,14 +1316,18 @@ private def binderStartingAt (bs : List BinderSpan) (toks : List Tok) : Option B
       (b.kind == .val || b.kind == .type || b.kind == .ctor) &&
         b.span.startLine == t.startLine && b.span.startCol == t.startCol
 
-/-- The binder documented by a doc comment followed by `toks`. -/
-private def documentedBinder (bs : List BinderSpan) (toks : List Tok) : Option BinderSpan :=
+/-- A pattern-let doc comment documents each captured value. Generated storage
+    and projection expressions have no independently authored documentation. -/
+private def documentedBinders (bs : List BinderSpan) (toks : List Tok) : List BinderSpan :=
   match toks.dropWhile isPlainComment with
   | t :: rest =>
     match t.token with
-    | .keyword .«let» | .keyword .«type» | .punct .pipe => binderStartingAt bs rest
-    | _ => binderStartingAt bs (t :: rest)
-  | [] => none
+    | .keyword .«let» =>
+        let header := rest.takeWhile fun t => t.token != .punct .eq
+        bs.filter fun b => b.kind == .val && header.any fun t => b.span == Span.ofTok t
+    | .keyword .«type» | .punct .pipe => (binderStartingAt bs rest).toList
+    | _ => (binderStartingAt bs (t :: rest)).toList
+  | [] => []
 
 /-- Attach doc comments to binders (see above). -/
 partial def attachDocs (bs : List BinderSpan) : List Tok → Except ParseError (List BinderSpan)
@@ -1294,11 +1338,12 @@ partial def attachDocs (bs : List BinderSpan) : List Tok → Except ParseError (
       let more := rest.takeWhile (docText? ·.token |>.isSome)
       let after := rest.drop more.length
       let doc := String.intercalate "\n" (text :: more.filterMap (docText? ·.token))
-      match documentedBinder bs after with
-      | some b => attachDocs (bs.map fun b' => if b' == b then { b' with doc? := some doc } else b') after
-      | none => .error {
+      match documentedBinders bs after with
+      | [] => .error {
           msg := "a doc comment must come before a `let`, a `type` or a constructor"
           line := t.startLine, col := t.startCol, endLine := t.endLine, endCol := t.endCol }
+      | documented => attachDocs (bs.map fun b =>
+          if documented.any (· == b) then { b with doc? := some doc } else b) after
     | _ => attachDocs bs rest
 
 /-! ## Public API -/

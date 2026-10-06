@@ -63,6 +63,9 @@ def Span.empty : Span := ⟨1, 1, 1, 1⟩
 /-- Parallel tree of expression hull spans. Constructors mirror `Surface.Expr`
     enough for scope collection; no binder names (those live in `BinderSpan`). -/
 inductive SpannedExpr where
+  /-- Expansion scaffolding has spans for diagnostics and binder location,
+      but is not an authored expression hover target. -/
+  | generated (expr : SpannedExpr)
   | leaf (span : Span)
   | pair (span : Span) (a b : SpannedExpr)
   | cons (span : Span) (head tail : SpannedExpr)
@@ -78,6 +81,7 @@ inductive SpannedExpr where
 instance : Inhabited SpannedExpr := ⟨.leaf Span.empty⟩
 
 def SpannedExpr.span : SpannedExpr → Span
+  | .generated expr => expr.span
   | .leaf s => s
   | .pair s .. => s
   | .cons s .. => s
