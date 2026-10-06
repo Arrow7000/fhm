@@ -1082,8 +1082,9 @@ end
 * `program` — interleaved type/let decls, optional body (default `()`)
 -/
 
-/-- Ctor field: `(name : ty)` discards `name`; bare fields are `tyApp`
-    (arrows need parens, so `C Int -> T` is not one field). -/
+/-- Ctor field: `(name : ty)` discards `name`; bare fields are atoms, as in
+    Haskell and Elm, so `Node T Int T` has three fields even when `T` takes no
+    parameters. Applied types and arrows need parens: `C (List a) (Int -> T)`. -/
 def ctorField : P Ty :=
   withErrorMessage "expected constructor field" do
     skipComments
@@ -1099,7 +1100,7 @@ def ctorField : P Ty :=
         skipComments
         let _ ← punct .rparen
         return t,
-      tyApp
+      tyAtom
     ]
 
 def dataCtor : P ((CtorName × List Ty) × List BinderSpan) :=
@@ -1534,6 +1535,23 @@ def parseTyEq (src : String) (expected : Ty) : Bool :=
     match p.decls with
     | [⟨.mk "Maybe", [.mk "a"],
         [(.mk "Just", [.tvar (.mk "a")]), (.mk "Nothing", [])]⟩] => true
+    | _ => false
+  | _ => false)
+
+-- a bare nullary type name in a field does not absorb the following fields
+#guard (match parseProgram "type T = Leaf | Node T Int T" with
+  | .ok p =>
+    match p.decls with
+    | [⟨.mk "T", [],
+        [(.mk "Leaf", []),
+         (.mk "Node", [.customTy (.mk "T") [], .prim .int, .customTy (.mk "T") []])]⟩] => true
+    | _ => false
+  | _ => false)
+-- applied field types are parenthesised
+#guard (match parseProgram "type Box = Box (List Int) Bool" with
+  | .ok p =>
+    match p.decls with
+    | [⟨.mk "Box", [], [(.mk "Box", [.customTy (.mk "List") [.prim .int], .prim .bool])]⟩] => true
     | _ => false
   | _ => false)
 
