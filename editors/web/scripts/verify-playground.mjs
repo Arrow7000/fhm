@@ -66,6 +66,33 @@ try {
   await program(page, edited);
   await page.locator(".result-value", { hasText: /^42$/ }).waitFor();
 
+  // Hovering a use shows its type; go to definition jumps to its binder.
+  const use = page
+    .locator(".view-lines .view-line", { hasText: /^answer$/ })
+    .locator("span > span")
+    .first();
+  await use.hover();
+  await page
+    .locator(".monaco-hover-content", { hasText: "answer : Int" })
+    .waitFor();
+  await use.click();
+  await page.keyboard.press("F12");
+  await page.keyboard.insertText("Z");
+  await page.waitForFunction(() =>
+    JSON.parse(localStorage.getItem("fhm.draft")).source.includes("Z"),
+  );
+  assert.match((await draft()).split("\n")[1], /^let Z?answerZ? = 42$/);
+  // A doc comment shows under the signature.
+  await program(page, "--- The answer.\nlet answer = 43\nanswer\n");
+  await page.locator(".result-value", { hasText: /^43$/ }).waitFor();
+  await page.mouse.move(0, 0); // Monaco only hovers again after the mouse moves.
+  await use.hover();
+  await page
+    .locator(".monaco-hover-content", { hasText: "The answer." })
+    .waitFor();
+  await program(page, edited);
+  await page.locator(".result-value", { hasText: /^42$/ }).waitFor();
+
   // Share copies the live URL rather than opening a dialog.
   await page.locator(".monaco-editor textarea").focus();
   await page.keyboard.press(`${mod}+s`);
@@ -167,6 +194,7 @@ try {
         "live evaluation",
         "stale result",
         "step limit",
+        "hover, doc comments & go to definition",
         "share copies URL",
         "draft restore",
         "link precedence & restore previous",

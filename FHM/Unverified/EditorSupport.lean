@@ -20,7 +20,25 @@ def prettyTyName : TyName → String
 def prettyCtorName : CtorName → String
   | .mk s => s
 
-def prettySurfaceDataDecl (d : Surface.DataDecl) : String :=
+/-- A type declaration laid out one constructor per line, each under its doc
+    comment (as `---` lines):
+
+    ```
+    type Maybe a =
+      --- No value.
+      | Nothing
+      | Just a
+    ```
+-/
+def layoutDataDecl (header : String) (ctors : List (String × Option String)) : String :=
+  let ctorLines := fun (ctor, doc?) =>
+    let docLines := (doc?.map fun doc => (doc.splitOn "\n").map fun l =>
+      if l.isEmpty then "  ---" else s!"  --- {l}").getD []
+    docLines ++ [s!"  | {ctor}"]
+  String.intercalate "\n" ((header ++ " =") :: ctors.flatMap ctorLines)
+
+def prettySurfaceDataDecl (d : Surface.DataDecl)
+    (ctorDoc : CtorName → Option String := fun _ => none) : String :=
   let params := String.intercalate " " (d.params.map prettyValName)
   let header :=
     if d.params.isEmpty then s!"type {prettyTyName d.name}"
@@ -30,19 +48,24 @@ def prettySurfaceDataDecl (d : Surface.DataDecl) : String :=
     if fields.isEmpty then prettyCtorName cname
     else prettyCtorName cname ++ " " ++
       String.intercalate " " (fields.map (Surface.Ty.prettyAux 2))
-  header ++ " = " ++ String.intercalate " | " (d.ctors.map ctorStr)
+  layoutDataDecl header (d.ctors.map fun c => (ctorStr c, ctorDoc c.1))
 
-/-- Spanned hover symbol (v3): definition `span` plus lexical `scope`. -/
+/-- Spanned hover symbol (v3): `span` plus lexical `scope`. `isDef` marks a
+    definition site (a binder, type, constructor or type variable binder), as
+    opposed to an occurrence; editors use it for go to definition. -/
 structure RangedSymbol where
   name : String
   kind : String
   type_ : String
   span : Span
   scope : Span
+  isDef : Bool := false
+  /-- Doc comment of the definition (also on its occurrences). -/
+  doc : Option String := none
   deriving Repr, BEq
 
 def RangedSymbol.toJson (s : RangedSymbol) : Lean.Json :=
-  Lean.Json.mkObj [
+  Lean.Json.mkObj <| [
     ("name", Lean.Json.str s.name),
     ("kind", Lean.Json.str s.kind),
     ("type", Lean.Json.str s.type_),
@@ -53,8 +76,9 @@ def RangedSymbol.toJson (s : RangedSymbol) : Lean.Json :=
     ("scopeStartLine", Lean.Json.num s.scope.startLine),
     ("scopeStartCol", Lean.Json.num s.scope.startCol),
     ("scopeEndLine", Lean.Json.num s.scope.endLine),
-    ("scopeEndCol", Lean.Json.num s.scope.endCol)
-  ]
+    ("scopeEndCol", Lean.Json.num s.scope.endCol),
+    ("def", Lean.Json.bool s.isDef)
+  ] ++ (s.doc.map fun d => ("doc", Lean.Json.str d)).toList
 
 def mkSym (name kind type_ : String) (span scope : Span) : RangedSymbol :=
   { name, kind, type_, span, scope }
@@ -96,7 +120,7 @@ def prettyCoreDataDecl (d : DataDecl) : String :=
     if fields.isEmpty then prettyCtorName cname
     else prettyCtorName cname ++ " " ++
       String.intercalate " " (fields.map (fun τ => Ty.prettyAux 2 τ))
-  header ++ " = " ++ String.intercalate " | " (d.ctors.map ctorStr)
+  layoutDataDecl header (d.ctors.map fun c => (ctorStr c, none))
 
 def preludeTypeCtorSymbols (ctors : CtorEnv) (scope : Span) : List RangedSymbol :=
   preludeDecls.flatMap fun d =>
@@ -106,6 +130,7 @@ def preludeTypeCtorSymbols (ctors : CtorEnv) (scope : Span) : List RangedSymbol 
       type_ := prettyCoreDataDecl d
       span := Span.empty
       scope := scope
+      isDef := true
     }
     let ctorSyms := d.ctors.map fun ⟨cname, _⟩ =>
       let tyStr :=
@@ -113,8 +138,15 @@ def preludeTypeCtorSymbols (ctors : CtorEnv) (scope : Span) : List RangedSymbol 
         | some ctor => ctor.toTy.pretty
         | none => prettyCtorName cname
       ({ name := prettyCtorName cname, kind := "ctor", type_ := tyStr,
-         span := Span.empty, scope := scope } : RangedSymbol)
+         span := Span.empty, scope := scope, isDef := true } : RangedSymbol)
     typeSym :: ctorSyms
+
+/-- Built-in primitive types (`Bool` is a prelude data type instead). Like the
+    prelude, they have no source location. -/
+def primTypeSymbols (scope : Span) : List RangedSymbol :=
+  ["Int", "Char", "Unit"].map fun name =>
+    { name, kind := "type", type_ := s!"type {name}  -- built in", span := Span.empty,
+      scope, isDef := true }
 
 def binOpPrimTy (ctors : CtorEnv) : BinOpToken → Option (String × String)
   | .plus => (PrimBinOp.ty ctors .intAdd).map fun τ => ("+", τ.pretty)
@@ -340,26 +372,38 @@ def collectHover (src : String) (p : Surface.Program) (binders : List BinderSpan
                 !(wrapperIds.contains occ.id)
               let locations := { collected with occurrences := authoredOccurrences }
               let displayScopes := FHM.Unverified.HMDisplay.scopes typed locations
+              let docAt (span : Span) : Option String :=
+                (binders.find? (·.span == span)).bind (·.doc?)
               let values := locations.binders.filterMap fun b =>
                 (FHM.Unverified.HMDisplay.binderType typed displayScopes locations b.site).map
-                  fun ty => mkSym b.name b.kind.toString ty b.span b.scope
+                  fun ty => { mkSym b.name b.kind.toString ty b.span b.scope with
+                    isDef := true, doc := docAt b.span }
               let occurrences := locations.occurrences.filterMap fun occ => do
                 let source ← lowered.sourceNodes.find? (fun n => n.id == occ.id)
                 let ty ← FHM.Unverified.HMDisplay.sourceType typed displayScopes occ.id
                 let name := if occ.kind == "lit" || occ.kind == "op" then
                   FHM.Unverified.HMArtifacts.spanText src source.span else occ.name
-                let kind := if occ.kind == "val" then
+                -- A value occurrence refers to the innermost binder of its name.
+                let binder := if occ.kind == "val" then
                   ((locations.binders.filter fun b => b.name == occ.name &&
                     b.scope.contains source.span.startLine source.span.startCol).mergeSort
                     (fun a b => a.scope.area ≤ b.scope.area)).head?
-                      |>.map (·.kind.toString) |>.getD "val"
-                  else occ.kind
-                pure (mkSym name kind ty source.span source.span)
-              let syntaxSyms := binders.filterMap fun b =>
+                  else none
+                let kind := if occ.kind == "val" then
+                  (binder.map (·.kind.toString)).getD "val" else occ.kind
+                let doc := match binder with
+                  | some b => docAt b.span
+                  | none => if occ.kind == "ctor" then
+                      (binders.find? fun b => b.kind == .ctor && b.name == occ.name).bind (·.doc?)
+                    else none
+                pure { mkSym name kind ty source.span source.span with doc }
+              let syntaxSyms := (binders.filterMap fun b =>
                 if locations.binders.any (fun s => s.span == b.span) then none
                 else if b.kind == .type then
                   (p.decls.find? (fun d => prettyTyName d.name == b.name)).map fun d =>
-                    mkSym b.name "type" (prettySurfaceDataDecl d) b.span scope
+                    let ctorDoc := fun (c : CtorName) => (binders.find? fun b =>
+                      b.kind == .ctor && b.name == prettyCtorName c).bind (·.doc?)
+                    mkSym b.name "type" (prettySurfaceDataDecl d ctorDoc) b.span scope
                 else if b.kind == .ctor then
                   (LookupList.get? ctors (.mk b.name)).map fun c =>
                     let names := ((p.decls.find? fun d =>
@@ -377,8 +421,8 @@ def collectHover (src : String) (p : Surface.Program) (binders : List BinderSpan
                     | some (_, s) => s
                     | none => b.scope?.getD scope
                   some (mkSym b.name "param" label b.span sc)
-                else none
-              let prelude := (preludeTypeCtorSymbols ctors scope).filter fun s =>
+                else none).map fun s => { s with isDef := true, doc := docAt s.span }
+              let prelude := (preludeTypeCtorSymbols ctors scope ++ primTypeSymbols scope).filter fun s =>
                 !(syntaxSyms.any fun b => b.name == s.name && b.kind == s.kind)
               let sugarOps := (collectLitOpSymbols src ctors).filter fun s => s.name == "::"
               { symbols := prelude ++ syntaxSyms ++ values ++ sugarOps ++ occurrences
@@ -395,12 +439,32 @@ def parseDiagJson (e : ParseError) : Lean.Json :=
     ("endCol", Lean.Json.num e.endCol)
   ]
 
+/-- Token class reported to editors, which use token boundaries to decide what
+    a hover position is on (whitespace and comments get no hover). -/
+def tokenClass : Surface.Lex.Token → String
+  | .lineComment _ | .blockComment _ | .docComment _ => "comment"
+  | .ident _ _ => "ident"
+  | .keyword _ => "keyword"
+  | .intLit _ | .charLit _ | .stringLit _ | .boolLit _ => "lit"
+  | .op _ => "op"
+  | .punct _ => "punct"
+
+/-- Every token as a compact `[startLine, startCol, endLine, endCol, class]`
+    (1-based, half-open, in source order). Empty if the source doesn't lex. -/
+def tokensJson (src : String) : Lean.Json :=
+  match Surface.Lex.lex src with
+  | .error _ => Lean.Json.arr #[]
+  | .ok toks => Lean.Json.arr <| toks.map fun t =>
+      Lean.Json.arr #[Lean.Json.num t.startLine, Lean.Json.num t.startCol,
+        Lean.Json.num t.endLine, Lean.Json.num t.endCol, Lean.Json.str (tokenClass t.token)]
+
 def diagnosePayload (src : String) : Lean.Json :=
   match parseProgramWithSpans src with
   | .error e => Lean.Json.mkObj [
       ("version", Lean.Json.num 3),
       ("diagnostics", Lean.Json.arr #[parseDiagJson e]),
-      ("symbols", Lean.Json.arr #[])
+      ("symbols", Lean.Json.arr #[]),
+      ("tokens", tokensJson src)
     ]
   | .ok (p, binders, sp) =>
     let r := collectHover src p binders sp
@@ -408,6 +472,7 @@ def diagnosePayload (src : String) : Lean.Json :=
       ("version", Lean.Json.num 3),
       ("diagnostics", Lean.Json.arr (r.diagnostics.map HoverDiag.toJson).toArray),
       ("symbols", Lean.Json.arr (r.symbols.map RangedSymbol.toJson).toArray),
+      ("tokens", tokensJson src),
       ("programTy", Lean.Json.str r.programTy)
     ]
 

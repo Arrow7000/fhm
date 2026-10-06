@@ -1,0 +1,171 @@
+1 │ -- Hover and go-to-definition across syntax: comments, keywords, punctuation,
+2 │ -- whitespace, patterns, shadowing.
+4 │ /- A block comment /- nested -/
+5 │    over two lines. -/
+6 │ type Box a = Box a
+    6-8     "Box"          type  Box : type Box a =⏎   | Box a  → def 6:6
+    10      "a"            param a : type variable (of Box)  → def 6:10
+    14-16   "Box"          ctor  Box : ∀ a. a → Box a  → def 6:14
+    18      "a"            param a : type variable (of Box)  → def 6:10
+8 │ --- A shape, by its dimensions.
+9 │ type Shape =
+    6-10    "Shape"        type  Shape : type Shape =⏎   --- A circle, by radius.⏎   | Circle Int⏎   --- A rectangle, by width⏎   --- and height.⏎   | Rect Int Int  → def 9:6  doc "A shape, by its dimensions."
+10 │   /-- A circle, by radius. -/
+11 │   | Circle Int
+    5-10    "Circle"       ctor  Circle : Int → Shape  → def 11:5  doc "A circle, by radius."
+    12-14   "Int"          type  Int : type Int  -- built in
+12 │   --- A rectangle, by width
+13 │   --- and height.
+14 │   | Rect Int Int
+    5-8     "Rect"         ctor  Rect : Int → Int → Shape  → def 14:5  doc "A rectangle, by width\nand height."
+    10-12   "Int"          type  Int : type Int  -- built in
+    14-16   "Int"          type  Int : type Int  -- built in
+16 │ ---------------------------------------- (not a doc comment)
+18 │ /-- Not the real area:
+19 │     just the sum of the dimensions. -/
+20 │ let area : Shape -> Int = \s ->
+    5-8     "area"         val   area : Shape → Int  → def 20:5  doc "Not the real area:\njust the sum of the dimensions."
+    12-16   "Shape"        type  Shape : type Shape =⏎   --- A circle, by radius.⏎   | Circle Int⏎   --- A rectangle, by width⏎   --- and height.⏎   | Rect Int Int  → def 9:6  doc "A shape, by its dimensions."
+    21-23   "Int"          type  Int : type Int  -- built in
+    27      "\\"           expr  Shape → Int  ⟦\s ->⟧
+    28      "s"            param s : Shape  → def 20:28
+    29-31   " ->"          expr  Shape → Int  ⟦\s ->⟧
+21 │   match s with
+    3-8     "match "       expr  Int  ⟦match s with⟧
+    9       "s"            param s : Shape  → def 20:28
+    10-14   " with"        expr  Int  ⟦match s with⟧
+22 │   | Circle r -> r + r
+    3-4     "| "           expr  Int  ⟦| Circle r -> r + r⟧
+    5-10    "Circle"       ctor  Circle : Int → Shape  → def 11:5  doc "A circle, by radius."
+    11      " "            expr  Int  ⟦| Circle r -> r + r⟧
+    12      "r"            pat   r : Int  → def 22:12
+    13-16   " -> "         expr  Int  ⟦| Circle r -> r + r⟧
+    17      "r"            pat   r : Int  → def 22:12
+    18      " "            expr  Int  ⟦r + r⟧
+    19      "+"            op    + : Int → Int → Int
+    20      " "            expr  Int  ⟦r + r⟧
+    21      "r"            pat   r : Int  → def 22:12
+23 │   | Rect w h -> w + h
+    3-4     "| "           expr  Int  ⟦| Rect w h -> w + h⟧
+    5-8     "Rect"         ctor  Rect : Int → Int → Shape  → def 14:5  doc "A rectangle, by width\nand height."
+    9       " "            expr  Int  ⟦| Rect w h -> w + h⟧
+    10      "w"            pat   w : Int  → def 23:10
+    11      " "            expr  Int  ⟦| Rect w h -> w + h⟧
+    12      "h"            pat   h : Int  → def 23:12
+    13-16   " -> "         expr  Int  ⟦| Rect w h -> w + h⟧
+    17      "w"            pat   w : Int  → def 23:10
+    18      " "            expr  Int  ⟦w + h⟧
+    19      "+"            op    + : Int → Int → Int
+    20      " "            expr  Int  ⟦w + h⟧
+    21      "h"            pat   h : Int  → def 23:12
+25 │ let unbox : {a} Box a -> a = \b ->
+    5-9     "unbox"        val   unbox : ∀ a. Box a → a  → def 25:5
+    14      "a"            param a : type variable (scheme binder)  → def 25:14
+    17-19   "Box"          ctor  Box : ∀ a. a → Box a  → def 6:14
+    21      "a"            param a : type variable (scheme binder)  → def 25:14
+    26      "a"            param a : type variable (scheme binder)  → def 25:14
+    30      "\\"           expr  Box a → a  ⟦\b ->⟧
+    31      "b"            param b : Box a  → def 25:31
+    32-34   " ->"          expr  Box a → a  ⟦\b ->⟧
+26 │   match b with
+    3-8     "match "       expr  a  ⟦match b with⟧
+    9       "b"            param b : Box a  → def 25:31
+    10-14   " with"        expr  a  ⟦match b with⟧
+27 │   | Box x -> x
+    3-4     "| "           expr  a  ⟦| Box x -> x⟧
+    5-7     "Box"          ctor  Box : ∀ a. a → Box a  → def 6:14
+    8       " "            expr  a  ⟦| Box x -> x⟧
+    9       "x"            pat   x : a  → def 27:9
+    10-13   " -> "         expr  a  ⟦| Box x -> x⟧
+    14      "x"            pat   x : a  → def 27:9
+29 │ let pairUp = \x y -> (x, y)
+    5-10    "pairUp"       val   pairUp : ∀ a b. a → b → (a, b)  → def 29:5
+    14      "\\"           expr  a → b → (a, b)  ⟦\x y -> (x, y)⟧
+    15      "x"            param x : a  → def 29:15
+    16      " "            expr  a → b → (a, b)  ⟦\x y -> (x, y)⟧
+    17      "y"            param y : b  → def 29:17
+    18-21   " -> "         expr  b → (a, b)  ⟦y -> (x, y)⟧
+    22      "("            expr  (a, b)  ⟦(x, y)⟧
+    23      "x"            param x : a  → def 29:15
+    24-25   ", "           expr  (a, b)  ⟦(x, y)⟧
+    26      "y"            param y : b  → def 29:17
+    27      ")"            expr  (a, b)  ⟦(x, y)⟧
+31 │ let firstOr = \d xs ->
+    5-11    "firstOr"      val   firstOr : ∀ a. a → List a → a  → def 31:5
+    15      "\\"           expr  a → List a → a  ⟦\d xs ->⟧
+    16      "d"            param d : a  → def 31:16
+    17      " "            expr  a → List a → a  ⟦\d xs ->⟧
+    18-19   "xs"           param xs : List a  → def 31:18
+    20-22   " ->"          expr  List a → a  ⟦xs ->⟧
+32 │   match xs with
+    3-8     "match "       expr  a  ⟦match xs with⟧
+    9-10    "xs"           param xs : List a  → def 31:18
+    11-15   " with"        expr  a  ⟦match xs with⟧
+33 │   | [] -> d
+    3-10    "| [] -> "     expr  a  ⟦| [] -> d⟧
+    11      "d"            param d : a  → def 31:16
+34 │   | h :: _ -> h
+    3-4     "| "           expr  a  ⟦| h :: _ -> h⟧
+    5       "h"            pat   h : a  → def 34:5
+    6       " "            expr  a  ⟦| h :: _ -> h⟧
+    7-8     "::"           op    :: : ∀ a. a → List a → List a
+    9-14    " _ -> "       expr  a  ⟦| h :: _ -> h⟧
+    15      "h"            pat   h : a  → def 34:5
+36 │ let shadow = \x ->
+    5-10    "shadow"       val   shadow : Int → Int  → def 36:5
+    14      "\\"           expr  Int → Int  ⟦\x ->⟧
+    15      "x"            param x : Int  → def 36:15
+    16-18   " ->"          expr  Int → Int  ⟦\x ->⟧
+37 │   --- Adds one.
+38 │   let inc = \x -> x + 1 in
+    3-6     "let "         expr  Int  ⟦let inc = \x -> x + 1 in⟧
+    7-9     "inc"          val   inc : Int → Int  → def 38:7  doc "Adds one."
+    10-12   " = "          expr  Int  ⟦let inc = \x -> x + 1 in⟧
+    13      "\\"           expr  Int → Int  ⟦\x -> x + 1⟧
+    14      "x"            param x : Int  → def 38:14
+    15-18   " -> "         expr  Int → Int  ⟦\x -> x + 1⟧
+    19      "x"            param x : Int  → def 38:14
+    20      " "            expr  Int  ⟦x + 1⟧
+    21      "+"            op    + : Int → Int → Int
+    22      " "            expr  Int  ⟦x + 1⟧
+    23      "1"            lit   1 : Int
+    24-26   " in"          expr  Int  ⟦let inc = \x -> x + 1 in⟧
+39 │   if x < 10 then inc x else 0 /- trailing -/
+    3-5     "if "          expr  Int  ⟦if x < 10 then inc x else 0⟧
+    6       "x"            param x : Int  → def 36:15
+    7       " "            expr  Bool  ⟦x < 10⟧
+    8       "<"            op    < : Int → Int → Bool
+    9       " "            expr  Bool  ⟦x < 10⟧
+    10-11   "10"           lit   10 : Int
+    12-17   " then "       expr  Int  ⟦if x < 10 then inc x else 0⟧
+    18-20   "inc"          val   inc : Int → Int  → def 38:7  doc "Adds one."
+    21      " "            expr  Int  ⟦inc x⟧
+    22      "x"            param x : Int  → def 36:15
+    23-28   " else "       expr  Int  ⟦if x < 10 then inc x else 0⟧
+    29      "0"            lit   0 : Int
+41 │ firstOr 0 [area (Circle 2), unbox (Box 3), shadow 4]
+    1-7     "firstOr"      val   firstOr : Int → List Int → Int  → def 31:5
+    8       " "            expr  List Int → Int  ⟦firstOr 0⟧
+    9       "0"            lit   0 : Int
+    10      " "            expr  Int  ⟦firstOr 0 [area (Circle 2), unbox (Box 3), shadow 4]⟧
+    11      "["            expr  List Int  ⟦[area (Circle 2), unbox (Box 3), shadow 4]⟧
+    12-15   "area"         val   area : Shape → Int  → def 20:5  doc "Not the real area:\njust the sum of the dimensions."
+    16      " "            expr  Int  ⟦area (Circle 2)⟧
+    17      "("            expr  Shape  ⟦(Circle 2)⟧
+    18-23   "Circle"       ctor  Circle : Int → Shape  → def 11:5  doc "A circle, by radius."
+    24      " "            expr  Shape  ⟦(Circle 2)⟧
+    25      "2"            lit   2 : Int
+    26      ")"            expr  Shape  ⟦(Circle 2)⟧
+    27-28   ", "           expr  List Int  ⟦[area (Circle 2), unbox (Box 3), shadow 4]⟧
+    29-33   "unbox"        val   unbox : Box Int → Int  → def 25:5
+    34      " "            expr  Int  ⟦unbox (Box 3)⟧
+    35      "("            expr  Box Int  ⟦(Box 3)⟧
+    36-38   "Box"          ctor  Box : Int → Box Int  → def 6:14
+    39      " "            expr  Box Int  ⟦(Box 3)⟧
+    40      "3"            lit   3 : Int
+    41      ")"            expr  Box Int  ⟦(Box 3)⟧
+    42-43   ", "           expr  List Int  ⟦[area (Circle 2), unbox (Box 3), shadow 4]⟧
+    44-49   "shadow"       val   shadow : Int → Int  → def 36:5
+    50      " "            expr  Int  ⟦shadow 4⟧
+    51      "4"            lit   4 : Int
+    52      "]"            expr  List Int  ⟦[area (Circle 2), unbox (Box 3), shadow 4]⟧

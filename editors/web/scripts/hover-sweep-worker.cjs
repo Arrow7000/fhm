@@ -7,7 +7,7 @@ const { parentPort, workerData } = require("node:worker_threads");
 const path = require("node:path");
 const core = require(path.join(__dirname, "../../shared/fhmEditorCore.cjs"));
 
-const { ranged, source, budgetMs } = workerData;
+const { ranged, tokens, source, budgetMs } = workerData;
 const lines = source.split("\n");
 
 let positions = 0;
@@ -23,7 +23,7 @@ try {
     for (let col0 = 0; col0 <= lineText.length; col0++) {
       positions++;
       const t0 = process.hrtime.bigint();
-      const hit = core.resolveHover(ranged, line0, col0, lineText);
+      const hit = core.resolveHover(ranged, line0, col0, lineText, tokens);
       const ms = Number(process.hrtime.bigint() - t0) / 1e6;
 
       // Heartbeat so parent can detect stalls.

@@ -160,30 +160,39 @@ function symbolAtRanged(ranged, line, col) {
  */
 function symbolAtUseSite(ranged, line, col, name) {
   const candidates = rangedByName(ranged).get(name) || [];
-  const hits = candidates.filter((s) => {
-    if (typeof s.type !== "string" || s.type.length === 0) return false;
-    return spanContains(scopeSpan(s), line, col);
-  });
-  if (hits.length === 0) return undefined;
-  let best = hits[0];
-  for (let i = 1; i < hits.length; i++) {
-    const s = hits[i];
-    const aBest = spanArea(scopeSpan(best));
-    const aS = spanArea(scopeSpan(s));
-    if (aS < aBest || aS === aBest) best = s;
+  return innermostScope(
+    candidates.filter((s) => typeof s.type === "string" && s.type.length > 0),
+    line,
+    col
+  );
+}
+
+/**
+ * Among symbols whose scope contains a 1-based position, the one with the
+ * smallest scope (ties: the later one).
+ * @param {any[]} syms
+ * @param {number} line
+ * @param {number} col
+ */
+function innermostScope(syms, line, col) {
+  let best;
+  for (const s of syms) {
+    if (!spanContains(scopeSpan(s), line, col)) continue;
+    if (!best || spanArea(scopeSpan(s)) <= spanArea(scopeSpan(best))) best = s;
   }
   return best;
 }
 
 /**
- * Normalize diagnose stdout: v2/v3 ranged symbols (legacy v1 name-map ignored).
+ * Normalize diagnose stdout: v2/v3 ranged symbols (legacy v1 name-map ignored)
+ * plus lexer tokens (empty when absent).
  * Keeps zero-width prelude placeholders (use-site only; def-span lookup skips them).
  * @param {unknown} raw
- * @returns {{ diagnostics: any[], version: number, ranged: any[], programTy?: string }}
+ * @returns {{ diagnostics: any[], version: number, ranged: any[], tokens: any[], programTy?: string }}
  */
 function normalizePayload(raw) {
   if (Array.isArray(raw)) {
-    return { diagnostics: raw, version: 0, ranged: [] };
+    return { diagnostics: raw, version: 0, ranged: [], tokens: [] };
   }
   if (raw && typeof raw === "object") {
     const obj = /** @type {Record<string, unknown>} */ (raw);
@@ -191,13 +200,14 @@ function normalizePayload(raw) {
     const version = typeof obj.version === "number" ? obj.version : 1;
     const programTy =
       typeof obj.programTy === "string" ? obj.programTy : undefined;
+    const tokens = normalizeTokens(obj.tokens);
     if (Array.isArray(obj.symbols)) {
       const ranged = obj.symbols.filter(isRangedSymbol).map(withScope);
-      return { diagnostics: diags, version, ranged, programTy };
+      return { diagnostics: diags, version, ranged, tokens, programTy };
     }
-    return { diagnostics: diags, version, ranged: [], programTy };
+    return { diagnostics: diags, version, ranged: [], tokens, programTy };
   }
-  return { diagnostics: [], version: 0, ranged: [] };
+  return { diagnostics: [], version: 0, ranged: [], tokens: [] };
 }
 
 /**
@@ -323,10 +333,21 @@ function kindBadge(kind) {
 /**
  * Markdown for a hover: the signature as an `fhm` code block, which both
  * VS Code and Monaco highlight with the registered FHM grammar, plus a prose
- * line where the payload's `type` is a description rather than a type.
+ * line where the payload's `type` is a description rather than a type, then
+ * the definition's doc comment, if any.
  * @param {any} hit
  */
 function hoverMarkdown(hit) {
+  const doc = typeof hit?.doc === "string" && hit.doc.length > 0 ? hit.doc : "";
+  const signature = hoverSignature(hit);
+  // Doc comments are Markdown, shown under the signature as in other editors.
+  return doc ? `${signature}\n\n---\n\n${doc}` : signature;
+}
+
+/**
+ * @param {any} hit
+ */
+function hoverSignature(hit) {
   const kind = kindBadge(hit?.kind);
   const name = String(hit?.name ?? "?");
   const type = String(hit?.type ?? "?");
@@ -359,79 +380,222 @@ function isTyvarLike(sym) {
 }
 
 /**
- * Convert 1-based diagnose span → 0-based editor range, clamped.
- * @param {any} sym
+ * Diagnose `tokens` rows (`[startLine, startCol, endLine, endCol, class]`,
+ * 1-based half-open, in source order) → objects. Malformed rows are dropped.
+ * @param {unknown} raw
+ * @returns {{ startLine: number, startCol: number, endLine: number, endCol: number, kind: string }[]}
+ */
+function normalizeTokens(raw) {
+  if (!Array.isArray(raw)) return [];
+  const out = [];
+  for (const t of raw) {
+    if (
+      Array.isArray(t) &&
+      t.length === 5 &&
+      t.slice(0, 4).every((n) => typeof n === "number") &&
+      typeof t[4] === "string"
+    ) {
+      out.push({
+        startLine: t[0],
+        startCol: t[1],
+        endLine: t[2],
+        endCol: t[3],
+        kind: t[4],
+      });
+    }
+  }
+  return out;
+}
+
+/**
+ * Index of the last token starting at or before a 1-based position, or -1.
+ * @param {any[]} tokens
+ * @param {number} line
+ * @param {number} col
+ */
+function lastTokenStartingBefore(tokens, line, col) {
+  let lo = 0;
+  let hi = tokens.length - 1;
+  let found = -1;
+  while (lo <= hi) {
+    const mid = (lo + hi) >> 1;
+    const t = tokens[mid];
+    if (t.startLine < line || (t.startLine === line && t.startCol <= col)) {
+      found = mid;
+      lo = mid + 1;
+    } else {
+      hi = mid - 1;
+    }
+  }
+  return found;
+}
+
+/**
+ * What a 0-based position is on: `{ token }` (1-based span plus class), or
+ * `{ between: true }` for whitespace between two code tokens on one line.
+ * Indentation, trailing whitespace and past-the-end give `undefined`.
+ * Uses diagnose `tokens` when available; otherwise approximates from the line
+ * (identifiers exactly, any other non-blank character as a one-column token).
+ * @param {any[] | undefined} tokens
+ * @param {string} lineText
  * @param {number} line0
  * @param {number} col0
- * @param {number} nameLen
+ * @returns {{ token?: any, between?: boolean } | undefined}
  */
-function defSpanToRange(sym, line0, col0, nameLen) {
-  const startLine0 = Math.max(0, (sym.startLine || 1) - 1);
-  const startCol0 = Math.max(0, (sym.startCol || 1) - 1);
-  const endLine0 = Math.max(0, (sym.endLine || 1) - 1);
-  const endCol0 = Math.max(0, (sym.endCol || 1) - 1);
+function positionAt(tokens, lineText, line0, col0) {
+  const line = line0 + 1;
+  const col = col0 + 1;
+  if (Array.isArray(tokens) && tokens.length > 0) {
+    const i = lastTokenStartingBefore(tokens, line, col);
+    if (i >= 0 && spanContains(tokens[i], line, col)) return { token: tokens[i] };
+    const prev = tokens[i];
+    const next = tokens[i + 1];
+    const between =
+      prev &&
+      next &&
+      prev.kind !== "comment" &&
+      next.kind !== "comment" &&
+      prev.endLine === line &&
+      next.startLine === line;
+    return between ? { between: true } : undefined;
+  }
+  if (typeof lineText !== "string" || col0 < 0 || col0 >= lineText.length) {
+    return undefined;
+  }
+  const ident = identAtColumn(lineText, col0);
+  if (ident) {
+    return {
+      token: {
+        startLine: line,
+        startCol: ident.startCol0 + 1,
+        endLine: line,
+        endCol: ident.endCol0 + 1,
+        kind: "ident",
+      },
+    };
+  }
+  if (/\s/.test(lineText[col0])) {
+    const before = lineText.slice(0, col0).trim() !== "";
+    const after = lineText.slice(col0).trim() !== "";
+    return before && after ? { between: true } : undefined;
+  }
+  return {
+    token: { startLine: line, startCol: col, endLine: line, endCol: col + 1, kind: "punct" },
+  };
+}
+
+/**
+ * Source text of a single-line token, or `undefined`.
+ * @param {any} token
+ * @param {string} lineText
+ */
+function tokenText(token, lineText) {
+  if (!token || token.startLine !== token.endLine || typeof lineText !== "string") {
+    return undefined;
+  }
+  return lineText.slice(token.startCol - 1, token.endCol - 1) || undefined;
+}
+
+/**
+ * Smallest span among symbols (ties: the later one).
+ * @param {any[]} syms
+ */
+function smallestSpan(syms) {
+  let best;
+  for (const s of syms) {
+    if (!best || spanArea(s) <= spanArea(best)) best = s;
+  }
+  return best;
+}
+
+/**
+ * Highlight for a hover on `line0`: the symbol's span clipped to that line
+ * (to its code tokens on the line when `tokens` are known), so a multi-line
+ * construct highlights its part of the current line. Falls back to the token
+ * under the cursor, then to the cursor's own column.
+ * @param {any} sym
+ * @param {any | undefined} token
+ * @param {any[] | undefined} tokens
+ * @param {number} line0
+ * @param {number} col0
+ * @param {string} lineText
+ */
+function hoverRangeFor(sym, token, tokens, line0, col0, lineText) {
+  const line = line0 + 1;
+  let startCol0;
+  let endCol0;
+  const onLine =
+    Array.isArray(tokens) && tokens.length > 0
+      ? tokens.filter(
+          (t) =>
+            t.kind !== "comment" &&
+            t.startLine === line &&
+            t.endLine === line &&
+            spanContains(sym, t.startLine, t.startCol)
+        )
+      : [];
+  if (onLine.length > 0) {
+    startCol0 = Math.min(...onLine.map((t) => t.startCol)) - 1;
+    endCol0 = Math.max(...onLine.map((t) => t.endCol)) - 1;
+  } else {
+    const text = typeof lineText === "string" ? lineText : "";
+    startCol0 =
+      sym.startLine === line ? sym.startCol - 1 : text.length - text.trimStart().length;
+    endCol0 = sym.endLine === line ? sym.endCol - 1 : text.trimEnd().length;
+  }
+  const fallback =
+    token && token.startLine === line && token.endLine === line
+      ? { startLine0: line0, startCol0: token.startCol - 1, endLine0: line0, endCol0: token.endCol - 1 }
+      : undefined;
   return clampHoverRange(
-    { startLine0, startCol0, endLine0, endCol0 },
+    { startLine0: line0, startCol0, endLine0: line0, endCol0 },
     line0,
     col0,
-    nameLen
+    fallback
   );
 }
 
 /**
- * Ensure range is non-empty, not inverted, not enormous, and contains cursor.
+ * Ensure range is non-empty, single-line, not enormous, and contains cursor;
+ * otherwise use `fallback` (if it qualifies) or the cursor's own column.
  * Monaco re-requests hover forever if the returned range misses the position.
  * @param {{ startLine0: number, startCol0: number, endLine0: number, endCol0: number }} range
  * @param {number} line0
  * @param {number} col0
- * @param {number} nameLen
+ * @param {{ startLine0: number, startCol0: number, endLine0: number, endCol0: number }} [fallback]
  */
-function clampHoverRange(range, line0, col0, nameLen) {
-  const len = Math.max(1, nameLen || 1);
-  const fallback = {
-    startLine0: line0,
-    startCol0: col0,
-    endLine0: line0,
-    endCol0: col0 + len,
-  };
-
-  let { startLine0, startCol0, endLine0, endCol0 } = range;
-
-  if (
-    startLine0 > endLine0 ||
-    (startLine0 === endLine0 && startCol0 >= endCol0)
-  ) {
-    return fallback;
-  }
-
-  // Giant / multi-line highlights thrash Monaco — keep hover local.
-  if (
-    endLine0 !== startLine0 ||
-    endCol0 - startCol0 > MAX_HOVER_SPAN_COLS
-  ) {
-    return fallback;
-  }
-
-  // Must contain the cursor (half-open).
-  if (
-    line0 !== startLine0 ||
-    col0 < startCol0 ||
-    col0 >= endCol0
-  ) {
-    return fallback;
-  }
-
-  return { startLine0, startCol0, endLine0, endCol0 };
+function clampHoverRange(range, line0, col0, fallback) {
+  const ok = (r) =>
+    r &&
+    r.startLine0 === line0 &&
+    r.endLine0 === line0 &&
+    r.startCol0 < r.endCol0 &&
+    r.endCol0 - r.startCol0 <= MAX_HOVER_SPAN_COLS &&
+    col0 >= r.startCol0 &&
+    col0 < r.endCol0;
+  if (ok(range)) return range;
+  if (ok(fallback)) return /** @type {any} */ (fallback);
+  return { startLine0: line0, startCol0: col0, endLine0: line0, endCol0: col0 + 1 };
 }
 
 /**
  * Resolve hover from a diagnose symbol cache.
  * Positions are 0-based (editor); spans in cache are 1-based.
  *
+ * - Comments, indentation and trailing whitespace: no hover.
+ * - On a token: the smallest non-expression symbol covering it (a binder,
+ *   occurrence, literal or operator); else, for an identifier, its binder by
+ *   name and scope (e.g. a constructor in a pattern, a type in an annotation);
+ *   else, for a keyword or punctuation, the smallest expression containing it
+ *   (e.g. `match` → the match).
+ * - Whitespace between tokens: the smallest expression containing it, which
+ *   is how an unparenthesised application such as `f x` shows its type.
+ *
  * @param {any[]} ranged
  * @param {number} line0
  * @param {number} col0
  * @param {string} lineText
+ * @param {any[]} [tokens] normalized diagnose tokens (approximated if absent)
  * @returns {{
  *   name: string,
  *   kind: string,
@@ -439,73 +603,86 @@ function clampHoverRange(range, line0, col0, nameLen) {
  *   startLine0: number,
  *   startCol0: number,
  *   endLine0: number,
- *   endCol0: number
+ *   endCol0: number,
+ *   doc?: string
  * } | undefined}
  */
-function resolveHover(ranged, line0, col0, lineText) {
+function resolveHover(ranged, line0, col0, lineText, tokens) {
   if (!Array.isArray(ranged) || ranged.length === 0) return undefined;
-
   const line = line0 + 1;
   const col = col0 + 1;
+  const at = positionAt(tokens, lineText, line0, col0);
+  if (!at || (at.token && at.token.kind === "comment")) return undefined;
 
-  let sym = symbolAtRanged(ranged, line, col);
-  /** @type {{ startLine0: number, startCol0: number, endLine0: number, endCol0: number } | undefined} */
-  let range;
-
-  // Phase 0: def-span hit with a usable type, or tyvar/param def (even if type empty).
-  if (
-    sym &&
-    isValidHalfOpenSpan(sym) &&
-    (symbolHasUsableType(sym) || isTyvarLike(sym))
-  ) {
-    const nameLen =
-      typeof sym.name === "string" && sym.name.length > 0
-        ? sym.name.length
-        : 1;
-    range = defSpanToRange(sym, line0, col0, nameLen);
-    if (!symbolHasUsableType(sym)) {
-      sym = { ...sym, type: "type variable" };
+  const hits = ranged.filter(
+    (s) =>
+      spanContains(s, line, col) && (symbolHasUsableType(s) || isTyvarLike(s))
+  );
+  let sym;
+  if (at.token) {
+    sym = smallestSpan(hits.filter((s) => s.kind !== "expr"));
+    if (!sym && at.token.kind === "ident") {
+      const word = tokenText(at.token, lineText);
+      if (word) sym = symbolAtUseSite(ranged, line, col, word);
     }
-  } else {
-    const hit = identAtColumn(lineText, col0);
-    if (!hit) return undefined;
-    if (!symbolHasUsableType(sym)) {
-      sym = symbolAtUseSite(ranged, line, col, hit.word);
-    }
-    if (!symbolHasUsableType(sym)) {
-      return undefined;
-    }
-    range = clampHoverRange(
-      {
-        startLine0: line0,
-        startCol0: hit.startCol0,
-        endLine0: line0,
-        endCol0: hit.endCol0,
-      },
-      line0,
-      col0,
-      hit.word.length
-    );
   }
+  // An identifier means itself: an unresolved one (e.g. while lowering
+  // fails) doesn't stand for the expression around it.
+  if (!sym && at.token?.kind !== "ident") {
+    sym = smallestSpan(hits.filter((s) => s.kind === "expr"));
+  }
+  if (!sym) return undefined;
+
+  const range = spanContains(sym, line, col)
+    ? hoverRangeFor(sym, at.token, tokens, line0, col0, lineText)
+    : hoverRangeFor(at.token, at.token, tokens, line0, col0, lineText);
 
   const name =
     typeof sym.name === "string" && sym.name.length > 0
       ? sym.name
       : lineText.slice(range.startCol0, range.endCol0) || "?";
-
-  const type =
-    typeof sym.type === "string" && sym.type.length > 0
-      ? sym.type
-      : "?";
-
+  let type = symbolHasUsableType(sym) ? sym.type : isTyvarLike(sym) ? "type variable" : "?";
   // Cap markdown payload size (pathological type strings).
-  const typeOut = type.length > 2000 ? type.slice(0, 2000) + "…" : type;
+  if (type.length > 2000) type = type.slice(0, 2000) + "…";
 
   return {
     name,
     kind: kindBadge(sym.kind || "val"),
-    type: typeOut,
+    type,
+    ...(typeof sym.doc === "string" && sym.doc.length > 0 ? { doc: sym.doc } : {}),
     ...range,
+  };
+}
+
+/**
+ * Go to definition: the definition site of the identifier at a 0-based
+ * position, as a 0-based half-open range. On a definition site, that site
+ * itself. Names without a source location (the prelude) give `undefined`.
+ * Resolution matches hover's use-site rule: same name, innermost scope.
+ * @param {any[]} ranged
+ * @param {number} line0
+ * @param {number} col0
+ * @param {string} lineText
+ * @param {any[]} [tokens]
+ * @returns {{ startLine0: number, startCol0: number, endLine0: number, endCol0: number } | undefined}
+ */
+function resolveDefinition(ranged, line0, col0, lineText, tokens) {
+  if (!Array.isArray(ranged) || ranged.length === 0) return undefined;
+  const at = positionAt(tokens, lineText, line0, col0);
+  if (!at || !at.token || at.token.kind !== "ident") return undefined;
+  const word = tokenText(at.token, lineText);
+  if (!word) return undefined;
+  const defs = (rangedByName(ranged).get(word) || []).filter((s) => s.def === true);
+  const def =
+    defs.find(
+      (s) => s.startLine === at.token.startLine && s.startCol === at.token.startCol
+    ) || innermostScope(defs, line0 + 1, col0 + 1);
+  if (!def || !isValidHalfOpenSpan(def)) return undefined;
+  return {
+    startLine0: def.startLine - 1,
+    startCol0: def.startCol - 1,
+    endLine0: def.endLine - 1,
+    endCol0: def.endCol - 1,
   };
 }
 
@@ -672,11 +849,14 @@ module.exports = {
   symbolAtRanged,
   symbolAtUseSite,
   normalizePayload,
+  normalizeTokens,
+  positionAt,
   identAtColumn,
   kindBadge,
   hoverMarkdown,
   clampHoverRange,
   resolveHover,
+  resolveDefinition,
   diagnosticsToMarkers,
   formatRunOutput,
   formatRunOutputHtml,

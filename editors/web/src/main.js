@@ -4,6 +4,7 @@ import editorWorker from "monaco-editor/esm/vs/editor/editor.worker?worker";
 import {
   normalizePayload,
   resolveHover,
+  resolveDefinition,
   hoverMarkdown,
   diagnosticsToMarkers,
   formatNs,
@@ -37,7 +38,9 @@ function node(tag, className, text) {
 }
 
 let editor;
+// Hover symbols and lexer tokens from the latest `diagnose` of the source.
 let ranged = [];
+let tokens = [];
 // The example the program was loaded from, if any, so the menu can mark it.
 let currentId = "";
 // The latest evaluation, kept (dimmed) while newer edits are being checked.
@@ -261,6 +264,7 @@ async function check() {
     const { diagnose: raw, run } = response;
     const normalized = normalizePayload(raw);
     ranged = normalized.ranged;
+    tokens = normalized.tokens;
     lastDiagnosis = { raw, source };
     const markers = diagnosticsToMarkers(normalized.diagnostics).map((m) => ({
       severity:
@@ -728,22 +732,39 @@ async function main() {
         position.lineNumber - 1,
         position.column - 1,
         model.getLineContent(position.lineNumber),
+        tokens,
       );
       if (!hit) return null;
-      const line = hit.startLine0 + 1;
-      const col = hit.startCol0 + 1;
-      const endCol =
-        hit.endLine0 === hit.startLine0
-          ? hit.endCol0 + 1
-          : col + hit.name.length;
+      // The range is on one line and contains the cursor (see resolveHover).
       return {
         range: new monaco.Range(
-          line,
-          col,
-          line,
-          Math.max(col + 1, Math.min(col + 128, endCol)),
+          hit.startLine0 + 1,
+          hit.startCol0 + 1,
+          hit.endLine0 + 1,
+          hit.endCol0 + 1,
         ),
         contents: [{ value: hoverMarkdown(hit) }],
+      };
+    },
+  });
+  monaco.languages.registerDefinitionProvider("fhm", {
+    provideDefinition(model, position) {
+      const def = resolveDefinition(
+        ranged,
+        position.lineNumber - 1,
+        position.column - 1,
+        model.getLineContent(position.lineNumber),
+        tokens,
+      );
+      if (!def) return null;
+      return {
+        uri: model.uri,
+        range: new monaco.Range(
+          def.startLine0 + 1,
+          def.startCol0 + 1,
+          def.endLine0 + 1,
+          def.endCol0 + 1,
+        ),
       };
     },
   });
@@ -751,6 +772,7 @@ async function main() {
   editor.onDidChangeModelContent(() => {
     checkAbort?.abort();
     ranged = [];
+    tokens = [];
     if (lastRun) renderResult();
     clearTimeout(saveTimer);
     saveTimer = setTimeout(save, 250);

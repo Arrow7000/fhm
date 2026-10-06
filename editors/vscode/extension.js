@@ -8,6 +8,7 @@ const path = require("path");
 const {
   normalizePayload,
   resolveHover,
+  resolveDefinition,
   hoverMarkdown,
   diagnosticsToMarkers,
   IDENT_RE,
@@ -23,9 +24,10 @@ const running = new Map();
 const requestGeneration = new Map();
 let nextRequestGeneration = 0;
 /**
- * Cached v3 ranged symbols (def span + lexical scope for use-site).
- * `documentVersion` prevents stale ranges from serving hovers during debounce.
- * @type {Map<string, { version: number, documentVersion: number, ranged: any[] }>}
+ * Cached v3 ranged symbols (def span + lexical scope for use-site) and lexer
+ * tokens. `documentVersion` prevents stale ranges from serving hovers during
+ * debounce.
+ * @type {Map<string, { version: number, documentVersion: number, ranged: any[], tokens: any[] }>}
  */
 const symbolCache = new Map();
 
@@ -119,8 +121,8 @@ async function refreshDiagnostics(doc) {
       return;
     }
 
-    const { diagnostics: diagArr, version, ranged } = normalizePayload(raw);
-    symbolCache.set(key, { version, documentVersion, ranged });
+    const { diagnostics: diagArr, version, ranged, tokens } = normalizePayload(raw);
+    symbolCache.set(key, { version, documentVersion, ranged, tokens });
 
     if (!diagnosticsEnabled) return;
 
@@ -168,6 +170,23 @@ function scheduleRefresh(doc) {
   );
 }
 
+/**
+ * The document's cached symbols, if they are for its current version.
+ * @param {vscode.TextDocument} doc
+ */
+function currentSymbols(doc) {
+  const cache = symbolCache.get(doc.uri.toString());
+  if (
+    !cache ||
+    cache.documentVersion !== doc.version ||
+    !cache.ranged ||
+    cache.ranged.length === 0
+  ) {
+    return undefined;
+  }
+  return cache;
+}
+
 /** @param {vscode.ExtensionContext} context */
 function activate(context) {
   diagnostics = vscode.languages.createDiagnosticCollection("fhm");
@@ -176,48 +195,50 @@ function activate(context) {
   context.subscriptions.push(
     vscode.languages.registerHoverProvider("fhm", {
       provideHover(doc, position) {
-        const cache = symbolCache.get(doc.uri.toString());
-        if (
-          !cache ||
-          cache.documentVersion !== doc.version ||
-          !cache.ranged ||
-          cache.ranged.length === 0
-        ) {
-          return undefined;
-        }
+        const cache = currentSymbols(doc);
+        if (!cache) return undefined;
 
         const lineText = doc.lineAt(position.line).text;
         const hit = resolveHover(
           cache.ranged,
           position.line,
           position.character,
-          lineText
+          lineText,
+          cache.tokens
         );
         if (!hit) return undefined;
 
-        let endLine = hit.endLine0;
-        let endCol = hit.endCol0;
-        if (
-          endLine < hit.startLine0 ||
-          (endLine === hit.startLine0 && endCol <= hit.startCol0)
-        ) {
-          endLine = hit.startLine0;
-          endCol = hit.startCol0 + Math.max(1, hit.name?.length ?? 1);
-        }
-        if (endLine !== hit.startLine0 || endCol - hit.startCol0 > 128) {
-          endLine = hit.startLine0;
-          endCol = hit.startCol0 + Math.max(1, hit.name?.length ?? 1);
-        }
-
+        // The range is on one line and contains the cursor (see resolveHover).
         const hoverRange = new vscode.Range(
           hit.startLine0,
           hit.startCol0,
-          endLine,
-          endCol
+          hit.endLine0,
+          hit.endCol0
         );
         return new vscode.Hover(
           new vscode.MarkdownString(hoverMarkdown(hit)),
           hoverRange
+        );
+      },
+    })
+  );
+
+  context.subscriptions.push(
+    vscode.languages.registerDefinitionProvider("fhm", {
+      provideDefinition(doc, position) {
+        const cache = currentSymbols(doc);
+        if (!cache) return undefined;
+        const def = resolveDefinition(
+          cache.ranged,
+          position.line,
+          position.character,
+          doc.lineAt(position.line).text,
+          cache.tokens
+        );
+        if (!def) return undefined;
+        return new vscode.Location(
+          doc.uri,
+          new vscode.Range(def.startLine0, def.startCol0, def.endLine0, def.endCol0)
         );
       },
     })

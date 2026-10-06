@@ -95,7 +95,7 @@ function runDiagnose(source) {
  * @param {string} source
  */
 function sweepFast(fixturePath, raw, source) {
-  const { ranged } = core.normalizePayload(raw);
+  const { ranged, tokens } = core.normalizePayload(raw);
   const lines = source.split("\n");
 
   let positions = 0;
@@ -115,7 +115,7 @@ function sweepFast(fixturePath, raw, source) {
       const t0 = process.hrtime.bigint();
       let hit;
       try {
-        hit = core.resolveHover(ranged, line0, col0, lineText);
+        hit = core.resolveHover(ranged, line0, col0, lineText, tokens);
       } catch (err) {
         console.error(
           `FAIL throw at ${line0 + 1}:${col0 + 1} (${JSON.stringify(lineText[col0] ?? "eol")})`,
@@ -168,11 +168,11 @@ function sweepFast(fixturePath, raw, source) {
  * @param {string} source
  */
 function sweepSafe(fixturePath, raw, source) {
-  const { ranged } = core.normalizePayload(raw);
+  const { ranged, tokens } = core.normalizePayload(raw);
   return new Promise((resolve, reject) => {
     const workerPath = path.join(__dirname, "hover-sweep-worker.cjs");
     const worker = new Worker(workerPath, {
-      workerData: { ranged, source, budgetMs: BUDGET_MS },
+      workerData: { ranged, tokens, source, budgetMs: BUDGET_MS },
     });
     let lastTick = Date.now();
     let lastPos = "0:0";
@@ -235,9 +235,10 @@ function assertCoverage(byKind, fixturePath) {
 /**
  * Spot-check: type-param `a` on `type Maybe a` must resolve quickly as param.
  * @param {any[]} ranged
+ * @param {any[]} tokens
  * @param {string} source
  */
-function spotCheckMaybeA(ranged, source) {
+function spotCheckMaybeA(ranged, tokens, source) {
   const lines = source.split("\n");
   const line0 = lines.findIndex((l) => /^type Maybe a\b/.test(l));
   if (line0 < 0) return;
@@ -246,7 +247,7 @@ function spotCheckMaybeA(ranged, source) {
   if (col0 < 0) return;
   const aCol = col0 + 1; // the `a`
   const t0 = process.hrtime.bigint();
-  const hit = core.resolveHover(ranged, line0, aCol, lineText);
+  const hit = core.resolveHover(ranged, line0, aCol, lineText, tokens);
   const ms = Number(process.hrtime.bigint() - t0) / 1e6;
   if (ms > BUDGET_MS) {
     console.error(`FAIL Maybe a hover budget: ${ms.toFixed(2)}ms`);
@@ -280,8 +281,8 @@ async function runOne(fixturePath) {
   const summary = useSafe
     ? await sweepSafe(fixturePath, raw, source)
     : sweepFast(fixturePath, raw, source);
-  const { ranged } = core.normalizePayload(raw);
-  spotCheckMaybeA(ranged, source);
+  const { ranged, tokens } = core.normalizePayload(raw);
+  spotCheckMaybeA(ranged, tokens, source);
   assertCoverage(summary.byKind, fixturePath);
   console.log(JSON.stringify(summary, null, 2));
   return summary;

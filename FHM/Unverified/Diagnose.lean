@@ -11,14 +11,21 @@ Reads a `.fhm` source file (or stdin) and prints a versioned JSON object:
   "diagnostics": [...],
   "symbols": [
     {"name":"map","kind":"val","type":"...","startLine":…,"startCol":…,"endLine":…,"endCol":…,
-     "scopeStartLine":…,"scopeStartCol":…,"scopeEndLine":…,"scopeEndCol":…},
+     "scopeStartLine":…,"scopeStartCol":…,"scopeEndLine":…,"scopeEndCol":…,
+     "def":true},
     ...
   ],
+  "tokens": [[startLine, startCol, endLine, endCol, "ident"], ...],
   "programTy": "..."
 }
 ```
 
-On parse failure: diagnostics only, empty `symbols` array, no `programTy`.
+`def` marks definition sites (as opposed to occurrences). `tokens` lists every
+lexer token with its class (`comment`, `ident`, `keyword`, `lit`, `op`,
+`punct`), so editors can tell what a position is on.
+
+On parse failure: diagnostics and tokens only, empty `symbols` array, no
+`programTy`.
 Line/col are 1-based half-open spans (same as `ParseError` / the lexer).
 -/
 

@@ -5,7 +5,9 @@
 - **Syntax highlighting** for `.fhm` via a TextMate grammar generated from `Surface.Lex`
 - **Language config** — `--` / `/- -/` comments, brackets, auto-close
 - **Parse, lowering, and HM diagnostics on edit** (debounced) via `fhm diagnose`.
-- **Type-on-hover** (v3) from actual inferred artifacts and a separate source/Core provenance map. Definitions show validated declarations or inferred schemes; occurrences show independently instantiated monotypes. Lambda/pattern binders and authored compound expressions are covered. Exact spans win before name/scope fallback.
+- **Type-on-hover** (v3) from actual inferred artifacts and a separate source/Core provenance map. Definitions show validated declarations or inferred schemes; occurrences show independently instantiated monotypes. Lambda/pattern binders and authored compound expressions are covered. Exact spans win before name/scope fallback. Comments and indentation have no hover; keywords and punctuation show the expression they belong to.
+- **Doc comments** (`--- …` lines or `/-- … -/`) before a `let`, `type` or constructor appear under the signature when hovering the definition or any use of it.
+- **Go to definition** for values, parameters, pattern variables, types, constructors and type variables (not for built-ins, which have no source location).
 
 Scoped head-type-variable sugar is still unsupported; prefer explicit schemes and ordinary lambdas.
 

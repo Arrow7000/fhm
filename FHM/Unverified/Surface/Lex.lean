@@ -33,6 +33,31 @@ partial def takeBlockComment (cs : List Char) (line col : Nat) (depth : Nat) (ac
     let (line', col') := bump line col c
     takeBlockComment rest line' col' depth (acc.push c) startLine startCol
 
+private def dropBlanks (cs : List Char) : List Char :=
+  cs.dropWhile Char.isWhitespace
+
+/-- Text of a `/-- … -/` doc comment (`raw` is the body, without the opening
+    and closing markers): blank lines at either end and trailing spaces dropped, and the
+    later lines' common indentation removed, since the first line follows the
+    opener directly. -/
+def docBlockText (raw : String) : String :=
+  let indentOf (l : List Char) := (l.takeWhile (· == ' ')).length
+  match (raw.splitOn "\n").map String.toList with
+  | [] => ""
+  | first :: rest =>
+    let indented := rest.filter (·.any (!·.isWhitespace))
+    let indent := match indented with
+      | [] => 0
+      | l :: ls => ls.foldl (fun m l => min m (indentOf l)) (indentOf l)
+    let lines := (first.dropWhile (· == ' ') :: rest.map (·.drop indent)).map
+      fun l => (dropBlanks l.reverse).reverse
+    let lines := ((lines.dropWhile List.isEmpty).reverse.dropWhile List.isEmpty).reverse
+    String.intercalate "\n" (lines.map String.ofList)
+
+/-- Text of a `---` doc line (`body` follows the third dash). -/
+def docLineText (body : List Char) : String :=
+  String.ofList (dropBlanks (match body with | ' ' :: b => b | b => b).reverse).reverse
+
 /-- String literal after opening `"`. -/
 partial def takeStringLit (cs : List Char) (line col : Nat) (acc : String)
     (startLine startCol : Nat) :
@@ -76,14 +101,23 @@ partial def lex (input : String) : Except LexError (Array TokenWithSource) :=
       match takeLineComment rest line (col + 2) "" with
       | .error e => .error e
       | .ok (text, rest', line', col') =>
-        go rest' line' col'
-          (acc.push (mkTok (.lineComment text) line col line' col'))
+        -- Exactly three dashes start a doc line; four or more (`-------`
+        -- separators) are an ordinary comment.
+        let tok := match text.toList with
+          | '-' :: '-' :: _ => .lineComment text
+          | '-' :: body => .docComment (docLineText body)
+          | _ => .lineComment text
+        go rest' line' col' (acc.push (mkTok tok line col line' col'))
     | '/' :: '-' :: rest =>
       match takeBlockComment rest line (col + 2) 1 "" line col with
       | .error e => .error e
       | .ok (text, rest', line', col') =>
-        go rest' line' col'
-          (acc.push (mkTok (.blockComment text) line col line' col'))
+        -- Likewise `/--` starts a doc comment but `/---` doesn't.
+        let tok := match text.toList with
+          | '-' :: '-' :: _ => .blockComment text
+          | '-' :: body => .docComment (docBlockText (String.ofList body))
+          | _ => .blockComment text
+        go rest' line' col' (acc.push (mkTok tok line col line' col'))
     | '-' :: '>' :: rest =>
       go rest line (col + 2)
         (acc.push (mkTok (.punct .arrow) line col line (col + 2)))
@@ -191,6 +225,16 @@ private def expectToks (input : String) (expected : Array Token) : Bool :=
 #guard expectToks "/- a /- b -/ c -/" #[.blockComment " a /- b -/ c "]
 #guard expectToks "/- a\n b -/x" #[.blockComment " a\n b ", .ident "x" false]
 #guard expectToks "{-1}" #[.punct .lbrace, .intLit (-1), .punct .rbrace]
+
+#guard expectToks "--- Doc. \nlet" #[.docComment "Doc.", .keyword .«let»]
+#guard expectToks "---\n" #[.docComment ""]
+#guard expectToks "---- not a doc" #[.lineComment "-- not a doc"]
+#guard expectToks "/-- Doc. -/" #[.docComment "Doc."]
+#guard expectToks "/--- not a doc -/" #[.blockComment "-- not a doc "]
+#guard expectToks "/--/" #[.blockComment ""]
+#guard docBlockText " First line.\n    Second, indented.\n  Third.\n  " =
+  "First line.\n  Second, indented.\nThird."
+#guard docBlockText "\n  Starts on the next line.\n" = "Starts on the next line."
 
 #guard expectToks "foo" #[.ident "foo" false]
 #guard expectToks "Foo" #[.ident "Foo" true]

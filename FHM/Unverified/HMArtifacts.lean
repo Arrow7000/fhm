@@ -83,6 +83,10 @@ partial def collect (bs : List BinderSpan) : Surface.Expr → IdentifiedExpr →
   | .ctor name, .leaf n => ⟨[], [⟨n.id, (match name with | .mk s => s), "ctor"⟩], []⟩
   | .primLit _, .leaf n => ⟨[], [⟨n.id, "literal", "lit"⟩], []⟩
   | .primBinOp _, .leaf n => ⟨[], [⟨n.id, "operator", "op"⟩], []⟩
+  -- `a + b` parses as `(+ a) b`. The section `(+ a)` can't be written in the
+  -- surface language, so it gets no expression hover of its own.
+  | .app (.primBinOp op) a, .app _ sop sa =>
+      (collect bs (.primBinOp op) sop).append (collect bs a sa)
   | .pair a b, .pair n sa sb | .cons a b, .cons n sa sb | .app a b, .app n sa sb =>
       ((collect bs a sa).append (collect bs b sb)).withExpr n
   | .list es, .list n ses => (collectList bs es ses).withExpr n

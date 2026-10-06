@@ -1,0 +1,369 @@
+1 │ -- Richer hover-sweep fixture: defs, ctors, tyvars, scheme binders,
+2 │ -- annotations, λ/pattern binders, use sites, lits, ops.
+4 │ type Maybe a =
+    6-10    "Maybe"        type  Maybe : type Maybe a =⏎   | Just a⏎   | Nothing  → def 4:6
+    12      "a"            param a : type variable (of Maybe)  → def 4:12
+5 │   | Just a
+    5-8     "Just"         ctor  Just : ∀ a. a → Maybe a  → def 5:5
+    10      "a"            param a : type variable (of Maybe)  → def 4:12
+6 │   | Nothing
+    5-11    "Nothing"      ctor  Nothing : ∀ a. Maybe a  → def 6:5
+8 │ type Tree a =
+    6-9     "Tree"         type  Tree : type Tree a =⏎   | Leaf⏎   | Node a (Tree a) (Tree a)  → def 8:6
+    11      "a"            param a : type variable (of Tree)  → def 8:11
+9 │   | Leaf
+    5-8     "Leaf"         ctor  Leaf : ∀ a. Tree a  → def 9:5
+10 │   | Node a (left : Tree a) (right : Tree a)
+    5-8     "Node"         ctor  Node : ∀ a. a → Tree a → Tree a → Tree a  → def 10:5
+    10      "a"            param a : type variable (of Tree)  → def 8:11
+    20-23   "Tree"         type  Tree : type Tree a =⏎   | Leaf⏎   | Node a (Tree a) (Tree a)  → def 8:6
+    25      "a"            param a : type variable (of Tree)  → def 8:11
+    37-40   "Tree"         type  Tree : type Tree a =⏎   | Leaf⏎   | Node a (Tree a) (Tree a)  → def 8:6
+    42      "a"            param a : type variable (of Tree)  → def 8:11
+12 │ type Color = Red | Green | Blue
+    6-10    "Color"        type  Color : type Color =⏎   | Red⏎   | Green⏎   | Blue  → def 12:6
+    14-16   "Red"          ctor  Red : Color  → def 12:14
+    20-24   "Green"        ctor  Green : Color  → def 12:20
+    28-31   "Blue"         ctor  Blue : Color  → def 12:28
+14 │ let map : {a b} (a -> b) -> List a -> List b =
+    5-7     "map"          val   map : ∀ a b. (a → b) → List a → List b  → def 14:5
+    12      "a"            param a : type variable (scheme binder)  → def 14:12
+    14      "b"            param b : type variable (scheme binder)  → def 14:14
+    18      "a"            param a : type variable (scheme binder)  → def 14:12
+    23      "b"            param b : type variable (scheme binder)  → def 14:14
+    29-32   "List"         type  List : type List a =⏎   | Nil⏎   | Cons a (List a)
+    34      "a"            param a : type variable (scheme binder)  → def 14:12
+    39-42   "List"         type  List : type List a =⏎   | Nil⏎   | Cons a (List a)
+    44      "b"            param b : type variable (scheme binder)  → def 14:14
+15 │   \f xs ->
+    3       "\\"           expr  (a → b) → List a → List b  ⟦\f xs ->⟧
+    4       "f"            param f : a → b  → def 15:4
+    5       " "            expr  (a → b) → List a → List b  ⟦\f xs ->⟧
+    6-7     "xs"           param xs : List a  → def 15:6
+    8-10    " ->"          expr  List a → List b  ⟦xs ->⟧
+16 │     match xs with
+    5-10    "match "       expr  List b  ⟦match xs with⟧
+    11-12   "xs"           param xs : List a  → def 15:6
+    13-17   " with"        expr  List b  ⟦match xs with⟧
+17 │     | [] -> []
+    5-12    "| [] -> "     expr  List b  ⟦| [] -> []⟧
+    13-14   "[]"           expr  List b
+18 │     | h :: t -> (f h) :: (map f t)
+    5-6     "| "           expr  List b  ⟦| h :: t -> (f h) :: (map f t)⟧
+    7       "h"            pat   h : a  → def 18:7
+    8       " "            expr  List b  ⟦| h :: t -> (f h) :: (map f t)⟧
+    9-10    "::"           op    :: : ∀ a. a → List a → List a
+    11      " "            expr  List b  ⟦| h :: t -> (f h) :: (map f t)⟧
+    12      "t"            pat   t : List a  → def 18:12
+    13-16   " -> "         expr  List b  ⟦| h :: t -> (f h) :: (map f t)⟧
+    17      "("            expr  b  ⟦(f h)⟧
+    18      "f"            param f : a → b  → def 15:4
+    19      " "            expr  b  ⟦(f h)⟧
+    20      "h"            pat   h : a  → def 18:7
+    21      ")"            expr  b  ⟦(f h)⟧
+    22      " "            expr  List b  ⟦(f h) :: (map f t)⟧
+    23-24   "::"           op    :: : ∀ a. a → List a → List a
+    25      " "            expr  List b  ⟦(f h) :: (map f t)⟧
+    26      "("            expr  List b  ⟦(map f t)⟧
+    27-29   "map"          val   map : (a → b) → List a → List b  → def 14:5
+    30      " "            expr  List a → List b  ⟦map f⟧
+    31      "f"            param f : a → b  → def 15:4
+    32      " "            expr  List b  ⟦(map f t)⟧
+    33      "t"            pat   t : List a  → def 18:12
+    34      ")"            expr  List b  ⟦(map f t)⟧
+20 │ let filter : {a} (a -> Bool) -> List a -> List a =
+    5-10    "filter"       val   filter : ∀ a. (a → Bool) → List a → List a  → def 20:5
+    15      "a"            param a : type variable (scheme binder)  → def 20:15
+    19      "a"            param a : type variable (scheme binder)  → def 20:15
+    24-27   "Bool"         type  Bool : type Bool =⏎   | True⏎   | False
+    33-36   "List"         type  List : type List a =⏎   | Nil⏎   | Cons a (List a)
+    38      "a"            param a : type variable (scheme binder)  → def 20:15
+    43-46   "List"         type  List : type List a =⏎   | Nil⏎   | Cons a (List a)
+    48      "a"            param a : type variable (scheme binder)  → def 20:15
+21 │   \p xs ->
+    3       "\\"           expr  (a → Bool) → List a → List a  ⟦\p xs ->⟧
+    4       "p"            param p : a → Bool  → def 21:4
+    5       " "            expr  (a → Bool) → List a → List a  ⟦\p xs ->⟧
+    6-7     "xs"           param xs : List a  → def 21:6
+    8-10    " ->"          expr  List a → List a  ⟦xs ->⟧
+22 │     match xs with
+    5-10    "match "       expr  List a  ⟦match xs with⟧
+    11-12   "xs"           param xs : List a  → def 21:6
+    13-17   " with"        expr  List a  ⟦match xs with⟧
+23 │     | [] -> []
+    5-12    "| [] -> "     expr  List a  ⟦| [] -> []⟧
+    13-14   "[]"           expr  List a
+24 │     | h :: t ->
+    5-6     "| "           expr  List a  ⟦| h :: t ->⟧
+    7       "h"            pat   h : a  → def 24:7
+    8       " "            expr  List a  ⟦| h :: t ->⟧
+    9-10    "::"           op    :: : ∀ a. a → List a → List a
+    11      " "            expr  List a  ⟦| h :: t ->⟧
+    12      "t"            pat   t : List a  → def 24:12
+    13-15   " ->"          expr  List a  ⟦| h :: t ->⟧
+25 │       if p h then
+    7-9     "if "          expr  List a  ⟦if p h then⟧
+    10      "p"            param p : a → Bool  → def 21:4
+    11      " "            expr  Bool  ⟦p h⟧
+    12      "h"            pat   h : a  → def 24:7
+    13-17   " then"        expr  List a  ⟦if p h then⟧
+26 │         h :: (filter p t)
+    9       "h"            pat   h : a  → def 24:7
+    10      " "            expr  List a  ⟦h :: (filter p t)⟧
+    11-12   "::"           op    :: : ∀ a. a → List a → List a
+    13      " "            expr  List a  ⟦h :: (filter p t)⟧
+    14      "("            expr  List a  ⟦(filter p t)⟧
+    15-20   "filter"       val   filter : (a → Bool) → List a → List a  → def 20:5
+    21      " "            expr  List a → List a  ⟦filter p⟧
+    22      "p"            param p : a → Bool  → def 21:4
+    23      " "            expr  List a  ⟦(filter p t)⟧
+    24      "t"            pat   t : List a  → def 24:12
+    25      ")"            expr  List a  ⟦(filter p t)⟧
+27 │       else
+    7-10    "else"         expr  List a
+28 │         filter p t
+    9-14    "filter"       val   filter : (a → Bool) → List a → List a  → def 20:5
+    15      " "            expr  List a → List a  ⟦filter p⟧
+    16      "p"            param p : a → Bool  → def 21:4
+    17      " "            expr  List a  ⟦filter p t⟧
+    18      "t"            pat   t : List a  → def 24:12
+30 │ let mapMaybe : {a b} (a -> b) -> Maybe a -> Maybe b =
+    5-12    "mapMaybe"     val   mapMaybe : ∀ a b. (a → b) → Maybe a → Maybe b  → def 30:5
+    17      "a"            param a : type variable (scheme binder)  → def 30:17
+    19      "b"            param b : type variable (scheme binder)  → def 30:19
+    23      "a"            param a : type variable (scheme binder)  → def 30:17
+    28      "b"            param b : type variable (scheme binder)  → def 30:19
+    34-38   "Maybe"        type  Maybe : type Maybe a =⏎   | Just a⏎   | Nothing  → def 4:6
+    40      "a"            param a : type variable (scheme binder)  → def 30:17
+    45-49   "Maybe"        type  Maybe : type Maybe a =⏎   | Just a⏎   | Nothing  → def 4:6
+    51      "b"            param b : type variable (scheme binder)  → def 30:19
+31 │   \f m ->
+    3       "\\"           expr  (a → b) → Maybe a → Maybe b  ⟦\f m ->⟧
+    4       "f"            param f : a → b  → def 31:4
+    5       " "            expr  (a → b) → Maybe a → Maybe b  ⟦\f m ->⟧
+    6       "m"            param m : Maybe a  → def 31:6
+    7-9     " ->"          expr  Maybe a → Maybe b  ⟦m ->⟧
+32 │     match m with
+    5-10    "match "       expr  Maybe b  ⟦match m with⟧
+    11      "m"            param m : Maybe a  → def 31:6
+    12-16   " with"        expr  Maybe b  ⟦match m with⟧
+33 │     | Nothing -> Nothing
+    5-6     "| "           expr  Maybe b  ⟦| Nothing -> Nothing⟧
+    7-13    "Nothing"      ctor  Nothing : ∀ a. Maybe a  → def 6:5
+    14-17   " -> "         expr  Maybe b  ⟦| Nothing -> Nothing⟧
+    18-24   "Nothing"      ctor  Nothing : Maybe b  → def 6:5
+34 │     | Just x -> Just (f x)
+    5-6     "| "           expr  Maybe b  ⟦| Just x -> Just (f x)⟧
+    7-10    "Just"         ctor  Just : ∀ a. a → Maybe a  → def 5:5
+    11      " "            expr  Maybe b  ⟦| Just x -> Just (f x)⟧
+    12      "x"            pat   x : a  → def 34:12
+    13-16   " -> "         expr  Maybe b  ⟦| Just x -> Just (f x)⟧
+    17-20   "Just"         ctor  Just : b → Maybe b  → def 5:5
+    21      " "            expr  Maybe b  ⟦Just (f x)⟧
+    22      "("            expr  b  ⟦(f x)⟧
+    23      "f"            param f : a → b  → def 31:4
+    24      " "            expr  b  ⟦(f x)⟧
+    25      "x"            pat   x : a  → def 34:12
+    26      ")"            expr  b  ⟦(f x)⟧
+36 │ let treeMap : {a b} (a -> b) -> Tree a -> Tree b =
+    5-11    "treeMap"      val   treeMap : ∀ a b. (a → b) → Tree a → Tree b  → def 36:5
+    16      "a"            param a : type variable (scheme binder)  → def 36:16
+    18      "b"            param b : type variable (scheme binder)  → def 36:18
+    22      "a"            param a : type variable (scheme binder)  → def 36:16
+    27      "b"            param b : type variable (scheme binder)  → def 36:18
+    33-36   "Tree"         type  Tree : type Tree a =⏎   | Leaf⏎   | Node a (Tree a) (Tree a)  → def 8:6
+    38      "a"            param a : type variable (scheme binder)  → def 36:16
+    43-46   "Tree"         type  Tree : type Tree a =⏎   | Leaf⏎   | Node a (Tree a) (Tree a)  → def 8:6
+    48      "b"            param b : type variable (scheme binder)  → def 36:18
+37 │   \f t ->
+    3       "\\"           expr  (a → b) → Tree a → Tree b  ⟦\f t ->⟧
+    4       "f"            param f : a → b  → def 37:4
+    5       " "            expr  (a → b) → Tree a → Tree b  ⟦\f t ->⟧
+    6       "t"            param t : Tree a  → def 37:6
+    7-9     " ->"          expr  Tree a → Tree b  ⟦t ->⟧
+38 │     match t with
+    5-10    "match "       expr  Tree b  ⟦match t with⟧
+    11      "t"            param t : Tree a  → def 37:6
+    12-16   " with"        expr  Tree b  ⟦match t with⟧
+39 │     | Leaf -> Leaf
+    5-6     "| "           expr  Tree b  ⟦| Leaf -> Leaf⟧
+    7-10    "Leaf"         ctor  Leaf : ∀ a. Tree a  → def 9:5
+    11-14   " -> "         expr  Tree b  ⟦| Leaf -> Leaf⟧
+    15-18   "Leaf"         ctor  Leaf : Tree b  → def 9:5
+40 │     | Node x l r -> Node (f x) (treeMap f l) (treeMap f r)
+    5-6     "| "           expr  Tree b  ⟦| Node x l r -> Node (f x) (treeMap f l) (treeMap f r)⟧
+    7-10    "Node"         ctor  Node : ∀ a. a → Tree a → Tree a → Tree a  → def 10:5
+    11      " "            expr  Tree b  ⟦| Node x l r -> Node (f x) (treeMap f l) (treeMap f r)⟧
+    12      "x"            pat   x : a  → def 40:12
+    13      " "            expr  Tree b  ⟦| Node x l r -> Node (f x) (treeMap f l) (treeMap f r)⟧
+    14      "l"            pat   l : Tree a  → def 40:14
+    15      " "            expr  Tree b  ⟦| Node x l r -> Node (f x) (treeMap f l) (treeMap f r)⟧
+    16      "r"            pat   r : Tree a  → def 40:16
+    17-20   " -> "         expr  Tree b  ⟦| Node x l r -> Node (f x) (treeMap f l) (treeMap f r)⟧
+    21-24   "Node"         ctor  Node : b → Tree b → Tree b → Tree b  → def 10:5
+    25      " "            expr  Tree b → Tree b → Tree b  ⟦Node (f x)⟧
+    26      "("            expr  b  ⟦(f x)⟧
+    27      "f"            param f : a → b  → def 37:4
+    28      " "            expr  b  ⟦(f x)⟧
+    29      "x"            pat   x : a  → def 40:12
+    30      ")"            expr  b  ⟦(f x)⟧
+    31      " "            expr  Tree b → Tree b  ⟦Node (f x) (treeMap f l)⟧
+    32      "("            expr  Tree b  ⟦(treeMap f l)⟧
+    33-39   "treeMap"      val   treeMap : (a → b) → Tree a → Tree b  → def 36:5
+    40      " "            expr  Tree a → Tree b  ⟦treeMap f⟧
+    41      "f"            param f : a → b  → def 37:4
+    42      " "            expr  Tree b  ⟦(treeMap f l)⟧
+    43      "l"            pat   l : Tree a  → def 40:14
+    44      ")"            expr  Tree b  ⟦(treeMap f l)⟧
+    45      " "            expr  Tree b  ⟦Node (f x) (treeMap f l) (treeMap f r)⟧
+    46      "("            expr  Tree b  ⟦(treeMap f r)⟧
+    47-53   "treeMap"      val   treeMap : (a → b) → Tree a → Tree b  → def 36:5
+    54      " "            expr  Tree a → Tree b  ⟦treeMap f⟧
+    55      "f"            param f : a → b  → def 37:4
+    56      " "            expr  Tree b  ⟦(treeMap f r)⟧
+    57      "r"            pat   r : Tree a  → def 40:16
+    58      ")"            expr  Tree b  ⟦(treeMap f r)⟧
+42 │ let colorOf = \n ->
+    5-11    "colorOf"      val   colorOf : Int → Color  → def 42:5
+    15      "\\"           expr  Int → Color  ⟦\n ->⟧
+    16      "n"            param n : Int  → def 42:16
+    17-19   " ->"          expr  Int → Color  ⟦\n ->⟧
+43 │   if n < 2 then
+    3-5     "if "          expr  Color  ⟦if n < 2 then⟧
+    6       "n"            param n : Int  → def 42:16
+    7       " "            expr  Bool  ⟦n < 2⟧
+    8       "<"            op    < : Int → Int → Bool
+    9       " "            expr  Bool  ⟦n < 2⟧
+    10      "2"            lit   2 : Int
+    11-15   " then"        expr  Color  ⟦if n < 2 then⟧
+44 │     Red
+    5-7     "Red"          ctor  Red : Color  → def 12:14
+45 │   else if n < 5 then
+    3-7     "else "        expr  Color  ⟦else if n < 5 then⟧
+    8-10    "if "          expr  Color  ⟦if n < 5 then⟧
+    11      "n"            param n : Int  → def 42:16
+    12      " "            expr  Bool  ⟦n < 5⟧
+    13      "<"            op    < : Int → Int → Bool
+    14      " "            expr  Bool  ⟦n < 5⟧
+    15      "5"            lit   5 : Int
+    16-20   " then"        expr  Color  ⟦if n < 5 then⟧
+46 │     Green
+    5-9     "Green"        ctor  Green : Color  → def 12:20
+47 │   else
+    3-6     "else"         expr  Color
+48 │     Blue
+    5-8     "Blue"         ctor  Blue : Color  → def 12:28
+50 │ let warm = \c ->
+    5-8     "warm"         val   warm : Color → Bool  → def 50:5
+    12      "\\"           expr  Color → Bool  ⟦\c ->⟧
+    13      "c"            param c : Color  → def 50:13
+    14-16   " ->"          expr  Color → Bool  ⟦\c ->⟧
+51 │   match c with
+    3-8     "match "       expr  Bool  ⟦match c with⟧
+    9       "c"            param c : Color  → def 50:13
+    10-14   " with"        expr  Bool  ⟦match c with⟧
+52 │   | Red -> True
+    3-4     "| "           expr  Bool  ⟦| Red -> True⟧
+    5-7     "Red"          ctor  Red : Color  → def 12:14
+    8-11    " -> "         expr  Bool  ⟦| Red -> True⟧
+    12-15   "True"         lit   True : Bool
+53 │   | Green -> False
+    3-4     "| "           expr  Bool  ⟦| Green -> False⟧
+    5-9     "Green"        ctor  Green : Color  → def 12:20
+    10-13   " -> "         expr  Bool  ⟦| Green -> False⟧
+    14-18   "False"        lit   False : Bool
+54 │   | Blue -> False
+    3-4     "| "           expr  Bool  ⟦| Blue -> False⟧
+    5-8     "Blue"         ctor  Blue : Color  → def 12:28
+    9-12    " -> "         expr  Bool  ⟦| Blue -> False⟧
+    13-17   "False"        lit   False : Bool
+56 │ let t = Node 1 Leaf (Node 4 Leaf (Node 9 Leaf Leaf))
+    5       "t"            val   t : Tree Int  → def 56:5
+    9-12    "Node"         ctor  Node : Int → Tree Int → Tree Int → Tree Int  → def 10:5
+    13      " "            expr  Tree Int → Tree Int → Tree Int  ⟦Node 1⟧
+    14      "1"            lit   1 : Int
+    15      " "            expr  Tree Int → Tree Int  ⟦Node 1 Leaf⟧
+    16-19   "Leaf"         ctor  Leaf : Tree Int  → def 9:5
+    20      " "            expr  Tree Int  ⟦Node 1 Leaf (Node 4 Leaf (Node 9 Leaf Leaf))⟧
+    21      "("            expr  Tree Int  ⟦(Node 4 Leaf (Node 9 Leaf Leaf))⟧
+    22-25   "Node"         ctor  Node : Int → Tree Int → Tree Int → Tree Int  → def 10:5
+    26      " "            expr  Tree Int → Tree Int → Tree Int  ⟦Node 4⟧
+    27      "4"            lit   4 : Int
+    28      " "            expr  Tree Int → Tree Int  ⟦Node 4 Leaf⟧
+    29-32   "Leaf"         ctor  Leaf : Tree Int  → def 9:5
+    33      " "            expr  Tree Int  ⟦(Node 4 Leaf (Node 9 Leaf Leaf))⟧
+    34      "("            expr  Tree Int  ⟦(Node 9 Leaf Leaf)⟧
+    35-38   "Node"         ctor  Node : Int → Tree Int → Tree Int → Tree Int  → def 10:5
+    39      " "            expr  Tree Int → Tree Int → Tree Int  ⟦Node 9⟧
+    40      "9"            lit   9 : Int
+    41      " "            expr  Tree Int → Tree Int  ⟦Node 9 Leaf⟧
+    42-45   "Leaf"         ctor  Leaf : Tree Int  → def 9:5
+    46      " "            expr  Tree Int  ⟦(Node 9 Leaf Leaf)⟧
+    47-50   "Leaf"         ctor  Leaf : Tree Int  → def 9:5
+    51      ")"            expr  Tree Int  ⟦(Node 9 Leaf Leaf)⟧
+    52      ")"            expr  Tree Int  ⟦(Node 4 Leaf (Node 9 Leaf Leaf))⟧
+58 │ let xs = [0, 1, 4, 9, 2]
+    5-6     "xs"           val   xs : List Int  → def 58:5
+    10      "["            expr  List Int  ⟦[0, 1, 4, 9, 2]⟧
+    11      "0"            lit   0 : Int
+    12-13   ", "           expr  List Int  ⟦[0, 1, 4, 9, 2]⟧
+    14      "1"            lit   1 : Int
+    15-16   ", "           expr  List Int  ⟦[0, 1, 4, 9, 2]⟧
+    17      "4"            lit   4 : Int
+    18-19   ", "           expr  List Int  ⟦[0, 1, 4, 9, 2]⟧
+    20      "9"            lit   9 : Int
+    21-22   ", "           expr  List Int  ⟦[0, 1, 4, 9, 2]⟧
+    23      "2"            lit   2 : Int
+    24      "]"            expr  List Int  ⟦[0, 1, 4, 9, 2]⟧
+60 │ let listLength = \l ->
+    5-14    "listLength"   val   listLength : ∀ a. List a → Int  → def 60:5
+    18      "\\"           expr  List a → Int  ⟦\l ->⟧
+    19      "l"            param l : List a  → def 60:19
+    20-22   " ->"          expr  List a → Int  ⟦\l ->⟧
+61 │   match l with
+    3-8     "match "       expr  Int  ⟦match l with⟧
+    9       "l"            param l : List a  → def 60:19
+    10-14   " with"        expr  Int  ⟦match l with⟧
+62 │   | [] -> 0
+    3-10    "| [] -> "     expr  Int  ⟦| [] -> 0⟧
+    11      "0"            lit   0 : Int
+63 │   | head :: tail -> 1 + listLength tail
+    3-4     "| "           expr  Int  ⟦| head :: tail -> 1 + listLength tail⟧
+    5-8     "head"         pat   head : a  → def 63:5
+    9       " "            expr  Int  ⟦| head :: tail -> 1 + listLength tail⟧
+    10-11   "::"           op    :: : ∀ a. a → List a → List a
+    12      " "            expr  Int  ⟦| head :: tail -> 1 + listLength tail⟧
+    13-16   "tail"         pat   tail : List a  → def 63:13
+    17-20   " -> "         expr  Int  ⟦| head :: tail -> 1 + listLength tail⟧
+    21      "1"            lit   1 : Int
+    22      " "            expr  Int  ⟦1 + listLength tail⟧
+    23      "+"            op    + : Int → Int → Int
+    24      " "            expr  Int  ⟦1 + listLength tail⟧
+    25-34   "listLength"   val   listLength : List a → Int  → def 60:5
+    35      " "            expr  Int  ⟦listLength tail⟧
+    36-39   "tail"         pat   tail : List a  → def 63:13
+65 │ let addInts : Int -> Int -> Int = \a b -> a + b
+    5-11    "addInts"      val   addInts : Int → Int → Int  → def 65:5
+    15-17   "Int"          type  Int : type Int  -- built in
+    22-24   "Int"          type  Int : type Int  -- built in
+    29-31   "Int"          type  Int : type Int  -- built in
+    35      "\\"           expr  Int → Int → Int  ⟦\a b -> a + b⟧
+    36      "a"            param a : Int  → def 65:36
+    37      " "            expr  Int → Int → Int  ⟦\a b -> a + b⟧
+    38      "b"            param b : Int  → def 65:38
+    39-42   " -> "         expr  Int → Int  ⟦b -> a + b⟧
+    43      "a"            param a : Int  → def 65:36
+    44      " "            expr  Int  ⟦a + b⟧
+    45      "+"            op    + : Int → Int → Int
+    46      " "            expr  Int  ⟦a + b⟧
+    47      "b"            param b : Int  → def 65:38
+67 │ addInts (listLength xs) 12
+    1-7     "addInts"      val   addInts : Int → Int → Int  → def 65:5
+    8       " "            expr  Int → Int  ⟦addInts (listLength xs)⟧
+    9       "("            expr  Int  ⟦(listLength xs)⟧
+    10-19   "listLength"   val   listLength : List Int → Int  → def 60:5
+    20      " "            expr  Int  ⟦(listLength xs)⟧
+    21-22   "xs"           val   xs : List Int  → def 58:5
+    23      ")"            expr  Int  ⟦(listLength xs)⟧
+    24      " "            expr  Int  ⟦addInts (listLength xs) 12⟧
+    25-26   "12"           lit   12 : Int

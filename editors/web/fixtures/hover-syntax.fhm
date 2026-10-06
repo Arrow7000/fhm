@@ -1,0 +1,41 @@
+-- Hover and go-to-definition across syntax: comments, keywords, punctuation,
+-- whitespace, patterns, shadowing.
+
+/- A block comment /- nested -/
+   over two lines. -/
+type Box a = Box a
+
+--- A shape, by its dimensions.
+type Shape =
+  /-- A circle, by radius. -/
+  | Circle Int
+  --- A rectangle, by width
+  --- and height.
+  | Rect Int Int
+
+---------------------------------------- (not a doc comment)
+
+/-- Not the real area:
+    just the sum of the dimensions. -/
+let area : Shape -> Int = \s ->
+  match s with
+  | Circle r -> r + r
+  | Rect w h -> w + h
+
+let unbox : {a} Box a -> a = \b ->
+  match b with
+  | Box x -> x
+
+let pairUp = \x y -> (x, y)
+
+let firstOr = \d xs ->
+  match xs with
+  | [] -> d
+  | h :: _ -> h
+
+let shadow = \x ->
+  --- Adds one.
+  let inc = \x -> x + 1 in
+  if x < 10 then inc x else 0 /- trailing -/
+
+firstOr 0 [area (Circle 2), unbox (Box 3), shadow 4]

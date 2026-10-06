@@ -41,7 +41,7 @@ abbrev TokStream := Subarray Tok
 abbrev P := SimpleParser TokStream Tok
 
 def isComment : Token → Bool
-  | .lineComment _ | .blockComment _ => true
+  | .lineComment _ | .blockComment _ | .docComment _ => true
   | _ => false
 
 def skipComments : P Unit :=
@@ -1227,6 +1227,57 @@ def program : P (Program × List BinderSpan × SpannedProgram) :=
     | none =>
       throwUnexpectedWithMessage none "duplicate binding names"
 
+/-! ## Doc comments
+
+The grammar skips doc comments like any comment. After parsing, each run of
+consecutive doc comments is attached to the binder it precedes: the name after
+`let` or `type`, the constructor after `|`, or a binder token directly (a
+type's first constructor). Ordinary comments in between are allowed. A doc
+comment that precedes anything else is an error, so it can't silently
+document nothing. -/
+
+private def docText? : Token → Option String
+  | .docComment t => some t
+  | _ => none
+
+private def isPlainComment (t : Tok) : Bool :=
+  match t.token with
+  | .lineComment _ | .blockComment _ => true
+  | _ => false
+
+/-- The `val`, `type` or `ctor` binder that starts at the first non-comment
+    token of `toks`. -/
+private def binderStartingAt (bs : List BinderSpan) (toks : List Tok) : Option BinderSpan :=
+  (toks.dropWhile isPlainComment).head?.bind fun t =>
+    bs.find? fun b =>
+      (b.kind == .val || b.kind == .type || b.kind == .ctor) &&
+        b.span.startLine == t.startLine && b.span.startCol == t.startCol
+
+/-- The binder documented by a doc comment followed by `toks`. -/
+private def documentedBinder (bs : List BinderSpan) (toks : List Tok) : Option BinderSpan :=
+  match toks.dropWhile isPlainComment with
+  | t :: rest =>
+    match t.token with
+    | .keyword .«let» | .keyword .«type» | .punct .pipe => binderStartingAt bs rest
+    | _ => binderStartingAt bs (t :: rest)
+  | [] => none
+
+/-- Attach doc comments to binders (see above). -/
+partial def attachDocs (bs : List BinderSpan) : List Tok → Except ParseError (List BinderSpan)
+  | [] => .ok bs
+  | t :: rest =>
+    match t.token with
+    | .docComment text =>
+      let more := rest.takeWhile (docText? ·.token |>.isSome)
+      let after := rest.drop more.length
+      let doc := String.intercalate "\n" (text :: more.filterMap (docText? ·.token))
+      match documentedBinder bs after with
+      | some b => attachDocs (bs.map fun b' => if b' == b then { b' with doc? := some doc } else b') after
+      | none => .error {
+          msg := "a doc comment must come before a `let`, a `type` or a constructor"
+          line := t.startLine, col := t.startCol, endLine := t.endLine, endCol := t.endCol }
+    | _ => attachDocs bs rest
+
 /-! ## Public API -/
 
 def runTokP (p : P α) (toks : Array Tok) : Except ParseError α :=
@@ -1255,10 +1306,16 @@ def parseExprWithSpans (src : String) :
     Except ParseError (Expr × List BinderSpan × SpannedExpr) :=
   runLexParse expr src
 
-/-- Parse with binder spans + spanned program (expr hulls for scopes). -/
+/-- Parse with binder spans (carrying doc comments) + spanned program (expr
+    hulls for scopes). -/
 def parseProgramWithSpans (src : String) :
     Except ParseError (Program × List BinderSpan × SpannedProgram) :=
-  runLexParse program src
+  match Lex.lex src with
+  | .error e => .error (lexToParse e)
+  | .ok toks => do
+    let (p, bs, sp) ← runTokP program toks
+    let bs ← attachDocs bs toks.toList
+    pure (p, bs, sp)
 
 def parseProgramWithBinders (src : String) : Except ParseError (Program × List BinderSpan) :=
   parseProgramWithSpans src |>.map fun (p, bs, _) => (p, bs)
@@ -1629,5 +1686,27 @@ def parseTyEq (src : String) (expected : Ty) : Bool :=
 #guard (match parseProgram "type Maybe a = Just a | Nothing\nlet x = Nothing\nx" with
   | .ok p => (SurfaceBridge.lowerProgram p).isSome
   | _ => false)
+
+-- Doc comments attach to the binder they precede.
+private def docsOf (src : String) : List (String × String) :=
+  match parseProgramWithSpans src with
+  | .ok (_, bs, _) => bs.filterMap fun b => b.doc?.map (b.name, ·)
+  | .error _ => []
+
+private def docErrorAt (src : String) : Option (Nat × Nat) :=
+  match parseProgramWithSpans src with
+  | .error e => some (e.line, e.col)
+  | .ok _ => none
+
+#guard docsOf "/-- The answer. -/\nlet answer = 42\nanswer\n" = [("answer", "The answer.")]
+#guard docsOf "--- Shapes.\ntype Shape =\n  --- A circle.\n  | Circle Int\n  /-- A square. -/\n  | Square Int\n1\n" =
+  [("Shape", "Shapes."), ("Circle", "A circle."), ("Square", "A square.")]
+#guard docsOf "type T = /-- First. -/ A | B\n1\n" = [("A", "First.")]
+#guard docsOf "--- One.\n--- Two.\n-- An ordinary comment in between.\nlet x = 1\nx\n" =
+  [("x", "One.\nTwo.")]
+#guard docsOf "let f = \\y ->\n  --- Local.\n  let z = y in z\nf 1\n" = [("z", "Local.")]
+#guard docErrorAt "let x = 1\n/-- Dangling. -/\nx\n" = some (2, 1)
+#guard docErrorAt "let f = \\x -> match x with\n  --- An arm.\n  | y -> y\nf 1\n" = some (2, 3)
+#guard docErrorAt "-------\nlet x = 1\nx\n" = none
 
 end Surface.Parse

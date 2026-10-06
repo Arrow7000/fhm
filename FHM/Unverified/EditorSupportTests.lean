@@ -596,3 +596,34 @@ def namedSignatureSrc : String :=
 #guard FHM.Unverified.HMDisplay.scheme
   { aliases := [(0, "a")], freeIds := [0] } []
   ⟨1, .arrow (.bvar 0) (.fvar 0)⟩ == "∀ b. b → a"
+
+-- Definition sites (binders, types, constructors, type variable binders) are
+-- flagged `isDef`; occurrences are not. Go to definition relies on this.
+def userDefSites (src : String) : List (String × Nat × Nat) :=
+  ((hoverSyms src).getD []).filterMap fun s =>
+    if s.isDef && s.span != Span.empty then some (s.name, s.span.startLine, s.span.startCol)
+    else none
+
+#guard userDefSites "type Box a = Box a\nlet f : {b} b -> b = \\x -> x\nf (Box 1)\n" =
+  [("Box", 1, 6), ("a", 1, 10), ("Box", 1, 14), ("b", 2, 10), ("f", 2, 5), ("x", 2, 23)]
+
+-- Editors get every token's span and class, comments included.
+#guard (tokensJson "f /- c -/ (1)").compress =
+  "[[1,1,1,2,\"ident\"],[1,3,1,10,\"comment\"],[1,11,1,12,\"punct\"],[1,12,1,13,\"lit\"],[1,13,1,14,\"punct\"]]"
+
+-- Doc comments reach the definition's symbol and its occurrences: values via
+-- their innermost binder, constructors by name.
+def docSites (src : String) : List (String × Nat × Nat × String) :=
+  ((hoverSyms src).getD []).filterMap fun s =>
+    s.doc.map fun d => (s.name, s.span.startLine, s.span.startCol, d)
+
+#guard docSites "type Box a =\n  --- Holds one value.\n  | Box a\n/-- Opens a box. -/\nlet unbox = \\b -> match b with | Box x -> x\nunbox (Box 1)\n" =
+  [("Box", 3, 5, "Holds one value."), ("unbox", 5, 5, "Opens a box."),
+   ("unbox", 6, 1, "Opens a box."), ("Box", 6, 8, "Holds one value.")]
+
+-- A type's hover lists its constructors one per line, under their docs.
+def typeHover (src : String) (name : String) : Option String :=
+  (((hoverSyms src).getD []).find? fun s => s.kind == "type" && s.name == name).map (·.type_)
+
+#guard typeHover "type Maybe a =\n  /-- No value.\n      Really none. -/\n  | Nothing\n  | Just a\n1\n" "Maybe" =
+  some "type Maybe a =\n  --- No value.\n  --- Really none.\n  | Nothing\n  | Just a"

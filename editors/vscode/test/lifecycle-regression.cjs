@@ -14,6 +14,7 @@ const settings = {
 };
 const markerSets = [];
 let hoverProvider;
+let definitionProvider;
 
 function child() {
   const c = new EventEmitter();
@@ -48,7 +49,12 @@ const vscode = {
       hoverProvider = provider;
       return { dispose() {} };
     },
+    registerDefinitionProvider: (_language, provider) => {
+      definitionProvider = provider;
+      return { dispose() {} };
+    },
   },
+  Location: class Location { constructor(...args) { this.args = args; } },
   Range: class Range { constructor(...args) { this.args = args; } },
   Diagnostic: class Diagnostic {},
   DiagnosticSeverity: { Warning: 1, Error: 0 },
@@ -77,8 +83,9 @@ const payload = (name) => ({
   version: 3, diagnostics: [], symbols: [{
     name, kind: "val", type: "Int", startLine: 1, startCol: 5,
     endLine: 1, endCol: 6, scopeStartLine: 1, scopeStartCol: 1,
-    scopeEndLine: 1, scopeEndCol: 10,
+    scopeEndLine: 1, scopeEndCol: 10, def: true,
   }],
+  tokens: [[1, 1, 1, 4, "keyword"], [1, 5, 1, 6, "ident"], [1, 7, 1, 8, "punct"], [1, 9, 1, 10, "lit"]],
 });
 const flush = () => new Promise((resolve) => setImmediate(resolve));
 
@@ -91,6 +98,10 @@ const flush = () => new Promise((resolve) => setImmediate(resolve));
   assert.equal(extension.__test.symbolCache.get(uri.toString()).ranged[0].name, "x");
   assert.deepEqual(markerSets.at(-1), [], "disabled diagnostics stays clear");
   assert(hoverProvider.provideHover(doc, { line: 0, character: 4 }));
+  assert.equal(hoverProvider.provideHover(doc, { line: 0, character: 3 }), undefined,
+    "whitespace outside any expression has no hover");
+  assert.deepEqual(definitionProvider.provideDefinition(doc, { line: 0, character: 4 }).args[1].args,
+    [0, 4, 0, 5], "a definition site is its own definition");
 
   // An obsolete close may arrive after its replacement begins, but cannot
   // unregister or publish over that replacement.

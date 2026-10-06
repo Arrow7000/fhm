@@ -116,6 +116,8 @@ structure BinderSpan where
   span : Span
   /-- If set (e.g. scheme-ann tyvars), use as use-site scope in join. -/
   scope? : Option Span := none
+  /-- Doc comment text, for `val`, `type` and `ctor` binders. -/
+  doc? : Option String := none
   deriving Repr, BEq
 
 def BinderKind.toString : BinderKind → String

@@ -43,6 +43,8 @@ inductive Punct
 inductive Token
   | lineComment (text : String)
   | blockComment (text : String)
+  /-- `/-- … -/` or a `---` line, with its text normalised (`Lex.docBlockText`). -/
+  | docComment (text : String)
   | ident (raw : String) (isUpper : Bool)
   | keyword (kw : Keyword)
   | intLit (n : Int)

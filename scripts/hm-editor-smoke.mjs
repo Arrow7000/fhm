@@ -37,9 +37,9 @@ function hover(payload, source, line0, word, expected, occurrence = 0) {
   const matches = [...line.matchAll(new RegExp(`\\b${word}\\b`, "g"))];
   const column = matches[occurrence]?.index;
   assert.ok(column !== undefined, `Missing ${word} on line ${line0 + 1}`);
-  const { ranged } = normalizePayload(payload);
+  const { ranged, tokens } = normalizePayload(payload);
   for (let offset = 0; offset < word.length; offset++) {
-    const hit = resolveHover(ranged, line0, column + offset, line);
+    const hit = resolveHover(ranged, line0, column + offset, line, tokens);
     assert.ok(hit, `Missing hover for ${word} at ${line0 + 1}:${column + offset + 1}`);
     assert.equal(hit.name, word);
     assert.equal(hit.type, expected);
@@ -128,13 +128,13 @@ test("non-BMP character before ASCII occurrence preserves UTF-16 range", () => {
 
 test("whitespace resolves whole application/list types, not identifier fallback", () => {
   const source = "let id = \\x -> x\nid 1\n";
-  const { ranged } = normalizePayload(diagnose(source));
-  const hit = resolveHover(ranged, 1, 2, "id 1");
+  const { ranged, tokens } = normalizePayload(diagnose(source));
+  const hit = resolveHover(ranged, 1, 2, "id 1", tokens);
   assert.equal(hit?.kind, "expr");
   assert.equal(hit?.type, "Int");
   assert.deepEqual([hit.startCol0, hit.endCol0], [0, 4]);
   const list = normalizePayload(diagnose("[1, 2]\n"));
-  assert.equal(resolveHover(list.ranged, 0, 3, "[1, 2]")?.type, "List Int");
+  assert.equal(resolveHover(list.ranged, 0, 3, "[1, 2]", list.tokens)?.type, "List Int");
 });
 
 test("signature names survive RHS hovers and nested-let skolems", () => {
