@@ -97,22 +97,33 @@ And patterns in bindings:
   field on a later line must be indented past `type`, so the declaration ends
   at the next unindented line.
 
-- [ ] **Value recursion overflows the evaluator's stack.** A recursive
-  definition that isn't a function crashes `fhm run` with `Stack overflow
-  detected. Aborting.`, even with `--fuel`, so the step budget doesn't count
-  this kind of recursion. Ordinary infinite recursion (`let loop = \n -> loop
-  (n + 1)`) does stop at the budget.
+- [ ] **Deep recursion crashes the evaluator with a native stack overflow.**
+  `fhm run` aborts with `Stack overflow detected. Aborting.` (in the
+  playground the child process just dies) once evaluation gets deep enough,
+  with or without `--fuel`:
 
   ```
-  let x = x + 1
+  let sum = \n -> if n < 1 then 0 else n + sum (n - 1)
 
-  x
+  sum 100000
   ```
 
-  Local `let`s are recursive too, so `let x = x + 1 in x` inside a function
-  does the same. Either the evaluator should spend fuel here, or definitions
-  like this should be rejected, as OCaml rejects `let rec x = x + 1` ("This
-  kind of expression is not allowed as right-hand side of let rec").
+  `sum 10000` works. `let x = x + 1` (top-level or local `let`s are
+  recursive) hits the same wall: it unfolds to `((x + 1) + 1) + …`.
+  Cause: `SmallStep.step` recurses down the evaluation context to find the
+  redex, so one step needs native stack proportional to the context's depth,
+  and the step budget can't help, since a single step overflows. Tail calls
+  (`let loop = \n -> loop (n + 1)`) are fine and stop at the budget.
+
+  Options, roughly in order of effort: report a clean "evaluation too deep"
+  error by bounding the context depth before stepping (computed without
+  recursion); run evaluation on a thread with a much larger stack; or evaluate
+  with an explicit continuation stack (the CEK machine in
+  `briefs/cekmachine-design.md`, which is no longer in the tree), so depth is
+  limited by memory, not the native stack. Separately, OCaml rejects
+  `let rec x = x + 1` outright ("This kind of expression is not allowed as
+  right-hand side of let rec"); FHM could reject non-function recursive
+  definitions too.
 
 - [ ] **A type and a constructor with the same name are confused by hover and
   go to definition.** With `type Box a = Box a`, the `Box` in an annotation
