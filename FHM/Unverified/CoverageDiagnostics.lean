@@ -93,7 +93,14 @@ partial def firstFailure (typed : TypedLowered) : Surface.Expr → IdentifiedExp
   | .pair a b, .pair _ sa sb | .cons a b, .cons _ sa sb | .app a b, .app _ sa sb =>
       firstFailure typed a sa <|> firstFailure typed b sb
   | .list es, .list _ ses => firstIn (es.zip ses)
-  | .lambda _ _ body, .lambda _ sbody => firstFailure typed body sbody
+  | .lambda param _ body, .lambda source sbody =>
+      let alone := Surface.Expr.lambda param none (.primLit .unit)
+      (if checkExhaustive typed.ctors alone then none else
+        let missing := match (typed.typesForSource source.id).head? with
+          | some (_, .arrow paramTy _) => examples typed.ctors paramTy [param]
+          | _ => { patterns := [] }
+        some { span := source.span, missing }) <|>
+        firstFailure typed body sbody
   | .letIn _ _ _ _ rhs body, .letIn _ srhs sbody =>
       firstFailure typed rhs srhs <|> firstFailure typed body sbody
   | .letRecIn binds body, .letRecIn _ rhss sbody =>

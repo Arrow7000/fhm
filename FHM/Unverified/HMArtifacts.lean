@@ -93,7 +93,10 @@ partial def collect (bs : List BinderSpan) : Surface.Expr → IdentifiedExpr →
   | .lambda pat _ body, .lambda owner sbody =>
       let binders := match pat with
         | .name name => locate bs (.lambda owner.id) name .param owner.span sbody.source.span sbody.source.span
-        | _ => []
+        | .wildcard => []
+        | _ => ((patVars pat).mapIdx fun capture name =>
+            locate bs (.patCapture owner.id 0 capture) name .pat owner.span
+              sbody.source.span sbody.source.span).flatten
       ((⟨binders, [], []⟩ : Locations).append (collect bs body sbody)).withExpr owner
   | .letIn name tyParams params ann rhs body, .letIn owner srhs sbody =>
       let vals := locate bs (.letIn owner.id) name .val owner.span sbody.source.span srhs.source.span

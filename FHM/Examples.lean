@@ -723,9 +723,8 @@ This section runs the **front-end pipeline**: `Surface.Program` →
 Prints use `ToString` on the surface term (same shape as Core demos).
 `#guard`s assert `.isSome` / printed eval results directly — no opaque matches.
 
-@TODO(pattern-λ): λ with nontrivial pattern params (`ctor`/`pair`/`cons`/`list`)
-still fail to lower (`none`); name/wildcard params are fine. See `lowerExpr` /
-`LowersExpr` in `SurfaceBridge`.
+Compound lambda parameters lower through pattern compilation and must pass
+coverage before evaluation.
 -/
 
 namespace SurfacePipelineDemo
@@ -792,9 +791,23 @@ private def sAnnId : Surface.Program :=
 #guard (lowerProgram sAnnId).isSome = true
 #guard evalProgram sAnnId = "41"
 
--- @TODO(pattern-λ): nontrivial pattern param — lower refuses (not a pipeline demo)
+-- A refutable parameter lowers, but fails coverage.
 private def sPatternLam : Surface.Expr :=
   .lambda (.ctor ⟨"Just"⟩ [.name ⟨"x"⟩]) none (.var (.mk "x"))
-#guard (lower ((elabDecls preludeDecls).getD []) sPatternLam).isNone = true
+#guard (lower ((elabDecls preludeDecls).getD []) sPatternLam).isSome = true
+#guard checkExhaustive ((elabDecls preludeDecls).getD []) sPatternLam = false
+
+
+private def sNestedPatternLam : Surface.Program :=
+  ⟨[], [], .app
+    (.lambda (.pair (.pair (.name ⟨"a"⟩) (.name ⟨"b"⟩)) (.name ⟨"c"⟩)) none
+      (.var ⟨"b"⟩))
+    (.pair (.pair (.primLit (.int 1)) (.primLit (.bool true))) (.primLit (.int 3)))⟩
+#guard (lowerProgram sNestedPatternLam).isSome
+#guard evalProgram sNestedPatternLam = "True"
+#guard checkExhaustive ((elabDecls preludeDecls).getD []) sNestedPatternLam.term
+
+example : SurfaceCovers ((elabDecls preludeDecls).getD []) sNestedPatternLam.term :=
+  checkExhaustive_sound _ (by native_decide)
 
 end SurfacePipelineDemo

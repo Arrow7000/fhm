@@ -182,8 +182,8 @@ And patterns in bindings:
   `code: "match.notExhaustive"`, `missingPatterns` and `moreMissing`; at most
   four examples are shown. Hovers remain available alongside the diagnostic.
   If a scrutinee type is unavailable (such as an eliminated branch), the
-  diagnostic keeps its generic wording. Once patterns are allowed in lambdas
-  and lets, reuse this for rejected refutable patterns.
+  diagnostic keeps its generic wording. Pattern lambdas reuse this for rejected refutable parameters; pattern lets
+  should do the same.
 
 - [ ] **Formatter**: an elm-format equivalent. One canonical layout for FHM
   source, as `fhm format`, with format-on-save in the editors. Hovers would
@@ -211,16 +211,13 @@ And patterns in bindings:
   not, independently. A fully annotated head can already be lowered, but
   anything less is a partial annotation, so this needs type holes.
 
-- [ ] **Patterns in lambda parameters**, e.g. `\(a, b) -> a`. The AST
-  already allows a pattern, and lowering has a `@TODO(pattern-λ)` hook
-  (`FHM/SurfaceBridge.lean`). Desugar `\p -> b` to `\x -> match x with
-  p -> b`, reusing `lowerMatch` as `if` does. Touches the parser (only names
-  and `_` parse today), `lowerExpr` and `LowersExpr`, the soundness,
-  completeness and uniqueness proofs (a pattern lambda counts as a match),
-  `SurfaceCovers`/`checkExhaustive`, and hover spans for the pattern's
-  binders. A refutable pattern (`\(Just x) -> x`) is rejected by the
-  exhaustiveness check, as an incomplete `match` is. Needs the nested-match
-  exhaustiveness fix first.
+- [x] **Patterns in lambda parameters**, e.g. `\(a, b) -> a`.
+  Compound parameters lower to a hidden argument and a singleton match, with
+  verified lowering, typing and coverage proofs. Nested tuples and exhaustive
+  single-constructor patterns work, including multiple parameters and whole
+  pattern annotations (`\((x, y) : (Int, Bool)) -> x`). Constructor applications
+  and cons patterns require parentheses. Refutable parameters are rejected with
+  missing-case examples; pattern binders retain inferred hovers and definitions.
 - [ ] **Pattern lets**, e.g. `let (q, r) = divMod n 10`, locally and at the
   top level.
   - **Generalised, name by name.** Desugar `let p = e in b` to

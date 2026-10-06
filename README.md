@@ -61,6 +61,10 @@ Ill-typed programs and non-exhaustive matches are rejected before anything runs.
   the definition's body, so inner annotations can refer to them.
 - **Algebraic data types**, including parameterised and recursive ones.
 - **Nested pattern matching** with wildcards. Matches must be exhaustive.
+  Lambda parameters accept exhaustive patterns too: `\(x, y) -> x` or
+  `\((x, y), z) -> y`. Applied constructors need parentheses (`\(Box x) -> x`);
+  refutable parameters such as `\(Just x) -> x` are rejected with missing cases.
+  Whole patterns can be annotated: `\((x, y) : (Int, Bool)) -> x`.
 - **Recursion and mutual recursion** between definitions written in any order.
   Unannotated recursive definitions follow standard HM. A definition with a
   type annotation can be used at different types anywhere in its recursive
@@ -213,7 +217,7 @@ Near term:
   and the rest of the pipeline.
 - **Signatures on function heads** (`let f (x : Int) (y : a) : a = …`) and
   **partial annotations** with holes (`Int -> _ -> Bool`).
-- **Pattern lambdas** (`\(x, y) -> …`) and **string literals**.
+- **Pattern lets** (`let (x, y) = …`) and **string literals**.
 
 Further out:
 

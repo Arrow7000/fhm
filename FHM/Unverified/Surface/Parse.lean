@@ -573,40 +573,6 @@ def valueParams : P (List (ValName × Option Ty) × List ParsedNameSpan) := do
     valueParam)
   return (ps.toList.map (·.1), ps.toList.flatMap (·.2))
 
-/-- λ binder: `(name : ty)` / `(_ : ty)` or simple name / `_`. -/
-def lambdaBinder : P (Pattern × Option Ty × List ParsedNameSpan × Span) :=
-  withErrorMessage "expected lambda binder" do
-    skipComments
-    first [
-      do
-        let t0 ← punct .lparen
-        skipComments
-        first [
-          do
-            let _ ← punct .underscore
-            skipComments
-            let _ ← punct .colon
-            skipComments
-            let (τ, refs) ← typeWithReferences ty
-            skipComments
-            let t1 ← punct .rparen
-            return (.wildcard, some τ, refs, Span.union (Span.ofTok t0) (Span.ofTok t1)),
-          do
-            let (tok, name) ← lowerIdentTok
-            skipComments
-            let _ ← punct .colon
-            skipComments
-            let (τ, refs) ← typeWithReferences ty
-            skipComments
-            let t1 ← punct .rparen
-            return (.name (.mk name), some τ, mkBinder .param tok name :: refs,
-              Span.union (Span.ofTok t0) (Span.ofTok t1))
-        ],
-      do
-        let (pat, bs, sp) ← simpleBinder
-        return (pat, none, bs, sp)
-    ]
-
 /-- `True`/`False` bool tokens as ctor patterns (Surface has no lit patterns). -/
 def boolLitPattern : P Pattern :=
   tokenMap fun t =>
@@ -615,7 +581,7 @@ def boolLitPattern : P Pattern :=
     | .boolLit false => some (.ctor (.mk "False") [])
     | _ => none
 
-/-! ## Patterns (match only; right-assoc `::`)
+/-! ## Patterns (match arms and lambda parameters; right-assoc `::`)
 
 * `patAtom` — `_`, name, bool ctor, `(p)`, `(p, p)`, `[ps]`, bare upper ctor
 * `patApp`  — upper ctor with argument atoms
@@ -700,6 +666,32 @@ partial def pattern : P (Pattern × List ParsedNameSpan) :=
     | none => return (left, bsL)
 
 end
+
+/-- A lambda parameter is one pattern atom; applied constructors and cons
+    patterns require parentheses, keeping `\x y` as two parameters. A whole
+    pattern can have a monotype annotation, e.g. `((x, y) : (Int, Bool))`. -/
+def lambdaBinder : P (Pattern × Option Ty × List ParsedNameSpan × Span) :=
+  withErrorMessage "expected lambda binder" do
+    skipComments
+    let ((pat, ann, bs), start, stop) ← withCapture <| first (combine := preferErr) [
+      withBacktracking do
+        let _ ← punct .lparen
+        let (pat, bs) ← pattern
+        skipComments
+        let _ ← punct .colon
+        let (τ, refs) ← typeWithReferences ty
+        skipComments
+        let _ ← punct .rparen
+        return (pat, some τ, bs ++ refs),
+      do
+        let (pat, bs) ← patAtom
+        return (pat, none, bs)
+    ]
+    let span ← spanOfConsumed start stop
+    let bs := match pat with
+      | .name _ => bs.map fun b => if b.isDef && b.kind == .pat then { b with kind := .param } else b
+      | _ => bs
+    return (pat, ann, bs, span)
 
 /-! ## Expression grammar
 

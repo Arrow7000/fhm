@@ -343,7 +343,7 @@ def locateLowerFail (src : String) (p : Surface.Program) (sp : SpannedProgram) :
       | some s => diagAtSpan msg (some s)
       | none => diagAtSpan msg (some (bodyDiagSpan sp.body))
   | [] => diagAtSpan
-      "expression lowering failed (rejected sugar, bad annotation, or pattern λ)"
+      "expression lowering failed (unbound name, rejected sugar, or bad annotation)"
       (some (bodyDiagSpan sp.body))
 
 /-- Exhaustiveness wording and structured missing-pattern examples shared by

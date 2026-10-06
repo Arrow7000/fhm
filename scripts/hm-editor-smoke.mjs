@@ -334,5 +334,50 @@ test("run --json reports errors where diagnose does", () => {
   }
 });
 
+test("pattern lambdas retain capture order, closures, shadowing and multiple parameters", () => {
+  const source = "let outer = 10\nlet select = \\(((a, b), (c, d)) : ((Int, Bool), (Bool, Int))) x _ -> ((a + outer) + x, (b, (c, d)))\nselect ((1, True), (False, 4)) 2 0\n";
+  const payload = diagnose(source);
+  hover(payload, source, 1, "a", "Int");
+  hover(payload, source, 1, "b", "Bool");
+  hover(payload, source, 1, "c", "Bool");
+  hover(payload, source, 1, "d", "Int");
+  hover(payload, source, 1, "a", "Int", 1);
+  const { ranged, tokens } = normalizePayload(payload);
+  const line = source.split("\n")[1];
+  const def = resolveDefinition(ranged, 1, line.lastIndexOf("a +"), line, tokens);
+  assert.deepEqual([def?.startLine0, def?.startCol0], [1, line.indexOf("a,")],
+    "Capture use resolves to its pattern binder");
+  run(source, "(13, (True, (False, 4)))");
+  run("let f = \\x -> \\(x, y) -> x\nf False (3, True)\n", "3");
+  run("let f = \\(a, _) (_, b) -> (a, b)\nf (3, False) (0, True)\n", "(3, True)");
+});
+
+test("single-constructor and annotated pattern lambdas infer polymorphic functions", () => {
+  run("type Box a = Box a\nlet unbox = \\(Box x) -> x\n(unbox (Box 3), unbox (Box True))\n", "(3, True)");
+  run("let fst : {a} (a, Bool) -> a = \\((x, _) : (a, Bool)) -> x\n(fst (3, False), fst (True, True))\n", "(3, True)");
+  run("let swap = \\((a, b) : (Int, Bool)) -> (b, a)\nswap (3, True)\n", "(True, 3)");
+  run("let sum = \\(n, total) -> if n < 1 then total else sum (n - 1, total + n)\nsum (5, 0)\n", "15");
+});
+
+test("refutable lambda parameters reuse missing-case diagnostics and preserve hovers", () => {
+  const cases = [
+    ["type Maybe a = Just a | Nothing\nlet get = \\(Just x) -> x\nget (Just 3)\n", "Nothing"],
+    ["let head = \\(x :: _) -> x\nhead [3]\n", "[]"],
+    ["let empty = \\[] -> 0\nempty []\n", "_ :: _"],
+    ["let choose = \\(True, x) -> x\nchoose (True, 3)\n", "(False, _)"],
+  ];
+  for (const [source, missing] of cases) {
+    const editor = cli(["diagnose"], source);
+    const d = editor.payload.diagnostics[0];
+    assert.equal(d?.code, "match.notExhaustive");
+    assert.ok(d.missingPatterns.includes(missing), JSON.stringify(d));
+    assert.ok(editor.payload.symbols.length > 0, "Rejected parameter keeps inferred hovers");
+    const runner = cli(["run", "--json"], source);
+    assert.notEqual(runner.status, 0);
+    assert.equal(runner.payload.code, d.code);
+    assert.deepEqual(runner.payload.missingPatterns, d.missingPatterns);
+  }
+});
+
 console.log(`${tests - failures}/${tests} HM CLI/editor semantic smoke checks passed.`);
 process.exitCode = failures ? 1 : 0;

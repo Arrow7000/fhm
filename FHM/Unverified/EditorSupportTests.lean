@@ -678,3 +678,16 @@ def innerNonExhaustive : String :=
         pat.declaration == defn.declaration && value.declaration == defn.declaration &&
         value.type_ == "Int → Box Int"
     | _, _, _ => false)
+
+
+-- Compound lambda parameters use the same capture provenance as match arms.
+#guard (match hoverReport "let swap = \\((a, b) : (Int, Bool)) -> (b, a)\nswap (3, True)\n" with
+  | some r => r.diagnostics.isEmpty &&
+      (r.symbols.any fun s => s.name == "a" && s.kind == "pat" && s.type_ == "Int") &&
+      (r.symbols.any fun s => s.name == "b" && s.kind == "pat" && s.type_ == "Bool")
+  | none => false)
+
+#guard (match hoverReport "type Maybe a = Just a | Nothing\nlet get = \\(Just x) -> x\nget (Just 3)\n" with
+  | some r => (r.diagnostics.any fun d => d.code? == some "match.notExhaustive" &&
+      d.missingPatterns == ["Nothing"]) && !r.symbols.isEmpty
+  | none => false)

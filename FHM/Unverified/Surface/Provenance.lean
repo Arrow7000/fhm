@@ -143,6 +143,7 @@ inductive GenerationReason where
   | listPartialApp (spineIndex : Nat)
   | listTailApp (spineIndex : Nat)
   | valueParamLambda (paramIndex : Nat)
+  | patternLambdaScrutinee
   | patternCompilation (node : PatComp.GeneratedNode)
   deriving Repr, DecidableEq, BEq
 
@@ -468,7 +469,22 @@ def lowerIdentifiedExpr (ke : KindEnv) (tvs vs : List ValName) :
           pure (combineAuthored source (.lambda ann' body'.expr)
             [body'.belowPath [.lambdaBody]] []
             [(.lambda source.id, .present [.lambda []])])
-      | _ => none
+      | _ => do
+          let body' ← lowerIdentifiedExpr ke tvs (patVars param ++ .mk "_" :: vs) body sbody
+          let scrut : Lowered := {
+            expr := .var 0
+            sourceNodes := []
+            sourceTargets := []
+            coreOrigins := [generatedOrigin source [] .patternLambdaScrutinee]
+            binderTargets := [] }
+          let traced := PatComp.lowerMatchTrace scrut.expr [param]
+            (fun i => [body'.expr].getD i (.ctor cNil))
+          let matched ← lowerTracedMatch source scrut [param] [body'] traced
+          let inner := { matched with
+            sourceNodes := matched.sourceNodes.filter (fun n => n.id != source.id)
+            sourceTargets := matched.sourceTargets.filter (fun entry => entry.1 != source.id) }
+          pure (combineAuthored source (.lambda ann' matched.expr)
+            [inner.belowPath [.lambdaBody]])
   | .app fn arg, .app source sfn sarg => do
       let fn' ← lowerIdentifiedExpr ke tvs vs fn sfn
       let arg' ← lowerIdentifiedExpr ke tvs vs arg sarg
