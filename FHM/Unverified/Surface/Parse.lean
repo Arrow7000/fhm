@@ -1106,11 +1106,16 @@ def ctorField : P Ty :=
       tyAtom
     ]
 
-def dataCtor : P ((CtorName × List Ty) × List BinderSpan) :=
+/-- A constructor and its fields. A field on a later line must be indented past
+    `declCol`, the declaration's `type` keyword, so the declaration ends at the
+    next unindented line (e.g. the program's body). -/
+def dataCtor (declCol : Nat) : P ((CtorName × List Ty) × List BinderSpan) :=
   withErrorMessage "expected constructor" do
     skipComments
     let (tok, name) ← upperIdentTok
-    let fields ← takeMany (withBacktracking ctorField)
+    let fields ← takeMany (withBacktracking do
+      colGt declCol
+      ctorField)
     return ((.mk name, fields.toList), [mkBinder .ctor tok name])
 
 /-- `type T a = …` plus binder spans and the full decl source span (tyvar scope). -/
@@ -1118,7 +1123,7 @@ def typeDecl : P (DataDecl × List BinderSpan × Span) :=
   withErrorMessage "expected type declaration" do
     skipComments
     let ((d, bs), seg) ← withCapture do
-      let _ ← keyword .«type»
+      let typeTok ← keyword .«type»
       skipComments
       let (tok, name) ← upperIdentTok
       let bsType := [mkBinder .type tok name]
@@ -1131,12 +1136,12 @@ def typeDecl : P (DataDecl × List BinderSpan × Span) :=
       skipComments
       let _ ← option? (withBacktracking (punct .pipe))
       skipComments
-      let (c0, bsC0) ← dataCtor
+      let (c0, bsC0) ← dataCtor typeTok.startCol
       let rest ← takeMany (withBacktracking do
         skipComments
         let _ ← punct .pipe
         skipComments
-        dataCtor)
+        dataCtor typeTok.startCol)
       return ({
         name := .mk name
         params := params.toList.map fun (_, n) => ValName.mk n
@@ -1689,6 +1694,15 @@ def parseTyEq (src : String) (expected : Ty) : Bool :=
 #guard (match parseProgram "type Maybe a = Just a | Nothing\nlet x = Nothing\nx" with
   | .ok p => (SurfaceBridge.lowerProgram p).isSome
   | _ => false)
+
+-- A type declaration ends at the next unindented line, so the program's body
+-- isn't read as another constructor field.
+private def ctorArities (src : String) : Option (List (List Nat)) :=
+  (parseProgram src).toOption.map (·.decls.map (·.ctors.map (·.2.length)))
+
+#guard ctorArities "type Color = Red | Green | Blue\n\nBlue\n" = some [[0, 0, 0]]
+#guard ctorArities "type T = A Int\n\nx\n" = some [[1]]
+#guard ctorArities "type T a = Leaf | Node a\n  (T a)\nx\n" = some [[0, 2]]
 
 -- An error inside a `let`, `if` or `match` keeps its message and position.
 private def programErrorAt (src : String) : Option (String × Nat × Nat) :=

@@ -84,7 +84,7 @@ And patterns in bindings:
   fields are now type atoms, as in Haskell and Elm. Worth a look at what else
   the field parser accepts too eagerly (see the next entry).
 
-- [ ] **Parser swallows a bare program body after a `type` declaration.** If
+- [x] **Parser swallows a bare program body after a `type` declaration.** If
   a `type` declaration is followed directly by the program's final
   expression, the parser reads that expression as an extra constructor field
   of the declaration's last constructor:
@@ -99,7 +99,9 @@ And patterns in bindings:
   take a `Red` argument. `(Red)` fails the same way. Any `let` between the
   declaration and the body hides the problem. The constructor-field parser
   (`dataCtor` / `ctorField` in `FHM/Unverified/Surface/Parse.lean`) should
-  stop at the end of the declaration's layout block.
+  stop at the end of the declaration's layout block. Fixed: a constructor
+  field on a later line must be indented past `type`, so the declaration ends
+  at the next unindented line.
 
 - [ ] **Value recursion overflows the evaluator's stack.** A recursive
   definition that isn't a function crashes `fhm run` with `Stack overflow
