@@ -26,6 +26,32 @@ And patterns in bindings:
    tuple patterns such as `\((a, b), c) -> …` straight away.
 8. **Patterns in lambda parameters**, then **pattern lets**.
 
+## Next implementation batches
+
+After pattern lets, keep one bounded reliability fix ahead of the larger
+annotation work. Commit independently reviewable slices within each batch.
+
+1. **Evaluator depth guard.** Detect excessive evaluation-context depth without
+   using the native call stack, and report a located, structured evaluation
+   error. Check deep non-tail recursion and `let x = x + 1`, ordinary recursive
+   programs, and existing fuel-limited tail loops. This contains the crash;
+   an explicit continuation evaluator remains a separate larger project.
+2. **Type holes, then named holes.** First settle how incomplete annotations
+   become inference constraints while preserving the verified acceptance path.
+   Implement `_`, then sharing for repeated `_a`. Test holes in arrows, tuples,
+   lists and constructors, scoped rigid variables, incompatible constraints,
+   and the rule that incomplete recursive signatures do not grant polymorphic
+   recursive calls. Give hole failures typed reasons and source spans as part
+   of this work.
+3. **Function-head binders.** Build on holes for independently optional parameter
+   and return annotations, plus explicit `{a}` binders. Check equivalence to
+   explicit RHS lambdas, scope/hover/definition locations, and complete versus
+   incomplete recursive signatures. Keep the fully annotated and inferred
+   cases in separately reviewable commits.
+
+Playground embeds stay deferred until the playground has been battle-tested.
+Error recovery and formatter work remain separate from these batches.
+
 ## Bugs
 
 - [x] **Exhaustiveness checker rejects complete nested matches.**
