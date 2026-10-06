@@ -4,17 +4,17 @@
     6-10    "Maybe"        type  Maybe : type Maybe a =⏎   | Just a⏎   | Nothing  → def 4:6
     12      "a"            param a : type variable (of Maybe)  → def 4:12
 5 │   | Just a
-    5-8     "Just"         ctor  Just : ∀ a. a → Maybe a  → def 5:5
+    5-8     "Just"         ctor  Just : ∀ a. a → Maybe a  → def 5:5  declaration "type Maybe a =\n  | Just a\n  | Nothing"
     10      "a"            param a : type variable (of Maybe)  → def 4:12
 6 │   | Nothing
-    5-11    "Nothing"      ctor  Nothing : ∀ a. Maybe a  → def 6:5
+    5-11    "Nothing"      ctor  Nothing : ∀ a. Maybe a  → def 6:5  declaration "type Maybe a =\n  | Just a\n  | Nothing"
 8 │ type Tree a =
     6-9     "Tree"         type  Tree : type Tree a =⏎   | Leaf⏎   | Node a (Tree a) (Tree a)  → def 8:6
     11      "a"            param a : type variable (of Tree)  → def 8:11
 9 │   | Leaf
-    5-8     "Leaf"         ctor  Leaf : ∀ a. Tree a  → def 9:5
+    5-8     "Leaf"         ctor  Leaf : ∀ a. Tree a  → def 9:5  declaration "type Tree a =\n  | Leaf\n  | Node a (Tree a) (Tree a)"
 10 │   | Node a (left : Tree a) (right : Tree a)
-    5-8     "Node"         ctor  Node : ∀ a. a → Tree a → Tree a → Tree a  → def 10:5
+    5-8     "Node"         ctor  Node : ∀ a. a → Tree a → Tree a → Tree a  → def 10:5  declaration "type Tree a =\n  | Leaf\n  | Node a (Tree a) (Tree a)"
     10      "a"            param a : type variable (of Tree)  → def 8:11
     20-23   "Tree"         type  Tree : type Tree a =⏎   | Leaf⏎   | Node a (Tree a) (Tree a)  → def 8:6
     25      "a"            param a : type variable (of Tree)  → def 8:11
@@ -22,9 +22,9 @@
     42      "a"            param a : type variable (of Tree)  → def 8:11
 12 │ type Color = Red | Green | Blue
     6-10    "Color"        type  Color : type Color =⏎   | Red⏎   | Green⏎   | Blue  → def 12:6
-    14-16   "Red"          ctor  Red : Color  → def 12:14
-    20-24   "Green"        ctor  Green : Color  → def 12:20
-    28-31   "Blue"         ctor  Blue : Color  → def 12:28
+    14-16   "Red"          ctor  Red : Color  → def 12:14  declaration "type Color =\n  | Red\n  | Green\n  | Blue"
+    20-24   "Green"        ctor  Green : Color  → def 12:20  declaration "type Color =\n  | Red\n  | Green\n  | Blue"
+    28-31   "Blue"         ctor  Blue : Color  → def 12:28  declaration "type Color =\n  | Red\n  | Green\n  | Blue"
 14 │ let map : {a b} (a -> b) -> List a -> List b =
     5-7     "map"          val   map : ∀ a b. (a → b) → List a → List b  → def 14:5
     12      "a"            param a : type variable (scheme binder)  → def 14:12
@@ -149,16 +149,16 @@
     12-16   " with"        expr  Maybe b  ⟦match m with⟧
 33 │     | Nothing -> Nothing
     5-6     "| "           expr  Maybe b  ⟦| Nothing -> Nothing⟧
-    7-13    "Nothing"      ctor  Nothing : ∀ a. Maybe a  → def 6:5
+    7-13    "Nothing"      ctor  Nothing : ∀ a. Maybe a  → def 6:5  declaration "type Maybe a =\n  | Just a\n  | Nothing"
     14-17   " -> "         expr  Maybe b  ⟦| Nothing -> Nothing⟧
-    18-24   "Nothing"      ctor  Nothing : Maybe b  → def 6:5
+    18-24   "Nothing"      ctor  Nothing : Maybe b  → def 6:5  declaration "type Maybe a =\n  | Just a\n  | Nothing"
 34 │     | Just x -> Just (f x)
     5-6     "| "           expr  Maybe b  ⟦| Just x -> Just (f x)⟧
-    7-10    "Just"         ctor  Just : ∀ a. a → Maybe a  → def 5:5
+    7-10    "Just"         ctor  Just : ∀ a. a → Maybe a  → def 5:5  declaration "type Maybe a =\n  | Just a\n  | Nothing"
     11      " "            expr  Maybe b  ⟦| Just x -> Just (f x)⟧
     12      "x"            pat   x : a  → def 34:12
     13-16   " -> "         expr  Maybe b  ⟦| Just x -> Just (f x)⟧
-    17-20   "Just"         ctor  Just : b → Maybe b  → def 5:5
+    17-20   "Just"         ctor  Just : b → Maybe b  → def 5:5  declaration "type Maybe a =\n  | Just a\n  | Nothing"
     21      " "            expr  Maybe b  ⟦Just (f x)⟧
     22      "("            expr  b  ⟦(f x)⟧
     23      "f"            param f : a → b  → def 31:4
@@ -187,12 +187,12 @@
     12-16   " with"        expr  Tree b  ⟦match t with⟧
 39 │     | Leaf -> Leaf
     5-6     "| "           expr  Tree b  ⟦| Leaf -> Leaf⟧
-    7-10    "Leaf"         ctor  Leaf : ∀ a. Tree a  → def 9:5
+    7-10    "Leaf"         ctor  Leaf : ∀ a. Tree a  → def 9:5  declaration "type Tree a =\n  | Leaf\n  | Node a (Tree a) (Tree a)"
     11-14   " -> "         expr  Tree b  ⟦| Leaf -> Leaf⟧
-    15-18   "Leaf"         ctor  Leaf : Tree b  → def 9:5
+    15-18   "Leaf"         ctor  Leaf : Tree b  → def 9:5  declaration "type Tree a =\n  | Leaf\n  | Node a (Tree a) (Tree a)"
 40 │     | Node x l r -> Node (f x) (treeMap f l) (treeMap f r)
     5-6     "| "           expr  Tree b  ⟦| Node x l r -> Node (f x) (treeMap f l) (treeMap f r)⟧
-    7-10    "Node"         ctor  Node : ∀ a. a → Tree a → Tree a → Tree a  → def 10:5
+    7-10    "Node"         ctor  Node : ∀ a. a → Tree a → Tree a → Tree a  → def 10:5  declaration "type Tree a =\n  | Leaf\n  | Node a (Tree a) (Tree a)"
     11      " "            expr  Tree b  ⟦| Node x l r -> Node (f x) (treeMap f l) (treeMap f r)⟧
     12      "x"            pat   x : a  → def 40:12
     13      " "            expr  Tree b  ⟦| Node x l r -> Node (f x) (treeMap f l) (treeMap f r)⟧
@@ -200,7 +200,7 @@
     15      " "            expr  Tree b  ⟦| Node x l r -> Node (f x) (treeMap f l) (treeMap f r)⟧
     16      "r"            pat   r : Tree a  → def 40:16
     17-20   " -> "         expr  Tree b  ⟦| Node x l r -> Node (f x) (treeMap f l) (treeMap f r)⟧
-    21-24   "Node"         ctor  Node : b → Tree b → Tree b → Tree b  → def 10:5
+    21-24   "Node"         ctor  Node : b → Tree b → Tree b → Tree b  → def 10:5  declaration "type Tree a =\n  | Leaf\n  | Node a (Tree a) (Tree a)"
     25      " "            expr  Tree b → Tree b → Tree b  ⟦Node (f x)⟧
     26      "("            expr  b  ⟦(f x)⟧
     27      "f"            param f : a → b  → def 37:4
@@ -237,7 +237,7 @@
     10      "2"            lit   2 : Int
     11-15   " then"        expr  Color  ⟦if n < 2 then⟧
 44 │     Red
-    5-7     "Red"          ctor  Red : Color  → def 12:14
+    5-7     "Red"          ctor  Red : Color  → def 12:14  declaration "type Color =\n  | Red\n  | Green\n  | Blue"
 45 │   else if n < 5 then
     3-7     "else "        expr  Color  ⟦else if n < 5 then⟧
     8-10    "if "          expr  Color  ⟦if n < 5 then⟧
@@ -248,11 +248,11 @@
     15      "5"            lit   5 : Int
     16-20   " then"        expr  Color  ⟦if n < 5 then⟧
 46 │     Green
-    5-9     "Green"        ctor  Green : Color  → def 12:20
+    5-9     "Green"        ctor  Green : Color  → def 12:20  declaration "type Color =\n  | Red\n  | Green\n  | Blue"
 47 │   else
     3-6     "else"         expr  Color
 48 │     Blue
-    5-8     "Blue"         ctor  Blue : Color  → def 12:28
+    5-8     "Blue"         ctor  Blue : Color  → def 12:28  declaration "type Color =\n  | Red\n  | Green\n  | Blue"
 50 │ let warm = \c ->
     5-8     "warm"         val   warm : Color → Bool  → def 50:5
     12      "\\"           expr  Color → Bool  ⟦\c ->⟧
@@ -264,42 +264,42 @@
     10-14   " with"        expr  Bool  ⟦match c with⟧
 52 │   | Red -> True
     3-4     "| "           expr  Bool  ⟦| Red -> True⟧
-    5-7     "Red"          ctor  Red : Color  → def 12:14
+    5-7     "Red"          ctor  Red : Color  → def 12:14  declaration "type Color =\n  | Red\n  | Green\n  | Blue"
     8-11    " -> "         expr  Bool  ⟦| Red -> True⟧
     12-15   "True"         lit   True : Bool
 53 │   | Green -> False
     3-4     "| "           expr  Bool  ⟦| Green -> False⟧
-    5-9     "Green"        ctor  Green : Color  → def 12:20
+    5-9     "Green"        ctor  Green : Color  → def 12:20  declaration "type Color =\n  | Red\n  | Green\n  | Blue"
     10-13   " -> "         expr  Bool  ⟦| Green -> False⟧
     14-18   "False"        lit   False : Bool
 54 │   | Blue -> False
     3-4     "| "           expr  Bool  ⟦| Blue -> False⟧
-    5-8     "Blue"         ctor  Blue : Color  → def 12:28
+    5-8     "Blue"         ctor  Blue : Color  → def 12:28  declaration "type Color =\n  | Red\n  | Green\n  | Blue"
     9-12    " -> "         expr  Bool  ⟦| Blue -> False⟧
     13-17   "False"        lit   False : Bool
 56 │ let t = Node 1 Leaf (Node 4 Leaf (Node 9 Leaf Leaf))
     5       "t"            val   t : Tree Int  → def 56:5
-    9-12    "Node"         ctor  Node : Int → Tree Int → Tree Int → Tree Int  → def 10:5
+    9-12    "Node"         ctor  Node : Int → Tree Int → Tree Int → Tree Int  → def 10:5  declaration "type Tree a =\n  | Leaf\n  | Node a (Tree a) (Tree a)"
     13      " "            expr  Tree Int → Tree Int → Tree Int  ⟦Node 1⟧
     14      "1"            lit   1 : Int
     15      " "            expr  Tree Int → Tree Int  ⟦Node 1 Leaf⟧
-    16-19   "Leaf"         ctor  Leaf : Tree Int  → def 9:5
+    16-19   "Leaf"         ctor  Leaf : Tree Int  → def 9:5  declaration "type Tree a =\n  | Leaf\n  | Node a (Tree a) (Tree a)"
     20      " "            expr  Tree Int  ⟦Node 1 Leaf (Node 4 Leaf (Node 9 Leaf Leaf))⟧
     21      "("            expr  Tree Int  ⟦(Node 4 Leaf (Node 9 Leaf Leaf))⟧
-    22-25   "Node"         ctor  Node : Int → Tree Int → Tree Int → Tree Int  → def 10:5
+    22-25   "Node"         ctor  Node : Int → Tree Int → Tree Int → Tree Int  → def 10:5  declaration "type Tree a =\n  | Leaf\n  | Node a (Tree a) (Tree a)"
     26      " "            expr  Tree Int → Tree Int → Tree Int  ⟦Node 4⟧
     27      "4"            lit   4 : Int
     28      " "            expr  Tree Int → Tree Int  ⟦Node 4 Leaf⟧
-    29-32   "Leaf"         ctor  Leaf : Tree Int  → def 9:5
+    29-32   "Leaf"         ctor  Leaf : Tree Int  → def 9:5  declaration "type Tree a =\n  | Leaf\n  | Node a (Tree a) (Tree a)"
     33      " "            expr  Tree Int  ⟦(Node 4 Leaf (Node 9 Leaf Leaf))⟧
     34      "("            expr  Tree Int  ⟦(Node 9 Leaf Leaf)⟧
-    35-38   "Node"         ctor  Node : Int → Tree Int → Tree Int → Tree Int  → def 10:5
+    35-38   "Node"         ctor  Node : Int → Tree Int → Tree Int → Tree Int  → def 10:5  declaration "type Tree a =\n  | Leaf\n  | Node a (Tree a) (Tree a)"
     39      " "            expr  Tree Int → Tree Int → Tree Int  ⟦Node 9⟧
     40      "9"            lit   9 : Int
     41      " "            expr  Tree Int → Tree Int  ⟦Node 9 Leaf⟧
-    42-45   "Leaf"         ctor  Leaf : Tree Int  → def 9:5
+    42-45   "Leaf"         ctor  Leaf : Tree Int  → def 9:5  declaration "type Tree a =\n  | Leaf\n  | Node a (Tree a) (Tree a)"
     46      " "            expr  Tree Int  ⟦(Node 9 Leaf Leaf)⟧
-    47-50   "Leaf"         ctor  Leaf : Tree Int  → def 9:5
+    47-50   "Leaf"         ctor  Leaf : Tree Int  → def 9:5  declaration "type Tree a =\n  | Leaf\n  | Node a (Tree a) (Tree a)"
     51      ")"            expr  Tree Int  ⟦(Node 9 Leaf Leaf)⟧
     52      ")"            expr  Tree Int  ⟦(Node 4 Leaf (Node 9 Leaf Leaf))⟧
 58 │ let xs = [0, 1, 4, 9, 2]

@@ -26,7 +26,7 @@ const update = process.env.UPDATE_HOVER_SNAPSHOTS === "1";
 /**
  * One line per maximal run of columns with the same hover and definition:
  *
- *   `cols  text  kind  shown  [⟦highlight⟧]  [→ def line:col]  [doc "…"]`
+ *   `cols  text  kind  shown  [⟦highlight⟧]  [→ def line:col]  [doc "…"]  [declaration "…"]`
  *
  * Runs with neither are left out. The highlight `⟦…⟧` is shown when it differs
  * from the run's own columns.
@@ -56,6 +56,7 @@ export function renderSnapshot(source, raw) {
       }
       if (run.def) entry += `  → def ${run.def.startLine0 + 1}:${run.def.startCol0 + 1}`;
       if (run.hit?.doc) entry += `  doc ${JSON.stringify(run.hit.doc)}`;
+      if (run.hit?.declaration) entry += `  declaration ${JSON.stringify(run.hit.declaration)}`;
       out.push(entry);
     };
     for (let col0 = 0; col0 < lineText.length; col0++) {

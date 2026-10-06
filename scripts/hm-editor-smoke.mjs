@@ -8,7 +8,7 @@ import { createRequire } from "node:module";
 import { fileURLToPath } from "node:url";
 
 const require = createRequire(import.meta.url);
-const { normalizePayload, resolveHover, resolveDefinition } = require("../editors/shared/fhmEditorCore.cjs");
+const { normalizePayload, resolveHover, resolveDefinition, hoverMarkdown } = require("../editors/shared/fhmEditorCore.cjs");
 const binary = process.env.FHM || fileURLToPath(new URL("../.lake/build/bin/fhm", import.meta.url));
 let failures = 0;
 let tests = 0;
@@ -204,6 +204,37 @@ test("complete nested patterns check and run; nested gaps remain rejected", () =
       assert.match(JSON.stringify(response.payload), /match not exhaustive/);
     }
   }
+});
+
+test("constructor hovers keep instantiated signatures and docs beside their declaration", () => {
+  const source = "type Maybe element =\n  --- Wraps a value.\n  | Just element\n  | Nothing\nlet unwrap = \\m -> match m with | Just x -> x | Nothing -> 0\nunwrap (Just 3)\n";
+  const { ranged, tokens } = normalizePayload(diagnose(source));
+  const declaration = "type Maybe element =\n  | Just element\n  | Nothing";
+  for (const line0 of [2, 4, 5]) {
+    const line = source.split("\n")[line0];
+    const col0 = line.indexOf("Just");
+    const hit = resolveHover(ranged, line0, col0, line, tokens);
+    assert.equal(hit?.kind, "ctor");
+    assert.equal(hit.declaration, declaration);
+    assert.equal(hit.doc, "Wraps a value.");
+    const markdown = hoverMarkdown(hit);
+    assert.ok(markdown.startsWith(`\`\`\`fhm\nJust : ${hit.type}\n\`\`\``));
+    assert.ok(markdown.includes(declaration));
+    assert.equal(markdown.split("Wraps a value.").length, 2, "constructor docs appear once");
+    const target = resolveDefinition(ranged, line0, col0, line, tokens);
+    assert.deepEqual([target?.startLine0, target?.startCol0], [2, 4]);
+    if (line0 === 5) assert.equal(hit.type, "Int → Maybe Int");
+  }
+  const prelude = normalizePayload(diagnose("Cons 1 Nil\n"));
+  const cons = resolveHover(prelude.ranged, 0, 0, "Cons 1 Nil", prelude.tokens);
+  assert.match(cons.declaration, /^type List a =/);
+  assert.match(cons.declaration, /Cons a \(List a\)/);
+  assert.equal(cons.type, "Int → List Int → List Int");
+  assert.equal(resolveDefinition(prelude.ranged, 0, 0, "Cons 1 Nil", prelude.tokens), undefined);
+  const plain = normalizePayload(diagnose("let x = 1\nx\n"));
+  const x = resolveHover(plain.ranged, 1, 0, "x", plain.tokens);
+  assert.equal(x.declaration, undefined);
+  assert.equal(hoverMarkdown(x), "```fhm\nx : Int\n```");
 });
 
 test("missing cases are actionable nested patterns, shared by CLI and editor", () => {

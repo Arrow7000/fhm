@@ -64,6 +64,8 @@ structure RangedSymbol where
   isDef : Bool := false
   /-- Doc comment of the definition (also on its occurrences). -/
   doc : Option String := none
+  /-- A constructor's enclosing data declaration, separate from its use-site type. -/
+  declaration : Option String := none
   deriving Repr, BEq
 
 def RangedSymbol.toJson (s : RangedSymbol) : Lean.Json :=
@@ -80,7 +82,8 @@ def RangedSymbol.toJson (s : RangedSymbol) : Lean.Json :=
     ("scopeEndLine", Lean.Json.num s.scope.endLine),
     ("scopeEndCol", Lean.Json.num s.scope.endCol),
     ("def", Lean.Json.bool s.isDef)
-  ] ++ (s.doc.map fun d => ("doc", Lean.Json.str d)).toList
+  ] ++ (s.doc.map fun d => ("doc", Lean.Json.str d)).toList ++
+    (s.declaration.map fun d => ("declaration", Lean.Json.str d)).toList
 
 def mkSym (name kind type_ : String) (span scope : Span) : RangedSymbol :=
   { name, kind, type_, span, scope }
@@ -140,7 +143,8 @@ def preludeTypeCtorSymbols (ctors : CtorEnv) (scope : Span) : List RangedSymbol 
         | some ctor => ctor.toTy.pretty
         | none => prettyCtorName cname
       ({ name := prettyCtorName cname, kind := "ctor", type_ := tyStr,
-         span := Span.empty, scope := scope, isDef := true } : RangedSymbol)
+         span := Span.empty, scope := scope, isDef := true,
+         declaration := some (prettyCoreDataDecl d) } : RangedSymbol)
     typeSym :: ctorSyms
 
 /-- Built-in primitive types (`Bool` is a prelude data type instead). Like the
@@ -403,6 +407,11 @@ def collectHover (src : String) (p : Surface.Program) (binders : List BinderSpan
               let displayScopes := FHM.Unverified.HMDisplay.scopes typed locations
               let docAt (span : Span) : Option String :=
                 (binders.find? (·.span == span)).bind (·.doc?)
+              let ctorDecl (name : String) : Option String :=
+                ((p.decls.find? fun d => d.ctors.any fun c => prettyCtorName c.1 == name).map
+                  fun d => prettySurfaceDataDecl d) <|>
+                ((preludeDecls.find? fun d => d.ctors.any fun c => prettyCtorName c.1 == name).map
+                  prettyCoreDataDecl)
               let values := locations.binders.filterMap fun b =>
                 (FHM.Unverified.HMDisplay.binderType typed displayScopes locations b.site).map
                   fun ty => { mkSym b.name b.kind.toString ty b.span b.scope with
@@ -425,7 +434,9 @@ def collectHover (src : String) (p : Surface.Program) (binders : List BinderSpan
                   | none => if occ.kind == "ctor" then
                       (binders.find? fun b => b.kind == .ctor && b.name == occ.name).bind (·.doc?)
                     else none
-                pure { mkSym name kind ty source.span source.span with doc }
+                pure { mkSym name kind ty source.span source.span with
+                  doc := doc
+                  declaration := if occ.kind == "ctor" then ctorDecl name else none }
               let syntaxSyms := (binders.filterMap fun b =>
                 if locations.binders.any (fun s => s.span == b.span) then none
                 else if b.kind == .type then
@@ -450,7 +461,10 @@ def collectHover (src : String) (p : Surface.Program) (binders : List BinderSpan
                     | some (_, s) => s
                     | none => b.scope?.getD scope
                   some (mkSym b.name "param" label b.span sc)
-                else none).map fun s => { s with isDef := true, doc := docAt s.span }
+                else none).map fun s => { s with
+                  isDef := true
+                  doc := docAt s.span
+                  declaration := if s.kind == "ctor" then ctorDecl s.name else none }
               let prelude := (preludeTypeCtorSymbols ctors scope ++ primTypeSymbols scope).filter fun s =>
                 !(syntaxSyms.any fun b => b.name == s.name && b.kind == s.kind)
               let references := sp.references.filterMap fun ref => do

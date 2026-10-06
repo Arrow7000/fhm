@@ -666,3 +666,15 @@ def innerNonExhaustive : String :=
 #guard ((hoverReport innerNonExhaustive).map fun r =>
   r.diagnostics.map fun d => (d.code?, d.missingPatterns, d.moreMissing)) =
   some [(some "match.notExhaustive", ["_ :: _"], false)]
+
+-- Constructor declaration context belongs to definitions, pattern references
+-- and value occurrences, while the occurrence type remains specialised.
+#guard (match hoverSyms sameNameSrc with
+  | none => false
+  | some syms =>
+    match symbolAt syms 1 14, symbolAt syms 3 51, symbolAt syms 5 8 with
+    | some defn, some pat, some value =>
+        defn.declaration == some "type Box a =\n  | Box a" &&
+        pat.declaration == defn.declaration && value.declaration == defn.declaration &&
+        value.type_ == "Int → Box Int"
+    | _, _, _ => false)

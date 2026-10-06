@@ -164,13 +164,15 @@ And patterns in bindings:
 
 ## Editor tooling
 
-- [ ] **Richer hovers.** Hovers show a highlighted signature but little else.
-  Look at what Elm's and other high-quality language servers show on hover,
-  and how they format it. Ideas:
-  - Show a constructor's full declaration, not just its type.
-  - For annotated bindings, show the inferred type when it differs from the
+- [ ] **Richer hovers.** Constructors now show their enclosing data declaration
+  below the highlighted signature and documentation, at definitions, expression
+  occurrences and pattern references in both editors. Use-site signatures stay
+  instantiated, while the declaration preserves the source type-parameter names.
+  Remaining ideas:
+  - [x] Show a constructor's full declaration, not just its type.
+  - [ ] For annotated bindings, show the inferred type when it differs from the
     annotation.
-  - With error recovery, show something like "type unknown (error in `g`)"
+  - [ ] With error recovery, show something like "type unknown (error in `g`)"
     instead of nothing.
 
 - [x] **Missing-case witnesses.** Non-exhaustive matches now name missing

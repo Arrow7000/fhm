@@ -334,14 +334,18 @@ function kindBadge(kind) {
  * Markdown for a hover: the signature as an `fhm` code block, which both
  * VS Code and Monaco highlight with the registered FHM grammar, plus a prose
  * line where the payload's `type` is a description rather than a type, then
- * the definition's doc comment, if any.
+ * the definition's doc comment and constructor declaration, if any.
  * @param {any} hit
  */
 function hoverMarkdown(hit) {
   const doc = typeof hit?.doc === "string" && hit.doc.length > 0 ? hit.doc : "";
-  const signature = hoverSignature(hit);
-  // Doc comments are Markdown, shown under the signature as in other editors.
-  return doc ? `${signature}\n\n---\n\n${doc}` : signature;
+  const sections = [hoverSignature(hit)];
+  // Keep the instantiated signature and constructor docs above the declaration.
+  if (doc) sections.push(doc);
+  if (typeof hit?.declaration === "string" && hit.declaration.length > 0) {
+    sections.push("```fhm\n" + hit.declaration.replace(/`/g, "'") + "\n```");
+  }
+  return sections.join("\n\n---\n\n");
 }
 
 /**
@@ -604,7 +608,8 @@ function clampHoverRange(range, line0, col0, fallback) {
  *   startCol0: number,
  *   endLine0: number,
  *   endCol0: number,
- *   doc?: string
+ *   doc?: string,
+ *   declaration?: string
  * } | undefined}
  */
 function resolveHover(ranged, line0, col0, lineText, tokens) {
@@ -650,6 +655,10 @@ function resolveHover(ranged, line0, col0, lineText, tokens) {
     kind: kindBadge(sym.kind || "val"),
     type,
     ...(typeof sym.doc === "string" && sym.doc.length > 0 ? { doc: sym.doc } : {}),
+    ...(typeof sym.declaration === "string" && sym.declaration.length > 0
+      ? { declaration: sym.declaration.length > 2000
+          ? sym.declaration.slice(0, 2000) + "…" : sym.declaration }
+      : {}),
     ...range,
   };
 }
