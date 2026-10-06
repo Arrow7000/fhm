@@ -118,21 +118,6 @@ And patterns in bindings:
   like this should be rejected, as OCaml rejects `let rec x = x + 1` ("This
   kind of expression is not allowed as right-hand side of let rec").
 
-- [ ] **Parse errors inside a `match` arm lose their message and location.**
-  `infix chaining requires parentheses` is reported correctly for
-  `\x -> x + x + x`, but inside a match arm it becomes `unexpected token` at
-  the start of the definition's right-hand side (here 1:9):
-
-  ```
-  let f = \p ->
-    match p with
-    | x -> x + x + x
-
-  f 1
-  ```
-
-  Probably backtracking out of the arm and reporting the outermost failure.
-
 - [ ] **A type and a constructor with the same name are confused by hover and
   go to definition.** With `type Box a = Box a`, the `Box` in an annotation
   such as `Box a -> a` is resolved by name to the constructor, so hover shows

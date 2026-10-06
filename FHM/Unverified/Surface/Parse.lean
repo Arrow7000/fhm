@@ -1065,12 +1065,15 @@ partial def matchExpr : PE :=
 partial def expr : PE :=
   withErrorMessage "expected expression" do
     skipComments
-    first [
-      letExpr,
-      ifExpr,
-      matchExpr,
-      infixExpr
-    ]
+    -- Commit on the leading keyword rather than trying each form in turn:
+    -- `first` keeps only the last alternative's error, so an error inside a
+    -- `match` (say) would be reported as `infixExpr` rejecting the keyword.
+    let next : Option Token := (← option? nextTok).map (·.token)
+    match next with
+    | some (.keyword .«let») => letExpr
+    | some (.keyword .«if») => ifExpr
+    | some (.keyword .«match») => matchExpr
+    | _ => infixExpr
 
 end
 
@@ -1686,6 +1689,19 @@ def parseTyEq (src : String) (expected : Ty) : Bool :=
 #guard (match parseProgram "type Maybe a = Just a | Nothing\nlet x = Nothing\nx" with
   | .ok p => (SurfaceBridge.lowerProgram p).isSome
   | _ => false)
+
+-- An error inside a `let`, `if` or `match` keeps its message and position.
+private def programErrorAt (src : String) : Option (String × Nat × Nat) :=
+  match parseProgramWithSpans src with
+  | .error e => some (e.msg, e.line, e.col)
+  | .ok _ => none
+
+#guard programErrorAt "let f = \\p ->\n  match p with\n  | x -> x + x + x\nf 1\n" =
+  some ("infix chaining requires parentheses", 3, 18)
+#guard programErrorAt "let f = if True then 1 + 1 + 1 else 0\nf\n" =
+  some ("infix chaining requires parentheses", 1, 30)
+#guard programErrorAt "let f = let y = 1 + 1 + 1 in y\nf\n" =
+  some ("infix chaining requires parentheses", 1, 25)
 
 -- Doc comments attach to the binder they precede.
 private def docsOf (src : String) : List (String × String) :=
