@@ -16,7 +16,7 @@ Display types come from the producer's actual group-exit binder schemes.
 
 ```
 fhm [--json] [path]
-fhm run [--json] [path]
+fhm run [--json] [--fuel N] [path]
 ```
 
 - No path, human output: default `scratch/live.fhm` (watch-live).
@@ -110,6 +110,8 @@ def formatTiming (a : Ansi) (label : String) (ns : Nat) : String :=
 structure PipelineErr where
   stage : PipelineStage
   message : String
+  /-- Steps taken before evaluation stopped, for an exhausted step budget. -/
+  steps? : Option Nat := none
   line : Nat := 1
   col : Nat := 1
   endLine : Nat := line
@@ -126,11 +128,14 @@ structure PipelineOk where
   report : ProgramReport
   checkNs : Nat
   evalNs : Nat
+  steps : Nat
   resultPretty : String
 
 structure LiveArgs where
   json : Bool := false
   path : Option String := none
+  /-- Evaluate for at most this many small steps (`--fuel N`). -/
+  fuel : Option Nat := none
 
 /-- Read actual group-exit schemes by logical binder identity. Empty surface
 groups emit no Core node; every nonempty top-level group emits one `let` or
@@ -256,18 +261,49 @@ def checkPipeline (src : String) :
     runtimeExpr := e
   }
 
-/-- Evaluate an already-checked program (timed). -/
-def evalCheckedIO (c : CheckedProgram) : IO (Except PipelineErr PipelineOk) := do
+/-- How a step-counting evaluation ended. -/
+inductive EvalOutcome
+  | value (v : Expr) (steps : Nat)
+  | stuck (steps : Nat)
+  | outOfFuel (steps : Nat)
+
+instance : Inhabited EvalOutcome := ⟨.stuck 0⟩
+
+/-- Step `e` until it is a value, counting steps, for at most `fuel` steps. -/
+def evalCounting : (fuel : Nat) → Expr → (steps : Nat) → EvalOutcome
+  | 0, e, n => if SmallStep.isValue e then .value e n else .outOfFuel n
+  | fuel + 1, e, n =>
+    if SmallStep.isValue e then .value e n
+    else match SmallStep.step e with
+      | some e' => evalCounting fuel e' (n + 1)
+      | none => .stuck n
+
+/-- `evalCounting` without a step budget; like `evaluateUnsafe`, it may diverge. -/
+partial def evalCountingUnsafe (e : Expr) (n : Nat) : EvalOutcome :=
+  if SmallStep.isValue e then .value e n
+  else match SmallStep.step e with
+    | some e' => evalCountingUnsafe e' (n + 1)
+    | none => .stuck n
+
+/-- Evaluate an already-checked program (timed), optionally with a step budget. -/
+def evalCheckedIO (c : CheckedProgram) (fuel : Option Nat := none) :
+    IO (Except PipelineErr PipelineOk) := do
   let tEval0 ← IO.monoNanosNow
-  match SmallStep.evaluateUnsafe c.runtimeExpr with
-  | none =>
+  let outcome := match fuel with
+    | some fuel => evalCounting fuel c.runtimeExpr 0
+    | none => evalCountingUnsafe c.runtimeExpr 0
+  match outcome with
+  | .stuck _ =>
       return .error { stage := .eval, message := "stuck (diverged or no step)" }
-  | some v =>
+  | .outOfFuel n =>
+      return .error { stage := .eval, message := s!"stopped after {n} steps", steps? := some n }
+  | .value v n =>
       let tEval1 ← IO.monoNanosNow
       return .ok {
         report := c.report
         checkNs := c.checkNs
         evalNs := tEval1 - tEval0
+        steps := n
         resultPretty := v.pretty
       }
 
@@ -283,6 +319,7 @@ def PipelineOk.toJson (r : PipelineOk) : Lean.Json :=
     ("bindings", Lean.Json.arr binds.toArray),
     ("programTy", Lean.Json.str r.report.programPretty),
     ("result", Lean.Json.str r.resultPretty),
+    ("steps", Lean.Json.num r.steps),
     ("timings", Lean.Json.mkObj [
       ("checkNs", Lean.Json.num r.checkNs),
       ("evalNs", Lean.Json.num r.evalNs)
@@ -290,7 +327,7 @@ def PipelineOk.toJson (r : PipelineOk) : Lean.Json :=
   ]
 
 def PipelineErr.toJson (e : PipelineErr) : Lean.Json :=
-  Lean.Json.mkObj [
+  Lean.Json.mkObj <| [
     ("version", Lean.Json.num 1),
     ("ok", Lean.Json.bool false),
     ("stage", Lean.Json.str e.stage.tag),
@@ -299,7 +336,7 @@ def PipelineErr.toJson (e : PipelineErr) : Lean.Json :=
     ("col", Lean.Json.num e.col),
     ("endLine", Lean.Json.num e.endLine),
     ("endCol", Lean.Json.num e.endCol)
-  ]
+  ] ++ (e.steps?.map fun n => ("steps", Lean.Json.num n)).toList
 
 /-- Parse CLI: optional `--json` and one optional path. -/
 def parseArgs (args : List String) : Except String LiveArgs :=
@@ -309,16 +346,20 @@ def parseArgs (args : List String) : Except String LiveArgs :=
     | "--json" :: rest =>
         if acc.json then .error "duplicate --json"
         else go rest { acc with json := true }
+    | "--fuel" :: n :: rest =>
+        match n.toNat? with
+        | some fuel => go rest { acc with fuel := some fuel }
+        | none => .error s!"--fuel expects a step count, got `{n}`"
     | "-h" :: _ | "--help" :: _ =>
-        .error "usage: fhm run [--json] [path]\n\
+        .error "usage: fhm run [--json] [--fuel N] [path]\n\
   no path (human): scratch/live.fhm\n\
   no path (--json): read stdin\n\
   path: read that file"
     | flag :: rest =>
         if flag.startsWith "-" then
-          .error s!"unknown flag: {flag}\nusage: fhm run [--json] [path]"
+          .error s!"unknown flag: {flag}\nusage: fhm run [--json] [--fuel N] [path]"
         else if acc.path.isSome then
-          .error "usage: fhm run [--json] [path]"
+          .error "usage: fhm run [--json] [--fuel N] [path]"
         else
           go rest { acc with path := some flag }
   go args {}
@@ -354,7 +395,7 @@ def runLive (args : List String) : IO UInt32 := do
         (← IO.getStdout).flush
         IO.println (ansi.yellow "evaluating…")
         (← IO.getStdout).flush
-      match ← evalCheckedIO checked with
+      match ← evalCheckedIO checked liveArgs.fuel with
       | .error e =>
           if liveArgs.json then
             IO.println e.toJson.pretty

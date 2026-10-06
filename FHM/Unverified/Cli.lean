@@ -8,7 +8,7 @@ Single executable replacing `fhm_diagnose` and `fhm_live`:
 
 ```
 fhm diagnose [path]       # editor JSON v3 (stdin if no path)
-fhm run [--json] [path]   # parse → typecheck → eval
+fhm run [--json] [--fuel N] [path]   # parse → typecheck → eval
 fhm [--json] [path]       # default: run (watch-live compat)
 ```
 -/
@@ -17,7 +17,8 @@ def usage : String :=
   "usage: fhm <command> [options]\n\
    commands:\n\
      diagnose [path]          editor diagnostics + hover symbols (stdin if no path)\n\
-     run [--json] [path]      parse, typecheck, evaluate\n\
+     run [--json] [--fuel N] [path]\n\
+                              parse, typecheck, evaluate (at most N steps)\n\
    default (no command): same as run\n\
    \n\
    examples:\n\
