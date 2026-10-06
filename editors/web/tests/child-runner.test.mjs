@@ -29,3 +29,12 @@ test("a missing executable releases its slot", async () => {
   await assert.rejects(run("/nonexistent/fhm", [], "", 5000), { code: "ENOENT" });
   assert.equal((await run(process.execPath, ["-e", ""], "", 5000)).code, 0);
 });
+
+test("aborting kills the child and frees its slot", async () => {
+  const run = createRunner({ maxProcesses: 1 });
+  const controller = new AbortController();
+  const pending = run(process.execPath, ["-e", "setInterval(() => {}, 1000)"], "", 5000, controller.signal);
+  controller.abort();
+  await assert.rejects(pending, { status: 499 });
+  assert.equal((await run(process.execPath, ["-e", ""], "", 5000)).code, 0);
+});

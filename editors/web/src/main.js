@@ -1,6 +1,5 @@
 import * as monaco from "monaco-editor/esm/vs/editor/edcore.main.js";
 import "monaco-editor/min/vs/editor/editor.main.css";
-import "./style.css";
 import editorWorker from "monaco-editor/esm/vs/editor/editor.worker?worker";
 import {
   normalizePayload,
@@ -42,10 +41,10 @@ let ranged = [];
 // The example the program was loaded from, if any. While the program is
 // unmodified the URL names the example instead of embedding its source.
 let currentId = "";
+// The latest evaluation, kept (dimmed) while newer edits are being checked.
 let lastRun = null;
 let lastDiagnosis = null;
-let running = false;
-let diagnoseTimer, diagnoseAbort, saveTimer, urlTimer, shareTimer;
+let checkTimer, checkAbort, saveTimer, urlTimer, shareTimer;
 
 function status(text, kind = "") {
   $("status").textContent = text;
@@ -117,6 +116,31 @@ async function share() {
   shareTimer = setTimeout(() => (label.textContent = "Share"), 2000);
 }
 
+// Name downloads after the program's contents, so different programs don't
+// overwrite each other and the same program always gets the same name.
+async function download() {
+  const source = editor.getValue();
+  let name = "program";
+  try {
+    const digest = await crypto.subtle.digest(
+      "SHA-256",
+      new TextEncoder().encode(source),
+    );
+    const hex = [...new Uint8Array(digest)].map((b) =>
+      b.toString(16).padStart(2, "0"),
+    );
+    name = `program-${hex.join("").slice(0, 7)}`;
+  } catch {}
+  const url = URL.createObjectURL(
+    new Blob([source], { type: "text/plain;charset=utf-8" }),
+  );
+  const link = node("a");
+  link.href = url;
+  link.download = `${name}.fhm`;
+  link.click();
+  setTimeout(() => URL.revokeObjectURL(url), 1000);
+}
+
 function replaceProgram(program) {
   const current = editor.getValue();
   if (current !== program.source)
@@ -154,10 +178,13 @@ async function post(url, source, controller, timeout = 90000) {
     });
     const payload = await response.json();
     if (!response.ok)
-      throw new Error(
-        response.status === 503
-          ? "The compiler is busy. Try again in a moment."
-          : payload.error || `Compiler request failed (${response.status}).`,
+      throw Object.assign(
+        new Error(
+          response.status === 503
+            ? "The compiler is busy."
+            : payload.error || `Compiler request failed (${response.status}).`,
+        ),
+        { status: response.status },
       );
     return payload;
   } finally {
@@ -238,10 +265,13 @@ function renderProblems(markers) {
   }
 }
 
-async function diagnose() {
-  diagnoseAbort?.abort();
+// Check, and if that succeeds evaluate, the current program. Runs after every
+// edit; evaluation is cut off by a step and time budget on the server.
+async function check() {
+  clearTimeout(checkTimer);
+  checkAbort?.abort();
   const controller = new AbortController();
-  diagnoseAbort = controller;
+  checkAbort = controller;
   const model = editor.getModel();
   const version = model.getVersionId();
   const source = model.getValue();
@@ -250,8 +280,18 @@ async function diagnose() {
     if (!controller.signal.aborted) status(WAKING);
   }, 4000);
   try {
-    const raw = await post("/api/diagnose", source, controller);
+    let response;
+    try {
+      response = await post("/api/check", source, controller);
+    } catch (error) {
+      // Another visitor's request may hold the compiler for a moment.
+      if (error.status !== 503) throw error;
+      await new Promise((resolve) => setTimeout(resolve, 750));
+      if (controller.signal.aborted) return;
+      response = await post("/api/check", source, controller);
+    }
     if (version !== model.getVersionId() || controller.signal.aborted) return;
+    const { diagnose: raw, run } = response;
     const normalized = normalizePayload(raw);
     ranged = normalized.ranged;
     lastDiagnosis = { raw, source };
@@ -269,6 +309,8 @@ async function diagnose() {
     monaco.editor.setModelMarkers(model, "fhm", markers);
     renderProblems(markers);
     await renderTypes(raw, source);
+    if (run) lastRun = { source, payload: run };
+    renderResult();
     status(
       markers.length
         ? `${markers.length} problem${markers.length === 1 ? "" : "s"}`
@@ -283,7 +325,7 @@ async function diagnose() {
     )
       return;
     status(
-      `${error.message || "Couldn't reach the compiler."} Edit or run to retry.`,
+      `${error.message || "Couldn't reach the compiler."} Edit to retry.`,
       "err",
     );
   } finally {
@@ -291,26 +333,62 @@ async function diagnose() {
   }
 }
 
+// Evaluation that ran out of its live budget can be retried without it.
+async function runUnlimited(button) {
+  const source = editor.getValue();
+  button.disabled = true;
+  button.textContent = "Running…";
+  try {
+    const payload = await post("/api/run", source, new AbortController());
+    lastRun = { source, payload };
+  } catch (error) {
+    lastRun = {
+      source,
+      payload: {
+        ok: false,
+        stage: "eval",
+        message:
+          error.status === 504
+            ? "still running after 20 s, so it was stopped"
+            : error.message,
+      },
+    };
+  }
+  if (source === editor.getValue()) renderResult();
+}
+
+const steps = (n) => `${n.toLocaleString("en")} step${n === 1 ? "" : "s"}`;
+
 function renderResult() {
   const block = $("result");
   block.replaceChildren();
   block.classList.remove("stale");
-  if (!lastRun) {
-    const hint = node("p", "note", "Run ");
-    hint.append(
-      node("kbd", "", mac ? "⌘↵" : "Ctrl+Enter"),
-      " to evaluate the final expression.",
-    );
-    return block.append(hint);
-  }
+  if (!lastRun) return;
   const { payload, source } = lastRun;
   const heading = node("h2", "heading", "Result");
   block.append(heading);
   if (source !== editor.getValue()) {
     block.classList.add("stale");
-    heading.textContent = "Result (program edited since this run)";
+    heading.textContent = "Result (of an earlier version)";
   }
   if (payload.ok === false) {
+    const limited = payload.limit === "time" || payload.steps !== undefined;
+    if (limited) {
+      const stop =
+        payload.steps !== undefined
+          ? `Stopped after ${steps(payload.steps)}.`
+          : `Stopped after ${payload.message.replace("stopped after ", "")}.`;
+      const note = node("p", "note", `${stop} The program may not terminate. `);
+      const button = node(
+        "button",
+        "link-button inline",
+        "Run without a limit",
+      );
+      button.onclick = () => runUnlimited(button);
+      note.append(button);
+      block.append(note);
+      return;
+    }
     // Positions are listed under problems, from the more precise diagnose pass.
     const box = node("div", "run-error");
     box.append(
@@ -330,35 +408,12 @@ function renderResult() {
       node(
         "p",
         "note",
-        `Checked in ${formatNs(t.checkNs)}, evaluated in ${formatNs(t.evalNs)}`,
+        `Checked in ${formatNs(t.checkNs)}, evaluated in ${formatNs(t.evalNs)}` +
+          (typeof payload.steps === "number"
+            ? ` (${steps(payload.steps)})`
+            : ""),
       ),
     );
-}
-
-async function runProgram() {
-  if (running) return;
-  running = true;
-  $("run").disabled = true;
-  $("run-label").textContent = "Running…";
-  const source = editor.getValue();
-  const waiting = setTimeout(() => status(WAKING), 4000);
-  try {
-    const payload = await post("/api/run", source, new AbortController());
-    lastRun = { source, payload };
-    renderResult();
-  } catch (error) {
-    lastRun = {
-      source,
-      payload: { ok: false, stage: "error", message: error.message },
-    };
-    renderResult();
-  } finally {
-    clearTimeout(waiting);
-    running = false;
-    $("run").disabled = false;
-    $("run-label").textContent = "Run";
-    if (/Waiting/.test($("status").textContent)) void diagnose();
-  }
 }
 
 /* Editor setup */
@@ -512,14 +567,24 @@ function examplesMenu() {
   }
   function open() {
     const source = editor.getValue();
-    menu.replaceChildren(
-      ...examples.map((example) =>
+    menu.replaceChildren();
+    let section;
+    for (const example of examples) {
+      if (example.section !== section) {
+        section = example.section;
+        const label = node("div", "menu-section", section);
+        label.setAttribute("role", "presentation");
+        menu.append(label);
+      }
+      menu.append(
         item(
           example.title,
           () => replaceProgram(example),
           currentId === example.id && example.source === source,
         ),
-      ),
+      );
+    }
+    menu.append(
       node("hr"),
       item("Blank program", () => replaceProgram({ source: "" })),
     );
@@ -679,10 +744,10 @@ async function main() {
   // Register these inside Monaco too: its insert-line command otherwise eats
   // Cmd/Ctrl+Enter before the page-level shortcut can see the event.
   editor.addAction({
-    id: "fhm.run",
-    label: "Run program",
+    id: "fhm.check",
+    label: "Check and run now",
     keybindings: [monaco.KeyMod.CtrlCmd | monaco.KeyCode.Enter],
-    run: runProgram,
+    run: check,
   });
   editor.addAction({
     id: "fhm.share",
@@ -725,15 +790,15 @@ async function main() {
   });
 
   editor.onDidChangeModelContent(() => {
-    diagnoseAbort?.abort();
+    checkAbort?.abort();
     ranged = [];
     if (lastRun) renderResult();
     clearTimeout(saveTimer);
     saveTimer = setTimeout(save, 250);
     clearTimeout(urlTimer);
     urlTimer = setTimeout(syncUrl, 400);
-    clearTimeout(diagnoseTimer);
-    diagnoseTimer = setTimeout(diagnose, 350);
+    clearTimeout(checkTimer);
+    checkTimer = setTimeout(check, 300);
   });
   editor.onDidChangeCursorPosition(({ position }) => {
     $("cursor").textContent =
@@ -755,7 +820,6 @@ async function main() {
     }
   });
 
-  $("run").onclick = runProgram;
   $("share").onclick = share;
   $("help").onclick = () => $("help-dialog").showModal();
   $("theme").onclick = () => {
@@ -764,16 +828,7 @@ async function main() {
     storage.set("theme", next);
     applyTheme();
   };
-  $("download").onclick = () => {
-    const url = URL.createObjectURL(
-      new Blob([editor.getValue()], { type: "text/plain;charset=utf-8" }),
-    );
-    const link = node("a");
-    link.href = url;
-    link.download = `${currentId || "program"}.fhm`;
-    link.click();
-    setTimeout(() => URL.revokeObjectURL(url), 1000);
-  };
+  $("download").onclick = download;
   const dialog = $("help-dialog");
   dialog.querySelector(".dialog-close").onclick = () => dialog.close();
   dialog.addEventListener("click", (event) => {
@@ -787,7 +842,7 @@ async function main() {
     if (!(event.metaKey || event.ctrlKey) || dialog.open) return;
     if (event.key === "Enter") {
       event.preventDefault();
-      void runProgram();
+      void check();
     } else if (event.key.toLowerCase() === "s") {
       event.preventDefault();
       void share();
@@ -798,7 +853,7 @@ async function main() {
   renderResult();
   save();
   await syncUrl();
-  await diagnose();
+  await check();
   if (program.notice)
     status(`Couldn't open the link: ${program.notice}`, "err");
 }

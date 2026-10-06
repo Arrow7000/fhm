@@ -115,6 +115,7 @@ lake build fhm       # build the fhm executable
 ```bash
 .lake/build/bin/fhm run path/to/program.fhm          # infer types, then evaluate
 .lake/build/bin/fhm --json path/to/program.fhm       # the same, as JSON
+.lake/build/bin/fhm run --fuel 100000 program.fhm    # stop after 100000 evaluation steps
 .lake/build/bin/fhm diagnose path/to/program.fhm     # diagnostics and hover info for editors
 ```
 
@@ -129,7 +130,9 @@ This uses `entr` or `fswatch` if available and falls back to polling.
 
 ### Browser playground
 
-A Monaco editor with inline errors, hover types, and a Run button:
+A Monaco editor that type-checks and evaluates the program as you type, with
+inline errors and hover types. The URL always encodes the current program, so it
+doubles as a share link:
 
 ```bash
 lake build fhm

@@ -35,8 +35,7 @@ try {
   await ready();
   // A fresh visitor sees the first example, named in the URL.
   assert.equal(await hash(), `#example=${examples[0].id}`);
-  await page.locator(".monaco-editor textarea").focus();
-  await page.keyboard.press(`${mod}+Enter`);
+  // The program is evaluated without pressing anything.
   await page.locator(".result-value").waitFor();
   assert.equal(
     await page.locator(".result-value").innerText(),
@@ -46,10 +45,7 @@ try {
 
   const downloadEvent = page.waitForEvent("download");
   await page.locator("#download").click();
-  assert.equal(
-    (await downloadEvent).suggestedFilename(),
-    `${examples[0].id}.fhm`,
-  );
+  assert.match((await downloadEvent).suggestedFilename(), /^program-[0-9a-f]{7}\.fhm$/);
 
   await page.locator("#divider").focus();
   await page.keyboard.press("ArrowLeft");
@@ -58,13 +54,21 @@ try {
     "58",
   );
 
-  // Editing keeps the address bar in sync, and marks the old result stale.
+  // Editing re-evaluates and keeps the address bar in sync.
   const edited = "-- a saved draft\nlet answer = 42\nanswer\n";
   await program(page, edited);
-  await ready();
+  await page.locator(".result-value", { hasText: /^42$/ }).waitFor();
   await page.waitForFunction(() => location.hash.startsWith("#code="));
   assert.equal(await sourceFromHash(await hash()), edited);
-  assert.ok(await page.locator("#result.stale").count());
+  // A program that no longer type-checks keeps the last result, dimmed.
+  await program(page, "let answer = 42\nanswer True\n");
+  await page.locator("#status.err").waitFor();
+  assert.ok(await page.locator("#result.stale .result-value").count());
+  // A program that doesn't finish within the live budget can run without it.
+  await program(page, "let loop = \\n -> loop (n + 1)\nloop 0\n");
+  await page.locator("#result button", { hasText: "Run without a limit" }).waitFor();
+  await program(page, edited);
+  await page.locator(".result-value", { hasText: /^42$/ }).waitFor();
 
   // Share copies the live URL rather than opening a dialog.
   await page.locator(".monaco-editor textarea").focus();
@@ -92,8 +96,6 @@ try {
   await page.locator("#status.err").waitFor();
   assert.ok(await page.locator(".problem").count());
   await page.locator(".problem").first().click();
-  await page.locator("#run").click();
-  await page.locator(".run-error").waitFor();
 
   await page.locator("#theme").click();
   assert.equal(await page.locator("html").getAttribute("data-theme"), "dark");
@@ -101,7 +103,6 @@ try {
     await page.screenshot({ path: `${process.env.FHM_SCREENSHOTS}-dark.png` });
   await page.locator("#theme").click();
   await example(page, examples[0].title);
-  await page.locator("#run").click();
   await page.locator(".result-value").waitFor();
   if (process.env.FHM_SCREENSHOTS)
     await page.screenshot({ path: `${process.env.FHM_SCREENSHOTS}-light.png` });
@@ -121,7 +122,7 @@ try {
       () => document.documentElement.scrollWidth <= innerWidth,
     ),
   );
-  assert.ok(await page.locator("#run").isVisible());
+  assert.ok(await page.locator("#share").isVisible());
   if (process.env.FHM_SCREENSHOTS)
     await page.screenshot({
       path: `${process.env.FHM_SCREENSHOTS}-mobile.png`,
@@ -131,7 +132,6 @@ try {
   const other = await fresh.newPage();
   await other.goto(sharedUrl);
   await ready(other);
-  await other.locator("#run").click();
   await other.locator(".result-value").waitFor();
   assert.equal(await other.locator(".result-value").innerText(), "42");
   await fresh.close();
@@ -169,12 +169,13 @@ try {
         "download",
         "keyboard resize",
         "live URL",
+        "live evaluation",
         "stale result",
+        "step limit",
         "share copies URL",
         "draft restore",
         "link precedence & restore previous",
         "problem navigation",
-        "run error",
         "theme",
         "help",
         "mobile layout",

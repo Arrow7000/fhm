@@ -22,6 +22,12 @@ Separately, the annotation features go in this order:
 
 ## Bugs
 
+- [ ] **`fhm run --json` reports type errors at 1:1.** When typechecking fails,
+  the run JSON's `line`/`col` are the `PipelineErr` defaults rather than the
+  failing expression's span; `fhm diagnose` reports the right location. The
+  playground only shows positions from `diagnose`, so this affects other
+  `--json` consumers.
+
 - [ ] **Exhaustiveness checker rejects complete nested matches.**
   `checkExhaustive` is sound (it never accepts an incomplete match) but not
   complete: some matches whose patterns go more than one constructor deep are

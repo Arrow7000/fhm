@@ -10,6 +10,8 @@ const BIN_DIR = path.join(REPO_ROOT, ".lake", "build", "bin");
 const MAX_SOURCE_BYTES = 128 * 1024;
 const DIAGNOSE_TIMEOUT_MS = 15_000;
 const RUN_TIMEOUT_MS = 20_000;
+const LIVE_FUEL = 200_000;
+const LIVE_TIMEOUT_MS = 3_000;
 
 const PORT = Number(process.env.PORT || 5173);
 const STATIC_ONLY = process.env.FHM_WEB_STATIC === "1" || process.env.NODE_ENV === "production";
@@ -71,68 +73,74 @@ async function createApp() {
     res.type("text/plain").send(fs.readFileSync(examplePath, "utf8"));
   });
 
+  // Run `fhm` with the given arguments and parse its JSON output. The child is
+  // killed if the browser gives up on the request first.
+  async function fhmJson(res, args, source, timeoutMs, signal) {
+    const bin = resolveFhmBin();
+    if (!bin) {
+      res.status(503).json({
+        error: "fhm not found — run `lake build fhm` in the repo root",
+      });
+      return null;
+    }
+    try {
+      const { stdout, stderr, code } = await runBin(bin, args, source, timeoutMs, signal);
+      try {
+        return JSON.parse(stdout.trim() || "{}");
+      } catch (err) {
+        res.status(502).json({
+          error: `fhm ${args.join(" ")} returned non-JSON (exit ${code})`,
+          stderr: stderr.slice(0, 2000),
+          detail: String(err),
+        });
+        return null;
+      }
+    } catch (err) {
+      // A live run that hits its time budget is a result, not a failure.
+      if (err.status === 504 && args.includes("--fuel")) {
+        return { ok: false, stage: "eval", message: `stopped after ${timeoutMs / 1000} s`, limit: "time" };
+      }
+      if (!res.headersSent) res.status(err.status || 502).json({ error: String(err) });
+      return null;
+    }
+  }
+
+  function cancellation(res) {
+    const controller = new AbortController();
+    res.on("close", () => {
+      if (!res.writableFinished) controller.abort();
+    });
+    return controller.signal;
+  }
+
   app.post("/api/diagnose", async (req, res) => {
     const source = readSource(req, res);
     if (source === null) return;
-    const bin = resolveFhmBin();
-    if (!bin) {
-      res.status(503).json({
-        error: "fhm not found — run `lake build fhm` in the repo root",
-      });
-      return;
-    }
-    try {
-      const { stdout, stderr, code } = await runBin(
-        bin,
-        ["diagnose"],
-        source,
-        DIAGNOSE_TIMEOUT_MS
-      );
-      try {
-        const payload = JSON.parse(stdout.trim() || "{}");
-        res.json(payload);
-      } catch (err) {
-        res.status(502).json({
-          error: `fhm diagnose returned non-JSON (exit ${code})`,
-          stderr: stderr.slice(0, 2000),
-          detail: String(err),
-        });
-      }
-    } catch (err) {
-      res.status(err.status || 502).json({ error: String(err) });
-    }
+    const payload = await fhmJson(res, ["diagnose"], source, DIAGNOSE_TIMEOUT_MS, cancellation(res));
+    if (payload) res.json(payload);
   });
 
+  // Unbounded evaluation, for programs that exceed the live check's budget.
   app.post("/api/run", async (req, res) => {
     const source = readSource(req, res);
     if (source === null) return;
-    const bin = resolveFhmBin();
-    if (!bin) {
-      res.status(503).json({
-        error: "fhm not found — run `lake build fhm` in the repo root",
-      });
-      return;
-    }
-    try {
-      const { stdout, stderr, code } = await runBin(
-        bin,
-        ["--json"],
-        source,
-        RUN_TIMEOUT_MS
-      );
-      try {
-        const payload = JSON.parse(stdout.trim() || "{}");
-        res.json(payload);
-      } catch (err) {
-        res.status(502).json({
-          error: `fhm --json returned non-JSON (exit ${code})`,
-          stderr: stderr.slice(0, 2000),
-          detail: String(err),
-        });
-      }
-    } catch (err) {
-      res.status(err.status || 502).json({ error: String(err) });
-    }
+    const payload = await fhmJson(res, ["--json"], source, RUN_TIMEOUT_MS, cancellation(res));
+    if (payload) res.json(payload);
+  });
+
+  // What the playground calls on every edit: diagnostics and hover data, then,
+  // if the program type-checks, a run within a small step and time budget.
+  app.post("/api/check", async (req, res) => {
+    const source = readSource(req, res);
+    if (source === null) return;
+    const signal = cancellation(res);
+    const diagnose = await fhmJson(res, ["diagnose"], source, DIAGNOSE_TIMEOUT_MS, signal);
+    if (!diagnose) return;
+    const failed = (diagnose.diagnostics || []).some((d) => d.severity !== "warning");
+    if (failed) return res.json({ diagnose, run: null });
+    const args = ["run", "--json", "--fuel", String(LIVE_FUEL)];
+    const run = await fhmJson(res, args, source, LIVE_TIMEOUT_MS, signal);
+    if (run) res.json({ diagnose, run });
   });
 
   if (STATIC_ONLY) {

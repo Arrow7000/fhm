@@ -7,7 +7,8 @@ function failure(message, status) {
 // Hold each slot until the child exits, including after a timeout or output limit.
 export function createRunner({ maxProcesses = 2, maxOutputBytes = 4 * 1024 * 1024 } = {}) {
   let active = 0;
-  return function runBin(bin, args, source, timeoutMs) {
+  // `signal` aborts the child, e.g. when the browser cancels a stale request.
+  return function runBin(bin, args, source, timeoutMs, signal) {
     if (active >= maxProcesses) {
       return Promise.reject(failure("playground busy; please retry shortly", 503));
     }
@@ -30,6 +31,9 @@ export function createRunner({ maxProcesses = 2, maxOutputBytes = 4 * 1024 * 102
         child.kill("SIGKILL");
       };
       const timer = setTimeout(() => stop(failure(`timeout after ${timeoutMs}ms`, 504)), timeoutMs);
+      const abort = () => stop(failure("request cancelled", 499));
+      if (signal?.aborted) abort();
+      else signal?.addEventListener("abort", abort, { once: true });
       const collect = (stream) => (chunk) => {
         bytes += chunk.length;
         if (bytes > maxOutputBytes) {
@@ -47,6 +51,7 @@ export function createRunner({ maxProcesses = 2, maxOutputBytes = 4 * 1024 * 102
       });
       child.on("close", (code) => {
         clearTimeout(timer);
+        signal?.removeEventListener("abort", abort);
         active--;
         if (error) reject(error);
         else resolve({ stdout, stderr, code });

@@ -213,6 +213,18 @@ pre {
   padding: 0 8px;
 }
 
+.link-button.inline {
+  height: auto;
+  padding: 0;
+  color: var(--accent);
+  font: inherit;
+}
+
+.link-button.inline:hover {
+  background: none;
+  text-decoration: underline;
+}
+
 .icon-button {
   width: 28px;
 }
@@ -261,6 +273,17 @@ pre {
 
 .menu button[aria-checked="true"] {
   font-weight: 600;
+}
+
+.menu-section {
+  padding: 8px 8px 2px;
+  color: var(--muted);
+  font-size: 11px;
+  font-weight: 600;
+}
+
+.menu-section:first-child {
+  padding-top: 4px;
 }
 
 .menu hr {

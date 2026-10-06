@@ -30,3 +30,36 @@ for (const example of examples) {
     );
   });
 }
+
+// The advanced examples' comments make claims about which signatures matter.
+const variants = [
+  ["cut", ["let eval : Expr -> Value ="], false],
+  ["mutual-polyrec", ["let pingLength : {a} Ping a -> Int ="], true],
+  ["mutual-polyrec", ["let pongLength : {b} Pong b -> Int ="], true],
+  [
+    "mutual-polyrec",
+    [
+      "let pingLength : {a} Ping a -> Int =",
+      "let pongLength : {b} Pong b -> Int =",
+    ],
+    false,
+  ],
+];
+for (const [id, signatures, accepted] of variants) {
+  test(
+    `example ${id} without ${signatures.length} signature(s) is ${accepted ? "accepted" : "rejected"}`,
+    { skip: !existsSync(bin) },
+    () => {
+      let source = examples.find((example) => example.id === id).source;
+      for (const signature of signatures) {
+        assert.ok(source.includes(signature));
+        source = source.replace(signature, `${signature.split(" :")[0]} =`);
+      }
+      const result = spawnSync(bin, ["--json"], {
+        input: source,
+        encoding: "utf8",
+      });
+      assert.equal(JSON.parse(result.stdout).ok, accepted, result.stdout);
+    },
+  );
+}
