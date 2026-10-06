@@ -206,6 +206,56 @@ test("complete nested patterns check and run; nested gaps remain rejected", () =
   }
 });
 
+test("missing cases are actionable nested patterns, shared by CLI and editor", () => {
+  const cases = [
+    ["type Maybe a = Just a | Nothing\n",
+      "let f = \\m -> match m with | Nothing -> 0 | Just (Just x) -> x",
+      "f (Just Nothing)", ["Just Nothing"], "9"],
+    ["", "let f = \\xs -> match xs with | [] -> 0 | [] :: _ -> 1",
+      "f [[1]]", ["(_ :: _) :: _"], "9"],
+    ["", "let f = \\p -> match p with | (True, True) -> 1 | (False, False) -> 0",
+      "(f (True, False), f (False, True))", ["(True, False)", "(False, True)"], "(9, 9)"],
+    ["type Color = Red | Green | Blue\n", "let f = \\c -> match c with | Red -> 0",
+      "(f Green, f Blue)", ["Green", "Blue"], "(9, 9)"],
+  ];
+  for (const [prefix, definition, body, expected, result] of cases) {
+    const source = `${prefix}${definition}\n${body}\n`;
+    const editor = cli(["diagnose"], source);
+    const runner = cli(["run", "--json"], source);
+    assert.equal(editor.status, 1);
+    assert.equal(runner.status, 1);
+    const [diag] = editor.payload.diagnostics;
+    assert.equal(diag.code, "match.notExhaustive");
+    assert.deepEqual(diag.missingPatterns, expected);
+    assert.equal(diag.moreMissing, false);
+    for (const key of ["code", "message", "line", "col", "endLine", "endCol", "missingPatterns", "moreMissing"]) {
+      assert.deepEqual(runner.payload[key], diag[key], key);
+    }
+    // The suggested patterns must parse, fill the holes and catch the input
+    // that was previously uncovered, rather than merely matching a snapshot.
+    const arms = expected.map(pattern => ` | ${pattern} -> 9`).join("");
+    const repaired = `${prefix}${definition}${arms}\n${body}\n`;
+    diagnose(repaired);
+    run(repaired, result);
+  }
+  diagnose("type Maybe a = Just a | Nothing\nlet f = \\m -> match m with | Just (Just x) -> x | _ -> 0\nf (Just Nothing)\n");
+});
+
+test("missing-case examples are capped and say when more remain", () => {
+  const prefix = "type Color = A | B | C | D | E | F | G\n";
+  const definition = "let f = \\c -> match c with | A -> 0";
+  const { payload, status } = cli(["diagnose"], `${prefix}${definition}\nf G\n`);
+  assert.equal(status, 1);
+  const [diag] = payload.diagnostics;
+  assert.deepEqual(diag.missingPatterns, ["B", "C", "D", "E"]);
+  assert.equal(diag.moreMissing, true);
+  assert.match(diag.message, /and more/);
+  const partialFix = definition + diag.missingPatterns.map(p => ` | ${p} -> 9`).join("");
+  const next = cli(["diagnose"], `${prefix}${partialFix}\nf G\n`);
+  assert.deepEqual(next.payload.diagnostics[0].missingPatterns, ["F", "G"]);
+  run(`${prefix}${partialFix} | F -> 9 | G -> 9\nf G\n`, "9");
+});
+
 test("application errors expose stable codes and precise matching CLI/editor spans", () => {
   const cases = [
     ["let bad = \\n -> n + True\nbad 1\n", "type.argumentMismatch", "type mismatch: expected Int, got Bool", "True", 0],

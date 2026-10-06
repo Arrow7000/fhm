@@ -658,5 +658,11 @@ def diagSites (src : String) : Option (List (String × Nat × Nat)) :=
 def innerNonExhaustive : String :=
   "type Maybe a = Just a | Nothing\nlet g = \\m ->\n  match m with\n  | Nothing -> 0\n  | Just xs ->\n    match xs with\n    | [] -> 0\ng (Just [1])\n"
 
-#guard diagSites innerNonExhaustive = some [("match not exhaustive", 6, 5)]
+#guard diagSites innerNonExhaustive = some [("match not exhaustive (missing: _ :: _)", 6, 5)]
 #guard ((hoverReport innerNonExhaustive).map (·.symbols.isEmpty)) = some false
+
+-- Structured witnesses use the inferred scrutinee type and remain available
+-- alongside hovers even when the failure is in a nested recursive definition.
+#guard ((hoverReport innerNonExhaustive).map fun r =>
+  r.diagnostics.map fun d => (d.code?, d.missingPatterns, d.moreMissing)) =
+  some [(some "match.notExhaustive", ["_ :: _"], false)]

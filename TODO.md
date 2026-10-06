@@ -173,12 +173,15 @@ And patterns in bindings:
   - With error recovery, show something like "type unknown (error in `g`)"
     instead of nothing.
 
-- [ ] **Missing-case witnesses.** When a match isn't exhaustive, name the
-  missing patterns (`missing: Just Nothing`) instead of only saying so, in
-  `fhm diagnose` and the editors. The playground shows `diagnose` output, so
-  it gets this for free. Once patterns are allowed in lambdas and lets, the
-  same witnesses explain why a refutable one is rejected. Also wants errors
-  as data.
+- [x] **Missing-case witnesses.** Non-exhaustive matches now name missing
+  patterns (`missing: Just Nothing`) in both `fhm run` and `fhm diagnose`.
+  Examples come from the compiled decision tree and inferred scrutinee types,
+  retaining tuple/list syntax and nested constructors. JSON includes
+  `code: "match.notExhaustive"`, `missingPatterns` and `moreMissing`; at most
+  four examples are shown. Hovers remain available alongside the diagnostic.
+  If a scrutinee type is unavailable (such as an eliminated branch), the
+  diagnostic keeps its generic wording. Once patterns are allowed in lambdas
+  and lets, reuse this for rejected refutable patterns.
 
 - [ ] **Formatter**: an elm-format equivalent. One canonical layout for FHM
   source, as `fhm format`, with format-on-save in the editors. Hovers would

@@ -1,5 +1,6 @@
 import FHM.Unverified.HMDisplay
 import FHM.Unverified.TypeDiagnostics
+import FHM.Unverified.CoverageDiagnostics
 import FHM.Unverified.Surface.Parse
 
 /-!
@@ -203,6 +204,8 @@ def collectLitOpSymbols (src : String) (ctors : CtorEnv) : List RangedSymbol :=
 structure HoverDiag where
   message : String
   code? : Option String := none
+  missingPatterns : List String := []
+  moreMissing : Bool := false
   line : Nat := 1
   col : Nat := 1
   endLine : Nat := 1
@@ -217,7 +220,10 @@ def HoverDiag.toJson (d : HoverDiag) : Lean.Json :=
     ("col", Lean.Json.num d.col),
     ("endLine", Lean.Json.num d.endLine),
     ("endCol", Lean.Json.num d.endCol)
-  ] ++ (d.code?.map fun code => ("code", Lean.Json.str code)).toList
+  ] ++ (d.code?.map fun code => ("code", Lean.Json.str code)).toList ++
+    (if d.missingPatterns.isEmpty then [] else [
+      ("missingPatterns", Lean.Json.arr (d.missingPatterns.map Lean.Json.str).toArray),
+      ("moreMissing", Lean.Json.bool d.moreMissing)])
 
 structure HoverReport where
   symbols : List RangedSymbol
@@ -336,31 +342,22 @@ def locateLowerFail (src : String) (p : Surface.Program) (sp : SpannedProgram) :
       "expression lowering failed (rejected sugar, bad annotation, or pattern λ)"
       (some (bodyDiagSpan sp.body))
 
-/-- The first `match` (outermost first, in source order) that isn't
-    exhaustive, found by walking the program alongside its span tree. Each
-    match is judged by `checkExhaustive` on the match alone, with its scrutinee
-    and arm bodies replaced by `()`. -/
-partial def firstNonExhaustive (ctors : CtorEnv) : Surface.Expr → SpannedExpr → Option Span
-  | .pair a b, .pair _ sa sb | .cons a b, .cons _ sa sb | .app a b, .app _ sa sb =>
-      firstNonExhaustive ctors a sa <|> firstNonExhaustive ctors b sb
-  | .list es, .list _ ses => firstIn (es.zip ses)
-  | .lambda _ _ body, .lambda _ sbody => firstNonExhaustive ctors body sbody
-  | .letIn _ _ _ _ rhs body, .letIn _ srhs sbody =>
-      firstNonExhaustive ctors rhs srhs <|> firstNonExhaustive ctors body sbody
-  | .letRecIn binds body, .letRecIn _ rhss sbody =>
-      firstIn ((binds.map (·.rhs)).zip rhss) <|> firstNonExhaustive ctors body sbody
-  | .ife c t f, .ife _ sc st sf =>
-      firstIn [(c, sc), (t, st), (f, sf)]
-  | .match_ scrut arms, .match_ span sscrut sarms =>
-      let alone := Surface.Expr.match_ (.primLit .unit) (arms.map fun (p, _) => (p, .primLit .unit))
-      firstNonExhaustive ctors scrut sscrut <|>
-        (if checkExhaustive ctors alone then none else some span) <|>
-        firstIn ((arms.map (·.2)).zip sarms)
-  | _, _ => none
-where
-  firstIn : List (Surface.Expr × SpannedExpr) → Option Span
-    | [] => none
-    | (e, se) :: rest => firstNonExhaustive ctors e se <|> firstIn rest
+/-- Exhaustiveness wording and structured missing-pattern examples shared by
+    the CLI and editor. Unknown witness shapes keep the generic message. -/
+def exhaustivenessDiag (typed : SurfaceBridge.Provenance.TypedLowered)
+    (term : Surface.Expr) (tree : SurfaceBridge.Provenance.IdentifiedExpr)
+    (fallback : Span) : HoverDiag :=
+  let failure := FHM.Unverified.CoverageDiagnostics.firstFailure typed term tree
+  let patterns := (failure.map fun f => f.missing.patterns.map
+    (Surface.Pattern.pretty 0)).getD []
+  let more := (failure.map fun f => f.missing.more).getD false
+  let message := if patterns.isEmpty then "match not exhaustive" else
+    "match not exhaustive (missing: " ++ String.intercalate ", " patterns ++
+      (if more then "; and more" else "") ++ ")"
+  { diagAtSpan message (some ((failure.map (·.span)).getD fallback)) with
+    code? := some "match.notExhaustive"
+    missingPatterns := patterns
+    moreMissing := more }
 
 def locateDeclFail (sp : SpannedProgram) (msg : String) : HoverDiag :=
   match sp.declSpans with
@@ -469,8 +466,7 @@ def collectHover (src : String) (p : Surface.Program) (binders : List BinderSpan
               -- Typing succeeded, so hovers stay available alongside this error.
               let exhaustiveness :=
                 if checkExhaustive ctors p.term then []
-                else [diagAtSpan "match not exhaustive"
-                  ((firstNonExhaustive ctors p.term tree).orElse fun _ => some (bodyDiagSpan sp.body))]
+                else [exhaustivenessDiag typed p.term identified (bodyDiagSpan sp.body)]
               { symbols := prelude ++ syntaxSyms ++ values ++ sugarOps ++ occurrences ++ references
                 programTy := FHM.Unverified.HMDisplay.scheme {} []
                   (genScheme [] [] typed.inference.ty)

@@ -32,6 +32,7 @@ roots = [
   "FHM.Unverified.HMDisplay",
   "FHM.Unverified.HMReport",
   "FHM.Unverified.TypeDiagnostics",
+  "FHM.Unverified.CoverageDiagnostics",
   "FHM.Unverified.Surface.Lex",
   "FHM.Unverified.Surface.Parse",
   "FHM.Unverified.Surface.Provenance",

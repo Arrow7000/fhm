@@ -112,6 +112,8 @@ structure PipelineErr where
   stage : PipelineStage
   message : String
   code? : Option String := none
+  missingPatterns : List String := []
+  moreMissing : Bool := false
   /-- Steps taken before evaluation stopped, for an exhausted step budget. -/
   steps? : Option Nat := none
   line : Nat := 1
@@ -192,8 +194,9 @@ private def topBindingTypes (groups : List (List Surface.Binding))
 def diagnosedErr (stage : PipelineStage) (d? : Option HoverDiag) (fallback : String) :
     PipelineErr :=
   match d? with
-  | some d => { stage, message := d.message, code? := d.code?, line := d.line, col := d.col,
-                endLine := d.endLine, endCol := d.endCol }
+  | some d => { stage, message := d.message, code? := d.code?,
+                missingPatterns := d.missingPatterns, moreMissing := d.moreMissing,
+                line := d.line, col := d.col, endLine := d.endLine, endCol := d.endCol }
   | none => { stage, message := fallback }
 
 /-- Parse → provenance-aware lower → path-keyed HM inference → exhaustiveness →
@@ -258,7 +261,8 @@ def checkPipeline (src : String) :
 
   if !(checkExhaustive ctors p.term) then
     return .error (diagnosedErr .exhaustiveness
-      ((firstNonExhaustive ctors p.term tree).map (diagAtSpan "match not exhaustive" ∘ some))
+      (some (exhaustivenessDiag typed p.term
+        (SurfaceBridge.Provenance.identify tree) (bodyDiagSpan sp.body)))
       "match not exhaustive")
 
   let e := lowered.expr.erase
@@ -345,7 +349,10 @@ def PipelineErr.toJson (e : PipelineErr) : Lean.Json :=
     ("endLine", Lean.Json.num e.endLine),
     ("endCol", Lean.Json.num e.endCol)
   ] ++ (e.steps?.map fun n => ("steps", Lean.Json.num n)).toList ++
-    (e.code?.map fun code => ("code", Lean.Json.str code)).toList
+    (e.code?.map fun code => ("code", Lean.Json.str code)).toList ++
+    (if e.missingPatterns.isEmpty then [] else [
+      ("missingPatterns", Lean.Json.arr (e.missingPatterns.map Lean.Json.str).toArray),
+      ("moreMissing", Lean.Json.bool e.moreMissing)])
 
 /-- Parse CLI: optional `--json` and one optional path. -/
 def parseArgs (args : List String) : Except String LiveArgs :=
