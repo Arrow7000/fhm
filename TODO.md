@@ -57,11 +57,11 @@ Error recovery and formatter work remain separate from these batches.
 ## Bugs
 
 - [x] **Exhaustiveness checker rejects complete nested matches.**
-  Fixed: infer candidate type arguments from constructor patterns across all
-  branches, then use the existing proved decision-tree coverage checker.
-  Nested tuples, parameterised constructors and lists now work; missing inner
-  cases are still rejected. Regression cases:
-  The simplest case is a nested tuple, which has only one case to cover:
+      Fixed: infer candidate type arguments from constructor patterns across all
+      branches, then use the existing proved decision-tree coverage checker.
+      Nested tuples, parameterised constructors and lists now work; missing inner
+      cases are still rejected. Regression cases:
+      The simplest case is a nested tuple, which has only one case to cover:
 
   ```
   let f = \p ->
@@ -101,15 +101,15 @@ Error recovery and formatter work remain separate from these batches.
   placeholders, which erased the type structure needed by nested switches.
 
 - [x] **Self-referential constructor fields only parsed last.** In a type
-  without parameters, `type T = Leaf | Node T Int T` was read as
-  `Node (T Int T)`, and parentheses didn't help. Fixed in 897be46: constructor
-  fields are now type atoms, as in Haskell and Elm. Worth a look at what else
-  the field parser accepts too eagerly (see the next entry).
+      without parameters, `type T = Leaf | Node T Int T` was read as
+      `Node (T Int T)`, and parentheses didn't help. Fixed in 897be46: constructor
+      fields are now type atoms, as in Haskell and Elm. Worth a look at what else
+      the field parser accepts too eagerly (see the next entry).
 
 - [x] **Parser swallows a bare program body after a `type` declaration.** If
-  a `type` declaration is followed directly by the program's final
-  expression, the parser reads that expression as an extra constructor field
-  of the declaration's last constructor:
+      a `type` declaration is followed directly by the program's final
+      expression, the parser reads that expression as an extra constructor field
+      of the declaration's last constructor:
 
   ```
   type Color = Red | Green | Blue
@@ -126,12 +126,12 @@ Error recovery and formatter work remain separate from these batches.
   at the next unindented line.
 
 - [x] **Deep recursion crashes the evaluator with a native stack overflow.**
-  Fixed in the CLI/playground runner: an iterative whole-expression depth
-  check stops evaluation above depth 512 with `eval.depthLimit`, located at
-  the program entry expression. This also checks zero-fuel and final-value
-  paths, and preserves the completed step count. The verified `runSafe` and
-  reduction theorems are unchanged; this guard does not establish a formal
-  native-stack bound or protect earlier parsing/typechecking stages.
+      Fixed in the CLI/playground runner: an iterative whole-expression depth
+      check stops evaluation above depth 512 with `eval.depthLimit`, located at
+      the program entry expression. This also checks zero-fuel and final-value
+      paths, and preserves the completed step count. The verified `runSafe` and
+      reduction theorems are unchanged; this guard does not establish a formal
+      native-stack bound or protect earlier parsing/typechecking stages.
 
   Original reproductions:
   `fhm run` aborts with `Stack overflow detected. Aborting.` (in the
@@ -159,19 +159,19 @@ Error recovery and formatter work remain separate from these batches.
   definitions too.
 
 - [x] **A type and a constructor with the same name are confused by hover and
-  go to definition.** Fixed: the parser records type-name, type-variable and
-  pattern-constructor references with their namespace. With `type Box a = Box a`,
-  annotations and constructor fields resolve to the type, while expressions
-  and patterns resolve to the constructor. The shared editor resolver respects
-  occurrence kinds; `hover-syntax` and CLI/editor canaries cover the fix.
+      go to definition.** Fixed: the parser records type-name, type-variable and
+      pattern-constructor references with their namespace. With `type Box a = Box a`,
+      annotations and constructor fields resolve to the type, while expressions
+      and patterns resolve to the constructor. The shared editor resolver respects
+      occurrence kinds; `hover-syntax` and CLI/editor canaries cover the fix.
 
 ## Future evaluation strategy
 
 - [ ] **Call-by-need for ordinary and pattern lets.** Desired future behavior:
-  defer a binding's RHS until its first actual use, then cache and share the
-  result. An unused `loop 0` binding should not block returning `42`, including
-  a binding mentioned only in a branch that is never taken; multiple demanded
-  projections should not repeat RHS work.
+      defer a binding's RHS until its first actual use, then cache and share the
+      result. An unused `loop 0` binding should not block returning `42`, including
+      a binding mentioned only in a branch that is never taken; multiple demanded
+      projections should not repeat RHS work.
 
   **Decision: defer this larger project.** For now, ordinary and pattern lets
   use call-by-name: unused computations can be discarded, but uses may repeat
@@ -185,91 +185,93 @@ Error recovery and formatter work remain separate from these batches.
 ## Errors and diagnostics
 
 - [ ] **Errors as data.** Replace the stringly typed errors throughout the
-  pipeline with an error ADT, so errors can be collected, computed over, and
-  presented differently depending on context (terminal, JSON, editor). The
-  verified functions currently return `Option`; moving them to `Except` means
-  restating their theorems in terms of `.ok` rather than `some`, which is
-  mechanical but touches a lot of code.
-  First slice done: application failures carry a reason ADT and Core path in
-  `FHM/Unverified/TypeDiagnostics.lean`, with stable JSON diagnostic codes shared
-  by CLI and editor output. This is an explanatory probe after verified
-  rejection; the verified workers still return `Option`. Migrating their own
-  failure results remains future work.
+      pipeline with an error ADT, so errors can be collected, computed over, and
+      presented differently depending on context (terminal, JSON, editor). The
+      verified functions currently return `Option`; moving them to `Except` means
+      restating their theorems in terms of `.ok` rather than `some`, which is
+      mechanical but touches a lot of code.
+      First slice done: application failures carry a reason ADT and Core path in
+      `FHM/Unverified/TypeDiagnostics.lean`, with stable JSON diagnostic codes shared
+      by CLI and editor output. This is an explanatory probe after verified
+      rejection; the verified workers still return `Option`. Migrating their own
+      failure results remains future work.
 - [ ] **Better error messages.** Application argument mismatches now report
-  expected and actual types at the argument span. Non-function applications
-  and infinite application types also have explanations and precise spans.
-  Recursive groups, match failures and other unsupported cases still use
-  `typechecking failed`, plus the name of the failing definition, located at
-  that definition (by `fhm run` and `fhm diagnose` alike). Lowering
-  errors are a single generic message: `lowering failed (unbound name, bad
-  decl, or rejected sugar)`.
+      expected and actual types at the argument span. Non-function applications
+      and infinite application types also have explanations and precise spans.
+      Recursive groups, match failures and other unsupported cases still use
+      `typechecking failed`, plus the name of the failing definition, located at
+      that definition (by `fhm run` and `fhm diagnose` alike). Lowering
+      errors are a single generic message: `lowering failed (unbound name, bad
+decl, or rejected sugar)`.
 - [ ] **Error recovery.** A single lowering or typechecking error currently
-  kills hover information for the whole file. Type checking already proceeds
-  one recursive group at a time, so a failed group's members could get a
-  placeholder type and checking could continue; only code that depends on the
-  failure would lose information. Lowering can recover per binding in the
-  same way, and the parser (unverified) can resynchronise at top-level
-  declarations. Recovery is for the editor path only: `elaborateSafe` and the
-  theorems keep applying to programs that check completely.
+      kills hover information for the whole file. Type checking already proceeds
+      one recursive group at a time, so a failed group's members could get a
+      placeholder type and checking could continue; only code that depends on the
+      failure would lose information. Lowering can recover per binding in the
+      same way, and the parser (unverified) can resynchronise at top-level
+      declarations. Recovery is for the editor path only: `elaborateSafe` and the
+      theorems keep applying to programs that check completely.
 
 ## Editor tooling
 
 - [ ] **Richer hovers.** Constructors now show their enclosing data declaration
-  below the highlighted signature and documentation, at definitions, expression
-  occurrences and pattern references in both editors. Use-site signatures stay
-  instantiated, while the declaration preserves the source type-parameter names.
-  Remaining ideas:
+      below the highlighted signature and documentation, at definitions, expression
+      occurrences and pattern references in both editors. Use-site signatures stay
+      instantiated, while the declaration preserves the source type-parameter names.
+      Remaining ideas:
+
   - [x] Show a constructor's full declaration, not just its type.
   - [ ] For annotated bindings, show the inferred type when it differs from the
-    annotation.
+        annotation.
   - [ ] With error recovery, show something like "type unknown (error in `g`)"
-    instead of nothing.
+        instead of nothing.
 
 - [x] **Missing-case witnesses.** Non-exhaustive matches now name missing
-  patterns (`missing: Just Nothing`) in both `fhm run` and `fhm diagnose`.
-  Examples come from the compiled decision tree and inferred scrutinee types,
-  retaining tuple/list syntax and nested constructors. JSON includes
-  `code: "match.notExhaustive"`, `missingPatterns` and `moreMissing`; at most
-  four examples are shown. Hovers remain available alongside the diagnostic.
-  If a scrutinee type is unavailable (such as an eliminated branch), the
-  diagnostic keeps its generic wording. Pattern lambdas reuse this for rejected refutable parameters; pattern lets
-  should do the same.
+      patterns (`missing: Just Nothing`) in both `fhm run` and `fhm diagnose`.
+      Examples come from the compiled decision tree and inferred scrutinee types,
+      retaining tuple/list syntax and nested constructors. JSON includes
+      `code: "match.notExhaustive"`, `missingPatterns` and `moreMissing`; at most
+      four examples are shown. Hovers remain available alongside the diagnostic.
+      If a scrutinee type is unavailable (such as an eliminated branch), the
+      diagnostic keeps its generic wording. Pattern lambdas reuse this for rejected refutable parameters; pattern lets
+      should do the same.
 
 - [ ] **Formatter**: an elm-format equivalent. One canonical layout for FHM
-  source, as `fhm format`, with format-on-save in the editors. Hovers would
-  reuse its printer for declarations and long signatures. Today a type's hover
-  uses a fixed one-constructor-per-line layout (so constructor docs fit), and
-  long signatures stay on one line. The printer has to keep comments where
-  they were, so the parser needs to keep them with their positions; the lexer
-  already emits them as tokens.
+      source, as `fhm format`, with format-on-save in the editors. Hovers would
+      reuse its printer for declarations and long signatures. Today a type's hover
+      uses a fixed one-constructor-per-line layout (so constructor docs fit), and
+      long signatures stay on one line. The printer has to keep comments where
+      they were, so the parser needs to keep them with their positions; the lexer
+      already emits them as tokens.
 
 ## Playground
 
 - [ ] **Embeds and "Open in playground" links.** Let the README, the language
-  guide and other docs link each code block into the playground (a share
-  link built at docs-build time), and maybe an embeddable read-only/runnable
-  view for iframes. Deferred until the playground has been battle-tested.
+      guide and other docs link each code block into the playground (a share
+      link built at docs-build time), and maybe an embeddable read-only/runnable
+      view for iframes. Deferred until the playground has been battle-tested.
 
 ## Language features
 
 - [ ] **Type holes** in annotations, e.g. `Int -> (_, Bool) -> _ -> Int`.
-  Each `_` is an unknown type to be inferred.
+      Each `_` is an unknown type to be inferred.
 - [ ] **Named holes** `_a`: like `_`, but every `_a` in the same annotation
-  stands for the same unknown type. They are inferred, not fixed.
+      stands for the same unknown type. They are inferred, not fixed.
 - [ ] **Head-binder syntax**: `let f (x : a) y (z : c) : Int = ...`. The point
-  of the syntax is that each parameter and the return type can be annotated or
-  not, independently. A fully annotated head can already be lowered, but
-  anything less is a partial annotation, so this needs type holes.
+      of the syntax is that each parameter and the return type can be annotated or
+      not, independently. A fully annotated head can already be lowered, but
+      anything less is a partial annotation, so this needs type holes.
 
 - [x] **Patterns in lambda parameters**, e.g. `\(a, b) -> a`.
-  Compound parameters lower to a hidden argument and a singleton match, with
-  verified lowering, typing and coverage proofs. Nested tuples and exhaustive
-  single-constructor patterns work, including multiple parameters and whole
-  pattern annotations (`\((x, y) : (Int, Bool)) -> x`). Constructor applications
-  and cons patterns require parentheses. Refutable parameters are rejected with
-  missing-case examples; pattern binders retain inferred hovers and definitions.
+      Compound parameters lower to a hidden argument and a singleton match, with
+      verified lowering, typing and coverage proofs. Nested tuples and exhaustive
+      single-constructor patterns work, including multiple parameters and whole
+      pattern annotations (`\((x, y) : (Int, Bool)) -> x`). Constructor applications
+      and cons patterns require parentheses. Refutable parameters are rejected with
+      missing-case examples; pattern binders retain inferred hovers and definitions.
 - [x] **Pattern lets**, e.g. `let (q, r) = divMod n 10`, locally and at the
-  top level.
+      top level.
+
   - **Generalised, name by name.** Desugar `let p = e in b` to
     `let t = e in let x₁ = match t with p -> x₁ in … in b`, one `let` per
     name `xᵢ` that `p` binds, with `t` a hidden name that source can't
@@ -310,23 +312,23 @@ Error recovery and formatter work remain separate from these batches.
 ## Cleanup
 
 - [x] `FHM/AnnotatedPolyRecErasure.lean` and `FHM/AnnotatedPolyRecHybrid.lean`
-  are prototype proofs from the annotated polymorphic recursion work, still in
-  the tree as historical artifacts. Removed from the default build; either
-  module can still be checked explicitly with `lake build FHM.AnnotatedPolyRecErasure`
-  or `lake build FHM.AnnotatedPolyRecHybrid`.
+      are prototype proofs from the annotated polymorphic recursion work, still in
+      the tree as historical artifacts. Removed from the default build; either
+      module can still be checked explicitly with `lake build FHM.AnnotatedPolyRecErasure`
+      or `lake build FHM.AnnotatedPolyRecHybrid`.
 - [ ] Recursive grouping currently happens in two places: SCC analysis during
-  lowering, and a second split of the unannotated members during inference.
-  A single SCC pass per scope, ignoring edges into annotated definitions,
-  would give the same results with one algorithm.
+      lowering, and a second split of the unannotated members during inference.
+      A single SCC pass per scope, ignoring edges into annotated definitions,
+      would give the same results with one algorithm.
 
 ## Ideas
 
 ### `fails`: code that must not typecheck
 
 - [ ] Sometimes you want code in the codebase that shows an expression does
-  *not* typecheck: documenting where the type system draws a line, or pinning
-  down that a mistake is caught. Today that code has to be commented out or
-  kept in a file outside the build. Instead, a top-level declaration like
+      _not_ typecheck: documenting where the type system draws a line, or pinning
+      down that a mistake is caught. Today that code has to be commented out or
+      kept in a file outside the build. Instead, a top-level declaration like
 
   ```
   fails (1 + True)
@@ -353,7 +355,7 @@ Error recovery and formatter work remain separate from these batches.
     parse errors, and scope errors (unbound names, unknown type variables)
     should be too; otherwise `fails (lenght xs)` would pass because of a
     typo. Type mismatches are the valuable case.
-  - **Expected errors.** Idris-style, a block could also state *which* error
+  - **Expected errors.** Idris-style, a block could also state _which_ error
     it expects, so it can't pass for the wrong reason. With errors as data
     (see above) that could name an error kind (`fails TypeMismatch (...)`)
     rather than match a message string. Worth considering once errors are
@@ -378,11 +380,11 @@ Error recovery and formatter work remain separate from these batches.
 
 ### Type apartness via `fails`
 
-- [ ] Assert that two expressions *cannot* have the same type: the opposite
-  of the usual "these have the same type" check, and often just as useful to
-  document. The meaning wanted is **apartness**, as in GHC: the two types
-  can't be unified however their type variables are chosen. Types that can
-  be reconciled (`a -> a` and `b -> Int`, say) are not apart.
+- [ ] Assert that two expressions _cannot_ have the same type: the opposite
+      of the usual "these have the same type" check, and often just as useful to
+      document. The meaning wanted is **apartness**, as in GHC: the two types
+      can't be unified however their type variables are chosen. Types that can
+      be reconciled (`a -> a` and `b -> Int`, say) are not apart.
 
   No new type-system machinery is needed:
 
@@ -400,7 +402,7 @@ Error recovery and formatter work remain separate from these batches.
   just flexible type variables, so `asTypeOf a b` typechecks and the
   definition is itself an error. A nicer spelling (such as `e1 <!=> e2`) would
   have to be notation that expands to the `fails` idiom. (Comparing the
-  *values* isn't part of this: in HM, comparing values of different types is
+  _values_ isn't part of this: in HM, comparing values of different types is
   already a type error.)
 
   Building disequality into inference as a constraint instead (like Prolog's
@@ -410,8 +412,8 @@ Error recovery and formatter work remain separate from these batches.
 ### Row types
 
 - [ ] Investigate row types (extensible records, maybe variants) before
-  building anything: what changes in `Ty`, unification (Rémy's rows or
-  Leijen's scoped labels), the inference algorithm and above all its
-  completeness proof (`typecheck_accepts_iff`), and whether pattern
-  compilation has to know about records. Write it up as a brief with an
-  estimate. Worth doing after errors as data.
+      building anything: what changes in `Ty`, unification (Rémy's rows or
+      Leijen's scoped labels), the inference algorithm and above all its
+      completeness proof (`typecheck_accepts_iff`), and whether pattern
+      compilation has to know about records. Write it up as a brief with an
+      estimate. Worth doing after errors as data.

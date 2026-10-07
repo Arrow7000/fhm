@@ -90,16 +90,16 @@ standard axioms. [`FHM/Headlines.lean`](./FHM/Headlines.lean) gathers the main
 theorems in one place, each with a plain-English explanation, and is the best
 starting point for reading the proofs.
 
-| Claim | Main theorems |
-|---|---|
-| **Type safety:** a well-typed program never gets stuck. It is either a value or can take another step, and its type is preserved. | `TypeOfHM.progress`, `TypeOfHM.preservation`, `TypeOfHM.type_safety_star` |
-| **End-to-end safety:** a well-typed, exhaustive *surface* program lowers to Core that never gets stuck. | `program_type_safe`, `surface_type_safe` |
-| **Inference is sound:** any type Algorithm W infers is a valid type for the program. | `Infer.sound`, `Infer.sourceSound` |
-| **Inference is complete and principal:** if a program has *any* type, inference succeeds, and every valid type is an instance of the inferred one. | `typecheck_accepts_iff`, `typecheck_principal`, `Infer.complete` |
-| **Pattern compilation is correct:** nested matches compile to decision trees that select the same branch with the same bindings. | `PatComp.compile_correct_surface`, `PatComp.lowerMatch_adequate_of_typed` |
-| **Exhaustiveness checking is sound:** if the checker accepts a match, the match is exhaustive. | `checkExhaustive_sound` |
-| **Recursive grouping is correct:** dependency analysis splits definitions into exactly their strongly connected components. | `sccGroups_sound`, `sccGroups_complete`, `kosaraju_sound` |
-| **Data declarations elaborate correctly**, matching their declarative spec. | `lowerDataDecls_sound`/`_complete`, `elabDecls_sound`/`_complete` |
+| Claim                                                                                                                                              | Main theorems                                                             |
+| -------------------------------------------------------------------------------------------------------------------------------------------------- | ------------------------------------------------------------------------- |
+| **Type safety:** a well-typed program never gets stuck. It is either a value or can take another step, and its type is preserved.                  | `TypeOfHM.progress`, `TypeOfHM.preservation`, `TypeOfHM.type_safety_star` |
+| **End-to-end safety:** a well-typed, exhaustive _surface_ program lowers to Core that never gets stuck.                                            | `program_type_safe`, `surface_type_safe`                                  |
+| **Inference is sound:** any type Algorithm W infers is a valid type for the program.                                                               | `Infer.sound`, `Infer.sourceSound`                                        |
+| **Inference is complete and principal:** if a program has _any_ type, inference succeeds, and every valid type is an instance of the inferred one. | `typecheck_accepts_iff`, `typecheck_principal`, `Infer.complete`          |
+| **Pattern compilation is correct:** nested matches compile to decision trees that select the same branch with the same bindings.                   | `PatComp.compile_correct_surface`, `PatComp.lowerMatch_adequate_of_typed` |
+| **Exhaustiveness checking is sound:** if the checker accepts a match, the match is exhaustive.                                                     | `checkExhaustive_sound`                                                   |
+| **Recursive grouping is correct:** dependency analysis splits definitions into exactly their strongly connected components.                        | `sccGroups_sound`, `sccGroups_complete`, `kosaraju_sound`                 |
+| **Data declarations elaborate correctly**, matching their declarative spec.                                                                        | `lowerDataDecls_sound`/`_complete`, `elabDecls_sound`/`_complete`         |
 
 **What is not verified:** the lexer, parser, CLI, editor tooling, and the
 unbounded evaluator used by `fhm run`. These live under
@@ -204,20 +204,20 @@ The design choices that matter most:
 
 ### Repository map
 
-| Module | Contents |
-|---|---|
-| [`Core.lean`](./FHM/Core.lean) | Types, Core terms, the typing relation `TypeOfHM`, small-step semantics |
-| [`InferW.lean`](./FHM/InferW.lean) | Unification, Algorithm W, inference soundness, progress and preservation |
-| [`Completeness.lean`](./FHM/Completeness.lean) | Completeness and principality of inference |
-| [`RuntimeTyping.lean`](./FHM/RuntimeTyping.lean) | Typing for erased runtime terms, used to prove progress and preservation |
-| [`SurfaceLang.lean`](./FHM/SurfaceLang.lean) | Surface syntax tree |
-| [`SurfaceBridge.lean`](./FHM/SurfaceBridge.lean) | Lowering surface to Core, exhaustiveness checking, end-to-end safety |
-| [`PatComp.lean`](./FHM/PatComp.lean) | Pattern-match compiler and its correctness proofs |
-| [`Scc/Kosaraju.lean`](./FHM/Scc/Kosaraju.lean) | Verified strongly connected components |
-| [`Decls.lean`](./FHM/Decls.lean) | Data declaration checking |
-| [`Headlines.lean`](./FHM/Headlines.lean) | Main theorems in one place, plus the verified `elaborateSafe`/`runSafe` pipeline |
-| [`Examples.lean`](./FHM/Examples.lean) | Worked examples of programs that typecheck and programs that are rejected |
-| [`Unverified/`](./FHM/Unverified/README.md) | Lexer, parser, CLI, editor support, unbounded evaluator |
+| Module                                           | Contents                                                                         |
+| ------------------------------------------------ | -------------------------------------------------------------------------------- |
+| [`Core.lean`](./FHM/Core.lean)                   | Types, Core terms, the typing relation `TypeOfHM`, small-step semantics          |
+| [`InferW.lean`](./FHM/InferW.lean)               | Unification, Algorithm W, inference soundness, progress and preservation         |
+| [`Completeness.lean`](./FHM/Completeness.lean)   | Completeness and principality of inference                                       |
+| [`RuntimeTyping.lean`](./FHM/RuntimeTyping.lean) | Typing for erased runtime terms, used to prove progress and preservation         |
+| [`SurfaceLang.lean`](./FHM/SurfaceLang.lean)     | Surface syntax tree                                                              |
+| [`SurfaceBridge.lean`](./FHM/SurfaceBridge.lean) | Lowering surface to Core, exhaustiveness checking, end-to-end safety             |
+| [`PatComp.lean`](./FHM/PatComp.lean)             | Pattern-match compiler and its correctness proofs                                |
+| [`Scc/Kosaraju.lean`](./FHM/Scc/Kosaraju.lean)   | Verified strongly connected components                                           |
+| [`Decls.lean`](./FHM/Decls.lean)                 | Data declaration checking                                                        |
+| [`Headlines.lean`](./FHM/Headlines.lean)         | Main theorems in one place, plus the verified `elaborateSafe`/`runSafe` pipeline |
+| [`Examples.lean`](./FHM/Examples.lean)           | Worked examples of programs that typecheck and programs that are rejected        |
+| [`Unverified/`](./FHM/Unverified/README.md)      | Lexer, parser, CLI, editor support, unbounded evaluator                          |
 
 ## Roadmap
 
