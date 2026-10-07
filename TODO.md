@@ -182,6 +182,45 @@ Error recovery and formatter work remain separate from these batches.
   work to address the native-stack overflow. Function-argument strictness is a
   separate decision. This does not replace the near-term evaluator depth guard.
 
+- [ ] **Recursive-value checks — decision deferred.** Mull over the policy
+  before implementing a new rejection check. Keep call-by-name lets and the
+  operational depth guard; do not switch to eager bindings or restrict ordinary
+  recursive definitions in the meantime.
+
+  Takeaways from the discussion:
+  - Fuel counts reductions; the guard measures expression depth. Unfolding
+    `x = x + 1` grows pending additions almost every step, whereas `sum` also
+    spends steps on calls, arithmetic, comparisons and branch selection.
+  - Elm 0.19.1's top-level checker rejects cycles of direct dependencies,
+    excluding references delayed under lambdas. Its local-let checker is
+    stricter: every named member of a recursive component must have arguments;
+    recursive destructuring is rejected. These are different acceptance rules.
+    [Top-level source](https://github.com/elm/compiler/blob/0.19.1/compiler/src/Canonicalize/Module.hs)
+    / [local-let source](https://github.com/elm/compiler/blob/0.19.1/compiler/src/Canonicalize/Expression.hs).
+  - OCaml permits some recursive data values, not just functions. Its analysis
+    checks recursive-variable access modes and allocation size to prevent
+    inspection of unfinished values. `let rec ones = 1 :: ones` creates a
+    cyclic cons cell: immutable after construction, with its tail pointing back
+    to itself. Lists still use nil/cons. FHM's current finite expression/value
+    representation and strict constructor arguments do not support that cyclic
+    value; evaluating its FHM spelling keeps unfolding. Supporting such graphs
+    would require runtime/operational-semantics work.
+    [OCaml checker](https://github.com/ocaml/ocaml/blob/5.4/typing/value_rec_check.ml).
+  - Evaluating every binding would make an unused `x = x + 1` diverge, but would
+    not eliminate false positives: `x = if True then 42 else x` still terminates.
+    Under current call-by-name semantics, `let x = x + 1; 42` also terminates.
+  - Options: a simple recursive-lambdas-only restriction; a more permissive
+    conservative initialization/dependency analysis; or a narrower detector
+    proving divergence when a flagged binding is actually demanded. Passing
+    any of these does not establish termination of arbitrary function calls.
+  - A separate acceptance check can leave HM typing and existing safety
+    theorems unchanged. Prove the checker implements its specified predicate;
+    for a narrow mandatory-demand detector, aim to prove flagged bindings
+    cannot produce a value when demanded. Conservative syntactic policies
+    cannot promise rejection implies divergence. Actually changing let
+    evaluation or adding cyclic runtime values would require corresponding
+    operational-semantics/proof changes.
+
 ## Errors and diagnostics
 
 - [ ] **Errors as data.** Replace the stringly typed errors throughout the
