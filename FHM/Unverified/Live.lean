@@ -114,7 +114,7 @@ structure PipelineErr where
   code? : Option String := none
   missingPatterns : List String := []
   moreMissing : Bool := false
-  /-- Steps taken before evaluation stopped, for an exhausted step budget. -/
+  /-- Steps taken before evaluation stopped, for a resource limit. -/
   steps? : Option Nat := none
   line : Nat := 1
   col : Nat := 1
@@ -127,6 +127,8 @@ structure CheckedProgram where
   report : ProgramReport
   checkNs : Nat
   runtimeExpr : Expr
+  /-- Entry expression, used to locate runtime resource-limit errors. -/
+  evalSpan : Surface.Span.Span := Surface.Span.Span.empty
 
 structure PipelineOk where
   report : ProgramReport
@@ -271,28 +273,63 @@ def checkPipeline (src : String) :
     report := report
     checkNs := tCheck1 - tCheck0
     runtimeExpr := e
+    evalSpan := bodyDiagSpan sp.body
   }
+
+/-- Conservative operational limit, not a language restriction or a proved native
+stack bound. Check the whole erased tree: value checks, substitution and printing
+also recurse, including through lambda bodies and inactive branches. -/
+def evaluationDepthLimit : Nat := 512
+
+/-- Explicit DFS work stack. Never recurse down the expression being inspected;
+stop as soon as any path exceeds the limit. Root depth is one. -/
+def withinEvaluationDepth (e : Expr) (limit : Nat := evaluationDepthLimit) : Bool := Id.run do
+  let mut pending : Array (Expr × Nat) := #[(e, 1)]
+  while !pending.isEmpty do
+    let some (node, depth) := pending.back? | return true
+    pending := pending.pop
+    if depth > limit then return false
+    let childDepth := depth + 1
+    match node with
+    | .lambda _ body => pending := pending.push (body, childDepth)
+    | .app f arg => pending := (pending.push (f, childDepth)).push (arg, childDepth)
+    | .letIn _ rhs body => pending := (pending.push (rhs, childDepth)).push (body, childDepth)
+    | .match_ scrut branches =>
+        pending := pending.push (scrut, childDepth)
+        for (_, body) in branches do
+          pending := pending.push (body, childDepth)
+    | .letRec _ bindings body =>
+        pending := pending.push (body, childDepth)
+        for rhs in bindings do
+          pending := pending.push (rhs, childDepth)
+    | .primLit _ | .primBinOp _ | .var _ | .ctor _ => pure ()
+  return true
 
 /-- How a step-counting evaluation ended. -/
 inductive EvalOutcome
   | value (v : Expr) (steps : Nat)
   | stuck (steps : Nat)
   | outOfFuel (steps : Nat)
+  | tooDeep (steps : Nat)
 
 instance : Inhabited EvalOutcome := ⟨.stuck 0⟩
 
 /-- Step `e` until it is a value, counting steps, for at most `fuel` steps. -/
 def evalCounting : (fuel : Nat) → Expr → (steps : Nat) → EvalOutcome
-  | 0, e, n => if SmallStep.isValue e then .value e n else .outOfFuel n
+  | 0, e, n =>
+    if !withinEvaluationDepth e then .tooDeep n
+    else if SmallStep.isValue e then .value e n else .outOfFuel n
   | fuel + 1, e, n =>
-    if SmallStep.isValue e then .value e n
+    if !withinEvaluationDepth e then .tooDeep n
+    else if SmallStep.isValue e then .value e n
     else match SmallStep.step e with
       | some e' => evalCounting fuel e' (n + 1)
       | none => .stuck n
 
 /-- `evalCounting` without a step budget; like `evaluateUnsafe`, it may diverge. -/
 partial def evalCountingUnsafe (e : Expr) (n : Nat) : EvalOutcome :=
-  if SmallStep.isValue e then .value e n
+  if !withinEvaluationDepth e then .tooDeep n
+  else if SmallStep.isValue e then .value e n
   else match SmallStep.step e with
     | some e' => evalCountingUnsafe e' (n + 1)
     | none => .stuck n
@@ -305,6 +342,10 @@ def evalCheckedIO (c : CheckedProgram) (fuel : Option Nat := none) :
     | some fuel => evalCounting fuel c.runtimeExpr 0
     | none => evalCountingUnsafe c.runtimeExpr 0
   match outcome with
+  | .tooDeep n =>
+      let message := s!"evaluation depth limit exceeded (limit {evaluationDepthLimit}, after {n} steps)"
+      let err := diagnosedErr .eval (some (diagAtSpan message (some c.evalSpan))) message
+      return .error { err with code? := some "eval.depthLimit", steps? := some n }
   | .stuck _ =>
       return .error { stage := .eval, message := "stuck (diverged or no step)" }
   | .outOfFuel n =>

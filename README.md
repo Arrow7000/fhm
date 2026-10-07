@@ -128,6 +128,14 @@ lake build fhm       # build the fhm executable
 .lake/build/bin/fhm diagnose path/to/program.fhm     # diagnostics and hover info for editors
 ```
 
+The CLI and playground stop evaluation when the erased expression exceeds depth
+512, reporting `eval.depthLimit` at the program entry expression with the completed
+step count. This conservative guard prevents the known deep-recursion stack crash;
+it is separate from `--fuel`, which limits reduction steps. It may reject deep
+computations (including values) that a future evaluator with an explicit
+continuation stack could handle. It covers evaluation, not parsing/typechecking,
+and does not change the verified `runSafe` or its theorems.
+
 For a REPL-like loop that re-runs the program every time you save:
 
 ```bash

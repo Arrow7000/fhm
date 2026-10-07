@@ -447,6 +447,43 @@ test("call-by-name pattern lets skip undemanded RHSs and respect fuel when deman
   assert.equal(demanded.payload.steps, 200);
 });
 
+test("deep evaluation returns located resource errors with and without fuel", () => {
+  const sum = "let sum = \\n -> if n < 1 then 0 else n + sum (n - 1)\n\nsum 100000\n";
+  const growing = "let x = x + 1\n\nx\n";
+  const local = "\n(let x = x + 1 in x)\n";
+  for (const [source, line, col] of [[sum, 3, 1], [growing, 3, 1], [local, 2, 1]]) {
+    for (const flags of [[], ["--fuel", "1000000"]]) {
+      const response = cli(["run", "--json", ...flags], source);
+      assert.notEqual(response.status, 0);
+      assert.equal(response.payload.ok, false);
+      assert.equal(response.payload.stage, "eval");
+      assert.equal(response.payload.code, "eval.depthLimit");
+      assert.match(response.payload.message, /evaluation depth limit exceeded/);
+      assert.ok(response.payload.steps > 0 && response.payload.steps < 1000000);
+      assert.equal(response.payload.line, line);
+      assert.equal(response.payload.col, col);
+    }
+  }
+  const human = spawnSync(binary, ["run", "/dev/stdin"], {
+    input: growing, encoding: "utf8", timeout: 15_000,
+  });
+  assert.ifError(human.error);
+  assert.equal(human.signal, null);
+  assert.notEqual(human.status, 0);
+  assert.match(human.stdout + human.stderr, /evaluation depth limit exceeded/);
+  run(sum.replace("sum 100000", "sum 40"), "820");
+  const tail = cli(["run", "--json", "--fuel", "2000"],
+    "let loop = \\n -> loop (n + 1)\nloop 0\n");
+  assert.equal(tail.payload.stage, "eval");
+  assert.equal(tail.payload.steps, 2000);
+  assert.equal(tail.payload.code, undefined);
+  assert.equal(tail.payload.message, "stopped after 2000 steps");
+  const early = cli(["run", "--json", "--fuel", "10"], sum);
+  assert.equal(early.payload.steps, 10);
+  assert.equal(early.payload.code, undefined);
+  run("42\n", "42", ["--fuel", "0"]);
+});
+
 test("pattern-let docs attach to captures and cycle diagnostics select the affected head", () => {
   const source = "/-- Components of a pair. -/\nlet (identity, number) = (\\x -> x, 7)\n(identity True, number)\n";
   const payload = diagnose(source);

@@ -31,11 +31,13 @@ And patterns in bindings:
 After pattern lets, keep one bounded reliability fix ahead of the larger
 annotation work. Commit independently reviewable slices within each batch.
 
-1. **Evaluator depth guard.** Detect excessive evaluation-context depth without
-   using the native call stack, and report a located, structured evaluation
-   error. Check deep non-tail recursion and `let x = x + 1`, ordinary recursive
-   programs, and existing fuel-limited tail loops. This contains the crash;
-   an explicit continuation evaluator remains a separate larger project.
+1. **Evaluator depth guard — complete.** The CLI/playground runner checks the
+   whole erased expression with an explicit work stack before every step and
+   before value checks/printing. Depth above 512 returns a located
+   `eval.depthLimit` error, with the completed step count. Deep non-tail
+   recursion and `let x = x + 1` stop cleanly; shallow tail loops retain their
+   fuel behavior. This is a conservative runtime safeguard, not a proved native
+   stack bound; an explicit continuation evaluator remains a larger project.
 2. **Type holes, then named holes.** First settle how incomplete annotations
    become inference constraints while preserving the verified acceptance path.
    Implement `_`, then sharing for repeated `_a`. Test holes in arrows, tuples,
@@ -123,7 +125,15 @@ Error recovery and formatter work remain separate from these batches.
   field on a later line must be indented past `type`, so the declaration ends
   at the next unindented line.
 
-- [ ] **Deep recursion crashes the evaluator with a native stack overflow.**
+- [x] **Deep recursion crashes the evaluator with a native stack overflow.**
+  Fixed in the CLI/playground runner: an iterative whole-expression depth
+  check stops evaluation above depth 512 with `eval.depthLimit`, located at
+  the program entry expression. This also checks zero-fuel and final-value
+  paths, and preserves the completed step count. The verified `runSafe` and
+  reduction theorems are unchanged; this guard does not establish a formal
+  native-stack bound or protect earlier parsing/typechecking stages.
+
+  Original reproductions:
   `fhm run` aborts with `Stack overflow detected. Aborting.` (in the
   playground the child process just dies) once evaluation gets deep enough,
   with or without `--fuel`:
@@ -141,12 +151,9 @@ Error recovery and formatter work remain separate from these batches.
   and the step budget can't help, since a single step overflows. Tail calls
   (`let loop = \n -> loop (n + 1)`) are fine and stop at the budget.
 
-  Options, roughly in order of effort: report a clean "evaluation too deep"
-  error by bounding the context depth before stepping (computed without
-  recursion); run evaluation on a thread with a much larger stack; or evaluate
-  with an explicit continuation stack (the CEK machine in
-  `briefs/cekmachine-design.md`, which is no longer in the tree), so depth is
-  limited by memory, not the native stack. Separately, OCaml rejects
+  Longer-term option: evaluate with an explicit continuation stack, so
+  evaluation-context depth is limited by memory, not the native stack.
+  Separately, OCaml rejects
   `let rec x = x + 1` outright ("This kind of expression is not allowed as
   right-hand side of let rec"); FHM could reject non-function recursive
   definitions too.

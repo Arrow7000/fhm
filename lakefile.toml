@@ -46,8 +46,8 @@ roots = ["FHM.Unverified.EditorSupport"]
 
 [[lean_lib]]
 name = "FHMEditorTests"
-# Span-hover canaries -- `lake build FHMEditorTests`.
-roots = ["FHM.Unverified.EditorSupportTests"]
+# Editor and runtime canaries -- `lake build FHMEditorTests`.
+roots = ["FHM.Unverified.EditorSupportTests", "FHM.Unverified.LiveTests"]
 
 [[lean_lib]]
 name = "FHMCli"
