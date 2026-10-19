@@ -3032,6 +3032,21 @@ private theorem RecGroups.ValidResidualGroups.inference_component_contained
   simpa [hcomponentEq] using hmemberDecl
 
 
+/-- Every canonical inference component is contained in one component of any
+valid declarative residual partition. -/
+theorem RecGroups.ValidResidualGroups.canonical_component_contained
+    {anns : List (Option PolyTy)} {bindings : List Expr}
+    {groups : List (List Nat)}
+    (h : RecGroups.ValidResidualGroups anns bindings groups)
+    {algorithmStage : Nat} {algorithmComponent : List Nat}
+    (halgorithm : (RecGroup.inferenceSccs anns bindings)[algorithmStage]? =
+      some algorithmComponent) :
+    ∃ (declStage : Nat) (declComponent : List Nat),
+      groups[declStage]? = some declComponent ∧
+      ∀ member ∈ algorithmComponent, member ∈ declComponent :=
+  h.inference_component_contained halgorithm
+
+
 /-- From the cofinite "types at every fresh opening of `σ`" premise, extract a
     typing at one *specific* opening `Ys` (any list of the right length): pick a
     generic fresh `Xs`, type at `σ.openVars Xs`, then rename `Xs → Ys`. -/
