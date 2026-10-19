@@ -506,7 +506,7 @@ end
 
 /-! ## The Algorithm W inference relation
 
-`Infer Φ ctx e Φ' S τ` is Algorithm W phrased as a *relation* (no function /
+`Infer κ Φ ctx e Φ' S τ` is Algorithm W phrased as a *relation* (no function /
 termination obligation in the relation itself). It reads: starting with the
 fresh-variable frontier `Φ` (every unification var in play is `< Φ`), expression
 `e` infers type `τ` under the most-general substitution `S`, allocating fresh
@@ -1543,56 +1543,64 @@ theorem RecCeilingConstraints.fixes_annotations {K rigid G Φ anns specs S}
     monotype; runtime execution uses the independently defined erased source term.
     The relation is mutually defined with the `match_` and `letRec` threaders
     `InferBranches` and `InferRecGroup`. -/
+/-- Unification at an inference step may solve only non-rigid variables. -/
+structure RigidUnify (K : List Nat) (a b : Ty) (S : Subst) : Prop where
+  unifies : UnifyRel a b S
+  dom_avoids : ∀ p ∈ S, p.1 ∉ K
+
+instance {K a b S} : CoeOut (RigidUnify K a b S) (UnifyRel a b S) :=
+  ⟨RigidUnify.unifies⟩
+
 mutual
-inductive Infer : Nat → Ctx → Expr → Nat → Subst → Ty → Prop
-  | primLitUnit {Φ ctx} :
-    Infer Φ ctx (.primLit .unit) Φ [] (.prim .unit)
-  | primLitInt {Φ ctx n} :
-    Infer Φ ctx (.primLit (.int n)) Φ [] (.prim .int)
-  | primLitNat {Φ ctx n} :
-    Infer Φ ctx (.primLit (.nat n)) Φ [] (.prim .nat)
-  | primLitChar {Φ ctx c} :
-    Infer Φ ctx (.primLit (.char c)) Φ [] (.prim .char)
-  | primBinOpIntAdd {Φ ctx} :
-    Infer Φ ctx (.primBinOp .intAdd) Φ []
+inductive Infer : List Nat → Nat → Ctx → Expr → Nat → Subst → Ty → Prop
+  | primLitUnit {κ Φ ctx} :
+    Infer κ Φ ctx (.primLit .unit) Φ [] (.prim .unit)
+  | primLitInt {κ Φ ctx n} :
+    Infer κ Φ ctx (.primLit (.int n)) Φ [] (.prim .int)
+  | primLitNat {κ Φ ctx n} :
+    Infer κ Φ ctx (.primLit (.nat n)) Φ [] (.prim .nat)
+  | primLitChar {κ Φ ctx c} :
+    Infer κ Φ ctx (.primLit (.char c)) Φ [] (.prim .char)
+  | primBinOpIntAdd {κ Φ ctx} :
+    Infer κ Φ ctx (.primBinOp .intAdd) Φ []
       (.arrow (.prim .int) (.arrow (.prim .int) (.prim .int)))
-  | primBinOpIntSub {Φ ctx} :
-    Infer Φ ctx (.primBinOp .intSub) Φ []
+  | primBinOpIntSub {κ Φ ctx} :
+    Infer κ Φ ctx (.primBinOp .intSub) Φ []
       (.arrow (.prim .int) (.arrow (.prim .int) (.prim .int)))
-  | primBinOpIntLt {Φ ctx trueC falseC} :
+  | primBinOpIntLt {κ Φ ctx trueC falseC} :
     LookupList.get? ctx.ctors ⟨"True"⟩  = some trueC → trueC.IsBoolCtor →
     LookupList.get? ctx.ctors ⟨"False"⟩ = some falseC → falseC.IsBoolCtor →
-    Infer Φ ctx (.primBinOp .intLt) Φ []
+    Infer κ Φ ctx (.primBinOp .intLt) Φ []
       (.arrow (.prim .int) (.arrow (.prim .int) (.customTy ⟨"Bool"⟩ [])))
-  | primBinOpCharLt {Φ ctx trueC falseC} :
+  | primBinOpCharLt {κ Φ ctx trueC falseC} :
     LookupList.get? ctx.ctors ⟨"True"⟩  = some trueC → trueC.IsBoolCtor →
     LookupList.get? ctx.ctors ⟨"False"⟩ = some falseC → falseC.IsBoolCtor →
-    Infer Φ ctx (.primBinOp .charLt) Φ []
+    Infer κ Φ ctx (.primBinOp .charLt) Φ []
       (.arrow (.prim .char) (.arrow (.prim .char) (.customTy ⟨"Bool"⟩ [])))
-  | lambda {Φ ctx ann paramTy body Φ₀ Φ' S τb} :
+  | lambda {κ Φ ctx ann paramTy body Φ₀ Φ' S τb} :
     LamSeed Φ ann paramTy Φ₀ →
-    Infer Φ₀ { ctx with env := PolyTy.mkTrivial paramTy :: ctx.env } body Φ' S τb →
-    Infer Φ ctx (.lambda ann body) Φ' S (.arrow (S.onTy paramTy) τb)
-  | app {Φ ctx f arg Φ₁ Φ₂ S₁ S₂ S₃ τf τa} :
-    Infer Φ ctx f Φ₁ S₁ τf →
-    Infer Φ₁ (S₁.onCtx ctx) arg Φ₂ S₂ τa →
-    UnifyRel (S₂.onTy τf) (.arrow τa (.fvar Φ₂)) S₃ →
-    Infer Φ ctx (.app f arg) (Φ₂ + 1) (S₁ ++ S₂ ++ S₃) (S₃.onTy (.fvar Φ₂))
-  | var {Φ ctx i polyTy} :
+    Infer κ Φ₀ { ctx with env := PolyTy.mkTrivial paramTy :: ctx.env } body Φ' S τb →
+    Infer κ Φ ctx (.lambda ann body) Φ' S (.arrow (S.onTy paramTy) τb)
+  | app {κ Φ ctx f arg Φ₁ Φ₂ S₁ S₂ S₃ τf τa} :
+    Infer κ Φ ctx f Φ₁ S₁ τf →
+    Infer κ Φ₁ (S₁.onCtx ctx) arg Φ₂ S₂ τa →
+    RigidUnify κ (S₂.onTy τf) (.arrow τa (.fvar Φ₂)) S₃ →
+    Infer κ Φ ctx (.app f arg) (Φ₂ + 1) (S₁ ++ S₂ ++ S₃) (S₃.onTy (.fvar Φ₂))
+  | var {κ Φ ctx i polyTy} :
     ctx.env[i]? = some polyTy →
-    Infer Φ ctx (.var i) (Φ + polyTy.paramCount) []
+    Infer κ Φ ctx (.var i) (Φ + polyTy.paramCount) []
       (polyTy.openVars (freshVars Φ polyTy.paramCount))
-  | ctor {Φ ctx name ctor} :
+  | ctor {κ Φ ctx name ctor} :
     LookupList.get? ctx.ctors name = some ctor →
-    Infer Φ ctx (.ctor name) (Φ + ctor.paramCount) []
+    Infer κ Φ ctx (.ctor name) (Φ + ctor.paramCount) []
       (ctor.toTy.openVars (freshVars Φ ctor.paramCount))
-  | letIn {Φ ctx rhs body Φ₁ Φ₂ S₁ S₂ τ₁ τ₂} :
-    Infer Φ ctx rhs Φ₁ S₁ τ₁ →
-    Infer Φ₁
+  | letIn {κ Φ ctx rhs body Φ₁ Φ₂ S₁ S₂ τ₁ τ₂} :
+    Infer κ Φ ctx rhs Φ₁ S₁ τ₁ →
+    Infer κ Φ₁
       { (S₁.onCtx ctx) with
         env := genScheme rhs.tyFreeVars (S₁.onCtx ctx).env τ₁ :: (S₁.onCtx ctx).env }
       body Φ₂ S₂ τ₂ →
-    Infer Φ ctx (.letIn none rhs body) Φ₂ (S₁ ++ S₂) τ₂
+    Infer κ Φ ctx (.letIn none rhs body) Φ₂ (S₁ ++ S₂) τ₂
   /-- Annotated `let` with scoped type variables. The bound scheme is
       the annotation `σ` (`σ.WF`; it MAY carry free type vars — outer scoped
       vars). Allocate `σ`'s skolems `Ys = freshVars Φ σ.paramCount` **first**, then
@@ -1603,155 +1611,155 @@ inductive Infer : Nat → Ctx → Expr → Nat → Subst → Ty → Prop
       the **whole** rhs+unify substitution `S₁ ++ Schk` (so the signature is no
       more general than `rhs` actually is), and none leaks into the threaded body
       context. -/
-  | letInAnn {Φ N ctx σ rhs body Φ₁ Φ₂ S₁ Schk S₂ τ₁ τ₂} :
+  | letInAnn {κ Φ N ctx σ rhs body Φ₁ Φ₂ S₁ Schk S₂ τ₁ τ₂} :
     σ.WF →
     Φ ≤ N →
-    Infer (N + σ.paramCount) ctx (rhs.openTyVars (freshVars N σ.paramCount)) Φ₁ S₁ τ₁ →
-    UnifyRel τ₁ (σ.openVars (freshVars N σ.paramCount)) Schk →
+    Infer (κ ++ freshVars N σ.paramCount) (N + σ.paramCount) ctx (rhs.openTyVars (freshVars N σ.paramCount)) Φ₁ S₁ τ₁ →
+    RigidUnify (κ ++ freshVars N σ.paramCount) τ₁ (σ.openVars (freshVars N σ.paramCount)) Schk →
     (∀ y ∈ freshVars N σ.paramCount, y ∉ (S₁ ++ Schk).map Prod.fst) →
     (∀ y ∈ freshVars N σ.paramCount, y ∉ (Schk.onCtx (S₁.onCtx ctx)).env.freeVars) →
-    Infer Φ₁
+    Infer κ Φ₁
       { (Schk.onCtx (S₁.onCtx ctx)) with env := σ :: (Schk.onCtx (S₁.onCtx ctx)).env }
       body Φ₂ S₂ τ₂ →
-    Infer Φ ctx (.letIn (some σ) rhs body) Φ₂ (S₁ ++ Schk ++ S₂) τ₂
-  | match_ {Φ ctx scrut branches Φ₁ Φ₂ S₁ S₂ τs} :
-    Infer Φ ctx scrut Φ₁ S₁ τs →
+    Infer κ Φ ctx (.letIn (some σ) rhs body) Φ₂ (S₁ ++ Schk ++ S₂) τ₂
+  | match_ {κ Φ ctx scrut branches Φ₁ Φ₂ S₁ S₂ τs} :
+    Infer κ Φ ctx scrut Φ₁ S₁ τs →
     branches ≠ [] →
-    InferBranches (Φ₁ + 1) (S₁.onCtx ctx) τs (.fvar Φ₁) branches Φ₂ S₂ →
-    Infer Φ ctx (.match_ scrut branches) Φ₂ (S₁ ++ S₂) (S₂.onTy (.fvar Φ₁))
+    InferBranches κ (Φ₁ + 1) (S₁.onCtx ctx) τs (.fvar Φ₁) branches Φ₂ S₂ →
+    Infer κ Φ ctx (.match_ scrut branches) Φ₂ (S₁ ++ S₂) (S₂.onTy (.fvar Φ₁))
   /-- Contract-stratified recursive groups.  First infer only unsigned members
       in the mixed monomorphic environment; then generalise them and check only
       signed members under the final scheme environment; finally infer the
       body under that same final environment. -/
-  | letRec {Φ ctx anns bindings body Φ₁ Φ₂ Φ₃ S₁ S₂ S₃ τ₃ G specs1 specs2} :
+  | letRec {κ Φ ctx anns bindings body Φ₁ Φ₂ Φ₃ S₁ S₂ S₃ τ₃ G specs1 specs2} :
     (∀ σ, some σ ∈ anns → σ.WF) →
     RecGroups.ValidResidualGroups anns bindings (RecGroup.inferenceSccs anns bindings) →
-    InferRecStrata (RecGroup.rigidVars anns bindings) bindings
+    InferRecStrata κ (RecGroup.rigidVars anns bindings) bindings
       (Φ + bindings.length) ctx (RecSpec.init Φ anns) [] []
       (RecGroup.inferenceSccs anns bindings) Φ₁ S₁ specs1 G →
-    InferRecGroupPoly Φ₁
+    InferRecGroupPoly κ Φ₁
       { (S₁.onCtx ctx) with
         env := specs1.map (RecSpec.bodyScheme G) ++ (S₁.onCtx ctx).env }
       bindings specs1 Φ₂ S₂ →
     specs2 = specs1.map (RecSpec.onSubst S₂) →
-    Infer Φ₂
+    Infer κ Φ₂
       { (S₂.onCtx (S₁.onCtx ctx)) with
         env := specs2.map (RecSpec.bodyScheme G) ++ (S₂.onCtx (S₁.onCtx ctx)).env }
       body Φ₃ S₃ τ₃ →
-    Infer Φ ctx (.letRec anns bindings body) Φ₃ (S₁ ++ S₂ ++ S₃) τ₃
+    Infer κ Φ ctx (.letRec anns bindings body) Φ₃ (S₁ ++ S₂ ++ S₃) τ₃
 
 /-- Threads inference through a `match_`'s branch list. Carries the scrutinee type
     `scrutTy` (which each *named* pattern constrains to its ADT by unifying it with a
     fresh `customTy` instance) and a running result type `ρ` that each branch body's
     type is unified against, with substitutions propagated to the next branch. An
     all-wildcard list leaves `scrutTy` free. -/
-inductive InferBranches :
+inductive InferBranches : List Nat →
     Nat → Ctx → Ty → Ty → List (MatchPattern × Expr) → Nat → Subst → Prop
-  | nil {Φ ctx scrutTy ρ} :
-    InferBranches Φ ctx scrutTy ρ [] Φ []
-  | cons {Φ ctx scrutTy ρ c n body rest ctor Φ₁ Φ₂ S₀ S₁ S₂ S₃ τb} :
+  | nil {κ Φ ctx scrutTy ρ} :
+    InferBranches κ Φ ctx scrutTy ρ [] Φ []
+  | cons {κ Φ ctx scrutTy ρ c n body rest ctor Φ₁ Φ₂ S₀ S₁ S₂ S₃ τb} :
     LookupList.get? ctx.ctors c = some ctor →
     n = ctor.contents.length →
-    UnifyRel scrutTy
+    RigidUnify κ scrutTy
       (.customTy ctor.tyName ((freshVars Φ ctor.paramCount).map (Ty.fvar ·))) S₀ →
-    Infer (Φ + ctor.paramCount)
+    Infer κ (Φ + ctor.paramCount)
       { (S₀.onCtx ctx) with
         env := (ctor.contents.map (Ty.openWith
             (((freshVars Φ ctor.paramCount).map (Ty.fvar ·)).map S₀.onTy))).map PolyTy.mkTrivial
           ++ (S₀.onCtx ctx).env }
       body Φ₁ S₁ τb →
-    UnifyRel τb (S₁.onTy (S₀.onTy ρ)) S₂ →
-    InferBranches Φ₁ (S₂.onCtx (S₁.onCtx (S₀.onCtx ctx)))
+    RigidUnify κ τb (S₁.onTy (S₀.onTy ρ)) S₂ →
+    InferBranches κ Φ₁ (S₂.onCtx (S₁.onCtx (S₀.onCtx ctx)))
       (S₂.onTy (S₁.onTy (S₀.onTy scrutTy))) (S₂.onTy (S₁.onTy (S₀.onTy ρ))) rest Φ₂ S₃ →
-    InferBranches Φ ctx scrutTy ρ ((.named c n, body) :: rest) Φ₂ (S₀ ++ S₁ ++ S₂ ++ S₃)
+    InferBranches κ Φ ctx scrutTy ρ ((.named c n, body) :: rest) Φ₂ (S₀ ++ S₁ ++ S₂ ++ S₃)
   /-- A wildcard branch: infer `body` in the *unextended* context (it binds
       nothing) and imposes no constraint on `scrutTy`; unify its type against the
       running result type `ρ`, continue. -/
-  | consWild {Φ ctx scrutTy ρ body rest Φ₁ Φ₂ S₁ S₂ S₃ τb} :
-    Infer Φ ctx body Φ₁ S₁ τb →
-    UnifyRel τb (S₁.onTy ρ) S₂ →
-    InferBranches Φ₁ (S₂.onCtx (S₁.onCtx ctx))
+  | consWild {κ Φ ctx scrutTy ρ body rest Φ₁ Φ₂ S₁ S₂ S₃ τb} :
+    Infer κ Φ ctx body Φ₁ S₁ τb →
+    RigidUnify κ τb (S₁.onTy ρ) S₂ →
+    InferBranches κ Φ₁ (S₂.onCtx (S₁.onCtx ctx))
       (S₂.onTy (S₁.onTy scrutTy)) (S₂.onTy (S₁.onTy ρ)) rest Φ₂ S₃ →
-    InferBranches Φ ctx scrutTy ρ ((.wildcard, body) :: rest) Φ₂ (S₁ ++ S₂ ++ S₃)
+    InferBranches κ Φ ctx scrutTy ρ ((.wildcard, body) :: rest) Φ₂ (S₁ ++ S₂ ++ S₃)
 
-/-- Infer exactly one residual component, retaining original member positions.
+/-- Infer κ exactly one residual component, retaining original member positions.
     Unselected monomorphic members and every annotated member are skipped. -/
-inductive InferRecComponent :
+inductive InferRecComponent : List Nat →
     List Nat → Nat → Nat → Ctx → List Expr → List RecSpec → Nat → Subst → Prop
-  | nil {members memberIndex Φ ctx} :
-      InferRecComponent members memberIndex Φ ctx [] [] Φ []
-  | consSelected {members memberIndex Φ ctx e rest τ specs Φ₁ Φ₂ S₁ S₂ S₃ τ'} :
+  | nil {κ members memberIndex Φ ctx} :
+      InferRecComponent κ members memberIndex Φ ctx [] [] Φ []
+  | consSelected {κ members memberIndex Φ ctx e rest τ specs Φ₁ Φ₂ S₁ S₂ S₃ τ'} :
       memberIndex ∈ members →
-      Infer Φ ctx e Φ₁ S₁ τ' →
-      UnifyRel τ' (S₁.onTy τ) S₂ →
-      InferRecComponent members (memberIndex + 1) Φ₁
+      Infer κ Φ ctx e Φ₁ S₁ τ' →
+      RigidUnify κ τ' (S₁.onTy τ) S₂ →
+      InferRecComponent κ members (memberIndex + 1) Φ₁
         (S₂.onCtx (S₁.onCtx ctx)) rest
         (specs.map (RecSpec.onSubst (S₁ ++ S₂))) Φ₂ S₃ →
-      InferRecComponent members memberIndex Φ ctx
+      InferRecComponent κ members memberIndex Φ ctx
         (e :: rest) (.mono τ :: specs) Φ₂ (S₁ ++ S₂ ++ S₃)
-  | skipMono {members memberIndex Φ ctx e rest τ specs Φ' S} :
+  | skipMono {κ members memberIndex Φ ctx e rest τ specs Φ' S} :
       memberIndex ∉ members →
-      InferRecComponent members (memberIndex + 1) Φ ctx rest specs Φ' S →
-      InferRecComponent members memberIndex Φ ctx
+      InferRecComponent κ members (memberIndex + 1) Φ ctx rest specs Φ' S →
+      InferRecComponent κ members memberIndex Φ ctx
         (e :: rest) (.mono τ :: specs) Φ' S
-  | skipPoly {members memberIndex Φ ctx e rest σ specs Φ' S} :
-      InferRecComponent members (memberIndex + 1) Φ ctx rest specs Φ' S →
-      InferRecComponent members memberIndex Φ ctx
+  | skipPoly {κ members memberIndex Φ ctx e rest σ specs Φ' S} :
+      InferRecComponent κ members (memberIndex + 1) Φ ctx rest specs Φ' S →
+      InferRecComponent κ members memberIndex Φ ctx
         (e :: rest) (.poly σ :: specs) Φ' S
 
 /-- Process residual components dependency-first. `done` records completed
     member indices and `G` the frozen aggregate generalisation pool. -/
-inductive InferRecStrata :
+inductive InferRecStrata : List Nat →
     List Nat → List Expr → Nat → Ctx → List RecSpec → List Nat → List Nat → List (List Nat) →
       Nat → Subst → List RecSpec → List Nat → Prop
-  | nil { rigid bindings Φ ctx specs done G } :
-      InferRecStrata rigid bindings Φ ctx specs done G [] Φ [] specs G
-  | cons { rigid bindings Φ ctx specs done G component rest Φ₁ Φ₂ S₁ S₂ specs₁ specs₂
+  | nil {κ  rigid bindings Φ ctx specs done G } :
+      InferRecStrata κ rigid bindings Φ ctx specs done G [] Φ [] specs G
+  | cons {κ  rigid bindings Φ ctx specs done G component rest Φ₁ Φ₂ S₁ S₂ specs₁ specs₂
       Gcurrent Gfinal } :
-      InferRecComponent component 0 Φ
+      InferRecComponent κ component 0 Φ
         (RecSpecs.algorithmStageCtx ctx specs done G)
         bindings specs Φ₁ S₁ →
       specs₁ = specs.map (RecSpec.onSubst S₁) →
       Gcurrent = genGroupVars (rigid ++ G)
         (RecSpecs.generalizationCtx (S₁.onCtx ctx) specs₁ done G).env
         (RecSpecs.monoTysAt specs₁ component) →
-      InferRecStrata rigid bindings Φ₁ (S₁.onCtx ctx) specs₁
+      InferRecStrata κ rigid bindings Φ₁ (S₁.onCtx ctx) specs₁
         (done ++ component) (G ++ Gcurrent) rest Φ₂ S₂ specs₂ Gfinal →
-      InferRecStrata rigid bindings Φ ctx specs done G
+      InferRecStrata κ rigid bindings Φ ctx specs done G
         (component :: rest) Φ₂ (S₁ ++ S₂) specs₂ Gfinal
 
 /-- First contract-stratified phase: solve unsigned members and skip signed
     ones while walking the original aligned lists. -/
-inductive InferRecGroup : Nat → Ctx → List Expr → List RecSpec → Nat → Subst → Prop
-  | nil {Φ ctx} : InferRecGroup Φ ctx [] [] Φ []
-  | consMono {Φ ctx e rest τ specs Φ₁ Φ₂ S₁ S₂ S₃ τ'} :
-    Infer Φ ctx e Φ₁ S₁ τ' →
-    UnifyRel τ' (S₁.onTy τ) S₂ →
-    InferRecGroup Φ₁ (S₂.onCtx (S₁.onCtx ctx)) rest
+inductive InferRecGroup : List Nat → Nat → Ctx → List Expr → List RecSpec → Nat → Subst → Prop
+  | nil {κ Φ ctx} : InferRecGroup κ Φ ctx [] [] Φ []
+  | consMono {κ Φ ctx e rest τ specs Φ₁ Φ₂ S₁ S₂ S₃ τ'} :
+    Infer κ Φ ctx e Φ₁ S₁ τ' →
+    RigidUnify κ τ' (S₁.onTy τ) S₂ →
+    InferRecGroup κ Φ₁ (S₂.onCtx (S₁.onCtx ctx)) rest
       (specs.map (RecSpec.onSubst (S₁ ++ S₂))) Φ₂ S₃ →
-    InferRecGroup Φ ctx (e :: rest) (.mono τ :: specs) Φ₂ (S₁ ++ S₂ ++ S₃)
-  | skipPoly {Φ ctx σ specs e rest Φ' S} :
-    InferRecGroup Φ ctx rest specs Φ' S →
-    InferRecGroup Φ ctx (e :: rest) (.poly σ :: specs) Φ' S
+    InferRecGroup κ Φ ctx (e :: rest) (.mono τ :: specs) Φ₂ (S₁ ++ S₂ ++ S₃)
+  | skipPoly {κ Φ ctx σ specs e rest Φ' S} :
+    InferRecGroup κ Φ ctx rest specs Φ' S →
+    InferRecGroup κ Φ ctx (e :: rest) (.poly σ :: specs) Φ' S
 
 /-- Second recursive-group phase: skip unsigned members and check signed ones
     under the final, already-generalised group environment. -/
-inductive InferRecGroupPoly : Nat → Ctx → List Expr → List RecSpec → Nat → Subst → Prop
-  | nil {Φ ctx} : InferRecGroupPoly Φ ctx [] [] Φ []
-  | skipMono {Φ ctx τ specs e rest Φ' S} :
-    InferRecGroupPoly Φ ctx rest specs Φ' S →
-    InferRecGroupPoly Φ ctx (e :: rest) (.mono τ :: specs) Φ' S
-  | consPoly {Φ N ctx σ specs e rest Φ₁ Φ₂ S₁ Schk S₂ τ} :
+inductive InferRecGroupPoly : List Nat → Nat → Ctx → List Expr → List RecSpec → Nat → Subst → Prop
+  | nil {κ Φ ctx} : InferRecGroupPoly κ Φ ctx [] [] Φ []
+  | skipMono {κ Φ ctx τ specs e rest Φ' S} :
+    InferRecGroupPoly κ Φ ctx rest specs Φ' S →
+    InferRecGroupPoly κ Φ ctx (e :: rest) (.mono τ :: specs) Φ' S
+  | consPoly {κ Φ N ctx σ specs e rest Φ₁ Φ₂ S₁ Schk S₂ τ} :
     Φ ≤ N →
-    Infer (N + σ.paramCount) ctx
+    Infer (κ ++ freshVars N σ.paramCount) (N + σ.paramCount) ctx
       (e.openTyVars (freshVars N σ.paramCount)) Φ₁ S₁ τ →
-    UnifyRel τ (σ.openVars (freshVars N σ.paramCount)) Schk →
+    RigidUnify (κ ++ freshVars N σ.paramCount) τ (σ.openVars (freshVars N σ.paramCount)) Schk →
     (∀ y ∈ freshVars N σ.paramCount, y ∉ (S₁ ++ Schk).map Prod.fst) →
     (∀ y ∈ freshVars N σ.paramCount,
       y ∉ (Schk.onCtx (S₁.onCtx ctx)).env.freeVars) →
-    InferRecGroupPoly Φ₁ (Schk.onCtx (S₁.onCtx ctx)) rest
+    InferRecGroupPoly κ Φ₁ (Schk.onCtx (S₁.onCtx ctx)) rest
       (specs.map (RecSpec.onSubst (S₁ ++ Schk))) Φ₂ S₂ →
-    InferRecGroupPoly Φ ctx (e :: rest) (.poly σ :: specs) Φ₂ (S₁ ++ Schk ++ S₂)
+    InferRecGroupPoly κ Φ ctx (e :: rest) (.poly σ :: specs) Φ₂ (S₁ ++ Schk ++ S₂)
 end
 
 
@@ -1878,7 +1886,7 @@ theorem Expr.substTyFvars_tyBvarBounded {S : List (Nat × Ty)} (hS : ∀ p ∈ S
 
 /-! The fresh-variable frontier only ever grows (`Infer.frontier_le`). -/
 mutual
-theorem Infer.frontier_le {Φ ctx e Φ' S τ} (h : Infer Φ ctx e Φ' S τ) : Φ ≤ Φ' := by
+theorem Infer.frontier_le {Φ ctx e Φ' S τ} (h : Infer κ Φ ctx e Φ' S τ) : Φ ≤ Φ' := by
   match h with
   | .primLitUnit => omega
   | .primLitInt => omega
@@ -1906,7 +1914,7 @@ termination_by (e.size, 0)
 decreasing_by
   all_goals (try subst_vars; simp only [Expr.size, Expr.size_openTyVars]; omega)
 theorem InferBranches.frontier_le {Φ ctx scrutTy ρ brs Φ' S}
-    (h : InferBranches Φ ctx scrutTy ρ brs Φ' S) :
+    (h : InferBranches κ Φ ctx scrutTy ρ brs Φ' S) :
     Φ ≤ Φ' := by
   match h with
   | .nil => omega
@@ -1918,7 +1926,7 @@ termination_by (Expr.sizeBranches brs, 0)
 decreasing_by
   all_goals (try subst_vars; simp only [Expr.sizeBranches]; omega)
 theorem InferRecComponent.frontier_le {members memberIndex Φ ctx bindings specs Φ' S}
-    (h : InferRecComponent members memberIndex Φ ctx bindings specs Φ' S) : Φ ≤ Φ' := by
+    (h : InferRecComponent κ members memberIndex Φ ctx bindings specs Φ' S) : Φ ≤ Φ' := by
   match h with
   | .nil => omega
   | .consSelected _ he _ hrest =>
@@ -1931,7 +1939,7 @@ termination_by (Expr.sizeRecGroup bindings, 0)
 decreasing_by
   all_goals (simp only [Expr.sizeRecGroup]; omega)
 theorem InferRecStrata.frontier_le {rigid bindings Φ ctx specs done G groups Φ' S specs' G'}
-    (h : InferRecStrata rigid bindings Φ ctx specs done G groups Φ' S specs' G') : Φ ≤ Φ' := by
+    (h : InferRecStrata κ rigid bindings Φ ctx specs done G groups Φ' S specs' G') : Φ ≤ Φ' := by
   match h with
   | .nil => omega
   | .cons hcomponent _ _ hrest =>
@@ -1942,7 +1950,7 @@ termination_by (Expr.sizeRecGroup bindings, groups.length)
 decreasing_by
   all_goals (try subst_vars; simp_wf; try omega)
 theorem InferRecGroup.frontier_le {Φ ctx bindings specs Φ' S}
-    (h : InferRecGroup Φ ctx bindings specs Φ' S) : Φ ≤ Φ' := by
+    (h : InferRecGroup κ Φ ctx bindings specs Φ' S) : Φ ≤ Φ' := by
   match h with
   | .nil => omega
   | .consMono he _ hrest =>
@@ -1952,7 +1960,7 @@ termination_by (Expr.sizeRecGroup bindings, 0)
 decreasing_by
   all_goals (simp only [Expr.sizeRecGroup]; omega)
 theorem InferRecGroupPoly.frontier_le {Φ ctx bindings specs Φ' S}
-    (h : InferRecGroupPoly Φ ctx bindings specs Φ' S) : Φ ≤ Φ' := by
+    (h : InferRecGroupPoly κ Φ ctx bindings specs Φ' S) : Φ ≤ Φ' := by
   match h with
   | .nil => omega
   | .skipMono hrest => exact InferRecGroupPoly.frontier_le hrest
@@ -1967,7 +1975,7 @@ end
 
 /-- Component inference walks the aligned binding/specification lists. -/
 theorem InferRecComponent.length_eq {members memberIndex Φ ctx bindings specs Φ' S}
-    (h : InferRecComponent members memberIndex Φ ctx bindings specs Φ' S) :
+    (h : InferRecComponent κ members memberIndex Φ ctx bindings specs Φ' S) :
     bindings.length = specs.length := by
   match h with
   | .nil => rfl
@@ -1978,7 +1986,7 @@ termination_by bindings.length
 
 /-- Strata only substitute specification bodies, preserving alignment. -/
 theorem InferRecStrata.specs_eq {rigid bindings Φ ctx specs done G groups Φ' S specs' G'}
-    (h : InferRecStrata rigid bindings Φ ctx specs done G groups Φ' S specs' G') :
+    (h : InferRecStrata κ rigid bindings Φ ctx specs done G groups Φ' S specs' G') :
     specs' = specs.map (RecSpec.onSubst S) := by
   match h with
   | .nil =>
@@ -1995,7 +2003,7 @@ termination_by groups.length
 
 /-- An `InferRecGroup` derivation has matching binding/target lengths. -/
 theorem InferRecGroup.length_eq {Φ ctx bindings specs Φ' S}
-    (h : InferRecGroup Φ ctx bindings specs Φ' S) : bindings.length = specs.length := by
+    (h : InferRecGroup κ Φ ctx bindings specs Φ' S) : bindings.length = specs.length := by
   induction bindings generalizing Φ ctx specs Φ' S with
   | nil => cases h with | nil => rfl
   | cons e rest ih =>
@@ -2006,7 +2014,7 @@ theorem InferRecGroup.length_eq {Φ ctx bindings specs Φ' S}
       have := ih hrest; simp only [List.length_cons] at this ⊢; omega
 
 theorem InferRecGroupPoly.length_eq {Φ ctx bindings specs Φ' S}
-    (h : InferRecGroupPoly Φ ctx bindings specs Φ' S) : bindings.length = specs.length := by
+    (h : InferRecGroupPoly κ Φ ctx bindings specs Φ' S) : bindings.length = specs.length := by
   induction bindings generalizing Φ ctx specs Φ' S with
   | nil => cases h with | nil => rfl
   | cons e rest ih =>
@@ -2156,7 +2164,7 @@ theorem RecSpecs.algorithmStageCtx_wf {ctx : Ctx} {specs : List RecSpec}
   · exact hctx M hM
 
 mutual
-theorem Infer.lc {Φ ctx e Φ' S τ} (h : Infer Φ ctx e Φ' S τ) :
+theorem Infer.lc {Φ ctx e Φ' S τ} (h : Infer κ Φ ctx e Φ' S τ) :
     CtxWF ctx → τ.IsLC ∧ (∀ p ∈ S, p.2.IsLC) := by
   match h with
   | .primLitUnit => intro _; exact ⟨.prim, by simp⟩
@@ -2281,7 +2289,7 @@ termination_by (e.size, 0)
 decreasing_by
   all_goals (try subst_vars; try simp only [Expr.size, Expr.size_openTyVars]; omega)
 theorem InferBranches.lc {Φ ctx scrutTy ρ brs Φ' S}
-    (h : InferBranches Φ ctx scrutTy ρ brs Φ' S)
+    (h : InferBranches κ Φ ctx scrutTy ρ brs Φ' S)
     (hctx : CtxWF ctx) (hscrutTy : scrutTy.IsLC) (hρ : ρ.IsLC) :
     (S.onTy ρ).IsLC ∧ (∀ p ∈ S, p.2.IsLC) := by
   match h with
@@ -2327,7 +2335,7 @@ termination_by (Expr.sizeBranches brs, 0)
 decreasing_by
   all_goals (try subst_vars; try simp only [Expr.sizeBranches]; omega)
 theorem InferRecComponent.lc {members memberIndex Φ ctx bindings specs Φ' S}
-    (h : InferRecComponent members memberIndex Φ ctx bindings specs Φ' S)
+    (h : InferRecComponent κ members memberIndex Φ ctx bindings specs Φ' S)
     (hctx : CtxWF ctx) (hspecs : ∀ s ∈ specs, s.LC) :
     ∀ p ∈ S, p.2.IsLC := by
   match h with
@@ -2358,7 +2366,7 @@ decreasing_by
   all_goals (simp only [Expr.sizeRecGroup]; omega)
 
 theorem InferRecStrata.lc {rigid bindings Φ ctx specs done G groups Φ' S specs' G'}
-    (h : InferRecStrata rigid bindings Φ ctx specs done G groups Φ' S specs' G')
+    (h : InferRecStrata κ rigid bindings Φ ctx specs done G groups Φ' S specs' G')
     (hctx : CtxWF ctx) (hspecs : ∀ s ∈ specs, s.LC) :
     ∀ p ∈ S, p.2.IsLC := by
   match h with
@@ -2381,7 +2389,7 @@ decreasing_by
     well-formed context and LC/WF specs, every replacement in the group's
     substitution is locally closed. -/
 theorem InferRecGroup.lc {Φ ctx bindings specs Φ' S}
-    (h : InferRecGroup Φ ctx bindings specs Φ' S)
+    (h : InferRecGroup κ Φ ctx bindings specs Φ' S)
     (hctx : CtxWF ctx) (hspecs : ∀ s ∈ specs, s.LC) :
     (∀ p ∈ S, p.2.IsLC) := by
   match h with
@@ -2410,7 +2418,7 @@ decreasing_by
   all_goals (try simp only [Expr.sizeRecGroup]; omega)
 /-- Local-closedness of the signed checking phase. -/
 theorem InferRecGroupPoly.lc {Φ ctx bindings specs Φ' S}
-    (h : InferRecGroupPoly Φ ctx bindings specs Φ' S)
+    (h : InferRecGroupPoly κ Φ ctx bindings specs Φ' S)
     (hctx : CtxWF ctx) (hspecs : ∀ s ∈ specs, s.LC) :
     (∀ p ∈ S, p.2.IsLC) := by
   match h with
@@ -3403,7 +3411,7 @@ theorem Expr.scheme_body_mem_annList_tyFreeVars {σ : PolyTy} {y : Nat}
     to `Φ'`). (Named `belowFvars` rather than `below`, since `Infer.below` is
     reserved by Lean's auto-generated recursor for the `Infer` inductive.) -/
 mutual
-theorem Infer.belowFvars {Φ ctx e Φ' S τ} (h : Infer Φ ctx e Φ' S τ) :
+theorem Infer.belowFvars {Φ ctx e Φ' S τ} (h : Infer κ Φ ctx e Φ' S τ) :
     CtxBelow Φ ctx → (∀ y ∈ e.tyFreeVars, y < Φ) →
     Ty.BelowFvars Φ' τ ∧ (∀ p ∈ S, Ty.BelowFvars Φ' p.2) := by
   match h with
@@ -3596,7 +3604,7 @@ termination_by (e.size, 0)
 decreasing_by
   all_goals (try subst_vars; try simp only [Expr.size, Expr.size_openTyVars]; omega)
 theorem InferBranches.belowFvars {Φ ctx scrutTy ρ brs Φ' S}
-    (h : InferBranches Φ ctx scrutTy ρ brs Φ' S)
+    (h : InferBranches κ Φ ctx scrutTy ρ brs Φ' S)
     (hctx : CtxBelow Φ ctx) (hscrutTy : Ty.BelowFvars Φ scrutTy) (hρ : Ty.BelowFvars Φ ρ)
     (htfv : ∀ y ∈ Expr.tyFreeVars.BranchList.tyFreeVars brs, y < Φ) :
     Ty.BelowFvars Φ' (S.onTy ρ) ∧ (∀ p ∈ S, Ty.BelowFvars Φ' p.2) := by
@@ -3668,7 +3676,7 @@ decreasing_by
   all_goals (try subst_vars; try simp only [Expr.sizeBranches]; omega)
 /-- Frontier bounds for one component and its remaining strata. -/
 theorem InferRecComponent.belowFvars {members memberIndex Φ ctx bindings specs Φ' S}
-    (h : InferRecComponent members memberIndex Φ ctx bindings specs Φ' S)
+    (h : InferRecComponent κ members memberIndex Φ ctx bindings specs Φ' S)
     (hctx : CtxBelow Φ ctx) (hspecs : ∀ s ∈ specs, s.BelowFvars Φ)
     (htfv : ∀ y ∈ Expr.tyFreeVars.RecGroup.tyFreeVars bindings, y < Φ) :
     (∀ p ∈ S, Ty.BelowFvars Φ' p.2) := by
@@ -3706,7 +3714,7 @@ termination_by (Expr.sizeRecGroup bindings, 0)
 decreasing_by
   all_goals (try simp only [Expr.sizeRecGroup]; omega)
 theorem InferRecStrata.belowFvars {rigid bindings Φ ctx specs done G groups Φ' S specs' G'}
-    (h : InferRecStrata rigid bindings Φ ctx specs done G groups Φ' S specs' G')
+    (h : InferRecStrata κ rigid bindings Φ ctx specs done G groups Φ' S specs' G')
     (hctx : CtxBelow Φ ctx) (hspecs : ∀ s ∈ specs, s.BelowFvars Φ)
     (htfv : ∀ y ∈ Expr.tyFreeVars.RecGroup.tyFreeVars bindings, y < Φ) :
     ∀ p ∈ S, Ty.BelowFvars Φ' p.2 := by
@@ -3730,7 +3738,7 @@ decreasing_by
   all_goals (simp_wf; try omega)
 
 theorem InferRecGroup.belowFvars {Φ ctx bindings specs Φ' S}
-    (h : InferRecGroup Φ ctx bindings specs Φ' S)
+    (h : InferRecGroup κ Φ ctx bindings specs Φ' S)
     (hctx : CtxBelow Φ ctx) (hspecs : ∀ s ∈ specs, s.BelowFvars Φ)
     (htfv : ∀ y ∈ Expr.tyFreeVars.RecGroup.tyFreeVars bindings, y < Φ) :
     (∀ p ∈ S, Ty.BelowFvars Φ' p.2) := by
@@ -3769,7 +3777,7 @@ decreasing_by
   all_goals (try simp only [Expr.sizeRecGroup]; omega)
 /-- Frontier bound for the signed recursive checking phase. -/
 theorem InferRecGroupPoly.belowFvars {Φ ctx bindings specs Φ' S}
-    (h : InferRecGroupPoly Φ ctx bindings specs Φ' S)
+    (h : InferRecGroupPoly κ Φ ctx bindings specs Φ' S)
     (hctx : CtxBelow Φ ctx) (hspecs : ∀ s ∈ specs, s.BelowFvars Φ)
     (htfv : ∀ y ∈ Expr.tyFreeVars.RecGroup.tyFreeVars bindings, y < Φ) :
     (∀ p ∈ S, Ty.BelowFvars Φ' p.2) := by
@@ -3828,7 +3836,7 @@ idempotency (`Infer.eliminates`, M3), this yields the prefix-fix corollary (M4)
 used by soundness. -/
 
 mutual
-theorem Infer.dom_below {Φ ctx e Φ' S τ} (h : Infer Φ ctx e Φ' S τ) :
+theorem Infer.dom_below {Φ ctx e Φ' S τ} (h : Infer κ Φ ctx e Φ' S τ) :
     CtxBelow Φ ctx → (∀ y ∈ e.tyFreeVars, y < Φ) → (∀ p ∈ S, p.1 < Φ') := by
   match h with
   | .primLitUnit => intro _ _; simp
@@ -4014,7 +4022,7 @@ termination_by (e.size, 0)
 decreasing_by
   all_goals (try subst_vars; try simp only [Expr.size, Expr.size_openTyVars]; omega)
 theorem InferBranches.dom_below {Φ ctx scrutTy ρ brs Φ' S}
-    (h : InferBranches Φ ctx scrutTy ρ brs Φ' S)
+    (h : InferBranches κ Φ ctx scrutTy ρ brs Φ' S)
     (hctx : CtxBelow Φ ctx) (hscrutTy : Ty.BelowFvars Φ scrutTy) (hρ : Ty.BelowFvars Φ ρ)
     (htfv : ∀ y ∈ Expr.tyFreeVars.BranchList.tyFreeVars brs, y < Φ) :
     (∀ p ∈ S, p.1 < Φ') := by
@@ -4103,7 +4111,7 @@ decreasing_by
   all_goals (try subst_vars; try simp only [Expr.sizeBranches]; omega)
 /-- `InferRecGroup` substitution-domain bound. -/
 theorem InferRecComponent.dom_below {members memberIndex Φ ctx bindings specs Φ' S}
-    (h : InferRecComponent members memberIndex Φ ctx bindings specs Φ' S)
+    (h : InferRecComponent κ members memberIndex Φ ctx bindings specs Φ' S)
     (hctx : CtxBelow Φ ctx) (hspecs : ∀ s ∈ specs, s.BelowFvars Φ)
     (htfv : ∀ y ∈ Expr.tyFreeVars.RecGroup.tyFreeVars bindings, y < Φ) :
     (∀ p ∈ S, p.1 < Φ') := by
@@ -4147,7 +4155,7 @@ termination_by (Expr.sizeRecGroup bindings, 0)
 decreasing_by
   all_goals (try simp only [Expr.sizeRecGroup]; omega)
 theorem InferRecStrata.dom_below {rigid bindings Φ ctx specs done G groups Φ' S specs' G'}
-    (h : InferRecStrata rigid bindings Φ ctx specs done G groups Φ' S specs' G')
+    (h : InferRecStrata κ rigid bindings Φ ctx specs done G groups Φ' S specs' G')
     (hctx : CtxBelow Φ ctx) (hspecs : ∀ s ∈ specs, s.BelowFvars Φ)
     (htfv : ∀ y ∈ Expr.tyFreeVars.RecGroup.tyFreeVars bindings, y < Φ) :
     ∀ p ∈ S, p.1 < Φ' := by
@@ -4172,7 +4180,7 @@ decreasing_by
   all_goals (simp_wf; try omega)
 
 theorem InferRecGroup.dom_below {Φ ctx bindings specs Φ' S}
-    (h : InferRecGroup Φ ctx bindings specs Φ' S)
+    (h : InferRecGroup κ Φ ctx bindings specs Φ' S)
     (hctx : CtxBelow Φ ctx) (hspecs : ∀ s ∈ specs, s.BelowFvars Φ)
     (htfv : ∀ y ∈ Expr.tyFreeVars.RecGroup.tyFreeVars bindings, y < Φ) :
     (∀ p ∈ S, p.1 < Φ') := by
@@ -4217,7 +4225,7 @@ decreasing_by
   all_goals (try simp only [Expr.sizeRecGroup]; omega)
 /-- Substitution-domain bound for the signed recursive checking phase. -/
 theorem InferRecGroupPoly.dom_below {Φ ctx bindings specs Φ' S}
-    (h : InferRecGroupPoly Φ ctx bindings specs Φ' S)
+    (h : InferRecGroupPoly κ Φ ctx bindings specs Φ' S)
     (hctx : CtxBelow Φ ctx) (hspecs : ∀ s ∈ specs, s.BelowFvars Φ)
     (htfv : ∀ y ∈ Expr.tyFreeVars.RecGroup.tyFreeVars bindings, y < Φ) :
     (∀ p ∈ S, p.1 < Φ') := by
@@ -4599,7 +4607,7 @@ mutual
 /-- **Locality (avoid form).** A var below the input frontier that avoids the
     context env and the source annotation free vars also avoids the inferred
     substitution range and result type. -/
-theorem Infer.range_avoid {Φ ctx e Φ' S τ} (h : Infer Φ ctx e Φ' S τ) :
+theorem Infer.range_avoid {Φ ctx e Φ' S τ} (h : Infer κ Φ ctx e Φ' S τ) :
     ∀ {w : Nat}, w < Φ → (∀ M ∈ ctx.env, w ∉ M.body.freeVars) → w ∉ e.tyFreeVars →
     (∀ p ∈ S, w ∉ p.2.freeVars) ∧ w ∉ τ.freeVars := by
   match h with
@@ -4790,7 +4798,7 @@ termination_by (e.size, 0)
 decreasing_by
   all_goals (try subst_vars; try simp only [Expr.size, Expr.size_openTyVars]; omega)
 theorem InferBranches.range_avoid {Φ ctx scrutTy ρ brs Φ' S}
-    (h : InferBranches Φ ctx scrutTy ρ brs Φ' S) :
+    (h : InferBranches κ Φ ctx scrutTy ρ brs Φ' S) :
     ∀ {w : Nat}, w < Φ → (∀ M ∈ ctx.env, w ∉ M.body.freeVars) → w ∉ scrutTy.freeVars →
     w ∉ ρ.freeVars → w ∉ Expr.tyFreeVars.BranchList.tyFreeVars brs →
     (∀ p ∈ S, w ∉ p.2.freeVars) ∧ w ∉ (S.onTy ρ).freeVars := by
@@ -4876,7 +4884,7 @@ decreasing_by
     that avoids the context, specs, and binding annotation vars is absent from
     the substitution range. -/
 theorem InferRecComponent.range_avoid {members memberIndex Φ ctx bindings specs Φ' S}
-    (h : InferRecComponent members memberIndex Φ ctx bindings specs Φ' S) :
+    (h : InferRecComponent κ members memberIndex Φ ctx bindings specs Φ' S) :
     ∀ {w : Nat}, w < Φ → (∀ M ∈ ctx.env, w ∉ M.body.freeVars) →
     (∀ s ∈ specs, w ∉ s.freeVars) → w ∉ Expr.tyFreeVars.RecGroup.tyFreeVars bindings →
     (∀ p ∈ S, w ∉ p.2.freeVars) := by
@@ -4919,7 +4927,7 @@ termination_by (Expr.sizeRecGroup bindings, 0)
 decreasing_by
   all_goals (try simp only [Expr.sizeRecGroup]; omega)
 theorem InferRecStrata.range_avoid {rigid bindings Φ ctx specs done G groups Φ' S specs' G'}
-    (h : InferRecStrata rigid bindings Φ ctx specs done G groups Φ' S specs' G') :
+    (h : InferRecStrata κ rigid bindings Φ ctx specs done G groups Φ' S specs' G') :
     ∀ {w : Nat}, w < Φ → (∀ M ∈ ctx.env, w ∉ M.body.freeVars) →
     (∀ s ∈ specs, w ∉ s.freeVars) → w ∉ Expr.tyFreeVars.RecGroup.tyFreeVars bindings →
     ∀ p ∈ S, w ∉ p.2.freeVars := by
@@ -4943,7 +4951,7 @@ decreasing_by
   all_goals (simp_wf; try omega)
 
 theorem InferRecGroup.range_avoid {Φ ctx bindings specs Φ' S}
-    (h : InferRecGroup Φ ctx bindings specs Φ' S) :
+    (h : InferRecGroup κ Φ ctx bindings specs Φ' S) :
     ∀ {w : Nat}, w < Φ → (∀ M ∈ ctx.env, w ∉ M.body.freeVars) →
     (∀ s ∈ specs, w ∉ s.freeVars) → w ∉ Expr.tyFreeVars.RecGroup.tyFreeVars bindings →
     (∀ p ∈ S, w ∉ p.2.freeVars) := by
@@ -4987,7 +4995,7 @@ decreasing_by
   all_goals (try simp only [Expr.sizeRecGroup]; omega)
 /-- Avoid-form locality for the signed recursive checking phase. -/
 theorem InferRecGroupPoly.range_avoid {Φ ctx bindings specs Φ' S}
-    (h : InferRecGroupPoly Φ ctx bindings specs Φ' S) :
+    (h : InferRecGroupPoly κ Φ ctx bindings specs Φ' S) :
     ∀ {w : Nat}, w < Φ → (∀ M ∈ ctx.env, w ∉ M.body.freeVars) →
     (∀ σ, RecSpec.poly σ ∈ specs → w ∉ σ.body.freeVars) →
     w ∉ Expr.tyFreeVars.RecGroup.tyFreeVars bindings →
@@ -5165,7 +5173,7 @@ theorem Subst.eliminates_onCtx {S : Subst} {w : Nat} {ctx : Ctx}
   exact hS M0.body
 
 mutual
-theorem Infer.eliminates {Φ ctx e Φ' S τ} (h : Infer Φ ctx e Φ' S τ)
+theorem Infer.eliminates {Φ ctx e Φ' S τ} (h : Infer κ Φ ctx e Φ' S τ)
     (hctx : CtxBelow Φ ctx) (hΦ : ∀ y ∈ e.tyFreeVars, y < Φ)
     (hSe : ∀ p ∈ S, p.1 ∉ e.tyFreeVars) :
     (∀ p ∈ S, ∀ x : Ty, p.1 ∉ (S.onTy x).freeVars) ∧ (∀ p ∈ S, p.1 ∉ τ.freeVars) := by
@@ -5590,7 +5598,7 @@ theorem Infer.eliminates {Φ ctx e Φ' S τ} (h : Infer Φ ctx e Φ' S τ)
 termination_by (e.size, 0)
 decreasing_by all_goals (try subst_vars; try simp only [Expr.size, Expr.size_openTyVars]; omega)
 theorem InferBranches.eliminates {Φ ctx scrutTy ρ brs Φ' S}
-    (h : InferBranches Φ ctx scrutTy ρ brs Φ' S)
+    (h : InferBranches κ Φ ctx scrutTy ρ brs Φ' S)
     (hctx : CtxBelow Φ ctx) (hsc : Ty.BelowFvars Φ scrutTy) (hρ : Ty.BelowFvars Φ ρ)
     (hΦ : ∀ y ∈ Expr.tyFreeVars.BranchList.tyFreeVars brs, y < Φ)
     (hSe : ∀ p ∈ S, p.1 ∉ Expr.tyFreeVars.BranchList.tyFreeVars brs) :
@@ -5757,7 +5765,7 @@ decreasing_by all_goals (try subst_vars; try simp only [Expr.sizeBranches]; omeg
     domain var never survives in any `S`-image. The scheme-avoidance hypothesis
     `hSsch` covers the poly members (their scoped variables are outer-rigid). -/
 theorem InferRecComponent.eliminates {members memberIndex Φ ctx bindings specs Φ' S}
-    (h : InferRecComponent members memberIndex Φ ctx bindings specs Φ' S)
+    (h : InferRecComponent κ members memberIndex Φ ctx bindings specs Φ' S)
     (hctx : CtxBelow Φ ctx) (hspecs : ∀ s ∈ specs, s.BelowFvars Φ)
     (hΦ : ∀ y ∈ Expr.tyFreeVars.RecGroup.tyFreeVars bindings, y < Φ)
     (hSe : ∀ p ∈ S, p.1 ∉ Expr.tyFreeVars.RecGroup.tyFreeVars bindings)
@@ -5836,7 +5844,7 @@ theorem InferRecComponent.eliminates {members memberIndex Φ ctx bindings specs 
 termination_by (Expr.sizeRecGroup bindings, 0)
 decreasing_by all_goals (try simp only [Expr.sizeRecGroup]; omega)
 theorem InferRecStrata.eliminates {rigid bindings Φ ctx specs done G groups Φ' S specs' G'}
-    (h : InferRecStrata rigid bindings Φ ctx specs done G groups Φ' S specs' G')
+    (h : InferRecStrata κ rigid bindings Φ ctx specs done G groups Φ' S specs' G')
     (hctx : CtxBelow Φ ctx) (hspecs : ∀ s ∈ specs, s.BelowFvars Φ)
     (hΦ : ∀ y ∈ Expr.tyFreeVars.RecGroup.tyFreeVars bindings, y < Φ)
     (hSe : ∀ p ∈ S, p.1 ∉ Expr.tyFreeVars.RecGroup.tyFreeVars bindings)
@@ -5880,7 +5888,7 @@ decreasing_by
   all_goals (simp_wf; try omega)
 
 theorem InferRecGroup.eliminates {Φ ctx bindings specs Φ' S}
-    (h : InferRecGroup Φ ctx bindings specs Φ' S)
+    (h : InferRecGroup κ Φ ctx bindings specs Φ' S)
     (hctx : CtxBelow Φ ctx) (hspecs : ∀ s ∈ specs, s.BelowFvars Φ)
     (hΦ : ∀ y ∈ Expr.tyFreeVars.RecGroup.tyFreeVars bindings, y < Φ)
     (hSe : ∀ p ∈ S, p.1 ∉ Expr.tyFreeVars.RecGroup.tyFreeVars bindings)
@@ -5960,7 +5968,7 @@ termination_by (Expr.sizeRecGroup bindings, 0)
 decreasing_by all_goals (try simp only [Expr.sizeRecGroup]; omega)
 /-- Idempotency of the signed recursive checking phase. -/
 theorem InferRecGroupPoly.eliminates {Φ ctx bindings specs Φ' S}
-    (h : InferRecGroupPoly Φ ctx bindings specs Φ' S)
+    (h : InferRecGroupPoly κ Φ ctx bindings specs Φ' S)
     (hctx : CtxBelow Φ ctx) (hspecs : ∀ s ∈ specs, s.BelowFvars Φ)
     (hΦ : ∀ y ∈ Expr.tyFreeVars.RecGroup.tyFreeVars bindings, y < Φ)
     (hSe : ∀ p ∈ S, p.1 ∉ Expr.tyFreeVars.RecGroup.tyFreeVars bindings)
@@ -6315,7 +6323,7 @@ untouched. Proof mirrors `range_avoid`, using `UnifyRel.dom_mem` (the unifier's
 domain lies in the unified types' free vars) where `range_avoid` uses
 `range_mem`. -/
 mutual
-theorem Infer.dom_avoid {Φ ctx e Φ' S τ} (h : Infer Φ ctx e Φ' S τ) :
+theorem Infer.dom_avoid {Φ ctx e Φ' S τ} (h : Infer κ Φ ctx e Φ' S τ) :
     ∀ {w : Nat}, w < Φ → (∀ M ∈ ctx.env, w ∉ M.body.freeVars) → w ∉ e.tyFreeVars →
     w ∉ S.map Prod.fst := by
   match h with
@@ -6496,7 +6504,7 @@ decreasing_by
     first
     | omega
 theorem InferBranches.dom_avoid {Φ ctx scrutTy ρ brs Φ' S}
-    (h : InferBranches Φ ctx scrutTy ρ brs Φ' S) :
+    (h : InferBranches κ Φ ctx scrutTy ρ brs Φ' S) :
     ∀ {w : Nat}, w < Φ → (∀ M ∈ ctx.env, w ∉ M.body.freeVars) → w ∉ scrutTy.freeVars →
     w ∉ ρ.freeVars → w ∉ Expr.tyFreeVars.BranchList.tyFreeVars brs →
     w ∉ S.map Prod.fst := by
@@ -6594,7 +6602,7 @@ decreasing_by
     by the group substitution (mono unifiers touch only spec monotypes and binding
     types; poly skolem-checks touch only the opened scheme and binding types). -/
 theorem InferRecComponent.dom_avoid {members memberIndex Φ ctx bindings specs Φ' S}
-    (h : InferRecComponent members memberIndex Φ ctx bindings specs Φ' S) :
+    (h : InferRecComponent κ members memberIndex Φ ctx bindings specs Φ' S) :
     ∀ {w : Nat}, w < Φ → (∀ M ∈ ctx.env, w ∉ M.body.freeVars) →
     (∀ s ∈ specs, w ∉ s.freeVars) → w ∉ Expr.tyFreeVars.RecGroup.tyFreeVars bindings →
     w ∉ S.map Prod.fst := by
@@ -6640,7 +6648,7 @@ termination_by (Expr.sizeRecGroup bindings, 0)
 decreasing_by
   all_goals (try simp only [Expr.sizeRecGroup]; omega)
 theorem InferRecStrata.dom_avoid {rigid bindings Φ ctx specs done G groups Φ' S specs' G'}
-    (h : InferRecStrata rigid bindings Φ ctx specs done G groups Φ' S specs' G') :
+    (h : InferRecStrata κ rigid bindings Φ ctx specs done G groups Φ' S specs' G') :
     ∀ {w : Nat}, w < Φ → (∀ M ∈ ctx.env, w ∉ M.body.freeVars) →
     (∀ s ∈ specs, w ∉ s.freeVars) → w ∉ Expr.tyFreeVars.RecGroup.tyFreeVars bindings →
     w ∉ S.map Prod.fst := by
@@ -6664,7 +6672,7 @@ decreasing_by
   all_goals (simp_wf; try omega)
 
 theorem InferRecGroup.dom_avoid {Φ ctx bindings specs Φ' S}
-    (h : InferRecGroup Φ ctx bindings specs Φ' S) :
+    (h : InferRecGroup κ Φ ctx bindings specs Φ' S) :
     ∀ {w : Nat}, w < Φ → (∀ M ∈ ctx.env, w ∉ M.body.freeVars) →
     (∀ s ∈ specs, w ∉ s.freeVars) → w ∉ Expr.tyFreeVars.RecGroup.tyFreeVars bindings →
     w ∉ S.map Prod.fst := by
@@ -6711,7 +6719,7 @@ decreasing_by
   all_goals (try simp only [Expr.sizeRecGroup]; omega)
 /-- Domain avoidance for the signed recursive checking phase. -/
 theorem InferRecGroupPoly.dom_avoid {Φ ctx bindings specs Φ' S}
-    (h : InferRecGroupPoly Φ ctx bindings specs Φ' S) :
+    (h : InferRecGroupPoly κ Φ ctx bindings specs Φ' S) :
     ∀ {w : Nat}, w < Φ → (∀ M ∈ ctx.env, w ∉ M.body.freeVars) →
     (∀ σ, RecSpec.poly σ ∈ specs → w ∉ σ.body.freeVars) →
     w ∉ Expr.tyFreeVars.RecGroup.tyFreeVars bindings → w ∉ S.map Prod.fst := by
@@ -7093,7 +7101,7 @@ theorem RecSpecs.algorithmStageEntries_avoid {specs : List RecSpec} {w : Nat}
 
 /-- Lookup-sensitive range, result, and domain locality for one inference. -/
 def Infer.SourceLocality : Prop :=
-  ∀ {Ψ c e Ψ' T τ}, Infer Ψ c e Ψ' T τ →
+  ∀ {Ψ c e Ψ' T τ}, Infer κ Ψ c e Ψ' T τ →
     ∀ {w}, w < Ψ →
     e.ForallOuter
       (fun i => ∀ M, c.env[i]? = some M → w ∉ M.body.freeVars) 0 →
@@ -7105,8 +7113,8 @@ def Infer.SourceLocality : Prop :=
     single-expression locality rule. -/
 theorem InferRecComponent.range_dom_avoid_selected_of_infer
     {members memberIndex Φ ctx bindings specs Φ' S}
-    (h : InferRecComponent members memberIndex Φ ctx bindings specs Φ' S)
-    (hInfer : ∀ {Ψ c e Ψ' T τ}, e ∈ bindings → Infer Ψ c e Ψ' T τ →
+    (h : InferRecComponent κ members memberIndex Φ ctx bindings specs Φ' S)
+    (hInfer : ∀ {Ψ c e Ψ' T τ}, e ∈ bindings → Infer κ Ψ c e Ψ' T τ →
       ∀ {w}, w < Ψ →
       e.ForallOuter
         (fun i => ∀ M, c.env[i]? = some M → w ∉ M.body.freeVars) 0 →
@@ -7208,8 +7216,8 @@ decreasing_by
     Its initial specs all avoid an outer variable below the surrounding frontier. -/
 theorem InferRecStrata.range_dom_avoid_outer_of_infer
     {rigid bindings Φ ctx specs done G groups Φ' S specs' G'}
-    (h : InferRecStrata rigid bindings Φ ctx specs done G groups Φ' S specs' G')
-    (hInfer : ∀ {Ψ c e Ψ' T τ}, e ∈ bindings → Infer Ψ c e Ψ' T τ →
+    (h : InferRecStrata κ rigid bindings Φ ctx specs done G groups Φ' S specs' G')
+    (hInfer : ∀ {Ψ c e Ψ' T τ}, e ∈ bindings → Infer κ Ψ c e Ψ' T τ →
       ∀ {w}, w < Ψ →
       e.ForallOuter
         (fun i => ∀ M, c.env[i]? = some M → w ∉ M.body.freeVars) 0 →
@@ -7298,7 +7306,7 @@ private theorem Expr.sourceLocality_size_mem {e : Expr} {es : List Expr} (h : e 
 mutual
 /-- Inference only touches old variables present in annotations or in the
     environment entries selected by the source expression. -/
-theorem Infer.sourceLocality {Φ ctx e Φ' S τ} (h : Infer Φ ctx e Φ' S τ) :
+theorem Infer.sourceLocality {Φ ctx e Φ' S τ} (h : Infer κ Φ ctx e Φ' S τ) :
     ∀ {w}, w < Φ →
     e.ForallOuter (fun i => ∀ M, ctx.env[i]? = some M → w ∉ M.body.freeVars) 0 →
     w ∉ e.tyFreeVars →
@@ -7469,7 +7477,7 @@ decreasing_by
     omega
 
 theorem InferBranches.sourceLocality {Φ ctx scrutTy ρ brs Φ' S}
-    (h : InferBranches Φ ctx scrutTy ρ brs Φ' S) :
+    (h : InferBranches κ Φ ctx scrutTy ρ brs Φ' S) :
     ∀ {w}, w < Φ →
     (∀ p b, (p,b) ∈ brs → b.ForallOuter
       (fun i => ∀ M, ctx.env[i]? = some M → w ∉ M.body.freeVars) p.bindCount) →
@@ -7538,7 +7546,7 @@ termination_by (Expr.sizeBranches brs, 0)
 decreasing_by all_goals (try subst_vars; simp only [Expr.sizeBranches]; omega)
 
 theorem InferRecGroupPoly.sourceLocality {Φ ctx bindings specs Φ' S}
-    (h : InferRecGroupPoly Φ ctx bindings specs Φ' S) :
+    (h : InferRecGroupPoly κ Φ ctx bindings specs Φ' S) :
     ∀ {w}, w < Φ →
     (∀ e ∈ bindings, e.ForallOuter
       (fun i => ∀ M, ctx.env[i]? = some M → w ∉ M.body.freeVars) 0) →
@@ -10424,17 +10432,17 @@ inductive InferRecStrata.Frozen :
     {rigid : List Nat} → {bindings : List Expr} → {Φ : Nat} → {ctx : Ctx} →
     {specs : List RecSpec} → {done G : List Nat} → {groups : List (List Nat)} →
     {Φ' : Nat} → {S : Subst} → {specs' : List RecSpec} → {G' : List Nat} →
-    InferRecStrata rigid bindings Φ ctx specs done G groups Φ' S specs' G' → Prop
+    InferRecStrata κ rigid bindings Φ ctx specs done G groups Φ' S specs' G' → Prop
   | nil {rigid bindings Φ ctx specs done G} :
       Frozen (@InferRecStrata.nil rigid bindings Φ ctx specs done G)
   | cons {rigid bindings Φ ctx specs done G component rest Φ₁ Φ₂ S₁ S₂ specs₁ specs₂ Gcurrent Gfinal}
-      {hcomponent : InferRecComponent component 0 Φ
+      {hcomponent : InferRecComponent κ component 0 Φ
         (RecSpecs.algorithmStageCtx ctx specs done G) bindings specs Φ₁ S₁}
       {hspecs : specs₁ = specs.map (RecSpec.onSubst S₁)}
       {hG : Gcurrent = genGroupVars (rigid ++ G)
         (RecSpecs.generalizationCtx (S₁.onCtx ctx) specs₁ done G).env
         (RecSpecs.monoTysAt specs₁ component)}
-      {hrest : InferRecStrata rigid bindings Φ₁ (S₁.onCtx ctx) specs₁
+      {hrest : InferRecStrata κ rigid bindings Φ₁ (S₁.onCtx ctx) specs₁
         (done ++ component) (G ++ Gcurrent) rest Φ₂ S₂ specs₂ Gfinal} :
       (∀ p ∈ S₁, p.1 ∉ G) →
       (∀ p ∈ S₁, ∀ g ∈ p.2.freeVars, g ∉ G) →
@@ -10573,9 +10581,9 @@ theorem RecSpecs.PendingSeeds.stage_lookupAvoid_of_no_ref {base : Nat} {ctx : Ct
 
 theorem InferRecComponent.pending_seed_avoid_of_infer
     {members Φ ctx bindings specs Φ' S base done G}
-    (h : InferRecComponent members 0 Φ (RecSpecs.algorithmStageCtx ctx specs done G)
+    (h : InferRecComponent κ members 0 Φ (RecSpecs.algorithmStageCtx ctx specs done G)
       bindings specs Φ' S)
-    (hInfer : ∀ {Ψ c e Ψ' T τ}, Infer Ψ c e Ψ' T τ →
+    (hInfer : ∀ {Ψ c e Ψ' T τ}, Infer κ Ψ c e Ψ' T τ →
       ∀ {w}, w < Ψ →
       e.ForallOuter (fun i => ∀ M, c.env[i]? = some M → w ∉ M.body.freeVars) 0 →
       w ∉ e.tyFreeVars →
@@ -10667,7 +10675,7 @@ theorem RecSpecs.PendingSeeds.stage_avoid_pool {base : Nat} {ctx : Ctx}
 
 theorem InferRecComponent.newPool_avoid_rigidSet
     {component Φ ctx bindings specs Φ' S base done G rigid} {K : List Nat}
-    (h : InferRecComponent component 0 Φ (RecSpecs.algorithmStageCtx ctx specs done G)
+    (h : InferRecComponent κ component 0 Φ (RecSpecs.algorithmStageCtx ctx specs done G)
       bindings specs Φ' S)
     (hpending : RecSpecs.PendingSeeds base ctx specs done)
     (hnotDone : ∀ member ∈ component, member ∉ done)
@@ -10744,7 +10752,7 @@ theorem InferRecComponent.newPool_avoid_rigidSet
       exact Subst.notMemOnTy hav.1 (htargets member old hm hold) hgτ
 
 theorem InferRecStrata.pool_nodup {rigid bindings Φ ctx specs done G groups Φ' S specs' G'}
-    (h : InferRecStrata rigid bindings Φ ctx specs done G groups Φ' S specs' G')
+    (h : InferRecStrata κ rigid bindings Φ ctx specs done G groups Φ' S specs' G')
     (hG : G.Nodup) : G'.Nodup := by
   match h with
   | .nil => exact hG
@@ -10761,7 +10769,7 @@ termination_by groups.length
 decreasing_by all_goals (simp_wf; try omega)
 
 theorem InferRecStrata.pool_avoid_rigid {rigid bindings Φ ctx specs done G groups Φ' S specs' G'}
-    (h : InferRecStrata rigid bindings Φ ctx specs done G groups Φ' S specs' G')
+    (h : InferRecStrata κ rigid bindings Φ ctx specs done G groups Φ' S specs' G')
     (hG : ∀ g ∈ G, g ∉ rigid) : ∀ g ∈ G', g ∉ rigid := by
   match h with
   | .nil => exact hG
@@ -10776,7 +10784,7 @@ termination_by groups.length
 decreasing_by all_goals (simp_wf; try omega)
 
 theorem InferRecStrata.pool_avoid_env {rigid bindings Φ ctx specs done G groups Φ' S specs' G'}
-    {h : InferRecStrata rigid bindings Φ ctx specs done G groups Φ' S specs' G'}
+    {h : InferRecStrata κ rigid bindings Φ ctx specs done G groups Φ' S specs' G'}
     (hfrozen : h.Frozen) (hG : ∀ g ∈ G, ∀ M ∈ ctx.env, g ∉ M.body.freeVars) :
     ∀ g ∈ G', ∀ M ∈ (S.onCtx ctx).env, g ∉ M.body.freeVars := by
   match hfrozen with
@@ -10797,7 +10805,7 @@ termination_by groups.length
 decreasing_by all_goals (simp_wf; try omega)
 
 theorem InferRecStrata.pool_below {rigid bindings Φ ctx specs done G groups Φ' S specs' G'}
-    (h : InferRecStrata rigid bindings Φ ctx specs done G groups Φ' S specs' G')
+    (h : InferRecStrata κ rigid bindings Φ ctx specs done G groups Φ' S specs' G')
     (hctx : CtxBelow Φ ctx) (hspecs : ∀ s ∈ specs, s.BelowFvars Φ)
     (hbindings : ∀ y ∈ Expr.tyFreeVars.RecGroup.tyFreeVars bindings, y < Φ)
     (hG : ∀ g ∈ G, g < Φ) : ∀ g ∈ G', g < Φ' := by
@@ -10837,8 +10845,8 @@ set_option maxHeartbeats 1_000_000 in
     incoming generalisation pool is frozen during the next component. -/
 theorem InferRecStrata.frozen_and_pool_avoid_of_sourceLocality
     {rigid bindings Φ ctx specs done G groups Φ' S specs' G'}
-    (h : InferRecStrata rigid bindings Φ ctx specs done G groups Φ' S specs' G')
-    (hInfer : ∀ {Ψ c e Ψ' T τ}, Infer Ψ c e Ψ' T τ →
+    (h : InferRecStrata κ rigid bindings Φ ctx specs done G groups Φ' S specs' G')
+    (hInfer : ∀ {Ψ c e Ψ' T τ}, Infer κ Ψ c e Ψ' T τ →
       ∀ {w}, w < Ψ →
       e.ForallOuter (fun i => ∀ M, c.env[i]? = some M → w ∉ M.body.freeVars) 0 →
       w ∉ e.tyFreeVars →
@@ -10922,7 +10930,7 @@ theorem InferRecStrata.frozen_and_pool_avoid_of_sourceLocality
     have hspecs₁B : ∀ s ∈ specs₁, s.BelowFvars Φ₁ := by
       rw [hspecEq]; intro s hs; obtain ⟨old,hold,rfl⟩ := List.mem_map.mp hs
       exact RecSpec.BelowFvars.onSubst hS₁B ((hspecsB old hold).mono hle)
-    have hstep : InferRecStrata rigid bindings Φ ctx specs done G [component]
+    have hstep : InferRecStrata κ rigid bindings Φ ctx specs done G [component]
         Φ₁ (S₁ ++ []) specs₁ (G ++ Gcurrent) := .cons hcomponent hspecEq hGeq .nil
     have hfrstep : hstep.Frozen := .cons (hcomponent := hcomponent)
       (hspecs := hspecEq) (hG := hGeq) hdom hran .nil
@@ -10965,7 +10973,7 @@ decreasing_by all_goals (simp_wf; try omega)
 
 theorem InferRecStrata.frozen_of_sourceLocality
     {rigid bindings Φ ctx specs done G groups Φ' S specs' G'}
-    (h : InferRecStrata rigid bindings Φ ctx specs done G groups Φ' S specs' G')
+    (h : InferRecStrata κ rigid bindings Φ ctx specs done G groups Φ' S specs' G')
     (hInfer : Infer.SourceLocality)
     {base : Nat} {anns : List (Option PolyTy)} {past : List (List Nat)}
     (hvalid : RecGroups.ValidResidualGroups anns bindings (past ++ groups))
@@ -10992,9 +11000,9 @@ theorem InferRecStrata.frozen_of_sourceLocality
 theorem InferRecStrata.head_frozen_of_sourceLocality
     {rigid bindings Φ ctx specs done G component rest Φ₁ Φ₂ S₁ S₂ specs₁ specs₂
       Gcurrent Gfinal}
-    (hcomponent : InferRecComponent component 0 Φ
+    (hcomponent : InferRecComponent κ component 0 Φ
       (RecSpecs.algorithmStageCtx ctx specs done G) bindings specs Φ₁ S₁)
-    (_hrest : InferRecStrata rigid bindings Φ₁ (S₁.onCtx ctx) specs₁
+    (_hrest : InferRecStrata κ rigid bindings Φ₁ (S₁.onCtx ctx) specs₁
       (done ++ component) (G ++ Gcurrent) rest Φ₂ S₂ specs₂ Gfinal)
     (hInfer : Infer.SourceLocality)
     {base : Nat} {anns : List (Option PolyTy)} {past : List (List Nat)}
@@ -11045,7 +11053,7 @@ theorem InferRecStrata.head_frozen_of_sourceLocality
 /-- A historical stage context survives subsequent strata: its completed
     members remain completed, while all other entries stay monomorphic. -/
 theorem InferRecStrata.transport_history {rigid bindings Φ ctx specs done G groups Φ' S specs' G'}
-    {h : InferRecStrata rigid bindings Φ ctx specs done G groups Φ' S specs' G'}
+    {h : InferRecStrata κ rigid bindings Φ ctx specs done G groups Φ' S specs' G'}
     (hfrozen : h.Frozen)
     (hctx : CtxWF ctx) (hbelow : CtxBelow Φ ctx)
     (hspecs : ∀ s ∈ specs, s.LC) (hspecsB : ∀ s ∈ specs, s.BelowFvars Φ)
@@ -11103,7 +11111,7 @@ termination_by groups.length
 decreasing_by all_goals (simp_wf; try omega)
 
 private abbrev Infer.SourceSoundAt (e : Expr) : Prop :=
-  ∀ {Φ ctx Φ' S τ}, Infer Φ ctx e Φ' S τ →
+  ∀ {Φ ctx Φ' S τ}, Infer κ Φ ctx e Φ' S τ →
     CtxWF ctx → CtxBelow Φ ctx → (K : List Nat) → (∀ k ∈ K, k < Φ) →
     (∀ y ∈ e.tyFreeVars, y ∈ K) → (∀ p ∈ S, p.1 ∉ K) →
     TypeOfHM (S.onCtx ctx) e τ
@@ -11112,7 +11120,7 @@ private abbrev Infer.SourceSoundAt (e : Expr) : Prop :=
     takes source soundness only for RHS subexpressions, avoiding any dependence
     on the eventual strata context. -/
 theorem InferRecComponent.sourceSoundMono_of {members memberIndex Φ ctx bindings specs Φ' S}
-    (h : InferRecComponent members memberIndex Φ ctx bindings specs Φ' S)
+    (h : InferRecComponent κ members memberIndex Φ ctx bindings specs Φ' S)
     (hsound : ∀ rhs ∈ bindings, Infer.SourceSoundAt rhs)
     (hctx : CtxWF ctx) (hbelow : CtxBelow Φ ctx)
     (hspecs : ∀ s ∈ specs, s.LC) (hspecsB : ∀ s ∈ specs, s.BelowFvars Φ)
@@ -11220,7 +11228,7 @@ decreasing_by
 /-- Every processed component is source-typed at its historical stage, rendered
     using the final solved specs and aggregate pool. -/
 theorem InferRecStrata.sourceSoundMono_of {rigid bindings Φ ctx specs done G groups Φ' S specs' G'}
-    {h : InferRecStrata rigid bindings Φ ctx specs done G groups Φ' S specs' G'}
+    {h : InferRecStrata κ rigid bindings Φ ctx specs done G groups Φ' S specs' G'}
     (hfrozen : h.Frozen) (hsound : ∀ rhs ∈ bindings, Infer.SourceSoundAt rhs)
     (hctx : CtxWF ctx) (hbelow : CtxBelow Φ ctx)
     (hspecs : ∀ s ∈ specs, s.LC) (hspecsB : ∀ s ∈ specs, s.BelowFvars Φ)
@@ -11295,7 +11303,7 @@ decreasing_by all_goals (simp_wf; try omega)
 set_option maxHeartbeats 800_000 in
 mutual
 /-- Backward soundness: inference implies declarative typing for the source term. -/
-theorem Infer.sourceSound {Φ ctx e Φ' S τ} (h : Infer Φ ctx e Φ' S τ) :
+theorem Infer.sourceSound {Φ ctx e Φ' S τ} (h : Infer κ Φ ctx e Φ' S τ) :
     CtxWF ctx → CtxBelow Φ ctx → (K : List Nat) → (∀ k ∈ K, k < Φ) →
     (∀ y ∈ e.tyFreeVars, y ∈ K) → (∀ p ∈ S, p.1 ∉ K) →
     TypeOfHM (S.onCtx ctx) e τ := by
@@ -12126,7 +12134,7 @@ decreasing_by
   all_goals (try subst_vars; try simp only [Expr.size, Expr.size_openTyVars]; omega)
 
 theorem InferBranches.sourceSound {Φ ctx scrutTy ρ brs Φ' S}
-    (h : InferBranches Φ ctx scrutTy ρ brs Φ' S)
+    (h : InferBranches κ Φ ctx scrutTy ρ brs Φ' S)
     (hctx : CtxWF ctx) (hbelow : CtxBelow Φ ctx)
     (hscrutTy : scrutTy.IsLC) (hρ : ρ.IsLC)
     (hscrutB : Ty.BelowFvars Φ scrutTy) (hρB : Ty.BelowFvars Φ ρ) (K : List Nat)
@@ -12399,7 +12407,7 @@ decreasing_by
 
 /-- Source soundness of the unsigned recursive-group phase. -/
 theorem InferRecGroup.sourceSoundMono {Φ ctx bindings specs Φ' S}
-    (h : InferRecGroup Φ ctx bindings specs Φ' S)
+    (h : InferRecGroup κ Φ ctx bindings specs Φ' S)
     (hctx : CtxWF ctx) (hbelow : CtxBelow Φ ctx)
     (hspecs : ∀ s ∈ specs, s.LC) (hspecsB : ∀ s ∈ specs, s.BelowFvars Φ)
     (K : List Nat) (hKΦ : ∀ k ∈ K, k < Φ)
@@ -12497,7 +12505,7 @@ decreasing_by
 
 /- Source soundness of the signed recursive-group phase. -/
 theorem InferRecGroupPoly.sourceSoundPoly {Φ ctx bindings specs Φ' S}
-    (h : InferRecGroupPoly Φ ctx bindings specs Φ' S)
+    (h : InferRecGroupPoly κ Φ ctx bindings specs Φ' S)
     (hctx : CtxWF ctx) (hbelow : CtxBelow Φ ctx)
     (hspecs : ∀ s ∈ specs, s.LC) (hspecsB : ∀ s ∈ specs, s.BelowFvars Φ)
     (hspecs_env : ∀ σ, RecSpec.poly σ ∈ specs →
@@ -12773,7 +12781,7 @@ end
 
 
 /-- Runtime soundness follows by erasing a source-sound typing derivation. -/
-theorem Infer.sound {Φ ctx e Φ' S τ} (h : Infer Φ ctx e Φ' S τ) :
+theorem Infer.sound {Φ ctx e Φ' S τ} (h : Infer κ Φ ctx e Φ' S τ) :
     CtxWF ctx → CtxBelow Φ ctx → (K : List Nat) → (∀ k ∈ K, k < Φ) →
     (∀ y ∈ e.tyFreeVars, y ∈ K) → (∀ p ∈ S, p.1 ∉ K) →
     RuntimeTyping.RunWT (S.onCtx ctx) e.erase τ := by
@@ -13668,7 +13676,7 @@ structure InferRecStrataOutput where
 mutual
 def inferWithTypesCore (K : List Nat) (Φ : Nat) (ctx : Ctx) (e : Expr) :
     Option { r : Nat × Subst × Ty × InferredNodeTypes × InferredBinderSchemes //
-      Infer Φ ctx e r.1 r.2.1 r.2.2.1 ∧ (∀ p ∈ r.2.1, p.1 ∉ K) } :=
+      Infer K Φ ctx e r.1 r.2.1 r.2.2.1 ∧ (∀ p ∈ r.2.1, p.1 ∉ K) } :=
   match e with
   | .primLit .unit => some ⟨(Φ, [], .prim .unit, .root (.prim .unit), []), .primLitUnit, by simp⟩
   | .primLit (.int n) => some ⟨(Φ, [], .prim .int, .root (.prim .int), []), .primLitInt, by simp⟩
@@ -13906,7 +13914,7 @@ decreasing_by
 def inferBranchesWithTypesCore (K : List Nat) (Φ : Nat) (ctx : Ctx) (scrutTy : Ty) (ρ : Ty)
     (branchIndex : Nat) (branches : List (MatchPattern × Expr)) :
     Option { r : Nat × Subst × InferredNodeTypes × InferredBinderSchemes //
-      InferBranches Φ ctx scrutTy ρ branches r.1 r.2.1 ∧ (∀ p ∈ r.2.1, p.1 ∉ K) } :=
+      InferBranches K Φ ctx scrutTy ρ branches r.1 r.2.1 ∧ (∀ p ∈ r.2.1, p.1 ∉ K) } :=
   match branches with
   | [] => some ⟨(Φ, [], [], []), .nil, by simp⟩
   | (.wildcard, body) :: rest =>
@@ -13977,13 +13985,13 @@ termination_by (Expr.sizeBranches branches, 0)
 decreasing_by
   all_goals (try simp only [Expr.sizeBranches]; omega)
 
-/-- Infer the members selected by one residual SCC while retaining their
+/-- Infer K the members selected by one residual SCC while retaining their
     original recursive-group coordinates for metadata. -/
 def inferRecComponentWithTypesCore (K : List Nat) (members : List Nat)
     (memberIndex : Nat) (Φ : Nat) (ctx : Ctx)
     (bindings : List Expr) (specs : List RecSpec) :
     Option { r : InferRecComponentOutput //
-      InferRecComponent members memberIndex Φ ctx bindings specs
+      InferRecComponent K members memberIndex Φ ctx bindings specs
         r.frontier r.subst ∧ (∀ p ∈ r.subst, p.1 ∉ K) } :=
   match bindings, specs with
   | [], [] => some ⟨⟨Φ, [], [], []⟩, .nil, by simp⟩
@@ -14029,14 +14037,14 @@ termination_by (Expr.sizeRecGroup bindings, 0)
 decreasing_by
   all_goals (try simp only [Expr.sizeRecGroup]; omega)
 
-/-- Infer and generalise residual SCCs dependency-first.  Each completed
+/-- Infer K and generalise residual SCCs dependency-first.  Each completed
     component becomes polymorphic for subsequent components, while unsolved
     members retain their positional monotype placeholders. -/
 def inferRecStrataWithTypesCore (K rigid : List Nat) (bindings : List Expr)
     (Φ : Nat) (ctx : Ctx) (specs : List RecSpec) (done G : List Nat)
     (groups : List (List Nat)) :
     Option { r : InferRecStrataOutput //
-      InferRecStrata rigid bindings Φ ctx specs done G groups
+      InferRecStrata K rigid bindings Φ ctx specs done G groups
         r.frontier r.subst r.specs r.genVars ∧
       (∀ p ∈ r.subst, p.1 ∉ K) } :=
   match groups with
@@ -14074,7 +14082,7 @@ decreasing_by
 def inferRecGroupWithTypesCore (K : List Nat) (Φ : Nat) (ctx : Ctx) (memberIndex : Nat)
     (bindings : List Expr) (specs : List RecSpec) :
     Option { r : Nat × Subst × InferredNodeTypes × InferredBinderSchemes //
-      InferRecGroup Φ ctx bindings specs r.1 r.2.1 ∧ (∀ p ∈ r.2.1, p.1 ∉ K) } :=
+      InferRecGroup K Φ ctx bindings specs r.1 r.2.1 ∧ (∀ p ∈ r.2.1, p.1 ∉ K) } :=
   match bindings, specs with
   | [], [] => some ⟨(Φ, [], [], []), .nil, by simp⟩
   | e :: rest, .mono τ :: specs' =>
@@ -14114,7 +14122,7 @@ decreasing_by
 def inferRecGroupPolyWithTypesCore (K : List Nat) (Φ : Nat) (ctx : Ctx) (memberIndex : Nat)
     (bindings : List Expr) (specs : List RecSpec) :
     Option { r : Nat × Subst × InferredNodeTypes × InferredBinderSchemes //
-      InferRecGroupPoly Φ ctx bindings specs r.1 r.2.1 ∧ (∀ p ∈ r.2.1, p.1 ∉ K) } :=
+      InferRecGroupPoly K Φ ctx bindings specs r.1 r.2.1 ∧ (∀ p ∈ r.2.1, p.1 ∉ K) } :=
   match bindings, specs with
   | [], [] => some ⟨(Φ, [], [], []), .nil, by simp⟩
   | e :: rest, .mono τ :: specs' =>
@@ -14162,7 +14170,7 @@ end
     inference is repeated and existing proof-facing callers keep their API. -/
 def inferCore (K : List Nat) (Φ : Nat) (ctx : Ctx) (e : Expr) :
     Option { r : Nat × Subst × Ty //
-      Infer Φ ctx e r.1 r.2.1 r.2.2 ∧ (∀ p ∈ r.2.1, p.1 ∉ K) } :=
+      Infer K Φ ctx e r.1 r.2.1 r.2.2 ∧ (∀ p ∈ r.2.1, p.1 ∉ K) } :=
   match inferWithTypesCore K Φ ctx e with
   | none => none
   | some ⟨(Φ', S, ty, _nodeTypes, _schemes), hInfer, hAvoid⟩ =>
@@ -14185,7 +14193,7 @@ def infer (Φ : Nat) (ctx : Ctx) (e : Expr) : Option (Nat × Subst × Ty) :=
 /-- `infer` soundness: a returned `(Φ', S, τ)` is a genuine `Infer` derivation
     (immediate — `inferCore` carries it). -/
 theorem infer_sound {Φ : Nat} {ctx : Ctx} {e : Expr} {Φ' : Nat} {S : Subst} {τ : Ty}
-    (h : infer Φ ctx e = some (Φ', S, τ)) : Infer Φ ctx e Φ' S τ := by
+    (h : infer Φ ctx e = some (Φ', S, τ)) : Infer K Φ ctx e Φ' S τ := by
   rw [infer] at h
   rcases hc : inferCore [] Φ ctx e with _ | ⟨r, hr⟩ <;> rw [hc] at h
   · exact absurd h (by simp)

@@ -4601,7 +4601,7 @@ def matchExhaustiveB (ctors : CtorEnv) (T : TyName) (tyArgs : List Ty)
 
 mutual
 
-/-- Infer only the type constraints contributed by constructor tests. Wildcards
+/-- Infer κ only the type constraints contributed by constructor tests. Wildcards
     and binders impose none. This proposes a coverage witness; acceptance still
     goes through `matchExhaustiveB` and its soundness theorem. -/
 private def constrainCoveragePat (ctors : CtorEnv) :
@@ -12847,7 +12847,7 @@ theorem surface_type_safe {ctors : CtorEnv} {s : Surface.Expr} {c : Expr}
   -- `typecheck` recovers the inferred `(Φ', S, τ)` from `infer`.
   obtain ⟨Φ', S, τ, hinfer⟩ := infer_of_typecheck hclosed htc
   -- `infer` is sound: the returned tuple is a genuine `Infer` derivation.
-  have hInf : Infer c.freshFloor ⟨[], ctors⟩ c Φ' S τ := infer_sound hinfer
+  have hInf : Infer κ c.freshFloor ⟨[], ctors⟩ c Φ' S τ := infer_sound hinfer
   -- `K := []`: the closed term has no free type vars, so `Infer.eliminates`
   -- shows `S`'s keys avoid `τ`, collapsing `Infer.sound`'s `S.onTy τ` to `τ`.
   have helim : (∀ p ∈ S, ∀ x : Ty, p.1 ∉ (S.onTy x).freeVars) ∧ (∀ p ∈ S, p.1 ∉ τ.freeVars) :=
