@@ -362,4 +362,154 @@ def shiftBindings (threshold count : Nat) : List Input → List Input
   | body :: rest => body.shiftFrom threshold count :: shiftBindings threshold count rest
 end
 
+
+mutual
+/-- Open an enclosing written type-variable block through a template. Anonymous
+holes are unchanged and never acquire an authored variable identity. -/
+def Template.openTyVarsFrom (d : Nat) (Xs : List Nat) : Template → Template
+  | .fixed ty => .fixed (ty.openVarsFrom d Xs)
+  | .hole => .hole
+  | .arrow a b => .arrow (a.openTyVarsFrom d Xs) (b.openTyVarsFrom d Xs)
+  | .custom name args => .custom name (openTemplateList d Xs args)
+def openTemplateList (d : Nat) (Xs : List Nat) : List Template → List Template
+  | [] => []
+  | t :: ts => t.openTyVarsFrom d Xs :: openTemplateList d Xs ts
+end
+
+/-- A signature's own binders shield its annotation and RHS, but not the let
+continuation. This also applies when its body contains anonymous holes. -/
+def LetAnn.paramCount : LetAnn → Nat
+  | .complete scheme => scheme.paramCount
+  | .partialForall n _ => n
+  | .absent | .template _ => 0
+
+def LetAnn.openTyVarsFrom (d : Nat) (Xs : List Nat) : LetAnn → LetAnn
+  | .absent => .absent
+  | .complete scheme => .complete { scheme with
+      body := scheme.body.openVarsFrom (d + scheme.paramCount) Xs }
+  | .template t => .template (t.openTyVarsFrom d Xs)
+  | .partialForall n t => .partialForall n (t.openTyVarsFrom (d + n) Xs)
+
+mutual
+/-- Open the type binders of an enclosing signature with the same scope rules
+as `Expr.openTyVarsAux`, retaining every partial annotation mode. -/
+def Input.openTyVarsFrom (d : Nat) (Xs : List Nat) : Input → Input
+  | .primLit p => .primLit p
+  | .primBinOp op => .primBinOp op
+  | .lambda ann body => .lambda (ann.map (Template.openTyVarsFrom d Xs))
+      (body.openTyVarsFrom d Xs)
+  | .app f arg => .app (f.openTyVarsFrom d Xs) (arg.openTyVarsFrom d Xs)
+  | .letIn ann rhs body => .letIn (ann.openTyVarsFrom d Xs)
+      (rhs.openTyVarsFrom (d + ann.paramCount) Xs) (body.openTyVarsFrom d Xs)
+  | .var i => .var i
+  | .ctor name => .ctor name
+  | .match_ scrut branches => .match_ (scrut.openTyVarsFrom d Xs)
+      (openInputBranches d Xs branches)
+  | .letRec anns bindings body => .letRec (anns.map (LetAnn.openTyVarsFrom d Xs))
+      (openInputBindings d Xs anns bindings) (body.openTyVarsFrom d Xs)
+def openInputBranches (d : Nat) (Xs : List Nat) :
+    List (MatchPattern × Input) → List (MatchPattern × Input)
+  | [] => []
+  | (pat, body) :: rest => (pat, body.openTyVarsFrom d Xs) :: openInputBranches d Xs rest
+/-- As in Core, missing recursion annotations are treated as absent; extra
+annotations do not introduce binders over another member. -/
+def openInputBindings (d : Nat) (Xs : List Nat) : List LetAnn → List Input → List Input
+  | _, [] => []
+  | [], body :: rest => body.openTyVarsFrom d Xs :: openInputBindings d Xs [] rest
+  | ann :: anns, body :: rest => body.openTyVarsFrom (d + ann.paramCount) Xs ::
+      openInputBindings d Xs anns rest
+end
+
+def Input.openTyVars (Xs : List Nat) (input : Input) : Input := input.openTyVarsFrom 0 Xs
+
+@[simp] theorem LetAnn.paramCount_openTyVarsFrom (ann : LetAnn) (d : Nat) (Xs : List Nat) :
+    (ann.openTyVarsFrom d Xs).paramCount = ann.paramCount := by cases ann <;> rfl
+
+mutual
+@[simp] theorem Input.size_openTyVarsFrom (input : Input) (d : Nat) (Xs : List Nat) :
+    (input.openTyVarsFrom d Xs).size = input.size := by
+  cases input with
+  | primLit | primBinOp | var | ctor => rfl
+  | lambda ann body => simp only [Input.openTyVarsFrom, Input.size, body.size_openTyVarsFrom d Xs]
+  | app f a => simp only [Input.openTyVarsFrom, Input.size, f.size_openTyVarsFrom d Xs, a.size_openTyVarsFrom d Xs]
+  | letIn ann rhs body => simp only [Input.openTyVarsFrom, Input.size,
+      rhs.size_openTyVarsFrom (d + ann.paramCount) Xs, body.size_openTyVarsFrom d Xs]
+  | match_ scrut branches => simp only [Input.openTyVarsFrom, Input.size,
+      scrut.size_openTyVarsFrom d Xs, sizeBranches_openInputBranches branches d Xs]
+  | letRec anns bindings body => simp only [Input.openTyVarsFrom, Input.size,
+      sizeBindings_openInputBindings bindings anns d Xs, body.size_openTyVarsFrom d Xs]
+termination_by sizeOf input
+theorem sizeBranches_openInputBranches (branches : List (MatchPattern × Input)) (d : Nat) (Xs : List Nat) :
+    sizeBranches (openInputBranches d Xs branches) = sizeBranches branches := by
+  cases branches with
+  | nil => rfl
+  | cons pair rest =>
+      rcases pair with ⟨pat, body⟩
+      simp only [openInputBranches, sizeBranches, body.size_openTyVarsFrom d Xs,
+        sizeBranches_openInputBranches rest d Xs]
+termination_by sizeOf branches
+theorem sizeBindings_openInputBindings (bindings : List Input) (anns : List LetAnn) (d : Nat) (Xs : List Nat) :
+    sizeBindings (openInputBindings d Xs anns bindings) = sizeBindings bindings := by
+  cases bindings with
+  | nil => rfl
+  | cons body rest =>
+      cases anns with
+      | nil => simp only [openInputBindings, sizeBindings, body.size_openTyVarsFrom d Xs,
+          sizeBindings_openInputBindings rest [] d Xs]
+      | cons ann anns => simp only [openInputBindings, sizeBindings,
+          body.size_openTyVarsFrom (d + ann.paramCount) Xs,
+          sizeBindings_openInputBindings rest anns d Xs]
+termination_by sizeOf bindings
+end
+
+@[simp] theorem Input.size_openTyVars (input : Input) (Xs : List Nat) :
+    (input.openTyVars Xs).size = input.size := input.size_openTyVarsFrom 0 Xs
+
+theorem openInputBindings_length (bindings : List Input) (anns : List LetAnn) (d : Nat) (Xs : List Nat) :
+    (openInputBindings d Xs anns bindings).length = bindings.length := by
+  induction bindings generalizing anns with
+  | nil => rfl
+  | cons body rest ih => cases anns <;> simp only [openInputBindings, List.length_cons, ih]
+
+mutual
+@[simp] theorem Input.erase_openTyVarsFrom (input : Input) (d : Nat) (Xs : List Nat) :
+    (input.openTyVarsFrom d Xs).erase = input.erase := by
+  cases input with
+  | primLit | primBinOp | var | ctor => rfl
+  | lambda ann body => simp only [Input.openTyVarsFrom, Input.erase, body.erase_openTyVarsFrom d Xs]
+  | app f a => simp only [Input.openTyVarsFrom, Input.erase, f.erase_openTyVarsFrom d Xs, a.erase_openTyVarsFrom d Xs]
+  | letIn ann rhs body => simp only [Input.openTyVarsFrom, Input.erase,
+      rhs.erase_openTyVarsFrom (d + ann.paramCount) Xs, body.erase_openTyVarsFrom d Xs]
+  | match_ scrut branches => simp only [Input.openTyVarsFrom, Input.erase,
+      scrut.erase_openTyVarsFrom d Xs, eraseBranches_openInputBranches branches d Xs]
+  | letRec anns bindings body => simp only [Input.openTyVarsFrom, Input.erase,
+      eraseBindings_openInputBindings bindings anns d Xs, body.erase_openTyVarsFrom d Xs,
+      List.map_const', openInputBindings_length]
+termination_by sizeOf input
+theorem eraseBranches_openInputBranches (branches : List (MatchPattern × Input)) (d : Nat) (Xs : List Nat) :
+    eraseBranches (openInputBranches d Xs branches) = eraseBranches branches := by
+  cases branches with
+  | nil => rfl
+  | cons pair rest =>
+      rcases pair with ⟨pat, body⟩
+      simp only [openInputBranches, eraseBranches, body.erase_openTyVarsFrom d Xs,
+        eraseBranches_openInputBranches rest d Xs]
+termination_by sizeOf branches
+theorem eraseBindings_openInputBindings (bindings : List Input) (anns : List LetAnn) (d : Nat) (Xs : List Nat) :
+    eraseBindings (openInputBindings d Xs anns bindings) = eraseBindings bindings := by
+  cases bindings with
+  | nil => rfl
+  | cons body rest =>
+      cases anns with
+      | nil => simp only [openInputBindings, eraseBindings, body.erase_openTyVarsFrom d Xs,
+          eraseBindings_openInputBindings rest [] d Xs]
+      | cons ann anns => simp only [openInputBindings, eraseBindings,
+          body.erase_openTyVarsFrom (d + ann.paramCount) Xs,
+          eraseBindings_openInputBindings rest anns d Xs]
+termination_by sizeOf bindings
+end
+
+@[simp] theorem Input.erase_openTyVars (input : Input) (Xs : List Nat) :
+    (input.openTyVars Xs).erase = input.erase := input.erase_openTyVarsFrom 0 Xs
+
 end Elaboration
