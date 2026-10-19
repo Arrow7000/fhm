@@ -512,4 +512,165 @@ end
 @[simp] theorem Input.erase_openTyVars (input : Input) (Xs : List Nat) :
     (input.openTyVars Xs).erase = input.erase := input.erase_openTyVarsFrom 0 Xs
 
+
+mutual
+theorem Template.toCore_openTyVarsFrom (template : Template) {ty : Ty}
+    (h : template.toCore = some ty) (d : Nat) (Xs : List Nat) :
+    (template.openTyVarsFrom d Xs).toCore = some (ty.openVarsFrom d Xs) := by
+  cases template with
+  | fixed t => cases h; rfl
+  | hole => cases h
+  | arrow a b =>
+      simp only [Template.toCore, bind, pure, Option.bind_eq_some_iff, Option.some.injEq] at h
+      obtain ⟨ta, ha, tb, hb, rfl⟩ := h
+      simp only [Template.openTyVarsFrom, Template.toCore, a.toCore_openTyVarsFrom ha d Xs,
+        b.toCore_openTyVarsFrom hb d Xs]
+      rfl
+  | custom name args =>
+      simp only [Template.toCore, bind, pure, Option.bind_eq_some_iff, Option.some.injEq] at h
+      obtain ⟨tys, ht, rfl⟩ := h
+      simp only [Template.openTyVarsFrom, Template.toCore, completeTypes_openTemplateList args ht d Xs,
+        Ty.openVarsFrom_customTy]
+      rfl
+theorem completeTypes_openTemplateList (templates : List Template) {tys : List Ty}
+    (h : completeTypes templates = some tys) (d : Nat) (Xs : List Nat) :
+    completeTypes (openTemplateList d Xs templates) = some (tys.map (Ty.openVarsFrom d Xs)) := by
+  cases templates with
+  | nil => cases h; rfl
+  | cons t ts =>
+      simp only [completeTypes, bind, pure, Option.bind_eq_some_iff, Option.some.injEq] at h
+      obtain ⟨ty, ht, tys, hts, rfl⟩ := h
+      simp only [openTemplateList, completeTypes, t.toCore_openTyVarsFrom ht d Xs,
+        completeTypes_openTemplateList ts hts d Xs]
+      rfl
+end
+
+theorem completeLambdaAnn_openTyVarsFrom (ann : Option Template) {core : Option Ty}
+    (h : completeLambdaAnn ann = some core) (d : Nat) (Xs : List Nat) :
+    completeLambdaAnn (ann.map (Template.openTyVarsFrom d Xs)) =
+      some (core.map (Ty.openVarsFrom d Xs)) := by
+  cases ann with
+  | none => cases h; rfl
+  | some template =>
+      simp only [completeLambdaAnn, bind, pure, Option.bind_eq_some_iff, Option.some.injEq] at h
+      obtain ⟨ty, ht, rfl⟩ := h
+      simp only [Option.map_some, completeLambdaAnn, template.toCore_openTyVarsFrom ht d Xs]
+      rfl
+
+theorem LetAnn.toCore_openTyVarsFrom (ann : LetAnn) {core : Option PolyTy}
+    (h : ann.toCore = some core) (d : Nat) (Xs : List Nat) :
+    (ann.openTyVarsFrom d Xs).toCore = some (core.map (fun scheme =>
+      { scheme with body := scheme.body.openVarsFrom (d + scheme.paramCount) Xs })) := by
+  cases ann <;> cases h <;> rfl
+
+theorem LetAnn.paramCount_toCore (ann : LetAnn) {core : Option PolyTy}
+    (h : ann.toCore = some core) : ann.paramCount = RecAnn.params core := by
+  cases ann <;> cases h <;> rfl
+
+theorem completeAnns_openTyVarsFrom (anns : List LetAnn) {cores : List (Option PolyTy)}
+    (h : completeAnns anns = some cores) (d : Nat) (Xs : List Nat) :
+    completeAnns (anns.map (LetAnn.openTyVarsFrom d Xs)) = some (RecGroup.openAnns d Xs cores) := by
+  induction anns generalizing cores with
+  | nil => cases h; rfl
+  | cons ann anns ih =>
+      simp only [completeAnns, bind, pure, Option.bind_eq_some_iff, Option.some.injEq] at h
+      obtain ⟨core, ha, cores, has, rfl⟩ := h
+      simp only [List.map_cons, completeAnns, ann.toCore_openTyVarsFrom ha d Xs, ih has]
+      rfl
+
+mutual
+/-- Successful conservative embedding commutes with opening an outer signature;
+all nested complete signatures retain the shielding used by ordinary Core. -/
+theorem Input.toCore_openTyVarsFrom (input : Input) {core : Expr}
+    (h : input.toCore = some core) (d : Nat) (Xs : List Nat) :
+    (input.openTyVarsFrom d Xs).toCore = some (core.openTyVarsAux d Xs) := by
+  cases input with
+  | primLit p => cases h; rfl
+  | primBinOp op => cases h; rfl
+  | var i => cases h; rfl
+  | ctor name => cases h; rfl
+  | lambda ann body =>
+      simp only [Input.toCore, bind, pure, Option.bind_eq_some_iff, Option.some.injEq] at h
+      obtain ⟨ann', ha, body', hb, rfl⟩ := h
+      simp only [Input.openTyVarsFrom, Input.toCore, completeLambdaAnn_openTyVarsFrom ann ha d Xs,
+        body.toCore_openTyVarsFrom hb d Xs]
+      rfl
+  | app f arg =>
+      simp only [Input.toCore, bind, pure, Option.bind_eq_some_iff, Option.some.injEq] at h
+      obtain ⟨f', hf, arg', ha, rfl⟩ := h
+      simp only [Input.openTyVarsFrom, Input.toCore, f.toCore_openTyVarsFrom hf d Xs,
+        arg.toCore_openTyVarsFrom ha d Xs]
+      rfl
+  | letIn ann rhs body =>
+      simp only [Input.toCore, bind, pure, Option.bind_eq_some_iff, Option.some.injEq] at h
+      obtain ⟨ann', ha, rhs', hr, body', hb, rfl⟩ := h
+      simp only [Input.openTyVarsFrom, Input.toCore, ann.toCore_openTyVarsFrom ha d Xs,
+        rhs.toCore_openTyVarsFrom hr (d + ann.paramCount) Xs, body.toCore_openTyVarsFrom hb d Xs]
+      rw [ann.paramCount_toCore ha]
+      cases ann' <;> rfl
+  | match_ scrut branches =>
+      simp only [Input.toCore, bind, pure, Option.bind_eq_some_iff, Option.some.injEq] at h
+      obtain ⟨scrut', hs, branches', hbs, rfl⟩ := h
+      simp only [Input.openTyVarsFrom, Input.toCore, scrut.toCore_openTyVarsFrom hs d Xs,
+        completeBranches_openTyVarsFrom branches hbs d Xs]
+      rfl
+  | letRec anns bindings body =>
+      simp only [Input.toCore, bind, pure, Option.bind_eq_some_iff, Option.some.injEq] at h
+      obtain ⟨anns', ha, bindings', hbs, body', hb, rfl⟩ := h
+      simp only [Input.openTyVarsFrom, Input.toCore, completeAnns_openTyVarsFrom anns ha d Xs,
+        completeBindings_openTyVarsFrom bindings anns ha hbs d Xs,
+        body.toCore_openTyVarsFrom hb d Xs]
+      rfl
+termination_by sizeOf input
+decreasing_by all_goals (subst_vars; simp_wf <;> omega)
+
+theorem completeBranches_openTyVarsFrom (branches : List (MatchPattern × Input))
+    {cores : List (MatchPattern × Expr)} (h : completeBranches branches = some cores)
+    (d : Nat) (Xs : List Nat) :
+    completeBranches (openInputBranches d Xs branches) = some (BranchList.openTyVarsAux d Xs cores) := by
+  cases branches with
+  | nil => cases h; rfl
+  | cons pair rest =>
+      simp only [completeBranches, bind, pure, Option.bind_eq_some_iff, Option.some.injEq] at h
+      obtain ⟨body', hb, rest', hr, rfl⟩ := h
+      simp only [openInputBranches, completeBranches, pair.2.toCore_openTyVarsFrom hb d Xs,
+        completeBranches_openTyVarsFrom rest hr d Xs]
+      rfl
+termination_by sizeOf branches
+decreasing_by all_goals (subst_vars; cases pair; simp_wf <;> omega)
+
+theorem completeBindings_openTyVarsFrom (bindings : List Input) (anns : List LetAnn)
+    {coreAnns : List (Option PolyTy)} {cores : List Expr}
+    (ha : completeAnns anns = some coreAnns) (h : completeBindings bindings = some cores)
+    (d : Nat) (Xs : List Nat) :
+    completeBindings (openInputBindings d Xs anns bindings) =
+      some (RecGroup.openTyVarsAux d Xs coreAnns cores) := by
+  cases bindings with
+  | nil => cases h; rfl
+  | cons body rest =>
+      simp only [completeBindings, bind, pure, Option.bind_eq_some_iff, Option.some.injEq] at h
+      obtain ⟨body', hb, rest', hr, rfl⟩ := h
+      cases anns with
+      | nil =>
+          cases ha
+          simp only [openInputBindings, completeBindings, body.toCore_openTyVarsFrom hb d Xs,
+            completeBindings_openTyVarsFrom rest [] rfl hr d Xs]
+          rfl
+      | cons ann anns =>
+          simp only [completeAnns, bind, pure, Option.bind_eq_some_iff, Option.some.injEq] at ha
+          obtain ⟨coreAnn, ha, coreAnns, has, rfl⟩ := ha
+          simp only [openInputBindings, completeBindings,
+            body.toCore_openTyVarsFrom hb (d + ann.paramCount) Xs,
+            completeBindings_openTyVarsFrom rest anns has hr d Xs]
+          rw [ann.paramCount_toCore ha]
+          rfl
+termination_by sizeOf bindings
+decreasing_by all_goals (subst_vars; simp_wf <;> omega)
+end
+
+theorem Input.toCore_openTyVars (input : Input) {core : Expr}
+    (h : input.toCore = some core) (Xs : List Nat) :
+    (input.openTyVars Xs).toCore = some (core.openTyVars Xs) :=
+  input.toCore_openTyVarsFrom h 0 Xs
+
 end Elaboration
