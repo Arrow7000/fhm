@@ -24,15 +24,15 @@ source has a `TypeOfHM` derivation.
 The production frontend uses canonical `Elaboration.Input` elaboration, which
 returns completed Core and editor maps in one worker traversal. Its full-language
 output typing, independent input typing, exact annotation fidelity, and erasure
-proofs are checked, including recursive groups with partial signatures. The final
-recursive principality and completeness proofs are still being assembled; the
-complete-Core backend results above do not stand in for those capstones.
+proofs are checked, including recursive groups with partial signatures. Its
+canonical principality and executable completeness theorems also cover those
+groups directly against independent partial-input typing.
 
 So: do not read this file as "everything below is proved". Read section 6's
 `#print axioms` output, which is the actual, unfakeable status report.
 
-Every name below already exists in `FHM.Core` /
-`FHM.SurfaceBridge`; this file re-exports (via doc-comments + `#check`, which
+Every name below already exists in the core, elaboration, or surface bridge
+modules; this file re-exports (via doc-comments + `#check`, which
 double as a compiler-checked "this name still exists with this shape" guard),
 adds a handful of small inversion lemmas, witnesses that the type system's
 `SurfaceWTExpr` relation is genuinely inhabited (not vacuously true), and wires
@@ -88,8 +88,11 @@ Core expression executed after erasure and the maps used by editor joins.
 types the authored input when the provisional context is empty. `Infer.completes`
 records exact annotation fidelity, and `Infer.erase` preserves runtime syntax.
 The `_source` variants also cover internal mutable provisional contexts.
-These guards include recursive constructors; the final recursive principal and
-producer-completeness capstones remain outstanding. -/
+`Infer.principal` factors independently typed candidates through the inferred
+result. `Infer.complete` and the executable completeness wrappers establish
+acceptance of independently typed inputs, including recursive groups.
+The metadata field guards preserve the artifact API; editor source joins remain
+operational code outside the verified boundary. -/
 #check @Infer.sourceSound
 #check @Infer.inputSound_source
 #check @Infer.inputSound
@@ -104,6 +107,37 @@ producer-completeness capstones remain outstanding. -/
 #check @inferWithTypes_source_sound
 #check @inferWithTypes_input_sound
 #check @inferWithTypes_erase
+#check @Infer.principal
+#check @Infer.complete
+#check @inferWithTypesCore_sourceComplete
+#check @inferWithTypesCore_complete
+#check @inferCore_complete
+#check @inferCore_accepts_iff
+#check @inferCore_empty_accepts_iff
+#check @inferWithTypes_complete
+#check @inferWithTypes_accepts_iff
+#check @inferWithTypes_principal
+#check @inferWithTypes_infer
+
+example (h : Infer K F frontier ctx input next subst output ty) : Infer.Principal h :=
+  h.principal
+
+example (input : Elaboration.Input) : InferWithTypesCoreSourceComplete input :=
+  inferWithTypesCore_sourceComplete input
+
+example (input : Elaboration.Input) : InferWithTypesCoreComplete input :=
+  inferWithTypesCore_complete input
+
+example (input : Elaboration.Input) : InferCoreComplete input := inferCore_complete input
+
+example {ctors : CtorEnv} {input : Elaboration.Input} :
+    (inferWithTypes ctors input).isSome ↔
+      ∃ ty, Elaboration.Typing input.rigidVars ⟨[], ctors⟩ input ty :=
+  inferWithTypes_accepts_iff
+
+example (result : InferenceResult) : Expr := result.completedExpr
+example (result : InferenceResult) : NodeTypeMap := result.nodeTypes
+example (result : InferenceResult) : BinderSchemeMap := result.binderSchemes
 
 /-! ### Complete-Core backend inference: source typing first, runtime erasure second
 
@@ -682,8 +716,8 @@ proved and axiom-clean in `FHM.RuntimeTyping` and `FHM.InferW`, so `runSafe` and
 
 Complete-Core inference soundness, principality, and relational/executable
 completeness are closed. Canonical elaboration's output/input soundness, fidelity,
-and erasure are also checked below; its final recursive principal/producer
-capstones are not claimed here yet. -/
+erasure, principality, and relational/executable completeness are also checked
+below, including recursive partial signatures. -/
 
 -- Closed and clean: source-to-runtime bridge and erased-term dynamics.
 #print axioms TypeOfHM.erase_preserves_typing -- expect {propext, Classical.choice, Quot.sound}
@@ -706,6 +740,16 @@ capstones are not claimed here yet. -/
 #print axioms inferWithTypes_source_sound
 #print axioms inferWithTypes_input_sound
 #print axioms inferWithTypes_erase
+#print axioms Infer.principal
+#print axioms Infer.complete
+#print axioms inferWithTypesCore_sourceComplete
+#print axioms inferWithTypesCore_complete
+#print axioms inferCore_complete
+#print axioms inferCore_accepts_iff
+#print axioms inferCore_empty_accepts_iff
+#print axioms inferWithTypes_complete
+#print axioms inferWithTypes_accepts_iff
+#print axioms inferWithTypes_principal
 
 -- Closed and clean: complete-Core backend source and runtime soundness.
 #print axioms CoreBackend.Infer.sound                -- expect {propext, Classical.choice, Quot.sound}

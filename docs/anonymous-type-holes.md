@@ -2,8 +2,8 @@
 
 Anonymous `_` holes are supported throughout expression annotations in the normal
 parser, editor, and execution pipeline. Named holes remain a later feature.
-The recursive worker and its soundness/fidelity proofs are checked; final
-recursive principality and producer completeness remain in progress.
+The canonical worker has checked soundness, annotation-fidelity, principality,
+and producer-completeness proofs, including recursive groups with partial signatures.
 Core `Ty` and `TypeOfHM` describe completed types and expressions.
 
 ## Architecture
@@ -60,12 +60,15 @@ variants retain arbitrary provisional `F` and compare the transformed input.
 The executable `inferWithTypes_source_sound`, `inferWithTypes_input_sound`, and
 `inferWithTypes_erase` wrappers apply directly to the returned result.
 
-Lambda, application, ordinary let, nonrecursive explicit signatures, and
-named/wildcard matches also have checked principal and completeness proof
-components. The final recursive residual-principality and producer-completeness
-cases are still being assembled. Completion requires the global canonical
-`Infer.principal`, `Infer.complete`, `inferCore_complete`, and
-`inferCore_empty_accepts_iff` contracts to build and pass axiom audits.
+The global canonical `Infer.principal` and `Infer.complete` contracts include
+recursive groups. Principality protects an independent candidate scope and
+factors arbitrary valid result types through an LC residual substitution.
+`inferWithTypesCore_sourceComplete` covers internal transformed-source visits;
+`inferCore_complete` specializes this result to the public empty provisional
+context. `inferCore_accepts_iff` characterizes acceptance under admissible context
+specialization, and `inferCore_empty_accepts_iff` characterizes closed inputs.
+The artifact API has the corresponding `inferWithTypes_complete`,
+`inferWithTypes_accepts_iff`, and `inferWithTypes_principal` guarantees.
 
 Eligible unsolved hole variables generalize. Variables reachable through the
 context, frozen variables, and live provisional slot images do not. A whole `_`
@@ -91,11 +94,11 @@ They do not claim a universal most-general filling for every unused annotation.
 - [x] Recursive worker with partial syntax and signatures, including SCC-wide
   constraints and complete-signature polymorphic recursion.
 - [x] Recursive completed-output/input typing, annotation fidelity, and erasure.
-- [ ] Final recursive residual principality and producer completeness.
+- [x] Global recursive residual principality and producer completeness.
 - [ ] Full source-level regressions, normal builds, CLI/editor and web tests,
   verified-boundary and axiom audits.
 
-## Recursive semantics and remaining proof work
+## Recursive semantics
 
 The recursive worker gives partial explicit-forall slots provisional monotypes
 while solving the whole SCC. Their fixed structure constrains every
@@ -109,9 +112,11 @@ The canonical judgment already carries `F` alongside frozen `K`. Nested signatur
 escape checks protect both the outer environment and outer `F`, including roots
 absent from the environment or annotation type. Checked source/output typing
 and fidelity preserve these invariants through shape constraints, provisional
-slot refinement, and completed exports. The remaining principal and producer
-proofs must retain independent candidate scope, arbitrary candidate types and
-contexts, and exact authored-prefix/output-binder distinctions.
+slot refinement, and completed exports. The principal and producer proofs
+retain independent candidate scope, arbitrary candidate types and contexts,
+and exact authored-prefix/output-binder distinctions. The worker follows the
+canonical dependency schedule; independent typing permits arbitrary valid
+residual groupings, including shared or permuted roots across stages.
 
 ## Regression coverage and completion
 
@@ -134,7 +139,5 @@ recursive worker with independent runtime/editor groups, including:
 Recursive lowering guards check true recursive input shapes and partial-forall
 counts. Runtime tests pair rejection cases with nearby accepted controls; a
 rejection alone does not establish correctness. Passing these tests complements
-the proofs and does not replace the outstanding capstones.
-The feature is complete only when all supported annotation syntax, including
-recursive groups, has the full proof stack above and the retained source,
-CLI/editor, web, normal-build, verified-boundary, and axiom checks pass.
+the full proof stack above. The remaining release checks are the retained source,
+CLI/editor, web, normal-build, verified-boundary, and axiom checks listed above.

@@ -2,11 +2,10 @@
 
 FHM is a small, Elm-flavoured functional language with Hindley–Milner type
 inference, formalised in Lean 4, with a command-line tool, watch mode, and browser
-playground. The completed-Core type system has proved safety, principality, and
-completeness. The canonical frontend also elaborates anonymous type holes;
-its recursive soundness and annotation-fidelity proofs are checked, while the
-final recursive principality and completeness proofs are in progress. See the
-[feature status](./docs/anonymous-type-holes.md).
+playground. Its canonical frontend elaborates anonymous type holes, with proved
+soundness, annotation fidelity, principality, and completeness, including recursive
+groups and partial signatures. The completed-Core type system also has proved
+type safety. See the [feature details](./docs/anonymous-type-holes.md).
 
 ## A taste of the language
 
@@ -100,6 +99,7 @@ starting point for reading the proofs.
 | **Type safety:** a well-typed program never gets stuck. It is either a value or can take another step, and its type is preserved.                  | `TypeOfHM.progress`, `TypeOfHM.preservation`, `TypeOfHM.type_safety_star` |
 | **Complete-Core surface safety:** a well-typed, exhaustive surface program accepted by the Core lowering bridge never gets stuck.                  | `program_type_safe`, `surface_type_safe`                                  |
 | **Canonical elaboration is sound:** successful inference returns typed completed Core and an independently typed partial input, with exact runtime erasure and annotation fidelity. | `Infer.sourceSound`, `Infer.inputSound`, `Infer.erase`, `Infer.completes` |
+| **Canonical inference is complete and principal:** inference accepts exactly independently well-typed partial inputs, and every valid result type factors through the inferred type. | `Infer.principal`, `Infer.complete`, `inferCore_accepts_iff`, `inferWithTypes_accepts_iff` |
 | **Complete-Core inference is complete and principal:** inference succeeds exactly for well-typed Core, and every valid type factors through the inferred one. | `CoreBackend.typecheck_accepts_iff`, `CoreBackend.Infer.principal`, `CoreBackend.Infer.complete` |
 | **Pattern compilation is correct:** nested matches compile to decision trees that select the same branch with the same bindings.                   | `PatComp.compile_correct_surface`, `PatComp.lowerMatch_adequate_of_typed` |
 | **Exhaustiveness checking is sound:** if the checker accepts a match, the match is exhaustive.                                                     | `checkExhaustive_sound`                                                   |
