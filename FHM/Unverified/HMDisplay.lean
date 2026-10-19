@@ -267,10 +267,12 @@ def bindingHoleParts (typed : TypedLowered) (scopes : List Scope) (site : Surfac
   let sigParts := match ann with
     | none => []
     | some sig =>
-        let finalized := finalizeAnn tyParams params ann
+        let finalized := Elaboration.finalizeInputAnn tyParams params ann
         let writtenNames := displayNames finalized
         let facts := (completedSchemes typed site).filterMap fun (path, scheme) => do
-          let body ← dropDomains (if (paramsToArrows params sig.body).isSome then params.length else 0) scheme.body
+          -- The written annotation is the result after every head parameter,
+          -- including parameters whose omitted types were inferred.
+          let body ← dropDomains params.length scheme.body
           let outer := context (scopes.filter fun s => s.path != path) path body true
           let names := bindingNames typed site writtenNames scheme
             (outer.boundNames ++ outer.aliases.map (·.2))

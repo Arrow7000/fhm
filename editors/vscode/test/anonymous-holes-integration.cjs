@@ -61,7 +61,7 @@ async function update(source, open = false) {
   const before = markerSets.length;
   text = source; doc.version++;
   if (open) listeners.Open(doc); else listeners.Change({ document: doc });
-  assert.equal(hoverProvider.provideHover(doc, { line: 0, character: source.indexOf("_") }), undefined,
+  assert.equal(hoverProvider.provideHover(doc, { line: 0, character: Math.max(0, source.indexOf("_")) }), undefined,
     "didOpen/didChange invalidates stale hover synchronously");
   const until = Date.now() + 15000;
   while (markerSets.length === before) {
@@ -118,6 +118,32 @@ const results = [];
   results.push({ case: "top-level pattern after two definitions", hovers: [
     hole("a → a", 0, 2), hole("Int", 1, 2), hole("a", 2, 2)
   ] });
+
+  const head = "let keep {item unused} (x : item) y : _ = (x,y)\nkeep 1 True\n";
+  assert.deepEqual(await update(head), []);
+  results.push({ case: "mixed head parameters and result hole", hover: hole("(item, a)") });
+  const headLine = doc.lineAt(0).text;
+  for (const [name, type] of [["x", "item"], ["y", "a"]]) {
+    const position = { line: 0, character: headLine.lastIndexOf(name) };
+    assert.equal(hoverProvider.provideHover(doc, position)?.contents.value,
+      `\`\`\`fhm\n${name} : ${type}\n\`\`\``);
+    assert.deepEqual(definitionProvider.provideDefinition(doc, position)?.range.args,
+      [0, headLine.indexOf(name), 0, headLine.indexOf(name) + name.length]);
+  }
+  assert.deepEqual(definitionProvider.provideDefinition(doc,
+    { line: 0, character: headLine.lastIndexOf("item") })?.range.args, [0, 10, 0, 14]);
+
+  assert.deepEqual(await update("let keep {unused item} (x : item) y = x\nkeep 1 True\n"), []);
+  assert.equal(hoverProvider.provideHover(doc, { line: 0, character: 4 })?.contents.value,
+    "```fhm\nkeep : ∀ unused item a. item → a → item\n```");
+  results.push({ case: "omitted return retains unused authored forall" });
+
+  assert.deepEqual(await update("let f {a} (x : a) : Int = if True then 0 else f [x]\nf True\n"), []);
+  assert.equal(hoverProvider.provideHover(doc, { line: 0, character: 4 })?.contents.value,
+    "```fhm\nf : ∀ a. a → Int\n```");
+  assert((await update("let f {a} (x : a) : _ = if True then 0 else f [x]\nf True\n"))
+    .some(d => d.severity === 0), "partial head keeps recursive calls monomorphic");
+  results.push({ case: "complete versus partial head polymorphic recursion" });
 
   listeners.Close(doc);
   assert.equal(hoverProvider.provideHover(doc, { line: 2, character: 15 }), undefined);

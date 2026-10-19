@@ -515,6 +515,128 @@ test("pattern lets reject duplicate captures and self/mutual cycles by name", ()
   assert.match(duplicate.payload.diagnostics[0]?.message || "", /duplicate names in let pattern/);
 });
 
+test("typed head binders preserve scoped names, parameters and definitions", () => {
+  const source = "let id {item} (x : item) : item = x\n(id 1,id True)\n";
+  const payload = diagnose(source);
+  hover(payload, source, 0, "id", "∀ item. item → item");
+  hover(payload, source, 0, "x", "item", 0);
+  hover(payload, source, 0, "x", "item", 1);
+  const { ranged, tokens } = normalizePayload(payload);
+  const line = source.split("\n")[0];
+  const itemCol = [...line.matchAll(/\bitem\b/g)][1].index;
+  const itemDef = resolveDefinition(ranged, 0, itemCol, line, tokens);
+  assert.deepEqual([itemDef?.startLine0, itemDef?.startCol0], [0, line.indexOf("item")]);
+  const xUse = line.lastIndexOf("x");
+  const xDef = resolveDefinition(ranged, 0, xUse, line, tokens);
+  assert.deepEqual([xDef?.startLine0, xDef?.startCol0], [0, line.indexOf("x")]);
+  assert.equal(payload.symbols.filter(s => s.kind === "typeHole").length, 0);
+  run(source, "(1, True)");
+});
+
+test("mixed head parameters align authored parameter and result holes", () => {
+  for (const [source, types, result] of [
+    ["let pair (x : _) y : _ = (x,y)\npair 1 True\n", ["a", "(a, b)"], "(1, True)"],
+    ["let pair x (y : _) : _ = (x,y)\npair 1 True\n", ["b", "(a, b)"], "(1, True)"],
+    ["let dup x : _ = (x,x)\ndup True\n", ["(a, a)"], "(True, True)"],
+    ["let apply (f : _ -> Int) x : _ = f x\napply (\\n -> n + 1) 2\n", ["a", "Int"], "3"],
+  ]) {
+    const payload = diagnose(source);
+    types.forEach((type, i) => hover(payload, source, 0, "_", type, i));
+    assert.equal(payload.symbols.filter(s => s.kind === "typeHole").length, types.length);
+    run(source, result);
+  }
+});
+
+test("head forall omissions preserve unused ordered names without synthetic hole tokens", () => {
+  const source = "let keep {unused item} (x : item) y = x\n(keep 1 True,keep False 0)\n";
+  const payload = diagnose(source);
+  hover(payload, source, 0, "keep", "∀ unused item a. item → a → item");
+  hover(payload, source, 0, "x", "item", 0);
+  assert.equal(payload.symbols.filter(s => s.kind === "typeHole").length, 0);
+  const response = run(source, "(1, False)");
+  assert.equal(response.bindings.find(b => b.name === "keep")?.type, "∀ unused item a. item → a → item");
+  run("let id {item} (x : item) = x\n(id 1,id True)\n", "(1, True)");
+  run("let id {item} = \\(x : item) -> x\n(id 1,id True)\n", "(1, True)");
+  run("let id x = x\n(id 1,id True)\n", "(1, True)");
+  run("let inc (x : Int) = x + 1\ninc 2\n", "3");
+  run("let answer = let keep {a} (x : a) y = x in (keep 1 True,keep False 0)\nanswer\n", "(1, False)");
+});
+
+test("head fixed constraints and explicit forall promises still reject mismatches", () => {
+  for (const source of [
+    "let f (x : Int) : _ = x\nf True\n",
+    "let f (x : Int) = x\nf True\n",
+    "let f x : Bool = x + 1\nf 2\n",
+    "let f {a} (x : a) : a = 1\nf True\n",
+    "let f {a} (x : a) = x + 1\nf True\n",
+  ]) {
+    const editor = cli(["diagnose"], source);
+    assert.equal(editor.status, 1);
+    assert.ok(editor.payload.diagnostics.length > 0);
+    assert.equal(cli(["run", "--json"], source).payload.stage, "typecheck");
+  }
+});
+
+test("complete recursive heads allow polymorphic calls while omitted or partial results do not", () => {
+  run("let f {a} (x : a) : Int = if True then 0 else f [x]\nf True\n", "0");
+  run("let answer = let f {a} (x : a) : Int = if True then 0 else f [x] in f True\nanswer\n", "0");
+  for (const resultAnn of ["", " : _"]) {
+    const source = `let f {a} (x : a)${resultAnn} = if True then 0 else f [x]\nf True\n`;
+    assert.equal(cli(["run", "--json"], source).payload.stage, "typecheck");
+  }
+});
+
+test("mutual recursive heads distinguish complete from partial contracts", () => {
+  const complete = "let f {a} (x : a) : Int = if True then 0 else g [x]\n" +
+    "let g {b} (y : b) : Int = f y\nf True\n";
+  diagnose(complete);
+  run(complete, "0");
+  const partial = complete.replaceAll(" : Int =", " : _ =");
+  assert.equal(cli(["run", "--json"], partial).payload.stage, "typecheck");
+});
+
+test("head parameter artifacts follow forward and noncontiguous recursive SCC source order", () => {
+  const source = "let f {a} (x : a) : _ = if True then x else g x\n" +
+    "let other z = z\nlet g {b} (y : b) : _ = f y\n(f 1,(g True,other 2))\n";
+  const payload = diagnose(source);
+  hover(payload, source, 0, "f", "∀ a. a → a");
+  hover(payload, source, 2, "g", "∀ b. b → b");
+  hover(payload, source, 0, "x", "a", 0);
+  hover(payload, source, 2, "y", "b", 0);
+  hover(payload, source, 0, "_", "a");
+  hover(payload, source, 2, "_", "b");
+  run(source, "(1, (True, 2))");
+});
+
+test("head forall-only, function returns, shadowed scopes and wildcard holes remain distinct", () => {
+  const forallOnly = "let id {unused} = \\x -> x\n(id 1,id True)\n";
+  const forallPayload = diagnose(forallOnly);
+  hover(forallPayload, forallOnly, 0, "id", "∀ unused a. a → a");
+  assert.equal(forallPayload.symbols.filter(s => s.kind === "typeHole").length, 0);
+  run(forallOnly, "(1, True)");
+
+  const functionReturn = "let const x : Int -> _ = \\n -> x\nconst True 0\n";
+  hover(diagnose(functionReturn), functionReturn, 0, "_", "a");
+  run(functionReturn, "True");
+
+  const shadowed = "let outer {a} (x : a) : _ = let inner {a} (y : a) : _ = y in (x,inner True)\nouter 1\n";
+  const shadowPayload = diagnose(shadowed);
+  hover(shadowPayload, shadowed, 0, "_", "(a, Bool)", 0);
+  hover(shadowPayload, shadowed, 0, "_", "a", 1);
+  const { ranged, tokens } = normalizePayload(shadowPayload);
+  const line = shadowed.split("\n")[0];
+  const names = [...line.matchAll(/\ba\b/g)].map(m => m.index);
+  assert.equal(resolveDefinition(ranged, 0, names[3], line, tokens)?.startCol0, names[2]);
+  run(shadowed, "(1, True)");
+
+  const wildcard = "let ignore (_ : _) = 1\nignore True\n";
+  const wildPayload = diagnose(wildcard);
+  assert.equal(wildPayload.symbols.filter(s => s.kind === "typeHole").length, 1);
+  hover(wildPayload, wildcard, 0, "_", "a", 1);
+  run(wildcard, "1");
+  run("let ignore _ = 1\nignore True\n", "1");
+});
+
 test("anonymous lambda holes generalize and expose precise token hovers", () => {
   const source = "let id = \\(x : _) -> x\n(id 1, id True)\n";
   const payload = diagnose(source);

@@ -576,8 +576,15 @@ def afterSccSrc : String :=
        | none => false)
   | none => false)
 
--- Keep the existing scoped-head-sugar limitation visible.
-#guard (hoverReport "let id {a} (x : a) : a = x\nid\n").isNone
+-- Head parameters and result annotations preserve authored scoped names.
+#guard (match hoverReport "let id {item} (x : item) : item = x\n(id 1, id True)\n" with
+  | some r => r.diagnostics.isEmpty &&
+      (r.symbols.any fun s => s.name == "id" && s.isDef &&
+        s.type_ == "∀ item. item → item") &&
+      (r.symbols.any fun s => s.name == "x" && s.kind == "param" && s.type_ == "item") &&
+      (r.symbols.any fun s => s.name == "item" && s.isDef) &&
+      (r.symbols.all fun s => s.kind != "typeHole")
+  | none => false)
 
 -- Named annotation binders survive presentation, both for a recursive
 -- binding's synthesized variables and for genuine nested-let skolems.
@@ -726,6 +733,38 @@ private def holeIdSrc := "let id = \\(x : _) -> x\n(id 1, id True)\n"
 #guard holeTypes "(\\(f : Int -> _) -> f 1) (\\x -> True)\n" == some ["Bool"]
 #guard holeTypes "(\\(x : List _) -> x) [1,2]\n" == some ["Int"]
 #guard holeTypes "(\\(x : (_, _)) -> x) (1, True)\n" == some ["Int", "Bool"]
+
+-- Missing head annotations allocate inference variables without inventing
+-- source tokens. A written result annotation always describes the result,
+-- including when an earlier head parameter has no annotation.
+#guard holeTypes "let pair (x : _) y : _ = (x,y)\npair 1 True\n" == some ["a", "(a, b)"]
+#guard holeTypes "let pair x (y : _) : _ = (x,y)\npair 1 True\n" == some ["b", "(a, b)"]
+#guard holeTypes "let dup x : _ = (x,x)\ndup True\n" == some ["(a, a)"]
+#guard holeTypes "let apply (f : _ -> Int) x : _ = f x\napply (\\n -> n + 1) 2\n" ==
+  some ["a", "Int"]
+#guard holeTypes "let id {item} (x : item) = x\n(id 1,id True)\n" == some []
+#guard holeTypes "let id {item} = \\(x : item) -> x\n(id 1,id True)\n" == some []
+#guard (match hoverReport
+    "let keep {unused item} (x : item) y = x\n(keep 1 True,keep False 0)\n" with
+  | some r => r.diagnostics.isEmpty &&
+      (r.symbols.any fun s => s.name == "keep" && s.isDef &&
+        s.type_ == "∀ unused item a. item → a → item") &&
+      (r.symbols.any fun s => s.name == "x" && s.kind == "param" && s.type_ == "item") &&
+      (r.symbols.all fun s => s.kind != "typeHole")
+  | none => false)
+
+-- Fully written heads form complete signatures; a missing or holeful return
+-- keeps recursive calls monomorphic, even with explicitly named foralls.
+#guard (match hoverReport
+    "let f {a} (x : a) : Int = if True then 0 else f [x]\nf True\n" with
+  | some r => r.diagnostics.isEmpty
+  | none => false)
+#guard (["let f {a} (x : a) = if True then 0 else f [x]\nf True\n",
+         "let f {a} (x : a) : _ = if True then 0 else f [x]\nf True\n",
+         "let f (x : Int) : _ = x\nf True\n"].all fun src =>
+    match hoverReport src with
+    | some r => !r.diagnostics.isEmpty
+    | none => false)
 #guard (match hoverReport "let f = \\(x : _) -> x x\nf\n" with
   | some r => r.diagnostics.any fun d => d.code? == some "type.infiniteType"
   | none => false)

@@ -20,7 +20,14 @@ let id = \(x : _) -> x
 
 Here `_` hovers as `a`; it has no declaration target. Fixed annotation structure still constrains the program: `let f : Int -> _ = \x -> x` followed by `f True` reports a type mismatch. Pattern wildcards are separate from type holes.
 
-Scoped head-type-variable sugar is still unsupported; prefer explicit schemes and ordinary lambdas.
+Let heads also support scoped type binders and typed or untyped parameters:
+
+```fhm
+let keep {item unused} (x : item) y : _ = (x,y)
+keep 1 True
+```
+
+Here the result hole hovers as `(item, a)`, and parameter uses resolve to their head definitions. The annotation after the parameters is the return type. Missing annotations are inferred without creating source hole tokens. Authored forall names retain their order, including unused binders. A fully written signature permits polymorphic recursive calls; an omitted or holeful part keeps calls within its recursive component monomorphic.
 
 ## Install via symlink (Cursor or VS Code)
 
@@ -77,7 +84,7 @@ node editors/vscode/test/lifecycle-regression.cjs
 node editors/vscode/test/anonymous-holes-integration.cjs
 ```
 
-The lifecycle regression mocks the backend to test races. The anonymous-hole integration test uses the actual extension providers and real `fhm diagnose` processes, with only the VS Code host API simulated. It checks precise hole hovers, edits, diagnostics, definition lookup, recursive holes, copied match fallbacks, and top-level pattern annotations. It does not launch an editor window or test an LSP protocol.
+The lifecycle regression mocks the backend to test races. The anonymous-hole integration test uses the actual extension providers and real `fhm diagnose` processes, with only the VS Code host API simulated. It checks precise hole hovers, edits, diagnostics, definition lookup, recursive holes, copied match fallbacks, top-level pattern annotations, and scoped head parameters. It does not launch an editor window or test an LSP protocol.
 
 ## Regenerate grammar
 
