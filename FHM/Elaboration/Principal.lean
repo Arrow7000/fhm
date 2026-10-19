@@ -3613,40 +3613,6 @@ theorem RecResidual.exportComponent
         residual_export_selected (hwrite i algTy hi hnew) hnew hi,
         hgeneralizes i algTy declTy hi hd hnew⟩
 
-theorem RecResidual.afterFinish
-    {P declPool Xs done members K soft : List Nat} {declCtx ctx : Ctx} {declSpecs : List RecSpec}
-    {declPrefixes : List (List Nat)} {state final : RecState} {R : Subst}
-    {outputs : List (Option Expr)} {facts : List RecFacts}
-    (h : RecResidual P declCtx declSpecs declPrefixes declPool Xs ctx state done R)
-    (hfinish : FinishRecComponent K soft members ctx state outputs facts final)
-    (hdisjoint : ∀ i ∈ members, i ∉ done)
-    (hexports : state.exports.length = state.specs.length)
-    (hAlgLC : ∀ i ty, state.specs[i]? = some (.mono ty) → i ∈ members → ty.IsLC)
-    (hDeclLC : ∀ i ty, declSpecs[i]? = some (.mono ty) → i ∈ members → ty.IsLC)
-    (hPool : declPool.Nodup)
-    (hWritten : ∀ i ty, declSpecs[i]? = some (.mono ty) → i ∈ members →
-      (declPrefixes[i]?.getD []).Nodup ∧ ∀ v ∈ declPrefixes[i]?.getD [], v ∈ declPool)
-    (hLen : Xs.length = declPool.length) (hXs : Xs.Nodup)
-    (hDisjoint : ∀ g ∈ declPool, g ∉ Xs)
-    (hFreshTy : ∀ i ty, declSpecs[i]? = some (.mono ty) → i ∈ members →
-      ∀ x ∈ Xs, x ∉ ty.freeVars)
-    (hFreshExport : ∀ i scheme, i ∈ members → final.exports[i]? = some (some scheme) →
-      ∀ x ∈ Xs, x ∉ (R.onPolyTy scheme).body.freeVars) :
-    RecResidual P declCtx declSpecs declPrefixes declPool Xs ctx final (done ++ members) R := by
-  cases hfinish with
-  | @mk written hresolve =>
-    apply h.exportComponent hdisjoint
-      (fun i ty hi _ => hexports.symm ▸ (List.getElem?_eq_some_iff.mp hi).1)
-    intro i algTy declTy hi hd hm
-    obtain ⟨hwnd, hwsub⟩ := hWritten i declTy hd hm
-    apply recScheme_generalizes_of_renameG (hAlgLC i algTy hi hm) (hDeclLC i declTy hd hm)
-      h.lc hPool hwnd hwsub hLen hXs hDisjoint (hFreshTy i declTy hd hm)
-      (h.pending i algTy declTy hi hd (hdisjoint i hm))
-    exact hFreshExport i _ hm (residual_export_selected
-      (hexports.symm ▸ (List.getElem?_eq_some_iff.mp hi).1) hm hi)
-
-
-
  theorem Ty.renameG_onSubst_pool_safe {G Xs : List Nat} {S : Subst} {ty : Ty}
     (hLC : ty.IsLC) (hS : ∀ p ∈ S,p.2.IsLC) (hG : G.Nodup)
     (hLen : Xs.length = G.length) (hGX : ∀ g ∈ G,g ∉ Xs)
@@ -4122,75 +4088,6 @@ theorem Ty.prefix_normalize_fresh
     · exact hMoved y hy
     · exact hActual y (hReps y hy)
 
- theorem RecResidual.align_prefixes
-    {P declPool Xs done actual candidate : List Nat} {declCtx ctx : Ctx}
-    {declSpecs : List RecSpec} {declPrefixes : List (List Nat)} {state : RecState}
-    {R : Subst} {frontier opened : Nat}
-    (h : RecResidual P declCtx declSpecs declPrefixes declPool Xs ctx state done R)
-    (hbelow : state.Below frontier) (hctx : CtxBelow frontier ctx)
-    (hP : ∀ p ∈ P, p < frontier)
-    (hactual : actual.Nodup) (hlen : actual.length = candidate.length)
-    (hstart : ∀ a ∈ actual, frontier ≤ a) (hend : ∀ a ∈ actual, a < opened)
-    (hCX : ∀ c ∈ candidate, c ∈ Xs)
-    (hXA : ∀ x ∈ Xs, x ∉ actual) (hXP : ∀ x ∈ Xs, x ∉ P)
-    (hG : declPool.Nodup) (hXlen : Xs.length = declPool.length)
-    (hGX : ∀ g ∈ declPool, g ∉ Xs) (hGA : ∀ g ∈ declPool, g ∉ actual)
-    (hdeclLC : ∀ ty, .mono ty ∈ declSpecs → ty.IsLC)
-    (hXM : ∀ ty, .mono ty ∈ declSpecs → ∀ x ∈ Xs, x ∉ ty.freeVars)
-    (hXPoly : ∀ sigma, .poly sigma ∈ declSpecs → ∀ x ∈ Xs, x ∉ sigma.body.freeVars)
-    (hXCtx : ∀ x ∈ Xs, x ∉ declCtx.env.freeVars) :
-    let reps := prefixRepresentatives actual candidate
-    let B : Subst := candidate.dedup.zip (reps.map Ty.fvar)
-    let Ys := recRenameNames candidate.dedup reps Xs
-    ∃ U : Subst, (∀ pair ∈ U, pair.2.IsLC) ∧ Subst.AgreesBelow frontier (R ++ B) U ∧
-      (∀ p ∈ P ++ reps, U.onTy (.fvar p) = .fvar p) ∧
-      (∀ i (hi : i < candidate.length),
-        U.onTy (.fvar (actual[i]'(by omega))) = .fvar (prefixRepresentative actual candidate candidate[i])) ∧
-      RecResidual (P ++ reps) declCtx declSpecs declPrefixes declPool Ys ctx state done U := by
-  dsimp only
-  let reps := prefixRepresentatives actual candidate
-  let B : Subst := candidate.dedup.zip (reps.map Ty.fvar)
-  have hrepA : ∀ r ∈ reps, r ∈ actual := fun _ hr => prefixRepresentatives_mem_actual hlen hr
-  have hrepLen : reps.length = candidate.dedup.length := by simp only [reps, prefixRepresentatives, List.length_map]
-  have hdisj : ∀ c ∈ candidate.dedup, c ∉ reps := by
-    intro c hc hr
-    exact hXA c (hCX c (List.mem_dedup.mp hc)) (hrepA c hr)
-  have hBLC : ∀ pair ∈ B, pair.2.IsLC := zip_fvars_lc
-  have hRB : ∀ pair ∈ R ++ B, pair.2.IsLC :=
-    fun pair hp => (List.mem_append.mp hp).elim (h.lc pair) (hBLC pair)
-  obtain ⟨U, hU, hag, hassign, hfixReps⟩ := Subst.override_prefixRepresentatives hRB frontier opened
-    hlen hactual hstart hend
-  have hPfix : ∀ p ∈ P, (R ++ B).onTy (.fvar p) = .fvar p := by
-    intro p hp
-    rw [Subst.onTy_append, h.fixes p hp]
-    exact zip_fvars_fixes (fun hc => hXP p (hCX p (List.mem_dedup.mp hc)) hp)
-  have hUfix := hag.fixes_prefixProtection hlen hP hPfix hassign
-  refine ⟨U, hU, hag, hUfix, hassign, ?_⟩
-  apply h.change_opening hbelow hctx hBLC ?_ ?_ ?_ ?_ ?_ hU hUfix hag
-  · apply congrArg₂ Ctx.mk
-    · apply Subst.onEnv_eq_self_of_fresh
-      intro pair hp hv
-      exact hXCtx pair.1 (hCX pair.1 (List.mem_dedup.mp (List.of_mem_zip hp).1)) hv
-    · rfl
-  · intro scheme hs
-    apply congrArg (PolyTy.mk scheme.paramCount)
-    apply Subst.onTy_eq_self_of_fixes
-    intro v hv
-    exact zip_fvars_fixes (fun hc => hXPoly scheme hs v (hCX v (List.mem_dedup.mp hc)) hv)
-  · intro i ty hi _
-    exact recScheme_wf (hdeclLC ty (List.mem_of_getElem? hi))
-  · intro i ty hi _
-    apply congrArg (PolyTy.mk _)
-    apply Subst.onTy_eq_self_of_fixes
-    intro v hv
-    exact zip_fvars_fixes (fun hc => hXM ty (List.mem_of_getElem? hi) v
-      (hCX v (List.mem_dedup.mp hc)) (Ty.freeVars_closeOver_subset hv))
-  · intro ty ht
-    exact zip_fvars_renameG hrepLen (List.nodup_dedup _) hdisj (hdeclLC ty ht) hG hXlen hGX
-      (fun g hg hr => hGA g hg (hrepA g hr))
-      (fun c hc => hXM ty ht c (hCX c (List.mem_dedup.mp hc)))
-
-
 theorem recRenameNames_nodup_partial {names targets Xs : List Nat}
     (hlen : targets.length = names.length) (hnd : names.Nodup) (htnd : targets.Nodup)
     (hdisj : ∀ n ∈ names, n ∉ targets) (hXs : Xs.Nodup)
@@ -4436,38 +4333,6 @@ theorem recStageCtx_change_opening {B : Subst} {specs : List RecSpec}
   · have henv := congrArg Ctx.env hctx
     simpa only [Subst.onCtx, Subst.onEnv, recStageCtx, List.map_append, heq] using
       congrArg (fun tail => specs.mapIdx (recStageEntry prefixes done G Ys) ++ tail) henv
-  · rfl
-
- theorem recStageCtx_onSubst_pool_safe {S : Subst} {specs : List RecSpec} {ctx : Ctx}
-    {prefixes : List (List Nat)} {done G Xs : List Nat}
-    (hLC : ∀ spec ∈ specs, spec.LC) (hS : ∀ pair ∈ S, pair.2.IsLC)
-    (hG : G.Nodup) (hLen : Xs.length = G.length) (hGX : ∀ g ∈ G, g ∉ Xs)
-    (hPrefix : ∀ i, i < specs.length → ∀ v ∈ prefixes[i]?.getD [], v ∈ G)
-    (hDomG : ∀ pair ∈ S, pair.1 ∉ G)
-    (hRanG : ∀ pair ∈ S, ∀ v ∈ pair.2.freeVars, v ∉ G)
-    (hDomX : ∀ pair ∈ S, pair.1 ∉ Xs) :
-    S.onCtx (recStageCtx ctx specs prefixes done G Xs) =
-      recStageCtx (S.onCtx ctx) (specs.map (RecSpec.onSubstSource S)) prefixes done G Xs := by
-  have heq : List.map S.onPolyTy (specs.mapIdx (recStageEntry prefixes done G Xs)) =
-      (specs.map (RecSpec.onSubstSource S)).mapIdx (recStageEntry prefixes done G Xs) := by
-    apply List.ext_getElem?
-    intro i
-    simp only [List.getElem?_map, List.getElem?_mapIdx]
-    cases hs : specs[i]? with
-    | none => rfl
-    | some spec =>
-      simp only [Option.map_some]
-      congr 1
-      cases spec with
-      | poly sigma => rfl
-      | mono ty =>
-        simp only [recStageEntry, RecSpec.onSubstSource]
-        split
-        · exact (recScheme_subst_pool_avoid hDomG hRanG (hPrefix i (List.getElem?_eq_some_iff.mp hs).1)).symm
-        · exact congrArg PolyTy.mkTrivial
-            (Ty.renameG_onSubst_pool_safe (hLC _ (List.mem_of_getElem? hs)) hS hG hLen hGX hDomG hRanG hDomX)
-  apply congrArg₂ Ctx.mk
-  · simp only [Subst.onCtx, Subst.onEnv, recStageCtx, List.map_append, heq]
   · rfl
 
  theorem OpenRecAnns.realize_prefixes
