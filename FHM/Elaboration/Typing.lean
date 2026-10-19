@@ -94,6 +94,13 @@ theorem Subst.fixes_of_dom_avoids {K : List Nat} {subst : Subst}
 
 namespace Elaboration
 
+/-- Structural branch completion preserves patterns and completes each body. -/
+inductive CompletedBranches (J : Input → Expr → Prop) :
+    List (MatchPattern × Input) → List (MatchPattern × Expr) → Prop
+  | nil : CompletedBranches J [] []
+  | cons : J source output → CompletedBranches J rest restOut →
+      CompletedBranches J ((pat, source) :: rest) ((pat, output) :: restOut)
+
 /-- Structural annotation completion. This is distinct from input admissibility
 (`Typing` below): it records fixed syntax, individual hole fillings, and the
 type abstraction/specialization performed when an ordinary let is generalized.
@@ -120,6 +127,18 @@ inductive Completes (K : List Nat) : Input → Expr → Prop
       Completes K (.letIn ann rhs body)
         (.letIn (some (subst.onPolyTy ⟨names.length, Ty.closeOver names ty⟩))
           ((rhsOut.closeTyVars names).substTyFvars subst) bodyOut)
+  | match_ : Completes K scrut scrutOut →
+      CompletedBranches (Completes K) branches branchesOut →
+      Completes K (.match_ scrut branches) (.match_ scrutOut branchesOut)
+
+/-- Independent branch semantics reuse the ordinary constructor specification;
+the body relation is a parameter, with no inference state or substitution. -/
+inductive BranchTyping (J : Ctx → Input → Ty → Prop) :
+    Ctx → (MatchPattern × Input) → Ty → Ty → Prop
+  | named : BranchCtorSpec ctx.ctors name count scrutTy ctor args fields →
+      J { ctx with env := fields.map PolyTy.mkTrivial ++ ctx.env } body resultTy →
+      BranchTyping J ctx (.named name count, body) scrutTy resultTy
+  | wildcard : J ctx body resultTy → BranchTyping J ctx (.wildcard, body) scrutTy resultTy
 
 /-- Independent input typing for the first fragment. `K` contains ambient rigid
 annotation variables; free variables in context monotypes can remain flexible.
@@ -130,7 +149,7 @@ polymorphic recursive uses through an arbitrary completed output signature.
 
 Whole completed subtrees use their existing checking rules through the
 conservative Core embedding. Complete annotated lets with partial syntax
-in their RHS or continuation, and partial match/recursive spines, have no rule
+in their RHS or continuation, and partial recursive spines, have no rule
 in this first fragment.
 -/
 inductive Typing (K : List Nat) : Ctx → Input → Ty → Prop
@@ -161,12 +180,23 @@ inductive Typing (K : List Nat) : Ctx → Input → Ty → Prop
   | ctor : LookupList.get? ctx.ctors name = some ctor →
       (∀ arg ∈ args, arg.IsLC) → ctor.toTy.InstantiatesTo args ty →
       Typing K ctx (.ctor name) ty
+  | match_ : Typing K ctx scrut scrutTy → branches ≠ [] →
+      (∀ branch ∈ branches, BranchTyping (Typing K) ctx branch scrutTy resultTy) →
+      Typing K ctx (.match_ scrut branches) resultTy
+
+private theorem erasedBranches_eq_map (branches : List (MatchPattern × Input)) :
+    eraseBranches branches = branches.map (fun branch => (branch.1, branch.2.erase)) := by
+  induction branches with
+  | nil => rfl
+  | cons head rest ih => rcases head with ⟨p, b⟩; simp only [eraseBranches, List.map_cons, ih]
 
 /-- The input specification has the ordinary HM runtime meaning independently
 of elaboration. Annotation matching restricts this meaning; it never grants a
 new runtime typing rule. -/
 theorem Typing.erase (h : Typing K ctx input ty) : RuntimeTyping.RunWT ctx input.erase ty := by
-  induction h with
+  induction h using Typing.rec
+      (motive_2 := fun ctx branch scrutTy resultTy _ =>
+        RuntimeTyping.RunWTMatchBranch ctx (branch.1, branch.2.erase) scrutTy resultTy) with
   | complete hemb _ htyping =>
       rw [← Input.toCore_erase _ hemb]
       exact htyping.erase_preserves_typing
@@ -179,6 +209,26 @@ theorem Typing.erase (h : Typing K ctx input ty) : RuntimeTyping.RunWT ctx input
       exact .letIn hwf ihrhs ihbody
   | var hlook hlc hinst => exact .var hlook hlc hinst
   | ctor hlook hlc hinst => exact .ctor hlook hlc hinst
+
+  | match_ _ hne _ ihscrut ihbranches =>
+    expose_names
+    simp only [Input.erase]
+    rw [erasedBranches_eq_map]
+    refine .match_ ihscrut ?_ ?_
+    · intro hempty
+      exact hne (List.map_eq_nil_iff.mp hempty)
+    · intro branch hb
+      obtain ⟨source, hsource, rfl⟩ := List.mem_map.mp hb
+      exact ihbranches source hsource
+  | named hspec _ ihbody => exact .mk hspec ihbody
+  | wildcard _ ihbody => exact .wildcard ihbody
+
+/-- Independently typed branch bodies retain ordinary erased branch semantics. -/
+theorem BranchTyping.erase (h : BranchTyping (Typing K) ctx branch scrutTy resultTy) :
+    RuntimeTyping.RunWTMatchBranch ctx (branch.1, branch.2.erase) scrutTy resultTy := by
+  cases h with
+  | named hspec hbody => exact .mk hspec hbody.erase
+  | wildcard hbody => exact .wildcard hbody.erase
 
 mutual
 theorem Template.Fits.onSubst_fixes {K : List Nat} {template : Template} {ty : Ty}
@@ -233,13 +283,43 @@ theorem LetAnn.FitsMono.onSubst {K : List Nat} {ann : LetAnn} {ty : Ty}
     ann.FitsMono (subst.onTy ty) :=
   h.onSubst_fixes hfixed (Subst.fixes_of_dom_avoids hsubst)
 
+/-- Constructor branch witnesses transport with LC substitutions; constructor
+field declarations themselves are closed and therefore unchanged. -/
+theorem _root_.BranchCtorSpec.onSubst {ctors : CtorEnv} {name : CtorName} {count : Nat}
+    {scrutTy : Ty} {ctor : Ctor} {args fields : List Ty}
+    (h : BranchCtorSpec ctors name count scrutTy ctor args fields)
+    (subst : Subst) (hlc : ∀ pair ∈ subst, pair.2.IsLC) :
+    BranchCtorSpec ctors name count (subst.onTy scrutTy) ctor
+      (args.map subst.onTy) (fields.map subst.onTy) := by
+  induction subst generalizing scrutTy args fields with
+  | nil =>
+    change BranchCtorSpec ctors name count scrutTy ctor (args.map id) (fields.map id)
+    simpa only [List.map_id] using h
+  | cons pair rest ih =>
+    rcases pair with ⟨v, replacement⟩
+    have hrepl := hlc (v, replacement) List.mem_cons_self
+    have hfields := InstantiatesBy.forall2_substFvar (Z := v) (U := replacement) hrepl h.fields
+    have hcontents : ctor.contents.map (Ty.substFvar v replacement) = ctor.contents := by
+      apply List.map_eq_self_of_forall_eq_id
+      intro field hf
+      exact Ty.substFvar_fresh ((ctor.closed field hf).not_mem_freeVars v)
+    rw [hcontents] at hfields
+    have hstep : BranchCtorSpec ctors name count (Ty.substFvar v replacement scrutTy) ctor
+        (args.map (Ty.substFvar v replacement)) (fields.map (Ty.substFvar v replacement)) :=
+      ⟨h.lookup, by rw [h.scrut_eq]; simp only [Ty.substFvar, TyList.substFvar_eq_map],
+        by simpa only [List.length_map] using h.arity, h.bind_count, hfields⟩
+    have ht := ih hstep (fun pair hp => hlc pair (List.mem_cons_of_mem _ hp))
+    simpa only [List.map_map, Function.comp_def, Subst.onTy, Ty.substFvars] using ht
+
 /-- Whole-substitution transport requires pointwise protection of fixed syntax.
 Sequential substitutions may mention K internally while their composite fixes K. -/
 theorem Typing.onSubst_fixes (h : Typing K ctx input ty) (subst : Subst)
     (hlc : ∀ pair ∈ subst, pair.2.IsLC)
     (hprotected : ∀ v ∈ K, subst.onTy (.fvar v) = .fvar v) :
     Typing K (subst.onCtx ctx) input (subst.onTy ty) := by
-  induction h with
+  induction h using Typing.rec
+      (motive_2 := fun ctx branch scrutTy resultTy _ =>
+        BranchTyping (Typing K) (subst.onCtx ctx) branch (subst.onTy scrutTy) (subst.onTy resultTy)) with
   | complete hemb hrigid htyping =>
       exact .complete hemb hrigid (TypeOfHM.onSubst_fixed subst hlc
         (Expr.substTyFvars_eq_self_of_fixes (fun v hv => hprotected v (hrigid v hv))) htyping)
@@ -282,6 +362,25 @@ theorem Typing.onSubst_fixes (h : Typing K ctx input ty) (subst : Subst)
   | ctor hlookup hargs hinst =>
       exact .complete rfl (by simp [Expr.tyFreeVars]) (TypeOfHM.onSubst_fixed subst hlc
         (Expr.substTyFvars_eq_self_of_tyFreeVars_nil _ rfl) (.ctor hlookup hargs hinst))
+
+  | match_ _ hne _ ihscrut ihbranches => exact .match_ ihscrut hne ihbranches
+  | named hspec _ ihbody =>
+    refine .named (hspec.onSubst subst hlc) ?_
+    simpa only [Subst.onCtx, Subst.onEnv, List.map_append, List.map_map,
+      Subst.onPolyTy, PolyTy.mkTrivial, Function.comp_def] using ihbody
+  | wildcard _ ihbody => exact .wildcard ihbody
+
+/-- Pointwise-fixed transport for an independently typed match branch. -/
+theorem BranchTyping.onSubst_fixes (h : BranchTyping (Typing K) ctx branch scrutTy resultTy)
+    (subst : Subst) (hlc : ∀ pair ∈ subst, pair.2.IsLC)
+    (hprotected : ∀ v ∈ K, subst.onTy (.fvar v) = .fvar v) :
+    BranchTyping (Typing K) (subst.onCtx ctx) branch (subst.onTy scrutTy) (subst.onTy resultTy) := by
+  cases h with
+  | named hspec hbody =>
+    refine .named (hspec.onSubst subst hlc) ?_
+    simpa only [Subst.onCtx, Subst.onEnv, List.map_append, List.map_map,
+      Subst.onPolyTy, PolyTy.mkTrivial, Function.comp_def] using hbody.onSubst_fixes subst hlc hprotected
+  | wildcard hbody => exact .wildcard (hbody.onSubst_fixes subst hlc hprotected)
 
 theorem Typing.onSubst (h : Typing K ctx input ty) (subst : Subst)
     (hlc : ∀ pair ∈ subst, pair.2.IsLC) (hprotected : ∀ pair ∈ subst, pair.1 ∉ K) :
