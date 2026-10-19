@@ -1,0 +1,67 @@
+-- Anonymous type holes: a runnable editor playground.
+--
+--   .lake/build/bin/fhm run scratch/anonymous-type-holes.fhm
+--   .lake/build/bin/fhm diagnose scratch/anonymous-type-holes.fhm
+--
+-- Open this file in the FHM editor and hover an annotation's `_`, a parameter,
+-- or a definition name. Each type hole is inferred independently; a pattern
+-- wildcard such as `_ -> ...` is a different feature. Named holes are deferred.
+-- The final expression exercises every example and terminates.
+
+type Maybe element = Just element | Nothing
+
+-- A lambda hole generalizes: idHole works at both Int and Bool.
+-- Hover `_`: a. Hover idHole: forall a. a -> a.
+let idHole = \(value : _) -> value
+
+-- Structured holes are independent: the input is arbitrary, the output is Int.
+-- Hover the two `_` tokens: a, then Int.
+let alwaysOne : _ -> _ = \ignored -> 1
+
+-- A hole inside a datatype application is inferred too.
+-- Hover wrap: forall a. a -> Maybe a.
+let wrap : _ -> Maybe _ = \value -> Just value
+
+-- Exhaustive lambda patterns keep their annotation and its two hole owners.
+-- Hover the two `_` tokens: b, then a.
+let swap = \((left, right) : (_, _)) -> (right, left)
+
+-- Pattern lets generalize each bound name separately.
+-- Hover these three `_` tokens: a -> a, Int, then a.
+let (patternId, seed) : (_, _) = (\(value : _) -> value, 7)
+
+-- Partial forall: keep the authored name, then infer an extra binder.
+-- Hover keep: forall element a. element -> a -> element.
+-- Both `_` tokens hover as a; the value parameter keeps the name element.
+let keep : {element} element -> _ -> element = \(value : element) (ignored : _) -> value
+
+-- Matches constrain both holes to Int; Nothing and Just are both covered.
+let choose : Maybe _ -> _ = \option ->
+  match option with
+  | Nothing -> 0
+  | Just value -> value
+
+-- An ordinary recursive function solves its lambda hole as Int.
+let sum = \(n : _) -> if n < 1 then 0 else n + sum (n - 1)
+
+-- A recursive partial signature retains item and completes its result as List item.
+-- Recursive calls within this component use one monomorphic instance.
+let copy : {item} List item -> _ = \items ->
+  match items with
+  | [] -> []
+  | first :: rest -> first :: copy rest
+
+-- Mutual recursion also supports a partial signature; both branches terminate.
+let evenSteps : {item} Int -> item -> _ = \n value ->
+  if n < 1 then value else oddSteps (n - 1) value
+let oddSteps = \n value ->
+  if n < 1 then value else evenSteps (n - 1) value
+
+-- Expected result:
+-- ((3, True), ((1, 7), ((True, 1), ((False, 7), ((9, True), (10, ([1, 2, 3], True)))))))
+((idHole 3, idHole True),
+ ((alwaysOne False, choose (wrap 7)),
+  (swap (1, True),
+   ((patternId False, seed),
+    ((keep 9 False, keep True 0),
+     (sum 4, (copy [1, 2, 3], evenSteps 3 True)))))))

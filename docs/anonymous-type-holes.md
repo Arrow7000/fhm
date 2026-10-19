@@ -6,6 +6,16 @@ The canonical worker has checked soundness, annotation-fidelity, principality,
 and producer-completeness proofs, including recursive groups with partial signatures.
 Core `Ty` and `TypeOfHM` describe completed types and expressions.
 
+## Try it
+
+Run [the commented playground](../scratch/anonymous-type-holes.fhm) with
+`.lake/build/bin/fhm run scratch/anonymous-type-holes.fhm`, or open it in the
+editor and hover its annotation holes. It covers structured and datatype holes,
+patterns, matches, partial forall signatures, and terminating mutual recursion.
+[The deliberately rejected example](../scratch/anonymous-type-holes-errors.fhm)
+shows that a hole still enforces the fixed parts of its annotation; change its
+`True` argument to `41` to make it succeed.
+
 ## Architecture
 
 `Elaboration.Input` records annotation syntax before inference. Its templates

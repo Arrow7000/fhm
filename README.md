@@ -82,6 +82,8 @@ Ill-typed programs and non-exhaustive matches are rejected before anything runs.
 - Built-in `Int`, `Bool`, pairs, and lists, with `+`, `-`, `<`, `::`, list
   literals, `if`/`then`/`else`, and `let … in` blocks.
 
+[`scratch/anonymous-type-holes.fhm`](./scratch/anonymous-type-holes.fhm) is a
+runnable hole-annotation playground: try the examples and hover their `_` tokens.
 [`scratch/language-guide.fhm`](./scratch/language-guide.fhm) walks through
 annotations and recursion with runnable examples, and
 [`recursion-language-comparison/`](./recursion-language-comparison/) compares
