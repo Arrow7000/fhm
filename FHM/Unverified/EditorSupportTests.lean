@@ -806,3 +806,9 @@ private def twoDepthScopes : List FHM.Unverified.HMDisplay.Scope := [
 #guard FHM.Unverified.HMDisplay.pretty
   (FHM.Unverified.HMDisplay.context twoDepthScopes [.letRhs, .letRhs] (.bvar 2) true)
   (.bvar 2) == "outer"
+
+-- Pattern-let desugaring keeps the annotation token order and nested lambda
+-- owner, while a non-BMP character before a hole preserves UTF-16 columns.
+#guard holeTypes "let (x,y) : (_,_) = (1,True)\n(x,y)\n" == some ["Int", "Bool"]
+#guard holeTypes "let (id,n) : (_,_) = (\\(x : _) -> x,1)\n(id True,n)\n" == some ["a → a", "Int", "a"]
+#guard holeTypes "('😀', (\\(x : _) -> x) True)\n" == some ["Bool"]

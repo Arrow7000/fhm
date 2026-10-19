@@ -549,6 +549,23 @@ test("datatype holes and adjacent lambda holes show their actual inferred types"
   assert.ok(!wildcard.symbols.some(s => s.kind === "typeHole"));
 });
 
+test("pattern-let hole owners and Unicode token spans survive production lowering", () => {
+  const pair = "let (x,y) : (_,_) = (1,True)\n(x,y)\n";
+  const pairPayload = diagnose(pair);
+  hover(pairPayload, pair, 0, "_", "Int", 0);
+  hover(pairPayload, pair, 0, "_", "Bool", 1);
+  run(pair, "(1, True)");
+  const nested = "let (id,n) : (_,_) = (\\(x : _) -> x,1)\n(id True,n)\n";
+  const nestedPayload = diagnose(nested);
+  hover(nestedPayload, nested, 0, "_", "a → a", 0);
+  hover(nestedPayload, nested, 0, "_", "Int", 1);
+  hover(nestedPayload, nested, 0, "_", "a", 2);
+  run(nested, "(True, 1)");
+  const unicode = "('😀', (\\(x : _) -> x) True)\n";
+  hover(diagnose(unicode), unicode, 0, "_", "Bool");
+  run(unicode, "('😀', True)");
+});
+
 test("actual pattern compilation preserves holes in copied fallback arms", () => {
   const source = "let f = \\p -> match p with | (True, True) -> 1 | _ -> let id = \\(x : _) -> x in id 2\n" +
     "(f (True, False), f (False, True))\n";
