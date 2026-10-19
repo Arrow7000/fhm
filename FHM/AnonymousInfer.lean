@@ -293,6 +293,94 @@ theorem Infer.completes (h : Infer K frontier ctx input next subst output ty) :
       exact .letIn hc.fits hc.rigid (.specialise ihr hc.dom_avoids) ihb
         (fun _ hn => genVars_not_mem_rigid hn) hb.dom_avoids
 
+/-- Successful inference also satisfies the independent partial-input rules.
+This connects input admissibility and completed-output typing at the same type. -/
+theorem Infer.inputSound (h : Infer K frontier ctx input next subst output ty) :
+    CtxWF ctx → Typing K (subst.onCtx ctx) input ty := by
+  induction h with
+  | backend hemb h hbelow hK hrigid =>
+      intro hctx
+      exact .complete hemb hrigid (h.sourceSound hctx hbelow hK hrigid)
+  | @lambda K frontier ann param initial ctx body next subst completed bodyTy hs hb ih =>
+      intro hctx
+      have hbodyCtx : CtxWF { ctx with env := PolyTy.mkTrivial param :: ctx.env } := by
+        intro scheme hscheme
+        rcases List.mem_cons.mp hscheme with rfl | hscheme
+        · exact hs.lc
+        · exact hctx scheme hscheme
+      have hsubst := (hb.lc hbodyCtx).2
+      refine Typing.lambda (Subst.onTy_lc hsubst hs.lc) ?_ hs.rigid ?_
+      · intro template heq
+        exact (hs.fits template heq).onSubst (hs.rigid template heq) hb.dom_avoids
+      · simpa only [Subst.onCtx, Subst.onEnv, List.map_cons, Subst.onPolyTy,
+          PolyTy.mkTrivial] using ih hbodyCtx
+  | @app K frontier ctx f first s1 fOut fTy arg second s2 argOut argTy s3 hf ha hu ihf iha =>
+      intro hctx
+      have hs1 := (hf.lc hctx).2
+      have haCtx := Subst.onCtx_wf hs1 hctx
+      have hs2 := (ha.lc haCtx).2
+      have hs3 := hu.unifies.lc (Subst.onTy_lc hs2 (hf.lc hctx).1)
+        (.arrow (ha.lc haCtx).1 .fvar)
+      have hfTyped := (ihf hctx).onSubst (s2 ++ s3)
+        (fun pair hp => (List.mem_append.mp hp).elim (hs2 pair) (hs3 pair))
+        (fun pair hp => (List.mem_append.mp hp).elim (ha.dom_avoids pair) (hu.dom_avoids pair))
+      have haTyped := (iha haCtx).onSubst s3 hs3 hu.dom_avoids
+      have heq : (s2 ++ s3).onTy fTy =
+          .arrow (s3.onTy argTy) (s3.onTy (.fvar second)) := by
+        simpa only [Unifies, Subst.onTy_append, Subst.onTy_arrow] using hu.unifies.unifies
+      rw [heq] at hfTyped
+      simp only [Subst.onCtx_append] at hfTyped
+      simpa only [Subst.onCtx_append] using Typing.app hfTyped haTyped
+  | @letIn K frontier ctx rhs first s1 rhsOut rhsTy ann checked sCheck body next s2 bodyOut bodyTy
+      hr hc _ hb ihr ihb =>
+      intro hctx
+      have hs1 := (hr.lc hctx).2
+      have hrTy := (hr.lc hctx).1
+      have hsCheck := hc.lc hrTy
+      have checkedCtxWF := Subst.onCtx_wf hsCheck (Subst.onCtx_wf hs1 hctx)
+      have checkedTyLC := Subst.onTy_lc hsCheck hrTy
+      have bodyCtxWF : CtxWF
+          { sCheck.onCtx (s1.onCtx ctx) with
+            env := genScheme K (sCheck.onCtx (s1.onCtx ctx)).env (sCheck.onTy rhsTy) ::
+              (sCheck.onCtx (s1.onCtx ctx)).env } := by
+        intro scheme hscheme
+        rcases List.mem_cons.mp hscheme with rfl | hscheme
+        · exact genScheme_wf checkedTyLC
+        · exact checkedCtxWF scheme hscheme
+      have hs2 := (hb.lc bodyCtxWF).2
+      have rhsTyped := (ihr hctx).onSubst sCheck hsCheck hc.dom_avoids
+      have rhsGeneral := rhsTyped.generalise
+        (names := genVars K (sCheck.onCtx (s1.onCtx ctx)).env (sCheck.onTy rhsTy))
+        hc.fits hc.rigid genVars_nodup (fun _ hn => genVars_not_mem hn)
+        (fun _ hn => genVars_not_mem_rigid hn)
+      obtain ⟨avoid, hfits, hgeneral⟩ := Typing.binding_onSubst
+        (scheme := genScheme K (sCheck.onCtx (s1.onCtx ctx)).env (sCheck.onTy rhsTy))
+        (fun fresh hf => (rhsGeneral fresh hf).1)
+        (fun fresh hf => (rhsGeneral fresh hf).2) hc.rigid s2 hs2 hb.dom_avoids
+      have bodyTyped := ihb bodyCtxWF
+      have hctxeq :
+          s2.onCtx
+            { sCheck.onCtx (s1.onCtx ctx) with
+              env := genScheme K (sCheck.onCtx (s1.onCtx ctx)).env (sCheck.onTy rhsTy) ::
+                (sCheck.onCtx (s1.onCtx ctx)).env } =
+          { (s1 ++ sCheck ++ s2).onCtx ctx with
+            env := s2.onPolyTy (genScheme K (sCheck.onCtx (s1.onCtx ctx)).env (sCheck.onTy rhsTy)) ::
+              ((s1 ++ sCheck ++ s2).onCtx ctx).env } := by
+        rw [Subst.onCtx_append, Subst.onCtx_append]
+        rfl
+      rw [hctxeq] at bodyTyped
+      refine Typing.letIn (L := avoid) (Subst.onPolyTy_wf hs2 (genScheme_wf checkedTyLC))
+        hc.rigid hfits ?_ bodyTyped
+      simpa only [← Subst.onCtx_append] using hgeneral
+
+/-- The syntactic RHS scope guard always passes on a successfully inferred RHS
+in a valid context, including after the annotation-checking substitution. -/
+theorem Infer.scoped_afterSubst (h : Infer K frontier ctx input next subst output ty)
+    (hctx : CtxWF ctx) (specialise : Subst) (hlc : ∀ pair ∈ specialise, pair.2.IsLC) :
+    (output.substTyFvars specialise).scopedAnnotations 0 = true :=
+  Expr.scopedAnnotations_complete _ 0
+    (TypeOfHM.onSubst specialise hlc (h.sourceSound hctx)).tyBvarBounded
+
 private def seed (K : List Nat) (frontier : Nat) (ann : Option Template) :
     Option { result : Nat × Ty // Seed K frontier ann result.2 result.1 } :=
   match ann with

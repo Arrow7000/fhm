@@ -1,5 +1,82 @@
 import FHM.InferW
 
+
+/-- Every declaratively typed Core expression has correctly scoped type annotations. -/
+theorem TypeOfHM.tyBvarBounded {ctx : Ctx} {expr : Expr} {ty : Ty}
+    (h : TypeOfHM ctx expr ty) : expr.TyBvarBounded 0 := by
+  induction h using TypeOfHM.rec
+      (motive_2 := fun _ branch _ _ _ => branch.2.TyBvarBounded 0) with
+  | primLitUnit => trivial
+  | primLitInt => trivial
+  | primLitNat => trivial
+  | primLitChar => trivial
+  | primBinOpIntAdd => trivial
+  | primBinOpIntSub => trivial
+  | primBinOpIntLt _ _ _ _ => trivial
+  | primBinOpCharLt _ _ _ _ => trivial
+  | var _ _ _ => trivial
+  | ctor _ _ _ => trivial
+  | lambda hpc hann _ _ ihbody =>
+    exact ⟨fun t ht => (hann t ht) ▸ hpc, ihbody⟩
+  | app _ _ ihf iharg => exact ⟨ihf, iharg⟩
+  | letIn hwf hann _ _ _ ihcofin ihbody =>
+    expose_names
+    obtain ⟨Xs, hlen, hnodup, havoid⟩ := exists_fresh_names L M.paramCount
+    have hrhs := ihcofin Xs ⟨hlen, hnodup, havoid⟩
+    cases ann with
+    | none => exact ⟨hrhs, ihbody⟩
+    | some σ =>
+      have hM : M = σ := hann σ rfl
+      subst M
+      refine ⟨by simpa only [Nat.zero_add] using hwf, ?_, ihbody⟩
+      have hb := Expr.tyBvarBounded_of_openTyVarsAux Xs boundExpr 0 hrhs
+      simpa only [Nat.zero_add, hlen] using hb
+  | match_ _ _ _ ihscrut ihbranches =>
+    refine ⟨ihscrut, Expr.TyBvarBounded.BranchList_iff.mpr ?_⟩
+    intro p b hb
+    exact ihbranches (p, b) hb
+  | mk _ _ _ ihbody => exact ihbody
+  | wildcard _ ihbody => exact ihbody
+  | letRec hvalid hwf _ _ _ _ ihmono ihpoly ihbody =>
+    expose_names
+    have hbound : ∀ pair ∈ bindings.zip specs,
+        pair.1.TyBvarBounded (RecAnn.params pair.2.ann) := by
+      rintro ⟨rhs, spec⟩ hpair
+      cases spec with
+      | mono τ =>
+        obtain ⟨member, hlookup⟩ := List.mem_iff_getElem?.mp hpair
+        rw [List.getElem?_zip_eq_some] at hlookup
+        obtain ⟨hrhs, hspec⟩ := hlookup
+        have hmember : member < bindings.length :=
+          (List.getElem?_eq_some_iff.mp hrhs).choose
+        have hunsigned : RecGroups.UnsignedAt anns member := by
+          rw [RecGroups.UnsignedAt, ← hwf.anns_eq, List.getElem?_map, hspec]
+          rfl
+        obtain ⟨component, hc, hm⟩ := List.mem_flatten.mp
+          ((hvalid.covers_unsigned member hmember).mpr hunsigned)
+        obtain ⟨stage, hstage⟩ := List.mem_iff_getElem?.mp hc
+        obtain ⟨Xs, hlen, hnodup, havoid⟩ := exists_fresh_names L G.length
+        exact ihmono stage component hstage Xs ⟨hlen, hnodup, havoid⟩
+          member hm rhs τ hrhs hspec
+      | poly σ =>
+        obtain ⟨Ys, hlen, hnodup, havoid⟩ := exists_fresh_names L σ.paramCount
+        have hopen := ihpoly (rhs, .poly σ) hpair σ rfl Ys ⟨hlen, hnodup, havoid⟩
+        have hb := Expr.tyBvarBounded_of_openTyVarsAux Ys rhs 0 hopen
+        simpa only [Nat.zero_add, hlen, RecSpec.ann, RecAnn.params] using hb
+    refine ⟨?_, ?_, ihbody⟩
+    · intro σ hσ
+      rw [← hwf.anns_eq] at hσ
+      obtain ⟨spec, hspec, heq⟩ := List.mem_map.mp hσ
+      have hpolySpec : spec = .poly σ := RecSpec.ann_eq_some heq
+      subst spec
+      simpa only [Nat.zero_add] using hwf.poly_wf σ hspec
+    · apply Expr.TyBvarBounded.RecGroup_of_zip
+        (hwf.length.trans (by rw [← hwf.anns_eq, List.length_map]))
+      intro pair hpair
+      rw [← hwf.anns_eq, List.zip_map_right] at hpair
+      obtain ⟨source, hsource, rfl⟩ := List.mem_map.mp hpair
+      simpa only [Prod.map, id_eq, Nat.zero_add] using hbound source hsource
+
 /-! Closing elaborated RHS annotations under a newly synthesized scheme must
 reopen the term as well as its type. Existing inner scheme binders are shielded.
 The freshness condition below is needed because `substTyFvars` is sequential.
@@ -313,4 +390,63 @@ theorem scopedBindings_sound (anns : List (Option PolyTy)) (bindings : List Expr
       | cons ann anns =>
           simp only [scopedBindings, Bool.and_eq_true] at h
           exact ⟨body.scopedAnnotations_sound _ h.1, scopedBindings_sound anns rest depth h.2⟩
+end
+
+mutual
+theorem Expr.scopedAnnotations_complete (expr : Expr) (depth : Nat)
+    (h : expr.TyBvarBounded depth) : expr.scopedAnnotations depth = true := by
+  cases expr with
+  | primLit => rfl
+  | primBinOp => rfl
+  | var => rfl
+  | ctor => rfl
+  | lambda ann body =>
+      simp only [Expr.scopedAnnotations, Bool.and_eq_true]
+      refine ⟨?_, body.scopedAnnotations_complete depth h.2⟩
+      cases ann with
+      | none => rfl
+      | some ty => exact (Ty.bvarsBelow_iff ty).mpr (h.1 ty rfl)
+  | app f x =>
+      simp only [Expr.scopedAnnotations, Bool.and_eq_true]
+      exact ⟨f.scopedAnnotations_complete depth h.1, x.scopedAnnotations_complete depth h.2⟩
+  | letIn ann rhs body =>
+      cases ann with
+      | none =>
+          simp only [Expr.scopedAnnotations, Option.all_none, Bool.true_and,
+            RecAnn.params, Nat.add_zero, Bool.and_eq_true]
+          exact ⟨rhs.scopedAnnotations_complete depth h.1, body.scopedAnnotations_complete depth h.2⟩
+      | some scheme =>
+          simp only [Expr.scopedAnnotations, Option.all_some, RecAnn.params, Bool.and_eq_true]
+          exact ⟨⟨(Ty.bvarsBelow_iff scheme.body).mpr h.1,
+            rhs.scopedAnnotations_complete _ h.2.1⟩, body.scopedAnnotations_complete depth h.2.2⟩
+  | match_ scrut branches =>
+      simp only [Expr.scopedAnnotations, Bool.and_eq_true]
+      exact ⟨scrut.scopedAnnotations_complete depth h.1, scopedBranches_complete branches depth h.2⟩
+  | letRec anns bindings body =>
+      simp only [Expr.scopedAnnotations, Bool.and_eq_true, List.all_eq_true]
+      refine ⟨⟨?_, scopedBindings_complete anns bindings depth h.2.1⟩,
+        body.scopedAnnotations_complete depth h.2.2⟩
+      intro ann hann
+      cases ann with
+      | none => rfl
+      | some scheme => exact (Ty.bvarsBelow_iff scheme.body).mpr (h.1 scheme hann)
+theorem scopedBranches_complete (branches : List (MatchPattern × Expr)) (depth : Nat)
+    (h : Expr.TyBvarBounded.BranchList depth branches) : scopedBranches depth branches = true := by
+  cases branches with
+  | nil => rfl
+  | cons head rest =>
+      simp only [scopedBranches, Bool.and_eq_true]
+      exact ⟨head.2.scopedAnnotations_complete depth h.1, scopedBranches_complete rest depth h.2⟩
+theorem scopedBindings_complete (anns : List (Option PolyTy)) (bindings : List Expr) (depth : Nat)
+    (h : Expr.TyBvarBounded.RecGroup depth anns bindings) : scopedBindings depth anns bindings = true := by
+  cases bindings with
+  | nil => rfl
+  | cons body rest =>
+      cases anns with
+      | nil =>
+          simp only [scopedBindings, Bool.and_eq_true]
+          exact ⟨body.scopedAnnotations_complete depth h.1, scopedBindings_complete [] rest depth h.2⟩
+      | cons ann anns =>
+          simp only [scopedBindings, Bool.and_eq_true]
+          exact ⟨body.scopedAnnotations_complete _ h.1, scopedBindings_complete anns rest depth h.2⟩
 end

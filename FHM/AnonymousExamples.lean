@@ -70,4 +70,103 @@ annotation underneath that same binder. -/
       scheme.paramCount == 1
   | _ => false
 
+private def idHole : Input := .lambda (some .hole) (.var 0)
+
+-- Independent local allocation: two syntactic visits, unrelated types.
+def distinctCopies : Input := pair idHole idHole
+#guard match inferCore [] 0 ctx distinctCopies with
+  | some ⟨(_, _, _, .customTy ⟨"Pair"⟩
+      [.arrow (.fvar a) (.fvar a'), .arrow (.fvar b) (.fvar b')]), _⟩ =>
+      a == a' && b == b' && a != b
+  | _ => false
+
+-- Independent local uses: same Input value copied, each used at a different type.
+def differentlyUsedCopies : Input :=
+  pair (.app idHole (.primLit (.int 1))) (.app idHole (.ctor ⟨"True"⟩))
+#guard (inferCore [] 0 ctx differentlyUsedCopies).isSome
+
+-- Reallocating the holes must not reallocate the shared outer monomorphic f.
+def sharedOuterRejected : Input :=
+  .lambda none
+    (pair
+      (.app (.lambda (some .hole) (.app (.var 1) (.var 0))) (.primLit (.int 1)))
+      (.app (.lambda (some .hole) (.app (.var 1) (.var 0))) (.ctor ⟨"True"⟩)))
+#guard !(inferCore [] 0 ctx sharedOuterRejected).isSome
+
+private def branches (yes no : Input) : List (MatchPattern × Input) :=
+  [(.named ⟨"True"⟩ 0, yes), (.named ⟨"False"⟩ 0, no)]
+
+-- Direct partial match currently unsupported, even if only the scrutinee has a hole.
+def directPartialScrutinee : Input :=
+  .match_ (.app idHole (.ctor ⟨"True"⟩))
+    (branches (.primLit (.int 1)) (.primLit (.int 0)))
+#guard !(inferCore [] 0 ctx directPartialScrutinee).isSome
+
+-- Equivalent normal lowering shape: the match scrutinee is bound once first.
+def loweredPartialScrutinee : Input :=
+  .letIn .absent (.app idHole (.ctor ⟨"True"⟩))
+    (.match_ (.var 0) (branches (.primLit (.int 1)) (.primLit (.int 0))))
+#guard (inferCore [] 0 ctx loweredPartialScrutinee).isSome
+
+-- Nested complete match is an argument to the partial scrutinee expression.
+def nestedScrutinee : Input :=
+  .letIn .absent
+    (.app idHole
+      (.letIn .absent (.ctor ⟨"False"⟩)
+        (.match_ (.var 0) (branches (.ctor ⟨"False"⟩) (.ctor ⟨"True"⟩)))))
+    (.match_ (.var 0) (branches (.primLit (.int 1)) (.primLit (.int 0))))
+#guard (inferCore [] 0 ctx nestedScrutinee).isSome
+
+-- Lowering an irrefutable named pattern makes another ordinary let. This
+-- checks the existing lowering/generalization policy, independently of copying.
+def irrefutableCapture : Input :=
+  .letIn .absent idHole
+    (.letIn .absent (.var 0)
+      (pair (.app (.var 0) (.primLit (.int 1)))
+        (.app (.var 0) (.ctor ⟨"True"⟩))))
+#guard (inferCore [] 0 ctx irrefutableCapture).isSome
+
+
+private def rigidArrow : Template := .arrow (.fixed (.fvar 7)) .hole
+private def rigidIdentity : Input := .lambda (some rigidArrow) (.var 0)
+private def violatesRigid : Input :=
+  .lambda (some rigidArrow) (.app (.var 0) (.primLit (.int 1)))
+private def rigidLet : Input :=
+  .letIn (.template rigidArrow) (.lambda none (.var 0)) (.var 0)
+private def violatesRigidLet : Input :=
+  .letIn (.template rigidArrow) (.lambda none (.var 0))
+    (.app (.var 0) (.primLit (.int 1)))
+
+#guard (Anonymous.inferCore [7] 8 ctx rigidIdentity).isSome
+#guard !(Anonymous.inferCore [7] 8 ctx violatesRigid).isSome
+#guard !(Anonymous.inferCore [] 8 ctx rigidIdentity).isSome
+#guard (Anonymous.inferCore [7] 8 ctx rigidLet).isSome
+#guard !(Anonymous.inferCore [7] 8 ctx violatesRigidLet).isSome
+#guard match Anonymous.inferCore [7] 8 ctx rigidLet with
+  | some ⟨(_, _, .letIn (some scheme) _ _, .arrow (.fvar 7) (.fvar 7)), _⟩ =>
+      scheme.paramCount == 0
+  | _ => false
+
+private def polyrec : Input :=
+  .letRec [.complete ⟨1, .arrow (.bvar 0) (.prim .int)⟩]
+    [.lambda none
+      (.app (.var 1) (.app (.app (.ctor ⟨"Pair"⟩) (.var 0)) (.var 0)))]
+    (.app (.var 0) (.ctor ⟨"True"⟩))
+#guard (Anonymous.inferCore [] 0 ctx polyrec).isSome
+#guard (Anonymous.inferCore [] 0 ctx
+  (.letIn .absent (.lambda (some .hole) (.var 0)) polyrec)).isSome
+#guard !(principalType ctx.ctors polyrec.erase).isSome
+
+-- Complete signatures with holes in their RHS are outside the first dispatch
+-- fragment, including cases whose holes would be compatible with its skolems.
+def completeForallWithPartialRhs : Input :=
+  .letIn (.complete ⟨1, .arrow (.bvar 0) (.bvar 0)⟩)
+    (.lambda (some .hole) (.var 0)) (.var 0)
+#guard !(inferCore [] 0 ctx completeForallWithPartialRhs).isSome
+
+#print axioms Infer.sourceSound
+#print axioms Infer.inputSound
+#print axioms Infer.completes
+#print axioms Infer.erase
+
 end Anonymous.Examples

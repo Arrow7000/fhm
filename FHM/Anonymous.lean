@@ -230,7 +230,9 @@ inductive Completes (K : List Nat) : Input → Expr → Prop
         (.letIn (some (subst.onPolyTy ⟨names.length, Ty.closeOver names ty⟩))
           ((rhsOut.closeTyVars names).substTyFvars subst) bodyOut)
 
-/-- Independent input typing for the first fragment. The let rule generalises
+/-- Independent input typing for the first fragment. `K` contains ambient rigid
+annotation variables; free variables in context monotypes can remain flexible.
+ The let rule generalises
 the RHS cofinally, and partial annotations constrain that very monotype. There
 is no recursive rule: in particular, a partial annotation cannot acquire
 polymorphic recursive uses through an arbitrary completed output signature.
@@ -239,46 +241,49 @@ Complete scoped signatures will use their existing checking rule when the
 conservative Core embedding is connected; this fragment does not reinterpret
 complete annotations as partial annotations.
 -/
-inductive Typing : Ctx → Input → Ty → Prop
+inductive Typing (K : List Nat) : Ctx → Input → Ty → Prop
   /-- Existing complete Core programs retain their existing declarative meaning.
   The checked embedding rejects every partial annotation mode. -/
-  | complete : input.toCore = some core → TypeOfHM ctx core ty → Typing ctx input ty
-  | primLit : TypeOfHM ctx (.primLit p) ty → Typing ctx (.primLit p) ty
-  | primBinOp : TypeOfHM ctx (.primBinOp op) ty → Typing ctx (.primBinOp op) ty
+  | complete : input.toCore = some core →
+      (∀ v ∈ core.tyFreeVars, v ∈ K) → TypeOfHM ctx core ty → Typing K ctx input ty
+  | primLit : TypeOfHM ctx (.primLit p) ty → Typing K ctx (.primLit p) ty
+  | primBinOp : TypeOfHM ctx (.primBinOp op) ty → Typing K ctx (.primBinOp op) ty
   | lambda :
       paramTy.IsLC →
       (∀ template, ann = some template → template.Fits paramTy) →
-      Typing { ctx with env := PolyTy.mkTrivial paramTy :: ctx.env } body bodyTy →
-      Typing ctx (.lambda ann body) (.arrow paramTy bodyTy)
-  | app : Typing ctx f (.arrow argTy retTy) → Typing ctx arg argTy →
-      Typing ctx (.app f arg) retTy
+      (∀ template, ann = some template → ∀ v ∈ template.rigidVars, v ∈ K) →
+      Typing K { ctx with env := PolyTy.mkTrivial paramTy :: ctx.env } body bodyTy →
+      Typing K ctx (.lambda ann body) (.arrow paramTy bodyTy)
+  | app : Typing K ctx f (.arrow argTy retTy) → Typing K ctx arg argTy →
+      Typing K ctx (.app f arg) retTy
   | letIn {M : PolyTy} {L : List Nat} :
       M.WF →
+      (∀ template, ann = .template template → ∀ v ∈ template.rigidVars, v ∈ K) →
       (∀ Xs, FreshNames L M.paramCount Xs → ann.FitsMono (M.openVars Xs)) →
-      (∀ Xs, FreshNames L M.paramCount Xs → Typing ctx rhs (M.openVars Xs)) →
-      Typing { ctx with env := M :: ctx.env } body bodyTy →
-      Typing ctx (.letIn ann rhs body) bodyTy
+      (∀ Xs, FreshNames L M.paramCount Xs → Typing K ctx rhs (M.openVars Xs)) →
+      Typing K { ctx with env := M :: ctx.env } body bodyTy →
+      Typing K ctx (.letIn ann rhs body) bodyTy
   | var : ctx.env[index]? = some scheme →
       (∀ arg ∈ args, arg.IsLC) → scheme.InstantiatesTo args ty →
-      Typing ctx (.var index) ty
+      Typing K ctx (.var index) ty
   | ctor : LookupList.get? ctx.ctors name = some ctor →
       (∀ arg ∈ args, arg.IsLC) → ctor.toTy.InstantiatesTo args ty →
-      Typing ctx (.ctor name) ty
+      Typing K ctx (.ctor name) ty
 
 /-- The input specification has the ordinary HM runtime meaning independently
 of elaboration. Annotation matching restricts this meaning; it never grants a
 new runtime typing rule. -/
-theorem Typing.erase (h : Typing ctx input ty) : RuntimeTyping.RunWT ctx input.erase ty := by
+theorem Typing.erase (h : Typing K ctx input ty) : RuntimeTyping.RunWT ctx input.erase ty := by
   induction h with
-  | complete hemb htyping =>
+  | complete hemb _ htyping =>
       rw [← Input.toCore_erase _ hemb]
       exact htyping.erase_preserves_typing
   | primLit h => simpa only [Expr.erase] using h.erase_preserves_typing
   | primBinOp h => simpa only [Expr.erase] using h.erase_preserves_typing
-  | lambda hlc _ _ ih =>
+  | lambda hlc _ _ _ ih =>
       exact .lambda hlc ih
   | app _ _ ihf ihx => exact .app ihf ihx
-  | letIn hwf _ _ _ ihrhs ihbody =>
+  | letIn hwf _ _ _ _ ihrhs ihbody =>
       exact .letIn hwf ihrhs ihbody
   | var hlook hlc hinst => exact .var hlook hlc hinst
   | ctor hlook hlc hinst => exact .ctor hlook hlc hinst
@@ -349,5 +354,165 @@ theorem fitsList_onSubst {K : List Nat} {templates : List Template} {types : Lis
       exact .cons (head.onSubst (fun v hv => hfixed v (List.mem_append_left _ hv)) hsubst)
         (fitsList_onSubst rest (fun v hv => hfixed v (List.mem_append_right _ hv)) hsubst)
 end
+
+theorem LetAnn.FitsMono.onSubst {K : List Nat} {ann : LetAnn} {ty : Ty}
+    (h : ann.FitsMono ty)
+    (hfixed : ∀ template, ann = .template template → ∀ v ∈ template.rigidVars, v ∈ K)
+    {subst : Subst} (hsubst : ∀ pair ∈ subst, pair.1 ∉ K) :
+    ann.FitsMono (subst.onTy ty) := by
+  cases ann with
+  | absent => trivial
+  | template template => exact Template.Fits.onSubst h (hfixed template rfl) hsubst
+  | complete => exact False.elim h
+  | partialForall => exact False.elim h
+
+/-- Substitution can specialize context variables and inferred hole fillings,
+while the written fixed annotation syntax stays unchanged. -/
+theorem Typing.onSubstFvar (h : Typing K ctx input ty) (name : Nat) (image : Ty)
+    (hlc : image.IsLC) (hprotected : name ∉ K) :
+    Typing K (Subst.onCtx [(name, image)] ctx) input (Ty.substFvar name image ty) := by
+  have hsubst : ∀ pair ∈ ([(name, image)] : Subst), pair.1 ∉ K := by
+    intro pair hp
+    cases List.mem_singleton.mp hp
+    exact hprotected
+  have hsubstLC : ∀ pair ∈ ([(name, image)] : Subst), pair.2.IsLC := by
+    intro pair hp
+    cases List.mem_singleton.mp hp
+    exact hlc
+  induction h with
+  | complete hemb hrigid htyping =>
+      exact .complete hemb hrigid
+        (TypeOfHM.onSubst_fixed [(name, image)] hsubstLC
+          (Expr.substTyFvars_eq_self_of_not_mem_tyFreeVars
+            (fun pair hp hv => hsubst pair hp (hrigid pair.1 hv))) htyping)
+  | primLit htyping =>
+      exact .primLit (TypeOfHM.onSubst_fixed [(name, image)] hsubstLC
+        (Expr.substTyFvars_eq_self_of_tyFreeVars_nil _ rfl) htyping)
+  | primBinOp htyping =>
+      exact .primBinOp (TypeOfHM.onSubst_fixed [(name, image)] hsubstLC
+        (Expr.substTyFvars_eq_self_of_tyFreeVars_nil _ rfl) htyping)
+  | lambda hparam hfit hrigid hbody ihbody =>
+      refine .lambda (Ty.IsLC.substFvar hlc hparam) ?_ hrigid ?_
+      · intro template heq
+        exact (hfit template heq).onSubst (hrigid template heq) hsubst
+      · simpa only [Subst.onCtx, Subst.onEnv, List.map_cons, Subst.onPolyTy,
+          PolyTy.mkTrivial, Subst.onTy, Ty.substFvars] using ihbody
+  | app _ _ ihf ihx => exact .app ihf ihx
+  | @letIn ctx ann rhs body bodyTy scheme avoid hwf hrigid hfit hgeneral hbody ihgeneral ihbody =>
+      refine Typing.letIn (M := scheme.substFvar name image) (L := name :: avoid)
+        (PolyTy.WF.substFvar hlc hwf) hrigid ?_ ?_ ?_
+      · intro fresh hfresh
+        have hname : name ∉ fresh := fun hn => hfresh.avoid name hn List.mem_cons_self
+        have hold : FreshNames avoid scheme.paramCount fresh :=
+          ⟨hfresh.length, hfresh.nodup, fun v hv ha => hfresh.avoid v hv (List.mem_cons_of_mem _ ha)⟩
+        have hs := (hfit fresh hold).onSubst hrigid hsubst
+        simpa only [PolyTy.openVars, PolyTy.substFvar, Subst.onTy, Ty.substFvars,
+          Ty.substFvar_openVars hlc hname] using hs
+      · intro fresh hfresh
+        have hname : name ∉ fresh := fun hn => hfresh.avoid name hn List.mem_cons_self
+        have hold : FreshNames avoid scheme.paramCount fresh :=
+          ⟨hfresh.length, hfresh.nodup, fun v hv ha => hfresh.avoid v hv (List.mem_cons_of_mem _ ha)⟩
+        simpa only [PolyTy.openVars, PolyTy.substFvar,
+          Ty.substFvar_openVars hlc hname] using ihgeneral fresh hold
+      · simpa only [Subst.onCtx, Subst.onEnv, List.map_cons, Subst.onPolyTy,
+          PolyTy.substFvar, Subst.onTy, Ty.substFvars] using ihbody
+  | var hlookup hargs hinst =>
+      exact .complete rfl (by simp [Expr.tyFreeVars])
+        (TypeOfHM.onSubst_fixed [(name, image)] hsubstLC
+          (Expr.substTyFvars_eq_self_of_tyFreeVars_nil _ rfl) (.var hlookup hargs hinst))
+  | ctor hlookup hargs hinst =>
+      exact .complete rfl (by simp [Expr.tyFreeVars])
+        (TypeOfHM.onSubst_fixed [(name, image)] hsubstLC
+          (Expr.substTyFvars_eq_self_of_tyFreeVars_nil _ rfl) (.ctor hlookup hargs hinst))
+
+theorem Typing.onSubst (h : Typing K ctx input ty) (subst : Subst)
+    (hlc : ∀ pair ∈ subst, pair.2.IsLC) (hprotected : ∀ pair ∈ subst, pair.1 ∉ K) :
+    Typing K (subst.onCtx ctx) input (subst.onTy ty) := by
+  induction subst generalizing ctx ty with
+  | nil => simpa only [Subst.onCtx_nil, Subst.onTy_nil] using h
+  | cons pair rest ih =>
+      have hstep := h.onSubstFvar pair.1 pair.2 (hlc pair List.mem_cons_self)
+        (hprotected pair List.mem_cons_self)
+      have hresult := ih hstep (fun p hp => hlc p (List.mem_cons_of_mem _ hp))
+        (fun p hp => hprotected p (List.mem_cons_of_mem _ hp))
+      rw [show pair :: rest = [pair] ++ rest from rfl, Subst.onCtx_append, Subst.onTy_append]
+      exact hresult
+
+theorem Typing.regular (h : Typing K ctx input ty) : ty.IsLC := h.erase.regular
+
+/-- Simultaneous fresh opening of an ordinary partial binding's monotype. The
+input syntax stays unchanged because every fixed annotation variable is in K. -/
+theorem Typing.generalise {ann : LetAnn} {names : List Nat} (h : Typing K ctx input ty)
+    (hfit : ann.FitsMono ty)
+    (hrigid : ∀ template, ann = .template template → ∀ v ∈ template.rigidVars, v ∈ K)
+    (hnames : names.Nodup) (hctx : ∀ name ∈ names, name ∉ ctx.env.freeVars)
+    (hprotected : ∀ name ∈ names, name ∉ K) :
+    ∀ fresh, FreshNames names names.length fresh →
+      ann.FitsMono (Ty.openVars fresh (Ty.closeOver names ty)) ∧
+      Typing K ctx input (Ty.openVars fresh (Ty.closeOver names ty)) := by
+  intro fresh hfresh
+  let rename : Subst := names.zip (fresh.map Ty.fvar)
+  have hdom : ∀ pair ∈ rename, pair.1 ∉ K :=
+    fun pair hp => hprotected pair.1 (List.of_mem_zip hp).1
+  have hlc : ∀ pair ∈ rename, pair.2.IsLC := by
+    intro pair hp
+    obtain ⟨name, _, heq⟩ := List.mem_map.mp (List.of_mem_zip hp).2
+    rw [← heq]
+    exact .fvar
+  have hctxfix : rename.onCtx ctx = ctx := by
+    cases ctx with
+    | mk env ctors =>
+        exact congrArg (fun env => Ctx.mk env ctors)
+          (Subst.onEnv_eq_self_of_fresh (fun pair hp => hctx pair.1 (List.of_mem_zip hp).1))
+  rw [Ty.openVars_closeOver_rename h.regular hnames hfresh.length
+    (fun name hn hf => hfresh.avoid name hf hn)]
+  refine ⟨hfit.onSubst hrigid hdom, ?_⟩
+  have hrenamed := h.onSubst rename hlc hdom
+  rwa [hctxfix] at hrenamed
+
+/-- Transport both premises of the independent ordinary-let rule through an
+ambient specialization. Fresh opening names avoid the substitution's keys. -/
+theorem Typing.binding_onSubst {ann : LetAnn} {scheme : PolyTy} {avoid : List Nat}
+    (hfit : ∀ fresh, FreshNames avoid scheme.paramCount fresh → ann.FitsMono (scheme.openVars fresh))
+    (htyping : ∀ fresh, FreshNames avoid scheme.paramCount fresh → Typing K ctx input (scheme.openVars fresh))
+    (hrigid : ∀ template, ann = .template template → ∀ v ∈ template.rigidVars, v ∈ K)
+    (subst : Subst) (hlc : ∀ pair ∈ subst, pair.2.IsLC)
+    (hprotected : ∀ pair ∈ subst, pair.1 ∉ K) :
+    ∃ avoid',
+      (∀ fresh, FreshNames avoid' scheme.paramCount fresh → ann.FitsMono ((subst.onPolyTy scheme).openVars fresh)) ∧
+      (∀ fresh, FreshNames avoid' scheme.paramCount fresh →
+        Typing K (subst.onCtx ctx) input ((subst.onPolyTy scheme).openVars fresh)) := by
+  induction subst generalizing ctx scheme avoid with
+  | nil =>
+      refine ⟨avoid, hfit, ?_⟩
+      simpa only [Subst.onCtx_nil, Subst.onPolyTy, Subst.onTy_nil] using htyping
+  | cons pair rest ih =>
+      have hstep : ∀ fresh, FreshNames (pair.1 :: avoid) scheme.paramCount fresh →
+          ann.FitsMono ((scheme.substFvar pair.1 pair.2).openVars fresh) ∧
+          Typing K (Subst.onCtx [pair] ctx) input ((scheme.substFvar pair.1 pair.2).openVars fresh) := by
+        intro fresh hfresh
+        have hname : pair.1 ∉ fresh := fun hn => hfresh.avoid pair.1 hn List.mem_cons_self
+        have hold : FreshNames avoid scheme.paramCount fresh :=
+          ⟨hfresh.length, hfresh.nodup, fun v hv ha => hfresh.avoid v hv (List.mem_cons_of_mem _ ha)⟩
+        have himage := hlc pair List.mem_cons_self
+        have hkey := hprotected pair List.mem_cons_self
+        have hdom : ∀ p ∈ ([pair] : Subst), p.1 ∉ K := by
+          intro p hp
+          cases List.mem_singleton.mp hp
+          exact hkey
+        have hfit' := (hfit fresh hold).onSubst hrigid hdom
+        have htyping' := (htyping fresh hold).onSubstFvar pair.1 pair.2 himage hkey
+        simpa only [PolyTy.openVars, PolyTy.substFvar, Subst.onTy, Ty.substFvars,
+          Ty.substFvar_openVars himage hname] using And.intro hfit' htyping'
+      obtain ⟨avoid', hfit', htyping'⟩ := ih
+        (ctx := Subst.onCtx [pair] ctx) (scheme := scheme.substFvar pair.1 pair.2)
+        (avoid := pair.1 :: avoid) (fun fresh hf => (hstep fresh hf).1)
+        (fun fresh hf => (hstep fresh hf).2)
+        (fun p hp => hlc p (List.mem_cons_of_mem _ hp))
+        (fun p hp => hprotected p (List.mem_cons_of_mem _ hp))
+      refine ⟨avoid', ?_, ?_⟩
+      · simpa only [show pair :: rest = [pair] ++ rest from rfl, Subst.onPolyTy_append] using hfit'
+      · simpa only [show pair :: rest = [pair] ++ rest from rfl,
+          Subst.onPolyTy_append, Subst.onCtx_append] using htyping'
 
 end Anonymous
