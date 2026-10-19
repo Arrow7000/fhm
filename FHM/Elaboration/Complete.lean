@@ -114,6 +114,137 @@ def _root_.InferWithTypesCoreSourceComplete (input : Input) : Prop :=
     Typing P (ambient.onCtx ctx) (input.substTyFvars ambient) target →
     (inferWithTypesCore K frontier ctx input F).isSome
 
+ theorem inferRecComponentWithTypesCore_complete
+    (hProducer : ∀ e : Input,e.size ≤ sizeBindings bindings → InferWithTypesCoreSourceComplete e)
+    (hPrincipal : ∀ {κ F' Ψ c e Ψ' T output ty},e.size ≤ sizeBindings bindings →
+      (hi : Infer κ F' Ψ c e Ψ' T output ty) → Infer.SourcePrincipal hi)
+    (hlen : bindings.length = specs.length)
+    (hctxWF : CtxWF ctx) (hctx : CtxBelow frontier ctx)
+    (hK : ∀ k ∈ K,k < frontier) (hF : ∀ t ∈ F,Ty.BelowFvars frontier t)
+    (hspecLC : ∀ spec ∈ specs,spec.LC) (hspecB : ∀ spec ∈ specs,spec.BelowFvars frontier)
+    (hscope : ∀ rhs ∈ bindings,SourceScope K F rhs)
+    (ambient : Subst) (P : List Nat) (hambient : ∀ p ∈ ambient,p.2.IsLC)
+    (hfixK : ∀ k ∈ K,ambient.onTy (.fvar k) = .fvar k)
+    (hP : ∀ p ∈ P,p < frontier) (hfixP : ∀ p ∈ P,ambient.onTy (.fvar p) = .fvar p)
+    (hcandidate : ∀ (j : Nat) (rhs : Input) (target : Ty),index + j ∈ members →
+      bindings[j]? = some rhs → specs[j]? = some (.mono target) →
+      Typing P (ambient.onCtx ctx) (rhs.substTyFvars ambient) (ambient.onTy target)) :
+    (inferRecComponentWithTypesCore K F members index frontier ctx bindings specs).isSome := by
+  match bindings,specs with
+  | [],[] => simp only [inferRecComponentWithTypesCore,Option.isSome_some]
+  | [],_::_ => simp at hlen
+  | _::_,[] => simp at hlen
+  | rhs::rest,.poly scheme::specs =>
+    have ht := inferRecComponentWithTypesCore_complete
+        (bindings := rest) (specs := specs) (K := K) (F := F)
+        (index := index+1) (frontier := frontier) (ctx := ctx)
+      (fun e he => hProducer e (by simp only [sizeBindings];omega))
+      (fun he hi => hPrincipal (by simp only [sizeBindings];omega) hi)
+      (Nat.succ.inj hlen) hctxWF hctx hK hF
+      (fun spec hm => hspecLC spec (List.mem_cons_of_mem _ hm))
+      (fun spec hm => hspecB spec (List.mem_cons_of_mem _ hm))
+      (fun rhs hm => hscope rhs (List.mem_cons_of_mem _ hm)) ambient P hambient hfixK hP hfixP
+      (fun j rhs target hm hb ht => hcandidate (j+1) rhs target (by simpa [Nat.add_assoc,Nat.add_comm,Nat.add_left_comm] using hm) hb ht)
+    cases hr : inferRecComponentWithTypesCore K F members (index+1) frontier ctx rest specs with
+    | none => simp only [hr,Option.isSome_none] at ht;contradiction
+    | some result => simp only [inferRecComponentWithTypesCore,hr,Option.isSome_some]
+  | rhs::rest,.mono expected::specs =>
+    by_cases hm : index ∈ members
+    · have hTyping := hcandidate 0 rhs expected (by simpa using hm) rfl rfl
+      obtain ⟨⟨⟨first,s1,output,ty,types,schemes⟩,hi⟩,hresult⟩ := Option.isSome_iff_exists.mp
+        (hProducer rhs (by simp only [sizeBindings];omega) K F frontier ctx ambient (ambient.onTy expected) P
+          (hscope rhs List.mem_cons_self) hctxWF hctx hK hF hambient hfixK hP hfixP hTyping)
+      obtain ⟨R1,hR1,hty,hR1P,hag1⟩ := hPrincipal (by simp only [sizeBindings];omega) hi
+        hctxWF hctx hK hF ambient (ambient.onTy expected) P hambient hP hfixP
+        (fun v _ hk _ => hfixK v hk) hTyping
+      have hle := hi.frontier_le
+      have hheadB : Ty.BelowFvars frontier expected := hspecB _ List.mem_cons_self
+      have hExpected : ambient.onTy expected = R1.onTy (s1.onTy expected) := by
+        simpa only [Subst.onTy_append] using Subst.onTy_congr hag1 hheadB
+      have hUni : Unifies R1 ty (s1.onTy expected) := hty.symm.trans hExpected
+      have hs1K := Subst.fixes_of_dom_avoids hi.dom_avoids
+      have hR1K : ∀ k ∈ K,R1.onTy (.fvar k) = .fvar k := by
+        intro k hk
+        have hh := hag1 k (hK k hk)
+        rw [Subst.onTy_append,hs1K k hk,hfixK k hk] at hh
+        exact hh.symm
+      obtain ⟨hiLC,hs1LC⟩ := hi.lc hctxWF
+      have hSome := unifyCoreK_complete hiLC (Subst.onTy_lc hs1LC (hspecLC _ List.mem_cons_self)) hR1 hUni hR1K
+      cases huni : unifyCoreK K ty (s1.onTy expected) with
+      | none => simp only [huni,Option.isSome_none] at hSome;contradiction
+      | some result =>
+        obtain ⟨s2,hu,havoid⟩ := result
+        obtain ⟨R2,hfac,hR2,hR2PK⟩ := hu.greatest_K R1 hR1 hUni
+          (fun k hk => (List.mem_append.mp hk).elim (hR1P k) (hR1K k) : ∀ k ∈ P ++ K,R1.onTy (.fvar k) = .fvar k)
+        have hR2P : ∀ p ∈ P,R2.onTy (.fvar p) = .fvar p := fun p hp => hR2PK p (List.mem_append_left _ hp)
+        have hR2K : ∀ k ∈ K,R2.onTy (.fvar k) = .fvar k := fun k hk => hR2PK k (List.mem_append_right _ hk)
+        have hag12 : Subst.AgreesBelow frontier ambient ((s1 ++ s2) ++ R2) := by
+          intro v hv
+          rw [hag1 v hv,Subst.onTy_append,hfac,Subst.onTy_append,Subst.onTy_append]
+        have hs2LC := hu.lc hiLC (Subst.onTy_lc hs1LC (hspecLC _ List.mem_cons_self))
+        have hbothLC : ∀ p ∈ s1 ++ s2,p.2.IsLC := fun p hp => (List.mem_append.mp hp).elim (hs1LC p) (hs2LC p)
+        obtain ⟨hiB,hs1B⟩ := hi.belowFvars hctx hK hF
+        have hs2B := hu.belowFvars hiB (Subst.onTy_belowFvars hs1B (hheadB.mono hle))
+        have hbothB : ∀ p ∈ s1 ++ s2,Ty.BelowFvars first p.2 := fun p hp => (List.mem_append.mp hp).elim (hs1B p) (hs2B p)
+        have hbothFix : ∀ k ∈ K,(s1 ++ s2).onTy (.fvar k) = .fvar k :=
+          Subst.fixes_of_dom_avoids (fun p hp => (List.mem_append.mp hp).elim (hi.dom_avoids p) (havoid p))
+        have hctxEq : R2.onCtx (s2.onCtx (s1.onCtx ctx)) = ambient.onCtx ctx := by
+          simpa only [Subst.onCtx_append] using (Subst.onCtx_congr hag12 hctx).symm
+        have hrawBelow : ∀ rhs ∈ rest,∀ v ∈ rhs.rigidVars,v < frontier := by
+          intro rhs hh v hv
+          exact (List.mem_append.mp (hscope rhs (List.mem_cons_of_mem _ hh) v hv)).elim (hK v) (softVars_lt hF v)
+        have ht := inferRecComponentWithTypesCore_complete
+          (bindings := rest.map (Input.substTyFvars (s1 ++ s2)))
+          (specs := specs.map (RecSpec.onSubstSource (s1 ++ s2)))
+          (K := K) (F := substSoft (s1 ++ s2) F) (index := index+1) (frontier := first)
+          (ctx := s2.onCtx (s1.onCtx ctx))
+          (fun e he => hProducer e (by simp only [sizeBindings_map_substTyFvars] at he;simp only [sizeBindings];omega))
+          (fun he hi => hPrincipal (by simp only [sizeBindings_map_substTyFvars] at he;simp only [sizeBindings];omega) hi)
+          (by simpa only [List.length_map] using Nat.succ.inj hlen)
+          (Subst.onCtx_wf hs2LC (Subst.onCtx_wf hs1LC hctxWF))
+          (by simpa only [Subst.onCtx_append] using Subst.onCtx_below hbothB hle hctx)
+          (fun k hk => (hK k hk).trans_le hle) (substSoft_below hbothB hle hF)
+          (by intro spec hs;obtain ⟨old,ho,rfl⟩ := List.mem_map.mp hs;exact RecSpec.lc_onSubstSource hbothLC (hspecLC old (List.mem_cons_of_mem _ ho)))
+          (by
+            intro spec hs
+            obtain ⟨old,ho,rfl⟩ := List.mem_map.mp hs
+            cases old with
+            | mono t => exact Subst.onTy_belowFvars hbothB ((hspecB _ (List.mem_cons_of_mem _ ho)).mono hle)
+            | poly M => exact Subst.onTy_belowFvars hbothB ((hspecB _ (List.mem_cons_of_mem _ ho)).mono hle))
+          (by intro rhs hs;obtain ⟨old,ho,rfl⟩ := List.mem_map.mp hs;exact (hscope old (List.mem_cons_of_mem _ ho)).subst _ hbothFix)
+          R2 P hR2 hR2K (fun p hp => (hP p hp).trans_le hle) hR2P
+          (by
+            intro j rhs target hj hb ht
+            obtain ⟨old,ho,rfl⟩ := Option.map_eq_some_iff.mp (by simpa only [List.getElem?_map] using hb)
+            obtain ⟨oldTarget,hot,rfl⟩ := RecSpec.mono_getElem?_map_onSubstSource ht
+            have hsourceEq : (old.substTyFvars (s1 ++ s2)).substTyFvars R2 = old.substTyFvars ambient := by
+              rw [←Input.substTyFvars_append]
+              exact old.substTyFvars_congr (fun v hv => (hag12 v (hrawBelow old (List.mem_of_getElem? ho) v hv)).symm)
+            have htargetEq : R2.onTy ((s1 ++ s2).onTy oldTarget) = ambient.onTy oldTarget := by
+              simpa only [Subst.onTy_append] using (Subst.onTy_congr hag12 (hspecB _ (List.mem_cons_of_mem _ (List.mem_of_getElem? hot)))).symm
+            rw [hctxEq,hsourceEq,htargetEq]
+            exact hcandidate (j+1) old oldTarget (by simpa [Nat.add_assoc,Nat.add_comm,Nat.add_left_comm] using hj) ho hot)
+        cases htail : inferRecComponentWithTypesCore K (substSoft (s1 ++ s2) F) members (index+1) first
+            (s2.onCtx (s1.onCtx ctx)) (rest.map (Input.substTyFvars (s1 ++ s2)))
+            (specs.map (RecSpec.onSubstSource (s1 ++ s2))) with
+        | none => simp only [htail,Option.isSome_none] at ht;contradiction
+        | some tail => simp only [inferRecComponentWithTypesCore,dif_pos hm,hresult,huni,htail,Option.isSome_some]
+    · have ht := inferRecComponentWithTypesCore_complete
+        (bindings := rest) (specs := specs) (K := K) (F := F)
+        (index := index+1) (frontier := frontier) (ctx := ctx)
+        (fun e he => hProducer e (by simp only [sizeBindings];omega))
+        (fun he hi => hPrincipal (by simp only [sizeBindings];omega) hi)
+        (Nat.succ.inj hlen) hctxWF hctx hK hF
+        (fun spec hm => hspecLC spec (List.mem_cons_of_mem _ hm))
+        (fun spec hm => hspecB spec (List.mem_cons_of_mem _ hm))
+        (fun rhs hm => hscope rhs (List.mem_cons_of_mem _ hm)) ambient P hambient hfixK hP hfixP
+        (fun j rhs target hm hb ht => hcandidate (j+1) rhs target (by simpa [Nat.add_assoc,Nat.add_comm,Nat.add_left_comm] using hm) hb ht)
+      cases hr : inferRecComponentWithTypesCore K F members (index+1) frontier ctx rest specs with
+      | none => simp only [hr,Option.isSome_none] at ht;contradiction
+      | some result => simp only [inferRecComponentWithTypesCore,dif_neg hm,hr,Option.isSome_some]
+ termination_by sizeBindings bindings
+ decreasing_by all_goals simp only [sizeBindings,sizeBindings_map_substTyFvars];omega
+
 /-- Producer completeness for the concrete worker, under an arbitrary LC
 specialization fixing the inference's rigid variables. Successful results
 already carry output typing and residual principality. -/

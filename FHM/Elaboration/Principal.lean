@@ -974,6 +974,277 @@ theorem SourceScope.residual_freeze {K : List Nat} {F : List Ty} {input : Input}
   rw [Subst.onTy_append, hfixed, hfreeze original horiginal horiginalK horiginalNotF] at hag
   exact hag.symm
 
+ theorem _root_.InferRecComponent.sourcePrincipal_of_infer
+    (h : InferRecComponent K F members index frontier ctx bindings specs next S outputs facts)
+    (hInfer : ∀ {κ F' Ψ c e Ψ' T output ty}, e.size ≤ sizeBindings bindings →
+      (hi : Infer κ F' Ψ c e Ψ' T output ty) → Infer.SourcePrincipal hi)
+    (hctxWF : CtxWF ctx) (hctx : CtxBelow frontier ctx)
+    (hK : ∀ k ∈ K,k < frontier) (hF : ∀ t ∈ F,Ty.BelowFvars frontier t)
+    (hspecLC : ∀ spec ∈ specs,spec.LC) (hspecB : ∀ spec ∈ specs,spec.BelowFvars frontier)
+    (hscope : ∀ rhs ∈ bindings,SourceScope K F rhs)
+    (ambient : Subst) (P : List Nat) (hambient : ∀ p ∈ ambient,p.2.IsLC)
+    (hP : ∀ p ∈ P,p < frontier) (hfixP : ∀ p ∈ P,ambient.onTy (.fvar p) = .fvar p)
+    (hfreeze : ∀ (j : Nat) (rhs : Input),index + j ∈ members → bindings[j]? = some rhs →
+      ∀ v ∈ rhs.rigidVars,v ∈ K → v ∉ softVars F → ambient.onTy (.fvar v) = .fvar v)
+    (hcandidate : ∀ (j : Nat) (rhs : Input) (target : Ty),index + j ∈ members →
+      bindings[j]? = some rhs → specs[j]? = some (.mono target) →
+      Typing P (ambient.onCtx ctx) (rhs.substTyFvars ambient) (ambient.onTy target)) :
+    ∃ R : Subst,(∀ p ∈ R,p.2.IsLC) ∧ (∀ p ∈ P,R.onTy (.fvar p) = .fvar p) ∧
+      Subst.AgreesBelow frontier ambient (S ++ R) := by
+  match h with
+  | .nil => exact ⟨ambient,hambient,hfixP,fun _ _ => rfl⟩
+  | .skipMono hn hr | .skipPoly hr =>
+    exact hr.sourcePrincipal_of_infer
+      (fun he hi => hInfer (by simp only [sizeBindings];omega) hi)
+      hctxWF hctx hK hF
+      (fun spec hm => hspecLC spec (List.mem_cons_of_mem _ hm))
+      (fun spec hm => hspecB spec (List.mem_cons_of_mem _ hm))
+      (fun rhs hm => hscope rhs (List.mem_cons_of_mem _ hm)) ambient P hambient hP hfixP
+      (fun j rhs hm hb => hfreeze (j+1) rhs (by simpa [Nat.add_assoc,Nat.add_comm,Nat.add_left_comm] using hm) hb)
+      (fun j rhs target hm hb ht => hcandidate (j+1) rhs target (by simpa [Nat.add_assoc,Nat.add_comm,Nat.add_left_comm] using hm) hb ht)
+  | .consSelected hm hi hu hr =>
+    expose_names
+    have hle := hi.frontier_le
+    have hheadB : Ty.BelowFvars frontier expected := hspecB _ List.mem_cons_self
+    have hheadSource := hscope _ List.mem_cons_self
+    have hrawBelow : ∀ rhs, SourceScope K F rhs → ∀ v ∈ rhs.rigidVars,v < frontier := by
+      intro rhs hh v hv
+      exact (List.mem_append.mp (hh v hv)).elim (hK v) (softVars_lt hF v)
+    obtain ⟨R1,hR1,hty,hR1P,hag1⟩ := hInfer (by simp only [sizeBindings];omega) hi
+      hctxWF hctx hK hF ambient (ambient.onTy expected) P hambient hP hfixP
+      (hfreeze 0 _ (by simpa using hm) rfl)
+      (hcandidate 0 _ _ (by simpa using hm) rfl rfl)
+    have hExpected : ambient.onTy expected = R1.onTy (s1.onTy expected) := by
+      simpa only [Subst.onTy_append] using Subst.onTy_congr hag1 hheadB
+    obtain ⟨R2,hfac,hR2,hR2P⟩ := hu.unifies.greatest_K R1 hR1 (hty.symm.trans hExpected) hR1P
+    have hag12 : Subst.AgreesBelow frontier ambient ((s1 ++ s2) ++ R2) := by
+      intro v hv
+      rw [hag1 v hv,Subst.onTy_append,hfac,Subst.onTy_append,Subst.onTy_append]
+    obtain ⟨hiLC,hs1LC⟩ := hi.lc hctxWF
+    have hs2LC := hu.unifies.lc hiLC (Subst.onTy_lc hs1LC (hspecLC _ List.mem_cons_self))
+    have hbothLC : ∀ p ∈ s1 ++ s2,p.2.IsLC := fun p hp => (List.mem_append.mp hp).elim (hs1LC p) (hs2LC p)
+    obtain ⟨hiB,hs1B⟩ := hi.belowFvars hctx hK hF
+    have hs2B := hu.unifies.belowFvars hiB (Subst.onTy_belowFvars hs1B (hheadB.mono hle))
+    have hbothB : ∀ p ∈ s1 ++ s2,Ty.BelowFvars first p.2 := fun p hp => (List.mem_append.mp hp).elim (hs1B p) (hs2B p)
+    have hbothFix : ∀ k ∈ K,(s1 ++ s2).onTy (.fvar k) = .fvar k :=
+      Subst.fixes_of_dom_avoids (fun p hp => (List.mem_append.mp hp).elim (hi.dom_avoids p) (hu.dom_avoids p))
+    have hctxEq : R2.onCtx (s2.onCtx (s1.onCtx ctx)) = ambient.onCtx ctx := by
+      simpa only [Subst.onCtx_append] using (Subst.onCtx_congr hag12 hctx).symm
+    have htailWF := Subst.onCtx_wf hs2LC (Subst.onCtx_wf hs1LC hctxWF)
+    have htailB : CtxBelow first (s2.onCtx (s1.onCtx ctx)) := by
+      simpa only [Subst.onCtx_append] using Subst.onCtx_below hbothB hle hctx
+    obtain ⟨R3,hR3,hR3P,hag3⟩ := hr.sourcePrincipal_of_infer
+      (fun he hi => hInfer (by simp only [sizeBindings_map_substTyFvars] at he;simp only [sizeBindings];omega) hi)
+      htailWF htailB (fun k hk => (hK k hk).trans_le hle) (substSoft_below hbothB hle hF)
+      (by intro spec hs;obtain ⟨old,ho,rfl⟩ := List.mem_map.mp hs;exact RecSpec.lc_onSubstSource hbothLC (hspecLC old (List.mem_cons_of_mem _ ho)))
+      (by
+        intro spec hs
+        obtain ⟨old,ho,rfl⟩ := List.mem_map.mp hs
+        cases old with
+        | mono t => exact Subst.onTy_belowFvars hbothB ((hspecB _ (List.mem_cons_of_mem _ ho)).mono hle)
+        | poly M => exact Subst.onTy_belowFvars hbothB ((hspecB _ (List.mem_cons_of_mem _ ho)).mono hle))
+      (by intro rhs hs;obtain ⟨old,ho,rfl⟩ := List.mem_map.mp hs;exact (hscope old (List.mem_cons_of_mem _ ho)).subst _ hbothFix)
+      R2 P hR2 (fun p hp => (hP p hp).trans_le hle) hR2P
+      (by
+        intro j rhs hj hb v hv hk hn
+        obtain ⟨old,ho,rfl⟩ := Option.map_eq_some_iff.mp (by simpa only [List.getElem?_map] using hb)
+        exact (hscope old (List.mem_cons_of_mem _ (List.mem_of_getElem? ho))).residual_freeze
+          (hrawBelow old (hscope old (List.mem_cons_of_mem _ (List.mem_of_getElem? ho)))) hbothFix
+          (hfreeze (j+1) old (by simpa [Nat.add_assoc,Nat.add_comm,Nat.add_left_comm] using hj) ho)
+          hag12 v hv hk hn)
+      (by
+        intro j rhs target hj hb ht
+        obtain ⟨old,ho,rfl⟩ := Option.map_eq_some_iff.mp (by simpa only [List.getElem?_map] using hb)
+        obtain ⟨oldTarget,hot,rfl⟩ := RecSpec.mono_getElem?_map_onSubstSource ht
+        have hsourceEq : (old.substTyFvars (s1 ++ s2)).substTyFvars R2 = old.substTyFvars ambient := by
+          rw [←Input.substTyFvars_append]
+          exact old.substTyFvars_congr (fun v hv => (hag12 v (hrawBelow old (hscope old (List.mem_cons_of_mem _ (List.mem_of_getElem? ho))) v hv)).symm)
+        have htargetEq : R2.onTy ((s1 ++ s2).onTy oldTarget) = ambient.onTy oldTarget := by
+          simpa only [Subst.onTy_append] using (Subst.onTy_congr hag12 (hspecB _ (List.mem_cons_of_mem _ (List.mem_of_getElem? hot)))).symm
+        rw [hctxEq,hsourceEq,htargetEq]
+        exact hcandidate (j+1) old oldTarget (by simpa [Nat.add_assoc,Nat.add_comm,Nat.add_left_comm] using hj) ho hot)
+    exact ⟨R3,hR3,hR3P,by simpa only [List.append_assoc] using hag12.trans_append hle hbothB hag3⟩
+ termination_by structural h
+
+
+/-- Candidate roots are class labels; a representative is the actual slot at
+that label's first occurrence. Labels may themselves collide with actual IDs. -/
+def prefixRepresentative (actual candidate : List Nat) (root : Nat) : Nat :=
+  (actual[candidate.idxOf root]?).getD 0
+
+def prefixRepresentativeImages (actual candidate : List Nat) : List Nat :=
+  candidate.map (prefixRepresentative actual candidate)
+
+def prefixRepresentatives (actual candidate : List Nat) : List Nat :=
+  candidate.dedup.map (prefixRepresentative actual candidate)
+
+ theorem prefixRepresentative_lookup {actual candidate : List Nat}
+    (hlen : actual.length = candidate.length) (hroot : root ∈ candidate) :
+    actual[candidate.idxOf root]? = some (prefixRepresentative actual candidate root) := by
+  have hi : candidate.idxOf root < actual.length := by
+    rw [hlen]
+    exact List.idxOf_lt_length_iff.mpr hroot
+  unfold prefixRepresentative
+  rw [List.getElem?_eq_getElem hi]
+  rfl
+
+ theorem prefixRepresentative_mem {actual candidate : List Nat}
+    (hlen : actual.length = candidate.length) (hroot : root ∈ candidate) :
+    prefixRepresentative actual candidate root ∈ actual :=
+  List.mem_of_getElem? (prefixRepresentative_lookup hlen hroot)
+
+ theorem prefixRepresentative_injective {actual candidate : List Nat}
+    (hlen : actual.length = candidate.length) (hnd : actual.Nodup)
+    (hc : c ∈ candidate) (hd : d ∈ candidate)
+    (heq : prefixRepresentative actual candidate c = prefixRepresentative actual candidate d) : c = d := by
+  have hcidx := List.idxOf_lt_length_iff.mpr hc
+  have hdidx := List.idxOf_lt_length_iff.mpr hd
+  have hci : candidate.idxOf c < actual.length := by omega
+  have hdi : candidate.idxOf d < actual.length := by omega
+  have ha := (prefixRepresentative_lookup hlen hc).trans
+    ((congrArg some heq).trans (prefixRepresentative_lookup hlen hd).symm)
+  rw [List.getElem?_eq_getElem hci,List.getElem?_eq_getElem hdi] at ha
+  have hij := hnd.getElem_inj_iff.mp (Option.some.inj ha)
+  have hh := congrArg (fun i => candidate[i]?) hij
+  dsimp only at hh
+  rw [List.getElem?_eq_getElem hcidx,List.getElem_idxOf hcidx,
+    List.getElem?_eq_getElem hdidx,List.getElem_idxOf hdidx] at hh
+  exact Option.some.inj hh
+
+ theorem prefixRepresentative_first {actual candidate : List Nat}
+    (hlen : actual.length = candidate.length) (hi : i < candidate.length)
+    (hfirst : candidate.idxOf candidate[i] = i) :
+    prefixRepresentative actual candidate candidate[i] = actual[i]'(by omega) := by
+  unfold prefixRepresentative
+  rw [hfirst,List.getElem?_eq_getElem (show i < actual.length by omega)]
+  rfl
+
+ theorem prefixRepresentative_fix_image {actual candidate : List Nat} {S : Subst}
+    (hlen : actual.length = candidate.length)
+    (hassign : ∀ i (hi : i < candidate.length),
+      S.onTy (.fvar (actual[i]'(by omega))) = .fvar (prefixRepresentative actual candidate candidate[i]))
+    (hc : c ∈ candidate) :
+    S.onTy (.fvar (prefixRepresentative actual candidate c)) = .fvar (prefixRepresentative actual candidate c) := by
+  have hi := List.idxOf_lt_length_iff.mpr hc
+  have hget : candidate[candidate.idxOf c] = c := List.getElem_idxOf hi
+  have hactual : actual[candidate.idxOf c]'(by omega) = prefixRepresentative actual candidate c :=
+    (Option.some.inj ((List.getElem?_eq_getElem (by omega)).symm.trans (prefixRepresentative_lookup hlen hc)))
+  simpa only [hactual,hget] using hassign (candidate.idxOf c) hi
+
+
+ theorem prefixRepresentative_below {actual candidate : List Nat}
+    (hlen : actual.length = candidate.length) (hbound : ∀ a ∈ actual, a < frontier)
+    (hc : c ∈ candidate) : prefixRepresentative actual candidate c < frontier :=
+  hbound _ (prefixRepresentative_mem hlen hc)
+
+ theorem prefixRepresentative_disjoint {actual candidate P : List Nat}
+    (hlen : actual.length = candidate.length) (hstart : ∀ a ∈ actual, base ≤ a)
+    (hP : ∀ p ∈ P, p < base) (hc : c ∈ candidate) :
+    prefixRepresentative actual candidate c ∉ P := by
+  intro hp
+  have := hstart _ (prefixRepresentative_mem hlen hc)
+  have := hP _ hp
+  omega
+
+ theorem prefixRepresentative_prefix_nodup {actual candidate names : List Nat}
+    (hlen : actual.length = candidate.length) (hA : actual.Nodup)
+    (hnd : names.Nodup) (hsub : ∀ c ∈ names, c ∈ candidate) :
+    (names.map (prefixRepresentative actual candidate)).Nodup :=
+  hnd.map_on (fun c hc d hd heq => prefixRepresentative_injective hlen hA (hsub c hc) (hsub d hd) heq)
+
+ theorem prefixRepresentatives_nodup {actual candidate : List Nat}
+    (hlen : actual.length = candidate.length) (hA : actual.Nodup) :
+    (prefixRepresentatives actual candidate).Nodup :=
+  prefixRepresentative_prefix_nodup hlen hA (List.nodup_dedup _) (fun _ h => List.mem_dedup.mp h)
+
+ theorem prefixRepresentatives_mem_actual {actual candidate : List Nat}
+    (hlen : actual.length = candidate.length) (hv : v ∈ prefixRepresentatives actual candidate) : v ∈ actual := by
+  obtain ⟨root,hroot,rfl⟩ := List.mem_map.mp hv
+  exact prefixRepresentative_mem hlen (List.mem_dedup.mp hroot)
+
+ theorem prefixRepresentatives_capacity {actual candidate : List Nat}
+    (hlen : actual.length = candidate.length) :
+    (prefixRepresentatives actual candidate).length ≤ actual.length := by
+  rw [prefixRepresentatives,List.length_map,hlen]
+  exact (List.dedup_sublist candidate).length_le
+
+ theorem prefixRepresentativeImages_length (actual candidate : List Nat) :
+    (prefixRepresentativeImages actual candidate).length = candidate.length := List.length_map _
+
+ theorem prefixRepresentativeImages_lookup {actual candidate : List Nat} {root i : Nat}
+    (hc : candidate[i]? = some root) :
+    (prefixRepresentativeImages actual candidate)[i]? = some (prefixRepresentative actual candidate root) := by
+  simp only [prefixRepresentativeImages,List.getElem?_map,hc,Option.map_some]
+
+ theorem prefixRepresentativeImages_fixed {actual candidate : List Nat} {S : Subst}
+    (hlen : actual.length = candidate.length)
+    (hassign : ∀ i (hi : i < candidate.length),
+      S.onTy (.fvar (actual[i]'(by omega))) = .fvar (prefixRepresentative actual candidate candidate[i])) :
+    (prefixRepresentativeImages actual candidate).map (fun v => S.onTy (.fvar v)) =
+      (prefixRepresentativeImages actual candidate).map Ty.fvar := by
+  apply List.map_congr_left
+  intro rep hr
+  obtain ⟨c,hc,rfl⟩ := List.mem_map.mp hr
+  exact prefixRepresentative_fix_image hlen hassign hc
+
+ theorem prefixRepresentatives_fixed {actual candidate : List Nat} {S : Subst}
+    (hlen : actual.length = candidate.length)
+    (hassign : ∀ i (hi : i < candidate.length),
+      S.onTy (.fvar (actual[i]'(by omega))) = .fvar (prefixRepresentative actual candidate candidate[i])) :
+    ∀ v ∈ prefixRepresentatives actual candidate, S.onTy (.fvar v) = .fvar v := by
+  intro v hv
+  obtain ⟨c,hc,rfl⟩ := List.mem_map.mp hv
+  exact prefixRepresentative_fix_image hlen hassign (List.mem_dedup.mp hc)
+
+
+/-- Realize the class assignment on any distinct selected slots in an allocation
+interval. Gaps are permitted; targets may mention any selected slot. -/
+ theorem _root_.Subst.override_prefixRepresentatives {S0 : Subst} {actual candidate : List Nat}
+    (hS0 : ∀ p ∈ S0, p.2.IsLC) (base frontier : Nat)
+    (hlen : actual.length = candidate.length) (hnd : actual.Nodup)
+    (hstart : ∀ a ∈ actual, base ≤ a) (hend : ∀ a ∈ actual, a < frontier) :
+    ∃ U : Subst, (∀ p ∈ U, p.2.IsLC) ∧ Subst.AgreesBelow base S0 U ∧
+      (∀ i (hi : i < candidate.length),
+        U.onTy (.fvar (actual[i]'(by omega))) = .fvar (prefixRepresentative actual candidate candidate[i])) ∧
+      (∀ v ∈ prefixRepresentatives actual candidate, U.onTy (.fvar v) = .fvar v) := by
+  let target := fun a => if a ∈ actual then
+    Ty.fvar (prefixRepresentative actual candidate (candidate[actual.idxOf a]?.getD 0))
+    else S0.onTy (.fvar a)
+  let targets := (freshVars base (frontier - base)).map target
+  have htargets : ∀ t ∈ targets, t.IsLC := by
+    intro t ht
+    obtain ⟨a,_,rfl⟩ := List.mem_map.mp ht
+    dsimp only [target]
+    split
+    · exact .fvar
+    · exact Subst.onTy_lc hS0 .fvar
+  obtain ⟨U,hU,hagree,hblock⟩ := Subst.override_block hS0 base targets htargets
+  have hassign : ∀ i (hi : i < candidate.length),
+      U.onTy (.fvar (actual[i]'(by omega))) = .fvar (prefixRepresentative actual candidate candidate[i]) := by
+    intro i hi
+    have hia : i < actual.length := by omega
+    have ha : actual[i] ∈ actual := List.getElem_mem hia
+    have haStart := hstart _ ha
+    have haEnd := hend _ ha
+    have hj : actual[i] - base < frontier - base := by omega
+    have hh := hblock (actual[i] - base) (by simpa only [targets,List.length_map,freshVars_length] using hj)
+    have hidx : actual.idxOf actual[i] = i := hnd.idxOf_getElem i hia
+    simpa only [targets,List.getElem_map,freshVars,List.getElem_range,show base + (actual[i] - base) = actual[i] from by omega,
+      target,if_pos ha,hidx,List.getElem?_eq_getElem hi,Option.getD_some] using hh
+  exact ⟨U,hU,hagree,hassign,prefixRepresentatives_fixed hlen hassign⟩
+
+ theorem _root_.Subst.AgreesBelow.fixes_prefixProtection {S0 U : Subst} {actual candidate P : List Nat}
+    (hlen : actual.length = candidate.length) (hagree : Subst.AgreesBelow base S0 U)
+    (hP : ∀ p ∈ P, p < base) (hfix : ∀ p ∈ P, S0.onTy (.fvar p) = .fvar p)
+    (hassign : ∀ i (hi : i < candidate.length),
+      U.onTy (.fvar (actual[i]'(by omega))) = .fvar (prefixRepresentative actual candidate candidate[i])) :
+    ∀ v ∈ P ++ prefixRepresentatives actual candidate, U.onTy (.fvar v) = .fvar v := by
+  intro v hv
+  rcases List.mem_append.mp hv with hp | hr
+  · exact (hagree v (hP v hp)).symm.trans (hfix v hp)
+  · exact prefixRepresentatives_fixed hlen hassign v hr
+
+
 theorem _root_.Infer.sourcePrincipal_backend {input : Input} {core : Expr}
     (hemb : input.toCore = some core)
     (h : CoreBackend.Infer K frontier ctx core next subst ty)
