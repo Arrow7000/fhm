@@ -1,7 +1,7 @@
 import FHM.Elaboration.Complete
 import FHM.Decls
 
-/-! Semantic canaries for anonymous lambda, let-signature, and match elaboration.
+/-! Semantic canaries for anonymous lambda, signature, match, and recursive elaboration.
 These run the elaborator itself; output typing follows from `Infer.sourceSound`.
 -/
 
@@ -81,9 +81,13 @@ def signedBodyHole : Input :=
   | some ⟨(_, _, .letIn (some scheme) _ _, _), _⟩ => scheme.paramCount == 1
   | _ => false
 
-def rejectsPartialRecursion : Input :=
+def partialRecursion : Input :=
   .letRec [.template (.arrow .hole (.fixed (.prim .int)))]
     [.lambda none (.primLit (.int 0))] (.var 0)
+
+def partialRecursionCodomainRejected : Input :=
+  .letRec [.template (.arrow .hole (.fixed (.prim .int)))]
+    [.lambda none (.primLit .unit)] (.var 0)
 
 #guard (inferCore [] 0 ctx polymorphicId).isSome
 #guard (inferCore [] 0 ctx independentHoles).isSome
@@ -93,7 +97,11 @@ def rejectsPartialRecursion : Input :=
 #guard (inferCore [] 0 ctx fixedDomainAccepted).isSome
 #guard !(inferCore [] 0 ctx fixedDomainRejected).isSome
 #guard (inferCore [] 0 ctx quantifiedId).isSome
-#guard !(inferCore [] 0 ctx rejectsPartialRecursion).isSome
+#guard match inferCore [] 0 ctx partialRecursion with
+  | some ⟨(_, _, .letRec [some ⟨1, .arrow (.bvar 0) (.prim .int)⟩]
+      [.lambda none (.primLit (.int 0))] (.var 0), .arrow (.fvar _) (.prim .int)), _⟩ => true
+  | _ => false
+#guard !(inferCore [] 0 ctx partialRecursionCodomainRejected).isSome
 
 /- The id canary really introduces a scheme binder and closes the lambda
 annotation underneath that same binder. -/
