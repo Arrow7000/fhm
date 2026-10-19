@@ -1,42 +1,74 @@
 # Anonymous type holes
 
-The completion target is anonymous holes throughout expression annotations in the
-normal parser, editor, and execution pipeline. The proved fragment below is a
-foundation for that feature, not the final supported boundary. Named holes remain
-a separate later feature; Core `Ty` and `TypeOfHM` continue to describe completed
-types and expressions.
+The target is anonymous `_` holes throughout expression annotations in the normal
+parser, editor, and execution pipeline. Named holes remain a later feature.
+Core `Ty` and `TypeOfHM` describe completed types and expressions.
 
-Remaining integration work:
+## Architecture
 
-- [ ] Make the elaborating judgment and metadata-producing worker the canonical
-  public inference API, with complete-Core inference as an internal backend.
-- [ ] Preserve partial annotation syntax through lowering and shared pattern
-  emission, including copied fallback arms and nested scrutinees.
-- [ ] Extend inference and its soundness, principality, and completeness proofs
-  through matches, explicit signatures, and recursion. Incomplete recursive
-  signatures must not silently grant polymorphic recursive calls.
-- [ ] Parse `_` in expression annotations, run the completed expression, and
-  surface inferred hole types through the existing editor metadata pipeline.
-- [ ] Pass source-level regression cases for those constructs alongside the
-  existing build, CLI/editor, web, boundary, and axiom checks.
+`Elaboration.Input` records annotation syntax before inference. Its templates
+contain fixed types, independent anonymous holes, arrows, and datatype
+applications. Let annotations distinguish absent, complete, monomorphic partial,
+and explicitly quantified partial signatures.
 
-## Proved foundation
+The canonical judgment is
+`Infer K frontier ctx input next subst completedExpr ty`. `InferW` exports its
+worker and public API. `inferWithTypes` produces the completed Core expression,
+type, substitution, and editor maps in one inference traversal. A complete
+subtree can delegate to `CoreBackend`; there is no second public inference path.
+The separate files under `Elaboration/` organize this judgment and its proofs.
 
-This branch contains a verified **Core-shaped input elaborator**, not a parser or editor feature yet. `Anonymous.Input` records partial annotation syntax; `Anonymous.inferCore` returns ordinary `Expr` output with completed annotations. `TypeOfHM` and runtime semantics are unchanged.
+An ordinary substitution does not express the entire completion. For example,
+`let id = \(x : _) -> x` needs its hole generalized into a scheme binder and its
+RHS annotation closed under that binder. Inference therefore returns the
+completed expression explicitly. Soundness types this output with `TypeOfHM`;
+erasure proves that completion preserves the runtime term exactly.
 
-Supported partial syntax is the lambda/application/ordinary-let spine. Templates contain fixed types, independent anonymous holes, arrows, and datatype applications. A whole `_` has the same independent typing meaning as an omitted lambda or ordinary-let annotation (`Typing.lambda_hole_iff` / `Typing.let_hole_iff`). Eligible unsolved variables generalize; variables reachable through the context and written rigid variables do not. An enclosing let synthesizes a complete scheme and closes its RHS annotations under those same ordered binders.
+Each inference visit allocates its own anonymous variables. Pattern compilation
+preserves templates through the shared `PatComp` emitter, including copied arms.
+It neither infers types nor assigns global identities to holes. Source spans
+locate hovers and have no role in variable allocation or sharing.
 
-Whole completed subtrees delegate once to the existing verified inferer. This preserves complete signatures, matches, and polymorphic recursion inside such subtrees. Partial explicit-forall signatures, complete annotated lets with partial syntax in their RHS or continuation, and partial match/recursive spines currently fail explicitly. In particular, a partial recursive signature never becomes a polymorphic-recursion dependency cut.
+The production frontend lowers into `Input`, then uses canonical inference.
+Runtime execution receives `completedExpr.erase`. Editor types and schemes come
+from the same inference result; original input annotation modes are retained to
+distinguish authored declarations from synthesized schemes. Hole hovers join
+annotation tokens to their owners and existing inferred artifacts.
 
-Checked results include:
+## Proof contracts
 
-- ordinary Core output typing (`Infer.sourceSound`), exact runtime erasure (`Infer.erase`), and annotation completion/fidelity (`Infer.completes`);
-- successful elaboration implies the independent partial-input rules (`Infer.inputSound`);
-- residual result/context principality against independent `Typing P`, with independently quantified protected set `P` (`Infer.principal`);
-- concrete producer completeness (`inferCore_complete`) and exact closed-input acceptance (`inferCore_empty_accepts_iff`).
+The lambda/application/ordinary-let foundation has checked proofs of:
 
-Principality here concerns the result type and flexible context. It does not assert most-general fillings for every unused hole or expose per-hole editor metadata.
+- completed Core typing (`Infer.sourceSound`), runtime erasure (`Infer.erase`),
+  and annotation fidelity (`Infer.completes`);
+- independent partial-input typing (`Infer.inputSound`);
+- residual result/context principality against independently quantified protected
+  sets (`Infer.principal`);
+- executable completeness and exact closed-input acceptance
+  (`inferCore_complete`, `inferCore_empty_accepts_iff`).
 
-`FHM/AnonymousExamples.lean` executes the polymorphic identity with a hole in its lambda parameter, structured let templates, independent holes at Bool/Int uses, occurs-check rejection, context-sensitive generalization, rigid-variable protection, unused-hole generalization, and complete polymorphic-recursion preservation. Run `lake build FHM.AnonymousExamples`.
+Eligible unsolved hole variables generalize. Variables reachable through the
+context and written rigid variables do not. A whole `_` has the same independent
+typing meaning as an omitted lambda or ordinary-let annotation.
 
-The examples also cover independent copied input visits and a lowered partial scrutinee followed by a completed matcher. The original copied fallback with holes in match branches remains unsupported; these tests are not a source pattern-compilation compatibility proof. Supporting that case requires a focused branch/lowering extension before any broader frontend migration. No global hole identities, ownership tables, or named-hole machinery is introduced.
+These principal-type results concern the result type and flexible context.
+They do not claim a universal most-general filling for every unused annotation.
+
+## Completion checklist
+
+- [x] Canonical elaborating judgment and worker, internal complete-Core backend.
+- [x] Annotation lowering through shared pattern emission, with erasure proofs.
+- [x] Parser spans, completed-expression runtime handoff, basic hole hovers.
+- [ ] Match inference and its complete soundness/principality/completeness stack.
+- [ ] Explicit signatures with partial RHSs or continuations; partial `forall`.
+- [ ] Recursive groups with partial syntax and signatures. Partial signatures
+  must constrain the entire monomorphic SCC before export and must not grant
+  polymorphic recursive calls. Complete signatures retain existing polyrec.
+- [ ] Full source-level regressions, normal builds, CLI/editor and web tests,
+  verified-boundary and axiom audits.
+
+`FHM.Elaboration.Examples` exercises the proved foundation. Editor canaries live
+in `FHM.Unverified.EditorSupportTests`; `scripts/hm-editor-smoke.mjs` includes
+end-to-end acceptance targets for the remaining constructs. Some targets remain
+intentionally red during this WIP extension; this checklist is the feature's
+completion criterion.
