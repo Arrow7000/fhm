@@ -499,8 +499,24 @@ theorem signed_candidate_dodge (S : Subst) (hS : ∀ p ∈ S, p.2.IsLC)
 /-- Residual principality retains an independently quantified protected set.
 `Typing P` scopes authored fixed types in precisely that protected set. It does
 not claim most-general fillings for every unused annotation hole. -/
-def _root_.Infer.Principal (_h : Infer K frontier ctx input next subst output ty) : Prop :=
+/-- Internal source-transforming residual theorem. The local freeze premise
+concerns authored frozen leaves only; unrelated K/context variables may vary. -/
+def _root_.Infer.SourcePrincipal (_h : Infer K F frontier ctx input next subst output ty) : Prop :=
   CtxWF ctx → CtxBelow frontier ctx → (∀ k ∈ K, k < frontier) →
+  (∀ soft ∈ F, Ty.BelowFvars frontier soft) →
+  ∀ (ambient : Subst) (target : Ty) (P : List Nat),
+    (∀ pair ∈ ambient, pair.2.IsLC) → (∀ p ∈ P, p < frontier) →
+    (∀ p ∈ P, ambient.onTy (.fvar p) = .fvar p) →
+    (∀ v ∈ input.rigidVars, v ∈ K → v ∉ softVars F → ambient.onTy (.fvar v) = .fvar v) →
+    Typing P (ambient.onCtx ctx) (input.substTyFvars ambient) target →
+    ∃ residual : Subst, (∀ pair ∈ residual, pair.2.IsLC) ∧
+      target = residual.onTy ty ∧
+      (∀ p ∈ P, residual.onTy (.fvar p) = .fvar p) ∧
+      Subst.AgreesBelow frontier ambient (subst ++ residual)
+
+def _root_.Infer.Principal (_h : Infer K F frontier ctx input next subst output ty) : Prop :=
+  CtxWF ctx → CtxBelow frontier ctx → (∀ k ∈ K, k < frontier) →
+  (∀ soft ∈ F, Ty.BelowFvars frontier soft) →
   ∀ (ambient : Subst) (target : Ty) (P : List Nat),
     (∀ pair ∈ ambient, pair.2.IsLC) → (∀ p ∈ P, p < frontier) →
     (∀ p ∈ P, ambient.onTy (.fvar p) = .fvar p) →
@@ -509,6 +525,13 @@ def _root_.Infer.Principal (_h : Infer K frontier ctx input next subst output ty
       target = residual.onTy ty ∧
       (∀ p ∈ P, residual.onTy (.fvar p) = .fvar p) ∧
       Subst.AgreesBelow frontier ambient (subst ++ residual)
+
+theorem _root_.Infer.SourcePrincipal.principal {h : Infer K F frontier ctx input next subst output ty}
+    (ih : Infer.SourcePrincipal h) : Infer.Principal h := by
+  intro hwf hctx hK hF ambient target P hS hP hfix ht
+  have heq := input.substTyFvars_eq_self_of_fixes (fun v hv => hfix v (ht.rigidVars v hv))
+  exact ih hwf hctx hK hF ambient target P hS hP hfix
+    (fun v hv _ _ => hfix v (ht.rigidVars v hv)) (heq.symm ▸ ht)
 
 theorem Seed.override (h : Seed K frontier ann param initial)
     (hK : ∀ k ∈ K, k < frontier) {target : Ty} (htarget : target.IsLC)

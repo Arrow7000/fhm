@@ -723,6 +723,11 @@ end
 @[simp] theorem LetAnn.paramCount_substTyFvars (ann : LetAnn) (subst : List (Nat × Ty)) :
     (ann.substTyFvars subst).paramCount = ann.paramCount := by cases ann <;> rfl
 
+@[simp] theorem substInputBranches_eq_nil (subst : List (Nat × Ty))
+    (branches : List (MatchPattern × Input)) :
+    substInputBranches subst branches = [] ↔ branches = [] := by
+  cases branches <;> simp [substInputBranches]
+
 mutual
 @[simp] theorem Input.size_substTyFvars (input : Input) (subst : List (Nat × Ty)) :
     (input.substTyFvars subst).size = input.size := by
