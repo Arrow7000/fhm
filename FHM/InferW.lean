@@ -11207,18 +11207,18 @@ theorem InferRecStrata.head_frozen_of_sourceLocality
 /-- A historical stage context survives subsequent strata: its completed
     members remain completed, while all other entries stay monomorphic. -/
 theorem InferRecStrata.transport_history {rigid bindings Φ ctx specs done G groups Φ' S specs' G'}
-    {h : InferRecStrata κ rigid bindings Φ ctx specs done G groups Φ' S specs' G'}
+    {h : InferRecStrata K rigid bindings Φ ctx specs done G groups Φ' S specs' G'}
     (hfrozen : h.Frozen)
     (hctx : CtxWF ctx) (hbelow : CtxBelow Φ ctx)
     (hspecs : ∀ s ∈ specs, s.LC) (hspecsB : ∀ s ∈ specs, s.BelowFvars Φ)
-    (K : List Nat) (hKΦ : ∀ k ∈ K, k < Φ)
+    (hKΦ : ∀ k ∈ K, k < Φ)
     (hKbr : ∀ y ∈ Expr.tyFreeVars.RecGroup.tyFreeVars bindings, y ∈ K)
     (hKpoly : ∀ σ, .poly σ ∈ specs → ∀ y ∈ σ.body.freeVars, y ∈ K)
-    (hSK : ∀ p ∈ S, p.1 ∉ K)
     {history : List Nat} (hhistory : ∀ member ∈ history, member ∈ done)
     {rhs : Expr} {τ : Ty} (hrhs : rhs ∈ bindings)
     (htyped : TypeOfHM (RecSpecs.algorithmStageCtx ctx specs history G) rhs τ) :
     TypeOfHM (RecSpecs.algorithmStageCtx (S.onCtx ctx) specs' history G') rhs (S.onTy τ) := by
+  have hSK := h.dom_avoids
   match hfrozen with
   | .nil => simpa only [Subst.onCtx_nil, Subst.onTy_nil] using htyped
   | .cons hdom hran hfr =>
@@ -11257,34 +11257,34 @@ theorem InferRecStrata.transport_history {rigid bindings Φ ctx specs done G gro
     rw [← hpool] at htyped₁
     have htail := InferRecStrata.transport_history hfr
       (Subst.onCtx_wf hS₁LC hctx) (Subst.onCtx_below hS₁B hle hbelow)
-      hspecs₁LC hspecs₁B K (fun k hk => lt_of_lt_of_le (hKΦ k hk) hle) hKbr
+      hspecs₁LC hspecs₁B (fun k hk => lt_of_lt_of_le (hKΦ k hk) hle) hKbr
       (fun σ hσ => hKpoly σ (RecSpec.poly_mem_map_onSubst.mp (hspecs_1 ▸ hσ)))
-      hS₂K (fun member hm => List.mem_append_left _ (hhistory member hm)) hrhs htyped₁
+       (fun member hm => List.mem_append_left _ (hhistory member hm)) hrhs htyped₁
     simpa only [Subst.onTy_append, Subst.onCtx_append] using htail
 termination_by groups.length
 decreasing_by all_goals (simp_wf; try omega)
 
 private abbrev Infer.SourceSoundAt (e : Expr) : Prop :=
-  ∀ {κ Φ ctx Φ' S τ}, Infer κ Φ ctx e Φ' S τ →
-    CtxWF ctx → CtxBelow Φ ctx → (K : List Nat) → (∀ k ∈ K, k < Φ) →
-    (∀ y ∈ e.tyFreeVars, y ∈ K) → (∀ p ∈ S, p.1 ∉ K) →
+  ∀ {K Φ ctx Φ' S τ}, Infer K Φ ctx e Φ' S τ →
+    CtxWF ctx → CtxBelow Φ ctx → (∀ k ∈ K, k < Φ) →
+    (∀ y ∈ e.tyFreeVars, y ∈ K) →
     TypeOfHM (S.onCtx ctx) e τ
 
 /-- Source typing of selected members in one residual component. This helper
     takes source soundness only for RHS subexpressions, avoiding any dependence
     on the eventual strata context. -/
 theorem InferRecComponent.sourceSoundMono_of {members memberIndex Φ ctx bindings specs Φ' S}
-    (h : InferRecComponent κ members memberIndex Φ ctx bindings specs Φ' S)
+    (h : InferRecComponent K members memberIndex Φ ctx bindings specs Φ' S)
     (hsound : ∀ rhs ∈ bindings, Infer.SourceSoundAt rhs)
     (hctx : CtxWF ctx) (hbelow : CtxBelow Φ ctx)
     (hspecs : ∀ s ∈ specs, s.LC) (hspecsB : ∀ s ∈ specs, s.BelowFvars Φ)
-    (K : List Nat) (hKΦ : ∀ k ∈ K, k < Φ)
-    (hKbr : ∀ y ∈ Expr.tyFreeVars.RecGroup.tyFreeVars bindings, y ∈ K)
-    (hSK : ∀ p ∈ S, p.1 ∉ K) :
+    (hKΦ : ∀ k ∈ K, k < Φ)
+    (hKbr : ∀ y ∈ Expr.tyFreeVars.RecGroup.tyFreeVars bindings, y ∈ K) :
     ∀ offset rhs τ, memberIndex + offset ∈ members →
       bindings[offset]? = some rhs →
       (specs.map (RecSpec.onSubst S))[offset]? = some (.mono τ) →
       TypeOfHM (S.onCtx ctx) rhs τ := by
+  have hSK := h.dom_avoids
   match h with
   | .nil => intro offset rhs τ _ hrhs; simp at hrhs
   | .skipMono hnot hrest =>
@@ -11295,10 +11295,10 @@ theorem InferRecComponent.sourceSoundMono_of {members memberIndex Φ ctx binding
       exact InferRecComponent.sourceSoundMono_of hrest
         (fun e he => hsound e (List.mem_cons_of_mem _ he)) hctx hbelow
         (fun s hs => hspecs s (List.mem_cons_of_mem _ hs))
-        (fun s hs => hspecsB s (List.mem_cons_of_mem _ hs)) K hKΦ
+        (fun s hs => hspecsB s (List.mem_cons_of_mem _ hs)) hKΦ
         (fun y hy => hKbr y (by
           simp only [Expr.tyFreeVars.RecGroup.tyFreeVars, List.mem_append]; exact Or.inr hy))
-        hSK offset rhs τ (by simpa only [Nat.add_assoc, Nat.add_comm 1 offset] using hmember)
+         offset rhs τ (by simpa only [Nat.add_assoc, Nat.add_comm 1 offset] using hmember)
         (by simpa using hrhs) (by simpa using hτ)
   | .skipPoly hrest =>
     intro offset rhs τ hmember hrhs hτ
@@ -11308,10 +11308,10 @@ theorem InferRecComponent.sourceSoundMono_of {members memberIndex Φ ctx binding
       exact InferRecComponent.sourceSoundMono_of hrest
         (fun e he => hsound e (List.mem_cons_of_mem _ he)) hctx hbelow
         (fun s hs => hspecs s (List.mem_cons_of_mem _ hs))
-        (fun s hs => hspecsB s (List.mem_cons_of_mem _ hs)) K hKΦ
+        (fun s hs => hspecsB s (List.mem_cons_of_mem _ hs)) hKΦ
         (fun y hy => hKbr y (by
           simp only [Expr.tyFreeVars.RecGroup.tyFreeVars, List.mem_append]; exact Or.inr hy))
-        hSK offset rhs τ (by simpa only [Nat.add_assoc, Nat.add_comm 1 offset] using hmember)
+         offset rhs τ (by simpa only [Nat.add_assoc, Nat.add_comm 1 offset] using hmember)
         (by simpa using hrhs) (by simpa using hτ)
   | .consSelected _ he huniRigid hrest =>
     have huni := huniRigid.unifies
@@ -11352,8 +11352,8 @@ theorem InferRecComponent.sourceSoundMono_of {members memberIndex Φ ctx binding
       simp only [List.map_cons, List.getElem?_cons_zero, RecSpec.onSubst,
         Option.some.injEq, RecSpec.mono.injEq] at hτ0
       subst τ0
-      have h0 := hsound e List.mem_cons_self he hctx hbelow K hKΦ
-        (fun y hy => hKbr y (.inl hy)) hK1
+      have h0 := hsound e List.mem_cons_self he hctx hbelow hKΦ
+        (fun y hy => hKbr y (.inl hy))
       have hefix (T : Subst) (hTK : ∀ p ∈ T, p.1 ∉ K) : e.substTyFvars T = e :=
         Expr.substTyFvars_eq_self_of_not_mem_tyFreeVars
           (fun p hp hc => hTK p hp (hKbr p.1 (.inl hc)))
@@ -11369,8 +11369,8 @@ theorem InferRecComponent.sourceSoundMono_of {members memberIndex Φ ctx binding
         exact List.map_congr_left (fun s _ => RecSpec.onSubst_append (S₁ ++ S₂) S₃ s)
       have htail := InferRecComponent.sourceSoundMono_of hrest
         (fun e he => hsound e (List.mem_cons_of_mem _ he)) hctx2 hbelow2 hspecs' hspecsB'
-        K (fun k hk => lt_of_lt_of_le (hKΦ k hk) hle1)
-        (fun y hy => hKbr y (.inr hy)) hK3 offset rhs τ0
+         (fun k hk => lt_of_lt_of_le (hKΦ k hk) hle1)
+        (fun y hy => hKbr y (.inr hy)) offset rhs τ0
         (by simpa only [Nat.add_assoc, Nat.add_comm 1 offset] using hmember)
         (by simpa using hrhs) (by
           simp only [List.map_cons, List.getElem?_cons_succ] at hτ0
@@ -11383,19 +11383,19 @@ decreasing_by
 /-- Every processed component is source-typed at its historical stage, rendered
     using the final solved specs and aggregate pool. -/
 theorem InferRecStrata.sourceSoundMono_of {rigid bindings Φ ctx specs done G groups Φ' S specs' G'}
-    {h : InferRecStrata κ rigid bindings Φ ctx specs done G groups Φ' S specs' G'}
+    {h : InferRecStrata K rigid bindings Φ ctx specs done G groups Φ' S specs' G'}
     (hfrozen : h.Frozen) (hsound : ∀ rhs ∈ bindings, Infer.SourceSoundAt rhs)
     (hctx : CtxWF ctx) (hbelow : CtxBelow Φ ctx)
     (hspecs : ∀ s ∈ specs, s.LC) (hspecsB : ∀ s ∈ specs, s.BelowFvars Φ)
-    (K : List Nat) (hKΦ : ∀ k ∈ K, k < Φ)
+    (hKΦ : ∀ k ∈ K, k < Φ)
     (hKbr : ∀ y ∈ Expr.tyFreeVars.RecGroup.tyFreeVars bindings, y ∈ K)
-    (hKpoly : ∀ σ, .poly σ ∈ specs → ∀ y ∈ σ.body.freeVars, y ∈ K)
-    (hSK : ∀ p ∈ S, p.1 ∉ K) :
+    (hKpoly : ∀ σ, .poly σ ∈ specs → ∀ y ∈ σ.body.freeVars, y ∈ K) :
     ∀ stage component, groups[stage]? = some component →
       ∀ member rhs τ, member ∈ component → bindings[member]? = some rhs →
       specs[member]? = some (.mono τ) →
       TypeOfHM (RecSpecs.algorithmStageCtx (S.onCtx ctx) specs'
         (done ++ (groups.take stage).flatten) G') rhs (S.onTy τ) := by
+  have hSK := h.dom_avoids
   match hfrozen with
   | .nil => intro stage component hc; simp at hc
   | .cons hdom hran hfr =>
@@ -11427,7 +11427,7 @@ theorem InferRecStrata.sourceSoundMono_of {rigid bindings Φ ctx specs done G gr
       simp only [List.getElem?_cons_zero, Option.some.injEq] at hc
       subst component_1
       have htyped := InferRecComponent.sourceSoundMono_of hcomponent hsound hstageWF hstageB
-        hspecs hspecsB K hKΦ hKbr hS₁K member rhs (S₁.onTy τ) (by simpa using hm) hrhs
+        hspecs hspecsB hKΦ hKbr member rhs (S₁.onTy τ) (by simpa using hm) hrhs
         (by rw [List.getElem?_map, hτ]; rfl)
       rw [RecSpecs.algorithmStageCtx_onSubst hdom hran
         (fun σ hσ p hp hc => hS₁K p hp (hKpoly σ hσ p.1 hc)), ← hspecs_1] at htyped
@@ -11440,16 +11440,16 @@ theorem InferRecStrata.sourceSoundMono_of {rigid bindings Φ ctx specs done G gr
       rw [← hpool] at htyped
       have htail := InferRecStrata.transport_history hfr
         (Subst.onCtx_wf hS₁LC hctx) (Subst.onCtx_below hS₁B hle hbelow)
-        hspecs₁LC hspecs₁B K (fun k hk => lt_of_lt_of_le (hKΦ k hk) hle) hKbr
-        hKpoly₁ hS₂K (fun i hi => List.mem_append_left _ hi)
+        hspecs₁LC hspecs₁B (fun k hk => lt_of_lt_of_le (hKΦ k hk) hle) hKbr
+        hKpoly₁ (fun i hi => List.mem_append_left _ hi)
         (List.mem_of_getElem? hrhs) htyped
       simpa only [Subst.onTy_append, Subst.onCtx_append, List.take_zero,
         List.flatten_nil, List.append_nil] using htail
     | succ stage =>
       have htail := InferRecStrata.sourceSoundMono_of hfr hsound
         (Subst.onCtx_wf hS₁LC hctx) (Subst.onCtx_below hS₁B hle hbelow)
-        hspecs₁LC hspecs₁B K (fun k hk => lt_of_lt_of_le (hKΦ k hk) hle) hKbr
-        hKpoly₁ hS₂K stage component_1 (by simpa using hc) member rhs (S₁.onTy τ) hm hrhs hτ₁
+        hspecs₁LC hspecs₁B (fun k hk => lt_of_lt_of_le (hKΦ k hk) hle) hKbr
+        hKpoly₁ stage component_1 (by simpa using hc) member rhs (S₁.onTy τ) hm hrhs hτ₁
       simpa only [Subst.onTy_append, Subst.onCtx_append, List.take_succ_cons,
         List.flatten_cons, List.append_assoc] using htail
 termination_by groups.length
@@ -11458,49 +11458,49 @@ decreasing_by all_goals (simp_wf; try omega)
 set_option maxRecDepth 4096 in
 set_option maxHeartbeats 800_000 in
 mutual
-/-- Generalized source soundness for a separately chosen protected set.
-    The public `sourceSound` below takes protection from the judgment itself. -/
-private theorem Infer.sourceSound_of_avoids {Φ ctx e Φ' S τ} (h : Infer κ Φ ctx e Φ' S τ) :
-    CtxWF ctx → CtxBelow Φ ctx → (K : List Nat) → (∀ k ∈ K, k < Φ) →
-    (∀ y ∈ e.tyFreeVars, y ∈ K) → (∀ p ∈ S, p.1 ∉ K) →
+/-- Inference implies source typing at the rigid context in its derivation. -/
+theorem Infer.sourceSound {Φ ctx e Φ' S τ} (h : Infer K Φ ctx e Φ' S τ) :
+    CtxWF ctx → CtxBelow Φ ctx → (∀ k ∈ K, k < Φ) →
+    (∀ y ∈ e.tyFreeVars, y ∈ K) →
     TypeOfHM (S.onCtx ctx) e τ := by
+  have hSK := h.dom_avoids
   cases h with
   | primLitUnit =>
-    intro _ _ _ _ _ _
+    intro _ _ _ _
     simp only [Subst.onCtx_nil]
     exact .primLitUnit
   | primLitInt =>
-    intro _ _ _ _ _ _
+    intro _ _ _ _
     simp only [Subst.onCtx_nil]
     exact .primLitInt
   | primLitNat =>
-    intro _ _ _ _ _ _
+    intro _ _ _ _
     simp only [Subst.onCtx_nil]
     exact .primLitNat
   | primLitChar =>
-    intro _ _ _ _ _ _
+    intro _ _ _ _
     simp only [Subst.onCtx_nil]
     exact .primLitChar
   | primBinOpIntAdd =>
-    intro _ _ _ _ _ _
+    intro _ _ _ _
     simp only [Subst.onCtx_nil]
     exact .primBinOpIntAdd
   | primBinOpIntSub =>
-    intro _ _ _ _ _ _
+    intro _ _ _ _
     simp only [Subst.onCtx_nil]
     exact .primBinOpIntSub
   | primBinOpIntLt hlookT hbT hlookF hbF =>
-    intro _ _ _ _ _ _
+    intro _ _ _ _
     simp only [Subst.onCtx_nil]
     exact .primBinOpIntLt (Ctor.IsBoolCtor.typeOfHM hlookT hbT)
       (Ctor.IsBoolCtor.typeOfHM hlookF hbF)
   | primBinOpCharLt hlookT hbT hlookF hbF =>
-    intro _ _ _ _ _ _
+    intro _ _ _ _
     simp only [Subst.onCtx_nil]
     exact .primBinOpCharLt (Ctor.IsBoolCtor.typeOfHM hlookT hbT)
       (Ctor.IsBoolCtor.typeOfHM hlookF hbF)
   | lambda hseed hbody =>
-    intro hctx hbelow K hKΦ hKe hSK
+    intro hctx hbelow hKΦ hKe
     cases hseed
     case none =>
       simp only [Expr.tyFreeVars, Option.elim_none, List.nil_append] at hKe
@@ -11512,8 +11512,8 @@ private theorem Infer.sourceSound_of_avoids {Φ ctx e Φ' S τ} (h : Infer κ Φ
         intro M hM; rcases List.mem_cons.mp hM with rfl | hM
         · exact .fvar (by omega)
         · exact (hbelow M hM).mono (by omega)
-      have ih := Infer.sourceSound_of_avoids hbody hbodyWF hbodyBelow K
-        (fun k hk => by have := hKΦ k hk; omega) hKe hSK
+      have ih := Infer.sourceSound hbody hbodyWF hbodyBelow
+        (fun k hk => by have := hKΦ k hk; omega) hKe
       refine TypeOfHM.lambda
         ((Subst.onTy_lc (Infer.lc hbody hbodyWF).2 ContainsBvarsUpTo.fvar))
         (fun T hT => by cases hT) rfl ?_
@@ -11530,9 +11530,9 @@ private theorem Infer.sourceSound_of_avoids {Φ ctx e Φ' S τ} (h : Infer κ Φ
         intro M hM; rcases List.mem_cons.mp hM with rfl | hM
         · exact Ty.BelowFvars.of_freeVars_lt (fun v hv => hKΦ v (hKe v (.inl hv)))
         · exact hbelow M hM
-      have ih := Infer.sourceSound_of_avoids hbody hbodyWF hbodyBelow K
+      have ih := Infer.sourceSound hbody hbodyWF hbodyBelow
         (fun k hk => by have := hKΦ k hk; omega)
-        (fun y hy => hKe y (.inr hy)) hSK
+        (fun y hy => hKe y (.inr hy))
       have hSparam : S.onTy paramTy = paramTy :=
         Ty.substFvars_eq_self_of_no_key (fun p hp hc => hSK p hp (hKe p.1 (.inl hc)))
       refine TypeOfHM.lambda
@@ -11545,7 +11545,7 @@ private theorem Infer.sourceSound_of_avoids {Φ ctx e Φ' S τ} (h : Infer κ Φ
         using ih
   | app hf harg huniRigid =>
     have huni := huniRigid.unifies
-    intro hctx hbelow K hKΦ hKe hSK
+    intro hctx hbelow hKΦ hKe
     expose_names
     simp only [Expr.tyFreeVars, List.mem_append] at hKe
     obtain ⟨hf_lc, hf_s⟩ := Infer.lc hf hctx
@@ -11554,12 +11554,12 @@ private theorem Infer.sourceSound_of_avoids {Φ ctx e Φ' S τ} (h : Infer κ Φ
     have hf_below := Infer.belowFvars hf hbelow (fun y hy => hKΦ y (hKe y (.inl hy)))
     have hbelow1 := Subst.onCtx_below hf_below.2 (Infer.frontier_le hf) hbelow
     have hs3 := huni.lc (Subst.onTy_lc harg_s hf_lc) (.arrow harg_lc ContainsBvarsUpTo.fvar)
-    have hf_sound := Infer.sourceSound_of_avoids hf hctx hbelow K hKΦ (fun y hy => hKe y (.inl hy))
-      (fun p hp => hSK p (List.mem_append_left _ (List.mem_append_left _ hp)))
-    have harg_sound := Infer.sourceSound_of_avoids harg hctx1 hbelow1 K
+    have hf_sound := Infer.sourceSound hf hctx hbelow hKΦ (fun y hy => hKe y (.inl hy))
+
+    have harg_sound := Infer.sourceSound harg hctx1 hbelow1
       (fun k hk => lt_of_lt_of_le (hKΦ k hk) (Infer.frontier_le hf))
       (fun y hy => hKe y (.inr hy))
-      (fun p hp => hSK p (List.mem_append_left _ (List.mem_append_right _ hp)))
+
     have hffix23 : f.substTyFvars (S₂ ++ S₃) = f :=
       Expr.substTyFvars_eq_self_of_not_mem_tyFreeVars (fun p hp hc =>
         (List.mem_append.mp hp).elim
@@ -11601,7 +11601,7 @@ private theorem Infer.sourceSound_of_avoids {Φ ctx e Φ' S τ} (h : Infer κ Φ
       rwa [hctx_eq] at harg3
     exact TypeOfHM.app hf_arr harg_arr
   | @var κ Φ ctx i polyTy hlook =>
-    intro hctx _ _ _ _ _
+    intro hctx _ _ _
     simp only [Subst.onCtx_nil]
     refine TypeOfHM.var (polyTy := polyTy)
       (instArgs := (freshVars Φ polyTy.paramCount).map Ty.fvar) hlook ?_ ?_
@@ -11611,7 +11611,7 @@ private theorem Infer.sourceSound_of_avoids {Φ ctx e Φ' S τ} (h : Infer κ Φ
     · exact InstantiatesBy.openVars
         (hctx _ (List.mem_of_getElem? hlook)) (by simp [freshVars_length])
   | @ctor κ Φ ctx name ctor hlook =>
-    intro _ _ _ _ _ _
+    intro _ _ _ _
     simp only [Subst.onCtx_nil]
     refine TypeOfHM.ctor (ctor := ctor)
       (tyArgs := (freshVars Φ ctor.paramCount).map Ty.fvar) hlook ?_ ?_
@@ -11621,7 +11621,7 @@ private theorem Infer.sourceSound_of_avoids {Φ ctx e Φ' S τ} (h : Infer κ Φ
     · exact InstantiatesBy.openVars (Ctor.toTy_wf ctor)
         (by simp [Ctor.toTy, freshVars_length])
   | letIn hrhs hbody =>
-    intro hctx hbelow K hKΦ hKe hSK
+    intro hctx hbelow hKΦ hKe
     expose_names
     simp only [Expr.tyFreeVars, Option.elim_none, List.nil_append, List.mem_append] at hKe
     obtain ⟨hrhs_lc, hrhs_s⟩ := Infer.lc hrhs hctx
@@ -11705,8 +11705,8 @@ private theorem Infer.sourceSound_of_avoids {Φ ctx e Φ' S τ} (h : Infer κ Φ
       rw [Subst.onCtx_append]
       simp only [Subst.onCtx, Subst.onEnv, List.map_cons]
     -- residual source typings
-    have hrhs_sound := Infer.sourceSound_of_avoids hrhs hctx hbelow K hKΦ (fun y hy => hKe y (.inl hy))
-      (fun p hp => hSK p (List.mem_append_left S₂ hp))
+    have hrhs_sound := Infer.sourceSound hrhs hctx hbelow hKΦ (fun y hy => hKe y (.inl hy))
+
     have hrhsfixS2 : rhs.substTyFvars S₂ = rhs :=
       Expr.substTyFvars_eq_self_of_not_mem_tyFreeVars
         (fun p hp hc => hSK p (List.mem_append_right _ hp) (hKe p.1 (.inl hc)))
@@ -11717,9 +11717,9 @@ private theorem Infer.sourceSound_of_avoids {Φ ctx e Φ' S τ} (h : Infer κ Φ
       have key := hr2
       rw [← Subst.onCtx_append, ← hSτ₁] at key
       exact key
-    have hbody_sound := Infer.sourceSound_of_avoids hbody hbodyWF hbodyBelow K
+    have hbody_sound := Infer.sourceSound hbody hbodyWF hbodyBelow
       (fun k hk => lt_of_lt_of_le (hKΦ k hk) (Infer.frontier_le hrhs))
-      (fun y hy => hKe y (.inr hy)) (fun p hp => hSK p (List.mem_append_right _ hp))
+      (fun y hy => hKe y (.inr hy))
     have hbody_pack : TypeOfHM
         { ((S₁ ++ S₂).onCtx ctx) with
           env := ⟨genV.length, Ty.closeOver genV ((S₁ ++ S₂).onTy τ₁)⟩
@@ -11785,7 +11785,7 @@ private theorem Infer.sourceSound_of_avoids {Φ ctx e Φ' S τ} (h : Infer κ Φ
   | letInAnn hσwf hΦN hrhs huniRigid hesc2 hbody =>
     have hesc1 := Subst.skolem_dom_avoids (Infer.dom_avoids hrhs) huniRigid.dom_avoids
     have huni := huniRigid.unifies
-    intro hctx hbelow K hKΦ hKe hSK
+    intro hctx hbelow hKΦ hKe
     expose_names
     simp only [Expr.tyFreeVars, Option.elim_some, List.mem_append] at hKe
     have hrle := Infer.frontier_le hrhs
@@ -11877,7 +11877,7 @@ private theorem Infer.sourceSound_of_avoids {Φ ctx e Φ' S τ} (h : Infer κ Φ
       rcases Expr.tyFreeVars_openTyVars hc with h | h
       · exact hSK p hpS (hKe p.1 (.inl (.inr h)))
       · exact hSYs p hpS h
-    have hrhs_sound := Infer.sourceSound_of_avoids hrhs hctx hctx_pc (K ++ Ys)
+    have hrhs_sound := Infer.sourceSound hrhs hctx hctx_pc
       (fun k hk => by
         rcases List.mem_append.mp hk with h | h
         · have := hKΦ k h; have := hΦN; omega
@@ -11886,11 +11886,7 @@ private theorem Infer.sourceSound_of_avoids {Φ ctx e Φ' S τ} (h : Infer κ Φ
         rcases Expr.tyFreeVars_openTyVars hy with h | h
         · exact List.mem_append_left _ (hKe y (.inl (.inr h)))
         · simp only [Ys]; exact List.mem_append_right _ h)
-      (fun p hp hc => by
-        rcases List.mem_append.mp hc with h | h
-        · exact hSK p (List.mem_append_left _ (List.mem_append_left _ hp)) h
-        · simp only [Ys] at h
-          exact hesc1 p.1 h (List.mem_map.mpr ⟨p, List.mem_append_left _ hp, rfl⟩))
+
     have hr1 := TypeOfHM.onSubst_fixed (ctx := S₁.onCtx ctx)
       (e := rhs.openTyVars Ys) (τ := τ₁) Schk hSchk_lc
       (Expr.substTyFvars_eq_self_of_not_mem_tyFreeVars (fun p hp hc => by
@@ -11954,9 +11950,9 @@ private theorem Infer.sourceSound_of_avoids {Φ ctx e Φ' S τ} (h : Infer κ Φ
       rw [show (S₁ ++ Schk ++ S₂) = (S₁ ++ Schk) ++ S₂ from rfl, Subst.onCtx_append,
         Subst.onCtx_append]
       simp only [Subst.onCtx, Subst.onEnv, List.map_cons, hS₂σ]
-    have hbody_sound := Infer.sourceSound_of_avoids hbody hbodyWF hbodyBelow K
+    have hbody_sound := Infer.sourceSound hbody hbodyWF hbodyBelow
       (fun k hk => by have := hKΦ k hk; have := hΦN; have := hrle; omega)
-      (fun y hy => hKe y (.inr hy)) (fun p hp => hSK p (List.mem_append_right _ hp))
+      (fun y hy => hKe y (.inr hy))
     have hbody_pack : TypeOfHM
         { ((S₁ ++ Schk ++ S₂).onCtx ctx) with
           env := σ
@@ -12023,7 +12019,7 @@ private theorem Infer.sourceSound_of_avoids {Φ ctx e Φ' S τ} (h : Infer κ Φ
         hYs_env p.1 (List.of_mem_zip hp).1 hc)
     rwa [hctxfix, htermeq, htypeeq] at hren
   | match_ hscrut hne hbr =>
-    intro hctx hbelow K hKΦ hKe hSK
+    intro hctx hbelow hKΦ hKe
     expose_names
     simp only [Expr.tyFreeVars, List.mem_append] at hKe
     obtain ⟨hτs_lc, hS₁⟩ := Infer.lc hscrut hctx
@@ -12032,19 +12028,19 @@ private theorem Infer.sourceSound_of_avoids {Φ ctx e Φ' S τ} (h : Infer κ Φ
     have hctx1 := Subst.onCtx_wf hS₁ hctx
     have hbelow1 := Subst.onCtx_below hscrut_below.2 hle1 hbelow
     have hS₂lc := (InferBranches.lc hbr hctx1 hτs_lc ContainsBvarsUpTo.fvar).2
-    have hscrut_sound := Infer.sourceSound_of_avoids hscrut hctx hbelow K hKΦ (fun y hy => hKe y (.inl hy))
-      (fun p hp => hSK p (List.mem_append_left _ hp))
+    have hscrut_sound := Infer.sourceSound hscrut hctx hbelow hKΦ (fun y hy => hKe y (.inl hy))
+
     have hscrutfix : scrut.substTyFvars S₂ = scrut :=
       Expr.substTyFvars_eq_self_of_not_mem_tyFreeVars (fun p hp hc =>
         hSK p (List.mem_append_right _ hp) (hKe p.1 (.inl hc)))
     have hscrut_decl := TypeOfHM.onSubst_fixed (ctx := S₁.onCtx ctx)
       (e := scrut) (τ := τs) S₂ hS₂lc hscrutfix hscrut_sound
-    have hbr_sound := InferBranches.sourceSound_of_avoids hbr hctx1
+    have hbr_sound := InferBranches.sourceSound hbr hctx1
       (fun M hM => (hbelow1 M hM).mono (by omega))
       hτs_lc ContainsBvarsUpTo.fvar
-      (hscrut_below.1.mono (by omega)) (.fvar (by omega)) K
+      (hscrut_below.1.mono (by omega)) (.fvar (by omega))
       (fun k hk => by have := hKΦ k hk; omega)
-      (fun y hy => hKe y (.inr hy)) (fun p hp => hSK p (List.mem_append_right _ hp))
+      (fun y hy => hKe y (.inr hy))
     refine TypeOfHM.match_
       (by
         have hctx_eq : (S₂.onCtx (S₁.onCtx ctx)) =
@@ -12060,7 +12056,7 @@ private theorem Infer.sourceSound_of_avoids {Φ ctx e Φ' S τ} (h : Infer κ Φ
         ((S₁ ++ S₂).onCtx ctx) := by rw [← Subst.onCtx_append]
     rwa [← hctx_eq]
   | letRec hwfanns hvalid hstrata hpoly hspecs2 hbody =>
-    intro hctx hbelow K hKΦ hKe hSK
+    intro hctx hbelow hKΦ hKe
     expose_names
     subst specs2
     simp only [Expr.tyFreeVars, List.mem_append] at hKe
@@ -12199,20 +12195,20 @@ private theorem Infer.sourceSound_of_avoids {Φ ctx e Φ' S τ} (h : Infer κ Φ
         (hbodyAvoid₂ g hc) (hGbody g hc)).1 p hp hg
     have hbridge₃ := RecSpecs.bodyCtx_onSubst (ctx := ctx₂) hS₃G hS₃RG
       (fun σ hσ p hp hc => hS₃K p hp (hpolySK σ hσ p.1 hc))
-    have hbodysound := Infer.sourceSound_of_avoids hbody hbodyWF₂ hbodyB₂ K
-      (fun k hk => by have := hKΦ k hk; omega) (fun y hy => hKe y (.inr hy)) hS₃K
+    have hbodysound := Infer.sourceSound hbody hbodyWF₂ hbodyB₂
+      (fun k hk => by have := hKΦ k hk; omega) (fun y hy => hKe y (.inr hy))
     have hmonoS := InferRecStrata.sourceSoundMono_of hfrozen
       (fun rhs hrhs => by
         have hsize := Expr.sourceLocality_size_mem hrhs
-        intro κ Ψ c Ψ' T τ he hc hb KK hKK hke htk
-        exact Infer.sourceSound_of_avoids he hc hb KK hKK hke htk)
-      hctx hctxB hinitLC hinitB K (fun k hk => by have := hKΦ k hk; omega)
-      hKbind (fun σ hσ => hKsch σ (RecSpec.poly_mem_init hσ)) hS₁K
-    obtain ⟨L₀,hpolyS⟩ := InferRecGroupPoly.sourceSoundPoly_of_avoids hpoly hbodyWF₁ hbodyB₁
+        intro K₀ Ψ c Ψ' T τ he hc hb hKK hke
+        exact Infer.sourceSound he hc hb hKK hke)
+      hctx hctxB hinitLC hinitB (fun k hk => by have := hKΦ k hk; omega)
+      hKbind (fun σ hσ => hKsch σ (RecSpec.poly_mem_init hσ))
+    obtain ⟨L₀,hpolyS⟩ := InferRecGroupPoly.sourceSoundPoly hpoly hbodyWF₁ hbodyB₁
       hspecs₁LC hspecs₁B
       (fun σ hσ y hy => Env.mem_freeVars_iff.mpr ⟨σ,
         List.mem_append_left _ (List.mem_map.mpr ⟨.poly σ,hσ,rfl⟩),hy⟩)
-      K (fun k hk => by have := hKΦ k hk; omega) hKbind hpoly₁K hS₂K
+       (fun k hk => by have := hKΦ k hk; omega) hKbind hpoly₁K
     let specsF := specsS.map (RecSpec.onSubst S₃)
     have hwfFinal : RecSpecs.WF anns bindings specsF G := by
       constructor
@@ -12293,18 +12289,18 @@ termination_by e.size
 decreasing_by
   all_goals (try subst_vars; try simp only [Expr.size, Expr.size_openTyVars]; omega)
 
-private theorem InferBranches.sourceSound_of_avoids {Φ ctx scrutTy ρ brs Φ' S}
-    (h : InferBranches κ Φ ctx scrutTy ρ brs Φ' S)
+theorem InferBranches.sourceSound {Φ ctx scrutTy ρ brs Φ' S}
+    (h : InferBranches K Φ ctx scrutTy ρ brs Φ' S)
     (hctx : CtxWF ctx) (hbelow : CtxBelow Φ ctx)
     (hscrutTy : scrutTy.IsLC) (hρ : ρ.IsLC)
-    (hscrutB : Ty.BelowFvars Φ scrutTy) (hρB : Ty.BelowFvars Φ ρ) (K : List Nat)
+    (hscrutB : Ty.BelowFvars Φ scrutTy) (hρB : Ty.BelowFvars Φ ρ)
     (hKΦ : ∀ k ∈ K, k < Φ)
-    (hKbr : ∀ y ∈ Expr.tyFreeVars.BranchList.tyFreeVars brs, y ∈ K)
-    (hSK : ∀ p ∈ S, p.1 ∉ K) :
+    (hKbr : ∀ y ∈ Expr.tyFreeVars.BranchList.tyFreeVars brs, y ∈ K) :
     ∀ p ∈ brs,
       TypeOfMatchBranch (S.onCtx ctx)
         (p.1, p.2)
         ((S.onTy scrutTy)) ((S.onTy ρ)) := by
+  have hSK := h.dom_avoids
   cases h with
   | nil => intro p hp; simp at hp
   | cons hlook hn huni0Rigid hbody huniRigid hrest =>
@@ -12368,13 +12364,13 @@ private theorem InferBranches.sourceSound_of_avoids {Φ ctx scrutTy ρ brs Φ' S
       Subst.onTy_belowFvars hS₂bel (Subst.onTy_belowFvars hb_sbel hS₀scrutbel)
     have hρ'bel : Ty.BelowFvars Φ₁ (S₂.onTy (S₁.onTy (S₀.onTy ρ))) :=
       Subst.onTy_belowFvars hS₂bel hS₁S₀ρbel
-    have hrest_sound := InferBranches.sourceSound_of_avoids hrest hctx1WF hctx1bel
+    have hrest_sound := InferBranches.sourceSound hrest hctx1WF hctx1bel
       (Subst.onTy_lc hS₂lc (Subst.onTy_lc hS₁lc (Subst.onTy_lc hS₀lc hscrutTy)))
       (Subst.onTy_lc hS₂lc (Subst.onTy_lc hS₁lc (Subst.onTy_lc hS₀lc hρ)))
-      hscrut'bel hρ'bel K (fun k hk => by have := hKΦ k hk; omega)
+      hscrut'bel hρ'bel (fun k hk => by have := hKΦ k hk; omega)
       (fun y hy => hKbr y (by
         simp only [Expr.tyFreeVars.BranchList.tyFreeVars, List.mem_append]; exact Or.inr hy))
-      (fun p hp => hSK p (List.mem_append_right _ hp))
+
     intro p hp
     rcases List.mem_cons.mp hp with rfl | hp_rest
     · -- head named source branch
@@ -12386,12 +12382,11 @@ private theorem InferBranches.sourceSound_of_avoids {Φ ctx scrutTy ρ brs Φ' S
             ++ (S₀.onCtx ctx).env }
       have h0 : TypeOfHM (S₁.onCtx bodyCtx) body
           τb :=
-        Infer.sourceSound_of_avoids hbody hbodyWF hbodyBelow K
+        Infer.sourceSound hbody hbodyWF hbodyBelow
           (fun k hk => by have := hKΦ k hk; have := hle0; omega)
           (fun y hy => hKbr y (by
             simp only [Expr.tyFreeVars.BranchList.tyFreeVars, List.mem_append]; exact Or.inl hy))
-          (fun p hp => hSK p (List.mem_append_left _ (List.mem_append_left _
-              (List.mem_append_right _ hp))))
+
       have hbodyfixS2 : body.substTyFvars S₂ = body :=
         Expr.substTyFvars_eq_self_of_not_mem_tyFreeVars (fun p hp hc =>
           hSe p (List.mem_append_left _ (List.mem_append_right _ hp))
@@ -12512,19 +12507,19 @@ private theorem InferBranches.sourceSound_of_avoids {Φ ctx scrutTy ρ brs Φ' S
       Subst.onTy_belowFvars hS₂bel (Subst.onTy_belowFvars hb_sbel (hscrutB.mono hle1))
     have hρ'bel : Ty.BelowFvars Φ₁ (S₂.onTy (S₁.onTy ρ)) :=
       Subst.onTy_belowFvars hS₂bel hS₁ρbel
-    have hrest_sound := InferBranches.sourceSound_of_avoids hrest hctx1WF hctx1bel
+    have hrest_sound := InferBranches.sourceSound hrest hctx1WF hctx1bel
       (Subst.onTy_lc hS₂lc (Subst.onTy_lc hS₁lc hscrutTy))
       (Subst.onTy_lc hS₂lc (Subst.onTy_lc hS₁lc hρ))
-      hscrut'bel hρ'bel K (fun k hk => by have := hKΦ k hk; omega)
+      hscrut'bel hρ'bel (fun k hk => by have := hKΦ k hk; omega)
       (fun y hy => hKbr y (by
         simp only [Expr.tyFreeVars.BranchList.tyFreeVars, List.mem_append]; exact Or.inr hy))
-      (fun p hp => hSK p (List.mem_append_right _ hp))
+
     intro p hp
     rcases List.mem_cons.mp hp with rfl | hp_rest
-    · have h0 := Infer.sourceSound_of_avoids hbody hctx hbelow K hKΦ
+    · have h0 := Infer.sourceSound hbody hctx hbelow hKΦ
         (fun y hy => hKbr y (by
           simp only [Expr.tyFreeVars.BranchList.tyFreeVars, List.mem_append]; exact Or.inl hy))
-        (fun p hp => hSK p (List.mem_append_left _ (List.mem_append_left _ hp)))
+
       have hbodyfixS2 : body.substTyFvars S₂ = body :=
         Expr.substTyFvars_eq_self_of_not_mem_tyFreeVars (fun p hp hc =>
           hSe p (List.mem_append_left _ (List.mem_append_right _ hp))
@@ -12569,15 +12564,15 @@ decreasing_by
   all_goals (try subst_vars; try simp only [Expr.sizeBranches]; omega)
 
 /-- Source soundness of the unsigned recursive-group phase. -/
-private theorem InferRecGroup.sourceSoundMono_of_avoids {Φ ctx bindings specs Φ' S}
-    (h : InferRecGroup κ Φ ctx bindings specs Φ' S)
+theorem InferRecGroup.sourceSoundMono {Φ ctx bindings specs Φ' S}
+    (h : InferRecGroup K Φ ctx bindings specs Φ' S)
     (hctx : CtxWF ctx) (hbelow : CtxBelow Φ ctx)
     (hspecs : ∀ s ∈ specs, s.LC) (hspecsB : ∀ s ∈ specs, s.BelowFvars Φ)
-    (K : List Nat) (hKΦ : ∀ k ∈ K, k < Φ)
-    (hKbr : ∀ y ∈ Expr.tyFreeVars.RecGroup.tyFreeVars bindings, y ∈ K)
-    (hSK : ∀ p ∈ S, p.1 ∉ K) :
+    (hKΦ : ∀ k ∈ K, k < Φ)
+    (hKbr : ∀ y ∈ Expr.tyFreeVars.RecGroup.tyFreeVars bindings, y ∈ K) :
     ∀ p ∈ bindings.zip (specs.map (RecSpec.onSubst S)), ∀ τ,
       p.2 = RecSpec.mono τ → TypeOfHM (S.onCtx ctx) p.1 τ := by
+  have hSK := h.dom_avoids
   cases h with
   | nil => intro p hp; simp at hp
   | skipPoly hrest =>
@@ -12585,12 +12580,12 @@ private theorem InferRecGroup.sourceSoundMono_of_avoids {Φ ctx bindings specs �
     simp only [List.map_cons, List.zip_cons_cons, List.mem_cons] at hp
     rcases hp with rfl | hp
     · exact absurd hτ0 (by simp [RecSpec.onSubst])
-    · exact InferRecGroup.sourceSoundMono_of_avoids hrest hctx hbelow
+    · exact InferRecGroup.sourceSoundMono hrest hctx hbelow
         (fun s hs => hspecs s (List.mem_cons_of_mem _ hs))
-        (fun s hs => hspecsB s (List.mem_cons_of_mem _ hs)) K hKΦ
+        (fun s hs => hspecsB s (List.mem_cons_of_mem _ hs)) hKΦ
         (fun y hy => hKbr y (by
           simp only [Expr.tyFreeVars.RecGroup.tyFreeVars, List.mem_append]
-          exact Or.inr hy)) hSK p hp τ0 hτ0
+          exact Or.inr hy)) p hp τ0 hτ0
   | consMono he huniRigid hrest =>
     have huni := huniRigid.unifies
     expose_names
@@ -12623,9 +12618,9 @@ private theorem InferRecGroup.sourceSoundMono_of_avoids {Φ ctx bindings specs �
           (fun h => hS₂below p h))
         ((hspecsB s (List.mem_cons_of_mem _ hs)).mono hle1)
     have hS₃lc : ∀ p ∈ S₃, p.2.IsLC := InferRecGroup.lc hrest hctx2 hspecs'
-    have hmono_tail := InferRecGroup.sourceSoundMono_of_avoids hrest hctx2 hbelow2
-      hspecs' hspecsB' K (fun k hk => lt_of_lt_of_le (hKΦ k hk) hle1)
-      (fun y hy => hKbr y (.inr hy)) hK3
+    have hmono_tail := InferRecGroup.sourceSoundMono hrest hctx2 hbelow2
+      hspecs' hspecsB' (fun k hk => lt_of_lt_of_le (hKΦ k hk) hle1)
+      (fun y hy => hKbr y (.inr hy))
     have hspecmap : specs.map (RecSpec.onSubst (S₁ ++ S₂ ++ S₃))
         = (specs.map (RecSpec.onSubst (S₁ ++ S₂))).map (RecSpec.onSubst S₃) := by
       rw [List.map_map]
@@ -12638,7 +12633,7 @@ private theorem InferRecGroup.sourceSoundMono_of_avoids {Φ ctx bindings specs �
       rw [hred] at hτ0
       injection hτ0 with hτeq
       subst hτeq
-      have h0 := Infer.sourceSound_of_avoids he hctx hbelow K hKΦ (fun y hy => hKbr y (.inl hy)) hK1
+      have h0 := Infer.sourceSound he hctx hbelow hKΦ (fun y hy => hKbr y (.inl hy))
       have hefixS2 : e.substTyFvars S₂ = e :=
         Expr.substTyFvars_eq_self_of_not_mem_tyFreeVars (fun p hp hc =>
           hK2 p hp (hKbr p.1 (.inl hc)))
@@ -12668,33 +12663,33 @@ decreasing_by
   all_goals (try subst_vars; try simp only [Expr.sizeRecGroup]; omega)
 
 /- Source soundness of the signed recursive-group phase. -/
-private theorem InferRecGroupPoly.sourceSoundPoly_of_avoids {Φ ctx bindings specs Φ' S}
-    (h : InferRecGroupPoly κ Φ ctx bindings specs Φ' S)
+theorem InferRecGroupPoly.sourceSoundPoly {Φ ctx bindings specs Φ' S}
+    (h : InferRecGroupPoly K Φ ctx bindings specs Φ' S)
     (hctx : CtxWF ctx) (hbelow : CtxBelow Φ ctx)
     (hspecs : ∀ s ∈ specs, s.LC) (hspecsB : ∀ s ∈ specs, s.BelowFvars Φ)
     (hspecs_env : ∀ σ, RecSpec.poly σ ∈ specs →
       ∀ y ∈ σ.body.freeVars, y ∈ ctx.env.freeVars)
-    (K : List Nat) (hKΦ : ∀ k ∈ K, k < Φ)
+    (hKΦ : ∀ k ∈ K, k < Φ)
     (hKbr : ∀ y ∈ Expr.tyFreeVars.RecGroup.tyFreeVars bindings, y ∈ K)
-    (hKsch : ∀ σ, RecSpec.poly σ ∈ specs → ∀ y ∈ σ.body.freeVars, y ∈ K)
-    (hSK : ∀ p ∈ S, p.1 ∉ K) :
+    (hKsch : ∀ σ, RecSpec.poly σ ∈ specs → ∀ y ∈ σ.body.freeVars, y ∈ K) :
     ∃ L : List Nat, ∀ p ∈ bindings.zip (specs.map (RecSpec.onSubst S)),
       ∀ σ, p.2 = RecSpec.poly σ → ∀ Xs, FreshNames L σ.paramCount Xs →
         TypeOfHM (S.onCtx ctx) (p.1.openTyVars Xs) (σ.openVars Xs) := by
+  have hSK := h.dom_avoids
   cases h with
   | nil =>
     refine ⟨[], ?_⟩
     intro p hp
     simp at hp
   | skipMono hrest =>
-    obtain ⟨L, htail⟩ := InferRecGroupPoly.sourceSoundPoly_of_avoids hrest hctx hbelow
+    obtain ⟨L, htail⟩ := InferRecGroupPoly.sourceSoundPoly hrest hctx hbelow
       (fun s hs => hspecs s (List.mem_cons_of_mem _ hs))
       (fun s hs => hspecsB s (List.mem_cons_of_mem _ hs))
-      (fun σ hs => hspecs_env σ (List.mem_cons_of_mem _ hs)) K hKΦ
+      (fun σ hs => hspecs_env σ (List.mem_cons_of_mem _ hs)) hKΦ
       (fun y hy => hKbr y (by
         simp only [Expr.tyFreeVars.RecGroup.tyFreeVars, List.mem_append]
         exact Or.inr hy))
-      (fun σ hσ => hKsch σ (List.mem_cons_of_mem _ hσ)) hSK
+      (fun σ hσ => hKsch σ (List.mem_cons_of_mem _ hσ))
     refine ⟨L, ?_⟩
     intro p hp σ hσ Xs hXs
     simp only [List.map_cons, List.zip_cons_cons, List.mem_cons] at hp
@@ -12795,7 +12790,7 @@ private theorem InferRecGroupPoly.sourceSoundPoly_of_avoids {Φ ctx bindings spe
       InferRecGroupPoly.dom_avoid hrest (hYs_lt p.1 hc) (hYs_ctx p.1 hc)
         (fun σ' hσ' => hYs_specs p.1 hc σ' hσ') (hYs_rest p.1 hc)
         (List.mem_map.mpr ⟨p, hp, rfl⟩)
-    have hrhs_sound := Infer.sourceSound_of_avoids he hctx hctx_pc (K ++ Ys)
+    have hrhs_sound := Infer.sourceSound he hctx hctx_pc
       (fun k hk => by
         rcases List.mem_append.mp hk with h | h
         · have := hKΦ k h; omega
@@ -12804,11 +12799,7 @@ private theorem InferRecGroupPoly.sourceSoundPoly_of_avoids {Φ ctx bindings spe
         rcases Expr.tyFreeVars_openTyVars hy with h | h
         · exact List.mem_append_left _ (hKbr y (.inl h))
         · simp only [Ys]; exact List.mem_append_right _ h)
-      (fun p hp hc => by
-        rcases List.mem_append.mp hc with h | h
-        · exact hK1 p hp h
-        · simp only [Ys] at h
-          exact hesc1 p.1 h (List.mem_map.mpr ⟨p, List.mem_append_left _ hp, rfl⟩))
+
     have he_open_fix : (e.openTyVars Ys).substTyFvars Schk = e.openTyVars Ys :=
       Expr.substTyFvars_eq_self_of_not_mem_tyFreeVars (fun p hp hc => by
         rcases Expr.tyFreeVars_openTyVars hc with h | h
@@ -12868,8 +12859,8 @@ private theorem InferRecGroupPoly.sourceSoundPoly_of_avoids {Φ ctx bindings spe
       fun y hy hc => by
         have := hKΦ y (hKsch σ List.mem_cons_self y hc)
         simp only [Ys] at hy; have := freshVars_ge y hy; omega
-    obtain ⟨L_tail, hpoly_tail⟩ := InferRecGroupPoly.sourceSoundPoly_of_avoids hrest hctx' hbelow'
-      hspecs' hspecsB' hspecs_env' K (fun k hk => by have := hKΦ k hk; omega) hKbr' hKsch' hK2
+    obtain ⟨L_tail, hpoly_tail⟩ := InferRecGroupPoly.sourceSoundPoly hrest hctx' hbelow'
+      hspecs' hspecsB' hspecs_env' (fun k hk => by have := hKΦ k hk; omega) hKbr' hKsch'
     have hctxbridge : S₂.onCtx (Schk.onCtx (S₁.onCtx ctx)) = (S₁ ++ Schk ++ S₂).onCtx ctx := by
       rw [show (S₁ ++ Schk ++ S₂ : Subst) = (S₁ ++ Schk) ++ S₂ from rfl,
           Subst.onCtx_append, Subst.onCtx_append]
@@ -12945,53 +12936,6 @@ decreasing_by
   all_goals (try subst_vars; try simp only [Expr.sizeRecGroup, Expr.size_openTyVars]; omega)
 end
 
-
-/-- Soundness at the rigid context recorded by the derivation. -/
-theorem InferBranches.sourceSound {K Φ ctx scrutTy ρ brs Φ' S}
-    (h : InferBranches K Φ ctx scrutTy ρ brs Φ' S)
-    (hctx : CtxWF ctx) (hbelow : CtxBelow Φ ctx)
-    (hscrutTy : scrutTy.IsLC) (hρ : ρ.IsLC)
-    (hscrutB : Ty.BelowFvars Φ scrutTy) (hρB : Ty.BelowFvars Φ ρ)
-    (hKΦ : ∀ k ∈ K, k < Φ)
-    (hKbr : ∀ y ∈ Expr.tyFreeVars.BranchList.tyFreeVars brs, y ∈ K) :
-    ∀ p ∈ brs,
-      TypeOfMatchBranch (S.onCtx ctx)
-        (p.1, p.2)
-        ((S.onTy scrutTy)) ((S.onTy ρ)) :=
-  InferBranches.sourceSound_of_avoids h hctx hbelow hscrutTy hρ hscrutB hρB K hKΦ hKbr h.dom_avoids
-
-/-- Soundness at the rigid context recorded by the derivation. -/
-theorem InferRecGroup.sourceSoundMono {K Φ ctx bindings specs Φ' S}
-    (h : InferRecGroup K Φ ctx bindings specs Φ' S)
-    (hctx : CtxWF ctx) (hbelow : CtxBelow Φ ctx)
-    (hspecs : ∀ s ∈ specs, s.LC) (hspecsB : ∀ s ∈ specs, s.BelowFvars Φ)
-    (hKΦ : ∀ k ∈ K, k < Φ)
-    (hKbr : ∀ y ∈ Expr.tyFreeVars.RecGroup.tyFreeVars bindings, y ∈ K) :
-    ∀ p ∈ bindings.zip (specs.map (RecSpec.onSubst S)), ∀ τ,
-      p.2 = RecSpec.mono τ → TypeOfHM (S.onCtx ctx) p.1 τ :=
-  InferRecGroup.sourceSoundMono_of_avoids h hctx hbelow hspecs hspecsB K hKΦ hKbr h.dom_avoids
-
-/-- Soundness at the rigid context recorded by the derivation. -/
-theorem InferRecGroupPoly.sourceSoundPoly {K Φ ctx bindings specs Φ' S}
-    (h : InferRecGroupPoly K Φ ctx bindings specs Φ' S)
-    (hctx : CtxWF ctx) (hbelow : CtxBelow Φ ctx)
-    (hspecs : ∀ s ∈ specs, s.LC) (hspecsB : ∀ s ∈ specs, s.BelowFvars Φ)
-    (hspecs_env : ∀ σ, RecSpec.poly σ ∈ specs →
-      ∀ y ∈ σ.body.freeVars, y ∈ ctx.env.freeVars)
-    (hKΦ : ∀ k ∈ K, k < Φ)
-    (hKbr : ∀ y ∈ Expr.tyFreeVars.RecGroup.tyFreeVars bindings, y ∈ K)
-    (hKsch : ∀ σ, RecSpec.poly σ ∈ specs → ∀ y ∈ σ.body.freeVars, y ∈ K) :
-    ∃ L : List Nat, ∀ p ∈ bindings.zip (specs.map (RecSpec.onSubst S)),
-      ∀ σ, p.2 = RecSpec.poly σ → ∀ Xs, FreshNames L σ.paramCount Xs →
-        TypeOfHM (S.onCtx ctx) (p.1.openTyVars Xs) (σ.openVars Xs) :=
-  InferRecGroupPoly.sourceSoundPoly_of_avoids h hctx hbelow hspecs hspecsB hspecs_env K hKΦ hKbr hKsch h.dom_avoids
-
-/-- Source soundness uses the rigid context carried by the derivation. -/
-theorem Infer.sourceSound {K Φ ctx e Φ' S τ} (h : Infer K Φ ctx e Φ' S τ)
-    (hwf : CtxWF ctx) (hbelow : CtxBelow Φ ctx)
-    (hKΦ : ∀ k ∈ K, k < Φ) (hKe : ∀ y ∈ e.tyFreeVars, y ∈ K) :
-    TypeOfHM (S.onCtx ctx) e τ :=
-  Infer.sourceSound_of_avoids h hwf hbelow K hKΦ hKe h.dom_avoids
 
 /-- Runtime soundness follows by erasing a source-sound typing derivation. -/
 theorem Infer.sound {K Φ ctx e Φ' S τ} (h : Infer K Φ ctx e Φ' S τ)
