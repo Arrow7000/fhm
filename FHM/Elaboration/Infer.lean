@@ -3,16 +3,41 @@ import FHM.Elaboration.Close
 
 namespace Elaboration
 
+private theorem forall₂_self_map {α β} {R : α → β → Prop} {f : α → β} :
+    ∀ {xs : List α}, (∀ x ∈ xs, R x (f x)) → List.Forall₂ R xs (xs.map f)
+  | [], _ => .nil
+  | _ :: _, h => .cons (h _ (List.mem_cons_self ..))
+      (forall₂_self_map (fun x hx => h x (List.mem_cons_of_mem _ hx)))
+
+/-- Whole substitutions transport a completed branch and its constructor witness. -/
+theorem _root_.TypeOfMatchBranch.onSubst
+    (h : TypeOfMatchBranch ctx (pat, body) scrutTy resultTy)
+    (subst : Subst) (hlc : ∀ pair ∈ subst, pair.2.IsLC) :
+    TypeOfMatchBranch (subst.onCtx ctx) (pat, body.substTyFvars subst)
+      (subst.onTy scrutTy) (subst.onTy resultTy) := by
+  cases h with
+  | wildcard hb => exact .wildcard (TypeOfHM.onSubst subst hlc hb)
+  | mk hspec heq hb =>
+    subst heq
+    refine .mk (hspec.onSubst subst hlc) ?_ (TypeOfHM.onSubst subst hlc hb)
+    simp only [Subst.onCtx, Subst.onEnv, List.map_append, List.map_map,
+      Function.comp_def, Subst.onPolyTy, PolyTy.mkTrivial]
+
+theorem _root_.InferBranches.nil_iff
+    (h : InferBranches K frontier ctx scrutTy resultTy branches next subst completed) :
+    completed = [] ↔ branches = [] := by cases h <;> simp
+
+mutual
 /-- Successful elaboration produces ordinary annotated Core typing. The proof
 constructs the typing from the inference derivation; it does not recheck output
 with the Core inferer. -/
 theorem _root_.Infer.sourceSound (h : Infer K frontier ctx input next subst output ty) :
     CtxWF ctx → TypeOfHM (subst.onCtx ctx) output ty := by
-  induction h with
-  | backend _ h hbelow hK hrigid =>
+  match h with
+  | .backend _ h hbelow hK hrigid =>
       intro hctx
       exact h.sourceSound hctx hbelow hK hrigid
-  | @lambda K frontier ann param initial ctx body next subst completed bodyTy hs hb ih =>
+  | @Infer.lambda K frontier ann param initial ctx body next subst completed bodyTy hs hb =>
       intro hctx
       have hbodyCtx : CtxWF { ctx with env := PolyTy.mkTrivial param :: ctx.env } := by
         intro scheme hscheme
@@ -26,8 +51,8 @@ theorem _root_.Infer.sourceSound (h : Infer K frontier ctx input next subst outp
         | none => cases heq
         | some template => exact Option.some.inj heq
       · simpa only [lambdaOutput, Subst.onCtx, Subst.onEnv, List.map_cons,
-          Subst.onPolyTy, PolyTy.mkTrivial] using ih hbodyCtx
-  | @app K frontier ctx f first s1 fOut fTy arg second s2 argOut argTy s3 hf ha hu ihf iha =>
+          Subst.onPolyTy, PolyTy.mkTrivial] using hb.sourceSound hbodyCtx
+  | @Infer.app K frontier ctx f first s1 fOut fTy arg second s2 argOut argTy s3 hf ha hu =>
       intro hctx
       have hs1 := (hf.lc hctx).2
       have haCtx := Subst.onCtx_wf hs1 hctx
@@ -35,16 +60,16 @@ theorem _root_.Infer.sourceSound (h : Infer K frontier ctx input next subst outp
       have hs3 := hu.unifies.lc (Subst.onTy_lc hs2 (hf.lc hctx).1)
         (.arrow (ha.lc haCtx).1 .fvar)
       have hfTyped := TypeOfHM.onSubst (s2 ++ s3)
-        (fun pair hp => (List.mem_append.mp hp).elim (hs2 pair) (hs3 pair)) (ihf hctx)
-      have haTyped := TypeOfHM.onSubst s3 hs3 (iha haCtx)
+        (fun pair hp => (List.mem_append.mp hp).elim (hs2 pair) (hs3 pair)) (hf.sourceSound hctx)
+      have haTyped := TypeOfHM.onSubst s3 hs3 (ha.sourceSound haCtx)
       have heq : (s2 ++ s3).onTy fTy =
           .arrow (s3.onTy argTy) (s3.onTy (.fvar second)) := by
         simpa only [Unifies, Subst.onTy_append, Subst.onTy_arrow] using hu.unifies.unifies
       rw [heq] at hfTyped
       simp only [Subst.onCtx_append] at hfTyped
       simpa only [Subst.onCtx_append] using TypeOfHM.app hfTyped haTyped
-  | @letIn K frontier ctx rhs first s1 rhsOut rhsTy ann checked sCheck body next s2 bodyOut bodyTy
-      hr hc hb ihr ihb =>
+  | @Infer.letIn K frontier ctx rhs first s1 rhsOut rhsTy ann checked sCheck body next s2 bodyOut bodyTy
+      hr hc hb =>
       intro hctx
       have hs1 := (hr.lc hctx).2
       have hrTy := (hr.lc hctx).1
@@ -60,14 +85,14 @@ theorem _root_.Infer.sourceSound (h : Infer K frontier ctx input next subst outp
         · exact genScheme_wf checkedTyLC
         · exact checkedCtxWF scheme hscheme
       have hs2 := (hb.lc bodyCtxWF).2
-      have rhsTyped := TypeOfHM.onSubst sCheck hsCheck (ihr hctx)
+      have rhsTyped := TypeOfHM.onSubst sCheck hsCheck (hr.sourceSound hctx)
       have rhsGeneral := TypeOfHM.generaliseAnnotated
         (names := genVars K (sCheck.onCtx (s1.onCtx ctx)).env (sCheck.onTy rhsTy))
         rhsTyped genVars_nodup
         (fun name hn => genVars_not_mem hn)
       obtain ⟨avoid, rhsFinal⟩ := GeneralisesTo.onSubst_annotated
         (genScheme_wf checkedTyLC) rhsGeneral s2 hs2
-      have bodyTyped := ihb bodyCtxWF
+      have bodyTyped := hb.sourceSound bodyCtxWF
       have hctxeq :
           s2.onCtx
             { sCheck.onCtx (s1.onCtx ctx) with
@@ -83,51 +108,165 @@ theorem _root_.Infer.sourceSound (h : Infer K frontier ctx input next subst outp
         (fun _ heq => Option.some.inj heq) ?_ rfl bodyTyped
       simpa only [letOutput, genScheme, ← Subst.onCtx_append] using rhsFinal
 
-/-- Elaboration changes type annotations and their binders, preserving the
-erased expression exactly. -/
+  | .match_ hs hne hb =>
+    intro hctx
+    have hs1 := (hs.lc hctx).2
+    have hbr := hb.lc (Subst.onCtx_wf hs1 hctx) (hs.lc hctx).1 .fvar
+    have hscrut := TypeOfHM.onSubst _ hbr.2 (hs.sourceSound hctx)
+    have hbranches := hb.sourceSound (Subst.onCtx_wf hs1 hctx) (hs.lc hctx).1 .fvar
+    simpa only [Subst.onCtx_append] using
+      TypeOfHM.match_ hscrut (fun hnil => hne (hb.nil_iff.mp hnil)) hbranches
+termination_by (input.size, 0)
+decreasing_by all_goals (simp only [Input.size]; omega)
+
+theorem _root_.InferBranches.sourceSound
+    (h : InferBranches K frontier ctx scrutTy resultTy branches next subst completed)
+    (hctx : CtxWF ctx) (hscrut : scrutTy.IsLC) (hresult : resultTy.IsLC) :
+    ∀ branch ∈ completed, TypeOfMatchBranch (subst.onCtx ctx) branch
+      (subst.onTy scrutTy) (subst.onTy resultTy) := by
+  match h with
+  | .nil => intro branch hb; cases hb
+  | @InferBranches.consWild K frontier ctx body first s1 bodyOut bodyTy resultTy s2 scrutTy rest next s3 restOut
+      hb hu hr =>
+    obtain ⟨hbTy, hs1⟩ := hb.lc hctx
+    have hs2 := hu.unifies.lc hbTy (Subst.onTy_lc hs1 hresult)
+    have hctxRest := Subst.onCtx_wf hs2 (Subst.onCtx_wf hs1 hctx)
+    have hscrutRest := Subst.onTy_lc hs2 (Subst.onTy_lc hs1 hscrut)
+    have hresultRest := Subst.onTy_lc hs2 (Subst.onTy_lc hs1 hresult)
+    have hs3 := (hr.lc hctxRest hscrutRest hresultRest).2
+    have htail := hr.sourceSound hctxRest hscrutRest hresultRest
+    intro branch hbranch
+    rcases List.mem_cons.mp hbranch with rfl | hbranch
+    · have head := TypeOfHM.onSubst (s2 ++ s3)
+        (fun p hp => (List.mem_append.mp hp).elim (hs2 p) (hs3 p)) (hb.sourceSound hctx)
+      have heq := congrArg s3.onTy hu.unifies.unifies
+      rw [Subst.onTy_append] at head
+      rw [heq] at head
+      simpa only [Subst.onCtx_append, Subst.onTy_append, List.append_assoc] using
+        (TypeOfMatchBranch.wildcard (scrutTy := (s1 ++ s2 ++ s3).onTy scrutTy) head)
+    · simpa only [Subst.onCtx_append, Subst.onTy_append] using htail branch hbranch
+  | @InferBranches.cons name ctor count K scrutTy frontier s0 ctx body first s1 bodyOut bodyTy resultTy s2 rest next s3 restOut
+      hlookup hcount hu0 hb hu hr =>
+    have hs0 := hu0.unifies.lc hscrut
+      (.customTy (fun t ht => by obtain ⟨v, _, rfl⟩ := List.mem_map.mp ht; exact .fvar))
+    have hbodyWF := branchBindings_wf (ctorr := ctor)
+      (ta := ((freshVars frontier ctor.paramCount).map Ty.fvar).map s0.onTy)
+      (Subst.onCtx_wf hs0 hctx)
+      (fun t ht => by
+        obtain ⟨v, hv, rfl⟩ := List.mem_map.mp ht
+        obtain ⟨x, _, rfl⟩ := List.mem_map.mp hv
+        exact Subst.onTy_lc hs0 .fvar) (by simp)
+    obtain ⟨hbTy, hs1⟩ := hb.lc hbodyWF
+    have hs2 := hu.unifies.lc hbTy (Subst.onTy_lc hs1 (Subst.onTy_lc hs0 hresult))
+    have hctxRest := Subst.onCtx_wf hs2 (Subst.onCtx_wf hs1 (Subst.onCtx_wf hs0 hctx))
+    have hscrutRest := Subst.onTy_lc hs2 (Subst.onTy_lc hs1 (Subst.onTy_lc hs0 hscrut))
+    have hresultRest := Subst.onTy_lc hs2 (Subst.onTy_lc hs1 (Subst.onTy_lc hs0 hresult))
+    have hs3 := (hr.lc hctxRest hscrutRest hresultRest).2
+    have htail := hr.sourceSound hctxRest hscrutRest hresultRest
+    intro branch hbranch
+    rcases List.mem_cons.mp hbranch with rfl | hbranch
+    · let args := (((freshVars frontier ctor.paramCount).map Ty.fvar).map s0.onTy).map s1.onTy
+      have hspec : BranchCtorSpec (s1.onCtx (s0.onCtx ctx)).ctors name count
+          (s1.onTy (s0.onTy scrutTy)) ctor args (ctor.contents.map (Ty.openWith args)) := by
+        refine ⟨hlookup, ?_, ?_, hcount, ?_⟩
+        · simpa only [Subst.onTy_customTy, args] using congrArg s1.onTy hu0.unifies.unifies
+        · simp only [args, List.length_map, freshVars_length]
+        · exact forall₂_self_map (fun t ht => InstantiatesBy.openWith (ctor.bound t ht)
+            (by simp only [args, List.length_map, freshVars_length]; omega))
+      have head0 := TypeOfMatchBranch.mk hspec (Subst.onCtx_branchBindings hs1) (hb.sourceSound hbodyWF)
+      have head := head0.onSubst (s2 ++ s3)
+        (fun p hp => (List.mem_append.mp hp).elim (hs2 p) (hs3 p))
+      have heq := congrArg s3.onTy hu.unifies.unifies
+      simp only [Subst.onTy_append] at head
+      rw [heq] at head
+      simpa only [Subst.onCtx_append, Subst.onTy_append] using head
+    · simpa only [Subst.onCtx_append, Subst.onTy_append] using htail branch hbranch
+termination_by (sizeBranches branches, 0)
+decreasing_by all_goals (simp only [sizeBranches]; omega)
+end
+
+mutual
+/-- Elaboration changes annotations and binders while preserving runtime syntax. -/
 theorem _root_.Infer.erase (h : Infer K frontier ctx input next subst output ty) :
     output.erase = input.erase := by
-  induction h with
-  | backend hemb _ _ _ _ => exact Input.toCore_erase _ hemb
-  | lambda _ _ ih => simpa only [lambdaOutput, Expr.erase, Input.erase] using congrArg (Expr.lambda none) ih
-  | app _ _ _ ihf ihx =>
-      simp only [Expr.erase, Expr.erase_substTyFvars, Input.erase, ihf, ihx]
-  | letIn _ _ _ ihr ihb =>
+  match h with
+  | .backend hemb _ _ _ _ => exact Input.toCore_erase _ hemb
+  | .lambda _ hb =>
+      simpa only [lambdaOutput, Expr.erase, Input.erase] using
+        congrArg (Expr.lambda none) hb.erase
+  | .app hf ha _ =>
+      simp only [Expr.erase, Expr.erase_substTyFvars, Input.erase, hf.erase, ha.erase]
+  | .letIn hr _ hb =>
       simp only [letOutput, Expr.erase, Expr.erase_substTyFvars,
-        Expr.erase_closeTyVars, Input.erase, ihr, ihb]
+        Expr.erase_closeTyVars, Input.erase, hr.erase, hb.erase]
+  | .match_ hs _ hb =>
+      simp only [Expr.erase, Expr.erase_substTyFvars, Input.erase, hs.erase, hb.erase]
+termination_by (input.size, 0)
+decreasing_by all_goals (simp only [Input.size]; omega)
+
+theorem _root_.InferBranches.erase
+    (h : InferBranches K frontier ctx scrutTy resultTy branches next subst completed) :
+    completed.map (fun pe => (pe.1, pe.2.erase)) = eraseBranches branches := by
+  match h with
+  | .nil => rfl
+  | .consWild hb _ hr =>
+      simp only [List.map_cons, eraseBranches, Expr.erase_substTyFvars, hb.erase, hr.erase]
+  | .cons _ _ _ hb _ hr =>
+      simp only [List.map_cons, eraseBranches, Expr.erase_substTyFvars, hb.erase, hr.erase]
+termination_by (sizeBranches branches, 0)
+decreasing_by all_goals (simp only [sizeBranches]; omega)
+end
 
 theorem _root_.Infer.sound (h : Infer K frontier ctx input next subst output ty) (hctx : CtxWF ctx) :
     RuntimeTyping.RunWT (subst.onCtx ctx) input.erase ty := by
   rw [← h.erase]
   exact (h.sourceSound hctx).erase_preserves_typing
 
-/-- Fixed annotation syntax is protected throughout local filling, substitution,
-and the synthesis of enclosing scheme binders. -/
+mutual
+/-- Fixed annotations are protected through filling and generated scheme binders. -/
 theorem _root_.Infer.completes (h : Infer K frontier ctx input next subst output ty) :
     Completes K input output := by
-  induction h with
-  | backend hemb _ _ _ hrigid => exact .complete hemb hrigid
-  | lambda hs hb ih =>
-      refine .lambda ?_ hs.rigid ih
+  match h with
+  | .backend hemb _ _ _ hrigid => exact .complete hemb hrigid
+  | .lambda hs hb =>
+      refine .lambda ?_ hs.rigid hb.completes
       intro template heq
       exact (hs.fits template heq).onSubst (hs.rigid template heq) hb.dom_avoids
-  | app hf ha hu ihf iha =>
-      exact .app (.specialise ihf (fun pair hp =>
+  | .app hf ha hu =>
+      exact .app (.specialise hf.completes (fun pair hp =>
         (List.mem_append.mp hp).elim (ha.dom_avoids pair) (hu.dom_avoids pair)))
-        (.specialise iha hu.dom_avoids)
-  | letIn hr hc hb ihr ihb =>
-      exact .letIn hc.fits hc.rigid (.specialise ihr hc.dom_avoids) ihb
+        (.specialise ha.completes hu.dom_avoids)
+  | .letIn hr hc hb =>
+      exact .letIn hc.fits hc.rigid (.specialise hr.completes hc.dom_avoids) hb.completes
         (fun _ hn => genVars_not_mem_rigid hn) hb.dom_avoids
+  | .match_ hs _ hb =>
+      exact .match_ (.specialise hs.completes hb.dom_avoids) hb.completes
+termination_by (input.size, 0)
+decreasing_by all_goals (simp only [Input.size]; omega)
 
+theorem _root_.InferBranches.completes
+    (h : InferBranches K frontier ctx scrutTy resultTy branches next subst completed) :
+    CompletedBranches (Completes K) branches completed := by
+  match h with
+  | .nil => exact .nil
+  | .consWild hb hu hr => exact .cons (.specialise hb.completes
+      (fun p hp => (List.mem_append.mp hp).elim (hu.dom_avoids p) (hr.dom_avoids p))) hr.completes
+  | .cons _ _ _ hb hu hr => exact .cons (.specialise hb.completes
+      (fun p hp => (List.mem_append.mp hp).elim (hu.dom_avoids p) (hr.dom_avoids p))) hr.completes
+termination_by (sizeBranches branches, 0)
+decreasing_by all_goals (simp only [sizeBranches]; omega)
+end
+
+mutual
 /-- Successful inference also satisfies the independent partial-input rules.
 This connects input admissibility and completed-output typing at the same type. -/
 theorem _root_.Infer.inputSound (h : Infer K frontier ctx input next subst output ty) :
     CtxWF ctx → Typing K (subst.onCtx ctx) input ty := by
-  induction h with
-  | backend hemb h hbelow hK hrigid =>
+  match h with
+  | .backend hemb h hbelow hK hrigid =>
       intro hctx
       exact .complete hemb hrigid (h.sourceSound hctx hbelow hK hrigid)
-  | @lambda K frontier ann param initial ctx body next subst completed bodyTy hs hb ih =>
+  | @Infer.lambda K frontier ann param initial ctx body next subst completed bodyTy hs hb =>
       intro hctx
       have hbodyCtx : CtxWF { ctx with env := PolyTy.mkTrivial param :: ctx.env } := by
         intro scheme hscheme
@@ -139,26 +278,26 @@ theorem _root_.Infer.inputSound (h : Infer K frontier ctx input next subst outpu
       · intro template heq
         exact (hs.fits template heq).onSubst (hs.rigid template heq) hb.dom_avoids
       · simpa only [Subst.onCtx, Subst.onEnv, List.map_cons, Subst.onPolyTy,
-          PolyTy.mkTrivial] using ih hbodyCtx
-  | @app K frontier ctx f first s1 fOut fTy arg second s2 argOut argTy s3 hf ha hu ihf iha =>
+          PolyTy.mkTrivial] using hb.inputSound hbodyCtx
+  | @Infer.app K frontier ctx f first s1 fOut fTy arg second s2 argOut argTy s3 hf ha hu =>
       intro hctx
       have hs1 := (hf.lc hctx).2
       have haCtx := Subst.onCtx_wf hs1 hctx
       have hs2 := (ha.lc haCtx).2
       have hs3 := hu.unifies.lc (Subst.onTy_lc hs2 (hf.lc hctx).1)
         (.arrow (ha.lc haCtx).1 .fvar)
-      have hfTyped := (ihf hctx).onSubst (s2 ++ s3)
+      have hfTyped := (hf.inputSound hctx).onSubst (s2 ++ s3)
         (fun pair hp => (List.mem_append.mp hp).elim (hs2 pair) (hs3 pair))
         (fun pair hp => (List.mem_append.mp hp).elim (ha.dom_avoids pair) (hu.dom_avoids pair))
-      have haTyped := (iha haCtx).onSubst s3 hs3 hu.dom_avoids
+      have haTyped := (ha.inputSound haCtx).onSubst s3 hs3 hu.dom_avoids
       have heq : (s2 ++ s3).onTy fTy =
           .arrow (s3.onTy argTy) (s3.onTy (.fvar second)) := by
         simpa only [Unifies, Subst.onTy_append, Subst.onTy_arrow] using hu.unifies.unifies
       rw [heq] at hfTyped
       simp only [Subst.onCtx_append] at hfTyped
       simpa only [Subst.onCtx_append] using Typing.app hfTyped haTyped
-  | @letIn K frontier ctx rhs first s1 rhsOut rhsTy ann checked sCheck body next s2 bodyOut bodyTy
-      hr hc hb ihr ihb =>
+  | @Infer.letIn K frontier ctx rhs first s1 rhsOut rhsTy ann checked sCheck body next s2 bodyOut bodyTy
+      hr hc hb =>
       intro hctx
       have hs1 := (hr.lc hctx).2
       have hrTy := (hr.lc hctx).1
@@ -174,7 +313,7 @@ theorem _root_.Infer.inputSound (h : Infer K frontier ctx input next subst outpu
         · exact genScheme_wf checkedTyLC
         · exact checkedCtxWF scheme hscheme
       have hs2 := (hb.lc bodyCtxWF).2
-      have rhsTyped := (ihr hctx).onSubst sCheck hsCheck hc.dom_avoids
+      have rhsTyped := (hr.inputSound hctx).onSubst sCheck hsCheck hc.dom_avoids
       have rhsGeneral := rhsTyped.generalise
         (names := genVars K (sCheck.onCtx (s1.onCtx ctx)).env (sCheck.onTy rhsTy))
         hc.fits hc.rigid genVars_nodup (fun _ hn => genVars_not_mem hn)
@@ -183,7 +322,7 @@ theorem _root_.Infer.inputSound (h : Infer K frontier ctx input next subst outpu
         (scheme := genScheme K (sCheck.onCtx (s1.onCtx ctx)).env (sCheck.onTy rhsTy))
         (fun fresh hf => (rhsGeneral fresh hf).1)
         (fun fresh hf => (rhsGeneral fresh hf).2) hc.rigid s2 hs2 hb.dom_avoids
-      have bodyTyped := ihb bodyCtxWF
+      have bodyTyped := hb.inputSound bodyCtxWF
       have hctxeq :
           s2.onCtx
             { sCheck.onCtx (s1.onCtx ctx) with
@@ -198,6 +337,89 @@ theorem _root_.Infer.inputSound (h : Infer K frontier ctx input next subst outpu
       refine Typing.letIn (L := avoid) (Subst.onPolyTy_wf hs2 (genScheme_wf checkedTyLC))
         hc.rigid hfits ?_ bodyTyped
       simpa only [← Subst.onCtx_append] using hgeneral
+
+  | .match_ hs hne hb =>
+    intro hctx
+    have hs1 := (hs.lc hctx).2
+    have hbr := hb.lc (Subst.onCtx_wf hs1 hctx) (hs.lc hctx).1 .fvar
+    have hscrut := (hs.inputSound hctx).onSubst _ hbr.2 hb.dom_avoids
+    have hbranches := hb.inputSound (Subst.onCtx_wf hs1 hctx) (hs.lc hctx).1 .fvar
+    simpa only [Subst.onCtx_append] using Typing.match_ hscrut hne hbranches
+termination_by (input.size, 0)
+decreasing_by all_goals (simp only [Input.size]; omega)
+
+theorem _root_.InferBranches.inputSound
+    (h : InferBranches K frontier ctx scrutTy resultTy branches next subst completed)
+    (hctx : CtxWF ctx) (hscrut : scrutTy.IsLC) (hresult : resultTy.IsLC) :
+    ∀ branch ∈ branches, BranchTyping (Typing K) (subst.onCtx ctx) branch
+      (subst.onTy scrutTy) (subst.onTy resultTy) := by
+  match h with
+  | .nil => intro branch hb; cases hb
+  | @InferBranches.consWild K frontier ctx body first s1 bodyOut bodyTy resultTy s2 scrutTy rest next s3 restOut
+      hb hu hr =>
+    obtain ⟨hbTy, hs1⟩ := hb.lc hctx
+    have hs2 := hu.unifies.lc hbTy (Subst.onTy_lc hs1 hresult)
+    have hctxRest := Subst.onCtx_wf hs2 (Subst.onCtx_wf hs1 hctx)
+    have hscrutRest := Subst.onTy_lc hs2 (Subst.onTy_lc hs1 hscrut)
+    have hresultRest := Subst.onTy_lc hs2 (Subst.onTy_lc hs1 hresult)
+    have hs3 := (hr.lc hctxRest hscrutRest hresultRest).2
+    have htail := hr.inputSound hctxRest hscrutRest hresultRest
+    intro branch hbranch
+    rcases List.mem_cons.mp hbranch with rfl | hbranch
+    · have head := (hb.inputSound hctx).onSubst (s2 ++ s3)
+        (fun p hp => (List.mem_append.mp hp).elim (hs2 p) (hs3 p))
+        (fun p hp => (List.mem_append.mp hp).elim (hu.dom_avoids p) (hr.dom_avoids p))
+      have heq := congrArg s3.onTy hu.unifies.unifies
+      rw [Subst.onTy_append] at head
+      rw [heq] at head
+      simpa only [Subst.onCtx_append, Subst.onTy_append, List.append_assoc] using
+        (BranchTyping.wildcard (scrutTy := (s1 ++ s2 ++ s3).onTy scrutTy) head)
+    · simpa only [Subst.onCtx_append, Subst.onTy_append] using htail branch hbranch
+  | @InferBranches.cons name ctor count K scrutTy frontier s0 ctx body first s1 bodyOut bodyTy resultTy s2 rest next s3 restOut
+      hlookup hcount hu0 hb hu hr =>
+    have hs0 := hu0.unifies.lc hscrut
+      (.customTy (fun t ht => by obtain ⟨v, _, rfl⟩ := List.mem_map.mp ht; exact .fvar))
+    have hbodyWF := branchBindings_wf (ctorr := ctor)
+      (ta := ((freshVars frontier ctor.paramCount).map Ty.fvar).map s0.onTy)
+      (Subst.onCtx_wf hs0 hctx)
+      (fun t ht => by
+        obtain ⟨v, hv, rfl⟩ := List.mem_map.mp ht
+        obtain ⟨x, _, rfl⟩ := List.mem_map.mp hv
+        exact Subst.onTy_lc hs0 .fvar) (by simp)
+    obtain ⟨hbTy, hs1⟩ := hb.lc hbodyWF
+    have hs2 := hu.unifies.lc hbTy (Subst.onTy_lc hs1 (Subst.onTy_lc hs0 hresult))
+    have hctxRest := Subst.onCtx_wf hs2 (Subst.onCtx_wf hs1 (Subst.onCtx_wf hs0 hctx))
+    have hscrutRest := Subst.onTy_lc hs2 (Subst.onTy_lc hs1 (Subst.onTy_lc hs0 hscrut))
+    have hresultRest := Subst.onTy_lc hs2 (Subst.onTy_lc hs1 (Subst.onTy_lc hs0 hresult))
+    have hs3 := (hr.lc hctxRest hscrutRest hresultRest).2
+    have htail := hr.inputSound hctxRest hscrutRest hresultRest
+    intro branch hbranch
+    rcases List.mem_cons.mp hbranch with rfl | hbranch
+    · let args := (((freshVars frontier ctor.paramCount).map Ty.fvar).map s0.onTy).map s1.onTy
+      have hspec : BranchCtorSpec (s1.onCtx (s0.onCtx ctx)).ctors name count
+          (s1.onTy (s0.onTy scrutTy)) ctor args (ctor.contents.map (Ty.openWith args)) := by
+        refine ⟨hlookup, ?_, ?_, hcount, ?_⟩
+        · simpa only [Subst.onTy_customTy, args] using congrArg s1.onTy hu0.unifies.unifies
+        · simp only [args, List.length_map, freshVars_length]
+        · exact forall₂_self_map (fun t ht => InstantiatesBy.openWith (ctor.bound t ht)
+            (by simp only [args, List.length_map, freshVars_length]; omega))
+      have head0 : BranchTyping (Typing K) (s1.onCtx (s0.onCtx ctx))
+          (.named name count, body) (s1.onTy (s0.onTy scrutTy)) bodyTy := by
+        refine .named hspec ?_
+        rw [← Subst.onCtx_branchBindings hs1]
+        exact hb.inputSound hbodyWF
+      have head := head0.onSubst_fixes (s2 ++ s3)
+        (fun p hp => (List.mem_append.mp hp).elim (hs2 p) (hs3 p))
+        (Subst.fixes_of_dom_avoids (fun p hp =>
+          (List.mem_append.mp hp).elim (hu.dom_avoids p) (hr.dom_avoids p)))
+      have heq := congrArg s3.onTy hu.unifies.unifies
+      simp only [Subst.onTy_append] at head
+      rw [heq] at head
+      simpa only [Subst.onCtx_append, Subst.onTy_append] using head
+    · simpa only [Subst.onCtx_append, Subst.onTy_append] using htail branch hbranch
+termination_by (sizeBranches branches, 0)
+decreasing_by all_goals (simp only [sizeBranches]; omega)
+end
 
 def seed (K : List Nat) (frontier : Nat) (ann : Option Template) :
     Option { result : Nat × Ty // Seed K frontier ann result.2 result.1 } :=
@@ -238,6 +460,7 @@ private theorem ctxBelow_of_all {ctx : Ctx} {frontier : Nat}
   intro v hv
   exact of_decide_eq_true (List.all_eq_true.mp h v (Env.mem_freeVars_iff.mpr ⟨scheme, hscheme, hv⟩))
 
+mutual
 /-- One dispatch path: completed subtrees use the existing verified worker;
 partial spines elaborate while inferring. Unsupported partial constructs fail
 before any completed recursive-signature interpretation can be introduced. -/
@@ -308,10 +531,90 @@ def _root_.inferWithTypesCore (K : List Nat) (frontier : Nat) (ctx : Ctx) (input
                               bodyTypes.below .letBody,
                             binder :: (rhsSchemes.onSubst (sCheck ++ s2)).below .letRhs ++
                               bodySchemes.below .letBody), .letIn hr hc hb⟩
+          | .match_ scrut branches =>
+              match inferWithTypesCore K frontier ctx scrut with
+              | none => none
+              | some ⟨(first, s1, scrutOut, scrutTy, scrutTypes, scrutSchemes), hs⟩ =>
+                match hh : branches.head? with
+                | none => none
+                | some _ =>
+                  match inferBranchesWithTypesCore K (first + 1) (s1.onCtx ctx)
+                      scrutTy (.fvar first) 0 branches with
+                  | none => none
+                  | some ⟨(next, s2, branchOut, branchTypes, branchSchemes), hb⟩ =>
+                    let ty := s2.onTy (.fvar first)
+                    some ⟨(next, s1 ++ s2, .match_ (scrutOut.substTyFvars s2) branchOut, ty,
+                      .root ty ++ (scrutTypes.onSubst s2).below .matchScrut ++ branchTypes,
+                      (scrutSchemes.onSubst s2).below .matchScrut ++ branchSchemes),
+                      .match_ hs (by intro heq; rw [heq] at hh; simp at hh) hb⟩
           | _ => none
     else none
   else none
-termination_by sizeOf input
+termination_by (input.size, 0)
+decreasing_by all_goals (simp only [Input.size]; omega)
+
+def _root_.inferBranchesWithTypesCore (K : List Nat) (Φ : Nat) (ctx : Ctx) (scrutTy : Ty) (ρ : Ty)
+    (branchIndex : Nat) (branches : List (MatchPattern × Input)) :
+    Option { r : Nat × Subst × List (MatchPattern × Expr) × InferredNodeTypes × InferredBinderSchemes //
+      InferBranches K Φ ctx scrutTy ρ branches r.1 r.2.1 r.2.2.1 } :=
+  match branches with
+  | [] => some ⟨(Φ, [], [], [], []), .nil⟩
+  | (.wildcard, body) :: rest =>
+      match inferWithTypesCore K Φ ctx body with
+      | none => none
+      | some ⟨(Φ₁, S₁, bodyOut, τb, bodyTypes, bodySchemes), hbody⟩ =>
+        match unifyCoreK K τb (S₁.onTy ρ) with
+        | none => none
+        | some ⟨S₂, huni, hav₂⟩ =>
+          match inferBranchesWithTypesCore K Φ₁ (S₂.onCtx (S₁.onCtx ctx))
+              (S₂.onTy (S₁.onTy scrutTy)) (S₂.onTy (S₁.onTy ρ)) (branchIndex + 1) rest with
+          | none => none
+          | some ⟨(Φ₂, S₃, restOut, restTypes, restSchemes), hrest⟩ =>
+            let schemes := (bodySchemes.onSubst (S₂ ++ S₃)).below
+              (.matchBranch branchIndex) ++ restSchemes
+            let nodeTypes := (bodyTypes.onSubst (S₂ ++ S₃)).below
+              (.matchBranch branchIndex) ++ restTypes
+            some ⟨(Φ₂, S₁ ++ S₂ ++ S₃,
+                (.wildcard, bodyOut.substTyFvars (S₂ ++ S₃)) :: restOut, nodeTypes, schemes),
+                .consWild hbody ⟨huni, hav₂⟩ hrest⟩
+  | (.named c n, body) :: rest =>
+      match hget : LookupList.get? ctx.ctors c with
+      | none => none
+      | some ctorr =>
+        if hcont : n = ctorr.contents.length then
+          match unifyCoreK K scrutTy
+              (.customTy ctorr.tyName ((freshVars Φ ctorr.paramCount).map (Ty.fvar ·))) with
+          | none => none
+          | some ⟨S₀, huni0, hav0⟩ =>
+            match inferWithTypesCore K (Φ + ctorr.paramCount)
+                { (S₀.onCtx ctx) with
+                  env := (ctorr.contents.map (Ty.openWith
+                      (((freshVars Φ ctorr.paramCount).map (Ty.fvar ·)).map S₀.onTy))).map PolyTy.mkTrivial
+                    ++ (S₀.onCtx ctx).env }
+                body with
+            | none => none
+            | some ⟨(Φ₁, S₁, bodyOut, τb, bodyTypes, bodySchemes), hbody⟩ =>
+              match unifyCoreK K τb (S₁.onTy (S₀.onTy ρ)) with
+              | none => none
+              | some ⟨S₂, huni, hav₂⟩ =>
+                match inferBranchesWithTypesCore K Φ₁ (S₂.onCtx (S₁.onCtx (S₀.onCtx ctx)))
+                    (S₂.onTy (S₁.onTy (S₀.onTy scrutTy))) (S₂.onTy (S₁.onTy (S₀.onTy ρ)))
+                    (branchIndex + 1) rest with
+                | none => none
+                | some ⟨(Φ₂, S₃, restOut, restTypes, restSchemes), hrest⟩ =>
+                  let schemes := (bodySchemes.onSubst (S₂ ++ S₃)).below
+                    (.matchBranch branchIndex) ++ restSchemes
+                  let nodeTypes := (bodyTypes.onSubst (S₂ ++ S₃)).below
+                    (.matchBranch branchIndex) ++ restTypes
+                  some ⟨(Φ₂, S₀ ++ S₁ ++ S₂ ++ S₃,
+                      (.named c n, bodyOut.substTyFvars (S₂ ++ S₃)) :: restOut, nodeTypes, schemes),
+                      .cons hget hcont ⟨huni0, hav0⟩ hbody ⟨huni, hav₂⟩ hrest⟩
+        else none
+termination_by (sizeBranches branches, 0)
+decreasing_by
+  all_goals (try simp only [sizeBranches]; omega)
+
+end
 
 /-- The plain certificate API projects the one metadata-producing run. -/
 def _root_.inferCore (K : List Nat) (frontier : Nat) (ctx : Ctx) (input : Input) :

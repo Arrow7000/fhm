@@ -250,37 +250,52 @@ theorem LetCheck.belowFvars (h : LetCheck K frontier ty ann next subst)
     rw [heq] at hle
     exact hu.unifies.belowFvars (hty.mono hle) hb
 
+mutual
 theorem _root_.Infer.frontier_le (h : Infer K frontier ctx input next subst output ty) : frontier ≤ next := by
-  induction h with
-  | backend _ h _ _ _ => exact CoreBackend.Infer.frontier_le h
-  | lambda hs _ ih => exact hs.frontier_le.trans ih
-  | app _ _ _ ihf iha => omega
-  | letIn _ hc _ ihr ihb => exact ihr.trans (hc.frontier_le.trans ihb)
+  match h with
+  | .backend _ hi _ _ _ => exact hi.frontier_le
+  | .lambda hs hb => exact hs.frontier_le.trans hb.frontier_le
+  | .app hf ha _ => have := hf.frontier_le; have := ha.frontier_le; omega
+  | .letIn hr hc hb => exact hr.frontier_le.trans (hc.frontier_le.trans hb.frontier_le)
+  | .match_ hs _ hb => have := hs.frontier_le; have := hb.frontier_le; omega
+termination_by (input.size, 0)
+decreasing_by all_goals (simp only [Input.size]; omega)
 
+theorem _root_.InferBranches.frontier_le
+    (h : InferBranches K frontier ctx scrutTy resultTy branches next subst output) : frontier ≤ next := by
+  match h with
+  | .nil => omega
+  | .cons _ _ _ hb _ hr => have := hb.frontier_le; have := hr.frontier_le; omega
+  | .consWild hb _ hr => have := hb.frontier_le; have := hr.frontier_le; omega
+termination_by (sizeBranches branches, 0)
+decreasing_by all_goals (simp only [sizeBranches]; omega)
+end
+
+mutual
 theorem _root_.Infer.belowFvars (h : Infer K frontier ctx input next subst output ty) :
     CtxBelow frontier ctx → (∀ k ∈ K, k < frontier) →
       Ty.BelowFvars next ty ∧ ∀ p ∈ subst, Ty.BelowFvars next p.2 := by
-  induction h with
-  | backend _ h _ _ hr =>
+  match h with
+  | .backend _ h _ _ hr =>
     intro hctx hK
     exact CoreBackend.Infer.belowFvars h hctx (fun v hv => hK v (hr v hv))
-  | lambda hs hb ih =>
+  | .lambda hs hb =>
     intro hctx hK
     have hle := hs.frontier_le
     have hparam := hs.belowFvars hK
-    obtain ⟨hbTy, hbSubst⟩ := ih (by
+    obtain ⟨hbTy, hbSubst⟩ := hb.belowFvars (by
       intro M hM
       rcases List.mem_cons.mp hM with rfl | hM
       · exact hparam
       · exact (hctx M hM).mono hle)
       (fun k hk => Nat.lt_of_lt_of_le (hK k hk) hle)
     exact ⟨.arrow (Subst.onTy_belowFvars hbSubst (hparam.mono hb.frontier_le)) hbTy, hbSubst⟩
-  | app hf ha hu ihf iha =>
+  | .app hf ha hu =>
     intro hctx hK
     have hfLe := hf.frontier_le
     have haLe := ha.frontier_le
-    obtain ⟨hfTy, hfSubst⟩ := ihf hctx hK
-    obtain ⟨haTy, haSubst⟩ := iha (Subst.onCtx_below hfSubst hfLe hctx)
+    obtain ⟨hfTy, hfSubst⟩ := hf.belowFvars hctx hK
+    obtain ⟨haTy, haSubst⟩ := ha.belowFvars (Subst.onCtx_below hfSubst hfLe hctx)
       (fun k hk => Nat.lt_of_lt_of_le (hK k hk) hfLe)
     have huni := hu.unifies.belowFvars
       (Subst.onTy_belowFvars (fun p hp => (haSubst p hp).mono (Nat.le_succ _))
@@ -293,17 +308,17 @@ theorem _root_.Infer.belowFvars (h : Infer K frontier ctx input next subst outpu
       · exact (hfSubst p hp).mono (haLe.trans (Nat.le_succ _))
       · exact (haSubst p hp).mono (Nat.le_succ _)
     · exact huni p hp
-  | letIn hr hc hb ihr ihb =>
+  | .letIn hr hc hb =>
     intro hctx hK
     have hrLe := hr.frontier_le
     have hcLe := hc.frontier_le
     have hbLe := hb.frontier_le
-    obtain ⟨hrTy, hrSubst⟩ := ihr hctx hK
+    obtain ⟨hrTy, hrSubst⟩ := hr.belowFvars hctx hK
     have hcSubst := hc.belowFvars hrTy (fun k hk => Nat.lt_of_lt_of_le (hK k hk) hrLe)
     have hcTy := Subst.onTy_belowFvars hcSubst (hrTy.mono hcLe)
     have hcheckedCtx := Subst.onCtx_below hcSubst hcLe
       (Subst.onCtx_below hrSubst hrLe hctx)
-    obtain ⟨hbTy, hbSubst⟩ := ihb (by
+    obtain ⟨hbTy, hbSubst⟩ := hb.belowFvars (by
       intro M hM
       rcases List.mem_cons.mp hM with rfl | hM
       · exact hcTy.closeOver
@@ -317,8 +332,93 @@ theorem _root_.Infer.belowFvars (h : Infer K frontier ctx input next subst outpu
       · exact (hcSubst p hp).mono hbLe
     · exact hbSubst p hp
 
+  | .match_ hs _ hb =>
+    intro hctx hK
+    obtain ⟨ht, hS1⟩ := hs.belowFvars hctx hK
+    have hle := hs.frontier_le
+    obtain ⟨hresult, hS2⟩ := hb.belowFvars
+      (Subst.onCtx_below (fun p hp => (hS1 p hp).mono (Nat.le_succ _)) (hle.trans (Nat.le_succ _)) hctx)
+      (ht.mono (Nat.le_succ _)) (.fvar (Nat.lt_succ_self _))
+      (fun k hk => Nat.lt_of_lt_of_le (hK k hk) (hle.trans (Nat.le_succ _)))
+    refine ⟨hresult, fun p hp => ?_⟩
+    rcases List.mem_append.mp hp with hp | hp
+    · exact (hS1 p hp).mono ((Nat.le_succ _).trans hb.frontier_le)
+    · exact hS2 p hp
+termination_by (input.size, 0)
+decreasing_by all_goals (simp only [Input.size]; omega)
 
-
+theorem _root_.InferBranches.belowFvars {Φ ctx scrutTy ρ brs Φ' S}
+    (h : InferBranches κ Φ ctx scrutTy ρ brs Φ' S out)
+    (hctx : CtxBelow Φ ctx) (hscrutTy : Ty.BelowFvars Φ scrutTy) (hρ : Ty.BelowFvars Φ ρ)
+    (hK : ∀ k ∈ κ, k < Φ) :
+    Ty.BelowFvars Φ' (S.onTy ρ) ∧ (∀ p ∈ S, Ty.BelowFvars Φ' p.2) := by
+  match h with
+  | .nil => exact ⟨by simpa using hρ, by simp⟩
+  | @InferBranches.cons name ctor count κ scrutTy Φ S₀ ctx body Φ₁ S₁ bodyOut bodyTy ρ S₂ rest Φ' S₃ restOut hlook hn huni0Rigid hbody huniRigid hrest =>
+    have huni0 := huni0Rigid.unifies
+    have huni := huniRigid.unifies
+    have hS₀ : ∀ p ∈ S₀, Ty.BelowFvars (Φ + ctor.paramCount) p.2 :=
+      UnifyRel.belowFvars huni0 (hscrutTy.mono (by omega))
+        (.customTy (fun t ht => by
+          obtain ⟨x, hx, rfl⟩ := List.mem_map.mp ht
+          exact .fvar (by have := freshVars_lt x hx; omega)))
+    obtain ⟨hτb, hS₁⟩ := Infer.belowFvars hbody
+      (branchBindings_below (ctorr := ctor)
+        (ta := ((freshVars Φ ctor.paramCount).map (Ty.fvar ·)).map S₀.onTy)
+        (Subst.onCtx_below hS₀ (by omega) hctx)
+        (fun t ht => by
+          obtain ⟨v, hv, rfl⟩ := List.mem_map.mp ht
+          obtain ⟨x, hx, rfl⟩ := List.mem_map.mp hv
+          exact Subst.onTy_belowFvars hS₀ (.fvar (by have := freshVars_lt x hx; omega))))
+      (fun k hk => Nat.lt_of_lt_of_le (hK k hk) (by omega))
+    have hle0 : Φ + ctor.paramCount ≤ Φ₁ := Infer.frontier_le hbody
+    have hS₀ρ : Ty.BelowFvars Φ₁ (S₀.onTy ρ) :=
+      (Subst.onTy_belowFvars hS₀ (hρ.mono (by omega))).mono hle0
+    have hS₀scrut : Ty.BelowFvars Φ₁ (S₀.onTy scrutTy) :=
+      (Subst.onTy_belowFvars hS₀ (hscrutTy.mono (by omega))).mono hle0
+    have hS₁ρ := Subst.onTy_belowFvars hS₁ hS₀ρ
+    have hS₂ := UnifyRel.belowFvars huni hτb hS₁ρ
+    have hctx1 : CtxBelow Φ₁ (S₂.onCtx (S₁.onCtx (S₀.onCtx ctx))) :=
+      Subst.onCtx_below hS₂ (le_refl _)
+        (Subst.onCtx_below hS₁ (le_refl _)
+          (Subst.onCtx_below (fun p hp => (hS₀ p hp).mono hle0) (by omega) hctx))
+    obtain ⟨hres, hS₃⟩ := InferBranches.belowFvars hrest hctx1
+      (Subst.onTy_belowFvars hS₂ (Subst.onTy_belowFvars hS₁ hS₀scrut))
+      (Subst.onTy_belowFvars hS₂ (Subst.onTy_belowFvars hS₁ hS₀ρ))
+      (fun k hk => Nat.lt_of_lt_of_le (hK k hk) (by omega))
+    have hbrle := InferBranches.frontier_le hrest
+    refine ⟨?_, ?_⟩
+    · rw [Subst.onTy_append, Subst.onTy_append, Subst.onTy_append]; exact hres
+    · intro p hp; rw [List.mem_append, List.mem_append, List.mem_append] at hp
+      rcases hp with ((hp | hp) | hp) | hp
+      · exact (hS₀ p hp).mono (by omega)
+      · exact (hS₁ p hp).mono (by omega)
+      · exact (hS₂ p hp).mono (by omega)
+      · exact hS₃ p hp
+  | .consWild hbody huniRigid hrest =>
+    have huni := huniRigid.unifies
+    obtain ⟨hτb, hS₁⟩ := Infer.belowFvars hbody hctx
+      hK
+    have hle1 := Infer.frontier_le hbody
+    have hS₁ρ := Subst.onTy_belowFvars hS₁ (hρ.mono hle1)
+    have hS₂ := UnifyRel.belowFvars huni hτb hS₁ρ
+    have hctx1 := Subst.onCtx_below hS₂ (le_refl _) (Subst.onCtx_below hS₁ hle1 hctx)
+    obtain ⟨hres, hS₃⟩ := InferBranches.belowFvars hrest hctx1
+      (Subst.onTy_belowFvars hS₂ (Subst.onTy_belowFvars hS₁ (hscrutTy.mono hle1)))
+      (Subst.onTy_belowFvars hS₂ (Subst.onTy_belowFvars hS₁ (hρ.mono hle1)))
+      (fun k hk => Nat.lt_of_lt_of_le (hK k hk) hle1)
+    have hbrle := InferBranches.frontier_le hrest
+    refine ⟨?_, ?_⟩
+    · rw [Subst.onTy_append, Subst.onTy_append]; exact hres
+    · intro p hp; rw [List.mem_append, List.mem_append] at hp
+      rcases hp with (hp | hp) | hp
+      · exact (hS₁ p hp).mono (by omega)
+      · exact (hS₂ p hp).mono (by omega)
+      · exact hS₃ p hp
+termination_by (sizeBranches brs, 0)
+decreasing_by
+  all_goals (try subst_vars; try simp only [sizeBranches]; omega)
+end
 
 end Elaboration
 
