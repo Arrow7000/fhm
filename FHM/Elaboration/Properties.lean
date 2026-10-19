@@ -688,3 +688,349 @@ end
 
 
 end Elaboration
+
+
+
+namespace Elaboration
+
+private theorem UnifyRel.sourceAvoid_local {t u : Ty} {S : Subst} {w : Nat}
+    (h : UnifyRel t u S) (ht : w ∉ t.freeVars) (hu : w ∉ u.freeVars) :
+    (∀ p ∈ S, w ∉ p.2.freeVars) ∧ w ∉ S.map Prod.fst := by
+  constructor
+  · intro p hp hw
+    exact (h.range_mem p hp w hw).elim ht hu
+  · intro hw
+    obtain ⟨p, hp, heq⟩ := List.mem_map.mp hw
+    have hm := h.dom_mem p hp
+    rw [heq] at hm
+    exact hm.elim ht hu
+
+private theorem Subst.sourceAvoid_append_local {S T : Subst} {w : Nat}
+    (hS : (∀ p ∈ S, w ∉ p.2.freeVars) ∧ w ∉ S.map Prod.fst)
+    (hT : (∀ p ∈ T, w ∉ p.2.freeVars) ∧ w ∉ T.map Prod.fst) :
+    (∀ p ∈ S ++ T, w ∉ p.2.freeVars) ∧ w ∉ (S ++ T).map Prod.fst := by
+  exact ⟨fun p hp => (List.mem_append.mp hp).elim (hS.1 p) (hT.1 p),
+    by simpa only [List.map_append, List.mem_append, not_or] using And.intro hS.2 hT.2⟩
+
+mutual
+ theorem Template.allocate_avoid {template : Template} {frontier w : Nat}
+    (hw : w < frontier) (h : w ∉ template.rigidVars) :
+    w ∉ (template.allocate frontier).2.freeVars := by
+  cases template with
+  | fixed ty => exact h
+  | hole => simp only [Template.allocate, Ty.freeVars, List.mem_singleton]; omega
+  | arrow a b =>
+    simp only [Template.rigidVars, List.mem_append, not_or] at h
+    have ha := a.allocate_avoid hw h.1
+    have hb := b.allocate_avoid (Nat.lt_of_lt_of_le hw (a.allocate_bounds frontier).1) h.2
+    simpa only [Template.allocate, Ty.freeVars, List.mem_dedup, List.mem_append, not_or] using And.intro ha hb
+  | custom name args =>
+    exact allocateList_avoid hw h
+ theorem allocateList_avoid {templates : List Template} {frontier w : Nat}
+    (hw : w < frontier) (h : w ∉ rigidVarsList templates) :
+    w ∉ TyList.freeVars (allocateList frontier templates).2 := by
+  cases templates with
+  | nil => simp [allocateList, TyList.freeVars]
+  | cons a rest =>
+    simp only [rigidVarsList, List.mem_append, not_or] at h
+    have ha := a.allocate_avoid hw h.1
+    have hb := allocateList_avoid (Nat.lt_of_lt_of_le hw (a.allocate_bounds frontier).1) h.2
+    simpa only [allocateList, TyList.freeVars, List.mem_dedup, List.mem_append, not_or] using And.intro ha hb
+end
+
+ theorem Seed.sourceAvoid (h : Seed K frontier ann param initial) (hw : w < frontier)
+    (hann : ∀ t, ann = some t → w ∉ t.rigidVars) : w ∉ param.freeVars := by
+  cases h with
+  | absent => simp only [Ty.freeVars, List.mem_singleton]; omega
+  | annotated heq _ _ => simpa only [heq] using Template.allocate_avoid hw (hann _ rfl)
+
+ theorem LetCheck.sourceAvoid (h : LetCheck K F frontier ty ann next subst)
+    (hw : w < frontier) (hty : w ∉ ty.freeVars) (hann : w ∉ ann.rigidVars) :
+    (∀ p ∈ subst, w ∉ p.2.freeVars) ∧ w ∉ subst.map Prod.fst := by
+  cases h with
+  | absent => simp
+  | hole => simp
+  | template heq _ _ hu =>
+    exact UnifyRel.sourceAvoid_local hu.unifies hty (by simpa only [heq] using Template.allocate_avoid hw hann)
+
+ theorem SignatureCheck.sourceAvoid (h : SignatureCheck K F written frontier ty ann next subst)
+    (hw : w < frontier) (hty : w ∉ ty.freeVars) (hann : w ∉ ann.rigidVars)
+    (hwr : w ∉ written) :
+    (∀ p ∈ subst, w ∉ p.2.freeVars) ∧ w ∉ subst.map Prod.fst := by
+  cases h with
+  | complete _ _ hu =>
+    refine UnifyRel.sourceAvoid_local hu.unifies hty ?_
+    intro hc
+    exact (Ty.freeVars_openVars_subset w hc).elim hann hwr
+  | partialSignature heq _ _ hu =>
+    refine UnifyRel.sourceAvoid_local hu.unifies hty ?_
+    simpa only [heq] using Template.allocate_avoid hw
+      (fun hc => (List.mem_append.mp (Template.openTyVarsFrom_scope _ (K := _) (fun _ h => h) 0 written w hc)).elim hann hwr)
+
+private theorem Input.avoid_subst {input : Input} {S : Subst} {w : Nat}
+    (hS : ∀ p ∈ S, w ∉ p.2.freeVars) (h : w ∉ input.rigidVars) :
+    w ∉ (input.substTyFvars S).rigidVars := by
+  intro hw
+  obtain ⟨v, hv, him⟩ := Input.rigidVars_substTyFvars hw
+  exact Subst.notMemOnTy hS (by simpa only [Ty.freeVars, List.mem_singleton] using (show w ≠ v from fun heq => h (heq.symm ▸ hv))) him
+
+private theorem LetAnn.avoid_subst {ann : LetAnn} {S : Subst} {w : Nat}
+    (hS : ∀ p ∈ S, w ∉ p.2.freeVars) (h : w ∉ ann.rigidVars) :
+    w ∉ (ann.substTyFvars S).rigidVars := by
+  intro hw
+  obtain ⟨v, hv, him⟩ := LetAnn.rigidVars_substTyFvars hw
+  exact Subst.notMemOnTy hS (by simpa only [Ty.freeVars, List.mem_singleton] using (show w ≠ v from fun heq => h (heq.symm ▸ hv))) him
+
+private theorem branches_avoid_subst {brs : List (MatchPattern × Input)} {S : Subst} {w : Nat}
+    (hS : ∀ p ∈ S, w ∉ p.2.freeVars) (h : w ∉ rigidBranchVars brs) :
+    w ∉ rigidBranchVars (substInputBranches S brs) := by
+  induction brs with
+  | nil => simp [substInputBranches, rigidBranchVars]
+  | cons pair rest ih =>
+    simp only [rigidBranchVars, List.mem_append, not_or] at h
+    exact fun hm => (List.mem_append.mp hm).elim (Input.avoid_subst hS h.1) (ih h.2)
+
+private theorem mem_eraseBranches {brs : List (MatchPattern × Input)} {p : MatchPattern} {b : Input}
+    (h : (p,b) ∈ brs) : (p,b.erase) ∈ eraseBranches brs := by
+  induction brs with
+  | nil => cases h
+  | cons pair rest ih =>
+    rcases List.mem_cons.mp h with heq | hm
+    · cases heq; exact List.mem_cons_self ..
+    · exact List.mem_cons_of_mem _ (ih hm)
+
+private theorem branches_refs_subst {brs : List (MatchPattern × Input)} {ctx : Ctx} {S : Subst} {w : Nat}
+    (hrefs : ∀ p b, (p,b) ∈ brs → b.erase.ForallOuter
+      (fun i => ∀ M, ctx.env[i]? = some M → w ∉ M.body.freeVars) p.bindCount)
+    (hS : ∀ p ∈ S, w ∉ p.2.freeVars) :
+    ∀ p b, (p,b) ∈ substInputBranches S brs → b.erase.ForallOuter
+      (fun i => ∀ M, (S.onCtx ctx).env[i]? = some M → w ∉ M.body.freeVars) p.bindCount := by
+  intro p b hm
+  rw [substInputBranches_eq_map] at hm
+  obtain ⟨⟨oldpat,oldbody⟩, hold, heq⟩ := List.mem_map.mp hm
+  cases heq
+  simpa only [Input.erase_substTyFvars] using Expr.ForallOuter.lookupAvoid_onSubst
+    (hrefs oldpat oldbody hold) hS
+
+mutual
+ theorem _root_.Infer.sourceLocality (h : Infer K F frontier ctx input next subst output ty) :
+    ∀ {w}, w < frontier →
+    input.erase.ForallOuter (fun i => ∀ M, ctx.env[i]? = some M → w ∉ M.body.freeVars) 0 →
+    w ∉ input.rigidVars →
+    (∀ p ∈ subst, w ∉ p.2.freeVars) ∧ w ∉ ty.freeVars ∧ w ∉ subst.map Prod.fst := by
+  match h with
+  | .backend hemb hi _ _ _ _ =>
+    intro w hw hrefs hwe
+    apply hi.sourceLocality hw
+    · apply (Expr.ForallOuter.erase_iff _).mp
+      rwa [Input.toCore_erase _ hemb]
+    · intro hm
+      exact hwe ((Input.toCore_rigidVars _ hemb w).mpr hm)
+  | .lambda _ hs hb =>
+    intro w hw hrefs hwe
+    simp only [Input.erase, Expr.ForallOuter, Expr.rec_strong, Nat.zero_add] at hrefs
+    simp only [Input.rigidVars, List.mem_append, not_or] at hwe
+    have hp := hs.sourceAvoid hw (by intro t ht; cases ht; exact hwe.1)
+    have hbrefs := Expr.ForallOuter.lookupAvoid_prepend (pre := [PolyTy.mkTrivial _]) hrefs
+      (by intro M hM; rcases List.mem_singleton.mp hM with rfl; exact hp)
+    obtain ⟨hS, hty, hD⟩ := hb.sourceLocality (Nat.lt_of_lt_of_le hw hs.frontier_le) hbrefs hwe.2
+    exact ⟨hS, by simpa only [Ty.freeVars, List.mem_dedup, List.mem_append, not_or]
+      using And.intro (Subst.notMemOnTy hS hp) hty, hD⟩
+  | .app _ hf ha hu =>
+    intro w hw hrefs hwe
+    expose_names
+    simp only [Input.erase, Expr.ForallOuter, Expr.rec_strong] at hrefs
+    simp only [Input.rigidVars, List.mem_append, not_or] at hwe
+    obtain ⟨hfS, hfTy, hfD⟩ := hf.sourceLocality hw hrefs.1 hwe.1
+    obtain ⟨haS, haTy, haD⟩ := ha.sourceLocality (Nat.lt_of_lt_of_le hw hf.frontier_le)
+      (by simpa only [Input.erase_substTyFvars] using Expr.ForallOuter.lookupAvoid_onSubst hrefs.2 hfS)
+      (Input.avoid_subst hfS hwe.2)
+    have hnew : w ∉ (Ty.fvar second).freeVars := by
+      simp only [Ty.freeVars, List.mem_singleton]; have := hf.frontier_le; have := ha.frontier_le; omega
+    have huA := UnifyRel.sourceAvoid_local hu.unifies (Subst.notMemOnTy haS hfTy)
+      (by simpa only [Ty.freeVars, List.mem_dedup, List.mem_append, not_or] using And.intro haTy hnew)
+    have hA := Subst.sourceAvoid_append_local (Subst.sourceAvoid_append_local ⟨hfS, hfD⟩ ⟨haS, haD⟩) huA
+    exact ⟨hA.1, Subst.notMemOnTy huA.1 hnew, hA.2⟩
+  | .letIn _ hr hc hb =>
+    intro w hw hrefs hwe
+    expose_names
+    simp only [Input.erase, Expr.ForallOuter, Expr.rec_strong, Nat.zero_add] at hrefs
+    simp only [Input.rigidVars, List.mem_append, not_or] at hwe
+    obtain ⟨hrS, hrTy, hrD⟩ := hr.sourceLocality hw hrefs.1 hwe.1.2
+    have hcA := hc.sourceAvoid (Nat.lt_of_lt_of_le hw hr.frontier_le) hrTy
+      (LetAnn.avoid_subst hrS hwe.1.1)
+    have hA := Subst.sourceAvoid_append_local ⟨hrS, hrD⟩ hcA
+    have hfinalTy := Subst.notMemOnTy hcA.1 hrTy
+    have hp : w ∉ (genScheme (K ++ softVars (substSoft (s1 ++ sCheck) F))
+      (sCheck.onCtx (s1.onCtx ctx)).env (sCheck.onTy rhsTy)).body.freeVars :=
+      fun hm => hfinalTy (Ty.freeVars_closeOver_subset hm)
+    have hbrefs := Expr.ForallOuter.lookupAvoid_prepend (pre := [genScheme _ _ _])
+      (Expr.ForallOuter.lookupAvoid_onSubst (Expr.ForallOuter.lookupAvoid_onSubst hrefs.2 hrS) hcA.1)
+      (by intro M hM; rcases List.mem_singleton.mp hM with rfl; exact hp)
+    obtain ⟨hbS, hbTy, hbD⟩ := hb.sourceLocality
+      (Nat.lt_of_lt_of_le hw (hr.frontier_le.trans hc.frontier_le))
+      (by simpa only [Input.erase_substTyFvars] using hbrefs) (Input.avoid_subst hA.1 hwe.2)
+    have hAll := Subst.sourceAvoid_append_local hA ⟨hbS, hbD⟩
+    exact ⟨hAll.1, hbTy, hAll.2⟩
+  | .letSignature _ heq _ _ hr hc _ hb =>
+    intro w hw hrefs hwe
+    expose_names
+    subst written
+    simp only [Input.erase, Expr.ForallOuter, Expr.rec_strong, Nat.zero_add] at hrefs
+    simp only [Input.rigidVars, List.mem_append, not_or] at hwe
+    have hwr : w ∉ freshVars frontier ann.paramCount := fun hm => by have := freshVars_ge w hm; omega
+    obtain ⟨hrS, hrTy, hrD⟩ := hr.sourceLocality (by omega)
+      (by simpa only [Input.erase_openTyVars] using hrefs.1)
+      (fun hm => (Input.rigidVars_openTyVarsFrom hm).elim hwe.1.2 hwr)
+    have hcA := hc.sourceAvoid (Nat.lt_of_lt_of_le hw (by have := hr.frontier_le; omega)) hrTy
+      (LetAnn.avoid_subst hrS hwe.1.1) hwr
+    have hA := Subst.sourceAvoid_append_local ⟨hrS, hrD⟩ hcA
+    have hp : w ∉ (signatureScheme (ann.substTyFvars (s1 ++ sCheck))
+      (K ++ softVars (substSoft (s1 ++ sCheck) F)) (freshVars frontier ann.paramCount)
+      (sCheck.onCtx (s1.onCtx ctx)) (sCheck.onTy rhsTy)).body.freeVars := by
+      cases ann with
+      | complete σ => exact LetAnn.avoid_subst hA.1 hwe.1.1
+      | absent | template t | partialForall n t =>
+        exact fun hm => Subst.notMemOnTy hcA.1 hrTy (Ty.freeVars_closeOver_subset hm)
+    have hbrefs := Expr.ForallOuter.lookupAvoid_prepend (pre := [signatureScheme _ _ _ _ _])
+      (Expr.ForallOuter.lookupAvoid_onSubst (Expr.ForallOuter.lookupAvoid_onSubst hrefs.2 hrS) hcA.1)
+      (by intro M hM; rcases List.mem_singleton.mp hM with rfl; exact hp)
+    obtain ⟨hbS, hbTy, hbD⟩ := hb.sourceLocality
+      (Nat.lt_of_lt_of_le hw (by have := hr.frontier_le; have := hc.frontier_le; omega))
+      (by simpa only [Input.erase_substTyFvars] using hbrefs) (Input.avoid_subst hA.1 hwe.2)
+    have hAll := Subst.sourceAvoid_append_local hA ⟨hbS, hbD⟩
+    exact ⟨hAll.1, hbTy, hAll.2⟩
+  | .match_ _ hs _ hb =>
+    intro w hw hrefs hwe
+    expose_names
+    simp only [Input.erase, Expr.ForallOuter, Expr.rec_strong, Nat.zero_add] at hrefs
+    simp only [Input.rigidVars, List.mem_append, not_or] at hwe
+    obtain ⟨hsS, hsTy, hsD⟩ := hs.sourceLocality hw hrefs.1 hwe.1
+    have hnew : w ∉ (Ty.fvar first).freeVars := by
+      simp only [Ty.freeVars, List.mem_singleton]; have := hs.frontier_le; omega
+    obtain ⟨hbS, hbTy, hbD⟩ := hb.sourceLocality (by have := hs.frontier_le; omega)
+      (branches_refs_subst (fun p b hm => hrefs.2 p b.erase (mem_eraseBranches hm)) hsS)
+      hsTy hnew (branches_avoid_subst hsS hwe.2)
+    have hA := Subst.sourceAvoid_append_local ⟨hsS, hsD⟩ ⟨hbS, hbD⟩
+    exact ⟨hA.1, hbTy, hA.2⟩
+ termination_by (input.size, 1)
+ decreasing_by all_goals (simp only [Input.size, Input.size_substTyFvars, Input.size_openTyVars, sizeBranches_substInputBranches]; omega)
+
+ theorem _root_.InferBranches.sourceLocality
+    (h : InferBranches K F frontier ctx scrutTy resultTy brs next subst completed) :
+    ∀ {w}, w < frontier →
+    (∀ p b, (p,b) ∈ brs → b.erase.ForallOuter
+      (fun i => ∀ M, ctx.env[i]? = some M → w ∉ M.body.freeVars) p.bindCount) →
+    w ∉ scrutTy.freeVars → w ∉ resultTy.freeVars → w ∉ rigidBranchVars brs →
+    (∀ p ∈ subst, w ∉ p.2.freeVars) ∧ w ∉ (subst.onTy resultTy).freeVars ∧ w ∉ subst.map Prod.fst := by
+  match h with
+  | .nil => intro w _ _ _ hρ _; exact ⟨by simp, by simpa using hρ, by simp⟩
+  | .cons _ hlook hn hu₀ hb hu hr =>
+    intro w hw hrefs hscrut hρ hbrs
+    expose_names
+    simp only [rigidBranchVars, List.mem_append, not_or] at hbrs
+    have hcustom : w ∉ (Ty.customTy ctor.tyName ((freshVars frontier ctor.paramCount).map Ty.fvar)).freeVars := by
+      intro hc; simp only [Ty.freeVars] at hc; rw [mem_TyList_freeVars] at hc
+      obtain ⟨t, ht, hwt⟩ := hc; obtain ⟨x, hx, rfl⟩ := List.mem_map.mp ht
+      simp only [Ty.freeVars, List.mem_singleton] at hwt
+      have := freshVars_ge x hx; omega
+    have hA₀ := UnifyRel.sourceAvoid_local hu₀.unifies hscrut hcustom
+    have hta : ∀ t ∈ ((freshVars frontier ctor.paramCount).map Ty.fvar).map s0.onTy, w ∉ t.freeVars := by
+      intro t ht; obtain ⟨t₀, ht₀, rfl⟩ := List.mem_map.mp ht
+      obtain ⟨x, hx, rfl⟩ := List.mem_map.mp ht₀
+      apply Subst.notMemOnTy hA₀.1
+      simp only [Ty.freeVars, List.mem_singleton]; have := freshVars_ge x hx; omega
+    have hbrefs : body.erase.ForallOuter
+        (fun i => ∀ M,
+          ((ctor.contents.map (Ty.openWith (((freshVars frontier ctor.paramCount).map Ty.fvar).map s0.onTy))).map PolyTy.mkTrivial
+            ++ (s0.onCtx ctx).env)[i]? = some M → w ∉ M.body.freeVars) 0 := by
+      apply Expr.ForallOuter.lookupAvoid_prepend
+        (by simpa only [List.length_map, Nat.zero_add, MatchPattern.bindCount, hn] using
+          Expr.ForallOuter.lookupAvoid_onSubst (hrefs (.named name count) body List.mem_cons_self) hA₀.1)
+      intro M hM; obtain ⟨t, ht, rfl⟩ := List.mem_map.mp hM
+      obtain ⟨t₀, ht₀, rfl⟩ := List.mem_map.mp ht
+      exact Ty.not_mem_freeVars_openWith hta ((ctor.closed t₀ ht₀).not_mem_freeVars w)
+    obtain ⟨hbS, hbTy, hbD⟩ := hb.sourceLocality (by omega)
+      (by simpa only [Input.erase_substTyFvars] using hbrefs) (Input.avoid_subst hA₀.1 hbrs.1)
+    have hA₂ := UnifyRel.sourceAvoid_local hu.unifies hbTy
+      (Subst.notMemOnTy hbS (Subst.notMemOnTy hA₀.1 hρ))
+    have hApre := Subst.sourceAvoid_append_local (Subst.sourceAvoid_append_local hA₀ ⟨hbS,hbD⟩) hA₂
+    obtain ⟨hrS, hrTy, hrD⟩ := hr.sourceLocality (by have := hb.frontier_le; omega)
+      (by
+        have hf := branches_refs_subst
+          (fun p b hm => hrefs p b (List.mem_cons_of_mem _ hm)) hApre.1
+        simpa only [Subst.onCtx_append] using hf)
+      (Subst.notMemOnTy hA₂.1 (Subst.notMemOnTy hbS (Subst.notMemOnTy hA₀.1 hscrut)))
+      (Subst.notMemOnTy hA₂.1 (Subst.notMemOnTy hbS (Subst.notMemOnTy hA₀.1 hρ)))
+      (branches_avoid_subst hApre.1 hbrs.2)
+    have hA := Subst.sourceAvoid_append_local hApre ⟨hrS,hrD⟩
+    exact ⟨hA.1, by simpa only [Subst.onTy_append] using hrTy, hA.2⟩
+  | .consWild _ hb hu hr =>
+    intro w hw hrefs hscrut hρ hbrs
+    expose_names
+    simp only [rigidBranchVars, List.mem_append, not_or] at hbrs
+    obtain ⟨hbS, hbTy, hbD⟩ := hb.sourceLocality hw
+      (hrefs .wildcard body List.mem_cons_self) hbrs.1
+    have hA₂ := UnifyRel.sourceAvoid_local hu.unifies hbTy (Subst.notMemOnTy hbS hρ)
+    have hApre := Subst.sourceAvoid_append_local ⟨hbS,hbD⟩ hA₂
+    obtain ⟨hrS, hrTy, hrD⟩ := hr.sourceLocality (Nat.lt_of_lt_of_le hw hb.frontier_le)
+      (by
+        have hf := branches_refs_subst
+          (fun p b hm => hrefs p b (List.mem_cons_of_mem _ hm)) hApre.1
+        simpa only [Subst.onCtx_append] using hf)
+      (Subst.notMemOnTy hA₂.1 (Subst.notMemOnTy hbS hscrut))
+      (Subst.notMemOnTy hA₂.1 (Subst.notMemOnTy hbS hρ))
+      (branches_avoid_subst hApre.1 hbrs.2)
+    have hA := Subst.sourceAvoid_append_local hApre ⟨hrS,hrD⟩
+    exact ⟨hA.1, by simpa only [Subst.onTy_append] using hrTy, hA.2⟩
+ termination_by (sizeBranches brs, 0)
+ decreasing_by all_goals (simp only [sizeBranches, Input.size_substTyFvars, sizeBranches_substInputBranches]; omega)
+end
+
+end Elaboration
+
+
+
+theorem RecSpec.notMem_freeVars_onSubstSource {S : Subst} {spec : RecSpec} {w : Nat}
+    (hS : ∀ p ∈ S, w ∉ p.2.freeVars) (h : w ∉ spec.freeVars) :
+    w ∉ (spec.onSubstSource S).freeVars := by
+  cases spec with
+  | mono ty => exact Subst.notMemOnTy hS h
+  | poly scheme => exact Subst.notMemOnTy hS h
+
+theorem RecSpec.mono_getElem?_map_onSubstSource {S : Subst} {specs : List RecSpec}
+    {member : Nat} {ty : Ty}
+    (h : (specs.map (RecSpec.onSubstSource S))[member]? = some (.mono ty)) :
+    ∃ old, specs[member]? = some (.mono old) ∧ ty = S.onTy old := by
+  rw [List.getElem?_map] at h
+  obtain ⟨s, hs, heq⟩ := Option.map_eq_some_iff.mp h
+  cases s with
+  | mono old => exact ⟨old, hs, (RecSpec.mono.inj heq).symm⟩
+  | poly scheme => cases heq
+
+theorem RecSpecs.PendingSeeds.onSubst_source {base : Nat} {ctx : Ctx} {specs : List RecSpec}
+    {done done' : List Nat} {S : Subst} (h : RecSpecs.PendingSeeds base ctx specs done)
+    (hdone : ∀ member ∈ done, member ∈ done')
+    (havoid : ∀ member ty, specs[member]? = some (.mono ty) → member ∉ done' →
+      (∀ p ∈ S, base + member ∉ p.2.freeVars) ∧ base + member ∉ S.map Prod.fst) :
+    RecSpecs.PendingSeeds base (S.onCtx ctx) (specs.map (RecSpec.onSubstSource S)) done' := by
+  constructor
+  · intro member ty hty hm
+    obtain ⟨old, hold, rfl⟩ := RecSpec.mono_getElem?_map_onSubstSource hty
+    rw [h.mono member old hold (fun hc => hm (hdone member hc))]
+    apply Ty.substFvars_eq_self_of_no_key
+    intro p hp hc
+    apply (havoid member old hold hm).2
+    apply List.mem_map.mpr
+    refine ⟨p, hp, ?_⟩
+    simpa only [Ty.freeVars, List.mem_singleton] using hc
+  · intro member ty hty hm j spec hs hj
+    obtain ⟨old, hold, _⟩ := RecSpec.mono_getElem?_map_onSubstSource hty
+    rw [List.getElem?_map] at hs
+    obtain ⟨oldSpec, holdSpec, rfl⟩ := Option.map_eq_some_iff.mp hs
+    exact RecSpec.notMem_freeVars_onSubstSource (havoid member old hold hm).1
+      (h.other member old hold (fun hc => hm (hdone member hc)) j oldSpec holdSpec hj)
+  · intro member ty hty hm
+    obtain ⟨old, hold, _⟩ := RecSpec.mono_getElem?_map_onSubstSource hty
+    exact Subst.onCtx_avoid (h.env member old hold (fun hc => hm (hdone member hc)))
+      (havoid member old hold hm).1
