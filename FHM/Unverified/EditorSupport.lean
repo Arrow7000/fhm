@@ -300,7 +300,7 @@ def explainTypeMismatch (ctors : CtorEnv) (ke : KindEnv)
   match b.ann with
   | none => s!"typechecking failed in {target}"
   | some σs =>
-      let σs := (finalizeAnn b.tyParams b.params (some σs)).getD σs
+      let σs := (Elaboration.finalizeInputAnn b.tyParams b.params (some σs)).getD σs
       let wantStr :=
         match lowerPoly ke σs with
         | some σ => FHM.Unverified.HMDisplay.scheme {} (σs.foralls.map prettyValName) σ

@@ -258,7 +258,7 @@ def checkPipeline (src : String) :
   let report : ProgramReport :=
     { bindings := (bindings.filter fun (name, _) => !Surface.internalBindingName name).map fun (name, hm) =>
         let binding := (p.groups.flatMap id).find? (fun b => b.name == name)
-        let ann := binding.bind (fun b => finalizeAnn b.tyParams b.params b.ann)
+        let ann := binding.bind (fun b => Elaboration.finalizeInputAnn b.tyParams b.params b.ann)
         let names := FHM.Unverified.HMArtifacts.displayNames ann
         { name, hm
           synthPretty? := some (FHM.Unverified.HMDisplay.scheme {}
