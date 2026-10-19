@@ -743,7 +743,7 @@ def patternBinderTypesAt (nodeTypes : NodeTypeMap) (targets : BinderTargetMap) :
     | .patCapture _ _ _, .absent _ => some (surface, [])
     | _, _ => none
 
-/-- Infer κ exactly the lowered Core term, then join types and inferred schemes by
+/-- Infer exactly the lowered Core term, then join types and inferred schemes by
     the paths emitted during lowering. No Surface/Core structural zip occurs. -/
 def inferWithProvenance (ctors : CtorEnv) (lowering : Lowered) : Option TypedLowered := do
   let inference ← inferWithTypes ctors lowering.expr

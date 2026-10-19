@@ -11457,7 +11457,7 @@ set_option maxRecDepth 4096 in
 set_option maxHeartbeats 800_000 in
 mutual
 /-- Backward soundness: inference implies declarative typing for the source term. -/
-theorem Infer.sourceSound {Φ ctx e Φ' S τ} (h : Infer κ Φ ctx e Φ' S τ) :
+theorem Infer.sourceSound_of_avoids {Φ ctx e Φ' S τ} (h : Infer κ Φ ctx e Φ' S τ) :
     CtxWF ctx → CtxBelow Φ ctx → (K : List Nat) → (∀ k ∈ K, k < Φ) →
     (∀ y ∈ e.tyFreeVars, y ∈ K) → (∀ p ∈ S, p.1 ∉ K) →
     TypeOfHM (S.onCtx ctx) e τ := by
@@ -11509,7 +11509,7 @@ theorem Infer.sourceSound {Φ ctx e Φ' S τ} (h : Infer κ Φ ctx e Φ' S τ) :
         intro M hM; rcases List.mem_cons.mp hM with rfl | hM
         · exact .fvar (by omega)
         · exact (hbelow M hM).mono (by omega)
-      have ih := Infer.sourceSound hbody hbodyWF hbodyBelow K
+      have ih := Infer.sourceSound_of_avoids hbody hbodyWF hbodyBelow K
         (fun k hk => by have := hKΦ k hk; omega) hKe hSK
       refine TypeOfHM.lambda
         ((Subst.onTy_lc (Infer.lc hbody hbodyWF).2 ContainsBvarsUpTo.fvar))
@@ -11527,7 +11527,7 @@ theorem Infer.sourceSound {Φ ctx e Φ' S τ} (h : Infer κ Φ ctx e Φ' S τ) :
         intro M hM; rcases List.mem_cons.mp hM with rfl | hM
         · exact Ty.BelowFvars.of_freeVars_lt (fun v hv => hKΦ v (hKe v (.inl hv)))
         · exact hbelow M hM
-      have ih := Infer.sourceSound hbody hbodyWF hbodyBelow K
+      have ih := Infer.sourceSound_of_avoids hbody hbodyWF hbodyBelow K
         (fun k hk => by have := hKΦ k hk; omega)
         (fun y hy => hKe y (.inr hy)) hSK
       have hSparam : S.onTy paramTy = paramTy :=
@@ -11551,9 +11551,9 @@ theorem Infer.sourceSound {Φ ctx e Φ' S τ} (h : Infer κ Φ ctx e Φ' S τ) :
     have hf_below := Infer.belowFvars hf hbelow (fun y hy => hKΦ y (hKe y (.inl hy)))
     have hbelow1 := Subst.onCtx_below hf_below.2 (Infer.frontier_le hf) hbelow
     have hs3 := huni.lc (Subst.onTy_lc harg_s hf_lc) (.arrow harg_lc ContainsBvarsUpTo.fvar)
-    have hf_sound := Infer.sourceSound hf hctx hbelow K hKΦ (fun y hy => hKe y (.inl hy))
+    have hf_sound := Infer.sourceSound_of_avoids hf hctx hbelow K hKΦ (fun y hy => hKe y (.inl hy))
       (fun p hp => hSK p (List.mem_append_left _ (List.mem_append_left _ hp)))
-    have harg_sound := Infer.sourceSound harg hctx1 hbelow1 K
+    have harg_sound := Infer.sourceSound_of_avoids harg hctx1 hbelow1 K
       (fun k hk => lt_of_lt_of_le (hKΦ k hk) (Infer.frontier_le hf))
       (fun y hy => hKe y (.inr hy))
       (fun p hp => hSK p (List.mem_append_left _ (List.mem_append_right _ hp)))
@@ -11702,7 +11702,7 @@ theorem Infer.sourceSound {Φ ctx e Φ' S τ} (h : Infer κ Φ ctx e Φ' S τ) :
       rw [Subst.onCtx_append]
       simp only [Subst.onCtx, Subst.onEnv, List.map_cons]
     -- residual source typings
-    have hrhs_sound := Infer.sourceSound hrhs hctx hbelow K hKΦ (fun y hy => hKe y (.inl hy))
+    have hrhs_sound := Infer.sourceSound_of_avoids hrhs hctx hbelow K hKΦ (fun y hy => hKe y (.inl hy))
       (fun p hp => hSK p (List.mem_append_left S₂ hp))
     have hrhsfixS2 : rhs.substTyFvars S₂ = rhs :=
       Expr.substTyFvars_eq_self_of_not_mem_tyFreeVars
@@ -11714,7 +11714,7 @@ theorem Infer.sourceSound {Φ ctx e Φ' S τ} (h : Infer κ Φ ctx e Φ' S τ) :
       have key := hr2
       rw [← Subst.onCtx_append, ← hSτ₁] at key
       exact key
-    have hbody_sound := Infer.sourceSound hbody hbodyWF hbodyBelow K
+    have hbody_sound := Infer.sourceSound_of_avoids hbody hbodyWF hbodyBelow K
       (fun k hk => lt_of_lt_of_le (hKΦ k hk) (Infer.frontier_le hrhs))
       (fun y hy => hKe y (.inr hy)) (fun p hp => hSK p (List.mem_append_right _ hp))
     have hbody_pack : TypeOfHM
@@ -11874,7 +11874,7 @@ theorem Infer.sourceSound {Φ ctx e Φ' S τ} (h : Infer κ Φ ctx e Φ' S τ) :
       rcases Expr.tyFreeVars_openTyVars hc with h | h
       · exact hSK p hpS (hKe p.1 (.inl (.inr h)))
       · exact hSYs p hpS h
-    have hrhs_sound := Infer.sourceSound hrhs hctx hctx_pc (K ++ Ys)
+    have hrhs_sound := Infer.sourceSound_of_avoids hrhs hctx hctx_pc (K ++ Ys)
       (fun k hk => by
         rcases List.mem_append.mp hk with h | h
         · have := hKΦ k h; have := hΦN; omega
@@ -11951,7 +11951,7 @@ theorem Infer.sourceSound {Φ ctx e Φ' S τ} (h : Infer κ Φ ctx e Φ' S τ) :
       rw [show (S₁ ++ Schk ++ S₂) = (S₁ ++ Schk) ++ S₂ from rfl, Subst.onCtx_append,
         Subst.onCtx_append]
       simp only [Subst.onCtx, Subst.onEnv, List.map_cons, hS₂σ]
-    have hbody_sound := Infer.sourceSound hbody hbodyWF hbodyBelow K
+    have hbody_sound := Infer.sourceSound_of_avoids hbody hbodyWF hbodyBelow K
       (fun k hk => by have := hKΦ k hk; have := hΦN; have := hrle; omega)
       (fun y hy => hKe y (.inr hy)) (fun p hp => hSK p (List.mem_append_right _ hp))
     have hbody_pack : TypeOfHM
@@ -12029,7 +12029,7 @@ theorem Infer.sourceSound {Φ ctx e Φ' S τ} (h : Infer κ Φ ctx e Φ' S τ) :
     have hctx1 := Subst.onCtx_wf hS₁ hctx
     have hbelow1 := Subst.onCtx_below hscrut_below.2 hle1 hbelow
     have hS₂lc := (InferBranches.lc hbr hctx1 hτs_lc ContainsBvarsUpTo.fvar).2
-    have hscrut_sound := Infer.sourceSound hscrut hctx hbelow K hKΦ (fun y hy => hKe y (.inl hy))
+    have hscrut_sound := Infer.sourceSound_of_avoids hscrut hctx hbelow K hKΦ (fun y hy => hKe y (.inl hy))
       (fun p hp => hSK p (List.mem_append_left _ hp))
     have hscrutfix : scrut.substTyFvars S₂ = scrut :=
       Expr.substTyFvars_eq_self_of_not_mem_tyFreeVars (fun p hp hc =>
@@ -12196,13 +12196,13 @@ theorem Infer.sourceSound {Φ ctx e Φ' S τ} (h : Infer κ Φ ctx e Φ' S τ) :
         (hbodyAvoid₂ g hc) (hGbody g hc)).1 p hp hg
     have hbridge₃ := RecSpecs.bodyCtx_onSubst (ctx := ctx₂) hS₃G hS₃RG
       (fun σ hσ p hp hc => hS₃K p hp (hpolySK σ hσ p.1 hc))
-    have hbodysound := Infer.sourceSound hbody hbodyWF₂ hbodyB₂ K
+    have hbodysound := Infer.sourceSound_of_avoids hbody hbodyWF₂ hbodyB₂ K
       (fun k hk => by have := hKΦ k hk; omega) (fun y hy => hKe y (.inr hy)) hS₃K
     have hmonoS := InferRecStrata.sourceSoundMono_of hfrozen
       (fun rhs hrhs => by
         have hsize := Expr.sourceLocality_size_mem hrhs
         intro κ Ψ c Ψ' T τ he hc hb KK hKK hke htk
-        exact Infer.sourceSound he hc hb KK hKK hke htk)
+        exact Infer.sourceSound_of_avoids he hc hb KK hKK hke htk)
       hctx hctxB hinitLC hinitB K (fun k hk => by have := hKΦ k hk; omega)
       hKbind (fun σ hσ => hKsch σ (RecSpec.poly_mem_init hσ)) hS₁K
     obtain ⟨L₀,hpolyS⟩ := InferRecGroupPoly.sourceSoundPoly hpoly hbodyWF₁ hbodyB₁
@@ -12383,7 +12383,7 @@ theorem InferBranches.sourceSound {Φ ctx scrutTy ρ brs Φ' S}
             ++ (S₀.onCtx ctx).env }
       have h0 : TypeOfHM (S₁.onCtx bodyCtx) body
           τb :=
-        Infer.sourceSound hbody hbodyWF hbodyBelow K
+        Infer.sourceSound_of_avoids hbody hbodyWF hbodyBelow K
           (fun k hk => by have := hKΦ k hk; have := hle0; omega)
           (fun y hy => hKbr y (by
             simp only [Expr.tyFreeVars.BranchList.tyFreeVars, List.mem_append]; exact Or.inl hy))
@@ -12518,7 +12518,7 @@ theorem InferBranches.sourceSound {Φ ctx scrutTy ρ brs Φ' S}
       (fun p hp => hSK p (List.mem_append_right _ hp))
     intro p hp
     rcases List.mem_cons.mp hp with rfl | hp_rest
-    · have h0 := Infer.sourceSound hbody hctx hbelow K hKΦ
+    · have h0 := Infer.sourceSound_of_avoids hbody hctx hbelow K hKΦ
         (fun y hy => hKbr y (by
           simp only [Expr.tyFreeVars.BranchList.tyFreeVars, List.mem_append]; exact Or.inl hy))
         (fun p hp => hSK p (List.mem_append_left _ (List.mem_append_left _ hp)))
@@ -12635,7 +12635,7 @@ theorem InferRecGroup.sourceSoundMono {Φ ctx bindings specs Φ' S}
       rw [hred] at hτ0
       injection hτ0 with hτeq
       subst hτeq
-      have h0 := Infer.sourceSound he hctx hbelow K hKΦ (fun y hy => hKbr y (.inl hy)) hK1
+      have h0 := Infer.sourceSound_of_avoids he hctx hbelow K hKΦ (fun y hy => hKbr y (.inl hy)) hK1
       have hefixS2 : e.substTyFvars S₂ = e :=
         Expr.substTyFvars_eq_self_of_not_mem_tyFreeVars (fun p hp hc =>
           hK2 p hp (hKbr p.1 (.inl hc)))
@@ -12792,7 +12792,7 @@ theorem InferRecGroupPoly.sourceSoundPoly {Φ ctx bindings specs Φ' S}
       InferRecGroupPoly.dom_avoid hrest (hYs_lt p.1 hc) (hYs_ctx p.1 hc)
         (fun σ' hσ' => hYs_specs p.1 hc σ' hσ') (hYs_rest p.1 hc)
         (List.mem_map.mpr ⟨p, hp, rfl⟩)
-    have hrhs_sound := Infer.sourceSound he hctx hctx_pc (K ++ Ys)
+    have hrhs_sound := Infer.sourceSound_of_avoids he hctx hctx_pc (K ++ Ys)
       (fun k hk => by
         rcases List.mem_append.mp hk with h | h
         · have := hKΦ k h; omega
@@ -12943,13 +12943,19 @@ decreasing_by
 end
 
 
+/-- Source soundness uses the rigid context carried by the derivation. -/
+theorem Infer.sourceSound {K Φ ctx e Φ' S τ} (h : Infer K Φ ctx e Φ' S τ)
+    (hwf : CtxWF ctx) (hbelow : CtxBelow Φ ctx)
+    (hKΦ : ∀ k ∈ K, k < Φ) (hKe : ∀ y ∈ e.tyFreeVars, y ∈ K) :
+    TypeOfHM (S.onCtx ctx) e τ :=
+  Infer.sourceSound_of_avoids h hwf hbelow K hKΦ hKe h.dom_avoids
+
 /-- Runtime soundness follows by erasing a source-sound typing derivation. -/
-theorem Infer.sound {Φ ctx e Φ' S τ} (h : Infer κ Φ ctx e Φ' S τ) :
-    CtxWF ctx → CtxBelow Φ ctx → (K : List Nat) → (∀ k ∈ K, k < Φ) →
-    (∀ y ∈ e.tyFreeVars, y ∈ K) → (∀ p ∈ S, p.1 ∉ K) →
-    RuntimeTyping.RunWT (S.onCtx ctx) e.erase τ := by
-  intro hctx hbelow K hKΦ hKe hSK
-  exact (Infer.sourceSound h hctx hbelow K hKΦ hKe hSK).erase_preserves_typing
+theorem Infer.sound {K Φ ctx e Φ' S τ} (h : Infer K Φ ctx e Φ' S τ)
+    (hwf : CtxWF ctx) (hbelow : CtxBelow Φ ctx)
+    (hKΦ : ∀ k ∈ K, k < Φ) (hKe : ∀ y ∈ e.tyFreeVars, y ∈ K) :
+    RuntimeTyping.RunWT (S.onCtx ctx) e.erase τ :=
+  (Infer.sourceSound h hwf hbelow hKΦ hKe).erase_preserves_typing
 
 
 /-! ### Generalisation/substitution commutation lemmas (for `letIn` principality) -/
@@ -14419,7 +14425,7 @@ theorem principalType_sound {ctors : CtorEnv} {e : Expr} {τ : Ty}
       Ty.substFvars_eq_self_of_no_key (fun p hp => helim.2 p hp)
     simpa [Subst.onCtx, Subst.onEnv, hSτ] using
       Infer.sound hInfer CtxWF.empty CtxBelow.empty
-        e.tyFreeVars (fun k hk => Expr.lt_freshFloor hk) (fun y hy => hy) hSK
+        (fun k hk => Expr.lt_freshFloor hk) (fun y hy => hy)
 
 /-- **Type-check a closed program** — the intended entry point. Run Algorithm W
     from the empty environment and *generalize* the result into a closed type
