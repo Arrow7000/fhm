@@ -70,6 +70,120 @@ def eraseBindings : List Input → List Expr
   | body :: rest => body.erase :: eraseBindings rest
 end
 
+/-- Complete annotation modes only. A partial mode stays partial even if its
+template happens not to contain a hole. -/
+def LetAnn.toCore : LetAnn → Option (Option PolyTy)
+  | .absent => some none
+  | .complete scheme => some (some scheme)
+  | .template _ | .partialForall _ _ => none
+
+mutual
+def Template.toCore : Template → Option Ty
+  | .fixed ty => some ty
+  | .hole => none
+  | .arrow a b => return .arrow (← a.toCore) (← b.toCore)
+  | .custom name args => return .customTy name (← completeTypes args)
+def completeTypes : List Template → Option (List Ty)
+  | [] => some []
+  | template :: rest => return (← template.toCore) :: (← completeTypes rest)
+end
+
+def completeLambdaAnn : Option Template → Option (Option Ty)
+  | none => some none
+  | some template => return some (← template.toCore)
+
+mutual
+/-- A decidable conservative embedding, preserving complete/partial modes.
+Only a whole subtree successfully embedded here may use the old Core backend. -/
+def Input.toCore : Input → Option Expr
+  | .primLit p => some (.primLit p)
+  | .primBinOp op => some (.primBinOp op)
+  | .lambda ann body => return .lambda (← completeLambdaAnn ann) (← body.toCore)
+  | .app f x => return .app (← f.toCore) (← x.toCore)
+  | .letIn ann rhs body => return .letIn (← ann.toCore) (← rhs.toCore) (← body.toCore)
+  | .var i => some (.var i)
+  | .ctor name => some (.ctor name)
+  | .match_ scrut branches => return .match_ (← scrut.toCore) (← completeBranches branches)
+  | .letRec anns bindings body =>
+      return .letRec (← completeAnns anns) (← completeBindings bindings) (← body.toCore)
+def completeBranches : List (MatchPattern × Input) → Option (List (MatchPattern × Expr))
+  | [] => some []
+  | (pat, body) :: rest => return (pat, ← body.toCore) :: (← completeBranches rest)
+def completeBindings : List Input → Option (List Expr)
+  | [] => some []
+  | body :: rest => return (← body.toCore) :: (← completeBindings rest)
+def completeAnns : List LetAnn → Option (List (Option PolyTy))
+  | [] => some []
+  | ann :: rest => return (← ann.toCore) :: (← completeAnns rest)
+end
+
+mutual
+theorem Input.toCore_erase (input : Input) {core : Expr}
+    (h : input.toCore = some core) : core.erase = input.erase := by
+  cases input with
+  | primLit p => cases h; simp only [Expr.erase, Input.erase]
+  | primBinOp op => cases h; simp only [Expr.erase, Input.erase]
+  | var i => cases h; simp only [Expr.erase, Input.erase]
+  | ctor c => cases h; simp only [Expr.erase, Input.erase]
+  | lambda ann body =>
+      simp only [Input.toCore, bind, pure, Option.bind_eq_some_iff,
+        Option.some.injEq] at h
+      obtain ⟨ann', _, body', hb, rfl⟩ := h
+      simp only [Expr.erase, Input.erase, body.toCore_erase hb]
+  | app f x =>
+      simp only [Input.toCore, bind, pure, Option.bind_eq_some_iff,
+        Option.some.injEq] at h
+      obtain ⟨f', hf, x', hx, rfl⟩ := h
+      simp only [Expr.erase, Input.erase, f.toCore_erase hf, x.toCore_erase hx]
+  | letIn ann rhs body =>
+      simp only [Input.toCore, bind, pure, Option.bind_eq_some_iff,
+        Option.some.injEq] at h
+      obtain ⟨ann', _, rhs', hr, body', hb, rfl⟩ := h
+      simp only [Expr.erase, Input.erase, rhs.toCore_erase hr, body.toCore_erase hb]
+  | match_ scrut branches =>
+      simp only [Input.toCore, bind, pure, Option.bind_eq_some_iff,
+        Option.some.injEq] at h
+      obtain ⟨scrut', hs, branches', hb, rfl⟩ := h
+      simp only [Expr.erase, Input.erase, scrut.toCore_erase hs, completeBranches_erase branches hb]
+  | letRec anns bindings body =>
+      simp only [Input.toCore, bind, pure, Option.bind_eq_some_iff,
+        Option.some.injEq] at h
+      obtain ⟨anns', _, bindings', hr, body', hb, rfl⟩ := h
+      have hbindings := completeBindings_erase bindings hr
+      have hlength : bindings'.length = bindings.length := by
+        have := congrArg List.length hbindings
+        simpa only [List.length_map, eraseBindings_length] using this
+      simp only [Expr.erase, Input.erase, body.toCore_erase hb, hbindings]
+      congr 1
+      simp only [List.map_const', hlength]
+theorem completeBranches_erase (inputs : List (MatchPattern × Input))
+    {cores : List (MatchPattern × Expr)} (h : completeBranches inputs = some cores) :
+    cores.map (fun pe => (pe.1, pe.2.erase)) = eraseBranches inputs := by
+  cases inputs with
+  | nil => cases h; rfl
+  | cons head rest =>
+      rcases head with ⟨pat, body⟩
+      simp only [completeBranches, bind, pure, Option.bind_eq_some_iff,
+        Option.some.injEq] at h
+      obtain ⟨body', hb, rest', hr, rfl⟩ := h
+      simp only [List.map_cons, eraseBranches, body.toCore_erase hb, completeBranches_erase rest hr]
+theorem completeBindings_erase (inputs : List Input) {cores : List Expr}
+    (h : completeBindings inputs = some cores) :
+    cores.map Expr.erase = eraseBindings inputs := by
+  cases inputs with
+  | nil => cases h; rfl
+  | cons body rest =>
+      simp only [completeBindings, bind, pure, Option.bind_eq_some_iff,
+        Option.some.injEq] at h
+      obtain ⟨body', hb, rest', hr, rfl⟩ := h
+      simp only [List.map_cons, eraseBindings, body.toCore_erase hb, completeBindings_erase rest hr]
+theorem eraseBindings_length (inputs : List Input) : (eraseBindings inputs).length = inputs.length := by
+  cases inputs with
+  | nil => rfl
+  | cons body rest =>
+      simpa only [eraseBindings, List.length_cons] using congrArg Nat.succ (eraseBindings_length rest)
+end
+
 /-- A partial ordinary signature constrains the inferred monotype before that
 monotype is generalised. It is not an existential complete Core signature. -/
 def LetAnn.FitsMono : LetAnn → Ty → Prop
@@ -87,6 +201,9 @@ conservative Core embedding is connected; this fragment does not reinterpret
 complete annotations as partial annotations.
 -/
 inductive Typing : Ctx → Input → Ty → Prop
+  /-- Existing complete Core programs retain their existing declarative meaning.
+  The checked embedding rejects every partial annotation mode. -/
+  | complete : input.toCore = some core → TypeOfHM ctx core ty → Typing ctx input ty
   | primLit : TypeOfHM ctx (.primLit p) ty → Typing ctx (.primLit p) ty
   | primBinOp : TypeOfHM ctx (.primBinOp op) ty → Typing ctx (.primBinOp op) ty
   | lambda :
@@ -112,15 +229,18 @@ inductive Typing : Ctx → Input → Ty → Prop
 /-- The input specification has the ordinary HM runtime meaning independently
 of elaboration. Annotation matching restricts this meaning; it never grants a
 new runtime typing rule. -/
-theorem Typing.erase (h : Typing ctx input ty) : TypeOfHM ctx input.erase ty := by
+theorem Typing.erase (h : Typing ctx input ty) : RuntimeTyping.RunWT ctx input.erase ty := by
   induction h with
-  | primLit h => exact h
-  | primBinOp h => exact h
+  | complete hemb htyping =>
+      rw [← Input.toCore_erase _ hemb]
+      exact htyping.erase_preserves_typing
+  | primLit h => simpa only [Expr.erase] using h.erase_preserves_typing
+  | primBinOp h => simpa only [Expr.erase] using h.erase_preserves_typing
   | lambda hlc _ _ ih =>
-      exact .lambda hlc (fun _ h => by cases h) rfl ih
+      exact .lambda hlc ih
   | app _ _ ihf ihx => exact .app ihf ihx
   | letIn hwf _ _ _ ihrhs ihbody =>
-      exact .letIn hwf (fun _ h => by cases h) ihrhs rfl ihbody
+      exact .letIn hwf ihrhs ihbody
   | var hlook hlc hinst => exact .var hlook hlc hinst
   | ctor hlook hlc hinst => exact .ctor hlook hlc hinst
 
