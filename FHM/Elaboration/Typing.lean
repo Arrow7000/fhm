@@ -2,6 +2,61 @@ import FHM.CoreBackend.Complete
 import FHM.Elaboration.RecScheme
 import FHM.Elaboration.Close
 
+/-- Pointwise fixing of the opening names suffices; the substitution's literal
+domain may contain those names and its ranges may mention them. -/
+theorem Subst.onTy_openVarsFrom_of_fixes {S : Subst} {Xs : List Nat}
+    (hlc : ∀ p ∈ S, p.2.IsLC)
+    (hfix : ∀ x ∈ Xs, S.onTy (.fvar x) = .fvar x) (ty : Ty) (depth : Nat) :
+    S.onTy (Ty.openVarsFrom depth Xs ty) = Ty.openVarsFrom depth Xs (S.onTy ty) := by
+  induction ty using Ty.rec_strong with
+  | prim p => simp only [Ty.openVarsFrom, Ty.instantiate, Subst.onTy_prim]
+  | bvar i =>
+    simp only [Subst.onTy_bvar, Ty.openVarsFrom, Ty.instantiate]
+    by_cases hi : i < depth
+    · simp only [if_pos hi, Subst.onTy_bvar]
+    · simp only [if_neg hi]
+      cases hx : Xs[i - depth]? with
+      | none => exact Subst.onTy_bvar
+      | some x => exact hfix x (List.mem_of_getElem? hx)
+  | fvar v =>
+    change S.onTy (.fvar v) = Ty.openVarsFrom depth Xs (S.onTy (.fvar v))
+    exact (Ty.instantiate_eq_self_of_lc (Subst.onTy_lc hlc .fvar)).symm
+  | arrow a b iha ihb =>
+    simp only [Ty.openVarsFrom, Ty.instantiate, Subst.onTy_arrow] at *
+    exact congrArg₂ Ty.arrow iha ihb
+  | customTy name args ih =>
+    simp only [Ty.openVarsFrom, Ty.instantiate, TyList.instantiate_eq_map,
+      Subst.onTy_customTy, List.map_map]
+    congr 1
+    exact List.map_congr_left (fun t ht => ih t ht)
+
+theorem Subst.onTy_openVars_of_fixes {S : Subst} {Xs : List Nat}
+    (hlc : ∀ p ∈ S, p.2.IsLC)
+    (hfix : ∀ x ∈ Xs, S.onTy (.fvar x) = .fvar x) {ty : Ty} :
+    S.onTy (Ty.openVars Xs ty) = Ty.openVars Xs (S.onTy ty) := by
+  simpa only [Ty.openVarsFrom, Nat.not_lt_zero, if_false, Nat.sub_zero, Ty.openVars] using Subst.onTy_openVarsFrom_of_fixes hlc hfix ty 0
+
+
+/-- Free-variable replacement cannot remove an existing bound variable. -/
+theorem ContainsBvarsUpTo.of_substFvar {n Z : Nat} {U ty : Ty}
+    (h : ContainsBvarsUpTo n (Ty.substFvar Z U ty)) : ContainsBvarsUpTo n ty := by
+  induction ty using Ty.rec_strong with
+  | prim p => exact .prim
+  | bvar i => exact h
+  | fvar v => exact .fvar
+  | arrow a b iha ihb => cases h with | arrow ha hb => exact .arrow (iha ha) (ihb hb)
+  | customTy name args ih =>
+    cases h with
+    | customTy hall =>
+      exact .customTy (fun t ht => ih t ht (hall _ (by
+        rw [TyList.substFvar_eq_map]; exact List.mem_map.mpr ⟨t, ht, rfl⟩)))
+
+theorem ContainsBvarsUpTo.of_substFvars {n : Nat} {S : Subst} {ty : Ty}
+    (h : ContainsBvarsUpTo n (Ty.substFvars S ty)) : ContainsBvarsUpTo n ty := by
+  induction S generalizing ty with
+  | nil => exact h
+  | cons pair rest ih => exact ContainsBvarsUpTo.of_substFvar (ih h)
+
 private theorem branch_tyFreeVars_mem {branches : List (MatchPattern × Expr)}
     {p : MatchPattern} {body : Expr} {v : Nat} (hb : (p, body) ∈ branches)
     (hv : v ∈ body.tyFreeVars) :
@@ -195,6 +250,154 @@ theorem Expr.mem_tyFreeVars_substTyFvars_image {S : Subst} {w : Nat} {e : Expr}
       exact ⟨k, Or.inr hk, hv⟩
 
 namespace Elaboration
+
+mutual
+theorem Template.allocate_bounds (template : Template) (frontier : Nat) :
+    frontier ≤ (template.allocate frontier).1 ∧
+      ((∀ v ∈ template.rigidVars, v < frontier) →
+        Ty.BelowFvars (template.allocate frontier).1 (template.allocate frontier).2) := by
+  cases template with
+  | fixed ty => exact ⟨Nat.le_refl _, Ty.BelowFvars.of_freeVars_lt⟩
+  | hole => exact ⟨Nat.le_succ _, fun _ => .fvar (Nat.lt_succ_self _)⟩
+  | arrow a b =>
+    obtain ⟨hale, hab⟩ := a.allocate_bounds frontier
+    obtain ⟨hble, hbb⟩ := b.allocate_bounds (a.allocate frontier).1
+    refine ⟨hale.trans hble, fun hr => .arrow ?_ ?_⟩
+    · exact (hab (fun v hv => hr v (List.mem_append_left _ hv))).mono hble
+    · exact hbb (fun v hv => Nat.lt_of_lt_of_le (hr v (List.mem_append_right _ hv)) hale)
+  | custom name args =>
+    obtain ⟨hle, hb⟩ := allocateList_bounds args frontier
+    exact ⟨hle, fun hr => .customTy (hb hr)⟩
+theorem allocateList_bounds (templates : List Template) (frontier : Nat) :
+    frontier ≤ (allocateList frontier templates).1 ∧
+      ((∀ v ∈ rigidVarsList templates, v < frontier) →
+        ∀ t ∈ (allocateList frontier templates).2, Ty.BelowFvars (allocateList frontier templates).1 t) := by
+  cases templates with
+  | nil => exact ⟨Nat.le_refl _, fun _ _ ht => by cases ht⟩
+  | cons template rest =>
+    obtain ⟨hhle, hhb⟩ := template.allocate_bounds frontier
+    obtain ⟨htle, htb⟩ := allocateList_bounds rest (template.allocate frontier).1
+    refine ⟨hhle.trans htle, ?_⟩
+    intro hr t ht
+    rcases List.mem_cons.mp ht with rfl | ht
+    · exact (hhb (fun v hv => hr v (List.mem_append_left _ hv))).mono htle
+    · exact htb (fun v hv => Nat.lt_of_lt_of_le (hr v (List.mem_append_right _ hv)) hhle) t ht
+end
+
+
+
+mutual
+theorem Template.substTyFvars_openTyVarsFrom_of_fixes (template : Template) {S : Subst} {Xs : List Nat}
+    (hlc : ∀ p ∈ S, p.2.IsLC)
+    (hfix : ∀ x ∈ Xs, S.onTy (.fvar x) = .fvar x) (depth : Nat) :
+    (template.openTyVarsFrom depth Xs).substTyFvars S =
+      (template.substTyFvars S).openTyVarsFrom depth Xs := by
+  cases template with
+  | fixed ty => exact congrArg Template.fixed (Subst.onTy_openVarsFrom_of_fixes hlc hfix ty depth)
+  | hole => rfl
+  | arrow a b =>
+    simp only [Template.openTyVarsFrom, Template.substTyFvars,
+      a.substTyFvars_openTyVarsFrom_of_fixes hlc hfix depth,
+      b.substTyFvars_openTyVarsFrom_of_fixes hlc hfix depth]
+  | custom name args =>
+    exact congrArg (Template.custom name) (templateList_open_subst_of_fixes args hlc hfix depth)
+private theorem templateList_open_subst_of_fixes (templates : List Template) {S : Subst} {Xs : List Nat}
+    (hlc : ∀ p ∈ S, p.2.IsLC)
+    (hfix : ∀ x ∈ Xs, S.onTy (.fvar x) = .fvar x) (depth : Nat) :
+    substTemplateList S (openTemplateList depth Xs templates) =
+      openTemplateList depth Xs (substTemplateList S templates) := by
+  cases templates with
+  | nil => rfl
+  | cons t ts =>
+    simp only [substTemplateList, openTemplateList,
+      t.substTyFvars_openTyVarsFrom_of_fixes hlc hfix depth,
+      templateList_open_subst_of_fixes ts hlc hfix depth]
+end
+
+/-- Factor an ordinary annotation check against the transformed source. Only
+raw-source allocation bounds and independent target protection are required. -/
+
+theorem LetAnn.substTyFvars_openTyVarsFrom_of_fixes (ann : LetAnn) {subst : Subst} {Xs : List Nat}
+    (hlc : ∀ pair ∈ subst, pair.2.IsLC) (hfix : ∀ x ∈ Xs, subst.onTy (.fvar x) = .fvar x) (d : Nat) :
+    (ann.openTyVarsFrom d Xs).substTyFvars subst = (ann.substTyFvars subst).openTyVarsFrom d Xs := by
+  cases ann with
+  | absent => rfl
+  | complete scheme =>
+      exact congrArg (fun t => LetAnn.complete ⟨scheme.paramCount, t⟩)
+        (Subst.onTy_openVarsFrom_of_fixes hlc hfix scheme.body (d + scheme.paramCount))
+  | template t => exact congrArg LetAnn.template (t.substTyFvars_openTyVarsFrom_of_fixes hlc hfix d)
+  | partialForall n t =>
+      exact congrArg (LetAnn.partialForall n) (t.substTyFvars_openTyVarsFrom_of_fixes hlc hfix (d + n))
+
+mutual
+/-- Source substitution commutes with opening through nested written signature
+binders. LC ranges need not avoid the opened names. -/
+theorem Input.substTyFvars_openTyVarsFrom_of_fixes (input : Input) {subst : Subst} {Xs : List Nat}
+    (hlc : ∀ pair ∈ subst, pair.2.IsLC) (hfix : ∀ x ∈ Xs, subst.onTy (.fvar x) = .fvar x) (d : Nat) :
+    (input.openTyVarsFrom d Xs).substTyFvars subst = (input.substTyFvars subst).openTyVarsFrom d Xs := by
+  cases input with
+  | primLit | primBinOp | var | ctor => rfl
+  | lambda ann body =>
+      simp only [Input.openTyVarsFrom, Input.substTyFvars,
+        body.substTyFvars_openTyVarsFrom_of_fixes hlc hfix d]
+      congr 1
+      cases ann with
+      | none => rfl
+      | some template => exact congrArg some (template.substTyFvars_openTyVarsFrom_of_fixes hlc hfix d)
+  | app f a => simp only [Input.openTyVarsFrom, Input.substTyFvars,
+      f.substTyFvars_openTyVarsFrom_of_fixes hlc hfix d, a.substTyFvars_openTyVarsFrom_of_fixes hlc hfix d]
+  | letIn ann rhs body => simp only [Input.openTyVarsFrom, Input.substTyFvars,
+      LetAnn.paramCount_substTyFvars, ann.substTyFvars_openTyVarsFrom_of_fixes hlc hfix d,
+      rhs.substTyFvars_openTyVarsFrom_of_fixes hlc hfix (d + ann.paramCount),
+      body.substTyFvars_openTyVarsFrom_of_fixes hlc hfix d]
+  | match_ scrut branches => simp only [Input.openTyVarsFrom, Input.substTyFvars,
+      scrut.substTyFvars_openTyVarsFrom_of_fixes hlc hfix d,
+      substInputBranches_openInputBranches_of_fixes branches hlc hfix d]
+  | letRec anns bindings body =>
+      simp only [Input.openTyVarsFrom, Input.substTyFvars,
+        body.substTyFvars_openTyVarsFrom_of_fixes hlc hfix d,
+        substInputBindings_openInputBindings_of_fixes bindings anns hlc hfix d, List.map_map]
+      congr 1
+      apply List.map_congr_left
+      intro ann _
+      exact ann.substTyFvars_openTyVarsFrom_of_fixes hlc hfix d
+termination_by sizeOf input
+
+theorem substInputBranches_openInputBranches_of_fixes (branches : List (MatchPattern × Input)) {subst : Subst} {Xs : List Nat}
+    (hlc : ∀ pair ∈ subst, pair.2.IsLC) (hfix : ∀ x ∈ Xs, subst.onTy (.fvar x) = .fvar x) (d : Nat) :
+    substInputBranches subst (openInputBranches d Xs branches) = openInputBranches d Xs (substInputBranches subst branches) := by
+  cases branches with
+  | nil => rfl
+  | cons pair rest =>
+      rcases pair with ⟨pat, body⟩
+      simp only [openInputBranches, substInputBranches, body.substTyFvars_openTyVarsFrom_of_fixes hlc hfix d,
+        substInputBranches_openInputBranches_of_fixes rest hlc hfix d]
+termination_by sizeOf branches
+
+theorem substInputBindings_openInputBindings_of_fixes (bindings : List Input) (anns : List LetAnn)
+    {subst : Subst} {Xs : List Nat}
+    (hlc : ∀ pair ∈ subst, pair.2.IsLC) (hfix : ∀ x ∈ Xs, subst.onTy (.fvar x) = .fvar x) (d : Nat) :
+    substInputBindings subst (openInputBindings d Xs anns bindings) =
+      openInputBindings d Xs (anns.map (LetAnn.substTyFvars subst)) (substInputBindings subst bindings) := by
+  cases bindings with
+  | nil => rfl
+  | cons body rest =>
+      cases anns with
+      | nil => simp only [openInputBindings, substInputBindings, List.map_nil,
+          body.substTyFvars_openTyVarsFrom_of_fixes hlc hfix d,
+          substInputBindings_openInputBindings_of_fixes rest [] hlc hfix d]
+      | cons ann anns => simp only [openInputBindings, substInputBindings, List.map_cons,
+          LetAnn.paramCount_substTyFvars, body.substTyFvars_openTyVarsFrom_of_fixes hlc hfix (d + ann.paramCount),
+          substInputBindings_openInputBindings_of_fixes rest anns hlc hfix d]
+termination_by sizeOf bindings
+end
+
+theorem Input.substTyFvars_openTyVars_of_fixes (input : Input) {subst : Subst} {Xs : List Nat}
+    (hlc : ∀ pair ∈ subst, pair.2.IsLC) (hfix : ∀ x ∈ Xs, subst.onTy (.fvar x) = .fvar x) :
+    (input.openTyVars Xs).substTyFvars subst = (input.substTyFvars subst).openTyVars Xs :=
+  input.substTyFvars_openTyVarsFrom_of_fixes hlc hfix 0
+
+
 
 
 
@@ -1335,22 +1538,6 @@ private theorem Expr.substTyFvars_openTyVars_lc (expr : Expr) {S : Subst} {Xs : 
 
 namespace Elaboration
 
-private theorem template_scope {K K' : List Nat} {S : Subst} {template : Template}
-    (h : ∀ v ∈ template.rigidVars, v ∈ K)
-    (hS : ∀ k ∈ K, ∀ v ∈ (S.onTy (.fvar k)).freeVars, v ∈ K') :
-    ∀ v ∈ (template.substTyFvars S).rigidVars, v ∈ K' := by
-  intro v hv
-  obtain ⟨k, hk, hv⟩ := Template.rigidVars_substTyFvars hv
-  exact hS k (h k hk) v hv
-
-private theorem fitsMono_subst {ann : LetAnn} {ty : Ty} (h : ann.FitsMono ty) (S : Subst) :
-    (ann.substTyFvars S).FitsMono (S.onTy ty) := by
-  cases ann with
-  | absent => trivial
-  | template t => exact h.substTyFvars S
-  | complete _ => cases h
-  | partialForall _ _ => cases h
-
 /-- Global LC transport is a paired cofinite induction; no closing algebra or
 choice of renamed internal witnesses is needed. -/
 theorem Completes.onSubst_source (h : Completes K input output) (S : Subst)
@@ -1382,7 +1569,7 @@ theorem Completes.onSubst_source (h : Completes K input output) (S : Subst)
         exact (hfit original rfl).substTyFvars S
       · intro template heq
         cases heq
-        exact template_scope (hr original rfl) hscope
+        exact template_scope_sourceSubst (hr original rfl) hscope
 
   | app _ _ ihf ihx =>
     rw [Expr.substTyFvars_app]
@@ -1401,9 +1588,9 @@ theorem Completes.onSubst_source (h : Completes K input output) (S : Subst)
       | absent | complete _ | partialForall _ _ => cases heq
       | template original =>
         cases heq
-        exact template_scope (hr original rfl) hscope
+        exact template_scope_sourceSubst (hr original rfl) hscope
     · intro Xs hf
-      have hfit' := fitsMono_subst (hfit Xs (oldFresh Xs hf)) S
+      have hfit' := fitsMono_sourceSubst (hfit Xs (oldFresh Xs hf)) S
       simpa only [PolyTy.openVars, Subst.onPolyTy, Subst.onTy_openVars hlc (domFresh Xs hf)] using hfit'
     · intro Xs hf
       have hc := ihr Xs (oldFresh Xs hf) hscope
@@ -1482,6 +1669,12 @@ theorem Completes.rigidVars (h : Completes K input output) :
   | cons _ _ ih ihs v hv => exact (List.mem_append.mp hv).elim (ih v) (ihs v)
 
 /-- LC specialization is derived, rather than an unrestricted constructor. -/
+theorem Completes.scope_mono (h : Completes K input output) (hscope : ∀ k ∈ K, k ∈ K') :
+    Completes K' input output := by
+  have hinput : input.substTyFvars [] = input := input.substTyFvars_eq_self_of_fixes (fun _ _ => rfl)
+  simpa only [hinput, Expr.substTyFvars] using
+    h.onSubst_source [] (by simp) (fun k hk v hv => hscope v ((List.mem_singleton.mp hv) ▸ hk))
+
 theorem Completes.onSubst_fixes (h : Completes K input output) (S : Subst)
     (hlc : ∀ p ∈ S, p.2.IsLC) (hfix : ∀ k ∈ K, S.onTy (.fvar k) = .fvar k) :
     Completes K input (output.substTyFvars S) := by
@@ -1512,23 +1705,6 @@ theorem Completes.generalise_closed (h : Completes K input output) {names : List
     exact .fvar
   · intro p hp
     exact hK p.1 (List.of_mem_zip hp).1
-
-/-- A later LC substitution is kept after closing, exactly as in the worker. -/
-theorem Completes.generalise_closed_after (h : Completes K input output) {names : List Nat}
-    (hnd : names.Nodup) (hK : ∀ name ∈ names, name ∉ K)
-    (hb : output.TyBvarBounded 0) (S : Subst)
-    (hlc : ∀ p ∈ S, p.2.IsLC) (hdom : ∀ p ∈ S, p.1 ∉ K) :
-    ∃ L, ∀ Xs, FreshNames L names.length Xs →
-      Completes K input (((output.closeTyVars names).substTyFvars S).openTyVars Xs) := by
-  refine ⟨names ++ S.map Prod.fst, ?_⟩
-  intro Xs hf
-  have hXs : FreshNames names names.length Xs :=
-    ⟨hf.length, hf.nodup, fun x hx hm => hf.avoid x hx (List.mem_append_left _ hm)⟩
-  have hS : ∀ p ∈ S, p.1 ∉ Xs := by
-    intro p hp hv
-    exact hf.avoid p.1 hv (List.mem_append_right _ (List.mem_map.mpr ⟨p, hp, rfl⟩))
-  rw [← Expr.substTyFvars_openTyVars_lc _ hlc hS]
-  exact (h.generalise_closed hnd hK hb Xs hXs).specialise S hlc hdom
 
 end Elaboration
 
@@ -1606,5 +1782,88 @@ theorem Completes.generalise_opened {K Ys G : List Nat} {input : Input} {output 
     (by simpa only [List.length_append] using hXs.length) hdisj hbound, hzip,
     Expr.substTyFvars_append]
   exact hsecond
+
+end Elaboration
+
+namespace Elaboration
+
+/-- Closing generated names and then changing the source needs no pointwise
+fixing of the old protected set. Only the new opening avoids S's domain. -/
+theorem Completes.generalise_closed_after_source (h : Completes Q input output) {names : List Nat}
+    (hnd : names.Nodup) (hQ : ∀ name ∈ names, name ∉ Q)
+    (hb : output.TyBvarBounded 0) (S : Subst)
+    (hlc : ∀ p ∈ S, p.2.IsLC)
+    (hscope : ∀ q ∈ Q, ∀ v ∈ (S.onTy (.fvar q)).freeVars, v ∈ Q') :
+    ∃ L, ∀ Xs, FreshNames L names.length Xs →
+      Completes Q' (input.substTyFvars S)
+        (((output.closeTyVars names).substTyFvars S).openTyVars Xs) := by
+  refine ⟨names ++ S.map Prod.fst, ?_⟩
+  intro Xs hf
+  have hXs : FreshNames names names.length Xs :=
+    ⟨hf.length, hf.nodup, fun x hx hm => hf.avoid x hx (List.mem_append_left _ hm)⟩
+  have hS : ∀ p ∈ S, p.1 ∉ Xs := by
+    intro p hp hv
+    exact hf.avoid p.1 hv (List.mem_append_right _ (List.mem_map.mpr ⟨p, hp, rfl⟩))
+  have ht := (h.generalise_closed hnd hQ hb Xs hXs).onSubst_source S hlc hscope
+  simpa only [Expr.substTyFvars_openTyVars_lc _ hlc hS] using ht
+
+
+/-- A cofinite signed completion transports without fixing the old scope. Only
+new opening names, chosen outside S's domain, stay fixed in the child scope. -/
+theorem Completes.signatureBinding_onSubst_source
+    {Q Q' : List Nat} {input : Input} {rhsOut : Expr} {ann : LetAnn} {M : PolyTy} {avoid : List Nat}
+    (h : ∀ Xs, FreshNames avoid M.paramCount Xs →
+      Completes (Q ++ Xs.take ann.paramCount) (input.openTyVars (Xs.take ann.paramCount))
+        (rhsOut.openTyVars Xs))
+    (S : Subst) (hlc : ∀ p ∈ S, p.2.IsLC)
+    (hscope : ∀ q ∈ Q, ∀ v ∈ (S.onTy (.fvar q)).freeVars, v ∈ Q') :
+    ∃ avoid', ∀ Xs, FreshNames avoid' M.paramCount Xs →
+      Completes (Q' ++ Xs.take ann.paramCount)
+        ((input.substTyFvars S).openTyVars (Xs.take ann.paramCount))
+        ((rhsOut.substTyFvars S).openTyVars Xs) := by
+  refine ⟨avoid ++ S.map Prod.fst, ?_⟩
+  intro Xs hf
+  have hXs : FreshNames avoid M.paramCount Xs :=
+    ⟨hf.length, hf.nodup, fun x hx hm => hf.avoid x hx (List.mem_append_left _ hm)⟩
+  have hS : ∀ p ∈ S, p.1 ∉ Xs := by
+    intro p hp hv
+    exact hf.avoid p.1 hv (List.mem_append_right _ (List.mem_map.mpr ⟨p, hp, rfl⟩))
+  have hsmall : ∀ p ∈ S, p.1 ∉ Xs.take ann.paramCount :=
+    fun p hp hv => hS p hp (List.mem_of_mem_take hv)
+  have ht := (h Xs hXs).onSubst_source S hlc
+    (K' := Q' ++ Xs.take ann.paramCount) (fun q hq v hv => by
+      rcases List.mem_append.mp hq with hq | hq
+      · exact List.mem_append_left _ (hscope q hq v hv)
+      · rw [Subst.fixes_of_dom_avoids hsmall q hq] at hv
+        exact List.mem_append_right _ ((List.mem_singleton.mp hv) ▸ hq))
+  simpa only [Input.substTyFvars_openTyVars _ hlc hsmall,
+    Expr.substTyFvars_openTyVars_lc _ hlc hS] using ht
+
+/-- The generated signature certificate supplies exactly the prefix/full-block
+length correspondence needed by the cofinite completion constructor. -/
+theorem LetAnn.SignatureCompletion.cofinite_completes
+    {ann : LetAnn} {written names Q : List Nat} {ty : Ty} {M : PolyTy}
+    {input : Input} {output : Expr}
+    (hcomp : ann.SignatureCompletion written ty M names)
+    (h : Completes (Q ++ written) (input.openTyVars written) output)
+    (hnd : names.Nodup) (hQ : ∀ name ∈ names, name ∉ Q)
+    (hsource : ∀ v ∈ input.rigidVars, v ∈ Q) (hb : output.TyBvarBounded 0) :
+    ∃ L, ∀ Xs, FreshNames L M.paramCount Xs →
+      Completes (Q ++ Xs.take ann.paramCount) (input.openTyVars (Xs.take ann.paramCount))
+        ((output.closeTyVars names).openTyVars Xs) := by
+  cases hcomp with
+  | complete hlen _ =>
+    obtain ⟨L, hgen⟩ := h.generalise_opened (G := []) (by simpa using hnd)
+      (by simpa using hQ) hsource hb
+    refine ⟨L, ?_⟩
+    intro Xs hf
+    simpa only [List.append_nil, LetAnn.paramCount, hlen] using
+      hgen Xs (by simpa only [List.length_nil, Nat.add_zero, hlen] using hf)
+  | partialSignature hlen _ =>
+    obtain ⟨L, hgen⟩ := h.generalise_opened hnd hQ hsource hb
+    refine ⟨L, ?_⟩
+    intro Xs hf
+    simpa only [LetAnn.paramCount, hlen] using
+      hgen Xs (by simpa only [List.length_append] using hf)
 
 end Elaboration

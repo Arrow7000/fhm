@@ -265,33 +265,10 @@ theorem LetCheck.rigid (h : LetCheck K F frontier ty ann next subst) :
   | hole => intro _ heq; cases heq; simp [Template.rigidVars]
   | template _ _ hrigid _ => intro _ heq; cases heq; exact hrigid
 
-mutual
 theorem Template.open_scope {template : Template} {K written : List Nat}
     (h : ∀ v ∈ template.rigidVars, v ∈ K) :
-    ∀ v ∈ (template.openTyVarsFrom 0 written).rigidVars, v ∈ K ++ written := by
-  cases template with
-  | fixed ty =>
-    intro v hv
-    exact (Ty.freeVars_openVarsFrom_subset v hv).elim
-      (fun hv => List.mem_append_left _ (h v hv)) (List.mem_append_right _)
-  | hole => intro _ hv; cases hv
-  | arrow a b =>
-    intro v hv
-    exact (List.mem_append.mp hv).elim
-      (Template.open_scope (fun w hw => h w (List.mem_append_left _ hw)) v)
-      (Template.open_scope (fun w hw => h w (List.mem_append_right _ hw)) v)
-  | custom _ ts => exact templateList_open_scope h
-private theorem templateList_open_scope {templates : List Template} {K written : List Nat}
-    (h : ∀ v ∈ rigidVarsList templates, v ∈ K) :
-    ∀ v ∈ rigidVarsList (openTemplateList 0 written templates), v ∈ K ++ written := by
-  cases templates with
-  | nil => intro _ hv; cases hv
-  | cons t ts =>
-    intro v hv
-    exact (List.mem_append.mp hv).elim
-      (Template.open_scope (fun w hw => h w (List.mem_append_left _ hw)) v)
-      (templateList_open_scope (fun w hw => h w (List.mem_append_right _ hw)) v)
-end
+    ∀ v ∈ (template.openTyVarsFrom 0 written).rigidVars, v ∈ K ++ written :=
+  template.openTyVarsFrom_scope h 0 written
 
 theorem SignatureCheck.dom_avoids (h : SignatureCheck K F written frontier ty ann next subst) :
     ∀ pair ∈ subst, pair.1 ∉ K ++ written := by

@@ -1510,4 +1510,157 @@ termination_by sizeOf bindings
 end
 
 
+
+
+mutual
+theorem Template.openTyVarsFrom_scope (template : Template) {K : List Nat}
+    (hscope : ∀ v ∈ template.rigidVars, v ∈ K) (depth : Nat) (Xs : List Nat) :
+    ∀ v ∈ (template.openTyVarsFrom depth Xs).rigidVars, v ∈ K ++ Xs := by
+  cases template with
+  | fixed ty =>
+    intro v hv
+    exact (Ty.freeVars_openVarsFrom_subset v hv).elim
+      (fun hv => List.mem_append_left _ (hscope v hv)) (List.mem_append_right _)
+  | hole => intro v hv; cases hv
+  | arrow a b =>
+    intro v hv
+    exact (List.mem_append.mp hv).elim
+      (a.openTyVarsFrom_scope (fun v hv => hscope v (List.mem_append_left _ hv)) depth Xs v)
+      (b.openTyVarsFrom_scope (fun v hv => hscope v (List.mem_append_right _ hv)) depth Xs v)
+  | custom name args => exact openTemplateList_scope args hscope depth Xs
+private theorem openTemplateList_scope (templates : List Template) {K : List Nat}
+    (hscope : ∀ v ∈ rigidVarsList templates, v ∈ K) (depth : Nat) (Xs : List Nat) :
+    ∀ v ∈ rigidVarsList (openTemplateList depth Xs templates), v ∈ K ++ Xs := by
+  cases templates with
+  | nil => intro v hv; cases hv
+  | cons t ts =>
+    intro v hv
+    exact (List.mem_append.mp hv).elim
+      (t.openTyVarsFrom_scope (fun v hv => hscope v (List.mem_append_left _ hv)) depth Xs v)
+      (openTemplateList_scope ts (fun v hv => hscope v (List.mem_append_right _ hv)) depth Xs v)
+end
+
+theorem LetAnn.openTyVarsFrom_scope (ann : LetAnn) {K : List Nat}
+    (hscope : ∀ v ∈ ann.rigidVars, v ∈ K) (depth : Nat) (Xs : List Nat) :
+    ∀ v ∈ (ann.openTyVarsFrom depth Xs).rigidVars, v ∈ K ++ Xs := by
+  cases ann with
+  | absent => intro v hv; cases hv
+  | complete scheme =>
+    intro v hv
+    exact (Ty.freeVars_openVarsFrom_subset v hv).elim
+      (fun hv => List.mem_append_left _ (hscope v hv)) (List.mem_append_right _)
+  | template t => exact t.openTyVarsFrom_scope hscope depth Xs
+  | partialForall n t => exact t.openTyVarsFrom_scope hscope (depth + n) Xs
+
+/- Opening adds only the opening names to the authored free-variable scope.
+The offset and nested signatures' own binders are respected in every mode. -/
+mutual
+theorem Input.openTyVarsFrom_scope (input : Input) {K : List Nat}
+    (hscope : ∀ v ∈ input.rigidVars, v ∈ K) (depth : Nat) (Xs : List Nat) :
+    ∀ v ∈ (input.openTyVarsFrom depth Xs).rigidVars, v ∈ K ++ Xs := by
+  cases input with
+  | primLit | primBinOp | var | ctor => intro v hv; cases hv
+  | lambda ann body =>
+    intro v hv
+    rcases List.mem_append.mp hv with hv | hv
+    · cases ann with
+      | none => cases hv
+      | some t =>
+        exact t.openTyVarsFrom_scope
+          (fun v hv => hscope v (List.mem_append_left _ hv)) depth Xs v hv
+    · exact body.openTyVarsFrom_scope
+        (fun v hv => hscope v (List.mem_append_right _ hv)) depth Xs v hv
+  | app f x =>
+    intro v hv
+    exact (List.mem_append.mp hv).elim
+      (f.openTyVarsFrom_scope (fun v hv => hscope v (List.mem_append_left _ hv)) depth Xs v)
+      (x.openTyVarsFrom_scope (fun v hv => hscope v (List.mem_append_right _ hv)) depth Xs v)
+  | letIn ann rhs body =>
+    intro v hv
+    rcases List.mem_append.mp hv with hv | hv
+    · rcases List.mem_append.mp hv with hv | hv
+      · exact ann.openTyVarsFrom_scope
+          (fun v hv => hscope v (List.mem_append_left _ (List.mem_append_left _ hv))) depth Xs v hv
+      · exact rhs.openTyVarsFrom_scope
+          (fun v hv => hscope v (List.mem_append_left _ (List.mem_append_right _ hv)))
+          (depth + ann.paramCount) Xs v hv
+    · exact body.openTyVarsFrom_scope
+        (fun v hv => hscope v (List.mem_append_right _ hv)) depth Xs v hv
+  | match_ scrut branches =>
+    intro v hv
+    exact (List.mem_append.mp hv).elim
+      (scrut.openTyVarsFrom_scope (fun v hv => hscope v (List.mem_append_left _ hv)) depth Xs v)
+      (openInputBranches_scope branches (fun v hv => hscope v (List.mem_append_right _ hv)) depth Xs v)
+  | letRec anns bindings body =>
+    intro v hv
+    rcases List.mem_append.mp hv with hv | hv
+    · rcases List.mem_append.mp hv with hv | hv
+      · obtain ⟨opened, ho, hv⟩ := List.mem_flatMap.mp hv
+        obtain ⟨original, horiginal, rfl⟩ := List.mem_map.mp ho
+        exact original.openTyVarsFrom_scope (fun v hv => hscope v
+          (List.mem_append_left _ (List.mem_append_left _
+            (List.mem_flatMap.mpr ⟨original, horiginal, hv⟩)))) depth Xs v hv
+      · exact openInputBindings_scope bindings anns
+          (fun v hv => hscope v (List.mem_append_left _ (List.mem_append_right _ hv))) depth Xs v hv
+    · exact body.openTyVarsFrom_scope
+        (fun v hv => hscope v (List.mem_append_right _ hv)) depth Xs v hv
+termination_by sizeOf input
+
+theorem openInputBranches_scope (branches : List (MatchPattern × Input)) {K : List Nat}
+    (hscope : ∀ v ∈ rigidBranchVars branches, v ∈ K) (depth : Nat) (Xs : List Nat) :
+    ∀ v ∈ rigidBranchVars (openInputBranches depth Xs branches), v ∈ K ++ Xs := by
+  cases branches with
+  | nil => intro v hv; cases hv
+  | cons branch branches =>
+    have hhead := branch.2.openTyVarsFrom_scope
+      (fun v hv => hscope v (List.mem_append_left _ hv)) depth Xs
+    have htail := openInputBranches_scope branches
+      (fun v hv => hscope v (List.mem_append_right _ hv)) depth Xs
+    rcases branch with ⟨pat, body⟩
+    intro v hv
+    exact (List.mem_append.mp hv).elim (hhead v) (htail v)
+termination_by sizeOf branches
+decreasing_by all_goals (subst_vars; cases branch; simp_wf <;> omega)
+
+theorem openInputBindings_scope (bindings : List Input) (anns : List LetAnn) {K : List Nat}
+    (hscope : ∀ v ∈ rigidBindingVars bindings, v ∈ K) (depth : Nat) (Xs : List Nat) :
+    ∀ v ∈ rigidBindingVars (openInputBindings depth Xs anns bindings), v ∈ K ++ Xs := by
+  cases bindings with
+  | nil => intro v hv; cases hv
+  | cons body rest =>
+    cases anns with
+    | nil =>
+      intro v hv
+      exact (List.mem_append.mp hv).elim
+        (body.openTyVarsFrom_scope (fun v hv => hscope v (List.mem_append_left _ hv)) depth Xs v)
+        (openInputBindings_scope rest [] (fun v hv => hscope v (List.mem_append_right _ hv)) depth Xs v)
+    | cons ann anns =>
+      intro v hv
+      exact (List.mem_append.mp hv).elim
+        (body.openTyVarsFrom_scope (fun v hv => hscope v (List.mem_append_left _ hv)) (depth + ann.paramCount) Xs v)
+        (openInputBindings_scope rest anns (fun v hv => hscope v (List.mem_append_right _ hv)) depth Xs v)
+termination_by sizeOf bindings
+end
+
+theorem Input.openTyVars_scope (input : Input) {K : List Nat}
+    (hscope : ∀ v ∈ input.rigidVars, v ∈ K) (Xs : List Nat) :
+    ∀ v ∈ (input.openTyVars Xs).rigidVars, v ∈ K ++ Xs :=
+  input.openTyVarsFrom_scope hscope 0 Xs
+
+theorem Input.rigidVars_openTyVarsFrom {input : Input} {d : Nat} {Xs : List Nat} {v : Nat}
+    (hv : v ∈ (input.openTyVarsFrom d Xs).rigidVars) : v ∈ input.rigidVars ∨ v ∈ Xs :=
+  List.mem_append.mp (input.openTyVarsFrom_scope (K := input.rigidVars) (fun _ h => h) d Xs v hv)
+
+theorem rigidBranchVars_openInputBranches {branches : List (MatchPattern × Input)}
+    {d : Nat} {Xs : List Nat} {v : Nat}
+    (hv : v ∈ rigidBranchVars (openInputBranches d Xs branches)) :
+    v ∈ rigidBranchVars branches ∨ v ∈ Xs :=
+  List.mem_append.mp (openInputBranches_scope branches (K := rigidBranchVars branches) (fun _ h => h) d Xs v hv)
+
+theorem rigidBindingVars_openInputBindings {bindings : List Input} {anns : List LetAnn}
+    {d : Nat} {Xs : List Nat} {v : Nat}
+    (hv : v ∈ rigidBindingVars (openInputBindings d Xs anns bindings)) :
+    v ∈ rigidBindingVars bindings ∨ v ∈ Xs :=
+  List.mem_append.mp (openInputBindings_scope bindings anns (K := rigidBindingVars bindings) (fun _ h => h) d Xs v hv)
+
 end Elaboration

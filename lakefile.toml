@@ -21,6 +21,7 @@ roots = [
   "FHM.Elaboration.RecScheme",
   "FHM.Elaboration.Lowering",
   "FHM.Elaboration.Typing",
+  "FHM.Elaboration.RecOpening",
   "FHM.Elaboration.Close",
   "FHM.Elaboration.Judgment",
   "FHM.Elaboration.Worker",

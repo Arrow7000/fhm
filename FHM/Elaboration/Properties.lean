@@ -83,40 +83,6 @@ theorem Subst.override_block {S0 : Subst} (hS0 : ∀ p ∈ S0, p.2.IsLC)
     have := (htargets ts[i] (List.getElem_mem hi)).mem_lt w hc
     omega
 
-/-- Pointwise fixing of the opening names suffices; the substitution's literal
-domain may contain those names and its ranges may mention them. -/
-theorem Subst.onTy_openVarsFrom_of_fixes {S : Subst} {Xs : List Nat}
-    (hlc : ∀ p ∈ S, p.2.IsLC)
-    (hfix : ∀ x ∈ Xs, S.onTy (.fvar x) = .fvar x) (ty : Ty) (depth : Nat) :
-    S.onTy (Ty.openVarsFrom depth Xs ty) = Ty.openVarsFrom depth Xs (S.onTy ty) := by
-  induction ty using Ty.rec_strong with
-  | prim p => simp only [Ty.openVarsFrom, Ty.instantiate, Subst.onTy_prim]
-  | bvar i =>
-    simp only [Subst.onTy_bvar, Ty.openVarsFrom, Ty.instantiate]
-    by_cases hi : i < depth
-    · simp only [if_pos hi, Subst.onTy_bvar]
-    · simp only [if_neg hi]
-      cases hx : Xs[i - depth]? with
-      | none => exact Subst.onTy_bvar
-      | some x => exact hfix x (List.mem_of_getElem? hx)
-  | fvar v =>
-    change S.onTy (.fvar v) = Ty.openVarsFrom depth Xs (S.onTy (.fvar v))
-    exact (Ty.instantiate_eq_self_of_lc (Subst.onTy_lc hlc .fvar)).symm
-  | arrow a b iha ihb =>
-    simp only [Ty.openVarsFrom, Ty.instantiate, Subst.onTy_arrow] at *
-    exact congrArg₂ Ty.arrow iha ihb
-  | customTy name args ih =>
-    simp only [Ty.openVarsFrom, Ty.instantiate, TyList.instantiate_eq_map,
-      Subst.onTy_customTy, List.map_map]
-    congr 1
-    exact List.map_congr_left (fun t ht => ih t ht)
-
-theorem Subst.onTy_openVars_of_fixes {S : Subst} {Xs : List Nat}
-    (hlc : ∀ p ∈ S, p.2.IsLC)
-    (hfix : ∀ x ∈ Xs, S.onTy (.fvar x) = .fvar x) {ty : Ty} :
-    S.onTy (Ty.openVars Xs ty) = Ty.openVars Xs (S.onTy ty) := by
-  simpa only [Ty.openVarsFrom, Nat.not_lt_zero, if_false, Nat.sub_zero, Ty.openVars] using Subst.onTy_openVarsFrom_of_fixes hlc hfix ty 0
-
 namespace Elaboration
 
 mutual
@@ -250,39 +216,6 @@ private theorem rigid_soft_lt {K F frontier}
     (hK : ∀ k ∈ K, k < frontier) (hF : ∀ t ∈ F, Ty.BelowFvars frontier t) :
     ∀ v ∈ K ++ softVars F, v < frontier :=
   fun v hv => (List.mem_append.mp hv).elim (hK v) (softVars_lt hF v)
-
-mutual
-private theorem Template.allocate_bounds (template : Template) (frontier : Nat) :
-    frontier ≤ (template.allocate frontier).1 ∧
-      ((∀ v ∈ template.rigidVars, v < frontier) →
-        Ty.BelowFvars (template.allocate frontier).1 (template.allocate frontier).2) := by
-  cases template with
-  | fixed ty => exact ⟨Nat.le_refl _, Ty.BelowFvars.of_freeVars_lt⟩
-  | hole => exact ⟨Nat.le_succ _, fun _ => .fvar (Nat.lt_succ_self _)⟩
-  | arrow a b =>
-    obtain ⟨hale, hab⟩ := a.allocate_bounds frontier
-    obtain ⟨hble, hbb⟩ := b.allocate_bounds (a.allocate frontier).1
-    refine ⟨hale.trans hble, fun hr => .arrow ?_ ?_⟩
-    · exact (hab (fun v hv => hr v (List.mem_append_left _ hv))).mono hble
-    · exact hbb (fun v hv => Nat.lt_of_lt_of_le (hr v (List.mem_append_right _ hv)) hale)
-  | custom name args =>
-    obtain ⟨hle, hb⟩ := allocateList_bounds args frontier
-    exact ⟨hle, fun hr => .customTy (hb hr)⟩
-private theorem allocateList_bounds (templates : List Template) (frontier : Nat) :
-    frontier ≤ (allocateList frontier templates).1 ∧
-      ((∀ v ∈ rigidVarsList templates, v < frontier) →
-        ∀ t ∈ (allocateList frontier templates).2, Ty.BelowFvars (allocateList frontier templates).1 t) := by
-  cases templates with
-  | nil => exact ⟨Nat.le_refl _, fun _ _ ht => by cases ht⟩
-  | cons template rest =>
-    obtain ⟨hhle, hhb⟩ := template.allocate_bounds frontier
-    obtain ⟨htle, htb⟩ := allocateList_bounds rest (template.allocate frontier).1
-    refine ⟨hhle.trans htle, ?_⟩
-    intro hr t ht
-    rcases List.mem_cons.mp ht with rfl | ht
-    · exact (hhb (fun v hv => hr v (List.mem_append_left _ hv))).mono htle
-    · exact htb (fun v hv => Nat.lt_of_lt_of_le (hr v (List.mem_append_right _ hv)) hhle) t ht
-end
 
 theorem Seed.frontier_le (h : Seed K frontier ann param initial) : frontier ≤ initial := by
   cases h with
@@ -716,6 +649,41 @@ theorem allocateList_lc {templates : List Template} {targets : List Ty}
     rcases List.mem_cons.mp hmem with rfl | hmem
     · exact hh.allocate_lc (hlc target List.mem_cons_self) frontier
     · exact allocateList_lc ht (fun t ht => hlc t (List.mem_cons_of_mem _ ht)) _ t hmem
+end
+
+
+mutual
+/-- A locally closed filling of the transformed source reflects local closure
+of the original allocation. No rigidity or closure of the substitution needed. -/
+theorem Template.Fits.allocate_lc_source {template : Template} {target : Ty} {S : Subst}
+    (h : (template.substTyFvars S).Fits target) (hlc : target.IsLC) (frontier : Nat) :
+    (template.allocate frontier).2.IsLC := by
+  cases template with
+  | fixed ty => cases h; exact ContainsBvarsUpTo.of_substFvars hlc
+  | hole => exact .fvar
+  | arrow a b =>
+    cases h with
+    | arrow ha hb =>
+      cases hlc with
+      | arrow hla hlb => exact .arrow (ha.allocate_lc_source hla frontier) (hb.allocate_lc_source hlb _)
+  | custom name args =>
+    cases h with
+    | custom hall =>
+      cases hlc with
+      | customTy hl => exact .customTy (allocateList_lc_source hall hl frontier)
+private theorem allocateList_lc_source {templates : List Template} {targets : List Ty} {S : Subst}
+    (h : List.Forall₂ Template.Fits (substTemplateList S templates) targets)
+    (hlc : ∀ t ∈ targets, t.IsLC) (frontier : Nat) :
+    ∀ t ∈ (allocateList frontier templates).2, t.IsLC := by
+  cases templates with
+  | nil => intro t ht; cases ht
+  | cons template templates =>
+    cases h with
+    | cons hh ht =>
+      intro t hmem
+      rcases List.mem_cons.mp hmem with rfl | hmem
+      · exact hh.allocate_lc_source (hlc _ List.mem_cons_self) frontier
+      · exact allocateList_lc_source ht (fun t ht => hlc t (List.mem_cons_of_mem _ ht)) _ t hmem
 end
 
 

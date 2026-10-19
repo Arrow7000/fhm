@@ -705,36 +705,6 @@ theorem _root_.Infer.sourcePrincipal_app
 
 
 
-mutual
-theorem Template.substTyFvars_openTyVarsFrom_of_fixes (template : Template) {S : Subst} {Xs : List Nat}
-    (hlc : ∀ p ∈ S, p.2.IsLC)
-    (hfix : ∀ x ∈ Xs, S.onTy (.fvar x) = .fvar x) (depth : Nat) :
-    (template.openTyVarsFrom depth Xs).substTyFvars S =
-      (template.substTyFvars S).openTyVarsFrom depth Xs := by
-  cases template with
-  | fixed ty => exact congrArg Template.fixed (Subst.onTy_openVarsFrom_of_fixes hlc hfix ty depth)
-  | hole => rfl
-  | arrow a b =>
-    simp only [Template.openTyVarsFrom, Template.substTyFvars,
-      a.substTyFvars_openTyVarsFrom_of_fixes hlc hfix depth,
-      b.substTyFvars_openTyVarsFrom_of_fixes hlc hfix depth]
-  | custom name args =>
-    exact congrArg (Template.custom name) (templateList_open_subst_of_fixes args hlc hfix depth)
-private theorem templateList_open_subst_of_fixes (templates : List Template) {S : Subst} {Xs : List Nat}
-    (hlc : ∀ p ∈ S, p.2.IsLC)
-    (hfix : ∀ x ∈ Xs, S.onTy (.fvar x) = .fvar x) (depth : Nat) :
-    substTemplateList S (openTemplateList depth Xs templates) =
-      openTemplateList depth Xs (substTemplateList S templates) := by
-  cases templates with
-  | nil => rfl
-  | cons t ts =>
-    simp only [substTemplateList, openTemplateList,
-      t.substTyFvars_openTyVarsFrom_of_fixes hlc hfix depth,
-      templateList_open_subst_of_fixes ts hlc hfix depth]
-end
-
-/-- Factor an ordinary annotation check against the transformed source. Only
-raw-source allocation bounds and independent target protection are required. -/
 theorem LetCheck.factor_source {P : List Nat} (hc : LetCheck K F first rhsTy ann checked sCheck)
     (hrigid : ∀ v ∈ ann.rigidVars, v < first) (hP : ∀ p ∈ P, p < first)
     (hty : Ty.BelowFvars first rhsTy)
@@ -933,49 +903,53 @@ theorem genScheme_generalizes {K : List Nat} {ctx : Ctx} {ty : Ty}
       simp only [genVars, List.mem_filter, Bool.and_eq_true]
       exact ⟨hv, by simpa using he, by simpa using hk⟩
 
-theorem SignatureCheck.cover (h : SignatureCheck K written frontier ty ann next subst)
-    (hlen : written.length = ann.paramCount) :
+theorem SignatureCheck.cover (h : SignatureCheck K F written frontier ty ann next subst)
+    (hlen : written.length = ann.paramCount) (hlc : ty.IsLC)
+    (hsource : ∀ v ∈ (ann.substTyFvars subst).rigidVars, v ∈ Q) :
     ∀ v ∈ (subst.onTy ty).freeVars,
-      v ∉ signatureNames ann K written ctx (subst.onTy ty) → v ∈ ctx.env.freeVars ∨ v ∈ K := by
-  have hcomp := h.completion (ctx := ctx) hlen
+      v ∉ signatureNames (ann.substTyFvars subst) Q written ctx (subst.onTy ty) →
+        v ∈ ctx.env.freeVars ∨ v ∈ Q := by
+  have hcomp := h.completion (Q := Q) (ctx := ctx) hlen hlc
   cases h with
-  | complete _ hr _ =>
+  | complete _ _ _ =>
     cases hcomp with
     | complete _ heq =>
       intro v hv hnot
       rw [heq] at hv
       rcases Ty.freeVars_openVars_subset v hv with hv | hv
-      · exact .inr (hr v hv)
+      · exact .inr (hsource v hv)
       · exact False.elim (hnot hv)
   | partialSignature _ _ _ _ =>
     intro v hv hnot
-    change v ∉ written ++ genVars (K ++ written) ctx.env (subst.onTy ty) at hnot
+    change v ∉ written ++ genVars (Q ++ written) ctx.env (subst.onTy ty) at hnot
     by_cases he : v ∈ ctx.env.freeVars
     · exact .inl he
-    · by_cases hk : v ∈ K
+    · by_cases hk : v ∈ Q
       · exact .inr hk
       · have hw : v ∉ written := fun hc => hnot (List.mem_append_left _ hc)
         exfalso
         apply hnot
         apply List.mem_append_right
         simp only [genVars, List.mem_filter, Bool.and_eq_true]
-        have hkw : v ∉ K ++ written := by simpa only [List.mem_append, not_or] using And.intro hk hw
+        have hkw : v ∉ Q ++ written := by simpa only [List.mem_append, not_or] using And.intro hk hw
         exact ⟨hv, by simpa using he, by simpa using hkw⟩
 
 theorem SignatureCheck.scheme_generalizes
-    (h : SignatureCheck K written frontier ty ann next subst)
-    (hlen : written.length = ann.paramCount) (hnd : written.Nodup)
-    (havoid : ∀ name ∈ written, name ∉ K)
+    (h : SignatureCheck K F written frontier ty ann next subst)
+    (hlen : written.length = ann.paramCount) (hnd : written.Nodup) (hlc : ty.IsLC)
+    (hsource : ∀ v ∈ (ann.substTyFvars subst).rigidVars, v ∈ Q)
+    (havoid : ∀ name ∈ written, name ∉ Q)
     {V : Subst} {M : PolyTy} {Xs : List Nat}
-    (hty : (subst.onTy ty).IsLC) (hV : ∀ pair ∈ V, pair.2.IsLC) (hM : M.WF)
+    (hV : ∀ pair ∈ V, pair.2.IsLC) (hM : M.WF)
     (hXnodup : Xs.Nodup) (hXlen : Xs.length = M.paramCount)
     (hXM : ∀ x ∈ Xs, x ∉ M.body.freeVars)
     (htarget : M.openVars Xs = V.onTy (subst.onTy ty))
     (hXctx : ∀ x ∈ Xs, x ∉ (V.onCtx ctx).env.freeVars)
-    (hXK : ∀ x ∈ Xs, ∀ k ∈ K, x ∉ (V.onTy (.fvar k)).freeVars) :
-    (V.onPolyTy (signatureScheme ann K written ctx (subst.onTy ty))).Generalizes M := by
-  rw [h.scheme_eq_close hlen hnd havoid]
-  exact closeScheme_generalizes hty hV hM hXnodup hXlen hXM htarget hXctx hXK (h.cover hlen)
+    (hXK : ∀ x ∈ Xs, ∀ k ∈ Q, x ∉ (V.onTy (.fvar k)).freeVars) :
+    (V.onPolyTy (signatureScheme (ann.substTyFvars subst) Q written ctx (subst.onTy ty))).Generalizes M := by
+  rw [h.scheme_eq_close hlen hlc hnd hsource havoid]
+  exact closeScheme_generalizes (Subst.onTy_lc (h.lc hlen hlc) hlc)
+    hV hM hXnodup hXlen hXM htarget hXctx hXK (h.cover hlen hlc hsource)
 
 theorem _root_.Infer.signature_frame_aligned {rhs body : Input} {ann : LetAnn}
     (hr : Infer (K ++ Ys) (frontier + ann.paramCount) ctx (rhs.openTyVars Ys) first s1 rhsOut rhsTy)
@@ -1306,15 +1280,19 @@ theorem _root_.Infer.signature_frame {rhs body : Input} {ann : LetAnn}
     (fun x hx => (hAll x hx).2.2) (fun x hx => (hAll x hx).2.1) hXImages
 
 
-/-- Move arbitrary candidate free variables away from newly allocated signature
-skolems. Only the scratch block is fresh; candidate types are unrestricted. -/
-theorem Typing.signature_dodge
-    {K P : List Nat} {ambient : Subst} {ctx : Ctx} {ann : LetAnn} {rhs body : Input} {target : Ty} {frontier : Nat}
-    (ht : Typing P (ambient.onCtx ctx) (.letIn ann rhs body) target)
-    (hmode : ann.isSignature = true) (hbelow : CtxBelow frontier ctx)
-    (hP : ∀ p ∈ P, p < frontier) (hK : ∀ k ∈ K, k < frontier)
+/-- Dodge candidate collisions while retaining the source-transformed signed
+contract. Authored candidate leaves lie in P and hence are fixed by the move. -/
+theorem Typing.signature_dodge_source
+    {K P : List Nat} {F : List Ty} {ambient : Subst} {ctx : Ctx} {ann : LetAnn}
+    {rhs body : Input} {target : Ty} {frontier : Nat}
+    (ht : Typing P (ambient.onCtx ctx) ((Input.letIn ann rhs body).substTyFvars ambient) target)
+    (hmode : ann.isSignature = true) (hscope : SourceScope K F (.letIn ann rhs body))
+    (hbelow : CtxBelow frontier ctx) (hP : ∀ p ∈ P, p < frontier)
+    (hK : ∀ k ∈ K, k < frontier) (hF : ∀ t ∈ F, Ty.BelowFvars frontier t)
     (hS : ∀ pair ∈ ambient, pair.2.IsLC)
-    (hfix : ∀ p ∈ P, ambient.onTy (.fvar p) = .fvar p) :
+    (hfix : ∀ p ∈ P, ambient.onTy (.fvar p) = .fvar p)
+    (hfreeze : ∀ v ∈ (.letIn ann rhs body : Input).rigidVars,
+      v ∈ K → v ∉ softVars F → ambient.onTy (.fvar v) = .fvar v) :
     ∃ (W : Nat) (M : PolyTy) (L : List Nat),
       let written := freshVars frontier ann.paramCount
       let forward := blockList frontier W ann.paramCount
@@ -1326,17 +1304,25 @@ theorem Typing.signature_dodge
       (∀ pair ∈ backward, pair.2.IsLC) ∧
       (∀ p ∈ P, backward.onTy (.fvar p) = .fvar p) ∧
       backward.onTy (forward.onTy target) = target ∧
-      M.WF ∧ (∀ v ∈ ann.rigidVars, v ∈ P) ∧ (∀ v ∈ rhs.rigidVars, v ∈ P) ∧
-      (∀ Xs, FreshNames L M.paramCount Xs → ann.SignatureFits M Xs) ∧
+      (∀ v ∈ (.letIn ann rhs body : Input).rigidVars,
+        v ∈ K → v ∉ softVars F → moved.onTy (.fvar v) = .fvar v) ∧
+      M.WF ∧ (∀ v ∈ (ann.substTyFvars moved).rigidVars, v ∈ P) ∧
+      (∀ v ∈ (rhs.substTyFvars moved).rigidVars, v ∈ P) ∧
+      (∀ Xs, FreshNames L M.paramCount Xs → (ann.substTyFvars moved).SignatureFits M Xs) ∧
       (∀ Xs, FreshNames L M.paramCount Xs →
         Typing (P ++ Xs.take ann.paramCount) (moved.onCtx ctx)
-          (rhs.openTyVars (Xs.take ann.paramCount)) (M.openVars Xs)) ∧
-      Typing P { moved.onCtx ctx with env := M :: (moved.onCtx ctx).env } body (forward.onTy target) ∧
+          ((rhs.substTyFvars moved).openTyVars (Xs.take ann.paramCount)) (M.openVars Xs)) ∧
+      Typing P { moved.onCtx ctx with env := M :: (moved.onCtx ctx).env }
+        (body.substTyFvars moved) (forward.onTy target) ∧
       (∀ y ∈ written, y ∉ M.body.freeVars) ∧
       (∀ y ∈ written, y ∉ (moved.onCtx ctx).env.freeVars) ∧
+      (∀ y ∈ written, y ∉ softVars (substSoft moved F)) ∧
       (∀ y ∈ written, ∀ k ∈ K, y ∉ (moved.onTy (.fvar k)).freeVars) := by
-  obtain ⟨M, L, hM, hann, hrhs, hfit, htyped, hbody⟩ := ht.signature_inv hmode
-  let images := K.map (fun k => ambient.onTy (.fvar k))
+  have hmode' : (ann.substTyFvars ambient).isSignature = true := by
+    cases ann <;> exact hmode
+  obtain ⟨M, L, hM, hann, hrhs, hfit, htyped, hbody⟩ := ht.signature_inv hmode'
+  let scopeVars := K ++ softVars F
+  let images := scopeVars.map (fun k => ambient.onTy (.fvar k))
   let contextTypes := (ambient.onCtx ctx).env.map PolyTy.body
   let targets := M.body :: target :: (contextTypes ++ images)
   obtain ⟨W, hW, _, hMoved, hWritten, hBelow, hForward, hBackward, hTargets⟩ :=
@@ -1362,6 +1348,19 @@ theorem Typing.signature_dodge
   have hctxeq : forward.onCtx (ambient.onCtx ctx) = moved.onCtx ctx := by
     rw [← Subst.onCtx_append]
     exact Subst.onCtx_congr hag hbelow
+  have hsourceeq : (.letIn ann rhs body : Input).substTyFvars moved =
+      (.letIn ann rhs body : Input).substTyFvars ambient := by
+    trans ((.letIn ann rhs body : Input).substTyFvars ambient).substTyFvars forward
+    · rw [← Input.substTyFvars_append]
+      apply Input.substTyFvars_congr
+      intro v hv
+      change moved.onTy (.fvar v) = (ambient ++ forward).onTy (.fvar v)
+      rw [Subst.onTy_append]
+      exact hForward (.fvar v) (.fvar ((List.mem_append.mp (hscope v hv)).elim (hK v) (softVars_lt hF v)))
+    · exact Input.substTyFvars_eq_self_of_fixes _ (fun v hv => hForwardP v (ht.rigidVars v hv))
+  change Input.letIn (ann.substTyFvars moved) (rhs.substTyFvars moved) (body.substTyFvars moved) =
+    Input.letIn (ann.substTyFvars ambient) (rhs.substTyFvars ambient) (body.substTyFvars ambient) at hsourceeq
+  obtain ⟨hannEq, hrhsEq, hbodyEq⟩ := Input.letIn.inj hsourceeq
   obtain ⟨L', hfits', htypes'⟩ := Typing.signatureBinding_onSubst hfit htyped hann
     forward hforwardLC hdomP
   have hbody' := hbody.onSubst_fixes forward hforwardLC hForwardP
@@ -1370,18 +1369,38 @@ theorem Typing.signature_dodge
     change { forward.onCtx (ambient.onCtx ctx) with
       env := forward.onPolyTy M :: (forward.onCtx (ambient.onCtx ctx)).env } = _
     rw [hctxeq]
-  rw [hbodyctx] at hbody'
+  rw [hbodyctx, ← hbodyEq] at hbody'
   have htargetM := hTargets M.body (by simp only [targets, List.mem_cons]; tauto)
   have htargetResult := hTargets target (by simp only [targets, List.mem_cons]; tauto)
-  refine ⟨W, forward.onPolyTy M, L', hMoved, ?_, (fun v hv => hBackward (.fvar v) (.fvar hv)), blockListBack_lc _ _ _, ?_,
-    htargetResult.1, Subst.onPolyTy_wf hforwardLC hM, hann, hrhs, hfits', ?_, hbody',
-    htargetM.2, ?_, ?_⟩
+  have hprotected : ∀ k ∈ scopeVars, k < frontier :=
+    fun k hk => (List.mem_append.mp hk).elim (hK k) (softVars_lt hF k)
+  have hImages : ∀ y ∈ freshVars frontier ann.paramCount, ∀ k ∈ scopeVars,
+      y ∉ (moved.onTy (.fvar k)).freeVars := by
+    intro y hy k hk hv
+    rw [hForward (.fvar _) (.fvar (hprotected k hk))] at hv
+    exact (hTargets (ambient.onTy (.fvar k)) (by
+      simp only [targets, List.mem_cons, List.mem_append]
+      right; right; right
+      exact List.mem_map.mpr ⟨k, hk, rfl⟩)).2 y hy hv
+  refine ⟨W, forward.onPolyTy M, L', hMoved, ?_, (fun v hv => hBackward (.fvar v) (.fvar hv)),
+    blockListBack_lc _ _ _, ?_, htargetResult.1, ?_, Subst.onPolyTy_wf hforwardLC hM,
+    ?_, ?_, ?_, ?_, hbody', htargetM.2, ?_, ?_, ?_⟩
   · intro p hp
     exact (List.mem_append.mp hp).elim (hMovedP p) (hWritten p)
   · intro p hp
     exact (hBelow p (hP p hp)).2
+  · intro v hv hk hnot
+    rw [hForward (.fvar v) (.fvar (hK v hk)), hfreeze v hv hk hnot]
+    exact (hBelow v (hK v hk)).1
+  · rwa [hannEq]
+  · rwa [hrhsEq]
   · intro Xs hf
-    simpa only [hctxeq] using htypes' Xs hf
+    have h := hfits' Xs hf
+    rw [← hannEq] at h
+    exact h
+  · intro Xs hf
+    rw [hrhsEq]
+    simpa only [LetAnn.paramCount_substTyFvars, hctxeq] using htypes' Xs hf
   · intro y hy hmem
     rw [← hctxeq] at hmem
     obtain ⟨scheme, hs, hv⟩ := Env.mem_freeVars_iff.mp hmem
@@ -1390,12 +1409,11 @@ theorem Typing.signature_dodge
       simp only [targets, List.mem_cons, List.mem_append]
       right; right; left
       exact List.mem_map.mpr ⟨old, ho, rfl⟩)).2 y hy hv
-  · intro y hy k hk hv
-    rw [hForward (.fvar _) (.fvar (hK k hk))] at hv
-    exact (hTargets (ambient.onTy (.fvar k)) (by
-      simp only [targets, List.mem_cons, List.mem_append]
-      right; right; right
-      exact List.mem_map.mpr ⟨k, hk, rfl⟩)).2 y hy hv
+  · intro y hy hv
+    obtain ⟨k, hk, hv⟩ := mem_softVars_substSoft.mp hv
+    exact hImages y hy k (List.mem_append_right _ hk) hv
+  · intro y hy k hk
+    exact hImages y hy k (List.mem_append_left _ hk)
 
 /-- Reconcile a checked ordinary RHS with a declarative let scheme, then
 transport its continuation. Shared by both completeness directions. -/

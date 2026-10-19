@@ -3,45 +3,41 @@ import FHM.Elaboration.Infer
 
 namespace Elaboration
 
-/-- The executable lambda seed accepts every locally closed, scoped template. -/
-theorem seed_complete {K : List Nat} {Φ : Nat} {ann : Option Template} {target : Ty}
-    (hlc : target.IsLC)
-    (hfit : ∀ template, ann = some template → template.Fits target)
-    (hscope : ∀ template, ann = some template → ∀ v ∈ template.rigidVars, v ∈ K) :
-    (seed K Φ ann).isSome := by
+theorem seed_complete_source {K : List Nat} {F : List Ty} {Φ : Nat}
+    {ann : Option Template} {target : Ty} {ambient : Subst}
+    (_hS : ∀ p ∈ ambient, p.2.IsLC) (hlc : target.IsLC)
+    (hfit : ∀ template, ann = some template → (template.substTyFvars ambient).Fits target)
+    (hscope : ∀ template, ann = some template → ∀ v ∈ template.rigidVars, v ∈ K ++ softVars F) :
+    (seed (K ++ softVars F) Φ ann).isSome := by
   cases ann with
   | none => rfl
   | some template =>
     have halloc : (template.allocate Φ).2.bvarsBelow 0 = true :=
-      (Ty.bvarsBelow_iff _).mpr ((hfit template rfl).allocate_lc hlc Φ)
-    have hr : template.rigidVars.all (fun v => decide (v ∈ K)) = true :=
+      (Ty.bvarsBelow_iff _).mpr ((hfit template rfl).allocate_lc_source hlc Φ)
+    have hr : template.rigidVars.all (fun v => decide (v ∈ K ++ softVars F)) = true :=
       List.all_eq_true.mpr (fun v hv => decide_eq_true (hscope template rfl v hv))
     simp only [seed, halloc, hr, dite_true, Option.isSome_some]
 
-/-- The executable ordinary-let check succeeds for every LC scoped target
-reachable by an LC substitution that fixes the protected variables. -/
-theorem checkLet_complete {K : List Nat} {Φ : Nat} {ann : LetAnn} {ty target : Ty} {R : Subst}
+theorem checkLet_complete_source {K : List Nat} {F : List Ty} {Φ : Nat}
+    {ann : LetAnn} {ty target : Ty} {R : Subst}
     (hK : ∀ k ∈ K, k < Φ) (hty : ty.IsLC) (hbelow : Ty.BelowFvars Φ ty)
     (hR : ∀ p ∈ R, p.2.IsLC) (hRfix : ∀ k ∈ K, R.onTy (.fvar k) = .fvar k)
-    (htarget : target.IsLC) (hfit : ann.FitsMono target)
-    (hscope : ∀ template, ann = .template template → ∀ v ∈ template.rigidVars, v ∈ K)
-    (heq : target = R.onTy ty) : (checkLet K Φ ann ty).isSome := by
+    (htarget : target.IsLC) (hfit : (ann.substTyFvars R).FitsMono target)
+    (hscope : ∀ v ∈ ann.rigidVars, v ∈ K ++ softVars F)
+    (hraw : ∀ v ∈ ann.rigidVars, v < Φ)
+    (heq : target = R.onTy ty) : (checkLet K F Φ ann ty).isSome := by
   cases ann with
   | absent => rfl
   | complete scheme => cases hfit
   | partialForall count template => cases hfit
   | template template =>
-    have hlc := hfit.allocate_lc htarget Φ
+    have hlc := hfit.allocate_lc_source htarget Φ
     have halloc : (template.allocate Φ).2.bvarsBelow 0 = true := (Ty.bvarsBelow_iff _).mpr hlc
-    have hr : template.rigidVars.all (fun v => decide (v ∈ K)) = true :=
-      List.all_eq_true.mpr (fun v hv => decide_eq_true (hscope template rfl v hv))
-    obtain ⟨U, hUlc, hagree, hUexpected⟩ := hfit.allocate_override htarget hR Φ
-      (fun v hv => hK v (hscope template rfl v hv))
-      (fun v hv => hRfix v (hscope template rfl v hv))
+    have hr : template.rigidVars.all (fun v => decide (v ∈ K ++ softVars F)) = true :=
+      List.all_eq_true.mpr (fun v hv => decide_eq_true (hscope v hv))
+    obtain ⟨U, hUlc, hagree, hUexpected⟩ := hfit.allocate_override_source htarget hR Φ hraw
     have hUty : U.onTy ty = target := (Subst.onTy_congr hagree hbelow).symm.trans heq.symm
-    have huni : Unifies U ty (template.allocate Φ).2 := by
-      change U.onTy ty = U.onTy (template.allocate Φ).2
-      rw [hUty, hUexpected]
+    have huni : Unifies U ty (template.allocate Φ).2 := hUty.trans hUexpected.symm
     have hunifies := unifyCoreK_complete hty hlc hUlc huni
       (fun k hk => (hagree k (hK k hk)).symm.trans (hRfix k hk))
     cases template <;> simp only [checkLet, halloc, hr, dite_true, Option.isSome_some]
@@ -49,6 +45,74 @@ theorem checkLet_complete {K : List Nat} {Φ : Nat} {ann : LetAnn} {ty target : 
       | none => simp only [hu, Option.isSome_none] at hunifies; contradiction
       | some result => rcases result with ⟨subst, hun, hav⟩; rfl
 
+
+
+theorem checkSignature_complete_source {K written : List Nat} {F : List Ty}
+    {frontier : Nat} {ann : LetAnn} {ty target : Ty} {R : Subst}
+    (hmode : ann.isSignature = true) (hprefix : written.length = ann.paramCount)
+    (hK : ∀ k ∈ K ++ written, k < frontier) (hty : ty.IsLC) (hbelow : Ty.BelowFvars frontier ty)
+    (hR : ∀ pair ∈ R, pair.2.IsLC) (hRfix : ∀ k ∈ K ++ written, R.onTy (.fvar k) = .fvar k)
+    (htarget : target.IsLC) (hscope : ∀ v ∈ ann.rigidVars, v ∈ K ++ softVars F)
+    (hraw : ∀ v ∈ ann.rigidVars, v < frontier) (heq : target = R.onTy ty)
+    (hcomplete : ∀ scheme, ann = .complete scheme → scheme.WF ∧ target = (R.onPolyTy scheme).openVars written)
+    (hpartial : ∀ count template, ann = .partialForall count template →
+      ((template.substTyFvars R).openTyVarsFrom 0 written).Fits target) :
+    (checkSignature K F written frontier ann ty).isSome := by
+  have hW : ∀ w ∈ written, R.onTy (.fvar w) = .fvar w :=
+    fun w hw => hRfix w (List.mem_append_right _ hw)
+  cases ann with
+  | absent => cases hmode
+  | template => cases hmode
+  | complete scheme =>
+    have hSchemeWF := (hcomplete scheme rfl).1
+    have hSchemeB : scheme.body.bvarsBelow scheme.paramCount = true := PolyTy.wf_iff_bvarsBelow.mpr hSchemeWF
+    have hr : scheme.body.freeVars.all (fun v => decide (v ∈ K ++ softVars F)) = true :=
+      List.all_eq_true.mpr (fun v hv => decide_eq_true (hscope v hv))
+    have hexpected := PolyTy.openVars_isLC hSchemeWF hprefix.ge
+    have hExpected : R.onTy (scheme.openVars written) = (R.onPolyTy scheme).openVars written :=
+      Subst.onTy_openVars_of_fixes hR hW
+    have hUni : Unifies R ty (scheme.openVars written) :=
+      heq.symm.trans ((hcomplete scheme rfl).2.trans hExpected.symm)
+    have hunifies := unifyCoreK_complete hty hexpected hR hUni hRfix
+    simp only [checkSignature, hSchemeB, hr, dite_true]
+    cases hu : unifyCoreK (K ++ written) ty (scheme.openVars written) with
+    | none => simp only [hu, Option.isSome_none] at hunifies; contradiction
+    | some result => rcases result with ⟨subst, hun, hav⟩; rfl
+  | partialForall count template =>
+    have hfit := hpartial count template rfl
+    rw [← Template.substTyFvars_openTyVarsFrom_of_fixes template hR hW 0] at hfit
+    have hexpected := hfit.allocate_lc_source htarget frontier
+    have hExpectedB : ((template.openTyVarsFrom 0 written).allocate frontier).2.bvarsBelow 0 = true :=
+      (Ty.bvarsBelow_iff _).mpr hexpected
+    have hr : template.rigidVars.all (fun v => decide (v ∈ K ++ softVars F)) = true :=
+      List.all_eq_true.mpr (fun v hv => decide_eq_true (hscope v hv))
+    obtain ⟨U, hU, hag, hUexpected⟩ := hfit.allocate_override_source htarget hR frontier (by
+      intro v hv
+      exact (List.mem_append.mp (Template.open_scope (K := template.rigidVars) (fun _ h => h) v hv)).elim
+        (hraw v) (fun hv => hK v (List.mem_append_right _ hv)))
+    have hUty : U.onTy ty = target := (Subst.onTy_congr hag hbelow).symm.trans heq.symm
+    have hUni : Unifies U ty ((template.openTyVarsFrom 0 written).allocate frontier).2 :=
+      hUty.trans hUexpected.symm
+    have hUfix : ∀ k ∈ K ++ written, U.onTy (.fvar k) = .fvar k := fun k hk =>
+      (hag k (hK k hk)).symm.trans (hRfix k hk)
+    have hunifies := unifyCoreK_complete hty hexpected hU hUni hUfix
+    simp only [checkSignature, hExpectedB, hr, dite_true]
+    cases hu : unifyCoreK (K ++ written) ty ((template.openTyVarsFrom 0 written).allocate frontier).2 with
+    | none => simp only [hu, Option.isSome_none] at hunifies; contradiction
+    | some result => rcases result with ⟨subst, hun, hav⟩; rfl
+
+/-- Internal producer contract for scoped soft-source visits. The bounded
+protected candidate set is independent of K; public completeness uses P=K. -/
+def _root_.InferWithTypesCoreSourceComplete (input : Input) : Prop :=
+  ∀ (K : List Nat) (F : List Ty) (frontier : Nat) (ctx : Ctx)
+    (ambient : Subst) (target : Ty) (P : List Nat),
+    SourceScope K F input → CtxWF ctx → CtxBelow frontier ctx →
+    (∀ k ∈ K, k < frontier) → (∀ t ∈ F, Ty.BelowFvars frontier t) →
+    (∀ pair ∈ ambient, pair.2.IsLC) →
+    (∀ k ∈ K, ambient.onTy (.fvar k) = .fvar k) →
+    (∀ p ∈ P, p < frontier) → (∀ p ∈ P, ambient.onTy (.fvar p) = .fvar p) →
+    Typing P (ambient.onCtx ctx) (input.substTyFvars ambient) target →
+    (inferWithTypesCore K frontier ctx input F).isSome
 
 /-- Producer completeness for the concrete worker, under an arbitrary LC
 specialization fixing the inference's rigid variables. Successful results
