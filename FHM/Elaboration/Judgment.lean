@@ -7,6 +7,19 @@ application, let, and match spines share the same recursive inference judgment.
 
 namespace Elaboration
 
+/-- Images of live provisional written-forall slots. They are scoped and
+excluded from nested generalization, but are not frozen by unification. -/
+def softVars (soft : List Ty) : List Nat := TyList.freeVars soft
+
+def substSoft (subst : Subst) (soft : List Ty) : List Ty := soft.map subst.onTy
+
+@[simp] theorem substSoft_nil (soft : List Ty) : substSoft [] soft = soft := by
+  simp [substSoft, Subst.onTy, Ty.substFvars]
+
+@[simp] theorem substSoft_append (first second : Subst) (soft : List Ty) :
+    substSoft (first ++ second) soft = substSoft second (substSoft first soft) := by
+  simp [substSoft, List.map_map, Function.comp_def, Subst.onTy_append]
+
 inductive Seed (K : List Nat) (frontier : Nat) : Option Template → Ty → Nat → Prop
   | absent : Seed K frontier none (.fvar frontier) (frontier + 1)
   | annotated :
@@ -14,29 +27,29 @@ inductive Seed (K : List Nat) (frontier : Nat) : Option Template → Ty → Nat 
       (∀ v ∈ template.rigidVars, v ∈ K) →
       Seed K frontier (some template) ty next
 
-inductive LetCheck (K : List Nat) (frontier : Nat) (ty : Ty) : LetAnn → Nat → Subst → Prop
-  | absent : LetCheck K frontier ty .absent frontier []
+inductive LetCheck (K : List Nat) (F : List Ty) (frontier : Nat) (ty : Ty) : LetAnn → Nat → Subst → Prop
+  | absent : LetCheck K F frontier ty .absent frontier []
   /-- A whole-signature `_` imposes no constraint on the RHS monotype. This
   eliminates an immediately solved, otherwise unused fresh metavariable. -/
-  | hole : LetCheck K frontier ty (.template .hole) frontier []
+  | hole : LetCheck K F frontier ty (.template .hole) frontier []
   | template :
       template.allocate frontier = (next, expected) → expected.IsLC →
-      (∀ v ∈ template.rigidVars, v ∈ K) →
+      (∀ v ∈ template.rigidVars, v ∈ K ++ softVars F) →
       RigidUnify K ty expected subst →
-      LetCheck K frontier ty (.template template) next subst
+      LetCheck K F frontier ty (.template template) next subst
 
 /-- A signed RHS is checked under its written forall prefix. Only those
 written skolems and ambient K are protected; anonymous holes stay flexible. -/
-inductive SignatureCheck (K written : List Nat) (frontier : Nat) (ty : Ty) :
+inductive SignatureCheck (K : List Nat) (F : List Ty) (written : List Nat) (frontier : Nat) (ty : Ty) :
     LetAnn → Nat → Subst → Prop
-  | complete {scheme : PolyTy} : scheme.WF → (∀ v ∈ scheme.body.freeVars, v ∈ K) →
+  | complete {scheme : PolyTy} : scheme.WF → (∀ v ∈ scheme.body.freeVars, v ∈ K ++ softVars F) →
       RigidUnify (K ++ written) ty (scheme.openVars written) subst →
-      SignatureCheck K written frontier ty (.complete scheme) frontier subst
+      SignatureCheck K F written frontier ty (.complete scheme) frontier subst
   | partialSignature {template : Template} :
       (template.openTyVarsFrom 0 written).allocate frontier = (next, expected) →
-      expected.IsLC → (∀ v ∈ template.rigidVars, v ∈ K) →
+      expected.IsLC → (∀ v ∈ template.rigidVars, v ∈ K ++ softVars F) →
       RigidUnify (K ++ written) ty expected subst →
-      SignatureCheck K written frontier ty (.partialForall count template) next subst
+      SignatureCheck K F written frontier ty (.partialForall count template) next subst
 
 /-- Written binders keep their authored order; inferred binders follow them. -/
 def signatureNames (ann : LetAnn) (K written : List Nat) (ctx : Ctx) (ty : Ty) : List Nat :=
@@ -57,94 +70,100 @@ def letOutput (scheme : PolyTy) (names : List Nat) (rhs body : Expr) (subst : Su
   .letIn (some (subst.onPolyTy scheme)) ((rhs.closeTyVars names).substTyFvars subst) body
 
 mutual
-/-- Authoritative input/output judgment for the proved anonymous fragment.
-The `backend` rule uses the existing judgment only after a whole subtree embeds
-as completed Core. Partial annotation modes never use that rule. -/
-
-inductive _root_.Infer : List Nat → Nat → Ctx → Input → Nat → Subst → Expr → Ty → Prop
+/-- Canonical inference carries frozen K and the current images F of live
+provisional forall slots. Sequential calls transform both F and source syntax. -/
+inductive _root_.Infer : List Nat → List Ty → Nat → Ctx → Input → Nat → Subst → Expr → Ty → Prop
   | backend :
       input.toCore = some core →
       CoreBackend.Infer K frontier ctx core next subst ty →
       CtxBelow frontier ctx → (∀ k ∈ K, k < frontier) →
       (∀ v ∈ core.tyFreeVars, v ∈ K) →
-      Infer K frontier ctx input next subst core ty
+      (∀ v ∈ core.tyFreeVars, v ∉ softVars F) →
+      Infer K F frontier ctx input next subst core ty
   | lambda :
-      Seed K frontier ann param initial →
-      Infer K initial { ctx with env := PolyTy.mkTrivial param :: ctx.env }
+      Seed (K ++ softVars F) frontier ann param initial →
+      Infer K F initial { ctx with env := PolyTy.mkTrivial param :: ctx.env }
         body next subst completed bodyTy →
-      Infer K frontier ctx (.lambda ann body) next subst
+      Infer K F frontier ctx (.lambda ann body) next subst
         (lambdaOutput ann param subst completed) (.arrow (subst.onTy param) bodyTy)
   | app :
-      Infer K frontier ctx f first s1 fOut fTy →
-      Infer K first (s1.onCtx ctx) arg second s2 argOut argTy →
+      Infer K F frontier ctx f first s1 fOut fTy →
+      Infer K (substSoft s1 F) first (s1.onCtx ctx) (arg.substTyFvars s1) second s2 argOut argTy →
       RigidUnify K (s2.onTy fTy) (.arrow argTy (.fvar second)) s3 →
-      Infer K frontier ctx (.app f arg) (second + 1) (s1 ++ s2 ++ s3)
+      Infer K F frontier ctx (.app f arg) (second + 1) (s1 ++ s2 ++ s3)
         (.app (fOut.substTyFvars (s2 ++ s3)) (argOut.substTyFvars s3)) (s3.onTy (.fvar second))
   | letIn :
-      Infer K frontier ctx rhs first s1 rhsOut rhsTy →
-      LetCheck K first rhsTy ann checked sCheck →
-      Infer K checked
+      Infer K F frontier ctx rhs first s1 rhsOut rhsTy →
+      LetCheck K (substSoft s1 F) first rhsTy (ann.substTyFvars s1) checked sCheck →
+      Infer K (substSoft (s1 ++ sCheck) F) checked
         { (sCheck.onCtx (s1.onCtx ctx)) with
-          env := genScheme K (sCheck.onCtx (s1.onCtx ctx)).env (sCheck.onTy rhsTy) ::
+          env := genScheme (K ++ softVars (substSoft (s1 ++ sCheck) F))
+            (sCheck.onCtx (s1.onCtx ctx)).env (sCheck.onTy rhsTy) ::
             (sCheck.onCtx (s1.onCtx ctx)).env }
-        body next s2 bodyOut bodyTy →
-      Infer K frontier ctx (.letIn ann rhs body) next (s1 ++ sCheck ++ s2)
-        (letOutput (genScheme K (sCheck.onCtx (s1.onCtx ctx)).env (sCheck.onTy rhsTy))
-          (genVars K (sCheck.onCtx (s1.onCtx ctx)).env (sCheck.onTy rhsTy))
+        (body.substTyFvars (s1 ++ sCheck)) next s2 bodyOut bodyTy →
+      Infer K F frontier ctx (.letIn ann rhs body) next (s1 ++ sCheck ++ s2)
+        (letOutput (genScheme (K ++ softVars (substSoft (s1 ++ sCheck) F))
+            (sCheck.onCtx (s1.onCtx ctx)).env (sCheck.onTy rhsTy))
+          (genVars (K ++ softVars (substSoft (s1 ++ sCheck) F))
+            (sCheck.onCtx (s1.onCtx ctx)).env (sCheck.onTy rhsTy))
           (rhsOut.substTyFvars sCheck) bodyOut s2) bodyTy
-
   | letSignature :
       written = freshVars frontier ann.paramCount →
-      (∀ name ∈ written, name ∉ K) → (∀ v ∈ rhs.rigidVars, v ∈ K) →
-      Infer (K ++ written) (frontier + ann.paramCount) ctx (rhs.openTyVars written)
+      (∀ name ∈ written, name ∉ K ++ softVars F) →
+      (∀ v ∈ rhs.rigidVars, v ∈ K ++ softVars F) →
+      Infer (K ++ written) F (frontier + ann.paramCount) ctx (rhs.openTyVars written)
         first s1 rhsOut rhsTy →
-      SignatureCheck K written first rhsTy ann checked sCheck →
-      (∀ name ∈ written, name ∉ (sCheck.onCtx (s1.onCtx ctx)).env.freeVars) →
-      Infer K checked
+      SignatureCheck K (substSoft s1 F) written first rhsTy (ann.substTyFvars s1) checked sCheck →
+      (∀ name ∈ written, name ∉ (sCheck.onCtx (s1.onCtx ctx)).env.freeVars ++
+        softVars (substSoft (s1 ++ sCheck) F)) →
+      Infer K (substSoft (s1 ++ sCheck) F) checked
         { (sCheck.onCtx (s1.onCtx ctx)) with
-          env := signatureScheme ann K written (sCheck.onCtx (s1.onCtx ctx)) (sCheck.onTy rhsTy) ::
+          env := signatureScheme (ann.substTyFvars (s1 ++ sCheck))
+            (K ++ softVars (substSoft (s1 ++ sCheck) F)) written
+            (sCheck.onCtx (s1.onCtx ctx)) (sCheck.onTy rhsTy) ::
             (sCheck.onCtx (s1.onCtx ctx)).env }
-        body next s2 bodyOut bodyTy →
-      Infer K frontier ctx (.letIn ann rhs body) next (s1 ++ sCheck ++ s2)
-        (letOutput (signatureScheme ann K written (sCheck.onCtx (s1.onCtx ctx)) (sCheck.onTy rhsTy))
-          (signatureNames ann K written (sCheck.onCtx (s1.onCtx ctx)) (sCheck.onTy rhsTy))
+        (body.substTyFvars (s1 ++ sCheck)) next s2 bodyOut bodyTy →
+      Infer K F frontier ctx (.letIn ann rhs body) next (s1 ++ sCheck ++ s2)
+        (letOutput (signatureScheme (ann.substTyFvars (s1 ++ sCheck))
+            (K ++ softVars (substSoft (s1 ++ sCheck) F)) written
+            (sCheck.onCtx (s1.onCtx ctx)) (sCheck.onTy rhsTy))
+          (signatureNames (ann.substTyFvars (s1 ++ sCheck))
+            (K ++ softVars (substSoft (s1 ++ sCheck) F)) written
+            (sCheck.onCtx (s1.onCtx ctx)) (sCheck.onTy rhsTy))
           (rhsOut.substTyFvars sCheck) bodyOut s2) bodyTy
-
   | match_ :
-      Infer K frontier ctx scrut first s1 scrutOut scrutTy →
+      Infer K F frontier ctx scrut first s1 scrutOut scrutTy →
       branches ≠ [] →
-      InferBranches K (first + 1) (s1.onCtx ctx) scrutTy (.fvar first)
-        branches next s2 branchesOut →
-      Infer K frontier ctx (.match_ scrut branches) next (s1 ++ s2)
+      InferBranches K (substSoft s1 F) (first + 1) (s1.onCtx ctx) scrutTy (.fvar first)
+        (substInputBranches s1 branches) next s2 branchesOut →
+      Infer K F frontier ctx (.match_ scrut branches) next (s1 ++ s2)
         (.match_ (scrutOut.substTyFvars s2) branchesOut) (s2.onTy (.fvar first))
 
-/-- Branch inference threads the same ambient rigid set and returns completed
-branch bodies alongside the substitution. Constructor allocation and constraint
-order match the complete-Core backend. -/
-inductive _root_.InferBranches : List Nat → Nat → Ctx → Ty → Ty →
+inductive _root_.InferBranches : List Nat → List Ty → Nat → Ctx → Ty → Ty →
     List (MatchPattern × Input) → Nat → Subst → List (MatchPattern × Expr) → Prop
-  | nil : InferBranches K frontier ctx scrutTy resultTy [] frontier [] []
+  | nil : InferBranches K F frontier ctx scrutTy resultTy [] frontier [] []
   | consWild :
-      Infer K frontier ctx body first s1 bodyOut bodyTy →
+      Infer K F frontier ctx body first s1 bodyOut bodyTy →
       RigidUnify K bodyTy (s1.onTy resultTy) s2 →
-      InferBranches K first (s2.onCtx (s1.onCtx ctx))
-        (s2.onTy (s1.onTy scrutTy)) (s2.onTy (s1.onTy resultTy)) rest next s3 restOut →
-      InferBranches K frontier ctx scrutTy resultTy ((.wildcard, body) :: rest) next (s1 ++ s2 ++ s3)
+      InferBranches K (substSoft (s1 ++ s2) F) first (s2.onCtx (s1.onCtx ctx))
+        (s2.onTy (s1.onTy scrutTy)) (s2.onTy (s1.onTy resultTy))
+        (substInputBranches (s1 ++ s2) rest) next s3 restOut →
+      InferBranches K F frontier ctx scrutTy resultTy ((.wildcard, body) :: rest) next (s1 ++ s2 ++ s3)
         ((.wildcard, bodyOut.substTyFvars (s2 ++ s3)) :: restOut)
   | cons :
       LookupList.get? ctx.ctors name = some ctor →
       count = ctor.contents.length →
       RigidUnify K scrutTy (.customTy ctor.tyName ((freshVars frontier ctor.paramCount).map Ty.fvar)) s0 →
-      Infer K (frontier + ctor.paramCount)
+      Infer K (substSoft s0 F) (frontier + ctor.paramCount)
         { (s0.onCtx ctx) with
           env := (ctor.contents.map (Ty.openWith (((freshVars frontier ctor.paramCount).map Ty.fvar).map s0.onTy))).map PolyTy.mkTrivial ++
               (s0.onCtx ctx).env }
-        body first s1 bodyOut bodyTy →
+        (body.substTyFvars s0) first s1 bodyOut bodyTy →
       RigidUnify K bodyTy (s1.onTy (s0.onTy resultTy)) s2 →
-      InferBranches K first (s2.onCtx (s1.onCtx (s0.onCtx ctx)))
+      InferBranches K (substSoft (s0 ++ s1 ++ s2) F) first (s2.onCtx (s1.onCtx (s0.onCtx ctx)))
         (s2.onTy (s1.onTy (s0.onTy scrutTy))) (s2.onTy (s1.onTy (s0.onTy resultTy)))
-        rest next s3 restOut →
-      InferBranches K frontier ctx scrutTy resultTy ((.named name count, body) :: rest) next
+        (substInputBranches (s0 ++ s1 ++ s2) rest) next s3 restOut →
+      InferBranches K F frontier ctx scrutTy resultTy ((.named name count, body) :: rest) next
         (s0 ++ s1 ++ s2 ++ s3) ((.named name count, bodyOut.substTyFvars (s2 ++ s3)) :: restOut)
 end
 
@@ -170,34 +189,34 @@ theorem Seed.rigid (h : Seed K frontier ann param initial) :
   | absent => intro _ heq; cases heq
   | annotated _ _ hrigid => intro _ heq; cases heq; exact hrigid
 
-theorem LetCheck.dom_avoids (h : LetCheck K frontier ty ann next subst) :
+theorem LetCheck.dom_avoids (h : LetCheck K F frontier ty ann next subst) :
     ∀ pair ∈ subst, pair.1 ∉ K := by
   cases h with
   | absent => simp
   | hole => simp
   | template _ _ _ huni => exact huni.dom_avoids
 
-theorem LetCheck.lc (h : LetCheck K frontier ty ann next subst) (hlc : ty.IsLC) :
+theorem LetCheck.lc (h : LetCheck K F frontier ty ann next subst) (hlc : ty.IsLC) :
     ∀ pair ∈ subst, pair.2.IsLC := by
   cases h with
   | absent => simp
   | hole => simp
   | template _ he _ huni => exact huni.unifies.lc hlc he
 
-theorem LetCheck.fits (h : LetCheck K frontier ty ann next subst) :
-    ann.FitsMono (subst.onTy ty) := by
+theorem LetCheck.fits (h : LetCheck K F frontier ty ann next subst) :
+    (ann.substTyFvars subst).FitsMono (subst.onTy ty) := by
   cases h with
   | absent => trivial
   | hole => exact .hole
-  | @template next expected subst t heq _ hrigid huni =>
+  | @template next expected subst t heq _ _ huni =>
       have hfit := Template.allocate_fits t frontier
       rw [heq] at hfit
-      change t.Fits (subst.onTy ty)
+      change (t.substTyFvars subst).Fits (subst.onTy ty)
       rw [huni.unifies.unifies]
-      exact hfit.onSubst hrigid huni.dom_avoids
+      exact hfit.substTyFvars subst
 
-theorem LetCheck.rigid (h : LetCheck K frontier ty ann next subst) :
-    ∀ template, ann = .template template → ∀ v ∈ template.rigidVars, v ∈ K := by
+theorem LetCheck.rigid (h : LetCheck K F frontier ty ann next subst) :
+    ∀ template, ann = .template template → ∀ v ∈ template.rigidVars, v ∈ K ++ softVars F := by
   cases h with
   | absent => intro _ heq; cases heq
   | hole => intro _ heq; cases heq; simp [Template.rigidVars]
@@ -231,26 +250,26 @@ private theorem templateList_open_scope {templates : List Template} {K written :
       (templateList_open_scope (fun w hw => h w (List.mem_append_right _ hw)) v)
 end
 
-theorem SignatureCheck.dom_avoids (h : SignatureCheck K written frontier ty ann next subst) :
+theorem SignatureCheck.dom_avoids (h : SignatureCheck K F written frontier ty ann next subst) :
     ∀ pair ∈ subst, pair.1 ∉ K ++ written := by
   cases h with
   | complete _ _ hu => exact hu.dom_avoids
   | partialSignature _ _ _ hu => exact hu.dom_avoids
 
-theorem SignatureCheck.rigid (h : SignatureCheck K written frontier ty ann next subst) :
+theorem SignatureCheck.rigid (h : SignatureCheck K F written frontier ty ann next subst) :
     ∀ v ∈ ann.rigidVars, v ∈ K := by
   cases h with
   | complete _ hr _ => exact hr
   | partialSignature _ _ hr _ => exact hr
 
-theorem SignatureCheck.lc (h : SignatureCheck K written frontier ty ann next subst)
+theorem SignatureCheck.lc (h : SignatureCheck K F written frontier ty ann next subst)
     (hprefix : written.length = ann.paramCount) (hlc : ty.IsLC) :
     ∀ pair ∈ subst, pair.2.IsLC := by
   cases h with
   | complete hwf _ hu => exact hu.unifies.lc hlc (PolyTy.openVars_isLC hwf hprefix.ge)
   | partialSignature _ he _ hu => exact hu.unifies.lc hlc he
 
-theorem SignatureCheck.completion (h : SignatureCheck K written frontier ty ann next subst)
+theorem SignatureCheck.completion (h : SignatureCheck K F written frontier ty ann next subst)
     (hprefix : written.length = ann.paramCount) :
     ann.SignatureCompletion written (subst.onTy ty)
       (signatureScheme ann K written ctx (subst.onTy ty))
@@ -272,14 +291,14 @@ theorem SignatureCheck.completion (h : SignatureCheck K written frontier ty ann 
     rw [hu.unifies.unifies]
     exact hfit.onSubst (Template.open_scope hr) hu.dom_avoids
 
-theorem SignatureCheck.scheme_wf (h : SignatureCheck K written frontier ty ann next subst)
+theorem SignatureCheck.scheme_wf (h : SignatureCheck K F written frontier ty ann next subst)
     (hlc : (subst.onTy ty).IsLC) :
     (signatureScheme ann K written ctx (subst.onTy ty)).WF := by
   cases h with
   | complete hwf _ _ => exact hwf
   | partialSignature _ _ _ _ => exact Ty.closeOver_preserves_bvars hlc
 
-theorem SignatureCheck.names_avoid (h : SignatureCheck K written frontier ty ann next subst)
+theorem SignatureCheck.names_avoid (h : SignatureCheck K F written frontier ty ann next subst)
     (havoid : ∀ name ∈ written, name ∉ K) :
     ∀ name ∈ signatureNames ann K written ctx (subst.onTy ty), name ∉ K := by
   cases h with
@@ -290,7 +309,7 @@ theorem SignatureCheck.names_avoid (h : SignatureCheck K written frontier ty ann
     · exact havoid name hn hk
     · exact genVars_not_mem_rigid hn (List.mem_append_left _ hk)
 
-theorem SignatureCheck.names_nodup (h : SignatureCheck K written frontier ty ann next subst)
+theorem SignatureCheck.names_nodup (h : SignatureCheck K F written frontier ty ann next subst)
     (hnd : written.Nodup) : (signatureNames ann K written ctx (subst.onTy ty)).Nodup := by
   cases h with
   | complete _ _ _ => exact hnd
@@ -301,7 +320,7 @@ theorem SignatureCheck.names_nodup (h : SignatureCheck K written frontier ty ann
     subst other
     exact genVars_not_mem_rigid hg (List.mem_append_right _ hw)
 
-theorem SignatureCheck.names_fresh (h : SignatureCheck K written frontier ty ann next subst)
+theorem SignatureCheck.names_fresh (h : SignatureCheck K F written frontier ty ann next subst)
     (havoid : ∀ name ∈ written, name ∉ ctx.env.freeVars) :
     ∀ name ∈ signatureNames ann K written ctx (subst.onTy ty), name ∉ ctx.env.freeVars := by
   cases h with
@@ -312,7 +331,7 @@ theorem SignatureCheck.names_fresh (h : SignatureCheck K written frontier ty ann
     · exact havoid name hn
     · exact genVars_not_mem hn
 
-theorem SignatureCheck.scheme_eq_close (h : SignatureCheck K written frontier ty ann next subst)
+theorem SignatureCheck.scheme_eq_close (h : SignatureCheck K F written frontier ty ann next subst)
     (hlen : written.length = ann.paramCount) (hnd : written.Nodup)
     (havoid : ∀ name ∈ written, name ∉ K) :
     signatureScheme ann K written ctx (subst.onTy ty) =
@@ -337,10 +356,10 @@ private theorem avoids_append {K : List Nat} {S T : Subst}
   fun p hp => (List.mem_append.mp hp).elim (hS p) (hT p)
 
 mutual
-theorem _root_.Infer.dom_avoids (h : Infer K frontier ctx input next subst output ty) :
+theorem _root_.Infer.dom_avoids (h : Infer K F frontier ctx input next subst output ty) :
     ∀ pair ∈ subst, pair.1 ∉ K := by
   match h with
-  | .backend _ hi _ _ _ => exact hi.dom_avoids
+  | .backend _ hi _ _ _ _ => exact hi.dom_avoids
   | .lambda _ hb => exact hb.dom_avoids
   | .app hf ha hu => exact avoids_append (avoids_append hf.dom_avoids ha.dom_avoids) hu.dom_avoids
   | .letIn hr hc hb => exact avoids_append (avoids_append hr.dom_avoids hc.dom_avoids) hb.dom_avoids
@@ -350,10 +369,10 @@ theorem _root_.Infer.dom_avoids (h : Infer K frontier ctx input next subst outpu
       (fun p hp hk => hc.dom_avoids p hp (List.mem_append_left _ hk))) hb.dom_avoids
   | .match_ hs _ hb => exact avoids_append hs.dom_avoids hb.dom_avoids
 termination_by (input.size, 0)
-decreasing_by all_goals (simp only [Input.size, Input.size_openTyVars]; omega)
+decreasing_by all_goals (simp only [Input.size, Input.size_openTyVars, Input.size_substTyFvars, sizeBranches_substInputBranches]; omega)
 
 theorem _root_.InferBranches.dom_avoids
-    (h : InferBranches K frontier ctx scrutTy resultTy branches next subst completed) :
+    (h : InferBranches K F frontier ctx scrutTy resultTy branches next subst completed) :
     ∀ pair ∈ subst, pair.1 ∉ K := by
   match h with
   | .nil => simp
@@ -361,15 +380,15 @@ theorem _root_.InferBranches.dom_avoids
   | .cons _ _ hu0 hb hu hr =>
     exact avoids_append (avoids_append (avoids_append hu0.dom_avoids hb.dom_avoids) hu.dom_avoids) hr.dom_avoids
 termination_by (sizeBranches branches, 0)
-decreasing_by all_goals (simp only [sizeBranches]; omega)
+decreasing_by all_goals (simp only [sizeBranches, Input.size_substTyFvars, sizeBranches_substInputBranches]; omega)
 end
 
 mutual
-theorem _root_.Infer.lc (h : Infer K frontier ctx input next subst output ty) :
+theorem _root_.Infer.lc (h : Infer K F frontier ctx input next subst output ty) :
     CtxWF ctx → ty.IsLC ∧ ∀ pair ∈ subst, pair.2.IsLC := by
   match h with
-  | .backend _ h _ _ _ => exact h.lc
-  | @Infer.lambda K frontier ann param initial ctx body next subst completed bodyTy hs hb =>
+  | .backend _ h _ _ _ _ => exact h.lc
+  | @Infer.lambda K F frontier ann param initial ctx body next subst completed bodyTy hs hb =>
       intro hctx
       have hbodyCtx : CtxWF { ctx with env := PolyTy.mkTrivial param :: ctx.env } := by
         intro scheme hscheme
@@ -408,7 +427,7 @@ theorem _root_.Infer.lc (h : Infer K frontier ctx input next subst output ty) :
     have hlen : _ := congrArg List.length hprefix
     simp only [freshVars_length] at hlen
     obtain ⟨hrTy, hs1⟩ := hr.lc hctx
-    have hcheck := hc.lc hlen hrTy
+    have hcheck := hc.lc (by simpa using hlen) hrTy
     obtain ⟨hbTy, hs2⟩ := hb.lc (by
       intro scheme hscheme
       rcases List.mem_cons.mp hscheme with rfl | hscheme
@@ -422,10 +441,10 @@ theorem _root_.Infer.lc (h : Infer K frontier ctx input next subst output ty) :
     obtain ⟨hresult, hS2⟩ := hb.lc (Subst.onCtx_wf hS1 hctx) ht .fvar
     exact ⟨hresult, fun p hp => (List.mem_append.mp hp).elim (hS1 p) (hS2 p)⟩
 termination_by (input.size, 0)
-decreasing_by all_goals (simp only [Input.size, Input.size_openTyVars]; omega)
+decreasing_by all_goals (simp only [Input.size, Input.size_openTyVars, Input.size_substTyFvars, sizeBranches_substInputBranches]; omega)
 
 theorem _root_.InferBranches.lc {Φ ctx scrutTy ρ brs Φ' S}
-    (h : InferBranches κ Φ ctx scrutTy ρ brs Φ' S out)
+    (h : InferBranches κ F Φ ctx scrutTy ρ brs Φ' S out)
     (hctx : CtxWF ctx) (hscrutTy : scrutTy.IsLC) (hρ : ρ.IsLC) :
     (S.onTy ρ).IsLC ∧ (∀ p ∈ S, p.2.IsLC) := by
   match h with
@@ -472,7 +491,7 @@ theorem _root_.InferBranches.lc {Φ ctx scrutTy ρ brs Φ' S}
       · exact hS₃ p hp
 termination_by (sizeBranches brs, 0)
 decreasing_by
-  all_goals (simp only [sizeBranches]; omega)
+  all_goals (simp only [sizeBranches, Input.size_substTyFvars, sizeBranches_substInputBranches]; omega)
 end
 
 
