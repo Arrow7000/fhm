@@ -673,4 +673,275 @@ theorem Input.toCore_openTyVars (input : Input) {core : Expr}
     (input.openTyVars Xs).toCore = some (core.openTyVars Xs) :=
   input.toCore_openTyVarsFrom h 0 Xs
 
+mutual
+/-- Substitute only free variables in authored type leaves; anonymous holes
+remain unallocated and independent. -/
+def Template.substTyFvars (subst : List (Nat × Ty)) : Template → Template
+  | .fixed ty => .fixed (ty.substFvars subst)
+  | .hole => .hole
+  | .arrow a b => .arrow (a.substTyFvars subst) (b.substTyFvars subst)
+  | .custom name args => .custom name (substTemplateList subst args)
+def substTemplateList (subst : List (Nat × Ty)) : List Template → List Template
+  | [] => []
+  | t :: ts => t.substTyFvars subst :: substTemplateList subst ts
+end
+
+/-- Free type substitution preserves annotation modes and written binders. -/
+def LetAnn.substTyFvars (subst : List (Nat × Ty)) : LetAnn → LetAnn
+  | .absent => .absent
+  | .complete scheme => .complete { scheme with body := scheme.body.substFvars subst }
+  | .template t => .template (t.substTyFvars subst)
+  | .partialForall n t => .partialForall n (t.substTyFvars subst)
+
+mutual
+/-- Type substitution does not shift under type or term binders: all replaced
+variables are free, just as for `Expr.substTyFvars`. -/
+def Input.substTyFvars (subst : List (Nat × Ty)) : Input → Input
+  | .primLit p => .primLit p
+  | .primBinOp op => .primBinOp op
+  | .lambda ann body => .lambda (ann.map (Template.substTyFvars subst)) (body.substTyFvars subst)
+  | .app f arg => .app (f.substTyFvars subst) (arg.substTyFvars subst)
+  | .letIn ann rhs body => .letIn (ann.substTyFvars subst) (rhs.substTyFvars subst) (body.substTyFvars subst)
+  | .var i => .var i
+  | .ctor name => .ctor name
+  | .match_ scrut branches => .match_ (scrut.substTyFvars subst) (substInputBranches subst branches)
+  | .letRec anns bindings body => .letRec (anns.map (LetAnn.substTyFvars subst))
+      (substInputBindings subst bindings) (body.substTyFvars subst)
+def substInputBranches (subst : List (Nat × Ty)) :
+    List (MatchPattern × Input) → List (MatchPattern × Input)
+  | [] => []
+  | (pat, body) :: rest => (pat, body.substTyFvars subst) :: substInputBranches subst rest
+def substInputBindings (subst : List (Nat × Ty)) : List Input → List Input
+  | [] => []
+  | body :: rest => body.substTyFvars subst :: substInputBindings subst rest
+end
+
+@[simp] theorem LetAnn.paramCount_substTyFvars (ann : LetAnn) (subst : List (Nat × Ty)) :
+    (ann.substTyFvars subst).paramCount = ann.paramCount := by cases ann <;> rfl
+
+mutual
+@[simp] theorem Input.size_substTyFvars (input : Input) (subst : List (Nat × Ty)) :
+    (input.substTyFvars subst).size = input.size := by
+  cases input with
+  | primLit | primBinOp | var | ctor => rfl
+  | lambda ann body => simp only [Input.substTyFvars, Input.size, body.size_substTyFvars subst]
+  | app f a => simp only [Input.substTyFvars, Input.size, f.size_substTyFvars subst, a.size_substTyFvars subst]
+  | letIn ann rhs body => simp only [Input.substTyFvars, Input.size,
+      rhs.size_substTyFvars subst, body.size_substTyFvars subst]
+  | match_ scrut branches => simp only [Input.substTyFvars, Input.size,
+      scrut.size_substTyFvars subst, sizeBranches_substInputBranches branches subst]
+  | letRec anns bindings body => simp only [Input.substTyFvars, Input.size,
+      sizeBindings_substInputBindings bindings subst, body.size_substTyFvars subst]
+termination_by sizeOf input
+theorem sizeBranches_substInputBranches (branches : List (MatchPattern × Input)) (subst : List (Nat × Ty)) :
+    sizeBranches (substInputBranches subst branches) = sizeBranches branches := by
+  cases branches with
+  | nil => rfl
+  | cons pair rest =>
+      rcases pair with ⟨pat, body⟩
+      simp only [substInputBranches, sizeBranches, body.size_substTyFvars subst,
+        sizeBranches_substInputBranches rest subst]
+termination_by sizeOf branches
+theorem sizeBindings_substInputBindings (bindings : List Input) (subst : List (Nat × Ty)) :
+    sizeBindings (substInputBindings subst bindings) = sizeBindings bindings := by
+  cases bindings with
+  | nil => rfl
+  | cons body rest =>
+      simp only [substInputBindings, sizeBindings, body.size_substTyFvars subst,
+          sizeBindings_substInputBindings rest subst]
+termination_by sizeOf bindings
+end
+
+theorem substInputBindings_length (bindings : List Input) (subst : List (Nat × Ty)) :
+    (substInputBindings subst bindings).length = bindings.length := by
+  induction bindings with
+  | nil => rfl
+  | cons body rest ih => simp only [substInputBindings, List.length_cons, ih]
+
+mutual
+@[simp] theorem Input.erase_substTyFvars (input : Input) (subst : List (Nat × Ty)) :
+    (input.substTyFvars subst).erase = input.erase := by
+  cases input with
+  | primLit | primBinOp | var | ctor => rfl
+  | lambda ann body => simp only [Input.substTyFvars, Input.erase, body.erase_substTyFvars subst]
+  | app f a => simp only [Input.substTyFvars, Input.erase, f.erase_substTyFvars subst, a.erase_substTyFvars subst]
+  | letIn ann rhs body => simp only [Input.substTyFvars, Input.erase,
+      rhs.erase_substTyFvars subst, body.erase_substTyFvars subst]
+  | match_ scrut branches => simp only [Input.substTyFvars, Input.erase,
+      scrut.erase_substTyFvars subst, eraseBranches_substInputBranches branches subst]
+  | letRec anns bindings body => simp only [Input.substTyFvars, Input.erase,
+      eraseBindings_substInputBindings bindings subst, body.erase_substTyFvars subst,
+      List.map_const', substInputBindings_length]
+termination_by sizeOf input
+theorem eraseBranches_substInputBranches (branches : List (MatchPattern × Input)) (subst : List (Nat × Ty)) :
+    eraseBranches (substInputBranches subst branches) = eraseBranches branches := by
+  cases branches with
+  | nil => rfl
+  | cons pair rest =>
+      rcases pair with ⟨pat, body⟩
+      simp only [substInputBranches, eraseBranches, body.erase_substTyFvars subst,
+        eraseBranches_substInputBranches rest subst]
+termination_by sizeOf branches
+theorem eraseBindings_substInputBindings (bindings : List Input) (subst : List (Nat × Ty)) :
+    eraseBindings (substInputBindings subst bindings) = eraseBindings bindings := by
+  cases bindings with
+  | nil => rfl
+  | cons body rest =>
+      simp only [substInputBindings, eraseBindings, body.erase_substTyFvars subst,
+          eraseBindings_substInputBindings rest subst]
+termination_by sizeOf bindings
+end
+
+mutual
+theorem Template.toCore_substTyFvars (template : Template) {ty : Ty}
+    (h : template.toCore = some ty) (subst : List (Nat × Ty)) :
+    (template.substTyFvars subst).toCore = some (ty.substFvars subst) := by
+  cases template with
+  | fixed t => cases h; rfl
+  | hole => cases h
+  | arrow a b =>
+      simp only [Template.toCore, bind, pure, Option.bind_eq_some_iff, Option.some.injEq] at h
+      obtain ⟨ta, ha, tb, hb, rfl⟩ := h
+      simp only [Template.substTyFvars, Template.toCore, a.toCore_substTyFvars ha subst,
+        b.toCore_substTyFvars hb subst, Ty.substFvars_arrow]
+      rfl
+  | custom name args =>
+      simp only [Template.toCore, bind, pure, Option.bind_eq_some_iff, Option.some.injEq] at h
+      obtain ⟨tys, ht, rfl⟩ := h
+      simp only [Template.substTyFvars, Template.toCore, completeTypes_substTemplateList args ht subst,
+        Ty.substFvars_customTy]
+      rfl
+theorem completeTypes_substTemplateList (templates : List Template) {tys : List Ty}
+    (h : completeTypes templates = some tys) (subst : List (Nat × Ty)) :
+    completeTypes (substTemplateList subst templates) = some (tys.map (Ty.substFvars subst)) := by
+  cases templates with
+  | nil => cases h; rfl
+  | cons t ts =>
+      simp only [completeTypes, bind, pure, Option.bind_eq_some_iff, Option.some.injEq] at h
+      obtain ⟨ty, ht, tys, hts, rfl⟩ := h
+      simp only [substTemplateList, completeTypes, t.toCore_substTyFvars ht subst,
+        completeTypes_substTemplateList ts hts subst]
+      rfl
+end
+
+theorem completeLambdaAnn_substTyFvars (ann : Option Template) {core : Option Ty}
+    (h : completeLambdaAnn ann = some core) (subst : List (Nat × Ty)) :
+    completeLambdaAnn (ann.map (Template.substTyFvars subst)) =
+      some (core.map (Ty.substFvars subst)) := by
+  cases ann with
+  | none => cases h; rfl
+  | some template =>
+      simp only [completeLambdaAnn, bind, pure, Option.bind_eq_some_iff, Option.some.injEq] at h
+      obtain ⟨ty, ht, rfl⟩ := h
+      simp only [Option.map_some, completeLambdaAnn, template.toCore_substTyFvars ht subst]
+      rfl
+
+theorem LetAnn.toCore_substTyFvars (ann : LetAnn) {core : Option PolyTy}
+    (h : ann.toCore = some core) (subst : List (Nat × Ty)) :
+    (ann.substTyFvars subst).toCore = some (core.map (fun scheme =>
+      { scheme with body := scheme.body.substFvars subst })) := by
+  cases ann <;> cases h <;> rfl
+
+theorem completeAnns_substTyFvars (anns : List LetAnn) {cores : List (Option PolyTy)}
+    (h : completeAnns anns = some cores) (subst : List (Nat × Ty)) :
+    completeAnns (anns.map (LetAnn.substTyFvars subst)) = some (cores.map (Option.map (fun scheme => {scheme with body := scheme.body.substFvars subst}))) := by
+  induction anns generalizing cores with
+  | nil => cases h; rfl
+  | cons ann anns ih =>
+      simp only [completeAnns, bind, pure, Option.bind_eq_some_iff, Option.some.injEq] at h
+      obtain ⟨core, ha, cores, has, rfl⟩ := h
+      simp only [List.map_cons, completeAnns, ann.toCore_substTyFvars ha subst, ih has]
+      rfl
+
+mutual
+/-- Conservative embedding commutes with free type substitution. -/
+theorem Input.toCore_substTyFvars (input : Input) {core : Expr}
+    (h : input.toCore = some core) (subst : List (Nat × Ty)) :
+    (input.substTyFvars subst).toCore = some (core.substTyFvars subst) := by
+  cases input with
+  | primLit p =>
+      cases h
+      induction subst with
+      | nil => rfl
+      | cons pair rest ih => cases pair; simpa only [Input.substTyFvars, Input.toCore, Expr.substTyFvars, Expr.substTyFvar] using ih
+  | primBinOp op =>
+      cases h
+      induction subst with
+      | nil => rfl
+      | cons pair rest ih => cases pair; simpa only [Input.substTyFvars, Input.toCore, Expr.substTyFvars, Expr.substTyFvar] using ih
+  | var i => cases h; simp only [Input.substTyFvars, Input.toCore, Expr.substTyFvars_var]
+  | ctor name =>
+      cases h
+      induction subst with
+      | nil => rfl
+      | cons pair rest ih => cases pair; simpa only [Input.substTyFvars, Input.toCore, Expr.substTyFvars, Expr.substTyFvar] using ih
+  | lambda ann body =>
+      simp only [Input.toCore, bind, pure, Option.bind_eq_some_iff, Option.some.injEq] at h
+      obtain ⟨ann', ha, body', hb, rfl⟩ := h
+      simp only [Input.substTyFvars, Input.toCore, completeLambdaAnn_substTyFvars ann ha subst,
+        body.toCore_substTyFvars hb subst, Expr.substTyFvars_lambda]
+      rfl
+  | app f arg =>
+      simp only [Input.toCore, bind, pure, Option.bind_eq_some_iff, Option.some.injEq] at h
+      obtain ⟨f', hf, arg', ha, rfl⟩ := h
+      simp only [Input.substTyFvars, Input.toCore, f.toCore_substTyFvars hf subst,
+        arg.toCore_substTyFvars ha subst, Expr.substTyFvars_app]
+      rfl
+  | letIn ann rhs body =>
+      simp only [Input.toCore, bind, pure, Option.bind_eq_some_iff, Option.some.injEq] at h
+      obtain ⟨ann', ha, rhs', hr, body', hb, rfl⟩ := h
+      simp only [Input.substTyFvars, Input.toCore, ann.toCore_substTyFvars ha subst,
+        rhs.toCore_substTyFvars hr subst, body.toCore_substTyFvars hb subst]
+      rw [Expr.substTyFvars_letIn]
+      rfl
+  | match_ scrut branches =>
+      simp only [Input.toCore, bind, pure, Option.bind_eq_some_iff, Option.some.injEq] at h
+      obtain ⟨scrut', hs, branches', hbs, rfl⟩ := h
+      simp only [Input.substTyFvars, Input.toCore, scrut.toCore_substTyFvars hs subst,
+        completeBranches_substTyFvars branches hbs subst, Expr.substTyFvars_match]
+      rfl
+  | letRec anns bindings body =>
+      simp only [Input.toCore, bind, pure, Option.bind_eq_some_iff, Option.some.injEq] at h
+      obtain ⟨anns', ha, bindings', hbs, body', hb, rfl⟩ := h
+      simp only [Input.substTyFvars, Input.toCore, completeAnns_substTyFvars anns ha subst,
+        completeBindings_substTyFvars bindings hbs subst,
+        body.toCore_substTyFvars hb subst, Expr.substTyFvars_letRec]
+      have hann : RecAnn.substFvars subst = Option.map (fun scheme =>
+          { scheme with body := scheme.body.substFvars subst }) := by
+        funext ann; cases ann <;> simp only [RecAnn.substFvars_none, RecAnn.substFvars_some,
+          PolyTy.substFvars_eq, Option.map_none, Option.map_some]
+      rw [hann]
+      rfl
+termination_by sizeOf input
+decreasing_by all_goals (subst_vars; simp_wf <;> omega)
+
+theorem completeBranches_substTyFvars (branches : List (MatchPattern × Input))
+    {cores : List (MatchPattern × Expr)} (h : completeBranches branches = some cores)
+    (subst : List (Nat × Ty)) :
+    completeBranches (substInputBranches subst branches) = some (cores.map (fun pair => (pair.1, pair.2.substTyFvars subst))) := by
+  cases branches with
+  | nil => cases h; rfl
+  | cons pair rest =>
+      simp only [completeBranches, bind, pure, Option.bind_eq_some_iff, Option.some.injEq] at h
+      obtain ⟨body', hb, rest', hr, rfl⟩ := h
+      simp only [substInputBranches, completeBranches, pair.2.toCore_substTyFvars hb subst,
+        completeBranches_substTyFvars rest hr subst]
+      rfl
+termination_by sizeOf branches
+decreasing_by all_goals (subst_vars; cases pair; simp_wf <;> omega)
+
+theorem completeBindings_substTyFvars (bindings : List Input) {cores : List Expr}
+    (h : completeBindings bindings = some cores) (subst : List (Nat × Ty)) :
+    completeBindings (substInputBindings subst bindings) = some (cores.map (Expr.substTyFvars subst)) := by
+  cases bindings with
+  | nil => cases h; rfl
+  | cons body rest =>
+      simp only [completeBindings, bind, pure, Option.bind_eq_some_iff, Option.some.injEq] at h
+      obtain ⟨body', hb, rest', hr, rfl⟩ := h
+      simp only [substInputBindings, completeBindings, body.toCore_substTyFvars hb subst,
+        completeBindings_substTyFvars rest hr subst]
+      rfl
+termination_by sizeOf bindings
+end
+
 end Elaboration
