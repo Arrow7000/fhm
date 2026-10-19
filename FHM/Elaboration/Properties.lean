@@ -300,8 +300,10 @@ theorem _root_.Infer.frontier_le (h : Infer K F frontier ctx input next subst ou
       have := hb.frontier_le
       omega
   | .match_ _ hs _ hb => have := hs.frontier_le; have := hb.frontier_le; omega
+  | .letRec _ _ _ hstrata hsigned _ _ hbody =>
+      have := hstrata.frontier_le; have := hsigned.frontier_le; have := hbody.frontier_le; omega
 termination_by (input.size, 0)
-decreasing_by all_goals (simp only [Input.size, Input.size_openTyVars, Input.size_substTyFvars, sizeBranches_substInputBranches]; omega)
+decreasing_by all_goals (simp only [Input.size, Input.size_openTyVars, Input.size_substTyFvars, sizeBranches_substInputBranches, sizeBindings_map_substTyFvars] at *; omega)
 
 theorem _root_.InferBranches.frontier_le
     (h : InferBranches K F frontier ctx scrutTy resultTy branches next subst output) : frontier ≤ next := by
@@ -311,7 +313,189 @@ theorem _root_.InferBranches.frontier_le
   | .consWild _ hb _ hr => have := hb.frontier_le; have := hr.frontier_le; omega
 termination_by (sizeBranches branches, 0)
 decreasing_by all_goals (simp only [sizeBranches, Input.size_substTyFvars, sizeBranches_substInputBranches]; omega)
+
+theorem _root_.InferRecComponent.frontier_le
+    (h : InferRecComponent K F members index frontier ctx bindings specs next S outputs facts) :
+    frontier ≤ next := by
+  match h with
+  | .nil => exact Nat.le_refl _
+  | .skipMono _ hr | .skipPoly hr => exact hr.frontier_le
+  | .consSelected _ hi _ hr => exact hi.frontier_le.trans hr.frontier_le
+termination_by (sizeBindings bindings, 0)
+decreasing_by all_goals (simp only [sizeBindings, sizeBindings_map_substTyFvars]; omega)
+
+theorem _root_.InferRecStrata.frontier_le
+    (h : InferRecStrata K F frontier ctx anns bindings state groups next S final) : frontier ≤ next := by
+  match h with
+  | .nil => exact Nat.le_refl _
+  | .cons ho _ hc _ hr => exact ho.frontier_le.trans (hc.frontier_le.trans hr.frontier_le)
+termination_by (sizeBindings bindings, groups.length + 1)
+decreasing_by all_goals (simp only [sizeBindings_map_substTyFvars, sizeBindings_openRecSources, List.length_cons]; omega)
+
+theorem _root_.InferRecSigned.frontier_le
+    (h : InferRecSigned K F index frontier ctx anns bindings state next S final) : frontier ≤ next := by
+  match h with
+  | .nil => exact Nat.le_refl _
+  | .skip _ hr => exact hr.frontier_le
+  | .cons _ _ hi _ _ hr => have := hi.frontier_le; have := hr.frontier_le; omega
+termination_by (sizeBindings bindings, 0)
+decreasing_by all_goals (simp only [sizeBindings, Input.size_openTyVars, sizeBindings_map_substTyFvars]; omega)
 end
+
+
+private theorem anns_below_subst {anns : List LetAnn}
+    (h : ∀ ann ∈ anns, ∀ v ∈ ann.rigidVars, v < frontier)
+    (hS : ∀ p ∈ S, Ty.BelowFvars next p.2) (hle : frontier ≤ next) :
+    ∀ ann ∈ anns.map (LetAnn.substTyFvars S), ∀ v ∈ ann.rigidVars, v < next := by
+  intro ann hm v hv
+  obtain ⟨old, hold, rfl⟩ := List.mem_map.mp hm
+  obtain ⟨k, hk, hv⟩ := LetAnn.rigidVars_substTyFvars hv
+  exact (Subst.onTy_belowFvars hS (.fvar (Nat.lt_of_lt_of_le (h old hold k hk) hle))).mem_lt v hv
+
+private theorem specs_below_subst {specs : List RecSpec}
+    (h : ∀ spec ∈ specs, spec.BelowFvars frontier)
+    (hS : ∀ p ∈ S, Ty.BelowFvars next p.2) (hle : frontier ≤ next) :
+    ∀ spec ∈ specs.map (RecSpec.onSubstSource S), spec.BelowFvars next := by
+  intro spec hm
+  obtain ⟨old, hold, rfl⟩ := List.mem_map.mp hm
+  cases old with
+  | mono ty => exact Subst.onTy_belowFvars hS ((h _ hold).mono hle)
+  | poly scheme => exact Subst.onTy_belowFvars hS ((h _ hold).mono hle)
+
+ theorem RecState.shapes_below {state : RecState} {openings : List RecOpening}
+    (hstate : state.Below frontier)
+    (hopen : ∀ opening ∈ openings, ∀ ty, opening.expected = some ty → Ty.BelowFvars frontier ty) :
+    ∀ shape ∈ state.shapes members openings, RecShape.BelowFvars frontier shape := by
+  intro shape hm
+  obtain ⟨i, _, heq⟩ := List.mem_filterMap.mp hm
+  cases hs : state.specs[i]? with
+  | none => simp [hs] at heq
+  | some spec =>
+    cases spec with
+    | poly σ => simp [hs, RecSpec.monoTy?] at heq
+    | mono ty =>
+      cases ho : openings[i]? with
+      | none => simp [hs, RecSpec.monoTy?, ho] at heq
+      | some opening =>
+        simp [hs, RecSpec.monoTy?, ho] at heq
+        subst shape
+        exact ⟨hstate.1 _ (List.mem_of_getElem? hs), hopen opening (List.mem_of_getElem? ho)⟩
+
+ theorem _root_.InferRecComponent.belowFvars_of_infer
+    (h : InferRecComponent K F members index frontier ctx bindings specs next S outputs facts)
+    (hInfer : ∀ {κ F' Ψ c e Ψ' T output ty}, e.size ≤ sizeBindings bindings →
+      Infer κ F' Ψ c e Ψ' T output ty → CtxBelow Ψ c → (∀ k ∈ κ, k < Ψ) →
+      (∀ t ∈ F', Ty.BelowFvars Ψ t) → Ty.BelowFvars Ψ' ty ∧ ∀ p ∈ T, Ty.BelowFvars Ψ' p.2)
+    (hctx : CtxBelow frontier ctx) (hK : ∀ k ∈ K, k < frontier)
+    (hF : ∀ t ∈ F, Ty.BelowFvars frontier t) (hspec : ∀ spec ∈ specs, spec.BelowFvars frontier) :
+    ∀ p ∈ S, Ty.BelowFvars next p.2 := by
+  match h with
+  | .nil => simp
+  | .skipMono _ hr | .skipPoly hr =>
+      exact hr.belowFvars_of_infer (fun he h => hInfer (by simp only [sizeBindings]; omega) h)
+        hctx hK hF (fun spec hm => hspec spec (List.mem_cons_of_mem _ hm))
+  | .consSelected _ hi hu hr =>
+      expose_names
+      have hle := hi.frontier_le
+      have hrle := hr.frontier_le
+      obtain ⟨hiTy, hiS⟩ := hInfer (by simp only [sizeBindings]; omega) hi hctx hK hF
+      have huS := hu.unifies.belowFvars hiTy (Subst.onTy_belowFvars hiS ((hspec _ List.mem_cons_self).mono hle))
+      have hboth : ∀ p ∈ s1 ++ s2, Ty.BelowFvars first p.2 :=
+        fun p hp => (List.mem_append.mp hp).elim (hiS p) (huS p)
+      have hrS := hr.belowFvars_of_infer
+        (fun he h => hInfer (by simp only [sizeBindings_map_substTyFvars] at he; simp only [sizeBindings]; omega) h)
+        (by simpa only [Subst.onCtx_append] using Subst.onCtx_below hboth hle hctx)
+        (fun k hk => Nat.lt_of_lt_of_le (hK k hk) hle)
+        (substSoft_below hboth hle hF)
+        (specs_below_subst (fun spec hm => hspec spec (List.mem_cons_of_mem _ hm)) hboth hle)
+      intro p hp
+      exact (List.mem_append.mp hp).elim (fun hp => (hboth p hp).mono hrle) (hrS p)
+ termination_by structural h
+
+ theorem _root_.InferRecStrata.belowFvars_of_infer
+    (h : InferRecStrata K F frontier ctx anns bindings state groups next S final)
+    (hInfer : ∀ {κ F' Ψ c e Ψ' T output ty}, e.size ≤ sizeBindings bindings →
+      Infer κ F' Ψ c e Ψ' T output ty → CtxBelow Ψ c → (∀ k ∈ κ, k < Ψ) →
+      (∀ t ∈ F', Ty.BelowFvars Ψ t) → Ty.BelowFvars Ψ' ty ∧ ∀ p ∈ T, Ty.BelowFvars Ψ' p.2)
+    (hctx : CtxBelow frontier ctx) (hK : ∀ k ∈ K, k < frontier)
+    (hF : ∀ t ∈ F, Ty.BelowFvars frontier t) (hstate : state.Below frontier)
+    (hanns : ∀ ann ∈ anns, ∀ v ∈ ann.rigidVars, v < frontier) :
+    (∀ p ∈ S, Ty.BelowFvars next p.2) ∧ final.Below next := by
+  match h with
+  | .nil => exact ⟨by simp, hstate⟩
+  | .cons hopen hshape hcomponent hfinish hrest =>
+    expose_names
+    have hle := hopen.frontier_le
+    have hcle := hcomponent.frontier_le
+    have hrle := hrest.frontier_le
+    have hinit := hstate.installOpenings hopen
+    have hpre := hshape.belowFvars (RecState.shapes_below hinit (hopen.expected_below hanns))
+    have hFopened : ∀ t ∈ F ++ (openings.flatMap RecOpening.written).map Ty.fvar, Ty.BelowFvars opened t := by
+      intro t ht
+      rcases List.mem_append.mp ht with ht | ht
+      · exact (hF t ht).mono hle
+      · obtain ⟨v, hv, rfl⟩ := List.mem_map.mp ht
+        exact .fvar (hopen.written_range v hv).2
+    have hcurrent := hcomponent.belowFvars_of_infer
+      (fun he h => hInfer (by simpa only [sizeBindings_map_substTyFvars, sizeBindings_openRecSources] using he) h)
+      ((hinit.onSubst hpre (Nat.le_refl _)).rhsCtx (Subst.onCtx_below hpre hle hctx))
+      (fun k hk => Nat.lt_of_lt_of_le (hK k hk) hle)
+      (substSoft_below hpre (Nat.le_refl _) hFopened) (hinit.onSubst hpre (Nat.le_refl _)).1
+    have hboth : ∀ p ∈ pre ++ current, Ty.BelowFvars first p.2 :=
+      fun p hp => (List.mem_append.mp hp).elim (fun hp => (hpre p hp).mono hcle) (hcurrent p)
+    have hfullle := hle.trans hcle
+    obtain ⟨htail, hfinal⟩ := hrest.belowFvars_of_infer
+      (fun he h => hInfer (by simpa only [sizeBindings_map_substTyFvars] using he) h)
+      (Subst.onCtx_below hboth hfullle hctx)
+      (fun k hk => Nat.lt_of_lt_of_le (hK k hk) hfullle)
+      (substSoft_below hboth hfullle hF)
+      (hfinish.below (hinit.onSubst hboth hcle))
+      (anns_below_subst hanns hboth hfullle)
+    exact ⟨fun p hp => (List.mem_append.mp hp).elim (fun hp => (hboth p hp).mono hrle) (htail p), hfinal⟩
+ termination_by structural h
+
+ theorem _root_.InferRecSigned.belowFvars_of_infer
+    (h : InferRecSigned K F index frontier ctx anns bindings state next S final)
+    (hInfer : ∀ {κ F' Ψ c e Ψ' T output ty}, e.size ≤ sizeBindings bindings →
+      Infer κ F' Ψ c e Ψ' T output ty → CtxBelow Ψ c → (∀ k ∈ κ, k < Ψ) →
+      (∀ t ∈ F', Ty.BelowFvars Ψ t) → Ty.BelowFvars Ψ' ty ∧ ∀ p ∈ T, Ty.BelowFvars Ψ' p.2)
+    (hctx : CtxBelow frontier ctx) (hK : ∀ k ∈ K, k < frontier)
+    (hF : ∀ t ∈ F, Ty.BelowFvars frontier t) (hstate : state.Below frontier)
+    (hanns : ∀ ann ∈ anns, ∀ v ∈ ann.rigidVars, v < frontier) :
+    (∀ p ∈ S, Ty.BelowFvars next p.2) ∧ final.Below next := by
+  match h with
+  | .nil => exact ⟨by simp, hstate⟩
+  | .skip _ hr =>
+      exact hr.belowFvars_of_infer (fun he h => hInfer (by simp only [sizeBindings]; omega) h)
+        hctx hK hF hstate (fun ann ha => hanns ann (List.mem_cons_of_mem _ ha))
+  | .cons _ _ hi hu _ hr =>
+      expose_names
+      have hle := hi.frontier_le
+      have hrle := hr.frontier_le
+      have hbase : frontier ≤ first := by omega
+      obtain ⟨hiTy, hiS⟩ := hInfer (by simp only [Input.size_openTyVars, sizeBindings]; omega) hi
+        (fun M hm => ((hstate.rhsCtx hctx) M hm).mono (by omega))
+        (by
+          intro k hk
+          rcases List.mem_append.mp hk with hk | hk
+          · have := hK k hk; omega
+          · exact freshVars_lt k hk)
+        (fun t ht => (hF t ht).mono (by omega))
+      have hexpected : Ty.BelowFvars first ((s1.onPolyTy scheme).openVars (freshVars frontier scheme.paramCount)) :=
+        Ty.openVars_belowFvars (Subst.onTy_belowFvars hiS
+          ((Ty.BelowFvars.of_freeVars_lt (hanns _ List.mem_cons_self)).mono hbase))
+          (fun v hv => Nat.lt_of_lt_of_le (freshVars_lt v hv) hle)
+      have huS := hu.unifies.belowFvars hiTy hexpected
+      have hboth : ∀ p ∈ s1 ++ s2, Ty.BelowFvars first p.2 :=
+        fun p hp => (List.mem_append.mp hp).elim (hiS p) (huS p)
+      obtain ⟨htail, hfinal⟩ := hr.belowFvars_of_infer
+        (fun he h => hInfer (by simp only [sizeBindings_map_substTyFvars] at he; simp only [sizeBindings]; omega) h)
+        (Subst.onCtx_below hboth hbase hctx)
+        (fun k hk => Nat.lt_of_lt_of_le (hK k hk) hbase)
+        (substSoft_below hboth hbase hF) ((hstate.onSubst hboth hbase).setSigned)
+        (anns_below_subst (fun ann ha => hanns ann (List.mem_cons_of_mem _ ha)) hboth hbase)
+      exact ⟨fun p hp => (List.mem_append.mp hp).elim (fun hp => (hboth p hp).mono hrle) (htail p), hfinal⟩
+ termination_by structural h
 
 mutual
 theorem _root_.Infer.belowFvars (h : Infer K F frontier ctx input next subst output ty) :
@@ -435,8 +619,42 @@ theorem _root_.Infer.belowFvars (h : Infer K F frontier ctx input next subst out
     rcases List.mem_append.mp hp with hp | hp
     · exact (hS1 p hp).mono ((Nat.le_succ _).trans hb.frontier_le)
     · exact hS2 p hp
+  | .letRec hscope _ hvalid hstrata hsigned _ _ hbody =>
+    intro hctx hK hF
+    expose_names
+    have hanns : ∀ ann ∈ anns, ∀ v ∈ ann.rigidVars, v < frontier := by
+      intro ann ha v hv
+      exact rigid_soft_lt hK hF v (hscope v (by
+        simp only [Input.rigidVars, List.mem_append]
+        exact Or.inl (Or.inl (List.mem_flatMap.mpr ⟨ann, ha, hv⟩))))
+    have hlen : anns.length = bindings.length := by simpa only [List.length_map] using hvalid.length
+    have hseed : frontier ≤ frontier + bindings.length := by omega
+    obtain ⟨hs1, hstate1⟩ := hstrata.belowFvars_of_infer
+      (fun he hi => hi.belowFvars)
+      (fun M hm => (hctx M hm).mono hseed)
+      (fun k hk => Nat.lt_of_lt_of_le (hK k hk) hseed)
+      (fun t ht => (hF t ht).mono hseed)
+      (by simpa only [hlen] using RecState.Below.init hanns)
+      (fun ann ha v hv => Nat.lt_of_lt_of_le (hanns ann ha v hv) hseed)
+    have hle1 := hstrata.frontier_le
+    have hle2 := hsigned.frontier_le
+    have hle3 := hbody.frontier_le
+    have hbase1 : frontier ≤ first := by omega
+    have hbase2 : frontier ≤ second := by omega
+    obtain ⟨hs2, hstate2⟩ := hsigned.belowFvars_of_infer
+      (fun he hi => hi.belowFvars)
+      (Subst.onCtx_below hs1 hbase1 hctx)
+      (fun k hk => Nat.lt_of_lt_of_le (hK k hk) hbase1)
+      (substSoft_below hs1 hbase1 hF) hstate1 (anns_below_subst hanns hs1 hbase1)
+    have hs12 : ∀ p ∈ s1 ++ s2, Ty.BelowFvars second p.2 :=
+      fun p hp => (List.mem_append.mp hp).elim (fun hp => (hs1 p hp).mono hle2) (hs2 p)
+    obtain ⟨hbodyTy, hs3⟩ := hbody.belowFvars
+      (hstate2.rhsCtx (Subst.onCtx_below hs12 hbase2 hctx))
+      (fun k hk => Nat.lt_of_lt_of_le (hK k hk) hbase2)
+      (substSoft_below hs12 hbase2 hF)
+    exact ⟨hbodyTy, fun p hp => (List.mem_append.mp hp).elim (fun hp => (hs12 p hp).mono hle3) (hs3 p)⟩
 termination_by (input.size, 0)
-decreasing_by all_goals (simp only [Input.size, Input.size_openTyVars, Input.size_substTyFvars, sizeBranches_substInputBranches]; omega)
+decreasing_by all_goals (simp only [Input.size, Input.size_openTyVars, Input.size_substTyFvars, sizeBranches_substInputBranches, sizeBindings_map_substTyFvars] at *; omega)
 
 theorem _root_.InferBranches.belowFvars {Φ ctx scrutTy ρ brs Φ' S}
     (h : InferBranches κ F Φ ctx scrutTy ρ brs Φ' S out)
@@ -516,6 +734,7 @@ termination_by (sizeBranches brs, 0)
 decreasing_by
   all_goals (try subst_vars; try simp only [sizeBranches, Input.size_substTyFvars, sizeBranches_substInputBranches]; omega)
 end
+
 
 end Elaboration
 
