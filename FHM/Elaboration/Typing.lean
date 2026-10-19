@@ -332,6 +332,17 @@ theorem LetAnn.SignatureFits.prefix_le {ann : LetAnn} {scheme : PolyTy} {names :
   | complete => exact Nat.le_refl _
   | partialSignature h _ => exact h
 
+/-- A checked monotype is closed under the written prefix and any inferred
+extra binders. Complete signatures retain their exact authored scheme. -/
+inductive LetAnn.SignatureCompletion : LetAnn → List Nat → Ty → PolyTy → List Nat → Prop
+  | complete {scheme : PolyTy} :
+      names.length = scheme.paramCount → ty = scheme.openVars names →
+      SignatureCompletion (.complete scheme) names ty scheme names
+  | partialSignature {template : Template} {count : Nat} {written extras : List Nat} :
+      written.length = count → (template.openTyVarsFrom 0 written).Fits ty →
+      SignatureCompletion (.partialForall count template) written ty
+        ⟨(written ++ extras).length, Ty.closeOver (written ++ extras) ty⟩ (written ++ extras)
+
 /-- Structural branch completion preserves patterns and completes each body. -/
 inductive CompletedBranches (J : List Nat → Input → Expr → Prop) :
     List Nat → List (MatchPattern × Input) → List (MatchPattern × Expr) → Prop
@@ -366,6 +377,14 @@ inductive Completes : List Nat → Input → Expr → Prop
       Completes K (.letIn ann rhs body)
         (.letIn (some (subst.onPolyTy ⟨names.length, Ty.closeOver names ty⟩))
           ((rhsOut.closeTyVars names).substTyFvars subst) bodyOut)
+  | letSignature {scheme : PolyTy} {subst : Subst} :
+      ann.SignatureCompletion written ty scheme names →
+      (∀ v ∈ ann.rigidVars, v ∈ K) → (∀ v ∈ rhs.rigidVars, v ∈ K) →
+      (∀ name ∈ names, name ∉ K) →
+      Completes (K ++ written) (rhs.openTyVars written) rhsOut →
+      Completes K body bodyOut → (∀ pair ∈ subst, pair.1 ∉ K) →
+      Completes K (.letIn ann rhs body)
+        (.letIn (some (subst.onPolyTy scheme)) ((rhsOut.closeTyVars names).substTyFvars subst) bodyOut)
   | match_ : Completes K scrut scrutOut →
       CompletedBranches Completes K branches branchesOut →
       Completes K (.match_ scrut branches) (.match_ scrutOut branchesOut)
@@ -379,17 +398,14 @@ inductive BranchTyping (J : List Nat → Ctx → Input → Ty → Prop) :
       BranchTyping J K ctx (.named name count, body) scrutTy resultTy
   | wildcard : J K ctx body resultTy → BranchTyping J K ctx (.wildcard, body) scrutTy resultTy
 
-/-- Independent input typing for the first fragment. `K` contains ambient rigid
-annotation variables; free variables in context monotypes can remain flexible.
- The let rule generalises
-the RHS cofinally, and partial annotations constrain that very monotype. There
-is no recursive rule: in particular, a partial annotation cannot acquire
-polymorphic recursive uses through an arbitrary completed output signature.
+/-- Independent input typing. `K` scopes authored rigid annotation variables;
+context monotypes can still contain flexible variables. Ordinary lets generalize
+cofinally. Signed lets preserve the written forall prefix and check each fresh
+opening, with any additional hole variables quantified after that prefix.
 
-Whole completed subtrees use their existing checking rules through the
-conservative Core embedding. Complete annotated lets with partial syntax
-in their RHS or continuation, and partial recursive spines, have no rule
-in this first fragment.
+Whole completed subtrees retain the existing rules through conservative Core
+embedding. Partial recursive spines have no rule here, so a partial annotation
+cannot grant polymorphic recursive uses through an arbitrary completed scheme.
 -/
 inductive Typing : List Nat → Ctx → Input → Ty → Prop
   /-- Existing complete Core programs retain their existing declarative meaning.
@@ -411,6 +427,13 @@ inductive Typing : List Nat → Ctx → Input → Ty → Prop
       (∀ template, ann = .template template → ∀ v ∈ template.rigidVars, v ∈ K) →
       (∀ Xs, FreshNames L M.paramCount Xs → ann.FitsMono (M.openVars Xs)) →
       (∀ Xs, FreshNames L M.paramCount Xs → Typing K ctx rhs (M.openVars Xs)) →
+      Typing K { ctx with env := M :: ctx.env } body bodyTy →
+      Typing K ctx (.letIn ann rhs body) bodyTy
+  | letSignature {M : PolyTy} {L : List Nat} :
+      M.WF → (∀ v ∈ ann.rigidVars, v ∈ K) → (∀ v ∈ rhs.rigidVars, v ∈ K) →
+      (∀ Xs, FreshNames L M.paramCount Xs → ann.SignatureFits M Xs) →
+      (∀ Xs, FreshNames L M.paramCount Xs →
+        Typing (K ++ Xs.take ann.paramCount) ctx (rhs.openTyVars (Xs.take ann.paramCount)) (M.openVars Xs)) →
       Typing K { ctx with env := M :: ctx.env } body bodyTy →
       Typing K ctx (.letIn ann rhs body) bodyTy
   | var : ctx.env[index]? = some scheme →
@@ -446,6 +469,10 @@ theorem Typing.erase (h : Typing K ctx input ty) : RuntimeTyping.RunWT ctx input
   | app _ _ ihf ihx => exact .app ihf ihx
   | letIn hwf _ _ _ _ ihrhs ihbody =>
       exact .letIn hwf ihrhs ihbody
+  | @letSignature K ctx body bodyTy ann rhs scheme avoid hwf _ _ _ _ _ ihrhs ihbody =>
+      refine .letIn (avoid := avoid) hwf ?_ ihbody
+      intro Xs hf
+      simpa only [Input.erase_openTyVars] using ihrhs Xs hf
   | var hlook hlc hinst => exact .var hlook hlc hinst
   | ctor hlook hlc hinst => exact .ctor hlook hlc hinst
 
@@ -593,6 +620,92 @@ theorem LetAnn.rigidVars_substTyFvars {ann : LetAnn} {subst : Subst} {v : Nat}
   | partialForall n t => exact t.rigidVars_substTyFvars h
 
 
+private theorem rigidAnns_substTyFvars {anns : List LetAnn} {subst : Subst} {v : Nat}
+    (h : v ∈ (anns.map (LetAnn.substTyFvars subst)).flatMap LetAnn.rigidVars) :
+    ∃ k ∈ anns.flatMap LetAnn.rigidVars, v ∈ (subst.onTy (.fvar k)).freeVars := by
+  obtain ⟨ann', hann', hv⟩ := List.mem_flatMap.mp h
+  obtain ⟨ann, hann, rfl⟩ := List.mem_map.mp hann'
+  obtain ⟨k, hk, hv⟩ := ann.rigidVars_substTyFvars hv
+  exact ⟨k, List.mem_flatMap.mpr ⟨ann, hann, hk⟩, hv⟩
+
+mutual
+/-- Every authored variable after source substitution originates in the image
+of one authored variable before substitution. -/
+theorem Input.rigidVars_substTyFvars {input : Input} {subst : Subst} {v : Nat}
+    (h : v ∈ (input.substTyFvars subst).rigidVars) :
+    ∃ k ∈ input.rigidVars, v ∈ (subst.onTy (.fvar k)).freeVars := by
+  cases input with
+  | primLit | primBinOp | var | ctor => cases h
+  | lambda ann body =>
+      rcases List.mem_append.mp h with ha | hb
+      · cases ann with
+        | none => cases ha
+        | some template =>
+            obtain ⟨k, hk, hv⟩ := template.rigidVars_substTyFvars ha
+            exact ⟨k, List.mem_append_left _ hk, hv⟩
+      · obtain ⟨k, hk, hv⟩ := body.rigidVars_substTyFvars hb
+        exact ⟨k, List.mem_append_right _ hk, hv⟩
+  | app f a =>
+      rcases List.mem_append.mp h with hf | ha
+      · obtain ⟨k, hk, hv⟩ := f.rigidVars_substTyFvars hf
+        exact ⟨k, List.mem_append_left _ hk, hv⟩
+      · obtain ⟨k, hk, hv⟩ := a.rigidVars_substTyFvars ha
+        exact ⟨k, List.mem_append_right _ hk, hv⟩
+  | letIn ann rhs body =>
+      rcases List.mem_append.mp h with hprefix | hb
+      · rcases List.mem_append.mp hprefix with ha | hr
+        · obtain ⟨k, hk, hv⟩ := ann.rigidVars_substTyFvars ha
+          exact ⟨k, List.mem_append_left _ (List.mem_append_left _ hk), hv⟩
+        · obtain ⟨k, hk, hv⟩ := rhs.rigidVars_substTyFvars hr
+          exact ⟨k, List.mem_append_left _ (List.mem_append_right _ hk), hv⟩
+      · obtain ⟨k, hk, hv⟩ := body.rigidVars_substTyFvars hb
+        exact ⟨k, List.mem_append_right _ hk, hv⟩
+  | match_ scrut branches =>
+      rcases List.mem_append.mp h with hs | hbs
+      · obtain ⟨k, hk, hv⟩ := scrut.rigidVars_substTyFvars hs
+        exact ⟨k, List.mem_append_left _ hk, hv⟩
+      · obtain ⟨k, hk, hv⟩ := rigidBranchVars_substTyFvars hbs
+        exact ⟨k, List.mem_append_right _ hk, hv⟩
+  | letRec anns bindings body =>
+      rcases List.mem_append.mp h with hprefix | hb
+      · rcases List.mem_append.mp hprefix with ha | hbs
+        · obtain ⟨k, hk, hv⟩ := rigidAnns_substTyFvars ha
+          exact ⟨k, List.mem_append_left _ (List.mem_append_left _ hk), hv⟩
+        · obtain ⟨k, hk, hv⟩ := rigidBindingVars_substTyFvars hbs
+          exact ⟨k, List.mem_append_left _ (List.mem_append_right _ hk), hv⟩
+      · obtain ⟨k, hk, hv⟩ := body.rigidVars_substTyFvars hb
+        exact ⟨k, List.mem_append_right _ hk, hv⟩
+termination_by sizeOf input
+
+theorem rigidBranchVars_substTyFvars {branches : List (MatchPattern × Input)} {subst : Subst} {v : Nat}
+    (h : v ∈ rigidBranchVars (substInputBranches subst branches)) :
+    ∃ k ∈ rigidBranchVars branches, v ∈ (subst.onTy (.fvar k)).freeVars := by
+  cases branches with
+  | nil => cases h
+  | cons pair rest =>
+      rcases List.mem_append.mp h with hb | hr
+      · obtain ⟨k, hk, hv⟩ := pair.2.rigidVars_substTyFvars hb
+        exact ⟨k, List.mem_append_left _ hk, hv⟩
+      · obtain ⟨k, hk, hv⟩ := rigidBranchVars_substTyFvars hr
+        exact ⟨k, List.mem_append_right _ hk, hv⟩
+termination_by sizeOf branches
+decreasing_by all_goals (subst_vars; cases pair; simp_wf <;> omega)
+
+theorem rigidBindingVars_substTyFvars {bindings : List Input} {subst : Subst} {v : Nat}
+    (h : v ∈ rigidBindingVars (substInputBindings subst bindings)) :
+    ∃ k ∈ rigidBindingVars bindings, v ∈ (subst.onTy (.fvar k)).freeVars := by
+  cases bindings with
+  | nil => cases h
+  | cons body rest =>
+      rcases List.mem_append.mp h with hb | hr
+      · obtain ⟨k, hk, hv⟩ := body.rigidVars_substTyFvars hb
+        exact ⟨k, List.mem_append_left _ hk, hv⟩
+      · obtain ⟨k, hk, hv⟩ := rigidBindingVars_substTyFvars hr
+        exact ⟨k, List.mem_append_right _ hk, hv⟩
+termination_by sizeOf bindings
+end
+
+
 private theorem fitsMono_sourceSubst {ann : LetAnn} {ty : Ty}
     (h : ann.FitsMono ty) (subst : Subst) :
     (ann.substTyFvars subst).FitsMono (subst.onTy ty) := by
@@ -616,6 +729,20 @@ private theorem substInputBranches_eq_map (subst : Subst) (branches : List (Matc
   | nil => rfl
   | cons head rest ih => cases head; simp only [substInputBranches, List.map_cons, ih]
 
+theorem LetAnn.SignatureFits.onSubst_source {ann : LetAnn} {scheme : PolyTy} {names : List Nat}
+    (h : ann.SignatureFits scheme names) (subst : Subst)
+    (hlc : ∀ pair ∈ subst, pair.2.IsLC) (hfresh : ∀ pair ∈ subst, pair.1 ∉ names) :
+    (ann.substTyFvars subst).SignatureFits (subst.onPolyTy scheme) names := by
+  cases h with
+  | complete => exact .complete
+  | @partialSignature scheme template count names hle hfit =>
+      refine .partialSignature hle ?_
+      have hsmall : ∀ pair ∈ subst, pair.1 ∉ names.take count :=
+        fun pair hp hv => hfresh pair hp (List.mem_of_mem_take hv)
+      have ht := hfit.substTyFvars subst
+      simpa only [Template.substTyFvars_openTyVarsFrom _ hlc hsmall 0,
+        PolyTy.openVars, Subst.onPolyTy, Subst.onTy_openVars hlc hfresh] using ht
+
 /-- Source-transforming substitution transports the independent judgment when
 its authored variable images are scoped by the destination protected set. -/
 theorem Typing.onSubst_source {K K' : List Nat} {ctx : Ctx} {input : Input} {ty : Ty}
@@ -624,10 +751,10 @@ theorem Typing.onSubst_source {K K' : List Nat} {ctx : Ctx} {input : Input} {ty 
     (hscope : ∀ k ∈ K, ∀ v ∈ (subst.onTy (.fvar k)).freeVars, v ∈ K') :
     Typing K' (subst.onCtx ctx) (input.substTyFvars subst) (subst.onTy ty) := by
   induction h using Typing.rec
-      (motive_2 := fun K ctx branch scrutTy resultTy _ =>
+      (motive_2 := fun K ctx branch scrutTy resultTy _ => ∀ {K' : List Nat},
         (∀ k ∈ K, ∀ v ∈ (subst.onTy (.fvar k)).freeVars, v ∈ K') →
           BranchTyping Typing K' (subst.onCtx ctx) (branch.1, branch.2.substTyFvars subst)
-            (subst.onTy scrutTy) (subst.onTy resultTy)) with
+            (subst.onTy scrutTy) (subst.onTy resultTy)) generalizing K' with
   | complete hemb hrigid htyping =>
     refine .complete (Input.toCore_substTyFvars _ hemb subst) ?_ (htyping.onSubst subst hlc)
     intro v hv
@@ -683,6 +810,40 @@ theorem Typing.onSubst_source {K K' : List Nat} {ctx : Ctx} {input : Input} {ty 
     · intro fresh hf
       simpa only [PolyTy.openVars, Subst.onPolyTy,
         Subst.onTy_openVars hlc (domFresh fresh hf)] using ihgeneral fresh (oldFresh fresh hf) hscope
+    · simpa only [Subst.onCtx, Subst.onEnv, List.map_cons] using ihbody hscope
+  | @letSignature K ctx body bodyTy ann rhs scheme avoid hwf hann hrhs hfit _ _ ihgeneral ihbody =>
+    let avoid' := avoid ++ subst.map Prod.fst
+    have oldFresh : ∀ names, FreshNames avoid' scheme.paramCount names → FreshNames avoid scheme.paramCount names :=
+      fun names hf => ⟨hf.length, hf.nodup, fun v hv ha => hf.avoid v hv (List.mem_append_left _ ha)⟩
+    have domFresh : ∀ names, FreshNames avoid' scheme.paramCount names → ∀ pair ∈ subst, pair.1 ∉ names := by
+      intro names hf pair hp hv
+      exact hf.avoid pair.1 hv (List.mem_append_right _ (List.mem_map.mpr ⟨pair, hp, rfl⟩))
+    refine Typing.letSignature (M := subst.onPolyTy scheme) (L := avoid')
+      (Subst.onPolyTy_wf hlc hwf) ?_ ?_ ?_ ?_ ?_
+    · intro v hv
+      obtain ⟨k, hk, hv⟩ := LetAnn.rigidVars_substTyFvars hv
+      exact hscope k (hann k hk) v hv
+    · intro v hv
+      obtain ⟨k, hk, hv⟩ := Input.rigidVars_substTyFvars hv
+      exact hscope k (hrhs k hk) v hv
+    · intro names hf
+      exact (hfit names (oldFresh names hf)).onSubst_source subst hlc (domFresh names hf)
+    · intro names hf
+      have hsmall : ∀ pair ∈ subst, pair.1 ∉ names.take ann.paramCount :=
+        fun pair hp hv => domFresh names hf pair hp (List.mem_of_mem_take hv)
+      have hchild := ihgeneral names (oldFresh names hf) (K' := K' ++ names.take ann.paramCount) (fun k hk v hv => by
+        rcases List.mem_append.mp hk with hk | hk
+        · exact List.mem_append_left _ (hscope k hk v hv)
+        · have hfix : subst.onTy (.fvar k) = .fvar k := by
+            apply Ty.substFvars_eq_self_of_no_key
+            intro pair hp hc
+            have heq : pair.1 = k := List.mem_singleton.mp hc
+            exact hsmall pair hp (heq ▸ hk)
+          rw [hfix] at hv
+          exact List.mem_append_right _ ((List.mem_singleton.mp hv) ▸ hk))
+      simpa only [LetAnn.paramCount_substTyFvars,
+        Input.substTyFvars_openTyVars _ hlc hsmall, PolyTy.openVars, Subst.onPolyTy,
+        Subst.onTy_openVars hlc (domFresh names hf)] using hchild
     · simpa only [Subst.onCtx, Subst.onEnv, List.map_cons] using ihbody hscope
   | var hlookup hargs hinst =>
     exact .complete rfl (by simp [Expr.tyFreeVars]) (TypeOfHM.onSubst_fixed subst hlc
@@ -746,6 +907,11 @@ theorem Typing.rigidVars (h : Typing K ctx input ty) : ∀ v ∈ input.rigidVars
         | partialForall _ _ => cases hf Xs hXs
         | template t => exact hr t rfl v hv
       · exact ihr Xs hXs v hv
+    · exact ihb v hv
+  | letSignature _ hann hrhs _ _ _ _ ihb =>
+    intro v hv
+    rcases List.mem_append.mp hv with hv | hv
+    · exact (List.mem_append.mp hv).elim (hann v) (hrhs v)
     · exact ihb v hv
   | var _ _ _ => intro v hv; cases hv
   | ctor _ _ _ => intro v hv; cases hv
