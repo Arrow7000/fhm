@@ -561,7 +561,7 @@ private theorem recShapes_selected_avoid {state : RecState}
         subst shape
         exact ⟨ha i ty him hspec, ho opening (List.mem_of_getElem? hopen)⟩
 
-private theorem openRecSources_getElem? {openings : List RecOpening} {bindings : List Input} {i : Nat} {rhs : Input}
+theorem openRecSources_getElem? {openings : List RecOpening} {bindings : List Input} {i : Nat} {rhs : Input}
     (hlen : openings.length = bindings.length)
     (h : (openRecSources openings bindings)[i]? = some rhs) :
     ∃ old : Input, bindings[i]? = some old ∧ rhs = old.openTyVars ((openings[i]?).getD .empty).written := by
