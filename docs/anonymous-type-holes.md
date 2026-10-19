@@ -12,11 +12,19 @@ applications. Let annotations distinguish absent, complete, monomorphic partial,
 and explicitly quantified partial signatures.
 
 The canonical judgment is
-`Infer K frontier ctx input next subst completedExpr ty`. `InferW` exports its
-worker and public API. `inferWithTypes` produces the completed Core expression,
-type, substitution, and editor maps in one inference traversal. A complete
-subtree can delegate to `CoreBackend`; there is no second public inference path.
-The separate files under `Elaboration/` organize this judgment and its proofs.
+`Infer K F frontier ctx input next subst completedExpr ty`. `K` contains frozen
+variables. `F` is a list of the current type images of provisional written-forall
+slots: these images remain unifiable but cannot generalize in nested bindings.
+Authored free variables are scoped by `K ++ softVars F`. Sequential inference
+transforms both the source annotations and `F` with the substitutions it produces.
+
+`InferW` exports the worker and public API. `inferWithTypes` produces the completed
+Core expression, type, substitution, and editor maps in one inference traversal.
+A complete subtree can delegate to `CoreBackend` only when its authored free
+variables lie in `K` and avoid `softVars F`; successful `toCore` conversion alone
+is insufficient. Other subtrees use structural elaboration. There is no second
+public inference path. The separate files under `Elaboration/` organize this
+judgment and its proofs.
 
 An ordinary substitution does not express the entire completion. For example,
 `let id = \(x : _) -> x` needs its hole generalized into a scheme binder and its
@@ -50,8 +58,9 @@ and named/wildcard match inference have checked proofs of:
   (`inferCore_complete`, `inferCore_empty_accepts_iff`).
 
 Eligible unsolved hole variables generalize. Variables reachable through the
-context and written rigid variables do not. A whole `_` has the same independent
-typing meaning as an omitted lambda or ordinary-let annotation.
+context, frozen variables, and live provisional slot images do not. A whole `_`
+has the same independent typing meaning as an omitted lambda or ordinary-let
+annotation.
 
 Completed partial signatures preserve the authored forall prefix in its exact
 order, including unused binders, and append newly generalized hole variables.
@@ -85,13 +94,12 @@ independent rigid skolems or identified merely by ordinal position. Complete
 signatures continue to permit polymorphic recursive calls; partial signatures
 do not.
 
-The proposed recursive extension carries `F`, the current type images of live
-provisional slots, alongside frozen `K`. These images participate in scope and
-are excluded from nested generalization, while unification may refine them.
-Nested signature escape checks must protect both the outer environment and
-outer `F`, including roots absent from the environment or annotation type.
-This extension is work in progress; the committed canonical judgment above
-still has no `F` index.
+The canonical judgment already carries `F` alongside frozen `K`. Nested signature
+escape checks protect both the outer environment and outer `F`, including roots
+absent from the environment or annotation type. The remaining recursive work
+must preserve these invariants through component shape constraints, provisional
+slot refinement, completed exports, and the recursive soundness, principality,
+and completeness proofs.
 
 ## Regression coverage and completion
 
@@ -103,6 +111,8 @@ runtime/editor targets for the remaining recursive cases, including:
 - shared and permuted member prefixes, authored definition/parameter/hole names,
   unused written binders, and extra inferred binders;
 - SCC-wide structural constraints and complete-versus-partial polymorphic calls;
+- cross-component prefix sharing and specialization of a completed export within
+  one original source cycle cut by a complete contract;
 - nested signature escape and ordinary-let generalization under a vacuous outer
   forall, each paired with a nearby accepted program;
 - complete annotations referring to outer provisional slots, which require
