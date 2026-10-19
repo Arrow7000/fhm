@@ -76,8 +76,7 @@ def probe (K : List Nat) (Φ : Nat) (ctx : Ctx) : Expr → Option Error
         match unifyCoreK rigid τ₁ (σ.openVars Ys) with
         | none => none -- Existing annotation diagnostics handle this case.
         | some ⟨Schk, _⟩ =>
-          if (∀ y ∈ Ys, y ∉ (S₁ ++ Schk).map Prod.fst) ∧
-              (∀ y ∈ Ys, y ∉ (Schk.onCtx (S₁.onCtx ctx)).env.freeVars) then
+          if ∀ y ∈ Ys, y ∉ (Schk.onCtx (S₁.onCtx ctx)).env.freeVars then
             let ctx₁ := Schk.onCtx (S₁.onCtx ctx)
             (probe K Φ₁ { ctx₁ with env := σ :: ctx₁.env } body).map
               (Error.below .letBody)

@@ -1541,8 +1541,10 @@ theorem RecCeilingConstraints.fixes_annotations {K rigid G Φ anns specs S}
 /-! Algorithm W as a type-directed inference relation over the source `Expr`.
     Its outputs are only the fresh-variable frontier, substitution, and inferred
     monotype; runtime execution uses the independently defined erased source term.
-    The relation is mutually defined with the `match_` and `letRec` threaders
-    `InferBranches` and `InferRecGroup`. -/
+    Its first index records the ambient rigid variables. Recursive children
+    retain that index; annotated RHS children extend it with their skolems.
+    The relation is mutually defined with the branch and recursive-group
+    threaders below. Generalization still uses source annotation variables. -/
 /-- Unification at an inference step may solve only non-rigid variables. -/
 structure RigidUnify (K : List Nat) (a b : Ty) (S : Subst) : Prop where
   unifies : UnifyRel a b S
@@ -1604,14 +1606,14 @@ inductive Infer : List Nat → Nat → Ctx → Expr → Nat → Subst → Ty →
       infer the bound expression already opened at `Ys` (`rhs.openTyVars Ys`,
       matching the spec's `openBoundTyVars`), so its scoped vars resolve to the
       rigid `Ys`. Unify the rhs type `τ₁` against `σ.openVars Ys` (both may mention
-      `Ys`), producing `Schk`. Escape conditions keep `Ys` rigid: none is bound by
-      the **whole** rhs+unify substitution `S₁ ++ Schk` (so the signature is no
-      more general than `rhs` actually is), and none leaks into the threaded body
-      context. -/
+      `Ys`), producing `Schk`. The RHS judgment and rigid unification keep
+      `Ys` unassigned throughout. The remaining escape condition prevents a
+      skolem from leaking into the threaded body context. -/
   | letInAnn {κ Φ N ctx σ rhs body Φ₁ Φ₂ S₁ Schk S₂ τ₁ τ₂} :
     σ.WF →
     Φ ≤ N →
-    Infer (κ ++ freshVars N σ.paramCount) (N + σ.paramCount) ctx (rhs.openTyVars (freshVars N σ.paramCount)) Φ₁ S₁ τ₁ →
+    Infer (κ ++ freshVars N σ.paramCount) (N + σ.paramCount) ctx
+      (rhs.openTyVars (freshVars N σ.paramCount)) Φ₁ S₁ τ₁ →
     RigidUnify (κ ++ freshVars N σ.paramCount) τ₁ (σ.openVars (freshVars N σ.paramCount)) Schk →
     (∀ y ∈ freshVars N σ.paramCount, y ∉ (Schk.onCtx (S₁.onCtx ctx)).env.freeVars) →
     Infer κ Φ₁
@@ -11456,8 +11458,9 @@ decreasing_by all_goals (simp_wf; try omega)
 set_option maxRecDepth 4096 in
 set_option maxHeartbeats 800_000 in
 mutual
-/-- Backward soundness: inference implies declarative typing for the source term. -/
-theorem Infer.sourceSound_of_avoids {Φ ctx e Φ' S τ} (h : Infer κ Φ ctx e Φ' S τ) :
+/-- Generalized source soundness for a separately chosen protected set.
+    The public `sourceSound` below takes protection from the judgment itself. -/
+private theorem Infer.sourceSound_of_avoids {Φ ctx e Φ' S τ} (h : Infer κ Φ ctx e Φ' S τ) :
     CtxWF ctx → CtxBelow Φ ctx → (K : List Nat) → (∀ k ∈ K, k < Φ) →
     (∀ y ∈ e.tyFreeVars, y ∈ K) → (∀ p ∈ S, p.1 ∉ K) →
     TypeOfHM (S.onCtx ctx) e τ := by
@@ -12036,7 +12039,7 @@ theorem Infer.sourceSound_of_avoids {Φ ctx e Φ' S τ} (h : Infer κ Φ ctx e �
         hSK p (List.mem_append_right _ hp) (hKe p.1 (.inl hc)))
     have hscrut_decl := TypeOfHM.onSubst_fixed (ctx := S₁.onCtx ctx)
       (e := scrut) (τ := τs) S₂ hS₂lc hscrutfix hscrut_sound
-    have hbr_sound := InferBranches.sourceSound hbr hctx1
+    have hbr_sound := InferBranches.sourceSound_of_avoids hbr hctx1
       (fun M hM => (hbelow1 M hM).mono (by omega))
       hτs_lc ContainsBvarsUpTo.fvar
       (hscrut_below.1.mono (by omega)) (.fvar (by omega)) K
@@ -12205,7 +12208,7 @@ theorem Infer.sourceSound_of_avoids {Φ ctx e Φ' S τ} (h : Infer κ Φ ctx e �
         exact Infer.sourceSound_of_avoids he hc hb KK hKK hke htk)
       hctx hctxB hinitLC hinitB K (fun k hk => by have := hKΦ k hk; omega)
       hKbind (fun σ hσ => hKsch σ (RecSpec.poly_mem_init hσ)) hS₁K
-    obtain ⟨L₀,hpolyS⟩ := InferRecGroupPoly.sourceSoundPoly hpoly hbodyWF₁ hbodyB₁
+    obtain ⟨L₀,hpolyS⟩ := InferRecGroupPoly.sourceSoundPoly_of_avoids hpoly hbodyWF₁ hbodyB₁
       hspecs₁LC hspecs₁B
       (fun σ hσ y hy => Env.mem_freeVars_iff.mpr ⟨σ,
         List.mem_append_left _ (List.mem_map.mpr ⟨.poly σ,hσ,rfl⟩),hy⟩)
@@ -12290,7 +12293,7 @@ termination_by e.size
 decreasing_by
   all_goals (try subst_vars; try simp only [Expr.size, Expr.size_openTyVars]; omega)
 
-theorem InferBranches.sourceSound {Φ ctx scrutTy ρ brs Φ' S}
+private theorem InferBranches.sourceSound_of_avoids {Φ ctx scrutTy ρ brs Φ' S}
     (h : InferBranches κ Φ ctx scrutTy ρ brs Φ' S)
     (hctx : CtxWF ctx) (hbelow : CtxBelow Φ ctx)
     (hscrutTy : scrutTy.IsLC) (hρ : ρ.IsLC)
@@ -12365,7 +12368,7 @@ theorem InferBranches.sourceSound {Φ ctx scrutTy ρ brs Φ' S}
       Subst.onTy_belowFvars hS₂bel (Subst.onTy_belowFvars hb_sbel hS₀scrutbel)
     have hρ'bel : Ty.BelowFvars Φ₁ (S₂.onTy (S₁.onTy (S₀.onTy ρ))) :=
       Subst.onTy_belowFvars hS₂bel hS₁S₀ρbel
-    have hrest_sound := InferBranches.sourceSound hrest hctx1WF hctx1bel
+    have hrest_sound := InferBranches.sourceSound_of_avoids hrest hctx1WF hctx1bel
       (Subst.onTy_lc hS₂lc (Subst.onTy_lc hS₁lc (Subst.onTy_lc hS₀lc hscrutTy)))
       (Subst.onTy_lc hS₂lc (Subst.onTy_lc hS₁lc (Subst.onTy_lc hS₀lc hρ)))
       hscrut'bel hρ'bel K (fun k hk => by have := hKΦ k hk; omega)
@@ -12509,7 +12512,7 @@ theorem InferBranches.sourceSound {Φ ctx scrutTy ρ brs Φ' S}
       Subst.onTy_belowFvars hS₂bel (Subst.onTy_belowFvars hb_sbel (hscrutB.mono hle1))
     have hρ'bel : Ty.BelowFvars Φ₁ (S₂.onTy (S₁.onTy ρ)) :=
       Subst.onTy_belowFvars hS₂bel hS₁ρbel
-    have hrest_sound := InferBranches.sourceSound hrest hctx1WF hctx1bel
+    have hrest_sound := InferBranches.sourceSound_of_avoids hrest hctx1WF hctx1bel
       (Subst.onTy_lc hS₂lc (Subst.onTy_lc hS₁lc hscrutTy))
       (Subst.onTy_lc hS₂lc (Subst.onTy_lc hS₁lc hρ))
       hscrut'bel hρ'bel K (fun k hk => by have := hKΦ k hk; omega)
@@ -12566,7 +12569,7 @@ decreasing_by
   all_goals (try subst_vars; try simp only [Expr.sizeBranches]; omega)
 
 /-- Source soundness of the unsigned recursive-group phase. -/
-theorem InferRecGroup.sourceSoundMono {Φ ctx bindings specs Φ' S}
+private theorem InferRecGroup.sourceSoundMono_of_avoids {Φ ctx bindings specs Φ' S}
     (h : InferRecGroup κ Φ ctx bindings specs Φ' S)
     (hctx : CtxWF ctx) (hbelow : CtxBelow Φ ctx)
     (hspecs : ∀ s ∈ specs, s.LC) (hspecsB : ∀ s ∈ specs, s.BelowFvars Φ)
@@ -12582,7 +12585,7 @@ theorem InferRecGroup.sourceSoundMono {Φ ctx bindings specs Φ' S}
     simp only [List.map_cons, List.zip_cons_cons, List.mem_cons] at hp
     rcases hp with rfl | hp
     · exact absurd hτ0 (by simp [RecSpec.onSubst])
-    · exact InferRecGroup.sourceSoundMono hrest hctx hbelow
+    · exact InferRecGroup.sourceSoundMono_of_avoids hrest hctx hbelow
         (fun s hs => hspecs s (List.mem_cons_of_mem _ hs))
         (fun s hs => hspecsB s (List.mem_cons_of_mem _ hs)) K hKΦ
         (fun y hy => hKbr y (by
@@ -12620,7 +12623,7 @@ theorem InferRecGroup.sourceSoundMono {Φ ctx bindings specs Φ' S}
           (fun h => hS₂below p h))
         ((hspecsB s (List.mem_cons_of_mem _ hs)).mono hle1)
     have hS₃lc : ∀ p ∈ S₃, p.2.IsLC := InferRecGroup.lc hrest hctx2 hspecs'
-    have hmono_tail := InferRecGroup.sourceSoundMono hrest hctx2 hbelow2
+    have hmono_tail := InferRecGroup.sourceSoundMono_of_avoids hrest hctx2 hbelow2
       hspecs' hspecsB' K (fun k hk => lt_of_lt_of_le (hKΦ k hk) hle1)
       (fun y hy => hKbr y (.inr hy)) hK3
     have hspecmap : specs.map (RecSpec.onSubst (S₁ ++ S₂ ++ S₃))
@@ -12665,7 +12668,7 @@ decreasing_by
   all_goals (try subst_vars; try simp only [Expr.sizeRecGroup]; omega)
 
 /- Source soundness of the signed recursive-group phase. -/
-theorem InferRecGroupPoly.sourceSoundPoly {Φ ctx bindings specs Φ' S}
+private theorem InferRecGroupPoly.sourceSoundPoly_of_avoids {Φ ctx bindings specs Φ' S}
     (h : InferRecGroupPoly κ Φ ctx bindings specs Φ' S)
     (hctx : CtxWF ctx) (hbelow : CtxBelow Φ ctx)
     (hspecs : ∀ s ∈ specs, s.LC) (hspecsB : ∀ s ∈ specs, s.BelowFvars Φ)
@@ -12684,7 +12687,7 @@ theorem InferRecGroupPoly.sourceSoundPoly {Φ ctx bindings specs Φ' S}
     intro p hp
     simp at hp
   | skipMono hrest =>
-    obtain ⟨L, htail⟩ := InferRecGroupPoly.sourceSoundPoly hrest hctx hbelow
+    obtain ⟨L, htail⟩ := InferRecGroupPoly.sourceSoundPoly_of_avoids hrest hctx hbelow
       (fun s hs => hspecs s (List.mem_cons_of_mem _ hs))
       (fun s hs => hspecsB s (List.mem_cons_of_mem _ hs))
       (fun σ hs => hspecs_env σ (List.mem_cons_of_mem _ hs)) K hKΦ
@@ -12865,7 +12868,7 @@ theorem InferRecGroupPoly.sourceSoundPoly {Φ ctx bindings specs Φ' S}
       fun y hy hc => by
         have := hKΦ y (hKsch σ List.mem_cons_self y hc)
         simp only [Ys] at hy; have := freshVars_ge y hy; omega
-    obtain ⟨L_tail, hpoly_tail⟩ := InferRecGroupPoly.sourceSoundPoly hrest hctx' hbelow'
+    obtain ⟨L_tail, hpoly_tail⟩ := InferRecGroupPoly.sourceSoundPoly_of_avoids hrest hctx' hbelow'
       hspecs' hspecsB' hspecs_env' K (fun k hk => by have := hKΦ k hk; omega) hKbr' hKsch' hK2
     have hctxbridge : S₂.onCtx (Schk.onCtx (S₁.onCtx ctx)) = (S₁ ++ Schk ++ S₂).onCtx ctx := by
       rw [show (S₁ ++ Schk ++ S₂ : Subst) = (S₁ ++ Schk) ++ S₂ from rfl,
@@ -12942,6 +12945,46 @@ decreasing_by
   all_goals (try subst_vars; try simp only [Expr.sizeRecGroup, Expr.size_openTyVars]; omega)
 end
 
+
+/-- Soundness at the rigid context recorded by the derivation. -/
+theorem InferBranches.sourceSound {K Φ ctx scrutTy ρ brs Φ' S}
+    (h : InferBranches K Φ ctx scrutTy ρ brs Φ' S)
+    (hctx : CtxWF ctx) (hbelow : CtxBelow Φ ctx)
+    (hscrutTy : scrutTy.IsLC) (hρ : ρ.IsLC)
+    (hscrutB : Ty.BelowFvars Φ scrutTy) (hρB : Ty.BelowFvars Φ ρ)
+    (hKΦ : ∀ k ∈ K, k < Φ)
+    (hKbr : ∀ y ∈ Expr.tyFreeVars.BranchList.tyFreeVars brs, y ∈ K) :
+    ∀ p ∈ brs,
+      TypeOfMatchBranch (S.onCtx ctx)
+        (p.1, p.2)
+        ((S.onTy scrutTy)) ((S.onTy ρ)) :=
+  InferBranches.sourceSound_of_avoids h hctx hbelow hscrutTy hρ hscrutB hρB K hKΦ hKbr h.dom_avoids
+
+/-- Soundness at the rigid context recorded by the derivation. -/
+theorem InferRecGroup.sourceSoundMono {K Φ ctx bindings specs Φ' S}
+    (h : InferRecGroup K Φ ctx bindings specs Φ' S)
+    (hctx : CtxWF ctx) (hbelow : CtxBelow Φ ctx)
+    (hspecs : ∀ s ∈ specs, s.LC) (hspecsB : ∀ s ∈ specs, s.BelowFvars Φ)
+    (hKΦ : ∀ k ∈ K, k < Φ)
+    (hKbr : ∀ y ∈ Expr.tyFreeVars.RecGroup.tyFreeVars bindings, y ∈ K) :
+    ∀ p ∈ bindings.zip (specs.map (RecSpec.onSubst S)), ∀ τ,
+      p.2 = RecSpec.mono τ → TypeOfHM (S.onCtx ctx) p.1 τ :=
+  InferRecGroup.sourceSoundMono_of_avoids h hctx hbelow hspecs hspecsB K hKΦ hKbr h.dom_avoids
+
+/-- Soundness at the rigid context recorded by the derivation. -/
+theorem InferRecGroupPoly.sourceSoundPoly {K Φ ctx bindings specs Φ' S}
+    (h : InferRecGroupPoly K Φ ctx bindings specs Φ' S)
+    (hctx : CtxWF ctx) (hbelow : CtxBelow Φ ctx)
+    (hspecs : ∀ s ∈ specs, s.LC) (hspecsB : ∀ s ∈ specs, s.BelowFvars Φ)
+    (hspecs_env : ∀ σ, RecSpec.poly σ ∈ specs →
+      ∀ y ∈ σ.body.freeVars, y ∈ ctx.env.freeVars)
+    (hKΦ : ∀ k ∈ K, k < Φ)
+    (hKbr : ∀ y ∈ Expr.tyFreeVars.RecGroup.tyFreeVars bindings, y ∈ K)
+    (hKsch : ∀ σ, RecSpec.poly σ ∈ specs → ∀ y ∈ σ.body.freeVars, y ∈ K) :
+    ∃ L : List Nat, ∀ p ∈ bindings.zip (specs.map (RecSpec.onSubst S)),
+      ∀ σ, p.2 = RecSpec.poly σ → ∀ Xs, FreshNames L σ.paramCount Xs →
+        TypeOfHM (S.onCtx ctx) (p.1.openTyVars Xs) (σ.openVars Xs) :=
+  InferRecGroupPoly.sourceSoundPoly_of_avoids h hctx hbelow hspecs hspecsB hspecs_env K hKΦ hKbr hKsch h.dom_avoids
 
 /-- Source soundness uses the rigid context carried by the derivation. -/
 theorem Infer.sourceSound {K Φ ctx e Φ' S τ} (h : Infer K Φ ctx e Φ' S τ)
@@ -14275,8 +14318,8 @@ decreasing_by
   all_goals (try simp only [Expr.sizeRecGroup, Expr.size_openTyVars]; omega)
 end
 
-/-- Compatibility projection of the authoritative metadata-producing worker. No
-    inference is repeated and existing proof-facing callers keep their API. -/
+/-- Project the metadata-producing worker to its inference result and indexed
+    derivation without repeating inference. -/
 def inferCore (K : List Nat) (Φ : Nat) (ctx : Ctx) (e : Expr) :
     Option { r : Nat × Subst × Ty //
       Infer K Φ ctx e r.1 r.2.1 r.2.2 } :=
