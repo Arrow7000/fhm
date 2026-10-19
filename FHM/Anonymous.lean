@@ -10,6 +10,98 @@ the syntax so an unsupported case cannot accidentally become a complete Core
 signature (and hence a polymorphic-recursion dependency cut).
 -/
 
+
+private theorem branch_tyFreeVars_mem {branches : List (MatchPattern × Expr)}
+    {p : MatchPattern} {body : Expr} {v : Nat} (hb : (p, body) ∈ branches)
+    (hv : v ∈ body.tyFreeVars) :
+    v ∈ Expr.tyFreeVars.BranchList.tyFreeVars branches := by
+  induction branches with
+  | nil => cases hb
+  | cons head tail ih =>
+    rcases head with ⟨p', body'⟩
+    simp only [Expr.tyFreeVars.BranchList.tyFreeVars, List.mem_append]
+    rcases List.mem_cons.mp hb with heq | hb
+    · cases heq; exact Or.inl hv
+    · exact Or.inr (ih hb)
+
+/-- Pointwise identity on annotation free variables fixes an entire Core expression. -/
+theorem Expr.substTyFvars_eq_self_of_fixes {S : Subst} {e : Expr}
+    (h : ∀ v ∈ e.tyFreeVars, S.onTy (.fvar v) = .fvar v) :
+    e.substTyFvars S = e := by
+  induction e using Expr.rec_strong with
+  | primLit p =>
+    exact Expr.substTyFvars_eq_self_of_not_mem_tyFreeVars (by simp [Expr.tyFreeVars])
+  | primBinOp op =>
+    exact Expr.substTyFvars_eq_self_of_not_mem_tyFreeVars (by simp [Expr.tyFreeVars])
+  | var n => exact Expr.substTyFvars_var
+  | ctor name =>
+    exact Expr.substTyFvars_eq_self_of_not_mem_tyFreeVars (by simp [Expr.tyFreeVars])
+  | lambda ann body ih =>
+    rw [Expr.substTyFvars_lambda]
+    have hb := ih (fun v hv => h v (List.mem_append_right _ hv))
+    rw [hb]
+    cases ann with
+    | none => rfl
+    | some t =>
+      have ht : Ty.substFvars S t = t := Subst.onTy_eq_self_of_fixes
+        (fun v hv => h v (List.mem_append_left _ hv))
+      simp only [Option.map_some, ht]
+  | app f arg ihf iha =>
+    rw [Expr.substTyFvars_app,
+      ihf (fun v hv => h v (List.mem_append_left _ hv)),
+      iha (fun v hv => h v (List.mem_append_right _ hv))]
+  | letIn ann rhs body ihr ihb =>
+    rw [Expr.substTyFvars_letIn,
+      ihr (fun v hv => h v (List.mem_append_left _ (List.mem_append_right _ hv))),
+      ihb (fun v hv => h v (List.mem_append_right _ hv))]
+    cases ann with
+    | none => rfl
+    | some scheme =>
+      have hs : Ty.substFvars S scheme.body = scheme.body := Subst.onTy_eq_self_of_fixes
+        (fun v hv => h v (List.mem_append_left _ (List.mem_append_left _ hv)))
+      simp only [Option.map_some, hs]
+  | match_ scrut branches ihs ihbs =>
+    rw [Expr.substTyFvars_match, ihs (fun v hv => h v (List.mem_append_left _ hv))]
+    congr 1
+    apply List.map_eq_self_of_forall_eq_id
+    rintro ⟨p, b⟩ hb
+    change (p, b.substTyFvars S) = (p, b)
+    rw [ihbs p b hb (fun v hv => h v
+      (List.mem_append_right _ (branch_tyFreeVars_mem hb hv)))]
+  | letRec anns bindings body ihbs ihb =>
+    rw [Expr.substTyFvars_letRec,
+      ihb (fun v hv => h v (List.mem_append_right _ hv))]
+    have hbindings : bindings.map (fun b => b.substTyFvars S) = bindings := by
+      apply List.map_eq_self_of_forall_eq_id
+      intro b hb
+      apply ihbs b hb
+      intro v hv
+      apply h v
+      apply List.mem_append_left
+      apply List.mem_append_right
+      exact Expr.mem_flatMap_tyFreeVars_iff_recGroup.mp (List.mem_flatMap.mpr ⟨b, hb, hv⟩)
+    rw [hbindings]
+    congr 1
+    apply List.map_eq_self_of_forall_eq_id
+    intro ann hann
+    cases ann with
+    | none => exact RecAnn.substFvars_none S
+    | some scheme =>
+      have hs : Ty.substFvars S scheme.body = scheme.body := Subst.onTy_eq_self_of_fixes
+        (fun v hv => h v (List.mem_append_left _ (List.mem_append_left _
+          (Expr.scheme_body_mem_annList_tyFreeVars hann hv))))
+      simp only [RecAnn.substFvars_some, PolyTy.substFvars_eq, hs]
+
+/-- Literal domain avoidance implies pointwise rigidity of the composite. -/
+theorem Subst.fixes_of_dom_avoids {K : List Nat} {subst : Subst}
+    (h : ∀ pair ∈ subst, pair.1 ∉ K) :
+    ∀ v ∈ K, subst.onTy (.fvar v) = .fvar v := by
+  intro v hv
+  apply Ty.substFvars_eq_self_of_no_key
+  intro pair hp hc
+  have heq : pair.1 = v := by simpa only [Ty.freeVars, List.mem_singleton] using hc
+  exact h pair hp (heq ▸ hv)
+
 namespace Anonymous
 
 /-- The fixed leaves retain authored type syntax; every `hole` occurrence is
@@ -327,116 +419,112 @@ theorem allocateList_fits (templates : List Template) (frontier : Nat) :
 end
 
 mutual
-theorem Template.Fits.onSubst {K : List Nat} {template : Template} {ty : Ty}
+theorem Template.Fits.onSubst_fixes {K : List Nat} {template : Template} {ty : Ty}
     (h : template.Fits ty) (hfixed : ∀ v ∈ template.rigidVars, v ∈ K)
-    {subst : Subst} (hsubst : ∀ pair ∈ subst, pair.1 ∉ K) :
+    {subst : Subst} (hsubst : ∀ v ∈ K, subst.onTy (.fvar v) = .fvar v) :
     template.Fits (subst.onTy ty) := by
   cases h with
   | fixed =>
-      have heq : subst.onTy ty = ty := Ty.substFvars_eq_self_of_no_key
-        (fun pair hp hv => hsubst pair hp (hfixed pair.1 hv))
+      have heq : subst.onTy ty = ty := Subst.onTy_eq_self_of_fixes
+        (fun v hv => hsubst v (hfixed v hv))
       rw [heq]
       exact .fixed
   | hole => exact .hole
   | @arrow a ta b tb ha hb =>
-      simpa only [Subst.onTy_arrow] using Template.Fits.arrow (ha.onSubst (fun v hv => hfixed v (List.mem_append_left _ hv)) hsubst)
-        (hb.onSubst (fun v hv => hfixed v (List.mem_append_right _ hv)) hsubst)
+      simpa only [Subst.onTy_arrow] using Template.Fits.arrow (ha.onSubst_fixes (fun v hv => hfixed v (List.mem_append_left _ hv)) hsubst)
+        (hb.onSubst_fixes (fun v hv => hfixed v (List.mem_append_right _ hv)) hsubst)
   | custom hall =>
-      simpa only [Subst.onTy_customTy] using Template.Fits.custom (fitsList_onSubst hall hfixed hsubst)
-theorem fitsList_onSubst {K : List Nat} {templates : List Template} {types : List Ty}
+      simpa only [Subst.onTy_customTy] using Template.Fits.custom (fitsList_onSubst_fixes hall hfixed hsubst)
+theorem fitsList_onSubst_fixes {K : List Nat} {templates : List Template} {types : List Ty}
     (h : List.Forall₂ Template.Fits templates types)
     (hfixed : ∀ v ∈ rigidVarsList templates, v ∈ K)
-    {subst : Subst} (hsubst : ∀ pair ∈ subst, pair.1 ∉ K) :
+    {subst : Subst} (hsubst : ∀ v ∈ K, subst.onTy (.fvar v) = .fvar v) :
     List.Forall₂ Template.Fits templates (types.map subst.onTy) := by
   cases h with
   | nil => exact .nil
   | cons head rest =>
-      exact .cons (head.onSubst (fun v hv => hfixed v (List.mem_append_left _ hv)) hsubst)
-        (fitsList_onSubst rest (fun v hv => hfixed v (List.mem_append_right _ hv)) hsubst)
+      exact .cons (head.onSubst_fixes (fun v hv => hfixed v (List.mem_append_left _ hv)) hsubst)
+        (fitsList_onSubst_fixes rest (fun v hv => hfixed v (List.mem_append_right _ hv)) hsubst)
 end
+
+theorem LetAnn.FitsMono.onSubst_fixes {K : List Nat} {ann : LetAnn} {ty : Ty}
+    (h : ann.FitsMono ty)
+    (hfixed : ∀ template, ann = .template template → ∀ v ∈ template.rigidVars, v ∈ K)
+    {subst : Subst} (hsubst : ∀ v ∈ K, subst.onTy (.fvar v) = .fvar v) :
+    ann.FitsMono (subst.onTy ty) := by
+  cases ann with
+  | absent => trivial
+  | template template => exact Template.Fits.onSubst_fixes h (hfixed template rfl) hsubst
+  | complete => exact False.elim h
+  | partialForall => exact False.elim h
+
+theorem Template.Fits.onSubst {K : List Nat} {template : Template} {ty : Ty}
+    (h : template.Fits ty) (hfixed : ∀ v ∈ template.rigidVars, v ∈ K)
+    {subst : Subst} (hsubst : ∀ pair ∈ subst, pair.1 ∉ K) :
+    template.Fits (subst.onTy ty) :=
+  h.onSubst_fixes hfixed (Subst.fixes_of_dom_avoids hsubst)
 
 theorem LetAnn.FitsMono.onSubst {K : List Nat} {ann : LetAnn} {ty : Ty}
     (h : ann.FitsMono ty)
     (hfixed : ∀ template, ann = .template template → ∀ v ∈ template.rigidVars, v ∈ K)
     {subst : Subst} (hsubst : ∀ pair ∈ subst, pair.1 ∉ K) :
-    ann.FitsMono (subst.onTy ty) := by
-  cases ann with
-  | absent => trivial
-  | template template => exact Template.Fits.onSubst h (hfixed template rfl) hsubst
-  | complete => exact False.elim h
-  | partialForall => exact False.elim h
+    ann.FitsMono (subst.onTy ty) :=
+  h.onSubst_fixes hfixed (Subst.fixes_of_dom_avoids hsubst)
 
-/-- Substitution can specialize context variables and inferred hole fillings,
-while the written fixed annotation syntax stays unchanged. -/
-theorem Typing.onSubstFvar (h : Typing K ctx input ty) (name : Nat) (image : Ty)
-    (hlc : image.IsLC) (hprotected : name ∉ K) :
-    Typing K (Subst.onCtx [(name, image)] ctx) input (Ty.substFvar name image ty) := by
-  have hsubst : ∀ pair ∈ ([(name, image)] : Subst), pair.1 ∉ K := by
-    intro pair hp
-    cases List.mem_singleton.mp hp
-    exact hprotected
-  have hsubstLC : ∀ pair ∈ ([(name, image)] : Subst), pair.2.IsLC := by
-    intro pair hp
-    cases List.mem_singleton.mp hp
-    exact hlc
+/-- Whole-substitution transport requires pointwise protection of fixed syntax.
+Sequential substitutions may mention K internally while their composite fixes K. -/
+theorem Typing.onSubst_fixes (h : Typing K ctx input ty) (subst : Subst)
+    (hlc : ∀ pair ∈ subst, pair.2.IsLC)
+    (hprotected : ∀ v ∈ K, subst.onTy (.fvar v) = .fvar v) :
+    Typing K (subst.onCtx ctx) input (subst.onTy ty) := by
   induction h with
   | complete hemb hrigid htyping =>
-      exact .complete hemb hrigid
-        (TypeOfHM.onSubst_fixed [(name, image)] hsubstLC
-          (Expr.substTyFvars_eq_self_of_not_mem_tyFreeVars
-            (fun pair hp hv => hsubst pair hp (hrigid pair.1 hv))) htyping)
+      exact .complete hemb hrigid (TypeOfHM.onSubst_fixed subst hlc
+        (Expr.substTyFvars_eq_self_of_fixes (fun v hv => hprotected v (hrigid v hv))) htyping)
   | primLit htyping =>
-      exact .primLit (TypeOfHM.onSubst_fixed [(name, image)] hsubstLC
+      exact .primLit (TypeOfHM.onSubst_fixed subst hlc
         (Expr.substTyFvars_eq_self_of_tyFreeVars_nil _ rfl) htyping)
   | primBinOp htyping =>
-      exact .primBinOp (TypeOfHM.onSubst_fixed [(name, image)] hsubstLC
+      exact .primBinOp (TypeOfHM.onSubst_fixed subst hlc
         (Expr.substTyFvars_eq_self_of_tyFreeVars_nil _ rfl) htyping)
-  | lambda hparam hfit hrigid hbody ihbody =>
-      refine .lambda (Ty.IsLC.substFvar hlc hparam) ?_ hrigid ?_
+  | lambda hparam hfit hrigid _ ihbody =>
+      simp only [Subst.onTy_arrow]
+      refine .lambda (Subst.onTy_lc hlc hparam) ?_ hrigid ?_
       · intro template heq
-        exact (hfit template heq).onSubst (hrigid template heq) hsubst
+        exact (hfit template heq).onSubst_fixes (hrigid template heq) hprotected
       · simpa only [Subst.onCtx, Subst.onEnv, List.map_cons, Subst.onPolyTy,
-          PolyTy.mkTrivial, Subst.onTy, Ty.substFvars] using ihbody
-  | app _ _ ihf ihx => exact .app ihf ihx
+          PolyTy.mkTrivial] using ihbody
+  | app _ _ ihf ihx =>
+      simp only [Subst.onTy_arrow] at ihf ⊢
+      exact .app ihf ihx
   | @letIn ctx ann rhs body bodyTy scheme avoid hwf hrigid hfit hgeneral hbody ihgeneral ihbody =>
-      refine Typing.letIn (M := scheme.substFvar name image) (L := name :: avoid)
-        (PolyTy.WF.substFvar hlc hwf) hrigid ?_ ?_ ?_
-      · intro fresh hfresh
-        have hname : name ∉ fresh := fun hn => hfresh.avoid name hn List.mem_cons_self
-        have hold : FreshNames avoid scheme.paramCount fresh :=
-          ⟨hfresh.length, hfresh.nodup, fun v hv ha => hfresh.avoid v hv (List.mem_cons_of_mem _ ha)⟩
-        have hs := (hfit fresh hold).onSubst hrigid hsubst
-        simpa only [PolyTy.openVars, PolyTy.substFvar, Subst.onTy, Ty.substFvars,
-          Ty.substFvar_openVars hlc hname] using hs
-      · intro fresh hfresh
-        have hname : name ∉ fresh := fun hn => hfresh.avoid name hn List.mem_cons_self
-        have hold : FreshNames avoid scheme.paramCount fresh :=
-          ⟨hfresh.length, hfresh.nodup, fun v hv ha => hfresh.avoid v hv (List.mem_cons_of_mem _ ha)⟩
-        simpa only [PolyTy.openVars, PolyTy.substFvar,
-          Ty.substFvar_openVars hlc hname] using ihgeneral fresh hold
-      · simpa only [Subst.onCtx, Subst.onEnv, List.map_cons, Subst.onPolyTy,
-          PolyTy.substFvar, Subst.onTy, Ty.substFvars] using ihbody
+      let avoid' := avoid ++ subst.map Prod.fst
+      have oldFresh : ∀ fresh, FreshNames avoid' scheme.paramCount fresh → FreshNames avoid scheme.paramCount fresh :=
+        fun fresh hf => ⟨hf.length, hf.nodup, fun v hv ha => hf.avoid v hv (List.mem_append_left _ ha)⟩
+      have domFresh : ∀ fresh, FreshNames avoid' scheme.paramCount fresh → ∀ pair ∈ subst, pair.1 ∉ fresh := by
+        intro fresh hf pair hp hv
+        exact hf.avoid pair.1 hv (List.mem_append_right _ (List.mem_map.mpr ⟨pair, hp, rfl⟩))
+      refine Typing.letIn (M := subst.onPolyTy scheme) (L := avoid')
+        (Subst.onPolyTy_wf hlc hwf) hrigid ?_ ?_ ?_
+      · intro fresh hf
+        have hs := (hfit fresh (oldFresh fresh hf)).onSubst_fixes hrigid hprotected
+        simpa only [PolyTy.openVars, Subst.onPolyTy,
+          Subst.onTy_openVars hlc (domFresh fresh hf)] using hs
+      · intro fresh hf
+        simpa only [PolyTy.openVars, Subst.onPolyTy,
+          Subst.onTy_openVars hlc (domFresh fresh hf)] using ihgeneral fresh (oldFresh fresh hf)
+      · simpa only [Subst.onCtx, Subst.onEnv, List.map_cons] using ihbody
   | var hlookup hargs hinst =>
-      exact .complete rfl (by simp [Expr.tyFreeVars])
-        (TypeOfHM.onSubst_fixed [(name, image)] hsubstLC
-          (Expr.substTyFvars_eq_self_of_tyFreeVars_nil _ rfl) (.var hlookup hargs hinst))
+      exact .complete rfl (by simp [Expr.tyFreeVars]) (TypeOfHM.onSubst_fixed subst hlc
+        (Expr.substTyFvars_eq_self_of_tyFreeVars_nil _ rfl) (.var hlookup hargs hinst))
   | ctor hlookup hargs hinst =>
-      exact .complete rfl (by simp [Expr.tyFreeVars])
-        (TypeOfHM.onSubst_fixed [(name, image)] hsubstLC
-          (Expr.substTyFvars_eq_self_of_tyFreeVars_nil _ rfl) (.ctor hlookup hargs hinst))
+      exact .complete rfl (by simp [Expr.tyFreeVars]) (TypeOfHM.onSubst_fixed subst hlc
+        (Expr.substTyFvars_eq_self_of_tyFreeVars_nil _ rfl) (.ctor hlookup hargs hinst))
 
 theorem Typing.onSubst (h : Typing K ctx input ty) (subst : Subst)
     (hlc : ∀ pair ∈ subst, pair.2.IsLC) (hprotected : ∀ pair ∈ subst, pair.1 ∉ K) :
-    Typing K (subst.onCtx ctx) input (subst.onTy ty) := by
-  induction subst generalizing ctx ty with
-  | nil => simpa only [Subst.onCtx_nil, Subst.onTy_nil] using h
-  | cons pair rest ih =>
-      have hstep := h.onSubstFvar pair.1 pair.2 (hlc pair List.mem_cons_self)
-        (hprotected pair List.mem_cons_self)
-      have hresult := ih hstep (fun p hp => hlc p (List.mem_cons_of_mem _ hp))
-        (fun p hp => hprotected p (List.mem_cons_of_mem _ hp))
-      rw [show pair :: rest = [pair] ++ rest from rfl, Subst.onCtx_append, Subst.onTy_append]
-      exact hresult
+    Typing K (subst.onCtx ctx) input (subst.onTy ty) :=
+  h.onSubst_fixes subst hlc (Subst.fixes_of_dom_avoids hprotected)
 
 theorem Typing.regular (h : Typing K ctx input ty) : ty.IsLC := h.erase.regular
 
@@ -470,8 +558,33 @@ theorem Typing.generalise {ann : LetAnn} {names : List Nat} (h : Typing K ctx in
   have hrenamed := h.onSubst rename hlc hdom
   rwa [hctxfix] at hrenamed
 
-/-- Transport both premises of the independent ordinary-let rule through an
-ambient specialization. Fresh opening names avoid the substitution's keys. -/
+/-- Transport both independent ordinary-let premises through a whole ambient
+specialization, freshening opening names away from its domain. -/
+theorem Typing.binding_onSubst_fixes {ann : LetAnn} {scheme : PolyTy} {avoid : List Nat}
+    (hfit : ∀ fresh, FreshNames avoid scheme.paramCount fresh → ann.FitsMono (scheme.openVars fresh))
+    (htyping : ∀ fresh, FreshNames avoid scheme.paramCount fresh → Typing K ctx input (scheme.openVars fresh))
+    (hrigid : ∀ template, ann = .template template → ∀ v ∈ template.rigidVars, v ∈ K)
+    (subst : Subst) (hlc : ∀ pair ∈ subst, pair.2.IsLC)
+    (hprotected : ∀ v ∈ K, subst.onTy (.fvar v) = .fvar v) :
+    ∃ avoid',
+      (∀ fresh, FreshNames avoid' scheme.paramCount fresh → ann.FitsMono ((subst.onPolyTy scheme).openVars fresh)) ∧
+      (∀ fresh, FreshNames avoid' scheme.paramCount fresh →
+        Typing K (subst.onCtx ctx) input ((subst.onPolyTy scheme).openVars fresh)) := by
+  let avoid' := avoid ++ subst.map Prod.fst
+  have hstep : ∀ fresh, FreshNames avoid' scheme.paramCount fresh →
+      ann.FitsMono ((subst.onPolyTy scheme).openVars fresh) ∧
+      Typing K (subst.onCtx ctx) input ((subst.onPolyTy scheme).openVars fresh) := by
+    intro fresh hf
+    have hold : FreshNames avoid scheme.paramCount fresh :=
+      ⟨hf.length, hf.nodup, fun v hv ha => hf.avoid v hv (List.mem_append_left _ ha)⟩
+    have hdom : ∀ pair ∈ subst, pair.1 ∉ fresh := by
+      intro pair hp hv
+      exact hf.avoid pair.1 hv (List.mem_append_right _ (List.mem_map.mpr ⟨pair, hp, rfl⟩))
+    have hfit' := (hfit fresh hold).onSubst_fixes hrigid hprotected
+    have htyping' := (htyping fresh hold).onSubst_fixes subst hlc hprotected
+    simpa only [PolyTy.openVars, Subst.onPolyTy, Subst.onTy_openVars hlc hdom] using And.intro hfit' htyping'
+  exact ⟨avoid', fun fresh hf => (hstep fresh hf).1, fun fresh hf => (hstep fresh hf).2⟩
+
 theorem Typing.binding_onSubst {ann : LetAnn} {scheme : PolyTy} {avoid : List Nat}
     (hfit : ∀ fresh, FreshNames avoid scheme.paramCount fresh → ann.FitsMono (scheme.openVars fresh))
     (htyping : ∀ fresh, FreshNames avoid scheme.paramCount fresh → Typing K ctx input (scheme.openVars fresh))
@@ -481,38 +594,7 @@ theorem Typing.binding_onSubst {ann : LetAnn} {scheme : PolyTy} {avoid : List Na
     ∃ avoid',
       (∀ fresh, FreshNames avoid' scheme.paramCount fresh → ann.FitsMono ((subst.onPolyTy scheme).openVars fresh)) ∧
       (∀ fresh, FreshNames avoid' scheme.paramCount fresh →
-        Typing K (subst.onCtx ctx) input ((subst.onPolyTy scheme).openVars fresh)) := by
-  induction subst generalizing ctx scheme avoid with
-  | nil =>
-      refine ⟨avoid, hfit, ?_⟩
-      simpa only [Subst.onCtx_nil, Subst.onPolyTy, Subst.onTy_nil] using htyping
-  | cons pair rest ih =>
-      have hstep : ∀ fresh, FreshNames (pair.1 :: avoid) scheme.paramCount fresh →
-          ann.FitsMono ((scheme.substFvar pair.1 pair.2).openVars fresh) ∧
-          Typing K (Subst.onCtx [pair] ctx) input ((scheme.substFvar pair.1 pair.2).openVars fresh) := by
-        intro fresh hfresh
-        have hname : pair.1 ∉ fresh := fun hn => hfresh.avoid pair.1 hn List.mem_cons_self
-        have hold : FreshNames avoid scheme.paramCount fresh :=
-          ⟨hfresh.length, hfresh.nodup, fun v hv ha => hfresh.avoid v hv (List.mem_cons_of_mem _ ha)⟩
-        have himage := hlc pair List.mem_cons_self
-        have hkey := hprotected pair List.mem_cons_self
-        have hdom : ∀ p ∈ ([pair] : Subst), p.1 ∉ K := by
-          intro p hp
-          cases List.mem_singleton.mp hp
-          exact hkey
-        have hfit' := (hfit fresh hold).onSubst hrigid hdom
-        have htyping' := (htyping fresh hold).onSubstFvar pair.1 pair.2 himage hkey
-        simpa only [PolyTy.openVars, PolyTy.substFvar, Subst.onTy, Ty.substFvars,
-          Ty.substFvar_openVars himage hname] using And.intro hfit' htyping'
-      obtain ⟨avoid', hfit', htyping'⟩ := ih
-        (ctx := Subst.onCtx [pair] ctx) (scheme := scheme.substFvar pair.1 pair.2)
-        (avoid := pair.1 :: avoid) (fun fresh hf => (hstep fresh hf).1)
-        (fun fresh hf => (hstep fresh hf).2)
-        (fun p hp => hlc p (List.mem_cons_of_mem _ hp))
-        (fun p hp => hprotected p (List.mem_cons_of_mem _ hp))
-      refine ⟨avoid', ?_, ?_⟩
-      · simpa only [show pair :: rest = [pair] ++ rest from rfl, Subst.onPolyTy_append] using hfit'
-      · simpa only [show pair :: rest = [pair] ++ rest from rfl,
-          Subst.onPolyTy_append, Subst.onCtx_append] using htyping'
+        Typing K (subst.onCtx ctx) input ((subst.onPolyTy scheme).openVars fresh)) :=
+  Typing.binding_onSubst_fixes hfit htyping hrigid subst hlc (Subst.fixes_of_dom_avoids hprotected)
 
 end Anonymous
