@@ -1,6 +1,54 @@
 import FHM.Elaboration.Principal
+import FHM.Elaboration.Infer
 
 namespace Elaboration
+
+/-- The executable lambda seed accepts every locally closed, scoped template. -/
+theorem seed_complete {K : List Nat} {Φ : Nat} {ann : Option Template} {target : Ty}
+    (hlc : target.IsLC)
+    (hfit : ∀ template, ann = some template → template.Fits target)
+    (hscope : ∀ template, ann = some template → ∀ v ∈ template.rigidVars, v ∈ K) :
+    (seed K Φ ann).isSome := by
+  cases ann with
+  | none => rfl
+  | some template =>
+    have halloc : (template.allocate Φ).2.bvarsBelow 0 = true :=
+      (Ty.bvarsBelow_iff _).mpr ((hfit template rfl).allocate_lc hlc Φ)
+    have hr : template.rigidVars.all (fun v => decide (v ∈ K)) = true :=
+      List.all_eq_true.mpr (fun v hv => decide_eq_true (hscope template rfl v hv))
+    simp only [seed, halloc, hr, dite_true, Option.isSome_some]
+
+/-- The executable ordinary-let check succeeds for every LC scoped target
+reachable by an LC substitution that fixes the protected variables. -/
+theorem checkLet_complete {K : List Nat} {Φ : Nat} {ann : LetAnn} {ty target : Ty} {R : Subst}
+    (hK : ∀ k ∈ K, k < Φ) (hty : ty.IsLC) (hbelow : Ty.BelowFvars Φ ty)
+    (hR : ∀ p ∈ R, p.2.IsLC) (hRfix : ∀ k ∈ K, R.onTy (.fvar k) = .fvar k)
+    (htarget : target.IsLC) (hfit : ann.FitsMono target)
+    (hscope : ∀ template, ann = .template template → ∀ v ∈ template.rigidVars, v ∈ K)
+    (heq : target = R.onTy ty) : (checkLet K Φ ann ty).isSome := by
+  cases ann with
+  | absent => rfl
+  | complete scheme => cases hfit
+  | partialForall count template => cases hfit
+  | template template =>
+    have hlc := hfit.allocate_lc htarget Φ
+    have halloc : (template.allocate Φ).2.bvarsBelow 0 = true := (Ty.bvarsBelow_iff _).mpr hlc
+    have hr : template.rigidVars.all (fun v => decide (v ∈ K)) = true :=
+      List.all_eq_true.mpr (fun v hv => decide_eq_true (hscope template rfl v hv))
+    obtain ⟨U, hUlc, hagree, hUexpected⟩ := hfit.allocate_override htarget hR Φ
+      (fun v hv => hK v (hscope template rfl v hv))
+      (fun v hv => hRfix v (hscope template rfl v hv))
+    have hUty : U.onTy ty = target := (Subst.onTy_congr hagree hbelow).symm.trans heq.symm
+    have huni : Unifies U ty (template.allocate Φ).2 := by
+      change U.onTy ty = U.onTy (template.allocate Φ).2
+      rw [hUty, hUexpected]
+    have hunifies := unifyCoreK_complete hty hlc hUlc huni
+      (fun k hk => (hagree k (hK k hk)).symm.trans (hRfix k hk))
+    cases template <;> simp only [checkLet, halloc, hr, dite_true, Option.isSome_some]
+    all_goals cases hu : unifyCoreK K ty _ with
+      | none => simp only [hu, Option.isSome_none] at hunifies; contradiction
+      | some result => rcases result with ⟨subst, hun, hav⟩; rfl
+
 
 /-- Producer completeness for the concrete worker, under an arbitrary LC
 specialization fixing the inference's rigid variables. Successful results
