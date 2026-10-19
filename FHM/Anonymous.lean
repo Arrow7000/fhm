@@ -330,8 +330,9 @@ is no recursive rule: in particular, a partial annotation cannot acquire
 polymorphic recursive uses through an arbitrary completed output signature.
 
 Whole completed subtrees use their existing checking rules through the
-conservative Core embedding. Complete signatures whose RHS contains partial
-syntax, and partial match/recursive spines, have no rule in this first fragment.
+conservative Core embedding. Complete annotated lets with partial syntax
+in their RHS or continuation, and partial match/recursive spines, have no rule
+in this first fragment.
 -/
 inductive Typing (K : List Nat) : Ctx → Input → Ty → Prop
   /-- Existing complete Core programs retain their existing declarative meaning.

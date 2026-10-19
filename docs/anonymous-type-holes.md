@@ -4,7 +4,7 @@ This branch contains a verified **Core-shaped input elaborator**, not a parser o
 
 Supported partial syntax is the lambda/application/ordinary-let spine. Templates contain fixed types, independent anonymous holes, arrows, and datatype applications. A whole `_` has the same independent typing meaning as an omitted lambda or ordinary-let annotation (`Typing.lambda_hole_iff` / `Typing.let_hole_iff`). Eligible unsolved variables generalize; variables reachable through the context and written rigid variables do not. An enclosing let synthesizes a complete scheme and closes its RHS annotations under those same ordered binders.
 
-Whole completed subtrees delegate once to the existing verified inferer. This preserves complete signatures, matches, and polymorphic recursion inside such subtrees. Partial explicit-forall signatures, complete signatures whose RHS contains partial syntax, and partial match/recursive spines currently fail explicitly. In particular, a partial recursive signature never becomes a polymorphic-recursion dependency cut.
+Whole completed subtrees delegate once to the existing verified inferer. This preserves complete signatures, matches, and polymorphic recursion inside such subtrees. Partial explicit-forall signatures, complete annotated lets with partial syntax in their RHS or continuation, and partial match/recursive spines currently fail explicitly. In particular, a partial recursive signature never becomes a polymorphic-recursion dependency cut.
 
 Checked results include:
 
