@@ -634,8 +634,8 @@ cofinally. Signed lets preserve the written forall prefix and check each fresh
 opening, with any additional hole variables quantified after that prefix.
 
 Whole completed subtrees retain the existing rules through conservative Core
-embedding. Partial recursive spines have no rule here, so a partial annotation
-cannot grant polymorphic recursive uses through an arbitrary completed scheme.
+embedding. Partial recursive signatures remain monomorphic within their
+component; only complete written schemes permit polymorphic recursive use.
 -/
 inductive Typing : List Nat → Ctx → Input → Ty → Prop
   /-- Existing complete Core programs retain their existing declarative meaning.

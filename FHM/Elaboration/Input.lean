@@ -31,7 +31,8 @@ end
 
 
 /-- Complete signatures and partial signatures have different checking modes.
-The quantified partial form is recorded separately pending its scoped rule. -/
+Quantified partial signatures retain their authored binder count for scoped
+checking and completion. -/
 inductive LetAnn where
   | absent
   | complete (scheme : PolyTy)
