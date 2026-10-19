@@ -6569,8 +6569,56 @@ theorem RecResidual.refresh_opening
     rw [Subst.onTy_append]
     exact zip_fvars_roundtrip hZLen hXsND hZND hXZ (hZOld v hv)
 
+/-- Internal proof data shared by recursive factorization and production.
+Creation requires only the authoritative opening allocation, not a solve/run. -/
+structure RecResidual.Prepared
+    (P G Xs K : List Nat) (F : List Ty) (frontier opened : Nat)
+    (ctx declCtx : Ctx) (state : RecState) (bindings : List Input)
+    (openings : List RecOpening) (done members : List Nat)
+    (declSpecs : List RecSpec) (prefixes : List (List Nat)) (R : Subst) where
+  protectedVars : List Nat
+  candidateCtx : Ctx
+  candidateSpecs : List RecSpec
+  opening : List Nat
+  subst : Subst
+  lc : ∀ pair ∈ subst, pair.2.IsLC
+  fixes : ∀ p ∈ protectedVars, subst.onTy (.fvar p) = .fvar p
+  record : RecResidual protectedVars candidateCtx candidateSpecs prefixes G opening ctx state done subst
+  below : ∀ p ∈ protectedVars, p < opened
+  freeze : ∀ (i : Nat) (rhs : Input), i ∈ members → bindings[i]? = some rhs →
+    ∀ v ∈ rhs.rigidVars, v ∈ K → v ∉ softVars F → subst.onTy (.fvar v) = .fvar v
+  solves : ∀ (i : Nat) (slot : RecOpening) (ty expected : Ty), i ∈ members →
+    openings[i]? = some slot → state.specs[i]? = some (.mono ty) →
+    slot.expected = some expected → subst.onTy expected = subst.onTy ty
+  typed : ∀ (i : Nat) (rhs : Input) (ty : Ty), i ∈ members →
+    (openRecSources openings bindings)[i]? = some rhs → state.specs[i]? = some (.mono ty) →
+    Typing protectedVars (subst.onCtx (state.rhsCtx ctx)) (rhs.substTyFvars subst) (subst.onTy ty)
+  written : ∀ (i : Nat) (slot : RecOpening), i ∈ members → openings[i]? = some slot →
+    slot.written.map (fun v => subst.onTy (.fvar v)) =
+      (recRenameNames G opening (prefixes[i]?.getD [])).map Ty.fvar
+  monoLC : ∀ ty, .mono ty ∈ candidateSpecs → ty.IsLC
+  poolND : G.Nodup
+  prefixData : ∀ (i : Nat) (ty : Ty), candidateSpecs[i]? = some (.mono ty) →
+    (prefixes[i]?.getD []).Nodup ∧ ∀ v ∈ prefixes[i]?.getD [], v ∈ G
+  length : opening.length = G.length
+  nodup : opening.Nodup
+  disjoint : ∀ g ∈ G, g ∉ opening
+  typesFresh : ∀ x ∈ opening, ∀ ty, .mono ty ∈ candidateSpecs → x ∉ ty.freeVars
+  ctxFresh : ∀ x ∈ opening, x ∉ (subst.onCtx (state.fixedCtx ctx)).env.freeVars
+  rigidFresh : ∀ x ∈ opening, ∀ k ∈ K, x ∉ (subst.onTy (.fvar k)).freeVars
+  softFresh : ∀ x ∈ opening, x ∉ softVars (substSoft subst F)
+  preservesRigid : (∀ k ∈ K, R.onTy (.fvar k) = .fvar k) →
+    ∀ k ∈ K, subst.onTy (.fvar k) = .fvar k
+  restore : ∀ (solved : Subst) (final : RecState) (V : Subst),
+    Subst.AgreesBelow opened subst (solved ++ V) →
+    RecResidual protectedVars candidateCtx candidateSpecs prefixes G opening
+      (solved.onCtx ctx) final (done ++ members) V →
+    ∃ T : Subst, (∀ pair ∈ T, pair.2.IsLC) ∧ (∀ p ∈ P, T.onTy (.fvar p) = .fvar p) ∧
+      Subst.AgreesBelow frontier R (solved ++ T) ∧
+      RecResidual P declCtx declSpecs prefixes G Xs (solved.onCtx ctx) final (done ++ members) T
+
 set_option maxHeartbeats 3000000 in
-theorem RecResidual.successful_step
+theorem RecResidual.prepare_component
     {P G Xs : List Nat} {declCtx : Ctx} {declAnns : List LetAnn}
     {declBindings : List Input} {declSpecs : List RecSpec}
     {declGroups declPrefixes : List (List Nat)} {cutoff base : Nat} :
@@ -6596,24 +6644,13 @@ theorem RecResidual.successful_step
   (∀ g ∈ G, g ∉ Xs) →
   (∀ x ∈ Xs, ∀ (ty : Ty), .mono ty ∈ declSpecs → x ∉ ty.freeVars) →
   (∀ x ∈ Xs, x ∉ declCtx.env.freeVars ++ P) →
-∀ {K : List Nat} {F : List Ty} {frontier opened first : Nat}
+∀ {K : List Nat} {F : List Ty} {frontier opened : Nat}
       {ctx : Ctx} {anns : List LetAnn} {bindings : List Input}
-      {state exported : RecState} {past rest : List (List Nat)} {component : List Nat}
-      {openings : List RecOpening} {pre current R : Subst}
-      {outputs : List (Option Expr)} {facts : List RecFacts},
+      {state : RecState} {past rest : List (List Nat)} {component : List Nat}
+      {openings : List RecOpening} {R : Subst}
+      ,
       OpenRecAnns component 0 frontier anns opened openings →
-      CheckRecShapes K ((state.installOpenings component openings).shapes component openings) pre →
-      InferRecComponent K
-        (substSoft pre (F ++ (openings.flatMap RecOpening.written).map Ty.fvar)) component 0 opened
-        (((state.installOpenings component openings).onSubst pre).rhsCtx (pre.onCtx ctx))
-        ((openRecSources openings bindings).map (Input.substTyFvars pre))
-        ((state.installOpenings component openings).onSubst pre).specs first current outputs facts →
-      FinishRecComponent K (softVars (substSoft (pre ++ current) F)) component
-        ((pre ++ current).onCtx ctx) ((state.installOpenings component openings).onSubst (pre ++ current))
-        outputs facts exported →
-      (∀ {κ F' Ψ c e Ψ' T output ty}, e.size ≤ sizeBindings bindings →
-        (hi : Infer κ F' Ψ c e Ψ' T output ty) → Infer.SourcePrincipal hi) →
-      first ≤ cutoff →
+      opened ≤ cutoff →
       RecGroups.ValidResidualGroups (anns.map LetAnn.recModeAnn) (bindings.map Input.erase)
         (past ++ component :: rest) →
       past ++ component :: rest = RecGroup.inferenceSccs
@@ -6634,17 +6671,14 @@ theorem RecResidual.successful_step
         v ∈ K → v ∉ softVars F → R.onTy (.fvar v) = .fvar v) →
       (∀ rhs ∈ bindings, ∀ v ∈ rhs.rigidVars,
         v ∈ K → v ∉ softVars F → R.onTy (.fvar v) = .fvar v) →
-      ∃ U : Subst, (∀ pair ∈ U, pair.2.IsLC) ∧
-        (∀ p ∈ P, U.onTy (.fvar p) = .fvar p) ∧
-        Subst.AgreesBelow frontier R ((pre ++ current) ++ U) ∧
-        RecResidual P declCtx declSpecs declPrefixes G Xs ((pre ++ current).onCtx ctx)
-          exported (past.flatten ++ component) U := by
+      Nonempty (RecResidual.Prepared P G Xs K F frontier opened ctx declCtx state bindings
+        openings past.flatten component declSpecs declPrefixes R) := by
   intro hdeclValid hdeclWF hprefix hGfresh hdeclAnn hdeclRhs hdeclFits hdeclTypes
-    hGhigh hXhigh hXlen hXnd hGX hXmono hXctxP K F frontier opened first ctx anns bindings state exported past rest component openings pre current R outputs facts
-    ho hp hc hf hInfer hcutoff hvalid hcanonical hframe hstateLC hstateB hctxWF hctx hbase hK hF hP hres
+    hGhigh hXhigh hXlen hXnd hGX hXmono hXctxP K F frontier opened ctx anns bindings state past rest component openings R
+    ho hcutoff hvalid hcanonical hframe hstateLC hstateB hctxWF hctx hbase hK hF hP hres
     hXsK hXsF hannScope hrhsScope hannEq hrhsEq hannFreeze hrhsFreeze
   have hopen := ho.frontier_le
-  have hopenCut : opened ≤ cutoff := hc.frontier_le.trans hcutoff
+  have hopenCut : opened ≤ cutoff := hcutoff
   have hfrontCut : frontier ≤ cutoff := hopen.trans hopenCut
   have hlen : anns.length = bindings.length := by simpa only [List.length_map] using hvalid.length
   have hAnnLen : declAnns.length = declSpecs.length := by
@@ -7066,50 +7100,178 @@ theorem RecResidual.successful_step
   have hGYs : ∀ g ∈ G, g ∉ Ys := by
     intro g hg hy
     exact (recRenameNames_mem_source_or_target hy).elim (hGX g hg) (hGR g hg)
-  obtain ⟨T, hTLC, hTP, hagClose, hTRes⟩ := hures.close_opened_component ho hp hc hf hInfer
-    hstateLC hstateB hctxWF hctx hK hF hUPbelow hlen hannScope hrhsScope hLocalFreeze hSolveU huTyped
+  refine ⟨{
+    protectedVars := P ++ reps
+    candidateCtx := D.onCtx declCtx
+    candidateSpecs := declSpecs.map (RecSpec.onSubstSource D)
+    opening := Ys
+    subst := U
+    lc := hU
+    fixes := hUP
+    record := hures
+    below := hUPbelow
+    freeze := hLocalFreeze
+    solves := hSolveU
+    typed := huTyped
+    written := ?_
+    monoLC := hMonoMovedLC
+    poolND := hdeclWF.nodup
+    prefixData := hMovedPrefix
+    length := ?_
+    nodup := hYsND
+    disjoint := hGYs
+    typesFresh := hYsTypes
+    ctxFresh := hYsCtx
+    rigidFresh := hYsK
+    softFresh := hYsF
+    preservesRigid := ?_
+    restore := ?_ }⟩
+  · intro i opening hi hop
+    have hib : i < names.length := by
+      have := (List.getElem?_eq_some_iff.mp hop).1
+      have := ho.length
+      omega
+    have hn := List.getElem?_eq_getElem hib
+    obtain ⟨ty, hty⟩ := hselectedMono i hi
+    have hm := (himages i opening names[i] (moved.onTy ty) hi hop hn (htarget i ty hi hty)).1
+    rw [hm, hGetNames i names[i] hi hn, ← recRenameNames_map_images hXlen
+      (hprefixData i (List.getElem?_eq_some_iff.mp (hres.mono i ty hty).choose_spec).1).2]
+  · simpa only [Ys, recRenameNames_length] using hXlen
+  · intro hRK k hk
+    rw [hUFacts (.fvar k) (.fvar (hK k hk)), hForward (.fvar k) (.fvar (hK k hk)),
+      hRK k hk, hDlow k (hK k hk)]
+    apply zip_fvars_fixes
+    intro hc
+    have hhi := hXhigh k (hCX k (List.mem_dedup.mp hc))
+    have hlo := hK k hk
+    omega
+  · intro solved final T hagClose hTRes
+    have hBRestored := hTRes.restore_prefixRepresentatives hRepLen hReps hCX hXR hdeclWF.nodup hXlen hGX hGR
+      hMonoMovedLC
+      (by
+        intro ty ht
+        obtain ⟨old, ho, he⟩ := List.mem_map.mp ht
+        cases old with
+        | poly scheme => cases he
+        | mono original => cases he; exact hDXfresh original (hSpecT _ ho) (fun x hx => hXmono x hx original ho))
+      (by
+        intro ty ht r hr
+        obtain ⟨old, ho, he⟩ := List.mem_map.mp ht
+        cases old with
+        | poly scheme => cases he
+        | mono original => cases he; exact (hTarget original (hSpecT _ ho)).2 r (hrepA r hr))
+      (by
+        intro scheme hs r hr
+        obtain ⟨old, ho, he⟩ := List.mem_map.mp hs
+        cases old with
+        | mono ty => cases he
+        | poly original => cases he; exact (hTarget original.body (hSpecT _ ho)).2 r (hrepA r hr))
+      (by
+        intro r hr hv
+        obtain ⟨M, hm, hv⟩ := Env.mem_freeVars_iff.mp hv
+        obtain ⟨old, ho, rfl⟩ := List.mem_map.mp hm
+        exact (hTarget old.body (hCtxT old ho)).2 r (hrepA r hr) hv)
+      hPR
+    have hFinal := hRestore _ _ _ _ hBRestored
+    have hagB : Subst.AgreesBelow frontier (moved ++ B) (solved ++ T) := by
+      intro v hv
+      exact (hUag v hv).trans (hagClose v (hv.trans_le hopen))
+    have hagPopB := hagB.restore_prefixRepresentatives hRepLen hReps hCD
+      (fun v hv r hr => hMovedAvoid (.fvar v) (.fvar hv) r (hrepA r hr))
+    have hagFinal := hagPopB.restore_after (fun v hv => hBackward (.fvar v) (.fvar hv))
+    exact ⟨_, hFinal.lc, hFinal.fixes, hagFinal, hFinal⟩
+
+
+set_option maxHeartbeats 3000000 in
+theorem RecResidual.successful_step
+    {P G Xs : List Nat} {declCtx : Ctx} {declAnns : List LetAnn}
+    {declBindings : List Input} {declSpecs : List RecSpec}
+    {declGroups declPrefixes : List (List Nat)} {cutoff base : Nat} :
+  RecGroups.ValidResidualGroups (declAnns.map LetAnn.recModeAnn) (declBindings.map Input.erase) declGroups →
+  RecSpecs.WF (declAnns.map LetAnn.recModeAnn) (declBindings.map Input.erase) declSpecs G →
+  RecPrefixesWF declAnns declSpecs declPrefixes G →
+  (∀ g ∈ G, g ∉ declCtx.env.freeVars ++ P) →
+  (∀ ann ∈ declAnns, ∀ v ∈ ann.rigidVars, v ∈ P) →
+  (∀ rhs ∈ declBindings, ∀ v ∈ rhs.rigidVars, v ∈ P) →
+  (∀ (stage : Nat) (component : List Nat), declGroups[stage]? = some component →
+    ∀ (member : Nat), member ∈ component → ∀ (rhs : Input) (ann : LetAnn) (names : List Nat) (ty : Ty),
+      declBindings[member]? = some rhs → declAnns[member]? = some ann →
+      declPrefixes[member]? = some names → declSpecs[member]? = some (.mono ty) →
+      ann.RecFits (recRenameNames G Xs names) (Ty.renameG G Xs ty)) →
+  (∀ (stage : Nat) (component : List Nat), declGroups[stage]? = some component →
+    ∀ (member : Nat), member ∈ component → ∀ (rhs : Input) (ann : LetAnn) (names : List Nat) (ty : Ty),
+      declBindings[member]? = some rhs → declAnns[member]? = some ann →
+      declPrefixes[member]? = some names → declSpecs[member]? = some (.mono ty) →
+      Typing (P ++ Xs) (recStageCtx declCtx declSpecs declPrefixes (declGroups.take stage).flatten G Xs)
+        (rhs.openTyVars (recRenameNames G Xs names)) (Ty.renameG G Xs ty)) →
+  (∀ g ∈ G, cutoff ≤ g) → (∀ x ∈ Xs, cutoff ≤ x) →
+  Xs.length = G.length → Xs.Nodup →
+  (∀ g ∈ G, g ∉ Xs) →
+  (∀ x ∈ Xs, ∀ (ty : Ty), .mono ty ∈ declSpecs → x ∉ ty.freeVars) →
+  (∀ x ∈ Xs, x ∉ declCtx.env.freeVars ++ P) →
+∀ {K : List Nat} {F : List Ty} {frontier opened first : Nat}
+      {ctx : Ctx} {anns : List LetAnn} {bindings : List Input}
+      {state exported : RecState} {past rest : List (List Nat)} {component : List Nat}
+      {openings : List RecOpening} {pre current R : Subst}
+      {outputs : List (Option Expr)} {facts : List RecFacts},
+      OpenRecAnns component 0 frontier anns opened openings →
+      CheckRecShapes K ((state.installOpenings component openings).shapes component openings) pre →
+      InferRecComponent K
+        (substSoft pre (F ++ (openings.flatMap RecOpening.written).map Ty.fvar)) component 0 opened
+        (((state.installOpenings component openings).onSubst pre).rhsCtx (pre.onCtx ctx))
+        ((openRecSources openings bindings).map (Input.substTyFvars pre))
+        ((state.installOpenings component openings).onSubst pre).specs first current outputs facts →
+      FinishRecComponent K (softVars (substSoft (pre ++ current) F)) component
+        ((pre ++ current).onCtx ctx) ((state.installOpenings component openings).onSubst (pre ++ current))
+        outputs facts exported →
+      (∀ {κ F' Ψ c e Ψ' T output ty}, e.size ≤ sizeBindings bindings →
+        (hi : Infer κ F' Ψ c e Ψ' T output ty) → Infer.SourcePrincipal hi) →
+      first ≤ cutoff →
+      RecGroups.ValidResidualGroups (anns.map LetAnn.recModeAnn) (bindings.map Input.erase)
+        (past ++ component :: rest) →
+      past ++ component :: rest = RecGroup.inferenceSccs
+        (anns.map LetAnn.recModeAnn) (bindings.map Input.erase) →
+      state.Frame base K F ctx anns past.flatten →
+      state.LC → state.Below frontier → CtxWF ctx → CtxBelow frontier ctx →
+      base + bindings.length ≤ frontier →
+      (∀ k ∈ K, k < frontier) → (∀ t ∈ F, Ty.BelowFvars frontier t) →
+      (∀ p ∈ P, p < frontier) →
+      RecResidual P declCtx declSpecs declPrefixes G Xs ctx state past.flatten R →
+      (∀ x ∈ Xs, ∀ k ∈ K, x ∉ (R.onTy (.fvar k)).freeVars) →
+      (∀ x ∈ Xs, x ∉ softVars (substSoft R F)) →
+      (∀ ann ∈ anns, ∀ v ∈ ann.rigidVars, v ∈ K ++ softVars F) →
+      (∀ rhs ∈ bindings, SourceScope K F rhs) →
+      anns.map (LetAnn.substTyFvars R) = declAnns →
+      bindings.map (Input.substTyFvars R) = declBindings →
+      (∀ ann ∈ anns, ∀ v ∈ ann.rigidVars,
+        v ∈ K → v ∉ softVars F → R.onTy (.fvar v) = .fvar v) →
+      (∀ rhs ∈ bindings, ∀ v ∈ rhs.rigidVars,
+        v ∈ K → v ∉ softVars F → R.onTy (.fvar v) = .fvar v) →
+      ∃ U : Subst, (∀ pair ∈ U, pair.2.IsLC) ∧
+        (∀ p ∈ P, U.onTy (.fvar p) = .fvar p) ∧
+        Subst.AgreesBelow frontier R ((pre ++ current) ++ U) ∧
+        RecResidual P declCtx declSpecs declPrefixes G Xs ((pre ++ current).onCtx ctx)
+          exported (past.flatten ++ component) U := by
+  intro hdeclValid hdeclWF hprefix hGfresh hdeclAnn hdeclRhs hdeclFits hdeclTypes
+    hGhigh hXhigh hXlen hXnd hGX hXmono hXctxP K F frontier opened first ctx anns bindings state exported past rest component openings pre current R outputs facts
+    ho hp hc hf hInfer hcutoff hvalid hcanonical hframe hstateLC hstateB hctxWF hctx hbase hK hF hP hres
+    hXsK hXsF hannScope hrhsScope hannEq hrhsEq hannFreeze hrhsFreeze
+  obtain ⟨prepared⟩ := RecResidual.prepare_component hdeclValid hdeclWF hprefix hGfresh hdeclAnn hdeclRhs
+    hdeclFits hdeclTypes hGhigh hXhigh hXlen hXnd hGX hXmono hXctxP
+    ho (hc.frontier_le.trans hcutoff) hvalid hcanonical hframe hstateLC hstateB hctxWF hctx hbase hK hF hP hres
+    hXsK hXsF hannScope hrhsScope hannEq hrhsEq hannFreeze hrhsFreeze
+  obtain ⟨T, hT, hTP, hag, hresT⟩ := prepared.record.close_opened_component ho hp hc hf hInfer
+    hstateLC hstateB hctxWF hctx hK hF prepared.below (by simpa only [List.length_map] using hvalid.length)
+    hannScope hrhsScope prepared.freeze prepared.solves prepared.typed
     (hframe.exports_length.trans hframe.specs_length.symm)
     (by
       intro i hi hd
-      have hnd := hvalid.flatten_nodup
-      have hh : (past.flatten ++ (component ++ rest.flatten)).Nodup := by simpa only [List.flatten_append, List.flatten_cons] using hnd
+      have hh : (past.flatten ++ (component ++ rest.flatten)).Nodup := by
+        simpa only [List.flatten_append, List.flatten_cons] using hvalid.flatten_nodup
       exact (List.nodup_append.mp hh).2.2 i hd i (List.mem_append_left _ hi) rfl)
-    hMonoMovedLC hdeclWF.nodup hMovedPrefix (by simpa only [Ys, recRenameNames_length] using hXlen)
-    hYsND hGYs hYsTypes hYsCtx hYsK hYsF
-  have hBRestored := hTRes.restore_prefixRepresentatives hRepLen hReps hCX hXR hdeclWF.nodup hXlen hGX hGR
-    hMonoMovedLC
-    (by
-      intro ty ht
-      obtain ⟨old, ho, he⟩ := List.mem_map.mp ht
-      cases old with
-      | poly scheme => cases he
-      | mono original => cases he; exact hDXfresh original (hSpecT _ ho) (fun x hx => hXmono x hx original ho))
-    (by
-      intro ty ht r hr
-      obtain ⟨old, ho, he⟩ := List.mem_map.mp ht
-      cases old with
-      | poly scheme => cases he
-      | mono original => cases he; exact (hTarget original (hSpecT _ ho)).2 r (hrepA r hr))
-    (by
-      intro scheme hs r hr
-      obtain ⟨old, ho, he⟩ := List.mem_map.mp hs
-      cases old with
-      | mono ty => cases he
-      | poly original => cases he; exact (hTarget original.body (hSpecT _ ho)).2 r (hrepA r hr))
-    (by
-      intro r hr hv
-      obtain ⟨M, hm, hv⟩ := Env.mem_freeVars_iff.mp hv
-      obtain ⟨old, ho, rfl⟩ := List.mem_map.mp hm
-      exact (hTarget old.body (hCtxT old ho)).2 r (hrepA r hr) hv)
-    hPR
-  have hFinal := hRestore _ _ _ _ hBRestored
-  have hagB : Subst.AgreesBelow frontier (moved ++ B) ((pre ++ current) ++ T) := by
-    intro v hv
-    exact (hUag v hv).trans (hagClose v (hv.trans_le hopen))
-  have hagPopB := hagB.restore_prefixRepresentatives hRepLen hReps hCD
-    (fun v hv r hr => hMovedAvoid (.fvar v) (.fvar hv) r (hrepA r hr))
-  have hagFinal := hagPopB.restore_after (fun v hv => hBackward (.fvar v) (.fvar hv))
-  exact ⟨_, hFinal.lc, hFinal.fixes, hagFinal, hFinal⟩
+    prepared.monoLC prepared.poolND prepared.prefixData prepared.length prepared.nodup prepared.disjoint
+    prepared.typesFresh prepared.ctxFresh prepared.rigidFresh prepared.softFresh
+  exact prepared.restore (pre ++ current) exported T hag hresT
 
 theorem _root_.Infer.sourcePrincipal (h : Infer K F frontier ctx input next subst output ty) :
     Infer.SourcePrincipal h := by
