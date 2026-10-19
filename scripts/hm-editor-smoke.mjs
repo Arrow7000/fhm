@@ -640,6 +640,27 @@ test("completed signature holes count synthetic binders in every enclosing scope
   run(deep, "(1, False)");
 });
 
+test("unsigned recursive lambda holes receive their solved parameter type", () => {
+  const source = "let sum = \\(n : _) -> if n < 1 then 0 else n + sum (n - 1)\nsum 3\n";
+  hover(diagnose(source), source, 0, "_", "Int");
+  run(source, "6");
+});
+
+test("recursive monomorphic templates generalize after the whole SCC", () => {
+  const source = "let id : _ -> _ = \\x -> if True then x else id x\n(id 1, id True)\n";
+  const payload = diagnose(source);
+  hover(payload, source, 0, "_", "a", 0);
+  hover(payload, source, 0, "_", "a", 1);
+  run(source, "(1, True)");
+});
+
+test("completed recursive RHSs permit a partial continuation", () => {
+  const source = "let sum = \\n -> if n < 1 then 0 else n + sum (n - 1)\n" +
+    "(\\(x : _) -> sum x) 3\n";
+  hover(diagnose(source), source, 1, "_", "Int");
+  run(source, "6");
+});
+
 test("recursive partial signature structure constrains the entire SCC", () => {
   const shape = "let f : {a} (Int,a) -> _ = \\x -> g x\n" +
     "let g = \\x -> if True then x else f x\n";
