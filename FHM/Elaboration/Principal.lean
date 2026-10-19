@@ -51,33 +51,6 @@ theorem fitsList_toCore_eq {templates : List Template} {tys complete : List Ty}
     rw [hh.toCore_eq hty, fitsList_toCore_eq ht htys]
 end
 
-mutual
-theorem Template.toCore_rigidVars {template : Template} {ty : Ty}
-    (h : template.toCore = some ty) (v : Nat) : v ∈ template.rigidVars ↔ v ∈ ty.freeVars := by
-  cases template with
-  | fixed => cases h; rfl
-  | hole => cases h
-  | arrow a b =>
-    simp only [Template.toCore, bind, pure, Option.bind_eq_some_iff, Option.some.injEq] at h
-    obtain ⟨ta, ha, tb, hb, rfl⟩ := h
-    simp only [Template.rigidVars, Ty.freeVars, List.mem_append, List.mem_dedup,
-      Template.toCore_rigidVars ha, Template.toCore_rigidVars hb]
-  | custom name args =>
-    simp only [Template.toCore, bind, pure, Option.bind_eq_some_iff, Option.some.injEq] at h
-    obtain ⟨tys, ht, rfl⟩ := h
-    simpa only [Template.rigidVars, Ty.freeVars, TyList.mem_freeVars_iff, List.mem_flatMap] using completeTypes_rigidVars ht v
-theorem completeTypes_rigidVars {templates : List Template} {tys : List Ty}
-    (h : completeTypes templates = some tys) (v : Nat) :
-    v ∈ rigidVarsList templates ↔ v ∈ tys.flatMap Ty.freeVars := by
-  cases templates with
-  | nil => cases h; rfl
-  | cons t ts =>
-    simp only [completeTypes, bind, pure, Option.bind_eq_some_iff, Option.some.injEq] at h
-    obtain ⟨ty, ht, tys, hts, rfl⟩ := h
-    simp only [rigidVarsList, List.flatMap_cons, List.mem_append,
-      Template.toCore_rigidVars ht, completeTypes_rigidVars hts]
-end
-
 private theorem completeBranches_length {inputs : List (MatchPattern × Input)}
     {cores : List (MatchPattern × Expr)} (h : completeBranches inputs = some cores) :
     inputs.length = cores.length := by
