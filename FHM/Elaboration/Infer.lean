@@ -108,6 +108,45 @@ theorem _root_.Infer.sourceSound (h : Infer K frontier ctx input next subst outp
         (fun _ heq => Option.some.inj heq) ?_ rfl bodyTyped
       simpa only [letOutput, genScheme, ← Subst.onCtx_append] using rhsFinal
 
+  | @Infer.letSignature written frontier K ctx first s1 rhsOut rhsTy ann checked sCheck body next s2 bodyOut bodyTy rhs
+      hprefix havoid _ hr hc hescape hb =>
+    intro hctx
+    have hlen : written.length = ann.paramCount := by simpa only [freshVars_length] using congrArg List.length hprefix
+    have hnd : written.Nodup := hprefix ▸ freshVars_nodup
+    obtain ⟨hrTy, hs1⟩ := hr.lc hctx
+    have hsCheck := hc.lc hlen hrTy
+    have checkedCtxWF := Subst.onCtx_wf hsCheck (Subst.onCtx_wf hs1 hctx)
+    have checkedTyLC := Subst.onTy_lc hsCheck hrTy
+    have hscheme := hc.scheme_wf (ctx := sCheck.onCtx (s1.onCtx ctx)) checkedTyLC
+    have bodyCtxWF : CtxWF
+        { sCheck.onCtx (s1.onCtx ctx) with
+          env := signatureScheme ann K written (sCheck.onCtx (s1.onCtx ctx)) (sCheck.onTy rhsTy) ::
+            (sCheck.onCtx (s1.onCtx ctx)).env } := by
+      intro scheme hschemeMem
+      rcases List.mem_cons.mp hschemeMem with rfl | hschemeMem
+      · exact hscheme
+      · exact checkedCtxWF scheme hschemeMem
+    have hs2 := (hb.lc bodyCtxWF).2
+    have rhsTyped := TypeOfHM.onSubst sCheck hsCheck (hr.sourceSound hctx)
+    have rhsGeneral := TypeOfHM.generaliseAnnotated
+      (names := signatureNames ann K written (sCheck.onCtx (s1.onCtx ctx)) (sCheck.onTy rhsTy))
+      rhsTyped (hc.names_nodup hnd) (hc.names_fresh hescape)
+    rw [← hc.scheme_eq_close hlen hnd havoid] at rhsGeneral
+    obtain ⟨avoid, rhsFinal⟩ := GeneralisesTo.onSubst_annotated hscheme rhsGeneral s2 hs2
+    have bodyTyped := hb.sourceSound bodyCtxWF
+    have hctxeq :
+        s2.onCtx { sCheck.onCtx (s1.onCtx ctx) with
+          env := signatureScheme ann K written (sCheck.onCtx (s1.onCtx ctx)) (sCheck.onTy rhsTy) ::
+            (sCheck.onCtx (s1.onCtx ctx)).env } =
+        { (s1 ++ sCheck ++ s2).onCtx ctx with
+          env := s2.onPolyTy (signatureScheme ann K written (sCheck.onCtx (s1.onCtx ctx)) (sCheck.onTy rhsTy)) ::
+            ((s1 ++ sCheck ++ s2).onCtx ctx).env } := by
+      rw [Subst.onCtx_append, Subst.onCtx_append]
+      rfl
+    rw [hctxeq] at bodyTyped
+    refine TypeOfHM.letIn (L := avoid) (Subst.onPolyTy_wf hs2 hscheme)
+      (fun _ heq => Option.some.inj heq) ?_ rfl bodyTyped
+    simpa only [letOutput, ← Subst.onCtx_append] using rhsFinal
   | .match_ hs hne hb =>
     intro hctx
     have hs1 := (hs.lc hctx).2
@@ -117,7 +156,7 @@ theorem _root_.Infer.sourceSound (h : Infer K frontier ctx input next subst outp
     simpa only [Subst.onCtx_append] using
       TypeOfHM.match_ hscrut (fun hnil => hne (hb.nil_iff.mp hnil)) hbranches
 termination_by (input.size, 0)
-decreasing_by all_goals (simp only [Input.size]; omega)
+decreasing_by all_goals (simp only [Input.size, Input.size_openTyVars]; omega)
 
 theorem _root_.InferBranches.sourceSound
     (h : InferBranches K frontier ctx scrutTy resultTy branches next subst completed)
@@ -199,10 +238,13 @@ theorem _root_.Infer.erase (h : Infer K frontier ctx input next subst output ty)
   | .letIn hr _ hb =>
       simp only [letOutput, Expr.erase, Expr.erase_substTyFvars,
         Expr.erase_closeTyVars, Input.erase, hr.erase, hb.erase]
+  | .letSignature _ _ _ hr _ _ hb =>
+      simp only [letOutput, Expr.erase, Expr.erase_substTyFvars,
+        Expr.erase_closeTyVars, Input.erase, hr.erase, hb.erase, Input.erase_openTyVars]
   | .match_ hs _ hb =>
       simp only [Expr.erase, Expr.erase_substTyFvars, Input.erase, hs.erase, hb.erase]
 termination_by (input.size, 0)
-decreasing_by all_goals (simp only [Input.size]; omega)
+decreasing_by all_goals (simp only [Input.size, Input.size_openTyVars]; omega)
 
 theorem _root_.InferBranches.erase
     (h : InferBranches K frontier ctx scrutTy resultTy branches next subst completed) :
@@ -239,10 +281,15 @@ theorem _root_.Infer.completes (h : Infer K frontier ctx input next subst output
   | .letIn hr hc hb =>
       exact .letIn hc.fits hc.rigid (.specialise hr.completes hc.dom_avoids) hb.completes
         (fun _ hn => genVars_not_mem_rigid hn) hb.dom_avoids
+  | .letSignature hprefix havoid hraw hr hc _ hb =>
+      have hlen : _ := congrArg List.length hprefix
+      simp only [freshVars_length] at hlen
+      exact .letSignature (hc.completion hlen) hc.rigid hraw (hc.names_avoid havoid)
+        (.specialise hr.completes hc.dom_avoids) hb.completes hb.dom_avoids
   | .match_ hs _ hb =>
       exact .match_ (.specialise hs.completes hb.dom_avoids) hb.completes
 termination_by (input.size, 0)
-decreasing_by all_goals (simp only [Input.size]; omega)
+decreasing_by all_goals (simp only [Input.size, Input.size_openTyVars]; omega)
 
 theorem _root_.InferBranches.completes
     (h : InferBranches K frontier ctx scrutTy resultTy branches next subst completed) :
@@ -338,6 +385,53 @@ theorem _root_.Infer.inputSound (h : Infer K frontier ctx input next subst outpu
         hc.rigid hfits ?_ bodyTyped
       simpa only [← Subst.onCtx_append] using hgeneral
 
+  | @Infer.letSignature written frontier K ctx first s1 rhsOut rhsTy ann checked sCheck body next s2 bodyOut bodyTy rhs
+      hprefix havoid hraw hr hc hescape hb =>
+    intro hctx
+    have hlen : written.length = ann.paramCount := by simpa only [freshVars_length] using congrArg List.length hprefix
+    have hnd : written.Nodup := hprefix ▸ freshVars_nodup
+    obtain ⟨hrTy, hs1⟩ := hr.lc hctx
+    have hsCheck := hc.lc hlen hrTy
+    have checkedCtxWF := Subst.onCtx_wf hsCheck (Subst.onCtx_wf hs1 hctx)
+    have checkedTyLC := Subst.onTy_lc hsCheck hrTy
+    have hscheme := hc.scheme_wf (ctx := sCheck.onCtx (s1.onCtx ctx)) checkedTyLC
+    have bodyCtxWF : CtxWF
+        { sCheck.onCtx (s1.onCtx ctx) with
+          env := signatureScheme ann K written (sCheck.onCtx (s1.onCtx ctx)) (sCheck.onTy rhsTy) ::
+            (sCheck.onCtx (s1.onCtx ctx)).env } := by
+      intro scheme hschemeMem
+      rcases List.mem_cons.mp hschemeMem with rfl | hschemeMem
+      · exact hscheme
+      · exact checkedCtxWF scheme hschemeMem
+    have hs2 := (hb.lc bodyCtxWF).2
+    have rhsTyped := (hr.inputSound hctx).onSubst sCheck hsCheck hc.dom_avoids
+    have hcomp := hc.completion (ctx := sCheck.onCtx (s1.onCtx ctx)) hlen
+    obtain ⟨fitAvoid, hfits⟩ := hcomp.cofinite_fits
+      (hc.names_nodup hnd) (hc.names_avoid havoid) hc.rigid checkedTyLC
+    obtain ⟨typeAvoid, htypes⟩ := hcomp.cofinite_typing rhsTyped hscheme
+      (hc.names_nodup hnd) (hc.names_fresh hescape) (hc.names_avoid havoid) hc.rigid hraw
+    have hfitBoth := fun fresh (hf : FreshNames (fitAvoid ++ typeAvoid)
+        (signatureScheme ann K written (sCheck.onCtx (s1.onCtx ctx)) (sCheck.onTy rhsTy)).paramCount fresh) =>
+      hfits fresh ⟨hf.length, hf.nodup, fun v hv ha => hf.avoid v hv (List.mem_append_left _ ha)⟩
+    have htypeBoth := fun fresh (hf : FreshNames (fitAvoid ++ typeAvoid)
+        (signatureScheme ann K written (sCheck.onCtx (s1.onCtx ctx)) (sCheck.onTy rhsTy)).paramCount fresh) =>
+      htypes fresh ⟨hf.length, hf.nodup, fun v hv ha => hf.avoid v hv (List.mem_append_right _ ha)⟩
+    obtain ⟨avoid, hfitsFinal, htypesFinal⟩ := Typing.signatureBinding_onSubst
+      hfitBoth htypeBoth hc.rigid s2 hs2 hb.dom_avoids
+    have bodyTyped := hb.inputSound bodyCtxWF
+    have hctxeq :
+        s2.onCtx { sCheck.onCtx (s1.onCtx ctx) with
+          env := signatureScheme ann K written (sCheck.onCtx (s1.onCtx ctx)) (sCheck.onTy rhsTy) ::
+            (sCheck.onCtx (s1.onCtx ctx)).env } =
+        { (s1 ++ sCheck ++ s2).onCtx ctx with
+          env := s2.onPolyTy (signatureScheme ann K written (sCheck.onCtx (s1.onCtx ctx)) (sCheck.onTy rhsTy)) ::
+            ((s1 ++ sCheck ++ s2).onCtx ctx).env } := by
+      rw [Subst.onCtx_append, Subst.onCtx_append]
+      rfl
+    rw [hctxeq] at bodyTyped
+    refine Typing.letSignature (L := avoid) (Subst.onPolyTy_wf hs2 hscheme)
+      hc.rigid hraw hfitsFinal ?_ bodyTyped
+    simpa only [← Subst.onCtx_append] using htypesFinal
   | .match_ hs hne hb =>
     intro hctx
     have hs1 := (hs.lc hctx).2
@@ -346,7 +440,7 @@ theorem _root_.Infer.inputSound (h : Infer K frontier ctx input next subst outpu
     have hbranches := hb.inputSound (Subst.onCtx_wf hs1 hctx) (hs.lc hctx).1 .fvar
     simpa only [Subst.onCtx_append] using Typing.match_ hscrut hne hbranches
 termination_by (input.size, 0)
-decreasing_by all_goals (simp only [Input.size]; omega)
+decreasing_by all_goals (simp only [Input.size, Input.size_openTyVars]; omega)
 
 theorem _root_.InferBranches.inputSound
     (h : InferBranches K frontier ctx scrutTy resultTy branches next subst completed)
@@ -453,6 +547,32 @@ def checkLet (K : List Nat) (frontier : Nat) (ann : LetAnn) (ty : Ty) :
       else none
   | .complete _ | .partialForall _ _ => none
 
+def checkSignature (K written : List Nat) (frontier : Nat) (ann : LetAnn) (ty : Ty) :
+    Option { result : Nat × Subst // SignatureCheck K written frontier ty ann result.1 result.2 } :=
+  match ann with
+  | .complete scheme =>
+    if hwf : scheme.body.bvarsBelow scheme.paramCount = true then
+      if hr : scheme.body.freeVars.all (fun v => decide (v ∈ K)) = true then
+        match unifyCoreK (K ++ written) ty (scheme.openVars written) with
+        | none => none
+        | some ⟨subst, hu, hd⟩ => some ⟨(frontier, subst), .complete
+            (PolyTy.wf_iff_bvarsBelow.mp hwf)
+            (fun v hv => of_decide_eq_true (List.all_eq_true.mp hr v hv)) ⟨hu, hd⟩⟩
+      else none
+    else none
+  | .partialForall _ template =>
+    let expected := (template.openTyVarsFrom 0 written).allocate frontier
+    if hlc : expected.2.bvarsBelow 0 = true then
+      if hr : template.rigidVars.all (fun v => decide (v ∈ K)) = true then
+        match unifyCoreK (K ++ written) ty expected.2 with
+        | none => none
+        | some ⟨subst, hu, hd⟩ => some ⟨(expected.1, subst), .partialSignature rfl
+            ((Ty.bvarsBelow_iff _).mp hlc)
+            (fun v hv => of_decide_eq_true (List.all_eq_true.mp hr v hv)) ⟨hu, hd⟩⟩
+      else none
+    else none
+  | .absent | .template _ => none
+
 private theorem ctxBelow_of_all {ctx : Ctx} {frontier : Nat}
     (h : ctx.env.freeVars.all (fun v => decide (v < frontier)) = true) : CtxBelow frontier ctx := by
   intro scheme hscheme
@@ -509,28 +629,64 @@ def _root_.inferWithTypesCore (K : List Nat) (frontier : Nat) (ctx : Ctx) (input
                             (fSchemes.onSubst (s2 ++ s3)).below .appFun ++
                               (argSchemes.onSubst s3).below .appArg), .app hf ha ⟨hu, hd⟩⟩
           | .letIn ann rhs body =>
-              match inferWithTypesCore K frontier ctx rhs with
-              | none => none
-              | some ⟨(first, s1, rhsOut, rhsTy, rhsTypes, rhsSchemes), hr⟩ =>
-                  match checkLet K first ann rhsTy with
+            if ann.isSignature then
+              let written := freshVars frontier ann.paramCount
+              if hraw : rhs.rigidVars.all (fun v => decide (v ∈ K)) = true then
+                match inferWithTypesCore (K ++ written) (frontier + ann.paramCount) ctx (rhs.openTyVars written) with
+                | none => none
+                | some ⟨(first, s1, rhsOut, rhsTy, rhsTypes, rhsSchemes), hr⟩ =>
+                  match checkSignature K written first ann rhsTy with
                   | none => none
                   | some ⟨(checked, sCheck), hc⟩ =>
-                      let checkedCtx := sCheck.onCtx (s1.onCtx ctx)
-                      let checkedTy := sCheck.onTy rhsTy
-                      let checkedOut := rhsOut.substTyFvars sCheck
-                      let scheme := genScheme K checkedCtx.env checkedTy
-                      let names := genVars K checkedCtx.env checkedTy
+                    let checkedCtx := sCheck.onCtx (s1.onCtx ctx)
+                    let checkedTy := sCheck.onTy rhsTy
+                    let checkedOut := rhsOut.substTyFvars sCheck
+                    let scheme := signatureScheme ann K written checkedCtx checkedTy
+                    let names := signatureNames ann K written checkedCtx checkedTy
+                    if hescape : ∀ name ∈ written, name ∉ checkedCtx.env.freeVars then
                       match inferWithTypesCore K checked { checkedCtx with env := scheme :: checkedCtx.env } body with
                       | none => none
                       | some ⟨(next, s2, bodyOut, bodyTy, bodyTypes, bodySchemes), hb⟩ =>
-                          let binder : InferredBinderScheme :=
-                            { site := .letIn [], scheme := s2.onPolyTy scheme, tyDepth := 0 }
-                          some ⟨(next, s1 ++ sCheck ++ s2,
-                            letOutput scheme names checkedOut bodyOut s2, bodyTy,
-                            .root bodyTy ++ (rhsTypes.onSubst (sCheck ++ s2)).below .letRhs ++
-                              bodyTypes.below .letBody,
-                            binder :: (rhsSchemes.onSubst (sCheck ++ s2)).below .letRhs ++
-                              bodySchemes.below .letBody), .letIn hr hc hb⟩
+                        let rhsFinalTypes := (((rhsTypes.onSubst sCheck).closeTyVars written).onSubst s2)
+                          |>.underTyBinders ann.paramCount |>.below .letRhs
+                        let rhsFinalSchemes := (((rhsSchemes.onSubst sCheck).closeTyVars written).onSubst s2)
+                          |>.underTyBinders ann.paramCount |>.below .letRhs
+                        let inferred : InferredBinderSchemes := match ann with
+                          | .partialForall _ _ => [{ site := .letIn [], scheme := s2.onPolyTy scheme, tyDepth := 0 }]
+                          | _ => []
+                        some ⟨(next, s1 ++ sCheck ++ s2, letOutput scheme names checkedOut bodyOut s2, bodyTy,
+                          .root bodyTy ++ rhsFinalTypes ++ bodyTypes.below .letBody,
+                          inferred ++ rhsFinalSchemes ++ bodySchemes.below .letBody),
+                          .letSignature rfl (fun name hn hk => by
+                            have hlt := of_decide_eq_true (List.all_eq_true.mp hK name hk)
+                            have hge := freshVars_ge name hn
+                            omega)
+                            (fun v hv => of_decide_eq_true (List.all_eq_true.mp hraw v hv)) hr hc hescape hb⟩
+                    else none
+              else none
+            else
+                  match inferWithTypesCore K frontier ctx rhs with
+                  | none => none
+                  | some ⟨(first, s1, rhsOut, rhsTy, rhsTypes, rhsSchemes), hr⟩ =>
+                      match checkLet K first ann rhsTy with
+                      | none => none
+                      | some ⟨(checked, sCheck), hc⟩ =>
+                          let checkedCtx := sCheck.onCtx (s1.onCtx ctx)
+                          let checkedTy := sCheck.onTy rhsTy
+                          let checkedOut := rhsOut.substTyFvars sCheck
+                          let scheme := genScheme K checkedCtx.env checkedTy
+                          let names := genVars K checkedCtx.env checkedTy
+                          match inferWithTypesCore K checked { checkedCtx with env := scheme :: checkedCtx.env } body with
+                          | none => none
+                          | some ⟨(next, s2, bodyOut, bodyTy, bodyTypes, bodySchemes), hb⟩ =>
+                              let binder : InferredBinderScheme :=
+                                { site := .letIn [], scheme := s2.onPolyTy scheme, tyDepth := 0 }
+                              some ⟨(next, s1 ++ sCheck ++ s2,
+                                letOutput scheme names checkedOut bodyOut s2, bodyTy,
+                                .root bodyTy ++ (rhsTypes.onSubst (sCheck ++ s2)).below .letRhs ++
+                                  bodyTypes.below .letBody,
+                                binder :: (rhsSchemes.onSubst (sCheck ++ s2)).below .letRhs ++
+                                  bodySchemes.below .letBody), .letIn hr hc hb⟩
           | .match_ scrut branches =>
               match inferWithTypesCore K frontier ctx scrut with
               | none => none
@@ -551,7 +707,7 @@ def _root_.inferWithTypesCore (K : List Nat) (frontier : Nat) (ctx : Ctx) (input
     else none
   else none
 termination_by (input.size, 0)
-decreasing_by all_goals (simp only [Input.size]; omega)
+decreasing_by all_goals (simp only [Input.size, Input.size_openTyVars]; omega)
 
 def _root_.inferBranchesWithTypesCore (K : List Nat) (Φ : Nat) (ctx : Ctx) (scrutTy : Ty) (ρ : Ty)
     (branchIndex : Nat) (branches : List (MatchPattern × Input)) :

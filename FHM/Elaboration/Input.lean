@@ -250,6 +250,10 @@ def sizeBindings : List Input → Nat
 end
 
 /-- Authored free type variables are rigid; anonymous holes contribute none. -/
+def LetAnn.isSignature : LetAnn → Bool
+  | .complete _ | .partialForall _ _ => true
+  | .absent | .template _ => false
+
 def LetAnn.rigidVars : LetAnn → List Nat
   | .absent => []
   | .complete scheme => scheme.body.freeVars

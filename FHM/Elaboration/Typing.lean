@@ -954,6 +954,222 @@ theorem Typing.onSubst (h : Typing K ctx input ty) (subst : Subst)
 
 theorem Typing.regular (h : Typing K ctx input ty) : ty.IsLC := h.erase.regular
 
+
+
+theorem Typing.generalise_opened {K Ys G : List Nat} {ctx : Ctx} {input : Input} {ty : Ty}
+    (h : Typing (K ++ Ys) ctx (input.openTyVars Ys) ty)
+    (hnd : (Ys ++ G).Nodup)
+    (hctx : ∀ name ∈ Ys ++ G, name ∉ ctx.env.freeVars)
+    (hK : ∀ name ∈ Ys ++ G, name ∉ K)
+    (hsource : ∀ v ∈ input.rigidVars, v ∈ K) :
+    ∃ L, ∀ Xs, FreshNames L (Ys.length + G.length) Xs →
+      Typing (K ++ Xs.take Ys.length) ctx (input.openTyVars (Xs.take Ys.length))
+        (Ty.openVars Xs (Ty.closeOver (Ys ++ G) ty)) := by
+  refine ⟨Ys ++ G, ?_⟩
+  intro Xs hXs
+  have htake : (Xs.take Ys.length).length = Ys.length := by
+    rw [List.length_take, hXs.length]; omega
+  have hdisj : ∀ name ∈ Ys ++ G, name ∉ Xs := fun name hn hx => hXs.avoid name hx hn
+  have hYtake : ∀ name ∈ Ys, name ∉ Xs.take Ys.length :=
+    fun name hn hx => hdisj name (List.mem_append_left _ hn) (List.mem_of_mem_take hx)
+  let RY : Subst := Ys.zip ((Xs.take Ys.length).map Ty.fvar)
+  let RG : Subst := G.zip ((Xs.drop Ys.length).map Ty.fvar)
+  have hRYlc : ∀ p ∈ RY, p.2.IsLC := by
+    intro p hp
+    obtain ⟨_, _, heq⟩ := List.mem_map.mp (List.of_mem_zip hp).2
+    rw [← heq]; exact .fvar
+  have hRGlc : ∀ p ∈ RG, p.2.IsLC := by
+    intro p hp
+    obtain ⟨_, _, heq⟩ := List.mem_map.mp (List.of_mem_zip hp).2
+    rw [← heq]; exact .fvar
+  have hRYK : ∀ k ∈ K, RY.onTy (.fvar k) = .fvar k := by
+    intro k hk
+    apply Ty.substFvars_eq_self_of_no_key
+    intro p hp hc
+    simp only [Ty.freeVars, List.mem_singleton] at hc
+    exact hK p.1 (List.mem_append_left _ (List.of_mem_zip hp).1) (hc ▸ hk)
+  have hRYscope : ∀ k ∈ K ++ Ys, ∀ v ∈ (RY.onTy (.fvar k)).freeVars, v ∈ K ++ Xs.take Ys.length := by
+    intro k hk v hv
+    rcases List.mem_append.mp hk with hk | hk
+    · rw [hRYK k hk] at hv
+      simp only [Ty.freeVars, List.mem_singleton] at hv
+      exact List.mem_append_left _ (hv ▸ hk)
+    · obtain ⟨i, hi⟩ := List.mem_iff_getElem?.mp hk
+      have hilt : i < Ys.length := (List.getElem?_eq_some_iff.mp hi).choose
+      have hit : i < (Xs.take Ys.length).length := by omega
+      have himg : RY.onTy (.fvar k) = .fvar ((Xs.take Ys.length)[i]) := by
+        apply Ty.substFvars_zip_fvar_eq' hnd.of_append_left hi
+        · simp only [List.getElem?_map, List.getElem?_eq_getElem hit, Option.map_some]
+        · intro y hy hc
+          simp only [Ty.freeVars, List.mem_singleton] at hc
+          apply hYtake y hy
+          rw [hc]
+          exact List.getElem_mem hit
+      rw [himg] at hv
+      simp only [Ty.freeVars, List.mem_singleton] at hv
+      exact List.mem_append_right _ (hv ▸ List.getElem_mem hit)
+  have ctxFixed : ∀ S : Subst, (∀ p ∈ S, p.1 ∈ Ys ++ G) → S.onCtx ctx = ctx := by
+    intro S hS
+    have henv := Subst.onEnv_eq_self_of_fresh (fun p hp => hctx p.1 (hS p hp))
+    cases ctx
+    simp only [Subst.onCtx, henv]
+  have hRYctx : RY.onCtx ctx = ctx := ctxFixed RY
+    (fun p hp => List.mem_append_left _ (List.of_mem_zip hp).1)
+  have hRGctx : RG.onCtx ctx = ctx := ctxFixed RG
+    (fun p hp => List.mem_append_right _ (List.of_mem_zip hp).1)
+  have hRYsource : (input.openTyVars Ys).substTyFvars RY = input.openTyVars (Xs.take Ys.length) := by
+    exact input.substTyFvars_zip_openTyVars htake.symm hnd.of_append_left
+      (fun y hy hv => hK y (List.mem_append_left _ hy) (hsource y hv)) hYtake
+  have hfirst := h.onSubst_source RY hRYlc hRYscope
+  rw [hRYctx, hRYsource] at hfirst
+  have hRGavoid : ∀ p ∈ RG, p.1 ∉ K ++ Xs.take Ys.length := by
+    intro p hp hc
+    have hpG := (List.of_mem_zip hp).1
+    rcases List.mem_append.mp hc with hk | hx
+    · exact hK p.1 (List.mem_append_right _ hpG) hk
+    · exact hdisj p.1 (List.mem_append_right _ hpG) (List.mem_of_mem_take hx)
+  have hsecond := hfirst.onSubst RG hRGlc hRGavoid
+  rw [hRGctx] at hsecond
+  have hzip : (Ys ++ G).zip (Xs.map Ty.fvar) = RY ++ RG := by
+    have hmap : Xs.map Ty.fvar = (Xs.take Ys.length).map Ty.fvar ++ (Xs.drop Ys.length).map Ty.fvar := by
+      rw [← List.map_append, List.take_append_drop]
+    rw [hmap]
+    exact List.zip_append (by simp only [List.length_map, htake])
+  rw [Ty.openVars_closeOver_rename h.regular hnd (by simpa only [List.length_append] using hXs.length) hdisj,
+    hzip]
+  change Typing (K ++ Xs.take Ys.length) ctx (input.openTyVars (Xs.take Ys.length))
+    ((RY ++ RG).onTy ty)
+  rw [Subst.onTy_append]
+  exact hsecond
+
+
+
+
+/-- Closing a checked partial signature preserves its exact written-prefix
+matching at every sufficiently fresh opening of the completed scheme. -/
+theorem LetAnn.SignatureCompletion.cofinite_fits {ann : LetAnn} {written names : List Nat}
+    {ty : Ty} {scheme : PolyTy} {K : List Nat}
+    (h : ann.SignatureCompletion written ty scheme names)
+    (hnd : names.Nodup) (hK : ∀ name ∈ names, name ∉ K)
+    (hsource : ∀ v ∈ ann.rigidVars, v ∈ K) (hlc : ty.IsLC) :
+    ∃ L, ∀ Xs, FreshNames L scheme.paramCount Xs → ann.SignatureFits scheme Xs := by
+  cases h with
+  | complete => exact ⟨[], fun _ _ => .complete⟩
+  | @partialSignature ty template count written extras hlen hfit =>
+    refine ⟨written ++ extras, ?_⟩
+    intro Xs hXs
+    have htake : (Xs.take written.length).length = written.length := by
+      rw [List.length_take, hXs.length]; simp only [List.length_append]; omega
+    have hdisj : ∀ name ∈ written ++ extras, name ∉ Xs := fun name hn hx => hXs.avoid name hx hn
+    have hYtake : ∀ name ∈ written, name ∉ Xs.take written.length :=
+      fun name hn hx => hdisj name (List.mem_append_left _ hn) (List.mem_of_mem_take hx)
+    let RY : Subst := written.zip ((Xs.take written.length).map Ty.fvar)
+    let RG : Subst := extras.zip ((Xs.drop written.length).map Ty.fvar)
+    have hRGlc : ∀ p ∈ RG, p.2.IsLC := by
+      intro p hp
+      obtain ⟨_, _, heq⟩ := List.mem_map.mp (List.of_mem_zip hp).2
+      rw [← heq]; exact .fvar
+    have hRYsource : (template.openTyVarsFrom 0 written).substTyFvars RY =
+        template.openTyVarsFrom 0 (Xs.take written.length) := by
+      exact template.substTyFvars_zip_openTyVarsFrom htake.symm hnd.of_append_left
+        (fun y hy hv => hK y (List.mem_append_left _ hy) (hsource y hv)) hYtake 0
+    have hfirst := hfit.substTyFvars RY
+    rw [hRYsource] at hfirst
+    have hRGfresh : ∀ p ∈ RG, p.1 ∉ Xs.take written.length := by
+      intro p hp hc
+      exact hdisj p.1 (List.mem_append_right _ (List.of_mem_zip hp).1) (List.mem_of_mem_take hc)
+    have hRGsource : (template.openTyVarsFrom 0 (Xs.take written.length)).substTyFvars RG =
+        template.openTyVarsFrom 0 (Xs.take written.length) := by
+      rw [template.substTyFvars_openTyVarsFrom hRGlc hRGfresh 0]
+      rw [template.substTyFvars_eq_self_of_fixes (fun v hv => by
+        apply Ty.substFvars_eq_self_of_no_key
+        intro p hp hc
+        have heq : p.1 = v := List.mem_singleton.mp hc
+        exact hK p.1 (List.mem_append_right _ (List.of_mem_zip hp).1) (heq ▸ hsource v hv))]
+    have hsecond := hfirst.substTyFvars RG
+    rw [hRGsource] at hsecond
+    have hzip : (written ++ extras).zip (Xs.map Ty.fvar) = RY ++ RG := by
+      have hmap : Xs.map Ty.fvar = (Xs.take written.length).map Ty.fvar ++ (Xs.drop written.length).map Ty.fvar := by
+        rw [← List.map_append, List.take_append_drop]
+      rw [hmap]
+      exact List.zip_append (by simp only [List.length_map, htake])
+    refine .partialSignature (by simp only [List.length_append]; omega) ?_
+    change (template.openTyVarsFrom 0 (Xs.take count)).Fits
+      (Ty.openVars Xs (Ty.closeOver (written ++ extras) ty))
+    rw [Ty.openVars_closeOver_rename hlc hnd hXs.length hdisj, hzip]
+    change (template.openTyVarsFrom 0 (Xs.take count)).Fits ((RY ++ RG).onTy ty)
+    rw [Subst.onTy_append, ← hlen]
+    exact hsecond
+
+
+/-- Opening a completed signed scheme reopens exactly its written source
+binders; inferred extra quantifiers specialize only the typing monotype. -/
+theorem LetAnn.SignatureCompletion.cofinite_typing
+    {ann : LetAnn} {written names K : List Nat} {ty : Ty} {scheme : PolyTy} {ctx : Ctx} {input : Input}
+    (hcomp : ann.SignatureCompletion written ty scheme names)
+    (ht : Typing (K ++ written) ctx (input.openTyVars written) ty)
+    (hwf : scheme.WF) (hnd : names.Nodup)
+    (hctx : ∀ name ∈ names, name ∉ ctx.env.freeVars)
+    (hK : ∀ name ∈ names, name ∉ K)
+    (hann : ∀ v ∈ ann.rigidVars, v ∈ K)
+    (hsource : ∀ v ∈ input.rigidVars, v ∈ K) :
+    ∃ L, ∀ Xs, FreshNames L scheme.paramCount Xs →
+      Typing (K ++ Xs.take ann.paramCount) ctx (input.openTyVars (Xs.take ann.paramCount)) (scheme.openVars Xs) := by
+  cases hcomp with
+  | @complete ty written scheme hlen heq =>
+    obtain ⟨L, hgen⟩ := ht.generalise_opened (G := [])
+      (by simpa only [List.append_nil] using hnd)
+      (by simpa only [List.append_nil] using hctx)
+      (by simpa only [List.append_nil] using hK) hsource
+    have hclose : Ty.closeOver written ty = scheme.body := by
+      rw [heq, PolyTy.openVars]
+      exact Ty.closeOver_openVars_self hnd (by simpa only [hlen] using hwf)
+        (fun name hn hv => hK name hn (hann name hv))
+    refine ⟨L, ?_⟩
+    intro Xs hf
+    simpa only [List.append_nil, LetAnn.paramCount, hclose, PolyTy.openVars, hlen] using
+      hgen Xs (by simpa only [List.length_nil, Nat.add_zero, hlen] using hf)
+  | @partialSignature ty template count written extras hlen _ =>
+    obtain ⟨L, hgen⟩ := ht.generalise_opened (G := extras) hnd hctx hK hsource
+    refine ⟨L, ?_⟩
+    intro Xs hf
+    simpa only [LetAnn.paramCount, hlen, PolyTy.openVars] using
+      hgen Xs (by simpa only [List.length_append] using hf)
+
+/-- A signed binding's cofinite contract transports under an ambient
+specialization; the newly opened written variables are chosen away from its domain. -/
+theorem Typing.signatureBinding_onSubst
+    {ann : LetAnn} {scheme : PolyTy} {avoid : List Nat} {K : List Nat} {ctx : Ctx} {input : Input}
+    (hfit : ∀ fresh, FreshNames avoid scheme.paramCount fresh → ann.SignatureFits scheme fresh)
+    (htyping : ∀ fresh, FreshNames avoid scheme.paramCount fresh →
+      Typing (K ++ fresh.take ann.paramCount) ctx (input.openTyVars (fresh.take ann.paramCount)) (scheme.openVars fresh))
+    (hrigid : ∀ v ∈ ann.rigidVars, v ∈ K)
+    (subst : Subst) (hlc : ∀ pair ∈ subst, pair.2.IsLC)
+    (hprotected : ∀ pair ∈ subst, pair.1 ∉ K) :
+    ∃ avoid',
+      (∀ fresh, FreshNames avoid' scheme.paramCount fresh → ann.SignatureFits (subst.onPolyTy scheme) fresh) ∧
+      (∀ fresh, FreshNames avoid' scheme.paramCount fresh →
+        Typing (K ++ fresh.take ann.paramCount) (subst.onCtx ctx)
+          (input.openTyVars (fresh.take ann.paramCount)) ((subst.onPolyTy scheme).openVars fresh)) := by
+  let avoid' := avoid ++ subst.map Prod.fst
+  have hold : ∀ fresh, FreshNames avoid' scheme.paramCount fresh → FreshNames avoid scheme.paramCount fresh :=
+    fun fresh hf => ⟨hf.length, hf.nodup, fun v hv ha => hf.avoid v hv (List.mem_append_left _ ha)⟩
+  have hdom : ∀ fresh, FreshNames avoid' scheme.paramCount fresh → ∀ pair ∈ subst, pair.1 ∉ fresh := by
+    intro fresh hf pair hp hv
+    exact hf.avoid pair.1 hv (List.mem_append_right _ (List.mem_map.mpr ⟨pair, hp, rfl⟩))
+  refine ⟨avoid', ?_, ?_⟩
+  · intro fresh hf
+    have hfit' := (hfit fresh (hold fresh hf)).onSubst_source subst hlc (hdom fresh hf)
+    rwa [ann.substTyFvars_eq_self_of_fixes (fun v hv => Subst.fixes_of_dom_avoids hprotected v (hrigid v hv))] at hfit'
+  · intro fresh hf
+    have hprotected' : ∀ pair ∈ subst, pair.1 ∉ K ++ fresh.take ann.paramCount := by
+      intro pair hp hmem
+      rcases List.mem_append.mp hmem with hmem | hmem
+      · exact hprotected pair hp hmem
+      · exact hdom fresh hf pair hp (List.mem_of_mem_take hmem)
+    have ht := (htyping fresh (hold fresh hf)).onSubst subst hlc hprotected'
+    simpa only [Subst.onPolyTy, PolyTy.openVars, Subst.onTy_openVars hlc (hdom fresh hf)] using ht
+
 /-- Simultaneous fresh opening of an ordinary partial binding's monotype. The
 input syntax stays unchanged because every fixed annotation variable is in K. -/
 theorem Typing.generalise {ann : LetAnn} {names : List Nat} (h : Typing K ctx input ty)

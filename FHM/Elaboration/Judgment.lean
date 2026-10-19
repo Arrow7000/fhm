@@ -38,10 +38,6 @@ inductive SignatureCheck (K written : List Nat) (frontier : Nat) (ty : Ty) :
       RigidUnify (K ++ written) ty expected subst →
       SignatureCheck K written frontier ty (.partialForall count template) next subst
 
-def LetAnn.isSignature : LetAnn → Bool
-  | .complete _ | .partialForall _ _ => true
-  | .absent | .template _ => false
-
 /-- Written binders keep their authored order; inferred binders follow them. -/
 def signatureNames (ann : LetAnn) (K written : List Nat) (ctx : Ctx) (ty : Ty) : List Nat :=
   match ann with
