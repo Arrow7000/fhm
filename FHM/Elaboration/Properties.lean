@@ -1143,6 +1143,448 @@ private theorem branches_refs_subst {brs : List (MatchPattern × Input)} {ctx : 
   simpa only [Input.erase_substTyFvars] using Expr.ForallOuter.lookupAvoid_onSubst
     (hrefs oldpat oldbody hold) hS
 
+ theorem _root_.InferRecComponent.sourceLocality_of_infer
+    (h : InferRecComponent K F members index frontier ctx bindings specs next S outputs facts)
+    (hInfer : ∀ {κ F' Ψ c e Ψ' T output ty}, e.size ≤ sizeBindings bindings →
+      Infer κ F' Ψ c e Ψ' T output ty →
+      ∀ {w}, w < Ψ →
+      e.erase.ForallOuter (fun i => ∀ M, c.env[i]? = some M → w ∉ M.body.freeVars) 0 →
+      w ∉ e.rigidVars →
+      (∀ p ∈ T, w ∉ p.2.freeVars) ∧ w ∉ ty.freeVars ∧ w ∉ T.map Prod.fst) :
+    ∀ {w}, w < frontier →
+    (∀ j rhs, index + j ∈ members → bindings[j]? = some rhs →
+      rhs.erase.ForallOuter
+        (fun i => ∀ M, ctx.env[i]? = some M → w ∉ M.body.freeVars) 0 ∧ w ∉ rhs.rigidVars) →
+    (∀ j ty, index + j ∈ members → specs[j]? = some (.mono ty) → w ∉ ty.freeVars) →
+    (∀ p ∈ S, w ∉ p.2.freeVars) ∧ w ∉ S.map Prod.fst := by
+  match h with
+  | .nil => intro w _ _ _; exact ⟨by simp, by simp⟩
+  | .consSelected hsel hi hu hrest =>
+    intro w hw hrefs htargets
+    expose_names
+    have hrhs := hrefs 0 rhs (by simpa using hsel) rfl
+    obtain ⟨hiS, hiTy, hiD⟩ := hInfer (by simp only [sizeBindings]; omega) hi hw hrhs.1 hrhs.2
+    have ht : w ∉ expected.freeVars := htargets 0 expected (by simpa using hsel) rfl
+    have huS : ∀ p ∈ s2, w ∉ p.2.freeVars := by
+      intro p hp hwp
+      exact (hu.unifies.range_mem p hp w hwp).elim hiTy (Subst.notMemOnTy hiS ht)
+    have huD : w ∉ s2.map Prod.fst := by
+      intro hm
+      obtain ⟨p, hp, hpw⟩ := List.mem_map.mp hm
+      have hmem := hu.unifies.dom_mem p hp
+      rw [hpw] at hmem
+      exact hmem.elim hiTy (Subst.notMemOnTy hiS ht)
+    have hS12 : ∀ p ∈ s1 ++ s2, w ∉ p.2.freeVars :=
+      fun p hp => (List.mem_append.mp hp).elim (hiS p) (huS p)
+    have hrestRefs : ∀ j rhs', index + 1 + j ∈ members →
+        (rest.map (Input.substTyFvars (s1 ++ s2)))[j]? = some rhs' →
+        rhs'.erase.ForallOuter
+          (fun i => ∀ M, (s2.onCtx (s1.onCtx ctx)).env[i]? = some M → w ∉ M.body.freeVars) 0 ∧
+          w ∉ rhs'.rigidVars := by
+      intro j rhs' hj hget
+      rw [List.getElem?_map] at hget
+      obtain ⟨old, hold, rfl⟩ := Option.map_eq_some_iff.mp hget
+      have horig := hrefs (j + 1) old
+        (by simpa only [Nat.add_assoc, Nat.add_comm 1 j] using hj)
+        (by simpa only [List.getElem?_cons_succ] using hold)
+      refine ⟨?_, Input.avoid_subst hS12 horig.2⟩
+      simpa only [Input.erase_substTyFvars, Subst.onCtx_append] using
+        Expr.ForallOuter.lookupAvoid_onSubst (S := s1 ++ s2) horig.1 hS12
+    have hrestTargets : ∀ j ty, index + 1 + j ∈ members →
+        (specs_1.map (RecSpec.onSubstSource (s1 ++ s2)))[j]? = some (.mono ty) →
+        w ∉ ty.freeVars := by
+      intro j ty hj hget
+      rw [List.getElem?_map] at hget
+      obtain ⟨old, hold, heq⟩ := Option.map_eq_some_iff.mp hget
+      cases old with
+      | poly σ => cases heq
+      | mono τ =>
+          cases RecSpec.mono.inj heq
+          exact Subst.notMemOnTy hS12 (htargets (j + 1) τ
+            (by simpa only [Nat.add_assoc, Nat.add_comm 1 j] using hj)
+            (by simpa only [List.getElem?_cons_succ] using hold))
+    obtain ⟨hrS, hrD⟩ := hrest.sourceLocality_of_infer
+      (fun he h => hInfer (by
+        simp only [sizeBindings_map_substTyFvars] at he
+        simp only [sizeBindings]; omega) h)
+      (Nat.lt_of_lt_of_le hw hi.frontier_le) hrestRefs hrestTargets
+    refine ⟨?_, ?_⟩
+    · intro p hp
+      rw [List.mem_append, List.mem_append] at hp
+      rcases hp with (hp | hp) | hp
+      · exact hiS p hp
+      · exact huS p hp
+      · exact hrS p hp
+    · simpa only [List.map_append, List.mem_append, not_or] using
+        And.intro (And.intro hiD huD) hrD
+  | .skipMono _ hrest | .skipPoly hrest =>
+    intro w hw hrefs htargets
+    apply hrest.sourceLocality_of_infer
+      (fun he h => hInfer (by simp only [sizeBindings]; omega) h) hw
+    · intro j rhs hj hget
+      exact hrefs (j + 1) rhs
+        (by simpa only [Nat.add_assoc, Nat.add_comm 1 j] using hj)
+        (by simpa only [List.getElem?_cons_succ] using hget)
+    · intro j ty hj hget
+      exact htargets (j + 1) ty
+        (by simpa only [Nat.add_assoc, Nat.add_comm 1 j] using hj)
+        (by simpa only [List.getElem?_cons_succ] using hget)
+ termination_by structural h
+
+/-- Only live type specs and exports affect the recursive term environment. -/
+def RecState.Avoids (w : Nat) (state : RecState) : Prop :=
+  (∀ spec ∈ state.specs, w ∉ spec.freeVars) ∧
+  ∀ scheme ∈ state.exports.filterMap id, w ∉ scheme.body.freeVars
+
+theorem RecState.Avoids.exported {state : RecState} (h : state.Avoids w)
+    (hs : some scheme ∈ state.exports) : w ∉ scheme.body.freeVars :=
+  h.2 scheme (List.mem_filterMap.mpr ⟨some scheme, hs, rfl⟩)
+
+theorem RecState.Avoids.init {anns : List LetAnn} (hw : w < base)
+    (hanns : ∀ ann ∈ anns, w ∉ ann.rigidVars) : (RecState.init base anns).Avoids w := by
+  have hmode : ∀ scheme, some scheme ∈ anns.map LetAnn.recModeAnn → w ∉ scheme.body.freeVars := by
+    intro scheme hs
+    obtain ⟨ann, ha, heq⟩ := List.mem_map.mp hs
+    cases ann with
+    | absent | template | partialForall => cases heq
+    | complete original =>
+      cases heq
+      exact hanns _ ha
+  constructor
+  · intro spec hs
+    rcases RecSpec.mem_init hs with ⟨m, hlo, _, rfl⟩ | ⟨scheme, hsigma, rfl⟩
+    · simp only [RecSpec.freeVars, Ty.freeVars, List.mem_singleton]
+      omega
+    · exact hmode scheme hsigma
+  · intro scheme hs
+    obtain ⟨old, ho, heq⟩ := List.mem_filterMap.mp hs
+    exact hmode scheme (heq ▸ ho)
+
+theorem RecState.Avoids.onSubst {state : RecState} (h : state.Avoids w)
+    (hS : ∀ p ∈ S, w ∉ p.2.freeVars) : (state.onSubst S).Avoids w := by
+  constructor
+  · intro spec hs
+    obtain ⟨old, ho, rfl⟩ := List.mem_map.mp hs
+    cases old with
+    | mono ty => exact Subst.notMemOnTy hS (h.1 _ ho)
+    | poly scheme => exact Subst.notMemOnTy hS (h.1 _ ho)
+  · intro scheme hs
+    obtain ⟨old, ho, heq⟩ := List.mem_filterMap.mp hs
+    obtain ⟨original, horiginal, rfl⟩ := List.mem_map.mp ho
+    obtain ⟨sigma, hsigma, heq'⟩ := Option.map_eq_some_iff.mp heq
+    subst scheme
+    exact Subst.notMemOnTy hS (h.exported (hsigma ▸ horiginal))
+
+theorem RecState.Avoids.installOpenings {state : RecState} (h : state.Avoids w) :
+    (state.installOpenings members openings).Avoids w := h
+
+theorem RecState.Avoids.setSigned {state : RecState} {member : Nat} {names : List Nat}
+    {output : Expr} {facts : RecFacts} (h : state.Avoids w) :
+    (state.setSigned member names output facts).Avoids w := h
+
+theorem RecState.Avoids.entries {state : RecState} (h : state.Avoids w) :
+    ∀ scheme ∈ state.entries, w ∉ scheme.body.freeVars := by
+  intro scheme hs
+  obtain ⟨⟨spec, exported⟩, hp, heq⟩ := List.mem_map.mp hs
+  have hmem := List.of_mem_zip hp
+  cases exported with
+  | none =>
+    subst scheme
+    cases spec with
+    | mono ty => exact h.1 _ hmem.1
+    | poly sigma => exact h.1 _ hmem.1
+  | some sigma =>
+    cases heq
+    exact h.exported hmem.2
+
+theorem RecState.Avoids.rhsCtx {state : RecState} {e : Expr} {groupSize : Nat} {ctx : Ctx} (h : state.Avoids w)
+    (hlen : state.entries.length = groupSize)
+    (href : e.ForallOuter (fun i => ∀ M, ctx.env[i]? = some M → w ∉ M.body.freeVars) groupSize) :
+    e.ForallOuter (fun i => ∀ M, (state.rhsCtx ctx).env[i]? = some M → w ∉ M.body.freeVars) 0 := by
+  exact Expr.ForallOuter.lookupAvoid_prepend (pre := state.entries)
+    (by simpa only [Nat.zero_add, hlen] using href) h.entries
+
+theorem RecState.Avoids.exportComponent {state : RecState} {members pool : List Nat}
+    {written : List (List Nat)} {outputs : List (Option Expr)} {facts : List RecFacts} (h : state.Avoids w) :
+    (state.exportComponent members written pool outputs facts).Avoids w := by
+  refine ⟨h.1, ?_⟩
+  intro scheme hs
+  obtain ⟨old, ho, heq⟩ := List.mem_filterMap.mp hs
+  obtain ⟨i, hi, heq'⟩ := List.mem_mapIdx.mp ho
+  subst old
+  split at heq
+  · cases hlookup : state.specs[i]? with
+    | none => simp [hlookup] at heq
+    | some spec =>
+      simp only [hlookup, bind, pure, Option.bind_some] at heq
+      cases heq
+      cases spec with
+      | mono ty => exact fun hv => h.1 _ (List.mem_of_getElem? hlookup) (Ty.freeVars_closeOver_subset hv)
+      | poly sigma => exact h.1 _ (List.mem_of_getElem? hlookup)
+  · exact h.exported (heq ▸ List.getElem_mem hi)
+
+theorem FinishRecComponent.avoids (h : FinishRecComponent K soft members ctx state outputs facts final)
+    (ha : state.Avoids w) : final.Avoids w := by
+  cases h
+  exact ha.exportComponent
+
+private theorem opening_template_avoid {template : Template} {names : List Nat}
+    (ht : w ∉ template.rigidVars) (hn : w ∉ names) :
+    w ∉ (template.openTyVarsFrom 0 names).rigidVars := by
+  intro hv
+  have hh := template.openTyVarsFrom_scope (K := template.rigidVars) (fun _ h => h) 0 names w hv
+  exact (List.mem_append.mp hh).elim ht hn
+
+theorem OpenRecAnn.expected_avoid (h : OpenRecAnn frontier ann next opening) (hw : w < frontier)
+    (ha : w ∉ ann.rigidVars) (he : opening.expected = some ty) : w ∉ ty.freeVars := by
+  cases h with
+  | absent | complete => cases he
+  | template halloc _ =>
+    cases he
+    simpa only [halloc] using Template.allocate_avoid hw ha
+  | @partialForall next ty frontier count template halloc _ =>
+    cases he
+    have hn : w ∉ freshVars frontier count := fun hm => by have := freshVars_ge w hm; omega
+    have hh := Template.allocate_avoid (frontier := frontier + count) (by omega : w < frontier + count)
+      (opening_template_avoid ha hn)
+    simpa only [halloc] using hh
+
+theorem OpenRecAnns.expected_avoid (h : OpenRecAnns members index frontier anns next openings)
+    (hw : w < frontier) (ha : ∀ ann ∈ anns, w ∉ ann.rigidVars) :
+    ∀ opening ∈ openings, ∀ ty, opening.expected = some ty → w ∉ ty.freeVars := by
+  induction h with
+  | nil => intro opening hm; cases hm
+  | skip _ _ ih =>
+    intro opening hm ty he
+    rcases List.mem_cons.mp hm with rfl | hm
+    · cases he
+    · exact ih hw (fun ann hm => ha ann (List.mem_cons_of_mem _ hm)) opening hm ty he
+  | cons _ hh ht ih =>
+    intro opening hm ty he
+    rcases List.mem_cons.mp hm with rfl | hm
+    · exact hh.expected_avoid hw (ha _ List.mem_cons_self) he
+    · exact ih (Nat.lt_of_lt_of_le hw hh.frontier_le)
+        (fun ann hm => ha ann (List.mem_cons_of_mem _ hm)) opening hm ty he
+
+private theorem openRecSources_locality {openings : List RecOpening} {bindings : List Input}
+    (ho : ∀ opening ∈ openings, w ∉ opening.written)
+    (hr : ∀ rhs ∈ bindings, rhs.erase.ForallOuter P depth ∧ w ∉ rhs.rigidVars) :
+    ∀ rhs ∈ openRecSources openings bindings, rhs.erase.ForallOuter P depth ∧ w ∉ rhs.rigidVars := by
+  induction bindings generalizing openings with
+  | nil => cases openings <;> intro rhs hm <;> cases hm
+  | cons rhs rest ih =>
+    cases openings with
+    | nil => exact hr
+    | cons opening openings =>
+      intro source hs
+      rcases List.mem_cons.mp hs with rfl | hs
+      · refine ⟨by simpa only [Input.erase_openTyVars] using (hr rhs List.mem_cons_self).1, ?_⟩
+        intro hv
+        exact (Input.rigidVars_openTyVarsFrom hv).elim (hr rhs List.mem_cons_self).2 (ho opening List.mem_cons_self)
+      · exact ih (fun opening ho' => ho opening (List.mem_cons_of_mem _ ho'))
+          (fun rhs hr' => hr rhs (List.mem_cons_of_mem _ hr')) source hs
+
+private theorem recShapes_avoid {state : RecState} (ha : state.Avoids w)
+    (ho : ∀ opening ∈ openings, ∀ ty, opening.expected = some ty → w ∉ ty.freeVars) :
+    ∀ shape ∈ state.shapes members openings, w ∉ shape.1.freeVars ∧
+      ∀ ty, shape.2 = some ty → w ∉ ty.freeVars := by
+  intro shape hs
+  obtain ⟨i, _, heq⟩ := List.mem_filterMap.mp hs
+  cases hspec : state.specs[i]? with
+  | none => simp [hspec] at heq
+  | some spec =>
+    cases spec with
+    | poly scheme => simp [hspec, RecSpec.monoTy?] at heq
+    | mono ty =>
+      cases hopen : openings[i]? with
+      | none => simp [hspec, RecSpec.monoTy?, hopen] at heq
+      | some opening =>
+        simp [hspec, RecSpec.monoTy?, hopen] at heq
+        subst shape
+        exact ⟨ha.1 _ (List.mem_of_getElem? hspec), ho opening (List.mem_of_getElem? hopen)⟩
+
+private theorem FinishRecComponent.avoid_lengths
+    (h : FinishRecComponent K soft members ctx state outputs facts final) :
+    final.specs.length = state.specs.length ∧ final.exports.length = state.exports.length := by
+  cases h
+  exact ⟨rfl, List.length_mapIdx⟩
+
+
+ theorem _root_.InferRecStrata.sourceLocality_of_infer
+    (h : InferRecStrata K F frontier ctx anns bindings state groups next S final)
+    (hInfer : ∀ {κ F' Ψ c e Ψ' T output ty}, e.size ≤ sizeBindings bindings →
+      Infer κ F' Ψ c e Ψ' T output ty →
+      ∀ {w}, w < Ψ →
+      e.erase.ForallOuter (fun i => ∀ M, c.env[i]? = some M → w ∉ M.body.freeVars) 0 →
+      w ∉ e.rigidVars →
+      (∀ p ∈ T, w ∉ p.2.freeVars) ∧ w ∉ ty.freeVars ∧ w ∉ T.map Prod.fst)
+    (hw : w < frontier) (ha : state.Avoids w)
+    (hlenS : state.specs.length = bindings.length)
+    (hlenE : state.exports.length = bindings.length)
+    (hanns : ∀ ann ∈ anns, w ∉ ann.rigidVars)
+    (hrhs : ∀ rhs ∈ bindings, rhs.erase.ForallOuter
+      (fun i => ∀ M, ctx.env[i]? = some M → w ∉ M.body.freeVars) bindings.length ∧ w ∉ rhs.rigidVars) :
+    (∀ p ∈ S, w ∉ p.2.freeVars) ∧ w ∉ S.map Prod.fst ∧ final.Avoids w := by
+  match h with
+  | .nil => exact ⟨by simp, by simp, ha⟩
+  | .cons ho hp hc hf hr =>
+    expose_names
+    have hpre := hp.sourceAvoid (recShapes_avoid ha.installOpenings (ho.expected_avoid hw hanns))
+    have hapre : ((state.installOpenings component openings).onSubst pre).Avoids w :=
+      ha.installOpenings.onSubst hpre.1
+    have hentry : (((state.installOpenings component openings).onSubst pre).entries).length = bindings.length := by
+      rw [RecState.entries_length]
+      · simpa [RecState.onSubst, RecState.installOpenings] using hlenS
+      · simpa [RecState.onSubst, RecState.installOpenings] using hlenE.trans hlenS.symm
+    have hopen : ∀ rhs ∈ openRecSources openings bindings, rhs.erase.ForallOuter
+        (fun i => ∀ M, ctx.env[i]? = some M → w ∉ M.body.freeVars) bindings.length ∧ w ∉ rhs.rigidVars :=
+      openRecSources_locality (fun opening hm hv => by
+        have hh := ho.written_range w (List.mem_flatMap.mpr ⟨opening, hm, hv⟩)
+        omega) hrhs
+    have hcomponent := hc.sourceLocality_of_infer
+      (fun he hi => hInfer (by simpa only [sizeBindings_map_substTyFvars, sizeBindings_openRecSources] using he) hi)
+      (Nat.lt_of_lt_of_le hw ho.frontier_le)
+      (by
+        intro j rhs _ hget
+        obtain ⟨old, hold, rfl⟩ := Option.map_eq_some_iff.mp (by simpa only [List.getElem?_map] using hget)
+        have hh := hopen old (List.mem_of_getElem? hold)
+        refine ⟨?_, Input.avoid_subst hpre.1 hh.2⟩
+        exact hapre.rhsCtx hentry (by simpa only [Input.erase_substTyFvars] using
+          Expr.ForallOuter.lookupAvoid_onSubst hh.1 hpre.1))
+      (by intro j ty _ hget; exact hapre.1 _ (List.mem_of_getElem? hget))
+    have hboth : ∀ p ∈ pre ++ current, w ∉ p.2.freeVars :=
+      fun p hm => (List.mem_append.mp hm).elim (hpre.1 p) (hcomponent.1 p)
+    have hafinal := hf.avoids (ha.installOpenings.onSubst hboth)
+    have hlength := hf.avoid_lengths
+    have htailS : exported.specs.length = (bindings.map (Input.substTyFvars (pre ++ current))).length := by
+      simpa [RecState.onSubst, RecState.installOpenings] using hlength.1.trans (by simpa [RecState.onSubst, RecState.installOpenings] using hlenS)
+    have htailE : exported.exports.length = (bindings.map (Input.substTyFvars (pre ++ current))).length := by
+      simpa [RecState.onSubst, RecState.installOpenings] using hlength.2.trans (by simpa [RecState.onSubst, RecState.installOpenings] using hlenE)
+    obtain ⟨htS, htD, htA⟩ := hr.sourceLocality_of_infer
+      (fun he hi => hInfer (by simpa only [sizeBindings_map_substTyFvars] using he) hi)
+      (Nat.lt_of_lt_of_le hw (ho.frontier_le.trans hc.frontier_le)) hafinal htailS htailE
+      (by intro ann hm; obtain ⟨old, hold, rfl⟩ := List.mem_map.mp hm
+          exact LetAnn.avoid_subst hboth (hanns old hold))
+      (by intro rhs hm; obtain ⟨old, hold, rfl⟩ := List.mem_map.mp hm
+          have hh := hrhs old hold
+          exact ⟨by simpa only [Input.erase_substTyFvars, List.length_map] using
+            Expr.ForallOuter.lookupAvoid_onSubst hh.1 hboth, Input.avoid_subst hboth hh.2⟩)
+    refine ⟨fun p hp => (List.mem_append.mp hp).elim (hboth p) (htS p), ?_, htA⟩
+    simpa only [List.map_append, List.mem_append, not_or] using And.intro (And.intro hpre.2 hcomponent.2) htD
+ termination_by structural h
+
+ theorem _root_.InferRecSigned.sourceLocality_of_infer
+    (h : InferRecSigned K F index frontier ctx anns bindings state next S final)
+    (hInfer : ∀ {κ F' Ψ c e Ψ' T output ty}, e.size ≤ sizeBindings bindings →
+      Infer κ F' Ψ c e Ψ' T output ty →
+      ∀ {w}, w < Ψ →
+      e.erase.ForallOuter (fun i => ∀ M, c.env[i]? = some M → w ∉ M.body.freeVars) 0 →
+      w ∉ e.rigidVars →
+      (∀ p ∈ T, w ∉ p.2.freeVars) ∧ w ∉ ty.freeVars ∧ w ∉ T.map Prod.fst)
+    (hw : w < frontier) (ha : state.Avoids w)
+    (groupSize : Nat) (hlenS : state.specs.length = groupSize)
+    (hlenE : state.exports.length = groupSize)
+    (hanns : ∀ ann ∈ anns, w ∉ ann.rigidVars)
+    (hrhs : ∀ rhs ∈ bindings, rhs.erase.ForallOuter
+      (fun i => ∀ M, ctx.env[i]? = some M → w ∉ M.body.freeVars) groupSize ∧ w ∉ rhs.rigidVars) :
+    (∀ p ∈ S, w ∉ p.2.freeVars) ∧ w ∉ S.map Prod.fst ∧ final.Avoids w := by
+  match h with
+  | .nil => exact ⟨by simp, by simp, ha⟩
+  | .skip _ hr =>
+    exact hr.sourceLocality_of_infer
+      (fun he hi => hInfer (by simp only [sizeBindings]; omega) hi) hw ha groupSize hlenS hlenE
+      (fun ann hm => hanns ann (List.mem_cons_of_mem _ hm))
+      (fun rhs hm => hrhs rhs (List.mem_cons_of_mem _ hm))
+  | .cons _ _ hi hu _ hr =>
+    expose_names
+    have hy : w ∉ freshVars frontier scheme.paramCount := fun hm => by
+      have := freshVars_ge w hm; omega
+    have hhead := hrhs rhs List.mem_cons_self
+    have hentry : state.entries.length = groupSize := by
+      rw [state.entries_length (hlenE.trans hlenS.symm)]; exact hlenS
+    obtain ⟨hfirstS, hfirstTy, hfirstD⟩ := hInfer
+      (by simp only [Input.size_openTyVars, sizeBindings]; omega) hi (by omega)
+      (by simpa only [Input.erase_openTyVars] using ha.rhsCtx hentry hhead.1)
+      (fun hv => (Input.rigidVars_openTyVarsFrom hv).elim hhead.2 hy)
+    have hexpected : w ∉ ((s1.onPolyTy scheme).openVars (freshVars frontier scheme.paramCount)).freeVars := by
+      intro hv
+      exact (Ty.freeVars_openVars_subset w hv).elim
+        (Subst.notMemOnTy hfirstS (hanns (.complete scheme) List.mem_cons_self)) hy
+    have hsecondS : ∀ p ∈ s2, w ∉ p.2.freeVars := by
+      intro p hp hv
+      exact (hu.unifies.range_mem p hp w hv).elim hfirstTy hexpected
+    have hsecondD : w ∉ s2.map Prod.fst := by
+      intro hm
+      obtain ⟨p, hp, hpw⟩ := List.mem_map.mp hm
+      have hh := hu.unifies.dom_mem p hp
+      rw [hpw] at hh
+      exact hh.elim hfirstTy hexpected
+    have hboth : ∀ p ∈ s1 ++ s2, w ∉ p.2.freeVars :=
+      fun p hm => (List.mem_append.mp hm).elim (hfirstS p) (hsecondS p)
+    have hanext : ((state.onSubst (s1 ++ s2)).setSigned index (freshVars frontier scheme.paramCount)
+        (output.substTyFvars s2) (bodyFacts.onSubst s2)).Avoids w :=
+      (ha.onSubst hboth).setSigned
+    obtain ⟨htS, htD, htA⟩ := hr.sourceLocality_of_infer
+      (fun he hh => hInfer (by
+        simp only [sizeBindings_map_substTyFvars] at he
+        simp only [sizeBindings]
+        omega) hh)
+      (by have := hi.frontier_le; omega) hanext groupSize
+      (by simpa [RecState.setSigned, RecState.onSubst] using hlenS)
+      (by simpa [RecState.setSigned, RecState.onSubst] using hlenE)
+      (by intro ann hm; obtain ⟨old, hold, rfl⟩ := List.mem_map.mp hm
+          exact LetAnn.avoid_subst hboth (hanns old (List.mem_cons_of_mem _ hold)))
+      (by intro source hm; obtain ⟨old, hold, rfl⟩ := List.mem_map.mp hm
+          have hh := hrhs old (List.mem_cons_of_mem _ hold)
+          exact ⟨by simpa only [Input.erase_substTyFvars] using
+            Expr.ForallOuter.lookupAvoid_onSubst hh.1 hboth, Input.avoid_subst hboth hh.2⟩)
+    refine ⟨fun p hp => (List.mem_append.mp hp).elim (hboth p) (htS p), ?_, htA⟩
+    simpa only [List.map_append, List.mem_append, not_or] using And.intro (And.intro hfirstD hsecondD) htD
+ termination_by structural h
+
+
+private theorem mem_eraseBindings {bindings : List Input} {rhs : Input}
+    (hr : rhs ∈ bindings) : rhs.erase ∈ eraseBindings bindings := by
+  induction bindings with
+  | nil => cases hr
+  | cons head rest ih =>
+    rcases List.mem_cons.mp hr with rfl | hr
+    · exact List.mem_cons_self
+    · exact List.mem_cons_of_mem _ (ih hr)
+
+private theorem rigidBindingVars_mem {bindings : List Input} {rhs : Input} {v : Nat}
+    (hr : rhs ∈ bindings) (hv : v ∈ rhs.rigidVars) : v ∈ rigidBindingVars bindings := by
+  induction bindings with
+  | nil => cases hr
+  | cons head rest ih =>
+    rcases List.mem_cons.mp hr with rfl | hr
+    · exact List.mem_append_left _ hv
+    · exact List.mem_append_right _ (ih hr)
+
+ theorem _root_.InferRecStrata.env_lengths
+    (h : InferRecStrata K F frontier ctx anns bindings state groups next S final) :
+    final.specs.length = state.specs.length ∧ final.exports.length = state.exports.length := by
+  match h with
+  | .nil => exact ⟨rfl, rfl⟩
+  | .cons _ _ _ hf hr =>
+    have he := hf.avoid_lengths
+    have ht := hr.env_lengths
+    exact ⟨ht.1.trans (he.1.trans (by simp [RecState.onSubst, RecState.installOpenings])),
+      ht.2.trans (he.2.trans (by simp [RecState.onSubst, RecState.installOpenings]))⟩
+ termination_by structural h
+
+ theorem _root_.InferRecSigned.env_lengths
+    (h : InferRecSigned K F index frontier ctx anns bindings state next S final) :
+    final.specs.length = state.specs.length ∧ final.exports.length = state.exports.length := by
+  match h with
+  | .nil => exact ⟨rfl, rfl⟩
+  | .skip _ hr => exact hr.env_lengths
+  | .cons _ _ _ _ _ hr =>
+    have ht := hr.env_lengths
+    exact ⟨ht.1.trans (by simp [RecState.onSubst, RecState.setSigned]),
+      ht.2.trans (by simp [RecState.onSubst, RecState.setSigned])⟩
+ termination_by structural h
+
 mutual
  theorem _root_.Infer.sourceLocality (h : Infer K F frontier ctx input next subst output ty) :
     ∀ {w}, w < frontier →
@@ -1231,6 +1673,47 @@ mutual
       (by simpa only [Input.erase_substTyFvars] using hbrefs) (Input.avoid_subst hA.1 hwe.2)
     have hAll := Subst.sourceAvoid_append_local hA ⟨hbS, hbD⟩
     exact ⟨hAll.1, hbTy, hAll.2⟩
+  | .letRec _ _ hv hs hp _ _ hb =>
+    intro w hw hrefs hwe
+    expose_names
+    simp only [Input.erase, Expr.ForallOuter, Expr.rec_strong, eraseBindings_length, Nat.zero_add] at hrefs
+    simp only [Input.rigidVars, List.mem_append, not_or] at hwe
+    have hanns : ∀ ann ∈ anns, w ∉ ann.rigidVars :=
+      fun ann ha hv => hwe.1.1 (List.mem_flatMap.mpr ⟨ann, ha, hv⟩)
+    have hrhs : ∀ rhs ∈ bindings, rhs.erase.ForallOuter
+        (fun i => ∀ M, ctx.env[i]? = some M → w ∉ M.body.freeVars) bindings.length ∧ w ∉ rhs.rigidVars := by
+      intro rhs hr
+      exact ⟨hrefs.1 rhs.erase (mem_eraseBindings hr), fun hv => hwe.1.2 (rigidBindingVars_mem hr hv)⟩
+    have hlen : anns.length = bindings.length := by simpa only [List.length_map] using hv.length
+    obtain ⟨hsS, hsD, hstate1⟩ := hs.sourceLocality_of_infer (fun _ hi => hi.sourceLocality)
+      (by omega) (RecState.Avoids.init hw hanns)
+      (by simpa only [RecState.init, RecSpec.init_length, List.length_map] using hlen)
+      (by simpa only [RecState.init, List.length_map] using hlen) hanns hrhs
+    have hsl := hs.env_lengths
+    have hs1len : state1.specs.length = bindings.length := by
+      simpa only [RecState.init, RecSpec.init_length, List.length_map] using hsl.1.trans (by simpa [RecState.init, RecSpec.init_length] using hlen)
+    have he1len : state1.exports.length = bindings.length := by
+      simpa only [RecState.init, List.length_map] using hsl.2.trans (by simpa [RecState.init] using hlen)
+    obtain ⟨hpS, hpD, hstate2⟩ := hp.sourceLocality_of_infer (fun _ hi => hi.sourceLocality)
+      (by have := hs.frontier_le; omega) hstate1 bindings.length hs1len he1len
+      (by intro ann ha; obtain ⟨old, ho, rfl⟩ := List.mem_map.mp ha; exact LetAnn.avoid_subst hsS (hanns old ho))
+      (by
+        intro rhs hr
+        obtain ⟨old, ho, rfl⟩ := List.mem_map.mp hr
+        exact ⟨by simpa only [Input.erase_substTyFvars] using Expr.ForallOuter.lookupAvoid_onSubst (hrhs old ho).1 hsS,
+          Input.avoid_subst hsS (hrhs old ho).2⟩)
+    have hpre := Subst.sourceAvoid_append_local ⟨hsS, hsD⟩ ⟨hpS, hpD⟩
+    have hpl := hp.env_lengths
+    have hentries : state2.entries.length = bindings.length := by
+      rw [state2.entries_length ((hpl.2.trans he1len).trans (hpl.1.trans hs1len).symm)]
+      exact hpl.1.trans hs1len
+    obtain ⟨hbS, hbTy, hbD⟩ := hb.sourceLocality (show w < second from by have := hs.frontier_le; have := hp.frontier_le; omega)
+      (by
+        have hh := hstate2.rhsCtx hentries (Expr.ForallOuter.lookupAvoid_onSubst hrefs.2 hpre.1)
+        simpa only [Input.erase_substTyFvars] using hh)
+      (Input.avoid_subst hpre.1 hwe.2)
+    have hAll := Subst.sourceAvoid_append_local hpre ⟨hbS, hbD⟩
+    exact ⟨hAll.1, hbTy, hAll.2⟩
   | .match_ _ hs _ hb =>
     intro w hw hrefs hwe
     expose_names
@@ -1245,7 +1728,9 @@ mutual
     have hA := Subst.sourceAvoid_append_local ⟨hsS, hsD⟩ ⟨hbS, hbD⟩
     exact ⟨hA.1, hbTy, hA.2⟩
  termination_by (input.size, 1)
- decreasing_by all_goals (simp only [Input.size, Input.size_substTyFvars, Input.size_openTyVars, sizeBranches_substInputBranches]; omega)
+ decreasing_by
+  all_goals simp only [sizeBindings_map_substTyFvars] at *
+  all_goals (simp only [Input.size, Input.size_substTyFvars, Input.size_openTyVars, sizeBranches_substInputBranches]; omega)
 
  theorem _root_.InferBranches.sourceLocality
     (h : InferBranches K F frontier ctx scrutTy resultTy brs next subst completed) :
