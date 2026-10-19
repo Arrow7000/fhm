@@ -109,6 +109,142 @@ private theorem branchFreeVars_iff {branches : List (MatchPattern × Expr)} {v :
       · exact Or.inl hv
       · exact Or.inr ⟨b, hb, hv⟩
 
+private theorem recGroupRefs_erase (e : Expr) (n depth : Nat) :
+    e.erase.recGroupRefs n depth = e.recGroupRefs n depth := by
+  induction e using Expr.rec_strong generalizing depth with
+  | primLit | primBinOp | ctor | var => simp only [Expr.erase]
+  | lambda ann body ih => simpa only [Expr.erase, Expr.recGroupRefs] using ih _
+  | app f a ihf iha => simp only [Expr.erase, Expr.recGroupRefs, ihf, iha]
+  | letIn ann rhs body ihr ihb => simp only [Expr.erase, Expr.recGroupRefs, ihr, ihb]
+  | match_ scrut branches ihs ihbr =>
+    simp only [Expr.erase_match, Expr.recGroupRefs, ihs]
+    congr 2
+    induction branches with
+    | nil => rfl
+    | cons pb rest ih =>
+      simp only [List.map_cons, RecGroupRefs.branches]
+      rw [ihbr pb.1 pb.2 List.mem_cons_self, ih (fun p b h => ihbr p b (List.mem_cons_of_mem _ h))]
+  | letRec anns bindings body ihbs ihb =>
+    simp only [Expr.erase_letRec, Expr.recGroupRefs, List.length_map, ihb]
+    congr 2
+    generalize depth + bindings.length = innerDepth
+    induction bindings generalizing innerDepth with
+    | nil => rfl
+    | cons rhs rest ih =>
+      simp only [List.map_cons, RecGroupRefs.bindings]
+      rw [ihbs rhs List.mem_cons_self, ih (fun e h => ihbs e (List.mem_cons_of_mem _ h)) innerDepth]
+
+private theorem validResidualGroups_erase_iff {anns : List (Option PolyTy)} {bindings : List Expr} :
+    RecGroups.ValidResidualGroups anns (bindings.map Expr.erase) groups ↔
+      RecGroups.ValidResidualGroups anns bindings groups := by
+  constructor
+  · intro h
+    refine ⟨by simpa using h.length, h.nonempty, h.flatten_nodup,
+      by simpa using h.bounded, ?_, ?_⟩
+    · intro member hm
+      exact h.covers_unsigned member (by simpa using hm)
+    · intro stage depStage component depComponent source target rhs hc hd hs ht hr href
+      apply h.dependencies_first hc hd hs ht
+        (by rw [List.getElem?_map, hr]; rfl)
+      simpa only [List.length_map, recGroupRefs_erase] using href
+  · intro h
+    exact h.map_bindings Expr.erase rfl (fun _ => Iff.rfl) (fun e _ => recGroupRefs_erase e _ _)
+
+private theorem completeBindings_length {inputs : List Input} {cores : List Expr}
+    (h : completeBindings inputs = some cores) : inputs.length = cores.length := by
+  have hh := congrArg List.length (completeBindings_erase inputs h)
+  simpa only [List.length_map, eraseBindings_length] using hh.symm
+
+private theorem completeBindings_lookup {inputs : List Input} {cores : List Expr}
+    (h : completeBindings inputs = some cores) {i : Nat} {rhs : Input}
+    (hr : inputs[i]? = some rhs) : ∃ core, cores[i]? = some core ∧ rhs.toCore = some core := by
+  induction inputs generalizing cores i with
+  | nil => cases hr
+  | cons head rest ih =>
+    simp only [completeBindings, bind, pure, Option.bind_eq_some_iff, Option.some.injEq] at h
+    obtain ⟨core, hh, cores, ht, rfl⟩ := h
+    cases i with
+    | zero => cases hr; exact ⟨core, rfl, hh⟩
+    | succ i => exact ih ht hr
+
+private theorem completeBindings_lookup_back {inputs : List Input} {cores : List Expr}
+    (h : completeBindings inputs = some cores) {i : Nat} {core : Expr}
+    (hr : cores[i]? = some core) : ∃ rhs, inputs[i]? = some rhs ∧ rhs.toCore = some core := by
+  induction inputs generalizing cores i with
+  | nil => cases h; cases hr
+  | cons head rest ih =>
+    simp only [completeBindings, bind, pure, Option.bind_eq_some_iff, Option.some.injEq] at h
+    obtain ⟨core0, hh, cores, ht, rfl⟩ := h
+    cases i with
+    | zero => cases hr; exact ⟨head, rfl, hh⟩
+    | succ i => exact ih ht hr
+
+private theorem completeAnns_data {anns : List LetAnn} {cores : List (Option PolyTy)}
+    (h : completeAnns anns = some cores) : cores = anns.map LetAnn.recModeAnn ∧
+      ∀ ann ∈ anns, ann.toCore = some ann.recModeAnn ∧ ann.recPrefixCount = 0 := by
+  induction anns generalizing cores with
+  | nil => cases h; exact ⟨rfl, by simp⟩
+  | cons ann rest ih =>
+    simp only [completeAnns, bind, pure, Option.bind_eq_some_iff, Option.some.injEq] at h
+    obtain ⟨core, ha, cores, ht, rfl⟩ := h
+    obtain ⟨heq, hall⟩ := ih ht
+    cases ann with
+    | template | partialForall => cases ha
+    | absent | complete =>
+      cases ha
+      refine ⟨by rw [heq]; rfl, ?_⟩
+      intro ann hm
+      rcases List.mem_cons.mp hm with rfl | hm
+      · exact ⟨rfl, rfl⟩
+      · exact hall ann hm
+
+private theorem eraseBindings_eq_map_rec (bindings : List Input) :
+    eraseBindings bindings = bindings.map Input.erase := by
+  induction bindings with
+  | nil => rfl
+  | cons rhs rest ih => simp only [eraseBindings, List.map_cons, ih]
+
+private theorem recScheme_empty (G : List Nat) (ty : Ty) : recScheme [] G ty = PolyTy.genGroup G ty := by
+  simp [recScheme, recNames, PolyTy.genGroup, Ty.genFilter]
+
+private theorem recCompleted_empty_prefixes (specs : List RecSpec) (prefixes : List (List Nat)) (G : List Nat)
+    (hp : ∀ i : Nat, prefixes[i]?.getD [] = []) :
+    recCompletedSchemes specs prefixes G = specs.map (RecSpec.bodyScheme G) := by
+  apply List.ext_get (by simp [recCompletedSchemes])
+  intro i hi hj
+  simp only [recCompletedSchemes, List.get_eq_getElem, List.getElem_mapIdx, List.getElem_map, hp]
+  cases specs[i]'(by simpa using hj) <;> simp only [RecSpec.completedScheme, RecSpec.bodyScheme, recScheme_empty]
+
+private theorem recStage_empty_prefixes (ctx : Ctx) (specs : List RecSpec) (prefixes : List (List Nat)) (done G Xs : List Nat)
+    (hp : ∀ i : Nat, prefixes[i]?.getD [] = []) :
+    recStageCtx ctx specs prefixes done G Xs = RecSpecs.stageCtx ctx specs done G Xs := by
+  unfold recStageCtx RecSpecs.stageCtx
+  congr 2
+  apply List.ext_get (by simp)
+  intro i hi hj
+  simp only [List.get_eq_getElem, List.getElem_mapIdx]
+  cases specs[i]'(by simpa using hj) <;>
+    simp only [recStageEntry, RecSpec.stageEntry, hp, recScheme_empty]
+
+private theorem complete_prefixes_empty {anns : List LetAnn} {specs : List RecSpec}
+    (hp : RecPrefixesWF anns specs prefixes G) (hlen : anns.length = specs.length)
+    (hz : ∀ ann ∈ anns, ann.recPrefixCount = 0) : ∀ i : Nat, prefixes[i]?.getD [] = [] := by
+  intro i
+  cases hn : prefixes[i]? with
+  | none => rfl
+  | some names =>
+    have hi : i < anns.length := by
+      have := (List.getElem?_eq_some_iff.mp hn).1
+      rw [hp.length] at this
+      omega
+    have hh := (hp.member i anns[i] names (List.getElem?_eq_getElem hi) hn).1
+    rw [hz anns[i] (List.getElem_mem hi)] at hh
+    exact List.length_eq_zero_iff.mp hh
+
+private theorem core_openTyVars_nil (e : Expr) : e.openTyVars [] = e := by
+  rw [← Expr.instTy_fvar_eq_openTyVars]
+  exact Expr.instTy_nil e
+
 /-- The independent rules conservatively recover ordinary typing whenever the
 input is already complete. This retains complete annotations and recursion. -/
 theorem Typing.toCore (h : Typing K ctx input ty) {core : Expr}
@@ -219,6 +355,55 @@ theorem Typing.toCore (h : Typing K ctx input ty) {core : Expr}
       · obtain ⟨branch, hb, hv⟩ := branchFreeVars_iff.mp hv
         obtain ⟨body, hbody, heq⟩ := completeBranches_backward hbs hb
         exact (ihbranches (branch.1, body) hbody heq).2 v hv
+  | letRec hgroups hwf hp hG hAnn hRhs hFits hMono hPoly hBody ihMono ihPoly ihBody =>
+    expose_names
+    have hRaw := (Typing.letRec hgroups hwf hp hG hAnn hRhs hFits hMono hPoly hBody).rigidVars
+    have hWhole := hc
+    simp only [Input.toCore, bind, pure, Option.bind_eq_some_iff, Option.some.injEq] at hc
+    obtain ⟨coreAnns, ha, coreBindings, hr, coreBody, hb, rfl⟩ := hc
+    obtain ⟨hAnnsEq, hAnnData⟩ := completeAnns_data ha
+    subst coreAnns
+    have hannsLen : anns.length = specs.length := by
+      have hh := congrArg List.length hwf.anns_eq
+      simpa using hh.symm
+    have hpNil := complete_prefixes_empty hp hannsLen (fun ann hm => (hAnnData ann hm).2)
+    have hlen := completeBindings_length hr
+    have hErased : coreBindings.map Expr.erase = bindings.map Input.erase := by
+      rw [completeBindings_erase bindings hr, eraseBindings_eq_map_rec]
+    have hbodyCtx : recBodyCtx ctx_1 specs prefixes G = RecSpecs.bodyCtx ctx_1 specs G := by
+      unfold recBodyCtx RecSpecs.bodyCtx
+      rw [recCompleted_empty_prefixes specs prefixes G hpNil]
+    refine ⟨TypeOfHM.letRec (groups := groups) (G := G) (L := G ++ L)
+      (validResidualGroups_erase_iff.mp (hErased ▸ hgroups))
+      ⟨hwf.anns_eq, hlen.symm.trans (by simpa using hwf.length), hwf.nodup, hwf.mono_lc, hwf.poly_wf⟩
+      ?_ ?_ rfl ?_, ?_⟩
+    · intro stage component hs Xs hf member hm rhs ty hcore ht
+      obtain ⟨rhs0, hr0, hemb⟩ := completeBindings_lookup_back hr hcore
+      have hi : member < specs.length := (List.getElem?_eq_some_iff.mp ht).1
+      have hia : member < anns.length := by omega
+      have hip : member < prefixes.length := by rw [hp.length]; exact hi
+      have hn : prefixes[member]? = some [] := by
+        have hh := hpNil member
+        rw [List.getElem?_eq_getElem hip] at hh
+        rw [List.getElem?_eq_getElem hip]
+        simpa only [Option.getD_some] using congrArg some hh
+      have ho := rhs0.toCore_openTyVars hemb []
+      rw [core_openTyVars_nil] at ho
+      have hh := (ihMono stage component hs Xs hf member hm rhs0 anns[member] [] ty
+        hr0 (List.getElem?_eq_getElem hia) hn ht ho).1
+      simpa only [recRenameNames, List.map_nil, recStage_empty_prefixes _ _ _ _ _ _ hpNil] using hh
+    · intro pair hpair scheme heq Ys hy
+      obtain ⟨member, hzip⟩ := List.mem_iff_getElem?.mp hpair
+      obtain ⟨hcore, ht⟩ := List.getElem?_zip_eq_some.mp hzip
+      rw [heq] at ht
+      obtain ⟨rhs0, hr0, hemb⟩ := completeBindings_lookup_back hr hcore
+      have hy0 : FreshNames L scheme.paramCount Ys :=
+        ⟨hy.length, hy.nodup, fun y hy' hl => hy.avoid y hy' (List.mem_append_right _ hl)⟩
+      have hh := (ihPoly member rhs0 scheme hr0 ht Ys hy0 (rhs0.toCore_openTyVars hemb Ys)).1
+      simpa only [hbodyCtx] using hh
+    · simpa only [hbodyCtx] using (ihBody hb).1
+    · intro v hv
+      exact hRaw v ((Input.toCore_rigidVars _ hWhole v).mpr hv)
   | named hspec _ ih =>
     rename_i body heq
     obtain ⟨ht, hs⟩ := ih heq
@@ -413,6 +598,219 @@ theorem Typing.signature_inv (h : Typing K ctx (.letIn ann rhs body) ty)
                   · exact List.mem_append_right _ hv
                 · simpa only [htake, Expr.openBoundTyVars] using hgen Xs hXs
               · intro v hv; exact hscope v (List.mem_append_right _ hv)
+
+
+/-- Recursive inversion exposes the exact independent staged premises, even
+when the derivation used the conservative complete-Core embedding. -/
+theorem Typing.rec_inv (h : Typing K ctx (.letRec anns bindings body) resultTy) :
+    ∃ (specs : List RecSpec) (groups prefixes : List (List Nat)) (G L : List Nat),
+    RecGroups.ValidResidualGroups (anns.map LetAnn.recModeAnn) (bindings.map Input.erase) groups ∧
+    RecSpecs.WF (anns.map LetAnn.recModeAnn) (bindings.map Input.erase) specs G ∧
+    RecPrefixesWF anns specs prefixes G ∧
+    (∀ name ∈ G, name ∉ ctx.env.freeVars ++ K) ∧
+    (∀ ann ∈ anns, ∀ v ∈ ann.rigidVars, v ∈ K) ∧
+    (∀ rhs ∈ bindings, ∀ v ∈ rhs.rigidVars, v ∈ K) ∧
+    (∀ (stage : Nat) (component : List Nat), groups[stage]? = some component →
+      ∀ Xs, FreshNames (G ++ L) G.length Xs →
+      ∀ (member : Nat), member ∈ component → ∀ (rhs : Input) (ann : LetAnn) (names : List Nat) (ty : Ty),
+        bindings[member]? = some rhs → anns[member]? = some ann →
+        prefixes[member]? = some names → specs[member]? = some (.mono ty) →
+        ann.RecFits (recRenameNames G Xs names) (Ty.renameG G Xs ty)) ∧
+    (∀ (stage : Nat) (component : List Nat), groups[stage]? = some component →
+      ∀ Xs, FreshNames (G ++ L) G.length Xs →
+      ∀ (member : Nat), member ∈ component → ∀ (rhs : Input) (ann : LetAnn) (names : List Nat) (ty : Ty),
+        bindings[member]? = some rhs → anns[member]? = some ann →
+        prefixes[member]? = some names → specs[member]? = some (.mono ty) →
+        Typing (K ++ Xs) (recStageCtx ctx specs prefixes (groups.take stage).flatten G Xs)
+          (rhs.openTyVars (recRenameNames G Xs names)) (Ty.renameG G Xs ty)) ∧
+    (∀ (member : Nat) (rhs : Input) (scheme : PolyTy), bindings[member]? = some rhs →
+      specs[member]? = some (.poly scheme) → ∀ Ys, FreshNames L scheme.paramCount Ys →
+        Typing (K ++ Ys) (recBodyCtx ctx specs prefixes G) (rhs.openTyVars Ys) (scheme.openVars Ys)) ∧
+    Typing K (recBodyCtx ctx specs prefixes G) body resultTy := by
+  cases h with
+  | letRec hg hw hp hG hAnn hRhs hf hm hpoly hb =>
+    exact ⟨_, _, _, _, _, hg, hw, hp, hG, hAnn, hRhs, hf, hm, hpoly, hb⟩
+  | complete hemb hscope ht =>
+    have rawScope : ∀ v ∈ (Input.letRec anns bindings body).rigidVars, v ∈ K :=
+      fun v hv => hscope v ((Input.toCore_rigidVars _ hemb v).mp hv)
+    have hAnn : ∀ ann ∈ anns, ∀ v ∈ ann.rigidVars, v ∈ K := by
+      intro ann ha v hv
+      exact rawScope v (List.mem_append_left _ (List.mem_append_left _ (List.mem_flatMap.mpr ⟨ann, ha, hv⟩)))
+    have hRhs : ∀ rhs ∈ bindings, ∀ v ∈ rhs.rigidVars, v ∈ K := by
+      have hB : ∀ bs : List Input, rigidBindingVars bs = bs.flatMap Input.rigidVars := by
+        intro bs
+        induction bs with
+        | nil => rfl
+        | cons rhs rest ih => simp only [rigidBindingVars, List.flatMap_cons, ih]
+      intro rhs hr v hv
+      apply rawScope v
+      apply List.mem_append_left
+      apply List.mem_append_right
+      rw [hB bindings]
+      exact List.mem_flatMap.mpr ⟨rhs, hr, hv⟩
+    simp only [Input.toCore, bind, pure, Option.bind_eq_some_iff, Option.some.injEq] at hemb
+    obtain ⟨coreAnns, ha, coreBindings, hr, coreBody, hb, rfl⟩ := hemb
+    obtain ⟨hAnnsEq, hAnnData⟩ := completeAnns_data ha
+    subst coreAnns
+    cases ht with
+    | letRec hg hw hMonoCore hPolyCore hctx hbody =>
+      expose_names
+      subst hctx
+      have hlen := completeBindings_length hr
+      have hannsLen : anns.length = specs.length := by
+        have hh := congrArg List.length hw.anns_eq
+        simpa using hh.symm
+      have hErased : coreBindings.map Expr.erase = bindings.map Input.erase := by
+        rw [completeBindings_erase bindings hr, eraseBindings_eq_map_rec]
+      have hw0 : RecSpecs.WF (anns.map LetAnn.recModeAnn) (bindings.map Input.erase) specs G :=
+        ⟨hw.anns_eq, by simpa only [List.length_map, hlen] using hw.length, hw.nodup, hw.mono_lc, hw.poly_wf⟩
+      let prefixes0 : List (List Nat) := List.replicate specs.length []
+      have hp0Nil : ∀ i : Nat, prefixes0[i]?.getD [] = [] := by
+        intro i
+        simp only [prefixes0, List.getElem?_replicate]
+        split <;> rfl
+      have hp0 : RecPrefixesWF anns specs prefixes0 G := by
+        refine ⟨List.length_replicate, ?_⟩
+        intro i ann names hai hni
+        have hh := hp0Nil i
+        rw [hni] at hh
+        simp only [Option.getD_some] at hh
+        subst names
+        exact ⟨(hAnnData ann (List.mem_of_getElem? hai)).2.symm, .nil, by simp⟩
+      let avoid := K ++ ctx.env.freeVars ++ G ++ specs.flatMap RecSpec.freeVars
+      obtain ⟨W, hWlen, hWnd, hWavoid⟩ := exists_fresh_names avoid G.length
+      have hGW : ∀ g ∈ G, g ∉ W := by
+        intro g hg hw
+        exact hWavoid g hw (by simp only [avoid, List.mem_append]; tauto)
+      have hWmono : ∀ ty, .mono ty ∈ specs → ∀ w ∈ W, w ∉ ty.freeVars := by
+        intro ty ht w hw hv
+        exact hWavoid w hw (by
+          simp only [avoid, List.mem_append]
+          right
+          exact List.mem_flatMap.mpr ⟨.mono ty, ht, hv⟩)
+      let specs' := specs.map (fun spec => RecSpec.onSubstSource [] (RecSpec.onSubst (G.zip (W.map Ty.fvar)) spec))
+      let prefixes' := prefixes0.map (recRenameNames G W)
+      let L' := G ++ W ++ L
+      have annNil : anns.map (LetAnn.substTyFvars []) = anns := by
+        conv_rhs => rw [← List.map_id anns]
+        apply List.map_congr_left
+        intro ann _
+        exact ann.substTyFvars_eq_self_of_fixes (fun _ _ => rfl)
+      have hw' : RecSpecs.WF (anns.map LetAnn.recModeAnn) (bindings.map Input.erase) specs' W := by
+        simpa only [annNil] using Elaboration.RecSpecs.WF.subst_fresh_pool (S := []) hw0 (by simp) hWnd
+      have hp' : RecPrefixesWF anns specs' prefixes' W := by
+        simpa only [annNil] using hp0.subst_fresh_pool (S := []) hWlen hWnd
+      have hp'Nil : ∀ i : Nat, prefixes'[i]?.getD [] = [] := by
+        intro i
+        simp only [prefixes', List.getElem?_map]
+        cases hpi : prefixes0[i]? with
+        | none => rfl
+        | some names =>
+          have hn := hp0Nil i
+          rw [hpi] at hn
+          simp only [Option.getD_some] at hn
+          rw [hn]
+          rfl
+      have hpData := fun i hi => hp0.get hannsLen (i := i) hi
+      have hcompleted := recCompletedSchemes_subst_fresh_pool (S := []) (by simp) hWlen hw.nodup hWnd hGW hWmono
+        (by simp) (by simp) hw.mono_lc hpData
+      have mapNil : ∀ xs : List PolyTy, xs.map (Subst.onPolyTy []) = xs := by
+        intro xs
+        rw [show Subst.onPolyTy [] = id from funext Subst.onPolyTy_nil, List.map_id]
+      have hbodyCtx : recBodyCtx ctx specs' prefixes' W = RecSpecs.bodyCtx ctx specs G := by
+        unfold recBodyCtx RecSpecs.bodyCtx
+        rw [hcompleted, mapNil, recCompleted_empty_prefixes specs prefixes0 G hp0Nil]
+      have oldFresh : ∀ Xs, FreshNames (W ++ L') W.length Xs → FreshNames L G.length Xs := by
+        intro Xs hf
+        refine ⟨hf.length.trans hWlen, hf.nodup, ?_⟩
+        intro x hx hl
+        exact hf.avoid x hx (by simp only [L', List.mem_append]; tauto)
+      have hGXs : ∀ Xs, FreshNames (W ++ L') W.length Xs → ∀ g ∈ G, g ∉ Xs := by
+        intro Xs hf g hg hx
+        exact hf.avoid g hx (by simp only [L', List.mem_append]; tauto)
+      have hWXs : ∀ Xs, FreshNames (W ++ L') W.length Xs → ∀ w ∈ W, w ∉ Xs := by
+        intro Xs hf w hw hx
+        exact hf.avoid w hx (List.mem_append_left _ hw)
+      have hstageCtx : ∀ Xs, FreshNames (W ++ L') W.length Xs → ∀ done,
+          recStageCtx ctx specs' prefixes' done W Xs = RecSpecs.stageCtx ctx specs done G Xs := by
+        intro Xs hf done
+        unfold recStageCtx
+        rw [recStageSchemes_subst_fresh_pool (S := []) (by simp) hWlen hw.nodup hWnd hGW hWmono
+          (by simp) (by simp) hw.mono_lc hpData (hf.length.trans hWlen) (hGXs Xs hf) (hWXs Xs hf) (by simp), mapNil]
+        exact recStage_empty_prefixes ctx specs prefixes0 done G Xs hp0Nil
+      have annMonoAbsent : ∀ (member : Nat) (ann : LetAnn) (ty : Ty), anns[member]? = some ann → specs[member]? = some (.mono ty) → ann = .absent := by
+        intro member ann ty hai hti
+        have heq := congrArg (fun xs => xs[member]?) hw.anns_eq
+        simp only [List.getElem?_map, hti, hai, Option.map_some, RecSpec.ann, Option.some.injEq] at heq
+        have hvalid := (hAnnData ann (List.mem_of_getElem? hai)).1
+        cases ann with
+        | absent => rfl
+        | complete scheme => cases heq
+        | template template => cases hvalid
+        | partialForall n template => cases hvalid
+      refine ⟨specs', groups, prefixes', W, L', hErased ▸ validResidualGroups_erase_iff.mpr hg,
+        hw', hp', ?_, hAnn, hRhs, ?_, ?_, ?_, ?_⟩
+      · intro w hw hm
+        exact hWavoid w hw (by simp only [avoid, List.mem_append] at hm ⊢; tauto)
+      · intro stage component hs Xs hf member hm rhs ann names ty hri hai hni hti
+        have hn := hp'Nil member
+        rw [hni] at hn
+        simp only [Option.getD_some] at hn
+        subst names
+        rw [List.getElem?_map] at hti
+        obtain ⟨spec, ht0, heq⟩ := Option.map_eq_some_iff.mp hti
+        cases spec with
+        | poly scheme => cases heq
+        | mono ty0 =>
+          rw [annMonoAbsent member ann ty0 hai ht0]
+          trivial
+      · intro stage component hs Xs hf member hm rhs ann names ty hri hai hni hti
+        have hn := hp'Nil member
+        rw [hni] at hn
+        simp only [Option.getD_some] at hn
+        subst names
+        rw [List.getElem?_map] at hti
+        obtain ⟨spec, ht0, heq⟩ := Option.map_eq_some_iff.mp hti
+        cases spec with
+        | poly scheme => cases heq
+        | mono ty0 =>
+          cases heq
+          obtain ⟨coreRhs, hc, hemb⟩ := completeBindings_lookup hr hri
+          have hcTyping := hMonoCore stage component hs Xs (oldFresh Xs hf) member hm coreRhs ty0 hc ht0
+          have ho := rhs.toCore_openTyVars hemb []
+          rw [core_openTyVars_nil] at ho
+          change Typing (K ++ Xs) (recStageCtx ctx specs' prefixes' (groups.take stage).flatten W Xs)
+            (rhs.openTyVars []) (Ty.renameG W Xs (Ty.renameG G W ty0))
+          have hsquare := Ty.renameG_subst_fresh_pool (S := []) (hw.mono_lc ty0 (List.mem_of_getElem? ht0)) (by simp)
+            hWlen hw.nodup hWnd hGW (hWmono ty0 (List.mem_of_getElem? ht0)) (by simp) (by simp)
+            (hf.length.trans hWlen) (hGXs Xs hf) (hWXs Xs hf) (by simp)
+          simp only [Subst.onTy_nil] at hsquare
+          rw [hstageCtx Xs hf, hsquare]
+          refine .complete ho ?_ hcTyping
+          intro v hv
+          exact List.mem_append_left _ (hRhs rhs (List.mem_of_getElem? hri) v ((Input.toCore_rigidVars _ hemb v).mpr hv))
+      · intro member rhs scheme hri hsi Ys hy
+        rw [List.getElem?_map] at hsi
+        obtain ⟨spec, hs0, heq⟩ := Option.map_eq_some_iff.mp hsi
+        cases spec with
+        | mono ty => cases heq
+        | poly scheme0 =>
+          cases heq
+          obtain ⟨coreRhs, hc, hemb⟩ := completeBindings_lookup hr hri
+          have hy0 : FreshNames L scheme0.paramCount Ys :=
+            ⟨hy.length, hy.nodup, fun y hy' hl => hy.avoid y hy' (by simp only [L', List.mem_append]; tauto)⟩
+          have hcTyping := hPolyCore (coreRhs, .poly scheme0)
+            (List.mem_iff_getElem?.mpr ⟨member, List.getElem?_zip_eq_some.mpr ⟨hc, hs0⟩⟩) scheme0 rfl Ys hy0
+          rw [hbodyCtx]
+          refine .complete (rhs.toCore_openTyVars hemb Ys) ?_ hcTyping
+          intro v hv
+          rcases Expr.tyFreeVars_openTyVars hv with hv | hv
+          · exact List.mem_append_left _ (hRhs rhs (List.mem_of_getElem? hri) v ((Input.toCore_rigidVars _ hemb v).mpr hv))
+          · exact List.mem_append_right _ hv
+      · rw [hbodyCtx]
+        refine .complete hb ?_ hbody
+        intro v hv
+        exact rawScope v (List.mem_append_right _ ((Input.toCore_rigidVars _ hb v).mpr hv))
 
 
 /-- Move candidate occurrences of an algorithmic skolem block out to fresh
