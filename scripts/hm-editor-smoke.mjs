@@ -705,5 +705,52 @@ test("an unrelated nested signature preserves a vacuous outer provisional forall
   run(source, "1");
 });
 
+
+// These acceptance/rejection pairs stay independent while recursive inference
+// is under construction. A rejection alone cannot establish the escape guard.
+test("a nested partial recursive group cannot capture an outer vacuous forall root", () => {
+  const source = "let f : {a} _ = \\x -> " +
+    "let g : {b} b -> _ = \\(y : a) -> if True then y else g y " +
+    "in if True then x else f x\nf 1\n";
+  const rejected = cli(["run", "--json"], source);
+  assert.equal(rejected.status, 1);
+  assert.equal(rejected.payload.stage, "typecheck");
+});
+
+test("an independent nested partial recursive group preserves an outer vacuous forall", () => {
+  const source = "let f : {a} _ = \\x -> " +
+    "let g : {b} b -> _ = \\(y : b) -> if True then y else g y " +
+    "in if True then x else f x\nf 1\n";
+  run(source, "1");
+});
+
+test("complete lambda annotations can reference an outer provisional forall", () => {
+  const source = "let f : {a} a -> _ = \\(x : a) -> if True then x else f x\n(f 1, f True)\n";
+  diagnose(source);
+  run(source, "(1, True)");
+});
+
+test("complete lambda annotations cannot specialize an outer authored forall", () => {
+  const source = "let f : {a} a -> _ = \\(x : Int) -> if True then x else f x\n(f 1, f True)\n";
+  const rejected = cli(["run", "--json"], source);
+  assert.equal(rejected.status, 1);
+  assert.equal(rejected.payload.stage, "typecheck");
+});
+
+test("complete nested signatures can reference an outer provisional forall", () => {
+  const source = "let f : {a} a -> _ = \\x -> let id : a -> a = \\y -> y " +
+    "in if True then id x else f x\n(f 1, f True)\n";
+  diagnose(source);
+  run(source, "(1, True)");
+});
+
+test("complete nested signatures cannot specialize an outer authored forall", () => {
+  const source = "let f : {a} a -> _ = \\x -> let id : Int -> Int = \\y -> y " +
+    "in if True then id x else f x\n(f 1, f True)\n";
+  const rejected = cli(["run", "--json"], source);
+  assert.equal(rejected.status, 1);
+  assert.equal(rejected.payload.stage, "typecheck");
+});
+
 console.log(`${tests - failures}/${tests} HM CLI/editor semantic smoke checks passed.`);
 process.exitCode = failures ? 1 : 0;

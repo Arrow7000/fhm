@@ -73,3 +73,13 @@ in `FHM.Unverified.EditorSupportTests`; `scripts/hm-editor-smoke.mjs` includes
 end-to-end acceptance targets for the remaining constructs. Some targets remain
 intentionally red during this WIP extension; this checklist is the feature's
 completion criterion.
+
+Pending recursive regressions include paired acceptance/rejection cases for a
+nested partial recursive group under a vacuous outer forall. The inner written
+prefix must remain independent of the outer provisional forall roots, including
+roots absent from the current term environment and annotation type. Complete
+lambda annotations and nested complete signatures may refer to these outer
+roots; successful conversion to Core alone does not make backend delegation
+eligible. Their accepted cases must use structural inference when needed.
+The editor guards currently check these sources' lowering and provenance; the
+independent smoke groups record their eventual runtime acceptance and rejection.

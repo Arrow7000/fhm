@@ -852,3 +852,61 @@ private def signedNested :=
    "let middle : {middle} middle -> _ -> _ = \\(y : middle) z -> " ++
    "let inner : {inner} inner -> _ = \\(w : inner) -> x in (inner y, z) " ++
    "in middle True\nouter 1 False\n") == some ["a → (outer, a)", "b", "(outer, b)", "outer"]
+
+-- Recursive worker targets below deliberately check lowering only until its
+-- proof-backed implementation lands. Runtime expectations live in the smoke
+-- suite as independent positive/negative groups; rejection alone proves little.
+private def lowersWith (src : String) (check : Elaboration.Input → Bool) : Bool :=
+  match parseProgramWithSpans src with
+  | .error _ => false
+  | .ok (p, bs, sp) =>
+      let result := do
+        let ctors ← elabDecls preludeDecls
+        let tree ← FHM.Unverified.HMArtifacts.programSpanned p sp (programWideScope bs sp)
+        SurfaceBridge.Provenance.lowerWithProvenance ctors p.term tree
+      match result with
+      | none => false
+      | some lowered => (lowered.mapExpr Elaboration.Input.erase).provenanceTotal && check lowered.expr
+
+private def nestedRecCapture :=
+  "let f : {a} _ = \\x -> let g : {b} b -> _ = \\(y : a) -> " ++
+  "if True then y else g y in if True then x else f x\nf 1\n"
+private def nestedRecIndependent :=
+  "let f : {a} _ = \\x -> let g : {b} b -> _ = \\(y : b) -> " ++
+  "if True then y else g y in if True then x else f x\nf 1\n"
+
+-- Both groups really are recursive. At the inner RHS, outer `a` has index1
+-- and the independently declared `b` has index0. Outer `a` is absent from f's
+-- template, so only the provisional-forall frame can prevent its capture.
+#guard lowersWith nestedRecCapture fun
+  | .letRec [.partialForall 1 .hole]
+      [.lambda none (.letRec [.partialForall 1 _] [.lambda (some (.fixed (.bvar 1))) _] _)] _ => true
+  | _ => false
+#guard lowersWith nestedRecIndependent fun
+  | .letRec [.partialForall 1 .hole]
+      [.lambda none (.letRec [.partialForall 1 _] [.lambda (some (.fixed (.bvar 0))) _] _)] _ => true
+  | _ => false
+
+private def recCompleteLambda :=
+  "let f : {a} a -> _ = \\(x : a) -> if True then x else f x\n(f 1, f True)\n"
+private def recCompleteLambdaSpecialized :=
+  "let f : {a} a -> _ = \\(x : Int) -> if True then x else f x\n(f 1, f True)\n"
+private def recCompleteNested :=
+  "let f : {a} a -> _ = \\x -> let id : a -> a = \\y -> y " ++
+  "in if True then id x else f x\n(f 1, f True)\n"
+private def recCompleteNestedSpecialized :=
+  "let f : {a} a -> _ = \\x -> let id : Int -> Int = \\y -> y " ++
+  "in if True then id x else f x\n(f 1, f True)\n"
+
+-- A complete subtree can still mention an outer provisional variable. Its
+-- successful toCore conversion must not force an ineligible backend dispatch.
+#guard lowersWith recCompleteLambda fun
+  | .letRec [.partialForall 1 _] [rhs@(.lambda (some (.fixed (.bvar 0))) _)] _ =>
+      rhs.toCore.isSome && (rhs.openTyVars [1000]).rigidVars.contains 1000
+  | _ => false
+#guard lowersWith recCompleteNested fun
+  | .letRec [.partialForall 1 _] [rhs@(.lambda none (.letIn (.complete scheme) _ _))] _ =>
+      scheme.paramCount == 0 && rhs.toCore.isSome && (rhs.openTyVars [1000]).rigidVars.contains 1000
+  | _ => false
+#guard lowersWith recCompleteLambdaSpecialized (fun _ => true)
+#guard lowersWith recCompleteNestedSpecialized (fun _ => true)
