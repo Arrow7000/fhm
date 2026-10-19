@@ -6333,6 +6333,784 @@ theorem _root_.Infer.sourcePrincipal_letRec_of_unsigned
   simpa only [List.append_assoc] using
     Subst.AgreesBelow.trans_append hbase2 hagOriginal hbothB hag3
 
+/-- Reparameterize a private candidate pool without moving any actual state.
+The inverse is valid after every later solve/export. -/
+theorem RecResidual.repool
+    {P G W Xs done : List Nat} {declCtx ctx : Ctx} {specs : List RecSpec}
+    {prefixes : List (List Nat)} {state : RecState} {R : Subst}
+    (h : RecResidual P declCtx specs prefixes G Xs ctx state done R)
+    (hLC : ∀ spec ∈ specs, spec.LC) (hG : G.Nodup)
+    (hprefix : ∀ i, i < specs.length → (prefixes[i]?.getD []).Nodup ∧
+      ∀ v ∈ prefixes[i]?.getD [], v ∈ G)
+    (hLen : W.length = G.length) (hW : W.Nodup)
+    (hGW : ∀ g ∈ G, g ∉ W)
+    (hWmono : ∀ ty, .mono ty ∈ specs → ∀ w ∈ W, w ∉ ty.freeVars)
+    (hPoly : ∀ scheme, .poly scheme ∈ specs → ∀ g ∈ G, g ∉ scheme.body.freeVars)
+    (hXsLen : Xs.length = G.length) (hGXs : ∀ g ∈ G, g ∉ Xs) (hWXs : ∀ w ∈ W, w ∉ Xs) :
+    let specs' := specs.map (RecSpec.onSubstSource (G.zip (W.map Ty.fvar)))
+    let prefixes' := prefixes.map (recRenameNames G W)
+    RecResidual P declCtx specs' prefixes' W Xs ctx state done R ∧
+      recBodyCtx declCtx specs' prefixes' W = recBodyCtx declCtx specs prefixes G ∧
+      (∀ Z, Z.length = G.length → (∀ g ∈ G, g ∉ Z) → (∀ w ∈ W, w ∉ Z) →
+        ∀ prior, recStageCtx declCtx specs' prefixes' prior W Z =
+          recStageCtx declCtx specs prefixes prior G Z) ∧
+      (∀ Z, Z.length = G.length → (∀ g ∈ G, g ∉ Z) → (∀ w ∈ W, w ∉ Z) →
+        ∀ ty, .mono ty ∈ specs →
+          Ty.renameG W Z (Ty.renameG G W ty) = Ty.renameG G Z ty) ∧
+      (∀ laterCtx laterState laterDone T,
+        RecResidual P declCtx specs' prefixes' W Xs laterCtx laterState laterDone T →
+        RecResidual P declCtx specs prefixes G Xs laterCtx laterState laterDone T) := by
+  dsimp only
+  let A : Subst := G.zip (W.map Ty.fvar)
+  let specs' := specs.map (RecSpec.onSubstSource A)
+  let prefixes' := prefixes.map (recRenameNames G W)
+  have hmonoLC : ∀ ty, .mono ty ∈ specs → ty.IsLC := fun ty ht => hLC _ ht
+  have hPolyFix : ∀ scheme, .poly scheme ∈ specs → A.onPolyTy scheme = scheme := by
+    intro scheme hs
+    apply congrArg (PolyTy.mk scheme.paramCount)
+    apply Subst.onTy_eq_self_of_fixes
+    intro v hv
+    exact zip_fvars_fixes (fun hg => hPoly scheme hs v hg hv)
+  have hMap : specs' = specs.map (fun spec => RecSpec.onSubstSource [] (RecSpec.onSubst A spec)) := by
+    apply List.map_congr_left
+    intro spec hs
+    cases spec with
+    | mono ty => simp only [RecSpec.onSubstSource, RecSpec.onSubst, Subst.onTy_nil]
+    | poly scheme => simp only [RecSpec.onSubstSource, RecSpec.onSubst, hPolyFix scheme hs, Subst.onPolyTy_nil]
+  have hNil : ∀ Ms : List PolyTy, Ms.map (Subst.onPolyTy []) = Ms := by
+    intro Ms
+    rw [show Subst.onPolyTy [] = id from funext Subst.onPolyTy_nil, List.map_id]
+  have hBody : recBodyCtx declCtx specs' prefixes' W = recBodyCtx declCtx specs prefixes G := by
+    unfold recBodyCtx
+    rw [hMap, recCompletedSchemes_subst_fresh_pool (S := []) (by simp) hLen hG hW hGW hWmono
+      (by simp) (by simp) hmonoLC hprefix, hNil]
+  have hStage : ∀ Z, Z.length = G.length → (∀ g ∈ G, g ∉ Z) → (∀ w ∈ W, w ∉ Z) →
+      ∀ prior, recStageCtx declCtx specs' prefixes' prior W Z = recStageCtx declCtx specs prefixes prior G Z := by
+    intro Z hZ hGZ hWZ prior
+    unfold recStageCtx
+    rw [hMap, recStageSchemes_subst_fresh_pool (S := []) (by simp) hLen hG hW hGW hWmono
+      (by simp) (by simp) hmonoLC hprefix hZ hGZ hWZ (by simp), hNil]
+  have hSquare : ∀ Z, Z.length = G.length → (∀ g ∈ G, g ∉ Z) → (∀ w ∈ W, w ∉ Z) →
+      ∀ ty, .mono ty ∈ specs → Ty.renameG W Z (Ty.renameG G W ty) = Ty.renameG G Z ty := by
+    intro Z hZ hGZ hWZ ty ht
+    exact Ty.renameG_renameG (hmonoLC ty ht) hG hW hLen hZ hGW (hWmono ty ht) hWZ hGZ
+  refine ⟨h.rename_decl_pool hLC hG hprefix hLen hW hXsLen hGW hWmono hWXs hGXs hPoly,
+    hBody, hStage, hSquare, ?_⟩
+  intro laterCtx laterState laterDone T ht
+  refine ⟨ht.lc, ht.fixes, ht.ctx_eq, ?_, ?_, ?_, ?_, ?_⟩
+  · simpa only [List.length_map] using ht.length
+  · intro i algTy hi
+    obtain ⟨declTy, hd⟩ := ht.mono i algTy hi
+    obtain ⟨old, ho, _⟩ := RecSpec.mono_getElem?_map_onSubstSource hd
+    exact ⟨old, ho⟩
+  · intro i algScheme hi
+    obtain ⟨declScheme, hd, heq⟩ := ht.poly i algScheme hi
+    rw [List.getElem?_map] at hd
+    obtain ⟨spec, ho, hspec⟩ := Option.map_eq_some_iff.mp hd
+    cases spec with
+    | mono ty => cases hspec
+    | poly scheme =>
+      simp only [RecSpec.onSubstSource] at hspec
+      cases RecSpec.poly.inj hspec
+      rw [hPolyFix scheme (List.mem_of_getElem? ho)] at heq
+      exact ⟨scheme, ho, heq⟩
+  · intro i algTy declTy hi hd hn
+    have hnew : specs'[i]? = some (.mono (Ty.renameG G W declTy)) := by
+      simp only [specs', List.getElem?_map, hd, Option.map_some, RecSpec.onSubstSource]
+      rfl
+    rw [ht.pending i algTy _ hi hnew hn, hSquare Xs hXsLen hGXs hWXs declTy (List.mem_of_getElem? hd)]
+  · intro i algTy declTy hi hd hm
+    have hnew : specs'[i]? = some (.mono (Ty.renameG G W declTy)) := by
+      simp only [specs', List.getElem?_map, hd, Option.map_some, RecSpec.onSubstSource]
+      rfl
+    obtain ⟨exported, he, hg⟩ := ht.completed i algTy _ hi hnew hm
+    refine ⟨exported, he, ?_⟩
+    have hpref : prefixes'[i]?.getD [] = recRenameNames G W (prefixes[i]?.getD []) := by
+      rw [List.getElem?_map]
+      cases prefixes[i]? <;> rfl
+    rw [hpref, recScheme_rename_pool (hmonoLC declTy (List.mem_of_getElem? hd)) hLen hG hW hGW
+      (hWmono declTy (List.mem_of_getElem? hd)) (hprefix i (List.getElem?_eq_some_iff.mp hd).1).1
+      (hprefix i (List.getElem?_eq_some_iff.mp hd).1).2] at hg
+    exact hg
+
+theorem recRenameNames_pool {names targets : List Nat}
+    (hlen : targets.length = names.length) (hnd : names.Nodup) :
+    recRenameNames names targets names = targets := by
+  apply List.ext_get (by simp [recRenameNames, hlen])
+  intro i hi hj
+  simp only [recRenameNames, List.get_eq_getElem, List.getElem_map]
+  simp only [hnd.idxOf_getElem i (by simpa only [recRenameNames, List.length_map] using hi),
+    List.getElem?_eq_getElem hj, Option.getD_some]
+
+/-- Refresh one candidate opening after the next actual allocation is known.
+The inverse is appended after later solving and needs no bound on that solve. -/
+theorem RecResidual.refresh_opening
+    {P G Xs Zs done : List Nat} {declCtx ctx : Ctx} {specs : List RecSpec}
+    {prefixes : List (List Nat)} {state : RecState} {R : Subst} {frontier : Nat}
+    (h : RecResidual P declCtx specs prefixes G Xs ctx state done R)
+    (hstate : state.Below frontier) (hctx : CtxBelow frontier ctx)
+    (hMonoLC : ∀ ty, .mono ty ∈ specs → ty.IsLC) (hG : G.Nodup)
+    (hXsLen : Xs.length = G.length) (hXsND : Xs.Nodup) (hGXs : ∀ g ∈ G, g ∉ Xs)
+    (hZLen : Zs.length = Xs.length) (hZND : Zs.Nodup) (hGZ : ∀ g ∈ G, g ∉ Zs)
+    (hXZ : ∀ x ∈ Xs, x ∉ Zs)
+    (hXsP : ∀ p ∈ P, p ∉ Xs) (hZP : ∀ p ∈ P, p ∉ Zs)
+    (hXsCtx : ∀ x ∈ Xs, x ∉ declCtx.env.freeVars)
+    (hZCtx : ∀ z ∈ Zs, z ∉ declCtx.env.freeVars)
+    (hXsSpec : ∀ x ∈ Xs, ∀ spec ∈ specs, x ∉ spec.freeVars)
+    (hZSpec : ∀ z ∈ Zs, ∀ spec ∈ specs, z ∉ spec.freeVars)
+    (hZOld : ∀ v, v < frontier → ∀ z ∈ Zs, z ∉ (R.onTy (.fvar v)).freeVars) :
+    let B : Subst := Xs.zip (Zs.map Ty.fvar)
+    let back : Subst := Zs.zip (Xs.map Ty.fvar)
+    RecResidual P declCtx specs prefixes G Zs ctx state done (R ++ B) ∧
+      (∀ prior, B.onCtx (recStageCtx declCtx specs prefixes prior G Xs) =
+        recStageCtx declCtx specs prefixes prior G Zs) ∧
+      (∀ ty, .mono ty ∈ specs → B.onTy (Ty.renameG G Xs ty) = Ty.renameG G Zs ty) ∧
+      (∀ (raw : Input), (∀ v ∈ raw.rigidVars, v ∈ P) → ∀ (prior : List Nat) (ty : Ty) (names : List Nat),
+        Typing (P ++ Xs) (recStageCtx declCtx specs prefixes prior G Xs) (raw.openTyVars names) ty →
+        Typing (P ++ Zs) (recStageCtx declCtx specs prefixes prior G Zs)
+          (raw.openTyVars (recRenameNames Xs Zs names)) (B.onTy ty)) ∧
+      (∀ laterCtx laterState laterDone T,
+        RecResidual P declCtx specs prefixes G Zs laterCtx laterState laterDone T →
+        RecResidual P declCtx specs prefixes G Xs laterCtx laterState laterDone (T ++ back)) ∧
+      (∀ solved T, Subst.AgreesBelow frontier (R ++ B) (solved ++ T) →
+        Subst.AgreesBelow frontier R (solved ++ (T ++ back))) := by
+  dsimp only
+  let B : Subst := Xs.zip (Zs.map Ty.fvar)
+  let back : Subst := Zs.zip (Xs.map Ty.fvar)
+  have hBLC : ∀ pair ∈ B, pair.2.IsLC := zip_fvars_lc
+  have hBackLC : ∀ pair ∈ back, pair.2.IsLC := zip_fvars_lc
+  have hBP : ∀ p ∈ P, B.onTy (.fvar p) = .fvar p := fun p hp => zip_fvars_fixes (hXsP p hp)
+  have hBackP : ∀ p ∈ P, back.onTy (.fvar p) = .fvar p := fun p hp => zip_fvars_fixes (hZP p hp)
+  have hBCtx : B.onCtx declCtx = declCtx := by
+    apply congrArg₂ Ctx.mk
+    · apply Subst.onEnv_eq_self_of_fresh
+      intro pair hp hv
+      exact hXsCtx pair.1 (List.of_mem_zip hp).1 hv
+    · rfl
+  have hBackCtx : back.onCtx declCtx = declCtx := by
+    apply congrArg₂ Ctx.mk
+    · apply Subst.onEnv_eq_self_of_fresh
+      intro pair hp hv
+      exact hZCtx pair.1 (List.of_mem_zip hp).1 hv
+    · rfl
+  have hBSpec : ∀ scheme, .poly scheme ∈ specs → B.onPolyTy scheme = scheme := by
+    intro scheme hs
+    apply congrArg (PolyTy.mk scheme.paramCount)
+    apply Subst.onTy_eq_self_of_fixes
+    intro v hv
+    exact zip_fvars_fixes (fun hx => hXsSpec v hx (.poly scheme) hs hv)
+  have hBackSpec : ∀ scheme, .poly scheme ∈ specs → back.onPolyTy scheme = scheme := by
+    intro scheme hs
+    apply congrArg (PolyTy.mk scheme.paramCount)
+    apply Subst.onTy_eq_self_of_fixes
+    intro v hv
+    exact zip_fvars_fixes (fun hz => hZSpec v hz (.poly scheme) hs hv)
+  have hBClose : ∀ (i : Nat) (ty : Ty), specs[i]? = some (.mono ty) →
+      B.onPolyTy (recScheme (prefixes[i]?.getD []) G ty) = recScheme (prefixes[i]?.getD []) G ty := by
+    intro i ty hs
+    apply congrArg (PolyTy.mk _)
+    apply Subst.onTy_eq_self_of_fixes
+    intro v hv
+    exact zip_fvars_fixes (fun hx => hXsSpec v hx (.mono ty) (List.mem_of_getElem? hs)
+      (Ty.freeVars_closeOver_subset hv))
+  have hBackClose : ∀ (i : Nat) (ty : Ty), specs[i]? = some (.mono ty) →
+      back.onPolyTy (recScheme (prefixes[i]?.getD []) G ty) = recScheme (prefixes[i]?.getD []) G ty := by
+    intro i ty hs
+    apply congrArg (PolyTy.mk _)
+    apply Subst.onTy_eq_self_of_fixes
+    intro v hv
+    exact zip_fvars_fixes (fun hz => hZSpec v hz (.mono ty) (List.mem_of_getElem? hs)
+      (Ty.freeVars_closeOver_subset hv))
+  have hBMono : ∀ ty, .mono ty ∈ specs → B.onTy (Ty.renameG G Xs ty) = Ty.renameG G Zs ty := by
+    intro ty ht
+    simpa only [recRenameNames_pool hZLen hXsND] using
+      (zip_fvars_renameG hZLen hXsND hXZ (hMonoLC ty ht) hG hXsLen hGXs hGZ
+        (fun x hx => hXsSpec x hx (.mono ty) ht))
+  have hBackMono : ∀ ty, .mono ty ∈ specs → back.onTy (Ty.renameG G Zs ty) = Ty.renameG G Xs ty := by
+    intro ty ht
+    simpa only [recRenameNames_pool hZLen.symm hZND] using
+      (zip_fvars_renameG hZLen.symm hZND (fun z hz hx => hXZ z hx hz)
+        (hMonoLC ty ht) hG (hZLen.trans hXsLen) hGZ hGXs
+        (fun z hz => hZSpec z hz (.mono ty) ht))
+  have hRBLc : ∀ pair ∈ R ++ B, pair.2.IsLC :=
+    fun pair hp => (List.mem_append.mp hp).elim (h.lc pair) (hBLC pair)
+  have hRBP : ∀ p ∈ P, (R ++ B).onTy (.fvar p) = .fvar p := by
+    intro p hp
+    rw [Subst.onTy_append, h.fixes p hp, hBP p hp]
+  refine ⟨h.change_opening hstate hctx hBLC hBCtx hBSpec
+    (fun i ty hs _ => recScheme_wf (hMonoLC ty (List.mem_of_getElem? hs)))
+    (fun i ty hs _ => hBClose i ty hs) hBMono hRBLc hRBP (fun _ _ => rfl), ?_, hBMono, ?_, ?_, ?_⟩
+  · intro prior
+    exact recStageCtx_change_opening hBCtx hBSpec hBClose hBMono
+  · intro raw hraw prior ty names ht
+    have himages : Xs.map (fun x => B.onTy (.fvar x)) = Zs.map Ty.fvar := by
+      apply List.ext_getElem
+      · simpa only [List.length_map] using hZLen.symm
+      · intro i hi hj
+        have hiX : i < Xs.length := by simpa only [List.length_map] using hi
+        have hiZ : i < Zs.length := by omega
+        simp only [List.getElem_map]
+        exact Ty.substFvars_zip_fvar_renameG hZLen hXsND hXZ
+          (List.getElem?_eq_getElem hiX) (List.getElem?_eq_getElem hiZ)
+    have hnames : names.map (fun x => B.onTy (.fvar x)) = (recRenameNames Xs Zs names).map Ty.fvar :=
+      zip_fvars_images hZLen hXsND hXZ
+    have hs := ht.opened_source_onSubst hBLC hBP himages hnames hraw
+    rw [recStageCtx_change_opening hBCtx hBSpec hBClose hBMono] at hs
+    exact hs
+  · intro laterCtx laterState laterDone T ht
+    have ht' : RecResidual (P ++ []) declCtx specs prefixes G Zs laterCtx laterState laterDone T := by
+      simpa only [List.append_nil] using ht
+    exact ht'.restore_opening hBackLC hBackP hBackCtx hBackSpec
+      (fun i ty hs _ => recScheme_wf (hMonoLC ty (List.mem_of_getElem? hs)))
+      (fun i ty hs _ => hBackClose i ty hs) hBackMono
+  · intro solved T hag
+    apply hag.restore_after
+    intro v hv
+    rw [Subst.onTy_append]
+    exact zip_fvars_roundtrip hZLen hXsND hZND hXZ (hZOld v hv)
+
+set_option maxHeartbeats 3000000 in
+theorem RecResidual.successful_step
+    {P G Xs : List Nat} {declCtx : Ctx} {declAnns : List LetAnn}
+    {declBindings : List Input} {declSpecs : List RecSpec}
+    {declGroups declPrefixes : List (List Nat)} {cutoff base : Nat} :
+  RecGroups.ValidResidualGroups (declAnns.map LetAnn.recModeAnn) (declBindings.map Input.erase) declGroups →
+  RecSpecs.WF (declAnns.map LetAnn.recModeAnn) (declBindings.map Input.erase) declSpecs G →
+  RecPrefixesWF declAnns declSpecs declPrefixes G →
+  (∀ g ∈ G, g ∉ declCtx.env.freeVars ++ P) →
+  (∀ ann ∈ declAnns, ∀ v ∈ ann.rigidVars, v ∈ P) →
+  (∀ rhs ∈ declBindings, ∀ v ∈ rhs.rigidVars, v ∈ P) →
+  (∀ (stage : Nat) (component : List Nat), declGroups[stage]? = some component →
+    ∀ (member : Nat), member ∈ component → ∀ (rhs : Input) (ann : LetAnn) (names : List Nat) (ty : Ty),
+      declBindings[member]? = some rhs → declAnns[member]? = some ann →
+      declPrefixes[member]? = some names → declSpecs[member]? = some (.mono ty) →
+      ann.RecFits (recRenameNames G Xs names) (Ty.renameG G Xs ty)) →
+  (∀ (stage : Nat) (component : List Nat), declGroups[stage]? = some component →
+    ∀ (member : Nat), member ∈ component → ∀ (rhs : Input) (ann : LetAnn) (names : List Nat) (ty : Ty),
+      declBindings[member]? = some rhs → declAnns[member]? = some ann →
+      declPrefixes[member]? = some names → declSpecs[member]? = some (.mono ty) →
+      Typing (P ++ Xs) (recStageCtx declCtx declSpecs declPrefixes (declGroups.take stage).flatten G Xs)
+        (rhs.openTyVars (recRenameNames G Xs names)) (Ty.renameG G Xs ty)) →
+  (∀ g ∈ G, cutoff ≤ g) → (∀ x ∈ Xs, cutoff ≤ x) →
+  Xs.length = G.length → Xs.Nodup →
+  (∀ g ∈ G, g ∉ Xs) →
+  (∀ x ∈ Xs, ∀ (ty : Ty), .mono ty ∈ declSpecs → x ∉ ty.freeVars) →
+  (∀ x ∈ Xs, x ∉ declCtx.env.freeVars ++ P) →
+∀ {K : List Nat} {F : List Ty} {frontier opened first : Nat}
+      {ctx : Ctx} {anns : List LetAnn} {bindings : List Input}
+      {state exported : RecState} {past rest : List (List Nat)} {component : List Nat}
+      {openings : List RecOpening} {pre current R : Subst}
+      {outputs : List (Option Expr)} {facts : List RecFacts},
+      OpenRecAnns component 0 frontier anns opened openings →
+      CheckRecShapes K ((state.installOpenings component openings).shapes component openings) pre →
+      InferRecComponent K
+        (substSoft pre (F ++ (openings.flatMap RecOpening.written).map Ty.fvar)) component 0 opened
+        (((state.installOpenings component openings).onSubst pre).rhsCtx (pre.onCtx ctx))
+        ((openRecSources openings bindings).map (Input.substTyFvars pre))
+        ((state.installOpenings component openings).onSubst pre).specs first current outputs facts →
+      FinishRecComponent K (softVars (substSoft (pre ++ current) F)) component
+        ((pre ++ current).onCtx ctx) ((state.installOpenings component openings).onSubst (pre ++ current))
+        outputs facts exported →
+      (∀ {κ F' Ψ c e Ψ' T output ty}, e.size ≤ sizeBindings bindings →
+        (hi : Infer κ F' Ψ c e Ψ' T output ty) → Infer.SourcePrincipal hi) →
+      first ≤ cutoff →
+      RecGroups.ValidResidualGroups (anns.map LetAnn.recModeAnn) (bindings.map Input.erase)
+        (past ++ component :: rest) →
+      past ++ component :: rest = RecGroup.inferenceSccs
+        (anns.map LetAnn.recModeAnn) (bindings.map Input.erase) →
+      state.Frame base K F ctx anns past.flatten →
+      state.LC → state.Below frontier → CtxWF ctx → CtxBelow frontier ctx →
+      base + bindings.length ≤ frontier →
+      (∀ k ∈ K, k < frontier) → (∀ t ∈ F, Ty.BelowFvars frontier t) →
+      (∀ p ∈ P, p < frontier) →
+      RecResidual P declCtx declSpecs declPrefixes G Xs ctx state past.flatten R →
+      (∀ x ∈ Xs, ∀ k ∈ K, x ∉ (R.onTy (.fvar k)).freeVars) →
+      (∀ x ∈ Xs, x ∉ softVars (substSoft R F)) →
+      (∀ ann ∈ anns, ∀ v ∈ ann.rigidVars, v ∈ K ++ softVars F) →
+      (∀ rhs ∈ bindings, SourceScope K F rhs) →
+      anns.map (LetAnn.substTyFvars R) = declAnns →
+      bindings.map (Input.substTyFvars R) = declBindings →
+      (∀ ann ∈ anns, ∀ v ∈ ann.rigidVars,
+        v ∈ K → v ∉ softVars F → R.onTy (.fvar v) = .fvar v) →
+      (∀ rhs ∈ bindings, ∀ v ∈ rhs.rigidVars,
+        v ∈ K → v ∉ softVars F → R.onTy (.fvar v) = .fvar v) →
+      ∃ U : Subst, (∀ pair ∈ U, pair.2.IsLC) ∧
+        (∀ p ∈ P, U.onTy (.fvar p) = .fvar p) ∧
+        Subst.AgreesBelow frontier R ((pre ++ current) ++ U) ∧
+        RecResidual P declCtx declSpecs declPrefixes G Xs ((pre ++ current).onCtx ctx)
+          exported (past.flatten ++ component) U := by
+  intro hdeclValid hdeclWF hprefix hGfresh hdeclAnn hdeclRhs hdeclFits hdeclTypes
+    hGhigh hXhigh hXlen hXnd hGX hXmono hXctxP K F frontier opened first ctx anns bindings state exported past rest component openings pre current R outputs facts
+    ho hp hc hf hInfer hcutoff hvalid hcanonical hframe hstateLC hstateB hctxWF hctx hbase hK hF hP hres
+    hXsK hXsF hannScope hrhsScope hannEq hrhsEq hannFreeze hrhsFreeze
+  have hopen := ho.frontier_le
+  have hopenCut : opened ≤ cutoff := hc.frontier_le.trans hcutoff
+  have hfrontCut : frontier ≤ cutoff := hopen.trans hopenCut
+  have hlen : anns.length = bindings.length := by simpa only [List.length_map] using hvalid.length
+  have hAnnLen : declAnns.length = declSpecs.length := by
+    have h := congrArg List.length hdeclWF.anns_eq
+    simpa only [List.length_map] using h.symm
+  have hAnnLen0 : anns.length = declAnns.length := by
+    have h := congrArg List.length hannEq
+    simpa only [List.length_map] using h
+  have hprefLen : declPrefixes.length = anns.length := hprefix.length.trans (hAnnLen.symm.trans hAnnLen0.symm)
+  have hprefixData := fun i hi => hprefix.get hAnnLen (i := i) hi
+  have hdeclLC : ∀ spec ∈ declSpecs, spec.LC := by
+    intro spec hs
+    cases spec with
+    | mono ty => exact hdeclWF.mono_lc ty hs
+    | poly scheme => exact hdeclWF.poly_wf scheme hs
+  have hRawAnn : ∀ ann ∈ anns, ∀ v ∈ ann.rigidVars, v < frontier :=
+    fun ann ha v hv => (List.mem_append.mp (hannScope ann ha v hv)).elim (hK v) (softVars_lt hF v)
+  have hRawRhs : ∀ rhs ∈ bindings, ∀ v ∈ rhs.rigidVars, v < frontier :=
+    fun rhs hr v hv => (List.mem_append.mp (hrhsScope rhs hr v hv)).elim (hK v) (softVars_lt hF v)
+  have hbindings : bindings.map Input.erase = declBindings.map Input.erase := by
+    rw [← hrhsEq, List.map_map]
+    exact List.map_congr_left (fun rhs _ => rhs.erase_substTyFvars R |>.symm)
+  have hmask : ∀ i, RecGroup.isUnsignedAt (anns.map LetAnn.recModeAnn) i =
+      RecGroup.isUnsignedAt (declAnns.map LetAnn.recModeAnn) i := by
+    intro i
+    rw [← hannEq]
+    exact LetAnn.recModeAnn_isUnsignedAt_subst anns R i
+  have halgorithm : (RecGroup.inferenceSccs (anns.map LetAnn.recModeAnn)
+      (bindings.map Input.erase))[past.length]? = some component := by
+    rw [← hcanonical, List.getElem?_append_right (by omega)]
+    simp
+  have hdone : past.flatten = ((RecGroup.inferenceSccs (anns.map LetAnn.recModeAnn)
+      (bindings.map Input.erase)).take past.length).flatten := by
+    rw [← hcanonical, List.take_append, List.take_length, Nat.sub_self, List.take_zero, List.append_nil]
+  have hTypes : ∀ stage co, declGroups[stage]? = some co →
+      ∀ member ∈ co, ∀ rhs ty, declBindings[member]? = some rhs → declSpecs[member]? = some (.mono ty) →
+      Typing (P ++ Xs) (recStageCtx declCtx declSpecs declPrefixes (declGroups.take stage).flatten G Xs)
+        (rhs.openTyVars (recRenameNames G Xs (declPrefixes[member]?.getD []))) (Ty.renameG G Xs ty) := by
+    intro stage co hs member hm rhs ty hr ht
+    have hi : member < declPrefixes.length := by rw [hprefix.length]; exact (List.getElem?_eq_some_iff.mp ht).1
+    have hiann : member < declAnns.length := by rw [hAnnLen]; exact (List.getElem?_eq_some_iff.mp ht).1
+    have hp := List.getElem?_eq_getElem hi
+    have ha := List.getElem?_eq_getElem hiann
+    simpa only [hp, Option.getD_some] using hdeclTypes stage co hs member hm rhs declAnns[member]
+      declPrefixes[member] ty hr ha hp ht
+  have hview : ∀ (i : Nat) (ann : LetAnn) (rhs : Input) (ty : Ty), i ∈ component →
+      anns[i]? = some ann → bindings[i]? = some rhs → state.specs[i]? = some (.mono ty) →
+      (ann.substTyFvars R).RecFits (recRenameNames G Xs (declPrefixes[i]?.getD [])) (R.onTy ty) ∧
+      (recRenameNames G Xs (declPrefixes[i]?.getD [])).length = ann.recPrefixCount ∧
+      Typing (P ++ recRenameNames G Xs (declPrefixes[i]?.getD [])) (R.onCtx (state.rhsCtx ctx))
+        ((rhs.substTyFvars R).openTyVars (recRenameNames G Xs (declPrefixes[i]?.getD []))) (R.onTy ty) := by
+    intro i ann rhs ty hi ha hr ht
+    exact hres.selected_view hframe hbindings hmask halgorithm hdone hdeclValid hdeclWF hprefix
+      hdeclFits hTypes hdeclRhs hannEq hrhsEq ha hr ht hi
+  let names := declPrefixes.mapIdx (fun i ns => if i ∈ component then recRenameNames G Xs ns else [])
+  have hNames : names.length = anns.length := by simp only [names, List.length_mapIdx, hprefLen]
+  have hprefixCount : ∀ (i : Nat) (ann : LetAnn) (ns : List Nat), anns[i]? = some ann →
+      declPrefixes[i]? = some ns → ns.length = ann.recPrefixCount ∧ ∀ v ∈ ns, v ∈ G := by
+    intro i ann ns ha hn
+    have hca : declAnns[i]? = some (ann.substTyFvars R) := by rw [← hannEq, List.getElem?_map, ha, Option.map_some]
+    obtain ⟨hc, _, hs⟩ := hprefix.member i _ ns hca hn
+    exact ⟨by simpa only [LetAnn.recPrefixCount_subst_source] using hc, hs⟩
+  have hcollection := ho.selected_prefix_collection hprefLen hXlen hprefixCount
+  change (openings.flatMap RecOpening.written).length = names.flatten.length ∧
+    ∀ c ∈ names.flatten, c ∈ Xs at hcollection
+  let A := openings.flatMap RecOpening.written
+  let C := names.flatten
+  let reps := prefixRepresentatives A C
+  let B : Subst := C.dedup.zip (reps.map Ty.fvar)
+  let Ys := recRenameNames C.dedup reps Xs
+  have hAC : A.length = C.length := hcollection.1
+  have hCX : ∀ c ∈ C, c ∈ Xs := hcollection.2
+  have hrepA : ∀ r ∈ reps, r ∈ A := fun r hr => prefixRepresentatives_mem_actual hAC hr
+  have hRepLen : reps.length = C.dedup.length := by simp only [reps, prefixRepresentatives, List.length_map]
+  have hReps : reps.Nodup := prefixRepresentatives_nodup hAC ho.written_nodup
+  have hXA : ∀ x ∈ Xs, x ∉ A := by
+    intro x hx ha
+    have h1 := hXhigh x hx
+    have h2 := (ho.written_range x ha).2
+    omega
+  have hGA : ∀ g ∈ G, g ∉ A := by
+    intro g hg ha
+    have h1 := hGhigh g hg
+    have h2 := (ho.written_range g ha).2
+    omega
+  have hXR : ∀ x ∈ Xs, x ∉ reps := fun x hx hr => hXA x hx (hrepA x hr)
+  have hGR : ∀ g ∈ G, g ∉ reps := fun g hg hr => hGA g hg (hrepA g hr)
+  have hCD : ∀ c ∈ C.dedup, c ∉ reps := fun c hc => hXR c (hCX c (List.mem_dedup.mp hc))
+  have hXP : ∀ x ∈ Xs, x ∉ P := fun x hx hp => hXctxP x hx (List.mem_append_right _ hp)
+  have hPC : ∀ p ∈ P, p ∉ C := fun p hp hc => hXP p (hCX p hc) hp
+  have hPR : ∀ p ∈ P, p ∉ reps := by
+    intro p hp hr
+    have h1 := hP p hp
+    have h2 := (ho.written_range p (hrepA p hr)).1
+    omega
+  let extras := (List.range frontier).map (fun v => R.onTy (.fvar v)) ++
+    K.map (fun k => R.onTy (.fvar k)) ++ F.map R.onTy
+  obtain ⟨W, hW, hWavoid, hmove, hblock, hDLC, hBackLC, hPoolFix, hForward, hBackward, hTargets, hRestore⟩ :=
+    hres.dodge frontier (opened - frontier) extras [] hctx hstateB hP hdeclLC hdeclWF.nodup hXlen hGX
+      (fun i hi => (hprefixData i hi).2)
+      (by
+        intro v hv hb
+        have hhigh := (List.mem_append.mp hv).elim (hGhigh v) (hXhigh v)
+        have hlt := freshVars_lt v hb
+        omega)
+  let D := blockList frontier W (opened - frontier)
+  let backD := blockListBack frontier W (opened - frontier)
+  let moved := Subst.conj (blockSwap frontier W (opened - frontier)) R
+  change RecResidual P (D.onCtx declCtx) (declSpecs.map (RecSpec.onSubstSource D)) declPrefixes G Xs ctx state past.flatten moved at hmove
+  have hAblock : ∀ a ∈ A, a ∈ freshVars frontier (opened - frontier) := by
+    intro a ha
+    obtain ⟨hlo, hhi⟩ := ho.written_range a ha
+    unfold freshVars
+    exact List.mem_map.mpr ⟨a - frontier, List.mem_range.mpr (by omega), by omega⟩
+  let allTargets := declCtx.env.map PolyTy.body ++ declSpecs.map (fun spec => spec.monoEntry.body) ++
+    (recCompletedSchemes declSpecs declPrefixes G).map PolyTy.body ++ extras
+  have hTarget : ∀ ty ∈ allTargets, backD.onTy (D.onTy ty) = ty ∧ ∀ a ∈ A, a ∉ (D.onTy ty).freeVars := by
+    intro ty ht
+    exact ⟨(hTargets ty ht).1, fun a ha => (hTargets ty ht).2 a (hAblock a ha)⟩
+  have hCtxT : ∀ M ∈ declCtx.env, M.body ∈ allTargets := by
+    intro M hm
+    have hh : M.body ∈ declCtx.env.map PolyTy.body := List.mem_map.mpr ⟨M, hm, rfl⟩
+    simp only [allTargets, List.mem_append]
+    tauto
+  have hSpecT : ∀ spec ∈ declSpecs, spec.monoEntry.body ∈ allTargets := by
+    intro spec hs
+    have hh : spec.monoEntry.body ∈ declSpecs.map (fun spec => spec.monoEntry.body) := List.mem_map.mpr ⟨spec, hs, rfl⟩
+    simp only [allTargets, List.mem_append]
+    tauto
+  have hCompleteT : ∀ M ∈ recCompletedSchemes declSpecs declPrefixes G, M.body ∈ allTargets := by
+    intro M hm
+    have hh : M.body ∈ (recCompletedSchemes declSpecs declPrefixes G).map PolyTy.body := List.mem_map.mpr ⟨M, hm, rfl⟩
+    simp only [allTargets, List.mem_append]
+    tauto
+  have hExtraT : ∀ ty ∈ extras, ty ∈ allTargets := by
+    intro ty ht
+    simp only [allTargets, List.mem_append]
+    tauto
+  have hBackX : ∀ x ∈ Xs, backD.onTy (.fvar x) = .fvar x :=
+    fun x hx => (hPoolFix x (List.mem_append_right _ hx)).2
+  have hForwardX : ∀ x ∈ Xs, D.onTy (.fvar x) = .fvar x :=
+    fun x hx => (hPoolFix x (List.mem_append_right _ hx)).1
+  have hFinite : ∀ ty ∈ allTargets, (∀ x ∈ Xs, x ∉ ty.freeVars) →
+      B.onTy (D.onTy ty) = D.onTy ty ∧ ∀ y ∈ Ys, y ∉ (D.onTy ty).freeVars := by
+    intro ty ht hx
+    exact Ty.prefix_normalize_fresh (hTarget ty ht).1 hBackX hx (hTarget ty ht).2 hrepA hCX
+  have hDlow : ∀ v, v < frontier → D.onTy (.fvar v) = .fvar v := by
+    intro v hv
+    apply Ty.substFvars_eq_self_of_no_key
+    intro pair hp hc
+    obtain ⟨j, hj, rfl⟩ := List.mem_map.mp hp
+    simp only [Ty.freeVars, List.mem_singleton] at hc
+    omega
+  have hDP : ∀ p ∈ P, D.onTy (.fvar p) = .fvar p := fun p hp => hDlow p (hP p hp)
+  have hagD : Subst.AgreesBelow frontier (R ++ D) moved := by
+    intro v hv
+    simpa only [Subst.onTy_append] using (hForward (.fvar v) (.fvar hv)).symm
+  have hCtxMove : D.onCtx (R.onCtx (state.rhsCtx ctx)) = moved.onCtx (state.rhsCtx ctx) := by
+    simpa only [Subst.onCtx_append] using Subst.onCtx_congr hagD (hstateB.rhsCtx hctx)
+  have hMovedSource : ∀ (raw : Input) (candidate : Input),
+      (∀ v ∈ raw.rigidVars, v < frontier) → raw.substTyFvars R = candidate →
+      (∀ v ∈ candidate.rigidVars, v ∈ P) → raw.substTyFvars moved = candidate := by
+    intro raw candidate hb he hs
+    calc
+      _ = (raw.substTyFvars R).substTyFvars D := by
+        rw [← raw.substTyFvars_append]
+        exact raw.substTyFvars_congr (fun v hv => (hagD v (hb v hv)).symm)
+      _ = candidate := by rw [he]; exact candidate.substTyFvars_eq_self_of_fixes (fun v hv => hDP v (hs v hv))
+  have hMovedAnn : ∀ ann ∈ anns, ann.substTyFvars moved = ann.substTyFvars R := by
+    intro ann ha
+    have hca : ann.substTyFvars R ∈ declAnns := by rw [← hannEq]; exact List.mem_map.mpr ⟨ann, ha, rfl⟩
+    calc
+      _ = (ann.substTyFvars R).substTyFvars D := by
+        rw [← ann.substTyFvars_append]
+        exact ann.substTyFvars_congr (fun v hv => (hagD v (hRawAnn ann ha v hv)).symm)
+      _ = ann.substTyFvars R := (ann.substTyFvars R).substTyFvars_eq_self_of_fixes
+        (fun v hv => hDP v (hdeclAnn _ hca v hv))
+  have hGetNames : ∀ i ns, i ∈ component → names[i]? = some ns →
+      ns = recRenameNames G Xs (declPrefixes[i]?.getD []) := by
+    intro i ns hi hn
+    rw [List.getElem?_mapIdx] at hn
+    obtain ⟨old, ho, he⟩ := Option.map_eq_some_iff.mp hn
+    simpa only [if_pos hi, ho, Option.getD_some] using he.symm
+  have hzero : ∀ i ann ns, anns[i]? = some ann → names[i]? = some ns → i ∉ component → ns = [] := by
+    intro i ann ns ha hn hi
+    rw [List.getElem?_mapIdx] at hn
+    obtain ⟨old, ho, he⟩ := Option.map_eq_some_iff.mp hn
+    simpa only [if_neg hi] using he.symm
+  have hselectedMono : ∀ i ∈ component, ∃ ty, state.specs[i]? = some (.mono ty) := by
+    intro i hi
+    have hm : i ∈ (past ++ component :: rest).flatten := by
+      simp only [List.flatten_append, List.flatten_cons, List.mem_append]
+      tauto
+    exact hframe.mono_at_unsigned ((hvalid.covers_unsigned i (hvalid.bounded i hm)).mp hm)
+  let targets := state.specs.map (fun spec => moved.onTy spec.monoEntry.body)
+  have hTargetsLen : targets.length = anns.length := by simp only [targets, List.length_map, hframe.specs_length]
+  have htarget : ∀ i ty, i ∈ component → state.specs[i]? = some (.mono ty) → targets[i]? = some (moved.onTy ty) := by
+    intro i ty hi ht
+    simp only [targets, List.getElem?_map, ht, Option.map_some, RecSpec.monoEntry, PolyTy.mkTrivial]
+  have hfit : ∀ i ann ns target, i ∈ component → anns[i]? = some ann →
+      names[i]? = some ns → targets[i]? = some target →
+      (ann.substTyFvars moved).RecFits ns target ∧ ns.length = ann.recPrefixCount ∧ target.IsLC := by
+    intro i ann ns target hi ha hn ht
+    obtain ⟨ty, hty⟩ := hselectedMono i hi
+    have hiRhs : i < bindings.length := by
+      have := (List.getElem?_eq_some_iff.mp ha).1
+      omega
+    have hr := List.getElem?_eq_getElem hiRhs
+    have ht' := htarget i ty hi hty
+    have he : target = moved.onTy ty := Option.some.inj (ht.symm.trans ht')
+    subst target
+    have hns := hGetNames i ns hi hn
+    rw [hns]
+    obtain ⟨hf0, hcount, htyped⟩ := hview i ann bindings[i] ty hi ha hr hty
+    have hnSub : ∀ v ∈ recRenameNames G Xs (declPrefixes[i]?.getD []), v ∈ Xs :=
+      recRenameNames_mem hXlen (hprefixData i (List.getElem?_eq_some_iff.mp (hres.mono i ty hty).choose_spec).1).2
+    have him : (recRenameNames G Xs (declPrefixes[i]?.getD [])).map (fun x => D.onTy (.fvar x)) =
+        (recRenameNames G Xs (declPrefixes[i]?.getD [])).map Ty.fvar :=
+      List.map_congr_left (fun x hx => hForwardX x (hnSub x hx))
+    refine ⟨?_, hcount, Subst.onTy_lc hmove.lc (hstateLC.1 _ (List.mem_of_getElem? hty))⟩
+    rw [hMovedAnn ann (List.mem_of_getElem? ha), hForward ty (hstateB.1 _ (List.mem_of_getElem? hty))]
+    have hh := hf0.onSubst_images hDLC him
+    rw [(ann.substTyFvars R).substTyFvars_eq_self_of_fixes (fun v hv => hDP v (hdeclAnn _
+      (by rw [← hannEq]; exact List.mem_map.mpr ⟨ann, List.mem_of_getElem? ha, rfl⟩) v hv))] at hh
+    exact hh
+  have hsource : ∀ i raw, i ∈ component → bindings[i]? = some raw →
+      ∃ candidate, declBindings[i]? = some candidate ∧ raw.substTyFvars moved = candidate ∧
+        ∀ v ∈ candidate.rigidVars, v ∈ P := by
+    intro i raw hi hr
+    have he : declBindings[i]? = some (raw.substTyFvars R) := by rw [← hrhsEq, List.getElem?_map, hr, Option.map_some]
+    exact ⟨raw.substTyFvars R, he,
+      hMovedSource raw _ (hRawRhs raw (List.mem_of_getElem? hr)) rfl
+        (hdeclRhs _ (List.mem_of_getElem? he)), hdeclRhs _ (List.mem_of_getElem? he)⟩
+  have htypedMoved : ∀ i raw candidate ty ns, i ∈ component → bindings[i]? = some raw →
+      declBindings[i]? = some candidate → state.specs[i]? = some (.mono ty) → names[i]? = some ns →
+      Typing (P ++ ns) (moved.onCtx (state.rhsCtx ctx)) (candidate.openTyVars ns) (moved.onTy ty) := by
+    intro i raw candidate ty ns hi hr hc ht hn
+    have hiAnn : i < anns.length := by have := (List.getElem?_eq_some_iff.mp hr).1; omega
+    have ha := List.getElem?_eq_getElem hiAnn
+    have he : raw.substTyFvars R = candidate := by
+      have hh := congrArg (fun bs : List Input => bs[i]?) hrhsEq
+      simpa only [List.getElem?_map, hr, Option.map_some, hc, Option.some.injEq] using hh
+    have hns := hGetNames i ns hi hn
+    obtain ⟨_, _, ht0⟩ := hview i anns[i] raw ty hi ha hr ht
+    rw [← hns, he] at ht0
+    have hnSub : ∀ v ∈ ns, v ∈ Xs := by
+      intro v hv
+      exact hCX v (List.mem_flatten.mpr ⟨ns, List.mem_of_getElem? hn, hv⟩)
+    have him : ns.map (fun x => D.onTy (.fvar x)) = ns.map Ty.fvar :=
+      List.map_congr_left (fun x hx => hForwardX x (hnSub x hx))
+    have htrans := ht0.opened_source_onSubst hDLC hDP him him (hdeclRhs candidate (List.mem_of_getElem? hc))
+    rw [hCtxMove, ← hForward ty (hstateB.1 _ (List.mem_of_getElem? ht))] at htrans
+    exact htrans
+  have hXpoly : ∀ scheme, .poly scheme ∈ declSpecs → ∀ x ∈ Xs, x ∉ scheme.body.freeVars := by
+    intro scheme hs x hx hv
+    have hm : some scheme ∈ declAnns.map LetAnn.recModeAnn := by
+      rw [← hdeclWF.anns_eq]
+      exact List.mem_map.mpr ⟨.poly scheme, hs, rfl⟩
+    obtain ⟨ann, ha, he⟩ := List.mem_map.mp hm
+    cases ann with
+    | absent | template _ | partialForall _ _ => cases he
+    | complete sigma =>
+      cases Option.some.inj he
+      exact hXP x hx (hdeclAnn (.complete scheme) ha x hv)
+  have hXspec : ∀ x ∈ Xs, ∀ spec ∈ declSpecs, x ∉ spec.freeVars := by
+    intro x hx spec hs
+    cases spec with
+    | mono ty => exact hXmono x hx ty hs
+    | poly scheme => exact hXpoly scheme hs x hx
+  have hDXfresh : ∀ ty ∈ allTargets, (∀ x ∈ Xs, x ∉ ty.freeVars) →
+      ∀ x ∈ Xs, x ∉ (D.onTy ty).freeVars := by
+    intro ty ht hold x hx hv
+    have hh : x ∈ (backD.onTy (D.onTy ty)).freeVars := Ty.mem_freeVars_substFvars_image.mpr
+      ⟨x, hv, by change x ∈ (backD.onTy (.fvar x)).freeVars; rw [hBackX x hx]; exact List.mem_singleton_self x⟩
+    rw [(hTarget ty ht).1] at hh
+    exact hold x hx hh
+  have hMonoMovedLC : ∀ ty, .mono ty ∈ declSpecs.map (RecSpec.onSubstSource D) → ty.IsLC := by
+    intro ty ht
+    obtain ⟨old, ho, he⟩ := List.mem_map.mp ht
+    cases old with
+    | poly scheme => cases he
+    | mono original => cases he; exact Subst.onTy_lc hDLC (hdeclWF.mono_lc original ho)
+  have hBctx : B.onCtx (D.onCtx declCtx) = D.onCtx declCtx := by
+    apply congrArg₂ Ctx.mk
+    · change ((declCtx.env.map D.onPolyTy).map B.onPolyTy) = declCtx.env.map D.onPolyTy
+      rw [List.map_map]
+      apply List.map_congr_left
+      intro M hm
+      exact congrArg (PolyTy.mk M.paramCount) (hFinite M.body (hCtxT M hm)
+        (fun x hx hv => hXctxP x hx (List.mem_append_left _ (Env.mem_freeVars_iff.mpr ⟨M, hm, hv⟩)))).1
+    · rfl
+  have hBpoly : ∀ scheme, .poly scheme ∈ declSpecs.map (RecSpec.onSubstSource D) → B.onPolyTy scheme = scheme := by
+    intro scheme hs
+    obtain ⟨old, ho, he⟩ := List.mem_map.mp hs
+    cases old with
+    | mono ty => cases he
+    | poly original =>
+      cases he
+      exact congrArg (PolyTy.mk original.paramCount) (hFinite original.body (hSpecT _ ho) (hXpoly original ho)).1
+  have hCompletedWF : ∀ i ty, (declSpecs.map (RecSpec.onSubstSource D))[i]? = some (.mono ty) → i ∈ past.flatten →
+      (recScheme (declPrefixes[i]?.getD []) G ty).WF := by
+    intro i ty hi _
+    exact recScheme_wf (hMonoMovedLC ty (List.mem_of_getElem? hi))
+  have hBcompleted : ∀ i ty, (declSpecs.map (RecSpec.onSubstSource D))[i]? = some (.mono ty) → i ∈ past.flatten →
+      B.onPolyTy (recScheme (declPrefixes[i]?.getD []) G ty) = recScheme (declPrefixes[i]?.getD []) G ty := by
+    intro i ty hi _
+    obtain ⟨original, ho, rfl⟩ := RecSpec.mono_getElem?_map_onSubstSource hi
+    apply congrArg (PolyTy.mk _)
+    apply Subst.onTy_eq_self_of_fixes
+    intro v hv
+    apply zip_fvars_fixes
+    intro hc
+    exact hDXfresh original (hSpecT _ (List.mem_of_getElem? ho))
+      (fun x hx => hXmono x hx original (List.mem_of_getElem? ho))
+      v (hCX v (List.mem_dedup.mp hc)) (Ty.freeVars_closeOver_subset hv)
+  have hBmono : ∀ ty, .mono ty ∈ declSpecs.map (RecSpec.onSubstSource D) →
+      B.onTy (Ty.renameG G Xs ty) = Ty.renameG G Ys ty := by
+    intro ty ht
+    obtain ⟨old, ho, he⟩ := List.mem_map.mp ht
+    cases old with
+    | poly scheme => cases he
+    | mono original =>
+      cases he
+      apply zip_fvars_renameG hRepLen (List.nodup_dedup _) hCD
+        (Subst.onTy_lc hDLC (hdeclWF.mono_lc original ho)) hdeclWF.nodup hXlen hGX hGR
+      intro c hc
+      exact hDXfresh original (hSpecT _ ho) (fun x hx => hXmono x hx original ho) c (hCX c (List.mem_dedup.mp hc))
+  obtain ⟨U, hU, hUag, hUP, hures, himages, huTyped⟩ := hmove.normalize_openings ho hstateB hctx hP
+    hRawAnn hRawRhs hlen names targets hNames hTargetsLen hzero hfit
+    (fun c hc => hXA c (hCX c hc)) hPC hBctx hBpoly hCompletedWF hBcompleted hBmono htarget htypedMoved hsource
+  change Subst.AgreesBelow frontier (moved ++ B) U at hUag
+  change RecResidual (P ++ reps) (D.onCtx declCtx) (declSpecs.map (RecSpec.onSubstSource D))
+    declPrefixes G Ys ctx state past.flatten U at hures
+  have hUFacts : ∀ ty, Ty.BelowFvars frontier ty → U.onTy ty = B.onTy (moved.onTy ty) := by
+    intro ty hb
+    simpa only [Subst.onTy_append] using (Subst.onTy_congr hUag hb).symm
+  have hOldImageT : ∀ v, v < frontier → R.onTy (.fvar v) ∈ allTargets := by
+    intro v hv
+    apply hExtraT
+    exact List.mem_append_left _ (List.mem_append_left _ (List.mem_map.mpr ⟨v, List.mem_range.mpr hv, rfl⟩))
+  have hMovedAvoid : ∀ ty, Ty.BelowFvars frontier ty → ∀ a ∈ A, a ∉ (moved.onTy ty).freeVars := by
+    intro ty hb a ha hv
+    obtain ⟨v, hv, him⟩ := Ty.mem_freeVars_substFvars_image.mp hv
+    change a ∈ (moved.onTy (.fvar v)).freeVars at him
+    rw [hForward (.fvar v) (.fvar (hb.mem_lt v hv))] at him
+    exact (hTarget _ (hOldImageT v (hb.mem_lt v hv))).2 a ha him
+  have hFiniteActual : ∀ ty, Ty.BelowFvars frontier ty → (∀ x ∈ Xs, x ∉ (R.onTy ty).freeVars) →
+      B.onTy (moved.onTy ty) = moved.onTy ty ∧ ∀ y ∈ Ys, y ∉ (moved.onTy ty).freeVars := by
+    intro ty hb hx
+    exact Ty.prefix_normalize_fresh (hBackward ty hb) hBackX hx (hMovedAvoid ty hb) hrepA hCX
+  have hFixedOld := hres.fixedCtx_avoids hframe
+    (fun x hx hv => hXctxP x hx (List.mem_append_left _ hv)) hXspec
+  have hFixedFinite : ∀ M ∈ (state.fixedCtx ctx).env,
+      B.onTy (moved.onTy M.body) = moved.onTy M.body ∧ ∀ y ∈ Ys, y ∉ (moved.onTy M.body).freeVars := by
+    intro M hm
+    apply hFiniteActual M.body (hstateB.fixedCtx hctx M hm)
+    intro x hx hv
+    exact hFixedOld x hx (Env.mem_freeVars_iff.mpr ⟨R.onPolyTy M,
+      List.mem_map.mpr ⟨M, hm, rfl⟩, hv⟩)
+  have hYsCtx : ∀ y ∈ Ys, y ∉ (U.onCtx (state.fixedCtx ctx)).env.freeVars := by
+    intro y hy hv
+    obtain ⟨scheme, hs, hv⟩ := Env.mem_freeVars_iff.mp hv
+    obtain ⟨M, hm, rfl⟩ := List.mem_map.mp hs
+    change y ∈ (U.onTy M.body).freeVars at hv
+    rw [hUFacts M.body (hstateB.fixedCtx hctx M hm), (hFixedFinite M hm).1] at hv
+    exact (hFixedFinite M hm).2 y hy hv
+  have hYsK : ∀ y ∈ Ys, ∀ k ∈ K, y ∉ (U.onTy (.fvar k)).freeVars := by
+    intro y hy k hk hv
+    have hh := hFiniteActual (.fvar k) (.fvar (hK k hk)) (fun x hx => hXsK x hx k hk)
+    rw [hUFacts (.fvar k) (.fvar (hK k hk)), hh.1] at hv
+    exact hh.2 y hy hv
+  have hYsF : ∀ y ∈ Ys, y ∉ softVars (substSoft U F) := by
+    intro y hy hv
+    obtain ⟨ty, ht, hv⟩ := TyList.mem_freeVars_iff.mp hv
+    obtain ⟨old, ho, rfl⟩ := List.mem_map.mp ht
+    have hh := hFiniteActual old (hF old ho) (fun x hx hv => hXsF x hx
+      (TyList.mem_freeVars_iff.mpr ⟨R.onTy old, List.mem_map.mpr ⟨old, ho, rfl⟩, hv⟩))
+    rw [hUFacts old (hF old ho), hh.1] at hv
+    exact hh.2 y hy hv
+  have hUPbelow : ∀ p ∈ P ++ reps, p < opened := by
+    intro p hp
+    exact (List.mem_append.mp hp).elim (fun hp => (hP p hp).trans_le hopen) (fun hp => (ho.written_range p (hrepA p hp)).2)
+  have hLocalFreeze : ∀ (i : Nat) (rhs : Input), i ∈ component → bindings[i]? = some rhs →
+      ∀ v ∈ rhs.rigidVars, v ∈ K → v ∉ softVars F → U.onTy (.fvar v) = .fvar v := by
+    intro i rhs hi hr v hv hk hn
+    rw [hUFacts (.fvar v) (.fvar (hK v hk)), hForward (.fvar v) (.fvar (hK v hk)),
+      hrhsFreeze rhs (List.mem_of_getElem? hr) v hv hk hn, hDlow v (hK v hk)]
+    apply zip_fvars_fixes
+    intro hc
+    have hhi := hXhigh v (hCX v (List.mem_dedup.mp hc))
+    have hlo := hK v hk
+    omega
+  have hSolveU : ∀ (i : Nat) (opening : RecOpening) (ty expected : Ty), i ∈ component →
+      openings[i]? = some opening → state.specs[i]? = some (.mono ty) → opening.expected = some expected →
+      U.onTy expected = U.onTy ty := by
+    intro i opening ty expected hi hop hty he
+    have hib : i < names.length := by
+      have hs := (List.getElem?_eq_some_iff.mp hty).1
+      rw [hframe.specs_length] at hs
+      omega
+    have hn := List.getElem?_eq_getElem hib
+    exact (himages i opening names[i] (moved.onTy ty) hi hop hn (htarget i ty hi hty)).2 expected he |>.trans
+      (hUFacts ty (hstateB.1 _ (List.mem_of_getElem? hty))).symm
+  have hMovedPrefix : ∀ (i : Nat) (ty : Ty), (declSpecs.map (RecSpec.onSubstSource D))[i]? = some (.mono ty) →
+      (declPrefixes[i]?.getD []).Nodup ∧ ∀ v ∈ declPrefixes[i]?.getD [], v ∈ G := by
+    intro i ty ht
+    obtain ⟨old, ho, rfl⟩ := RecSpec.mono_getElem?_map_onSubstSource ht
+    exact hprefixData i (List.getElem?_eq_some_iff.mp ho).1
+  have hYsTypes : ∀ y ∈ Ys, ∀ ty, .mono ty ∈ declSpecs.map (RecSpec.onSubstSource D) → y ∉ ty.freeVars := by
+    intro y hy ty ht
+    obtain ⟨old, ho, he⟩ := List.mem_map.mp ht
+    cases old with
+    | poly scheme => cases he
+    | mono original =>
+      cases he
+      exact (hFinite original (hSpecT _ ho) (fun x hx => hXmono x hx original ho)).2 y hy
+  have hYsND : Ys.Nodup := recRenameNames_nodup_partial hRepLen (List.nodup_dedup _) hReps hCD hXnd
+    (fun r hr hx => hXR r hx hr)
+  have hGYs : ∀ g ∈ G, g ∉ Ys := by
+    intro g hg hy
+    exact (recRenameNames_mem_source_or_target hy).elim (hGX g hg) (hGR g hg)
+  obtain ⟨T, hTLC, hTP, hagClose, hTRes⟩ := hures.close_opened_component ho hp hc hf hInfer
+    hstateLC hstateB hctxWF hctx hK hF hUPbelow hlen hannScope hrhsScope hLocalFreeze hSolveU huTyped
+    (hframe.exports_length.trans hframe.specs_length.symm)
+    (by
+      intro i hi hd
+      have hnd := hvalid.flatten_nodup
+      have hh : (past.flatten ++ (component ++ rest.flatten)).Nodup := by simpa only [List.flatten_append, List.flatten_cons] using hnd
+      exact (List.nodup_append.mp hh).2.2 i hd i (List.mem_append_left _ hi) rfl)
+    hMonoMovedLC hdeclWF.nodup hMovedPrefix (by simpa only [Ys, recRenameNames_length] using hXlen)
+    hYsND hGYs hYsTypes hYsCtx hYsK hYsF
+  have hBRestored := hTRes.restore_prefixRepresentatives hRepLen hReps hCX hXR hdeclWF.nodup hXlen hGX hGR
+    hMonoMovedLC
+    (by
+      intro ty ht
+      obtain ⟨old, ho, he⟩ := List.mem_map.mp ht
+      cases old with
+      | poly scheme => cases he
+      | mono original => cases he; exact hDXfresh original (hSpecT _ ho) (fun x hx => hXmono x hx original ho))
+    (by
+      intro ty ht r hr
+      obtain ⟨old, ho, he⟩ := List.mem_map.mp ht
+      cases old with
+      | poly scheme => cases he
+      | mono original => cases he; exact (hTarget original (hSpecT _ ho)).2 r (hrepA r hr))
+    (by
+      intro scheme hs r hr
+      obtain ⟨old, ho, he⟩ := List.mem_map.mp hs
+      cases old with
+      | mono ty => cases he
+      | poly original => cases he; exact (hTarget original.body (hSpecT _ ho)).2 r (hrepA r hr))
+    (by
+      intro r hr hv
+      obtain ⟨M, hm, hv⟩ := Env.mem_freeVars_iff.mp hv
+      obtain ⟨old, ho, rfl⟩ := List.mem_map.mp hm
+      exact (hTarget old.body (hCtxT old ho)).2 r (hrepA r hr) hv)
+    hPR
+  have hFinal := hRestore _ _ _ _ hBRestored
+  have hagB : Subst.AgreesBelow frontier (moved ++ B) ((pre ++ current) ++ T) := by
+    intro v hv
+    exact (hUag v hv).trans (hagClose v (hv.trans_le hopen))
+  have hagPopB := hagB.restore_prefixRepresentatives hRepLen hReps hCD
+    (fun v hv r hr => hMovedAvoid (.fvar v) (.fvar hv) r (hrepA r hr))
+  have hagFinal := hagPopB.restore_after (fun v hv => hBackward (.fvar v) (.fvar hv))
+  exact ⟨_, hFinal.lc, hFinal.fixes, hagFinal, hFinal⟩
+
 theorem _root_.Infer.sourcePrincipal (h : Infer K F frontier ctx input next subst output ty) :
     Infer.SourcePrincipal h := by
   match h with
@@ -6345,6 +7123,20 @@ theorem _root_.Infer.sourcePrincipal (h : Infer K F frontier ctx input next subs
   | .match_ hscope hs hne hb =>
     exact Infer.sourcePrincipal_match hscope hs hne hb hs.sourcePrincipal
       (fun body hbody {_ _ _ _ _ _ _ _} hi => hi.sourcePrincipal)
+  | .letRec hscope hann hvalid hstrata hsigned hexports houtputs hbody =>
+    apply Infer.sourcePrincipal_letRec_of_unsigned hscope hann hvalid hstrata hsigned hexports houtputs hbody
+      (fun he hi => hi.sourcePrincipal) hbody.sourcePrincipal
+    intro P declCtx declAnns declBindings declSpecs declGroups declPrefixes G Xs R
+      hdeclValid hdeclWF hprefix hGfresh hdeclAnn hdeclRhs hdeclFits hdeclTypes
+      hGhigh hXhigh hXlen hXnd hGX hXmono hXctxP
+      hctxWF hctx hstateLC hstateB hframe hK hF hP hres hXsK hXsF hannScope hrhsScope
+      hannEq hrhsEq hannFreeze hrhsFreeze
+    simpa only [List.nil_append] using InferRecStrata.sourcePrincipal_residual_of_step (past := []) (base := frontier)
+      (RecResidual.successful_step hdeclValid hdeclWF hprefix hGfresh hdeclAnn hdeclRhs hdeclFits hdeclTypes
+        hGhigh hXhigh hXlen hXnd hGX hXmono hXctxP)
+      hstrata (fun he hi => hi.sourcePrincipal) (hsigned.frontier_le.trans hbody.frontier_le)
+      hvalid.1 hvalid.2 hframe hstateLC hstateB hctxWF hctx (by omega) hK hF hP hres
+      hXsK hXsF hannScope hrhsScope hannEq hrhsEq hannFreeze hrhsFreeze
 termination_by input.size
 decreasing_by
   all_goals (simp only [Input.size, Input.size_openTyVars, Input.size_substTyFvars]; omega)
