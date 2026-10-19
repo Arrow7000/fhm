@@ -95,7 +95,7 @@ They do not claim a universal most-general filling for every unused annotation.
   constraints and complete-signature polymorphic recursion.
 - [x] Recursive completed-output/input typing, annotation fidelity, and erasure.
 - [x] Global recursive residual principality and producer completeness.
-- [ ] Full source-level regressions, normal builds, CLI/editor and web tests,
+- [x] Full source-level regressions, normal builds, CLI/editor and web tests,
   verified-boundary and axiom audits.
 
 ## Recursive semantics
@@ -139,5 +139,15 @@ recursive worker with independent runtime/editor groups, including:
 Recursive lowering guards check true recursive input shapes and partial-forall
 counts. Runtime tests pair rejection cases with nearby accepted controls; a
 rejection alone does not establish correctness. Passing these tests complements
-the full proof stack above. The remaining release checks are the retained source,
-CLI/editor, web, normal-build, verified-boundary, and axiom checks listed above.
+the full proof stack above. Final verification passed:
+
+- `lake build`: 745 jobs, including the recursive proof examples.
+- `lake build FHMEditorTests fhm`: 1,663 jobs.
+- `node scripts/hm-editor-smoke.mjs`: 64/64 CLI/editor semantic checks.
+- `npm --prefix editors/web test`: 31/31 tests.
+- `scripts/check-unverified-boundary.sh`: passed; `Core.lean` and
+  `RuntimeTyping.lean` are unchanged by this feature.
+- An actual-import audit of 21 public capstones checked their API contracts and
+  found only `propext`, `Classical.choice`, and `Quot.sound`, with no residual
+  producer callbacks, `sorryAx`, or native-decision axioms. `FHM.Headlines`
+  retains the public API and axiom guards in the default build.
