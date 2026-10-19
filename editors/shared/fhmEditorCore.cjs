@@ -320,6 +320,7 @@ function identAtColumn(lineText, col0) {
  */
 function kindBadge(kind) {
   if (kind === "type") return "type";
+  if (kind === "typeHole") return "typeHole";
   if (kind === "ctor") return "ctor";
   if (kind === "param") return "param";
   if (kind === "pat") return "pat";

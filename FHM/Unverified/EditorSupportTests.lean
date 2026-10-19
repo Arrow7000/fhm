@@ -735,3 +735,28 @@ private def holeIdSrc := "let id = \\(x : _) -> x\n(id 1, id True)\n"
 
 -- Pattern underscores remain wildcards, with no inferred-hole symbol.
 #guard holeTypes "let f = \\_ -> 1\nf True\n" == some []
+
+private def copiedHoleFallback :=
+  "let f = \\p -> match p with | (True, True) -> 1 | _ -> let id = \\(x : _) -> x in id 2\n" ++
+  "(f (True, False), f (False, True))\n"
+
+-- This checks the real parser/compiler path independently of inference: one
+-- authored annotation survives at three compiler-produced expression paths.
+#guard (match parseProgramWithSpans copiedHoleFallback with
+  | .error _ => false
+  | .ok (p, bs, sp) =>
+      let result := do
+        let ctors ← elabDecls preludeDecls
+        let tree ← FHM.Unverified.HMArtifacts.programSpanned p sp (programWideScope bs sp)
+        SurfaceBridge.Provenance.lowerWithProvenance ctors p.term tree
+      match result with
+      | none => false
+      | some lowered =>
+          (sp.references.filter fun r => r.kind == .typeHole).length == 1 &&
+          (lowered.mapExpr Elaboration.Input.erase).provenanceTotal &&
+          lowered.sourceTargets.any fun (_, target) => match target with
+            | .absent _ => false
+            | .present paths => paths.length == 3 && paths.all fun path =>
+                match SurfaceBridge.Provenance.inputAtCorePath lowered.expr path with
+                | some (.lambda (some .hole) _) => true
+                | _ => false)
