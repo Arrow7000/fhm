@@ -1204,4 +1204,112 @@ theorem Input.substTyFvars_openTyVars (input : Input) {subst : List (Nat × Ty)}
     (input.openTyVars Xs).substTyFvars subst = (input.substTyFvars subst).openTyVars Xs :=
   input.substTyFvars_openTyVarsFrom hlc hfresh 0
 
+private theorem ty_substFvars_eq_self_of_fixes {subst : List (Nat × Ty)} {ty : Ty}
+    (h : ∀ v ∈ ty.freeVars, (Ty.fvar v).substFvars subst = .fvar v) : ty.substFvars subst = ty := by
+  induction ty using Ty.rec_strong with
+  | prim p => exact Ty.substFvars_prim
+  | bvar i => exact Ty.substFvars_bvar
+  | fvar n => exact h n (by simp only [Ty.freeVars, List.mem_singleton])
+  | arrow a b iha ihb =>
+      rw [Ty.substFvars_arrow,
+        iha (fun v hv => h v (by simp only [Ty.freeVars, List.mem_dedup, List.mem_append]; exact .inl hv)),
+        ihb (fun v hv => h v (by simp only [Ty.freeVars, List.mem_dedup, List.mem_append]; exact .inr hv))]
+  | customTy name args ih =>
+      rw [Ty.substFvars_customTy]
+      congr 1
+      conv_rhs => rw [← List.map_id args]
+      apply List.map_congr_left
+      intro ty hty
+      exact ih ty hty (fun v hv => h v (TyList.mem_freeVars_of_mem hty hv))
+
+mutual
+theorem Template.substTyFvars_eq_self_of_fixes (template : Template) {subst : List (Nat × Ty)}
+    (h : ∀ v ∈ template.rigidVars, (Ty.fvar v).substFvars subst = .fvar v) :
+    template.substTyFvars subst = template := by
+  cases template with
+  | fixed ty => exact congrArg Template.fixed (ty_substFvars_eq_self_of_fixes h)
+  | hole => rfl
+  | arrow a b => simp only [Template.substTyFvars,
+      a.substTyFvars_eq_self_of_fixes (fun v hv => h v (List.mem_append_left _ hv)),
+      b.substTyFvars_eq_self_of_fixes (fun v hv => h v (List.mem_append_right _ hv))]
+  | custom name args =>
+      exact congrArg (Template.custom name) (substTemplateList_eq_self_of_fixes args h)
+theorem substTemplateList_eq_self_of_fixes (templates : List Template) {subst : List (Nat × Ty)}
+    (h : ∀ v ∈ rigidVarsList templates, (Ty.fvar v).substFvars subst = .fvar v) :
+    substTemplateList subst templates = templates := by
+  cases templates with
+  | nil => rfl
+  | cons t ts => simp only [substTemplateList,
+      t.substTyFvars_eq_self_of_fixes (fun v hv => h v (List.mem_append_left _ hv)),
+      substTemplateList_eq_self_of_fixes ts (fun v hv => h v (List.mem_append_right _ hv))]
+end
+
+theorem LetAnn.substTyFvars_eq_self_of_fixes (ann : LetAnn) {subst : List (Nat × Ty)}
+    (h : ∀ v ∈ ann.rigidVars, (Ty.fvar v).substFvars subst = .fvar v) : ann.substTyFvars subst = ann := by
+  cases ann with
+  | absent => rfl
+  | complete scheme => simp only [LetAnn.substTyFvars, ty_substFvars_eq_self_of_fixes h]
+  | template t => exact congrArg LetAnn.template (t.substTyFvars_eq_self_of_fixes h)
+  | partialForall n t => exact congrArg (LetAnn.partialForall n) (t.substTyFvars_eq_self_of_fixes h)
+
+mutual
+/-- Fixing every authored free type variable leaves the complete input syntax
+unchanged, including anonymous holes and written signature modes. -/
+theorem Input.substTyFvars_eq_self_of_fixes (input : Input) {subst : List (Nat × Ty)}
+    (h : ∀ v ∈ input.rigidVars, (Ty.fvar v).substFvars subst = .fvar v) : input.substTyFvars subst = input := by
+  cases input with
+  | primLit | primBinOp | var | ctor => rfl
+  | lambda ann body =>
+      simp only [Input.substTyFvars,
+        body.substTyFvars_eq_self_of_fixes (fun v hv => h v (List.mem_append_right _ hv))]
+      congr 1
+      cases ann with
+      | none => rfl
+      | some template =>
+          exact congrArg some (template.substTyFvars_eq_self_of_fixes (fun v hv => h v (List.mem_append_left _ hv)))
+  | app f a => simp only [Input.substTyFvars,
+      f.substTyFvars_eq_self_of_fixes (fun v hv => h v (List.mem_append_left _ hv)),
+      a.substTyFvars_eq_self_of_fixes (fun v hv => h v (List.mem_append_right _ hv))]
+  | letIn ann rhs body => simp only [Input.substTyFvars,
+      ann.substTyFvars_eq_self_of_fixes (fun v hv => h v (List.mem_append_left _ (List.mem_append_left _ hv))),
+      rhs.substTyFvars_eq_self_of_fixes (fun v hv => h v (List.mem_append_left _ (List.mem_append_right _ hv))),
+      body.substTyFvars_eq_self_of_fixes (fun v hv => h v (List.mem_append_right _ hv))]
+  | match_ scrut branches => simp only [Input.substTyFvars,
+      scrut.substTyFvars_eq_self_of_fixes (fun v hv => h v (List.mem_append_left _ hv)),
+      substInputBranches_eq_self_of_fixes branches (fun v hv => h v (List.mem_append_right _ hv))]
+  | letRec anns bindings body =>
+      simp only [Input.substTyFvars,
+        body.substTyFvars_eq_self_of_fixes (fun v hv => h v (List.mem_append_right _ hv)),
+        substInputBindings_eq_self_of_fixes bindings (fun v hv => h v (List.mem_append_left _ (List.mem_append_right _ hv)))]
+      congr 1
+      conv_rhs => rw [← List.map_id anns]
+      apply List.map_congr_left
+      intro ann hann
+      exact ann.substTyFvars_eq_self_of_fixes (fun v hv => h v (List.mem_append_left _
+        (List.mem_append_left _ (List.mem_flatMap.mpr ⟨ann, hann, hv⟩))))
+termination_by sizeOf input
+
+theorem substInputBranches_eq_self_of_fixes (branches : List (MatchPattern × Input)) {subst : List (Nat × Ty)}
+    (h : ∀ v ∈ rigidBranchVars branches, (Ty.fvar v).substFvars subst = .fvar v) :
+    substInputBranches subst branches = branches := by
+  cases branches with
+  | nil => rfl
+  | cons pair rest =>
+      simp only [substInputBranches,
+        pair.2.substTyFvars_eq_self_of_fixes (fun v hv => h v (List.mem_append_left _ hv)),
+        substInputBranches_eq_self_of_fixes rest (fun v hv => h v (List.mem_append_right _ hv))]
+termination_by sizeOf branches
+decreasing_by all_goals (subst_vars; cases pair; simp_wf <;> omega)
+
+theorem substInputBindings_eq_self_of_fixes (bindings : List Input) {subst : List (Nat × Ty)}
+    (h : ∀ v ∈ rigidBindingVars bindings, (Ty.fvar v).substFvars subst = .fvar v) :
+    substInputBindings subst bindings = bindings := by
+  cases bindings with
+  | nil => rfl
+  | cons body rest => simp only [substInputBindings,
+      body.substTyFvars_eq_self_of_fixes (fun v hv => h v (List.mem_append_left _ hv)),
+      substInputBindings_eq_self_of_fixes rest (fun v hv => h v (List.mem_append_right _ hv))]
+termination_by sizeOf bindings
+end
+
 end Elaboration
