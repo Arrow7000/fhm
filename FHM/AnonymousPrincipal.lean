@@ -223,7 +223,7 @@ def Infer.Principal (_h : Infer K frontier ctx input next subst output ty) : Pro
       (∀ p ∈ P, residual.onTy (.fvar p) = .fvar p) ∧
       Subst.AgreesBelow frontier ambient (subst ++ residual)
 
-private theorem Seed.override (h : Seed K frontier ann param initial)
+theorem Seed.override (h : Seed K frontier ann param initial)
     (hK : ∀ k ∈ K, k < frontier) {target : Ty} (htarget : target.IsLC)
     (hfit : ∀ template, ann = some template → template.Fits target)
     {ambient : Subst} (hlc : ∀ pair ∈ ambient, pair.2.IsLC)
@@ -336,7 +336,7 @@ theorem Infer.principal_app
   · exact hUret.symm.trans (hfac (.fvar second))
   · simpa only [List.append_assoc] using hag1
 
-private theorem LetCheck.factor {P : List Nat} (hc : LetCheck K first rhsTy ann checked sCheck)
+theorem LetCheck.factor {P : List Nat} (hc : LetCheck K first rhsTy ann checked sCheck)
     (hK : ∀ k ∈ K, k < first) (hP : ∀ p ∈ P, p < first)
     (hty : Ty.BelowFvars first rhsTy)
     {R : Subst} (hR : ∀ pair ∈ R, pair.2.IsLC)
@@ -401,17 +401,29 @@ theorem genScheme_generalizes {K : List Nat} {ctx : Ctx} {ty : Ty}
     exact Ty.mem_freeVars_onTy_iff.mpr ⟨v, hv, hxv⟩
   · exact hXK x hx v hk hxv
 
-theorem Infer.principal_letIn
+/-- Reconcile a checked ordinary RHS with a declarative let scheme, then
+transport its continuation. Shared by both completeness directions. -/
+theorem Infer.let_frame
     (hr : Infer K frontier ctx rhs first s1 rhsOut rhsTy)
     (hc : LetCheck K first rhsTy ann checked sCheck)
-    (hscoped : (rhsOut.substTyFvars sCheck).TyBvarBounded 0)
-    (hb : Infer K checked
-      { (sCheck.onCtx (s1.onCtx ctx)) with
+    (ihr : Infer.Principal hr) :
+    CtxWF ctx → CtxBelow frontier ctx → (∀ k ∈ K, k < frontier) →
+    ∀ (ambient : Subst) (target : Ty) (P : List Nat),
+      (∀ pair ∈ ambient, pair.2.IsLC) → (∀ p ∈ P, p < frontier) →
+      (∀ p ∈ P, ambient.onTy (.fvar p) = .fvar p) →
+      Typing P (ambient.onCtx ctx) (.letIn ann rhs body) target →
+      ∃ V : Subst, (∀ pair ∈ V, pair.2.IsLC) ∧
+        (∀ p ∈ P, V.onTy (.fvar p) = .fvar p) ∧
+        Subst.AgreesBelow frontier ambient (s1 ++ sCheck ++ V) ∧
+        Typing P (V.onCtx { (sCheck.onCtx (s1.onCtx ctx)) with
         env := genScheme K (sCheck.onCtx (s1.onCtx ctx)).env (sCheck.onTy rhsTy) ::
-          (sCheck.onCtx (s1.onCtx ctx)).env }
-      body next s2 bodyOut bodyTy)
-    (ihr : Infer.Principal hr) (ihb : Infer.Principal hb) :
-    Infer.Principal (.letIn hr hc hscoped hb) := by
+          (sCheck.onCtx (s1.onCtx ctx)).env }) body target ∧
+        CtxWF { (sCheck.onCtx (s1.onCtx ctx)) with
+        env := genScheme K (sCheck.onCtx (s1.onCtx ctx)).env (sCheck.onTy rhsTy) ::
+          (sCheck.onCtx (s1.onCtx ctx)).env } ∧ CtxBelow checked { (sCheck.onCtx (s1.onCtx ctx)) with
+        env := genScheme K (sCheck.onCtx (s1.onCtx ctx)).env (sCheck.onTy rhsTy) ::
+          (sCheck.onCtx (s1.onCtx ctx)).env } ∧
+        (∀ pair ∈ s1 ++ sCheck, Ty.BelowFvars checked pair.2) := by
   intro hwf hbelow hK ambient target P hS hP hfix htyping
   obtain ⟨M, L, hM, hannRigid, hannFits, hrD, hbD⟩ := htyping.letMono_inv hc.fits
   let images := K.flatMap (fun k => (ambient.onTy (.fvar k)).freeVars)
@@ -486,11 +498,28 @@ theorem Infer.principal_letIn
     rcases List.mem_cons.mp hs with rfl | hs
     · exact hcheckedTyB.closeOver
     · exact hcheckedB scheme hs
+  exact ⟨V, hV, hVP, hagPrefix, hbodyD, hbodyWF, hbodyB, hprefixB⟩
+
+theorem Infer.principal_letIn
+    (hr : Infer K frontier ctx rhs first s1 rhsOut rhsTy)
+    (hc : LetCheck K first rhsTy ann checked sCheck)
+    (hscoped : (rhsOut.substTyFvars sCheck).TyBvarBounded 0)
+    (hb : Infer K checked
+      { (sCheck.onCtx (s1.onCtx ctx)) with
+        env := genScheme K (sCheck.onCtx (s1.onCtx ctx)).env (sCheck.onTy rhsTy) ::
+          (sCheck.onCtx (s1.onCtx ctx)).env }
+      body next s2 bodyOut bodyTy)
+    (ihr : Infer.Principal hr) (ihb : Infer.Principal hb) :
+    Infer.Principal (.letIn hr hc hscoped hb) := by
+  intro hwf hbelow hK ambient target P hS hP hfix htyping
+  obtain ⟨V, hV, hVP, hagPrefix, hbodyD, hbodyWF, hbodyB, hprefixB⟩ :=
+    hr.let_frame hc ihr hwf hbelow hK ambient target P hS hP hfix htyping
+  have hle := hr.frontier_le.trans hc.frontier_le
   obtain ⟨R2, hR2, hresult, hR2P, hag2⟩ := ihb hbodyWF hbodyB
-    (fun k hk => Nat.lt_of_lt_of_le (hK1 k hk) hcle) V target P hV
-    (fun p hp => Nat.lt_of_lt_of_le (hP1 p hp) hcle) hVP hbodyD
+    (fun k hk => Nat.lt_of_lt_of_le (hK k hk) hle) V target P hV
+    (fun p hp => Nat.lt_of_lt_of_le (hP p hp) hle) hVP hbodyD
   exact ⟨R2, hR2, hresult, hR2P,
-    Subst.AgreesBelow.trans_append (hrle.trans hcle) hagPrefix hprefixB hag2⟩
+    Subst.AgreesBelow.trans_append hle hagPrefix hprefixB hag2⟩
 
 /-- Every elaboration in the supported judgment is principal for independent
 input typings, with the same residual factorization frame as ordinary Core. -/

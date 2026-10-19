@@ -1,4 +1,4 @@
-import FHM.AnonymousInfer
+import FHM.AnonymousComplete
 import FHM.Decls
 
 /-! Semantic canaries for the proved anonymous lambda/ordinary-let slice.
@@ -163,6 +163,14 @@ def completeForallWithPartialRhs : Input :=
   .letIn (.complete ⟨1, .arrow (.bvar 0) (.bvar 0)⟩)
     (.lambda (some .hole) (.var 0)) (.var 0)
 #guard !(inferCore [] 0 ctx completeForallWithPartialRhs).isSome
+
+-- An unused hole still generalizes at its own binding even when it is absent
+-- from the whole-program result type.
+def unusedHole : Input :=
+  .letIn (.template .hole) (.ctor ⟨"Nil"⟩) (.primLit (.int 1))
+#guard match inferCore [] 0 ctx unusedHole with
+  | some ⟨(_, _, .letIn (some ⟨1, .customTy ⟨"List"⟩ [.bvar 0]⟩) _ _, .prim .int), _⟩ => true
+  | _ => false
 
 #print axioms Infer.sourceSound
 #print axioms Infer.inputSound

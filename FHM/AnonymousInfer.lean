@@ -381,7 +381,7 @@ theorem Infer.scoped_afterSubst (h : Infer K frontier ctx input next subst outpu
   Expr.scopedAnnotations_complete _ 0
     (TypeOfHM.onSubst specialise hlc (h.sourceSound hctx)).tyBvarBounded
 
-private def seed (K : List Nat) (frontier : Nat) (ann : Option Template) :
+def seed (K : List Nat) (frontier : Nat) (ann : Option Template) :
     Option { result : Nat × Ty // Seed K frontier ann result.2 result.1 } :=
   match ann with
   | none => some ⟨(frontier + 1, .fvar frontier), .absent⟩
@@ -394,7 +394,7 @@ private def seed (K : List Nat) (frontier : Nat) (ann : Option Template) :
         else none
       else none
 
-private def checkLet (K : List Nat) (frontier : Nat) (ann : LetAnn) (ty : Ty) :
+def checkLet (K : List Nat) (frontier : Nat) (ann : LetAnn) (ty : Ty) :
     Option { result : Nat × Subst // LetCheck K frontier ty ann result.1 result.2 } :=
   match ann with
   | .absent => some ⟨(frontier, []), .absent⟩
