@@ -114,6 +114,9 @@ partial def probe (K : List Nat) (Φ : Nat) (ctx : Ctx)
                     some ⟨[], .infiniteType n (.arrow τa (.fvar Φ₂))⟩
                   else some ⟨[], .incompatibleApplication fnTy τa⟩
               | _ => some ⟨[.appFun], .notFunction fnTy⟩
+    -- A signed RHS has to be opened in the worker's scoped context. Until a
+    -- canonical failure result is available, retain the binding-level fallback.
+    | .letIn (.complete _) _ _ | .letIn (.partialForall _ _) _ _ => none
     | .letIn ann rhs body =>
         match inferCore K Φ ctx rhs with
         | none => (probe K Φ ctx rhs).map (Error.below .letRhs)

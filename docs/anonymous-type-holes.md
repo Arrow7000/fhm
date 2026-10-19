@@ -37,7 +37,8 @@ annotation tokens to their owners and existing inferred artifacts.
 
 ## Proof contracts
 
-The lambda/application/ordinary-let foundation has checked proofs of:
+Lambda, application, ordinary let, and named/wildcard match inference have
+checked proofs of:
 
 - completed Core typing (`Infer.sourceSound`), runtime erasure (`Infer.erase`),
   and annotation fidelity (`Infer.completes`);
@@ -59,7 +60,7 @@ They do not claim a universal most-general filling for every unused annotation.
 - [x] Canonical elaborating judgment and worker, internal complete-Core backend.
 - [x] Annotation lowering through shared pattern emission, with erasure proofs.
 - [x] Parser spans, completed-expression runtime handoff, basic hole hovers.
-- [ ] Match inference and its complete soundness/principality/completeness stack.
+- [x] Match inference and its complete soundness/principality/completeness stack.
 - [ ] Explicit signatures with partial RHSs or continuations; partial `forall`.
 - [ ] Recursive groups with partial syntax and signatures. Partial signatures
   must constrain the entire monomorphic SCC before export and must not grant
@@ -67,7 +68,7 @@ They do not claim a universal most-general filling for every unused annotation.
 - [ ] Full source-level regressions, normal builds, CLI/editor and web tests,
   verified-boundary and axiom audits.
 
-`FHM.Elaboration.Examples` exercises the proved foundation. Editor canaries live
+`FHM.Elaboration.Examples` exercises the proved expression and match rules. Editor canaries live
 in `FHM.Unverified.EditorSupportTests`; `scripts/hm-editor-smoke.mjs` includes
 end-to-end acceptance targets for the remaining constructs. Some targets remain
 intentionally red during this WIP extension; this checklist is the feature's

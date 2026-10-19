@@ -567,6 +567,48 @@ test("partial forall preserves named rigidity and complete signatures permit par
   run("let id : {a} a -> a = \\x -> x\n(\\(x : _) -> id x) 1\n", "1");
 });
 
+test("partial signature displays preserve authored names alongside inferred hole binders", () => {
+  const source = "let keep : {element} element -> _ -> element = \\(x : element) (y : _) -> x\n" +
+    "(keep 1 True, keep False 2)\n";
+  const payload = diagnose(source);
+  hover(payload, source, 0, "_", "a", 0);
+  hover(payload, source, 0, "_", "a", 1);
+  hover(payload, source, 0, "x", "element", 0);
+  hover(payload, source, 0, "y", "a");
+  const response = run(source, "(1, False)");
+  assert.equal(response.bindings.find(b => b.name === "keep")?.type,
+    "∀ element a. element → a → element");
+  const unused = "let id : {unused} _ -> _ = \\x -> x\n(id 1, id True)\n";
+  const unusedPayload = diagnose(unused);
+  hover(unusedPayload, unused, 0, "_", "a", 0);
+  hover(unusedPayload, unused, 0, "_", "a", 1);
+  assert.equal(run(unused, "(1, True)").bindings.find(b => b.name === "id")?.type,
+    "∀ unused a. a → a");
+});
+
+test("copied and nested signature holes keep their authored scope names", () => {
+  const copied = "let f = \\p -> match p with | (True, True) -> 1 | _ -> " +
+    "let id : {item} item -> item = \\(x : _) -> x in id 2\n" +
+    "(f (True, False), f (False, True))\n";
+  const payload = diagnose(copied);
+  assert.equal(payload.symbols.filter(s => s.kind === "typeHole").length, 1);
+  hover(payload, copied, 0, "_", "item", 1);
+  run(copied, "(2, 2)");
+  const nested = "let outer : {element} element -> _ = \\(x : element) -> " +
+    "let inner : {item} item -> _ = \\(y : item) -> (x, y) in inner True\nouter 1\n";
+  const nestedPayload = diagnose(nested);
+  hover(nestedPayload, nested, 0, "_", "(element, Bool)", 0);
+  hover(nestedPayload, nested, 0, "_", "(element, item)", 1);
+  run(nested, "(1, True)");
+  const deep = "let outer : {outer} outer -> _ = \\(x : outer) -> " +
+    "let middle : {middle} middle -> _ -> _ = \\(y : middle) z -> " +
+    "let inner : {inner} inner -> _ = \\(w : inner) -> x in (inner y, z) " +
+    "in middle True\nouter 1 False\n";
+  const deepPayload = diagnose(deep);
+  hover(deepPayload, deep, 0, "_", "outer", 3);
+  run(deep, "(1, False)");
+});
+
 test("recursive partial signatures constrain the SCC without permitting polymorphic recursion", () => {
   const shape = "let f : {a} (Int,a) -> _ = \\x -> g x\n" +
     "let g = \\x -> if True then x else f x\n";

@@ -778,3 +778,31 @@ private def copiedHoleFallback :=
       match result with
       | none => false
       | some scopes => (scopes.filter fun scope => scope.names == ["item"]).length == 3)
+
+-- Completion retains authored forall order and vacuous slots; extra hole
+-- variables get fresh names without taking over an authored `a` or `b`.
+#guard FHM.Unverified.HMDisplay.annotationNames
+  (.partialForall 2 (.arrow (.fixed (.bvar 1)) .hole)) ["b", "a"]
+  ⟨3, .arrow (.bvar 1) (.bvar 2)⟩ == ["b", "a", "c"]
+#guard FHM.Unverified.HMDisplay.annotationNames
+  (.partialForall 1 .hole) ["unused"] ⟨2, .bvar 1⟩ == ["unused", "a"]
+#guard FHM.Unverified.HMDisplay.extendNames ["element"] 2 == ["element", "a"]
+#guard FHM.Unverified.HMDisplay.extendNames ["item"] 2 ["a"] == ["item", "b"]
+
+-- Partial holes survive the actual match compiler and canonical match worker.
+#guard holeTypes
+  "let f = \\p -> match p with | (True, True) -> 1 | _ -> let id = \\(x : _) -> x in id 2\n(f (True, False), f (False, True))\n" == some ["a"]
+#guard ((hoverReport "match (\\(x : _) -> x) True with | True -> 1 | False -> 2\n").map (·.programTy)) == some "Int"
+#guard holeTypes "(\\((a,b) : (_, _)) -> (b,a)) (1, True)\n" == some ["Int", "Bool"]
+
+-- Metadata retains only the explicit binder; completed annotation syntax also
+-- counts the synthetic hole binder before reaching the next outer scope.
+private def twoDepthScopes : List FHM.Unverified.HMDisplay.Scope := [
+  ⟨[.letRhs], ["outer"], [], [], ["outer", "a"]⟩,
+  ⟨[.letRhs, .letRhs], ["middle"], [], [], ["middle", "b"]⟩ ]
+#guard FHM.Unverified.HMDisplay.pretty
+  (FHM.Unverified.HMDisplay.context twoDepthScopes [.letRhs, .letRhs] (.bvar 1))
+  (.bvar 1) == "outer"
+#guard FHM.Unverified.HMDisplay.pretty
+  (FHM.Unverified.HMDisplay.context twoDepthScopes [.letRhs, .letRhs] (.bvar 2) true)
+  (.bvar 2) == "outer"

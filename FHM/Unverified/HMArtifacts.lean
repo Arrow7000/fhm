@@ -176,9 +176,8 @@ def programWrapperIds : List (List Surface.Binding) → IdentifiedExpr → List 
         | _, .letRecIn owner _ body => owner.id :: programWrapperIds rest body
         | _, _ => []
 
-/-- Authored schemes are carried declarations, deliberately absent from the
-    inferred-scheme map. They have nevertheless passed the HM ceiling check. -/
-def declaredScheme (typed : TypedLowered) (site : SurfaceBinderSite) : Option PolyTy := do
+/-- Read the authored annotation mode through the existing binder-path join. -/
+def bindingAnn (typed : TypedLowered) (site : SurfaceBinderSite) : Option Elaboration.LetAnn := do
   let (_, target) ← typed.lowering.binderTargets.find? (fun p => p.1 == site)
   let sites ← match target with
     | .present sites => some sites
@@ -186,19 +185,18 @@ def declaredScheme (typed : TypedLowered) (site : SurfaceBinderSite) : Option Po
   let core ← sites.head?
   match core with
   | .letIn path =>
-      let node ← inputAtCorePath typed.input path
-      match node with
-      | .letIn (.complete scheme) _ _ => some scheme
-      | _ => none
+      let .letIn ann _ _ ← inputAtCorePath typed.input path | none
+      pure ann
   | .letRec path member =>
-      let node ← inputAtCorePath typed.input path
-      match node with
-      | .letRec anns _ _ => do
-          match ← anns[member]? with
-          | .complete scheme => some scheme
-          | _ => none
-      | _ => none
+      let .letRec anns _ _ ← inputAtCorePath typed.input path | none
+      anns[member]?
   | _ => none
+
+/-- Authored complete schemes passed the HM ceiling check. Partial modes keep
+    their authored templates until presentation joins them to completed types. -/
+def declaredScheme (typed : TypedLowered) (site : SurfaceBinderSite) : Option PolyTy := do
+  let .complete scheme ← bindingAnn typed site | none
+  pure scheme
 
 def binderType (typed : TypedLowered) (site : SurfaceBinderSite) : Option String :=
   match typed.inferredBinderSchemes.find? (fun p => p.1 == site) with

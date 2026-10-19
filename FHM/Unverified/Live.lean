@@ -240,7 +240,7 @@ def checkPipeline (src : String) :
       }
     | some tree => pure tree
   let lowered ← match SurfaceBridge.Provenance.lowerWithProvenance ctors p.term tree with
-    | none => return .error { stage := .lower, message := "provenance-aware lowering failed" }
+    | none => return .error (diagnosedErr .lower (firstDiag ()) "provenance-aware lowering failed")
     | some lowered => pure lowered
   let typed ← match SurfaceBridge.Provenance.inferWithProvenance ctors lowered with
     | none => return .error (diagnosedErr .typecheck (firstDiag ()) "typechecking failed")
@@ -261,7 +261,8 @@ def checkPipeline (src : String) :
         let ann := binding.bind (fun b => finalizeAnn b.tyParams b.params b.ann)
         let names := FHM.Unverified.HMArtifacts.displayNames ann
         { name, hm
-          synthPretty? := some (FHM.Unverified.HMDisplay.scheme {} names hm) }
+          synthPretty? := some (FHM.Unverified.HMDisplay.scheme {}
+            (FHM.Unverified.HMDisplay.extendNames names hm.paramCount) hm) }
       programHm := bodyσ
       programSynthPretty? := some (FHM.Unverified.HMDisplay.scheme {} [] bodyσ) }
 

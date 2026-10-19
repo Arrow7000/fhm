@@ -60,6 +60,9 @@ structure Scope where
   names : List String
   aliases : List (Nat × String)
   freeIds : List Nat
+  /-- Output annotation bodies close every generalized variable; metadata
+      closes only authored explicit binders. Keep their depths separate. -/
+  completedNames : List String
 
 /- Only bijective variable-to-variable correspondences supply display names.
     Composite specialization and identified independent variables are NOT
@@ -78,6 +81,42 @@ partial def matchNameArgs (names : List String) : List Ty → List Ty → List (
   | _, _ => []
 end
 
+def completedSchemes (typed : TypedLowered) (site : SurfaceBinderSite) : List (CorePath × PolyTy) :=
+  let target : Option BinderOriginTarget := (typed.lowering.binderTargets.find? fun p => p.1 == site).map (·.2)
+  match target with
+  | some (.present sites) => sites.filterMap fun
+      | .letIn path => do
+          let .letIn (some sig) _ _ ← typed.lowering.expr.atCorePath path | none
+          pure (path ++ [.letRhs], sig)
+      | .letRec path member => do
+          let .letRec anns _ _ ← typed.lowering.expr.atCorePath path | none
+          let some sig ← anns[member]? | none
+          pure (path ++ [.letRecRhs member], sig)
+      | _ => none
+  | _ => []
+
+
+/-- Extend a preserved authored prefix with fresh presentation names. -/
+def extendNames (written : List String) (count : Nat) (reserved : List String := []) : List String :=
+  let explicit := written.take count
+  let fresh := (List.range (count + written.length + reserved.length)).map alphaName
+    |>.filter (fun name => !written.contains name && !reserved.contains name)
+  explicit ++ fresh.take (count - explicit.length)
+
+/-- Completion preserves the explicit forall prefix, including unused
+binders. Only newly generalized holes receive synthesized display names. -/
+def annotationNames (ann : Elaboration.LetAnn) (written : List String) (sig : PolyTy)
+    (reserved : List String := []) : List String :=
+  match ann with
+  | .complete _ => written
+  | .partialForall count _ =>
+      extendNames (written.take count) sig.paramCount reserved
+  | _ => extendNames [] sig.paramCount reserved
+
+def bindingNames (typed : TypedLowered) (site : SurfaceBinderSite)
+    (written : List String) (sig : PolyTy) (reserved : List String := []) : List String :=
+  (bindingAnn typed site).map (fun ann => annotationNames ann written sig reserved) |>.getD []
+
 def rhsPaths (typed : TypedLowered) (site : SurfaceBinderSite) : List CorePath :=
   let target : Option BinderOriginTarget := (typed.lowering.binderTargets.find? fun p => p.1 == site).map (·.2)
   match target with
@@ -90,26 +129,37 @@ def rhsPaths (typed : TypedLowered) (site : SurfaceBinderSite) : List CorePath :
 def rhsPath (typed : TypedLowered) (site : SurfaceBinderSite) : Option CorePath :=
   (rhsPaths typed site).head?
 
-def scopes (typed : TypedLowered) (locations : Locations) : List Scope :=
-  locations.displays.flatMap fun display =>
-    (rhsPaths typed display.site).filterMap fun path => do
-      let rootTy ← nodeTyAtCorePath typed.inference.nodeTypes path
-      let candidates := match declaredScheme typed display.site with
-        | some sig => matchNames display.names rootTy sig.body
-        | none => []
-      let aliases := candidates.filter fun (n, name) => candidates.all fun (m, other) =>
-        (m != n || other == name) && (other != name || m == n)
-      let freeIds := (rootTy.freeVars ++ typed.sourceTypes.flatMap (fun (_, facts) =>
-        facts.flatMap fun (p, ty) => if path.isPrefixOf p then ty.freeVars else [])).eraseDups
-      pure ⟨path, display.names, aliases.eraseDups, freeIds⟩
-
-def context (scopes : List Scope) (path : CorePath) (ty : Ty) : Context :=
+def context (scopes : List Scope) (path : CorePath) (ty : Ty)
+    (completed : Bool := false) : Context :=
   let enclosing := (scopes.filter fun s => s.path.isPrefixOf path).mergeSort
     (fun a b => a.path.length ≥ b.path.length)
   let aliases := enclosing.flatMap (·.aliases)
   let freeIds := ((enclosing.head?.map (·.freeIds)).getD [] ++ ty.freeVars).eraseDups
     |>.filter (fun n => !(aliases.any fun p => p.1 == n))
-  ⟨enclosing.flatMap (·.names), aliases, freeIds⟩
+  ⟨enclosing.flatMap (fun scope => if completed then scope.completedNames else scope.names), aliases, freeIds⟩
+
+
+def scopes (typed : TypedLowered) (locations : Locations) : List Scope :=
+  locations.displays.foldl (fun outer display => outer ++
+    (rhsPaths typed display.site).filterMap fun path => do
+      let rootTy ← nodeTyAtCorePath typed.inference.nodeTypes path
+      let signature := (declaredScheme typed display.site).orElse fun _ =>
+        ((completedSchemes typed display.site).find? fun entry => entry.1 == path).map (·.2)
+      let outerCtx := context outer path rootTy
+      let reserved := outerCtx.boundNames ++ outerCtx.aliases.map (·.2)
+      let names := signature.map (fun sig => bindingNames typed display.site display.names sig reserved)
+        |>.getD display.names
+      let candidates := match signature with
+        | some sig => matchNames names rootTy sig.body
+        | none => []
+      let aliases := candidates.filter fun (n, name) => candidates.all fun (m, other) =>
+        (m != n || other == name) && (other != name || m == n)
+      let freeIds := (rootTy.freeVars ++ typed.sourceTypes.flatMap (fun (_, facts) =>
+        facts.flatMap fun (p, ty) => if path.isPrefixOf p then ty.freeVars else [])).eraseDups
+      -- Metadata closes explicit scoped binders only. Newly generalized hole
+      -- variables remain fvars, and receive names through the aliases above.
+      pure ⟨path, display.names, aliases.eraseDups, freeIds, names⟩) []
+
 
 def sourceType (typed : TypedLowered) (scopes : List Scope) (id : SourceId) : Option String := do
   let (path, ty) ← (typed.typesForSource id).head?
@@ -128,7 +178,9 @@ def binderType (typed : TypedLowered) (scopes : List Scope) (locations : Locatio
       match typed.inferredBinderSchemes.find? (fun p => p.1 == site) with
       | some (_, sig) =>
           let path := (rhsPath typed site).getD []
-          some (scheme (context scopes path sig.body) [] sig)
+          let outer := context (scopes.filter fun s => s.path != path) path sig.body
+          some (scheme outer (bindingNames typed site names sig
+            (outer.boundNames ++ outer.aliases.map (·.2))) sig)
       | none => do
           let (_, target) ← typed.lowering.binderTargets.find? (fun p => p.1 == site)
           match site, target with
@@ -181,49 +233,37 @@ def binderMonotypes (typed : TypedLowered) (site : SurfaceBinderSite) : List (Co
       | _ => none
   | _ => []
 
-def completedSchemes (typed : TypedLowered) (site : SurfaceBinderSite) : List (CorePath × PolyTy) :=
-  let target : Option BinderOriginTarget := (typed.lowering.binderTargets.find? fun p => p.1 == site).map (·.2)
-  match target with
-  | some (.present sites) => sites.filterMap fun
-      | .letIn path => do
-          let .letIn (some sig) _ _ ← typed.lowering.expr.atCorePath path | none
-          pure (path ++ [.letRhs], sig)
-      | .letRec path member => do
-          let .letRec anns _ _ ← typed.lowering.expr.atCorePath path | none
-          let some sig ← anns[member]? | none
-          pure (path ++ [.letRecRhs member], sig)
-      | _ => none
-  | _ => []
 
 def dropDomains : Nat → Ty → Option Ty
   | 0, ty => some ty
   | n + 1, .arrow _ body => dropDomains n body
   | _, _ => none
 
-abbrev HoleValues := List (CorePath × Ty × List String)
+abbrev HoleValues := List (CorePath × Ty × List String × Bool)
 
 def annotationParts (annotation : Surface.Ty) (facts : HoleValues) : List HoleValues :=
   let count := (holeParts annotation none).length
-  (List.range count).map fun i => facts.filterMap fun (path, ty, names) => do
+  (List.range count).map fun i => facts.filterMap fun (path, ty, names, completed) => do
     let some part ← (holeParts annotation (some ty))[i]? | none
-    pure (path, part, names)
+    pure (path, part, names, completed)
 
 def headerHoles (refs : List NameReference) (scopes : List Scope)
     (header bodyStart : Span) (parts : List HoleValues) : List HoleDisplay :=
   let holes := refs.filter fun r => r.kind == .typeHole && inside r.span header && before r.span bodyStart
   (holes.zip parts).map fun (ref, facts) =>
-    let types := facts.map fun (path, ty, names) =>
-      let ctx := context (if names.isEmpty then scopes else scopes.filter (fun s => s.path != path)) path ty
+    let types := facts.map fun (path, ty, names, completed) =>
+      let ctx := context (if completed then scopes.filter (fun s => s.path != path) else scopes)
+        path ty completed
       pretty { ctx with boundNames := names ++ ctx.boundNames } ty
     ⟨ref.span, types.eraseDups⟩
 
-def bindingHoleParts (typed : TypedLowered) (site : SurfaceBinderSite)
+def bindingHoleParts (typed : TypedLowered) (scopes : List Scope) (site : SurfaceBinderSite)
     (paramSite : Nat → SurfaceBinderSite) (tyParams : List ValName)
     (params : List (ValName × Option Surface.Ty)) (ann : Option Surface.PolyTy) : List HoleValues :=
   let paramParts := (params.mapIdx fun i (_, annotation) => match annotation with
     | none => []
     | some annotation => annotationParts annotation
-        ((binderMonotypes typed (paramSite i)).map fun (p, t) => (p, t, []))).flatten
+        ((binderMonotypes typed (paramSite i)).map fun (p, t) => (p, t, [], false))).flatten
   let sigParts := match ann with
     | none => []
     | some sig =>
@@ -231,9 +271,10 @@ def bindingHoleParts (typed : TypedLowered) (site : SurfaceBinderSite)
         let writtenNames := displayNames finalized
         let facts := (completedSchemes typed site).filterMap fun (path, scheme) => do
           let body ← dropDomains (if (paramsToArrows params sig.body).isSome then params.length else 0) scheme.body
-          let names := if writtenNames.length == scheme.paramCount then writtenNames
-            else (List.range scheme.paramCount).map alphaName
-          pure (path, body, names)
+          let outer := context (scopes.filter fun s => s.path != path) path body true
+          let names := bindingNames typed site writtenNames scheme
+            (outer.boundNames ++ outer.aliases.map (·.2))
+          pure (path, body, names, true)
         annotationParts sig.body facts
   paramParts ++ sigParts
 
@@ -248,7 +289,7 @@ partial def holeDisplays (typed : TypedLowered) (scopes : List Scope)
       let parts := match ann with
         | none => []
         | some annotation => annotationParts annotation ((typed.typesForSource owner.id).filterMap fun (p, t) =>
-            match t with | .arrow domain _ => some (p, domain, []) | _ => none)
+            match t with | .arrow domain _ => some (p, domain, [], false) | _ => none)
       headerHoles refs scopes owner.span sb.source.span parts ++ holeDisplays typed scopes bs refs body sb
   | .letIn name tyParams params ann rhs body, .letIn owner sr sb =>
       let locations := locate bs (.letIn owner.id) name .val owner.span sb.source.span sr.source.span
@@ -256,7 +297,7 @@ partial def holeDisplays (typed : TypedLowered) (scopes : List Scope)
         | v :: _ => { owner.span with startLine := v.span.startLine, startCol := v.span.startCol }
         | [] => owner.span
       headerHoles refs scopes header sr.source.span
-        (bindingHoleParts typed (.letIn owner.id) (.letParam owner.id) tyParams params ann) ++
+        (bindingHoleParts typed scopes (.letIn owner.id) (.letParam owner.id) tyParams params ann) ++
         holeDisplays typed scopes bs refs rhs sr ++ holeDisplays typed scopes bs refs body sb
   | .letRecIn bindings body, .letRecIn owner rhss sb =>
       bindingHoleDisplays typed scopes bs refs owner 0 bindings rhss ++ holeDisplays typed scopes bs refs body sb
@@ -284,7 +325,7 @@ partial def bindingHoleDisplays (typed : TypedLowered) (scopes : List Scope)
         | v :: _ => { owner.span with startLine := v.span.startLine, startCol := v.span.startCol }
         | [] => owner.span
       headerHoles refs scopes header r.source.span
-        (bindingHoleParts typed (.letRec owner.id i) (.letRecParam owner.id i) b.tyParams b.params b.ann) ++
+        (bindingHoleParts typed scopes (.letRec owner.id i) (.letRecParam owner.id i) b.tyParams b.params b.ann) ++
         holeDisplays typed scopes bs refs b.rhs r ++ bindingHoleDisplays typed scopes bs refs owner (i + 1) bindings rhss
   | _, _, _ => []
 end
