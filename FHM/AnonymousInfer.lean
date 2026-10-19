@@ -57,7 +57,6 @@ inductive Infer : List Nat → Nat → Ctx → Input → Nat → Subst → Expr 
   | letIn :
       Infer K frontier ctx rhs first s1 rhsOut rhsTy →
       LetCheck K first rhsTy ann checked sCheck →
-      (rhsOut.substTyFvars sCheck).TyBvarBounded 0 →
       Infer K checked
         { (sCheck.onCtx (s1.onCtx ctx)) with
           env := genScheme K (sCheck.onCtx (s1.onCtx ctx)).env (sCheck.onTy rhsTy) ::
@@ -133,7 +132,7 @@ theorem Infer.dom_avoids (h : Infer K frontier ctx input next subst output ty) :
       rcases List.mem_append.mp hp with hp | hp
       · exact (List.mem_append.mp hp).elim (ihf pair) (ihx pair)
       · exact hu.dom_avoids pair hp
-  | letIn _ hc _ _ ihr ihb =>
+  | letIn _ hc _ ihr ihb =>
       intro pair hp
       rcases List.mem_append.mp hp with hp | hp
       · exact (List.mem_append.mp hp).elim (ihr pair) (hc.dom_avoids pair)
@@ -162,7 +161,7 @@ theorem Infer.lc (h : Infer K frontier ctx input next subst output ty) :
       rcases List.mem_append.mp hp with hp | hp
       · exact (List.mem_append.mp hp).elim (hs1 pair) (hs2 pair)
       · exact hs3 pair hp
-  | letIn hr hc _ hb ihr ihb =>
+  | letIn hr hc hb ihr ihb =>
       intro hctx
       obtain ⟨hrTy, hs1⟩ := ihr hctx
       have hcheck := hc.lc hrTy
@@ -218,7 +217,7 @@ theorem Infer.sourceSound (h : Infer K frontier ctx input next subst output ty) 
       simp only [Subst.onCtx_append] at hfTyped
       simpa only [Subst.onCtx_append] using TypeOfHM.app hfTyped haTyped
   | @letIn K frontier ctx rhs first s1 rhsOut rhsTy ann checked sCheck body next s2 bodyOut bodyTy
-      hr hc hscope hb ihr ihb =>
+      hr hc hb ihr ihb =>
       intro hctx
       have hs1 := (hr.lc hctx).2
       have hrTy := (hr.lc hctx).1
@@ -237,7 +236,7 @@ theorem Infer.sourceSound (h : Infer K frontier ctx input next subst output ty) 
       have rhsTyped := TypeOfHM.onSubst sCheck hsCheck (ihr hctx)
       have rhsGeneral := TypeOfHM.generaliseAnnotated
         (names := genVars K (sCheck.onCtx (s1.onCtx ctx)).env (sCheck.onTy rhsTy))
-        rhsTyped hscope genVars_nodup
+        rhsTyped genVars_nodup
         (fun name hn => genVars_not_mem hn)
       obtain ⟨avoid, rhsFinal⟩ := GeneralisesTo.onSubst_annotated
         (genScheme_wf checkedTyLC) rhsGeneral s2 hs2
@@ -266,9 +265,9 @@ theorem Infer.erase (h : Infer K frontier ctx input next subst output ty) :
   | lambda _ _ ih => simpa only [lambdaOutput, Expr.erase, Input.erase] using congrArg (Expr.lambda none) ih
   | app _ _ _ ihf ihx =>
       simp only [Expr.erase, Expr.erase_substTyFvars, Input.erase, ihf, ihx]
-  | letIn _ _ hscope _ ihr ihb =>
+  | letIn _ _ _ ihr ihb =>
       simp only [letOutput, Expr.erase, Expr.erase_substTyFvars,
-        Expr.erase_closeTyVars hscope genVars_nodup, Input.erase, ihr, ihb]
+        Expr.erase_closeTyVars, Input.erase, ihr, ihb]
 
 theorem Infer.sound (h : Infer K frontier ctx input next subst output ty) (hctx : CtxWF ctx) :
     RuntimeTyping.RunWT (subst.onCtx ctx) input.erase ty := by
@@ -289,7 +288,7 @@ theorem Infer.completes (h : Infer K frontier ctx input next subst output ty) :
       exact .app (.specialise ihf (fun pair hp =>
         (List.mem_append.mp hp).elim (ha.dom_avoids pair) (hu.dom_avoids pair)))
         (.specialise iha hu.dom_avoids)
-  | letIn hr hc _ hb ihr ihb =>
+  | letIn hr hc hb ihr ihb =>
       exact .letIn hc.fits hc.rigid (.specialise ihr hc.dom_avoids) ihb
         (fun _ hn => genVars_not_mem_rigid hn) hb.dom_avoids
 
@@ -332,7 +331,7 @@ theorem Infer.inputSound (h : Infer K frontier ctx input next subst output ty) :
       simp only [Subst.onCtx_append] at hfTyped
       simpa only [Subst.onCtx_append] using Typing.app hfTyped haTyped
   | @letIn K frontier ctx rhs first s1 rhsOut rhsTy ann checked sCheck body next s2 bodyOut bodyTy
-      hr hc _ hb ihr ihb =>
+      hr hc hb ihr ihb =>
       intro hctx
       have hs1 := (hr.lc hctx).2
       have hrTy := (hr.lc hctx).1
@@ -372,14 +371,6 @@ theorem Infer.inputSound (h : Infer K frontier ctx input next subst output ty) :
       refine Typing.letIn (L := avoid) (Subst.onPolyTy_wf hs2 (genScheme_wf checkedTyLC))
         hc.rigid hfits ?_ bodyTyped
       simpa only [← Subst.onCtx_append] using hgeneral
-
-/-- The syntactic RHS scope guard always passes on a successfully inferred RHS
-in a valid context, including after the annotation-checking substitution. -/
-theorem Infer.scoped_afterSubst (h : Infer K frontier ctx input next subst output ty)
-    (hctx : CtxWF ctx) (specialise : Subst) (hlc : ∀ pair ∈ specialise, pair.2.IsLC) :
-    (output.substTyFvars specialise).scopedAnnotations 0 = true :=
-  Expr.scopedAnnotations_complete _ 0
-    (TypeOfHM.onSubst specialise hlc (h.sourceSound hctx)).tyBvarBounded
 
 def seed (K : List Nat) (frontier : Nat) (ann : Option Template) :
     Option { result : Nat × Ty // Seed K frontier ann result.2 result.1 } :=
@@ -474,14 +465,11 @@ def inferCore (K : List Nat) (frontier : Nat) (ctx : Ctx) (input : Input) :
                       let checkedOut := rhsOut.substTyFvars sCheck
                       let scheme := genScheme K checkedCtx.env checkedTy
                       let names := genVars K checkedCtx.env checkedTy
-                      if hscope : checkedOut.scopedAnnotations 0 = true then
-                        match inferCore K checked { checkedCtx with env := scheme :: checkedCtx.env } body with
-                        | none => none
-                        | some ⟨(next, s2, bodyOut, bodyTy), hb⟩ =>
-                            some ⟨(next, s1 ++ sCheck ++ s2,
-                              letOutput scheme names checkedOut bodyOut s2, bodyTy),
-                              .letIn hr hc (checkedOut.scopedAnnotations_sound 0 hscope) hb⟩
-                      else none
+                      match inferCore K checked { checkedCtx with env := scheme :: checkedCtx.env } body with
+                      | none => none
+                      | some ⟨(next, s2, bodyOut, bodyTy), hb⟩ =>
+                          some ⟨(next, s1 ++ sCheck ++ s2,
+                            letOutput scheme names checkedOut bodyOut s2, bodyTy), .letIn hr hc hb⟩
           | _ => none
     else none
   else none

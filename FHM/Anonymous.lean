@@ -329,9 +329,9 @@ the RHS cofinally, and partial annotations constrain that very monotype. There
 is no recursive rule: in particular, a partial annotation cannot acquire
 polymorphic recursive uses through an arbitrary completed output signature.
 
-Complete scoped signatures will use their existing checking rule when the
-conservative Core embedding is connected; this fragment does not reinterpret
-complete annotations as partial annotations.
+Whole completed subtrees use their existing checking rules through the
+conservative Core embedding. Complete signatures whose RHS contains partial
+syntax, and partial match/recursive spines, have no rule in this first fragment.
 -/
 inductive Typing (K : List Nat) : Ctx → Input → Ty → Prop
   /-- Existing complete Core programs retain their existing declarative meaning.

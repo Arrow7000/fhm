@@ -209,6 +209,34 @@ theorem Typing.letMono_inv (h : Typing K ctx (.letIn ann rhs body) ty)
           exact .complete hr (fun v hv => hscope v (List.mem_append_left _ hv)) (hcofin Xs hXs)
         · intro v hv; exact hscope v (List.mem_append_right _ hv)
 
+/-- A whole lambda-parameter hole has exactly omission's independent meaning. -/
+theorem Typing.lambda_hole_iff :
+    Typing K ctx (.lambda (some .hole) body) ty ↔ Typing K ctx (.lambda none body) ty := by
+  constructor
+  · intro h
+    obtain ⟨param, result, rfl, hlc, _, _, hb⟩ := h.lambda_inv
+    exact .lambda hlc (fun _ heq => by cases heq) (fun _ heq => by cases heq) hb
+  · intro h
+    obtain ⟨param, result, rfl, hlc, _, _, hb⟩ := h.lambda_inv
+    refine .lambda hlc ?_ ?_ hb
+    · intro template heq; cases heq; exact .hole
+    · intro template heq; cases heq; simp only [Template.rigidVars, List.not_mem_nil, false_implies, implies_true]
+
+/-- A whole ordinary-let signature hole has exactly omission's independent
+meaning, including cofinite generalization of its RHS. -/
+theorem Typing.let_hole_iff :
+    Typing K ctx (.letIn (.template .hole) rhs body) ty ↔
+      Typing K ctx (.letIn .absent rhs body) ty := by
+  constructor
+  · intro h
+    obtain ⟨M, L, hwf, _, _, hr, hb⟩ := h.letMono_inv (checkedTy := .prim .unit) (.hole)
+    exact .letIn hwf (fun _ heq => by cases heq) (fun _ _ => True.intro) hr hb
+  · intro h
+    obtain ⟨M, L, hwf, _, _, hr, hb⟩ := h.letMono_inv (checkedTy := .prim .unit) True.intro
+    refine .letIn hwf ?_ (fun _ _ => .hole) hr hb
+    intro template heq; cases heq
+    simp only [Template.rigidVars, List.not_mem_nil, false_implies, implies_true]
+
 /-- Residual principality retains an independently quantified protected set.
 `Typing P` scopes authored fixed types in precisely that protected set. It does
 not claim most-general fillings for every unused annotation hole. -/
@@ -503,14 +531,13 @@ theorem Infer.let_frame
 theorem Infer.principal_letIn
     (hr : Infer K frontier ctx rhs first s1 rhsOut rhsTy)
     (hc : LetCheck K first rhsTy ann checked sCheck)
-    (hscoped : (rhsOut.substTyFvars sCheck).TyBvarBounded 0)
     (hb : Infer K checked
       { (sCheck.onCtx (s1.onCtx ctx)) with
         env := genScheme K (sCheck.onCtx (s1.onCtx ctx)).env (sCheck.onTy rhsTy) ::
           (sCheck.onCtx (s1.onCtx ctx)).env }
       body next s2 bodyOut bodyTy)
     (ihr : Infer.Principal hr) (ihb : Infer.Principal hb) :
-    Infer.Principal (.letIn hr hc hscoped hb) := by
+    Infer.Principal (.letIn hr hc hb) := by
   intro hwf hbelow hK ambient target P hS hP hfix htyping
   obtain ⟨V, hV, hVP, hagPrefix, hbodyD, hbodyWF, hbodyB, hprefixB⟩ :=
     hr.let_frame hc ihr hwf hbelow hK ambient target P hS hP hfix htyping
@@ -529,6 +556,6 @@ theorem Infer.principal (h : Infer K frontier ctx input next subst output ty) :
   | backend hemb hi hctx hK hr => exact Infer.principal_backend hemb hi hctx hK hr
   | lambda hs hb ih => exact Infer.principal_lambda hs hb ih
   | app hf ha hu ihf iha => exact Infer.principal_app hf ha hu ihf iha
-  | letIn hr hc hscope hb ihr ihb => exact Infer.principal_letIn hr hc hscope hb ihr ihb
+  | letIn hr hc hb ihr ihb => exact Infer.principal_letIn hr hc hb ihr ihb
 
 end Anonymous

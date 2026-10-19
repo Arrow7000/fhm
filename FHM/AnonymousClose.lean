@@ -240,7 +240,7 @@ binders as its result type. Unlike the unannotated Core rule, the resulting
 cofinite premise opens BOTH the RHS and the scheme. -/
 theorem TypeOfHM.generaliseAnnotated {ctx : Ctx} {expr : Expr} {ty : Ty}
     {names : List Nat} (htyping : TypeOfHM ctx expr ty)
-    (hbound : expr.TyBvarBounded 0) (hnames : names.Nodup)
+    (hnames : names.Nodup)
     (hctx : ∀ name ∈ names, name ∉ ctx.env.freeVars) :
     GeneralisesTo TypeOfHM ctx (some ⟨names.length, Ty.closeOver names ty⟩)
       (expr.closeTyVars names) ⟨names.length, Ty.closeOver names ty⟩ names := by
@@ -248,7 +248,7 @@ theorem TypeOfHM.generaliseAnnotated {ctx : Ctx} {expr : Expr} {ty : Ty}
   have hdisj : ∀ name ∈ names, name ∉ fresh :=
     fun name hn hf => hfresh.avoid name hf hn
   rw [Expr.openBoundTyVars,
-    Expr.open_closeTyVars_rename hnames hfresh.length hdisj hbound]
+    Expr.open_closeTyVars_rename hnames hfresh.length hdisj htyping.tyBvarBounded]
   change TypeOfHM ctx (expr.substTyFvars (names.zip (fresh.map Ty.fvar)))
     (Ty.openVars fresh (Ty.closeOver names ty))
   rw [Ty.openVars_closeOver_rename (TypeOfHM.regular htyping) hnames hfresh.length hdisj]
@@ -279,32 +279,6 @@ theorem GeneralisesTo.onSubst_annotated {ctx : Ctx} {rhs : Expr} {scheme : PolyT
       subst heq
       exact ⟨_, hgen⟩
 
-mutual
-/-- A syntactic scope check for RHSs that will acquire a synthesized scheme.
-It checks only annotation binder scope, not term typing. -/
-def Expr.scopedAnnotations (depth : Nat) : Expr → Bool
-  | .primLit _ | .primBinOp _ | .var _ | .ctor _ => true
-  | .lambda ann body =>
-      ann.all (Ty.bvarsBelow depth) && body.scopedAnnotations depth
-  | .app f x => f.scopedAnnotations depth && x.scopedAnnotations depth
-  | .letIn ann rhs body =>
-      ann.all (fun scheme => Ty.bvarsBelow (depth + scheme.paramCount) scheme.body) &&
-        rhs.scopedAnnotations (depth + RecAnn.params ann) && body.scopedAnnotations depth
-  | .match_ scrut branches => scrut.scopedAnnotations depth && scopedBranches depth branches
-  | .letRec anns bindings body =>
-      anns.all (fun ann => ann.all fun scheme =>
-        Ty.bvarsBelow (depth + scheme.paramCount) scheme.body) &&
-        scopedBindings depth anns bindings && body.scopedAnnotations depth
-def scopedBranches (depth : Nat) : List (MatchPattern × Expr) → Bool
-  | [] => true
-  | (_, body) :: rest => body.scopedAnnotations depth && scopedBranches depth rest
-def scopedBindings (depth : Nat) : List (Option PolyTy) → List Expr → Bool
-  | _, [] => true
-  | [], body :: rest => body.scopedAnnotations depth && scopedBindings depth [] rest
-  | ann :: anns, body :: rest =>
-      body.scopedAnnotations (depth + RecAnn.params ann) && scopedBindings depth anns rest
-end
-
 /-- Substitution changes annotations only, so it preserves runtime shape. -/
 theorem Expr.erase_substTyFvars (expr : Expr) (subst : Subst) :
     (expr.substTyFvars subst).erase = expr.erase := by
@@ -325,128 +299,49 @@ theorem Expr.erase_substTyFvars (expr : Expr) (subst : Subst) :
       congr 1
       exact List.map_congr_left (fun binding hb => ihbs binding hb)
 
-/-- For a scoped RHS, closing its eligible variables affects no runtime code.
-The proof reuses reopening and substitution erasure rather than introducing a
-second structural closing proof. -/
-theorem Expr.erase_closeTyVars {expr : Expr} {names : List Nat}
-    (hbound : expr.TyBvarBounded 0) (hnames : names.Nodup) :
-    (expr.closeTyVars names).erase = expr.erase := by
-  obtain ⟨fresh, hfresh⟩ := exists_fresh_names names names.length
-  have hrename := Expr.open_closeTyVars_rename hnames hfresh.1
-    (fun name hn hf => hfresh.2.2 name hf hn) hbound
-  have herase := congrArg Expr.erase hrename
-  rw [Expr.erase_openTyVars, Expr.erase_substTyFvars] at herase
-  exact herase
 
-mutual
-theorem Expr.scopedAnnotations_sound (expr : Expr) (depth : Nat)
-    (h : expr.scopedAnnotations depth = true) : expr.TyBvarBounded depth := by
-  cases expr with
-  | primLit => trivial
-  | primBinOp => trivial
-  | var => trivial
-  | ctor => trivial
-  | lambda ann body =>
-      simp only [Expr.scopedAnnotations, Bool.and_eq_true] at h
-      refine ⟨?_, body.scopedAnnotations_sound depth h.2⟩
-      intro ty hty
-      subst ann
-      exact (Ty.bvarsBelow_iff ty).mp h.1
-  | app f x =>
-      simp only [Expr.scopedAnnotations, Bool.and_eq_true] at h
-      exact ⟨f.scopedAnnotations_sound depth h.1, x.scopedAnnotations_sound depth h.2⟩
-  | letIn ann rhs body =>
-      simp only [Expr.scopedAnnotations, Bool.and_eq_true] at h
-      cases ann with
-      | none => exact ⟨rhs.scopedAnnotations_sound depth h.1.2,
-          body.scopedAnnotations_sound depth h.2⟩
-      | some scheme => exact ⟨(Ty.bvarsBelow_iff scheme.body).mp h.1.1,
-          rhs.scopedAnnotations_sound _ h.1.2, body.scopedAnnotations_sound depth h.2⟩
-  | match_ scrut branches =>
-      simp only [Expr.scopedAnnotations, Bool.and_eq_true] at h
-      exact ⟨scrut.scopedAnnotations_sound depth h.1, scopedBranches_sound branches depth h.2⟩
-  | letRec anns bindings body =>
-      simp only [Expr.scopedAnnotations, Bool.and_eq_true, List.all_eq_true] at h
-      refine ⟨?_, scopedBindings_sound anns bindings depth h.1.2,
-        body.scopedAnnotations_sound depth h.2⟩
-      intro scheme hscheme
-      exact (Ty.bvarsBelow_iff scheme.body).mp (h.1.1 (some scheme) hscheme)
-theorem scopedBranches_sound (branches : List (MatchPattern × Expr)) (depth : Nat)
-    (h : scopedBranches depth branches = true) : Expr.TyBvarBounded.BranchList depth branches := by
-  cases branches with
-  | nil => trivial
-  | cons head rest =>
-      simp only [scopedBranches, Bool.and_eq_true] at h
-      exact ⟨head.2.scopedAnnotations_sound depth h.1, scopedBranches_sound rest depth h.2⟩
-theorem scopedBindings_sound (anns : List (Option PolyTy)) (bindings : List Expr) (depth : Nat)
-    (h : scopedBindings depth anns bindings = true) : Expr.TyBvarBounded.RecGroup depth anns bindings := by
-  cases bindings with
-  | nil => trivial
-  | cons body rest =>
-      cases anns with
-      | nil =>
-          simp only [scopedBindings, Bool.and_eq_true] at h
-          exact ⟨body.scopedAnnotations_sound depth h.1, scopedBindings_sound [] rest depth h.2⟩
-      | cons ann anns =>
-          simp only [scopedBindings, Bool.and_eq_true] at h
-          exact ⟨body.scopedAnnotations_sound _ h.1, scopedBindings_sound anns rest depth h.2⟩
-end
+/-- Closing scoped type variables changes only annotations, which erasure discards. -/
+theorem Expr.erase_closeTyVarsAux (expr : Expr) (depth : Nat) (names : List Nat) :
+    (expr.closeTyVarsAux depth names).erase = expr.erase := by
+  induction expr using Expr.rec_strong generalizing depth with
+  | primLit p => rfl
+  | primBinOp op => rfl
+  | var i => rfl
+  | ctor name => rfl
+  | lambda ann body ih => simp only [Expr.closeTyVarsAux, Expr.erase, ih]
+  | app f arg ihf iha => simp only [Expr.closeTyVarsAux, Expr.erase, ihf, iha]
+  | letIn ann rhs body ihr ihb =>
+    cases ann <;> simp only [Expr.closeTyVarsAux, Expr.erase, ihr, ihb]
+  | match_ scrut branches ihs ihbs =>
+    simp only [Expr.closeTyVarsAux, Expr.erase, ihs]
+    congr 1
+    induction branches with
+    | nil => rfl
+    | cons head tail ih =>
+      rcases head with ⟨pat, body⟩
+      simp only [BranchList.closeTyVarsAux, List.map_cons]
+      rw [ihbs pat body List.mem_cons_self depth]
+      congr 1
+      exact ih (fun p b hb => ihbs p b (List.mem_cons_of_mem _ hb))
+  | letRec anns bindings body ihbs ihb =>
+    have hgroup : ∀ anns depth,
+        (RecGroup.closeTyVarsAux depth names anns bindings).map Expr.erase = bindings.map Expr.erase := by
+      induction bindings with
+      | nil => intro _ _; rfl
+      | cons head tail ih =>
+        intro anns depth
+        cases anns <;> simp only [RecGroup.closeTyVarsAux, List.map_cons]
+        all_goals
+          rw [ihbs head List.mem_cons_self]
+          congr 1
+          exact ih (fun b hb => ihbs b (List.mem_cons_of_mem _ hb)) _ _
+    have hlen := congrArg List.length (hgroup anns depth)
+    simp only [List.length_map] at hlen
+    simp only [Expr.closeTyVarsAux, Expr.erase, ihb, hgroup]
+    congr 1
+    simp only [List.map_const', hlen]
 
-mutual
-theorem Expr.scopedAnnotations_complete (expr : Expr) (depth : Nat)
-    (h : expr.TyBvarBounded depth) : expr.scopedAnnotations depth = true := by
-  cases expr with
-  | primLit => rfl
-  | primBinOp => rfl
-  | var => rfl
-  | ctor => rfl
-  | lambda ann body =>
-      simp only [Expr.scopedAnnotations, Bool.and_eq_true]
-      refine ⟨?_, body.scopedAnnotations_complete depth h.2⟩
-      cases ann with
-      | none => rfl
-      | some ty => exact (Ty.bvarsBelow_iff ty).mpr (h.1 ty rfl)
-  | app f x =>
-      simp only [Expr.scopedAnnotations, Bool.and_eq_true]
-      exact ⟨f.scopedAnnotations_complete depth h.1, x.scopedAnnotations_complete depth h.2⟩
-  | letIn ann rhs body =>
-      cases ann with
-      | none =>
-          simp only [Expr.scopedAnnotations, Option.all_none, Bool.true_and,
-            RecAnn.params, Nat.add_zero, Bool.and_eq_true]
-          exact ⟨rhs.scopedAnnotations_complete depth h.1, body.scopedAnnotations_complete depth h.2⟩
-      | some scheme =>
-          simp only [Expr.scopedAnnotations, Option.all_some, RecAnn.params, Bool.and_eq_true]
-          exact ⟨⟨(Ty.bvarsBelow_iff scheme.body).mpr h.1,
-            rhs.scopedAnnotations_complete _ h.2.1⟩, body.scopedAnnotations_complete depth h.2.2⟩
-  | match_ scrut branches =>
-      simp only [Expr.scopedAnnotations, Bool.and_eq_true]
-      exact ⟨scrut.scopedAnnotations_complete depth h.1, scopedBranches_complete branches depth h.2⟩
-  | letRec anns bindings body =>
-      simp only [Expr.scopedAnnotations, Bool.and_eq_true, List.all_eq_true]
-      refine ⟨⟨?_, scopedBindings_complete anns bindings depth h.2.1⟩,
-        body.scopedAnnotations_complete depth h.2.2⟩
-      intro ann hann
-      cases ann with
-      | none => rfl
-      | some scheme => exact (Ty.bvarsBelow_iff scheme.body).mpr (h.1 scheme hann)
-theorem scopedBranches_complete (branches : List (MatchPattern × Expr)) (depth : Nat)
-    (h : Expr.TyBvarBounded.BranchList depth branches) : scopedBranches depth branches = true := by
-  cases branches with
-  | nil => rfl
-  | cons head rest =>
-      simp only [scopedBranches, Bool.and_eq_true]
-      exact ⟨head.2.scopedAnnotations_complete depth h.1, scopedBranches_complete rest depth h.2⟩
-theorem scopedBindings_complete (anns : List (Option PolyTy)) (bindings : List Expr) (depth : Nat)
-    (h : Expr.TyBvarBounded.RecGroup depth anns bindings) : scopedBindings depth anns bindings = true := by
-  cases bindings with
-  | nil => rfl
-  | cons body rest =>
-      cases anns with
-      | nil =>
-          simp only [scopedBindings, Bool.and_eq_true]
-          exact ⟨body.scopedAnnotations_complete depth h.1, scopedBindings_complete [] rest depth h.2⟩
-      | cons ann anns =>
-          simp only [scopedBindings, Bool.and_eq_true]
-          exact ⟨body.scopedAnnotations_complete _ h.1, scopedBindings_complete anns rest depth h.2⟩
-end
+/-- Erasure is invariant under closing any list of names, including duplicates. -/
+theorem Expr.erase_closeTyVars (expr : Expr) (names : List Nat) :
+    (expr.closeTyVars names).erase = expr.erase :=
+  expr.erase_closeTyVarsAux 0 names

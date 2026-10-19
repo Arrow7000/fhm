@@ -255,7 +255,7 @@ theorem Infer.frontier_le (h : Infer K frontier ctx input next subst output ty) 
   | backend _ h _ _ _ => exact _root_.Infer.frontier_le h
   | lambda hs _ ih => exact hs.frontier_le.trans ih
   | app _ _ _ ihf iha => omega
-  | letIn _ hc _ _ ihr ihb => exact ihr.trans (hc.frontier_le.trans ihb)
+  | letIn _ hc _ ihr ihb => exact ihr.trans (hc.frontier_le.trans ihb)
 
 theorem Infer.belowFvars (h : Infer K frontier ctx input next subst output ty) :
     CtxBelow frontier ctx → (∀ k ∈ K, k < frontier) →
@@ -293,7 +293,7 @@ theorem Infer.belowFvars (h : Infer K frontier ctx input next subst output ty) :
       · exact (hfSubst p hp).mono (haLe.trans (Nat.le_succ _))
       · exact (haSubst p hp).mono (Nat.le_succ _)
     · exact huni p hp
-  | letIn hr hc _ hb ihr ihb =>
+  | letIn hr hc hb ihr ihb =>
     intro hctx hK
     have hrLe := hr.frontier_le
     have hcLe := hc.frontier_le
@@ -318,172 +318,6 @@ theorem Infer.belowFvars (h : Infer K frontier ctx input next subst output ty) :
     · exact hbSubst p hp
 
 
-
-mutual
-private theorem Template.allocate_locality (template : Template) (frontier : Nat) :
-    frontier ≤ (template.allocate frontier).1 ∧
-      ∀ w, w < frontier → w ∉ template.rigidVars →
-        w ∉ (template.allocate frontier).2.freeVars := by
-  cases template with
-  | fixed ty => exact ⟨Nat.le_refl _, fun _ _ h => h⟩
-  | hole =>
-    refine ⟨Nat.le_succ _, ?_⟩
-    intro w hw _
-    simp only [Template.allocate, Ty.freeVars, List.mem_singleton]
-    omega
-  | arrow a b =>
-    obtain ⟨hale, ha⟩ := a.allocate_locality frontier
-    obtain ⟨hble, hb⟩ := b.allocate_locality (a.allocate frontier).1
-    refine ⟨hale.trans hble, ?_⟩
-    intro w hw hr
-    simp only [Template.rigidVars, List.mem_append, not_or] at hr
-    simp only [Template.allocate, Ty.freeVars, List.mem_dedup, List.mem_append, not_or]
-    exact ⟨ha w hw hr.1, hb w (Nat.lt_of_lt_of_le hw hale) hr.2⟩
-  | custom name args =>
-    obtain ⟨hle, ha⟩ := allocateList_locality args frontier
-    exact ⟨hle, ha⟩
-private theorem allocateList_locality (templates : List Template) (frontier : Nat) :
-    frontier ≤ (allocateList frontier templates).1 ∧
-      ∀ w, w < frontier → w ∉ rigidVarsList templates →
-        w ∉ TyList.freeVars (allocateList frontier templates).2 := by
-  cases templates with
-  | nil => exact ⟨Nat.le_refl _, by simp [allocateList, TyList.freeVars]⟩
-  | cons template rest =>
-    obtain ⟨hhle, hh⟩ := template.allocate_locality frontier
-    obtain ⟨htle, ht⟩ := allocateList_locality rest (template.allocate frontier).1
-    refine ⟨hhle.trans htle, ?_⟩
-    intro w hw hr
-    simp only [rigidVarsList, List.mem_append, not_or] at hr
-    simp only [allocateList, TyList.freeVars, List.mem_dedup, List.mem_append, not_or]
-    exact ⟨hh w hw hr.1, ht w (Nat.lt_of_lt_of_le hw hhle) hr.2⟩
-end
-
-private theorem seed_locality (h : Seed K frontier ann param initial) :
-    frontier ≤ initial ∧ ∀ w, w < frontier → w ∉ K → w ∉ param.freeVars := by
-  cases h with
-  | absent => exact ⟨by omega, by simp only [Ty.freeVars, List.mem_singleton]; omega⟩
-  | @annotated next ty template heq _ hr =>
-    have hall := template.allocate_locality frontier
-    rw [heq] at hall
-    exact ⟨hall.1, fun w hw hK => hall.2 w hw (fun hv => hK (hr w hv))⟩
-
-private theorem unify_avoids {t u : Ty} {S : Subst} {w : Nat}
-    (h : UnifyRel t u S) (ht : w ∉ t.freeVars) (hu : w ∉ u.freeVars) :
-    (∀ p ∈ S, w ∉ p.2.freeVars) ∧ w ∉ S.map Prod.fst := by
-  constructor
-  · intro p hp hw; exact (h.range_mem p hp w hw).elim ht hu
-  · intro hw
-    obtain ⟨p, hp, heq⟩ := List.mem_map.mp hw
-    have hm := h.dom_mem p hp
-    rw [heq] at hm
-    exact hm.elim ht hu
-
-private theorem letCheck_locality (h : LetCheck K frontier ty ann next subst) :
-    frontier ≤ next ∧ ∀ w, w < frontier → w ∉ K → w ∉ ty.freeVars →
-      (∀ p ∈ subst, w ∉ p.2.freeVars) ∧ w ∉ subst.map Prod.fst := by
-  cases h with
-  | absent => exact ⟨Nat.le_refl _, by simp⟩
-  | hole => exact ⟨Nat.le_refl _, by simp⟩
-  | @template next expected subst template heq _ hr hu =>
-    have hall := template.allocate_locality frontier
-    rw [heq] at hall
-    exact ⟨hall.1, fun w hw hK ht => unify_avoids hu.unifies ht
-      (hall.2 w hw (fun hv => hK (hr w hv)))⟩
-
-private theorem env_avoids_onSubst {ctx : Ctx} {S : Subst} {w : Nat}
-    (hctx : w ∉ ctx.env.freeVars) (hS : ∀ p ∈ S, w ∉ p.2.freeVars) :
-    w ∉ (S.onCtx ctx).env.freeVars := by
-  intro hw
-  obtain ⟨M, hM, hwM⟩ := Env.mem_freeVars_iff.mp hw
-  obtain ⟨M0, hM0, rfl⟩ := List.mem_map.mp hM
-  exact Subst.notMemOnTy hS (fun hv => hctx (Env.mem_freeVars_iff.mpr ⟨M0, hM0, hv⟩)) hwM
-
-private theorem forallOuter_of_all (e : Expr) {P : Nat → Prop} (h : ∀ i, P i) (depth : Nat) :
-    e.ForallOuter P depth := by
-  induction e using Expr.rec_strong generalizing depth with
-  | primLit p => simp only [Expr.ForallOuter, Expr.rec_strong]
-  | primBinOp op => simp only [Expr.ForallOuter, Expr.rec_strong]
-  | var i => simp only [Expr.ForallOuter, Expr.rec_strong]; exact fun _ => h _
-  | ctor name => simp only [Expr.ForallOuter, Expr.rec_strong]
-  | lambda ann body ih =>
-    simp only [Expr.ForallOuter, Expr.rec_strong] at *; exact ih _
-  | app f arg ihf iha =>
-    simp only [Expr.ForallOuter, Expr.rec_strong] at *; exact ⟨ihf _, iha _⟩
-  | letIn ann rhs body ihr ihb =>
-    simp only [Expr.ForallOuter, Expr.rec_strong] at *; exact ⟨ihr _, ihb _⟩
-  | match_ scrut branches ihs ihbs =>
-    simp only [Expr.ForallOuter, Expr.rec_strong] at *
-    exact ⟨ihs _, fun p b hb => ihbs p b hb _⟩
-  | letRec anns bindings body ihbs ihb =>
-    simp only [Expr.ForallOuter, Expr.rec_strong] at *
-    exact ⟨fun b hb => ihbs b hb _, ihb _⟩
-
-private theorem avoid_append {S T : Subst} {w : Nat}
-    (hS : (∀ p ∈ S, w ∉ p.2.freeVars) ∧ w ∉ S.map Prod.fst)
-    (hT : (∀ p ∈ T, w ∉ p.2.freeVars) ∧ w ∉ T.map Prod.fst) :
-    (∀ p ∈ S ++ T, w ∉ p.2.freeVars) ∧ w ∉ (S ++ T).map Prod.fst := by
-  exact ⟨fun p hp => (List.mem_append.mp hp).elim (hS.1 p) (hT.1 p),
-    by simpa only [List.map_append, List.mem_append, not_or] using And.intro hS.2 hT.2⟩
-
-/-- An inference cannot mention or solve an old name absent from its protected
-variables and entire input environment. -/
-theorem Infer.sourceLocality (h : Infer K frontier ctx input next subst output ty) :
-    ∀ w, w < frontier → w ∉ K → w ∉ ctx.env.freeVars →
-      (∀ p ∈ subst, w ∉ p.2.freeVars) ∧ w ∉ ty.freeVars ∧ w ∉ subst.map Prod.fst := by
-  induction h with
-  | backend _ hi _ _ hr =>
-    intro w hw hK henv
-    apply _root_.Infer.sourceLocality hi hw
-    · apply forallOuter_of_all
-      intro i M hM hv
-      exact henv (Env.mem_freeVars_iff.mpr ⟨M, List.mem_of_getElem? hM, hv⟩)
-    · exact fun hv => hK (hr w hv)
-  | lambda hs hb ih =>
-    intro w hw hK henv
-    have hseed := seed_locality hs
-    have hp := hseed.2 w hw hK
-    obtain ⟨hbS, hbTy, hbDom⟩ := ih w (Nat.lt_of_lt_of_le hw hseed.1) hK (by
-      intro hv
-      obtain ⟨M, hM, hv⟩ := Env.mem_freeVars_iff.mp hv
-      rcases List.mem_cons.mp hM with rfl | hM
-      · exact hp hv
-      · exact henv (Env.mem_freeVars_iff.mpr ⟨M, hM, hv⟩))
-    refine ⟨hbS, ?_, hbDom⟩
-    simp only [Ty.freeVars, List.mem_dedup, List.mem_append, not_or]
-    exact ⟨Subst.notMemOnTy hbS hp, hbTy⟩
-  | app hf ha hu ihf iha =>
-    intro w hw hK henv
-    expose_names
-    have hfLe := Infer.frontier_le hf
-    have haLe := Infer.frontier_le ha
-    obtain ⟨hfS, hfTy, hfDom⟩ := ihf w hw hK henv
-    obtain ⟨haS, haTy, haDom⟩ := iha w (Nat.lt_of_lt_of_le hw hfLe) hK
-      (env_avoids_onSubst henv hfS)
-    have hfresh : w ∉ (Ty.fvar second).freeVars := by
-      simp only [Ty.freeVars, List.mem_singleton]
-      omega
-    have huA := unify_avoids hu.unifies (Subst.notMemOnTy haS hfTy)
-      (by simp only [Ty.freeVars, List.mem_dedup, List.mem_append, not_or]; exact ⟨haTy, hfresh⟩)
-    have hall := avoid_append (avoid_append ⟨hfS, hfDom⟩ ⟨haS, haDom⟩) huA
-    exact ⟨hall.1, Subst.notMemOnTy huA.1 hfresh, hall.2⟩
-  | letIn hr hc _ hb ihr ihb =>
-    intro w hw hK henv
-    expose_names
-    have hrLe := Infer.frontier_le hr
-    have hcFrame := letCheck_locality hc
-    obtain ⟨hrS, hrTy, hrDom⟩ := ihr w hw hK henv
-    have hcA := hcFrame.2 w (Nat.lt_of_lt_of_le hw hrLe) hK hrTy
-    have hcheckedTy := Subst.notMemOnTy hcA.1 hrTy
-    have hcheckedEnv := env_avoids_onSubst (env_avoids_onSubst henv hrS) hcA.1
-    obtain ⟨hbS, hbTy, hbDom⟩ := ihb w
-      (Nat.lt_of_lt_of_le hw (hrLe.trans hcFrame.1)) hK (by
-        intro hv
-        obtain ⟨M, hM, hv⟩ := Env.mem_freeVars_iff.mp hv
-        rcases List.mem_cons.mp hM with rfl | hM
-        · exact hcheckedTy (Ty.freeVars_closeOver_subset hv)
-        · exact hcheckedEnv (Env.mem_freeVars_iff.mpr ⟨M, hM, hv⟩))
-    have hall := avoid_append (avoid_append ⟨hrS, hrDom⟩ hcA) ⟨hbS, hbDom⟩
-    exact ⟨hall.1, hbTy, hall.2⟩
 
 
 end Anonymous

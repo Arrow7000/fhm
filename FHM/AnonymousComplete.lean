@@ -155,11 +155,10 @@ theorem inferCore_complete_letIn_partial
     have hKchecked : ∀ k ∈ K, k < checked := fun k hk => Nat.lt_of_lt_of_le (hK k hk) hle
     obtain ⟨⟨⟨next, s2, bodyOut, bodyTy⟩, hb⟩, hbResult⟩ := Option.isSome_iff_exists.mp
       (ihb K checked _ V target hbodyWF hbodyB hKchecked hV hVK hbodyD)
-    have hscope := hr.scoped_afterSubst hwf sCheck (hc.lc hrLC)
     rw [inferCore, dif_pos (rigid_all hK), dif_pos (ctx_all hbelow)]
     split
     · rename_i core heq; simp [hemb] at heq
-    · simp only [hrResult, hcResult, hscope, dite_true, hbResult, Option.isSome_some]
+    · simp only [hrResult, hcResult, hbResult, Option.isSome_some]
 
 /-- Concrete producer completeness for exactly the independently specified
 fragment, including structured partial annotations and completed backend leaves. -/
