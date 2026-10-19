@@ -83,35 +83,113 @@ theorem Subst.override_block {S0 : Subst} (hS0 : ∀ p ∈ S0, p.2.IsLC)
     have := (htargets ts[i] (List.getElem_mem hi)).mem_lt w hc
     omega
 
+/-- Pointwise fixing of the opening names suffices; the substitution's literal
+domain may contain those names and its ranges may mention them. -/
+theorem Subst.onTy_openVarsFrom_of_fixes {S : Subst} {Xs : List Nat}
+    (hlc : ∀ p ∈ S, p.2.IsLC)
+    (hfix : ∀ x ∈ Xs, S.onTy (.fvar x) = .fvar x) (ty : Ty) (depth : Nat) :
+    S.onTy (Ty.openVarsFrom depth Xs ty) = Ty.openVarsFrom depth Xs (S.onTy ty) := by
+  induction ty using Ty.rec_strong with
+  | prim p => simp only [Ty.openVarsFrom, Ty.instantiate, Subst.onTy_prim]
+  | bvar i =>
+    simp only [Subst.onTy_bvar, Ty.openVarsFrom, Ty.instantiate]
+    by_cases hi : i < depth
+    · simp only [if_pos hi, Subst.onTy_bvar]
+    · simp only [if_neg hi]
+      cases hx : Xs[i - depth]? with
+      | none => exact Subst.onTy_bvar
+      | some x => exact hfix x (List.mem_of_getElem? hx)
+  | fvar v =>
+    change S.onTy (.fvar v) = Ty.openVarsFrom depth Xs (S.onTy (.fvar v))
+    exact (Ty.instantiate_eq_self_of_lc (Subst.onTy_lc hlc .fvar)).symm
+  | arrow a b iha ihb =>
+    simp only [Ty.openVarsFrom, Ty.instantiate, Subst.onTy_arrow] at *
+    exact congrArg₂ Ty.arrow iha ihb
+  | customTy name args ih =>
+    simp only [Ty.openVarsFrom, Ty.instantiate, TyList.instantiate_eq_map,
+      Subst.onTy_customTy, List.map_map]
+    congr 1
+    exact List.map_congr_left (fun t ht => ih t ht)
+
+theorem Subst.onTy_openVars_of_fixes {S : Subst} {Xs : List Nat}
+    (hlc : ∀ p ∈ S, p.2.IsLC)
+    (hfix : ∀ x ∈ Xs, S.onTy (.fvar x) = .fvar x) {ty : Ty} :
+    S.onTy (Ty.openVars Xs ty) = Ty.openVars Xs (S.onTy ty) := by
+  simpa only [Ty.openVarsFrom, Nat.not_lt_zero, if_false, Nat.sub_zero, Ty.openVars] using Subst.onTy_openVarsFrom_of_fixes hlc hfix ty 0
+
 namespace Elaboration
 
 mutual
-private theorem Template.Fits.hole_targets {template : Template} {target : Ty}
-    (h : template.Fits target) (hlc : target.IsLC) (Φ : Nat) :
+private theorem transformed_hole_targets (template : Template) {S0 : Subst} {target : Ty}
+    (h : (template.substTyFvars S0).Fits target) (hlc : target.IsLC) (Φ : Nat) :
     ∃ ts : List Ty, (template.allocate Φ).1 = Φ + ts.length ∧
       (∀ t ∈ ts, t.IsLC) ∧ ∀ U : Subst,
-      (∀ v ∈ template.rigidVars, U.onTy (.fvar v) = .fvar v) →
+      (∀ v ∈ template.rigidVars, U.onTy (.fvar v) = S0.onTy (.fvar v)) →
       (∀ i (hi : i < ts.length), U.onTy (.fvar (Φ + i)) = ts[i]) →
       U.onTy (template.allocate Φ).2 = target := by
-  cases h with
-  | fixed =>
-    exact ⟨[], rfl, by simp, fun _ hr _ => Subst.onTy_eq_self_of_fixes hr⟩
+  cases template with
+  | fixed ty =>
+    cases h
+    exact ⟨[], rfl, by simp, fun _ hr _ => Template.fixed.inj ((Template.fixed ty).substTyFvars_congr hr)⟩
   | hole =>
     refine ⟨[target], rfl, ?_, ?_⟩
     · simpa using hlc
     · intro U _ hb
       simpa only [Nat.add_zero] using hb 0 (by simp)
-  | @arrow a ta b tb ha hb =>
-    cases hlc with
-    | arrow hlca hlcb =>
-      obtain ⟨as, halen, halc, haeq⟩ := ha.hole_targets hlca Φ
-      obtain ⟨bs, hblen, hblc, hbeq⟩ := hb.hole_targets hlcb (a.allocate Φ).1
+  | arrow a b =>
+    cases h with
+    | arrow ha hb =>
+       cases hlc with
+        | arrow hlca hlcb =>
+          obtain ⟨as, halen, halc, haeq⟩ := transformed_hole_targets a ha hlca Φ
+          obtain ⟨bs, hblen, hblc, hbeq⟩ := transformed_hole_targets b hb hlcb (a.allocate Φ).1
+          refine ⟨as ++ bs, ?_, ?_, ?_⟩
+          · change (b.allocate (a.allocate Φ).1).1 = Φ + (as ++ bs).length
+            rw [hblen, halen, List.length_append, Nat.add_assoc]
+          · intro t ht; exact (List.mem_append.mp ht).elim (halc t) (hblc t)
+          · intro U hr hblock
+            simp only [Template.allocate, Subst.onTy_arrow]
+            congr 1
+            · apply haeq U (fun v hv => hr v (List.mem_append_left _ hv))
+              intro i hi
+              have heq := hblock i (by simp only [List.length_append]; omega)
+              rwa [List.getElem_append_left hi] at heq
+            · apply hbeq U (fun v hv => hr v (List.mem_append_right _ hv))
+              intro i hi
+              have heq := hblock (as.length + i) (by simp only [List.length_append]; omega)
+              rw [List.getElem_append_right (by omega)] at heq
+              simpa only [halen, Nat.add_assoc, Nat.add_sub_cancel_left] using heq
+  | custom name templates =>
+    cases h with
+    | custom h =>
+      cases hlc with
+      | customTy hlcs =>
+        obtain ⟨ts, hlen, hlc, heq⟩ := transformed_hole_targets_list templates h hlcs Φ
+        refine ⟨ts, hlen, hlc, ?_⟩
+        intro U hr hb
+        simp only [Template.allocate, Subst.onTy_customTy, heq U hr hb]
+private theorem transformed_hole_targets_list (templates : List Template) {S0 : Subst} {targets : List Ty}
+    (h : List.Forall₂ Template.Fits (substTemplateList S0 templates) targets)
+    (hlc : ∀ t ∈ targets, t.IsLC) (Φ : Nat) :
+    ∃ ts : List Ty, (allocateList Φ templates).1 = Φ + ts.length ∧
+      (∀ t ∈ ts, t.IsLC) ∧ ∀ U : Subst,
+      (∀ v ∈ rigidVarsList templates, U.onTy (.fvar v) = S0.onTy (.fvar v)) →
+      (∀ i (hi : i < ts.length), U.onTy (.fvar (Φ + i)) = ts[i]) →
+      (allocateList Φ templates).2.map U.onTy = targets := by
+  cases templates with
+  | nil => cases h; exact ⟨[], rfl, by simp, by simp [allocateList]⟩
+  | cons template templates =>
+    cases h with
+    | cons hh ht =>
+      obtain ⟨as, halen, halc, haeq⟩ := transformed_hole_targets template hh (hlc _ List.mem_cons_self) Φ
+      obtain ⟨bs, hblen, hblc, hbeq⟩ := transformed_hole_targets_list templates ht
+        (fun t ht => hlc t (List.mem_cons_of_mem _ ht)) (template.allocate Φ).1
       refine ⟨as ++ bs, ?_, ?_, ?_⟩
-      · change (b.allocate (a.allocate Φ).1).1 = Φ + (as ++ bs).length
+      · change (allocateList (template.allocate Φ).1 templates).1 = Φ + (as ++ bs).length
         rw [hblen, halen, List.length_append, Nat.add_assoc]
       · intro t ht; exact (List.mem_append.mp ht).elim (halc t) (hblc t)
       · intro U hr hblock
-        simp only [Template.allocate, Subst.onTy_arrow]
+        simp only [allocateList, List.map_cons]
         congr 1
         · apply haeq U (fun v hv => hr v (List.mem_append_left _ hv))
           intro i hi
@@ -122,48 +200,23 @@ private theorem Template.Fits.hole_targets {template : Template} {target : Ty}
           have heq := hblock (as.length + i) (by simp only [List.length_append]; omega)
           rw [List.getElem_append_right (by omega)] at heq
           simpa only [halen, Nat.add_assoc, Nat.add_sub_cancel_left] using heq
-  | @custom templates targets name h =>
-    cases hlc with
-    | customTy hlcs =>
-      obtain ⟨ts, hlen, hlc, heq⟩ := hole_targets_list h hlcs Φ
-      refine ⟨ts, hlen, hlc, ?_⟩
-      intro U hr hb
-      simp only [Template.allocate, Subst.onTy_customTy, heq U hr hb]
-private theorem hole_targets_list {templates : List Template} {targets : List Ty}
-    (h : List.Forall₂ Template.Fits templates targets)
-    (hlc : ∀ t ∈ targets, t.IsLC) (Φ : Nat) :
-    ∃ ts : List Ty, (allocateList Φ templates).1 = Φ + ts.length ∧
-      (∀ t ∈ ts, t.IsLC) ∧ ∀ U : Subst,
-      (∀ v ∈ rigidVarsList templates, U.onTy (.fvar v) = .fvar v) →
-      (∀ i (hi : i < ts.length), U.onTy (.fvar (Φ + i)) = ts[i]) →
-      (allocateList Φ templates).2.map U.onTy = targets := by
-  cases h with
-  | nil => exact ⟨[], rfl, by simp, by simp [allocateList]⟩
-  | @cons template target templates targets hh ht =>
-    obtain ⟨as, halen, halc, haeq⟩ := hh.hole_targets (hlc target List.mem_cons_self) Φ
-    obtain ⟨bs, hblen, hblc, hbeq⟩ := hole_targets_list ht
-      (fun t ht => hlc t (List.mem_cons_of_mem _ ht)) (template.allocate Φ).1
-    refine ⟨as ++ bs, ?_, ?_, ?_⟩
-    · change (allocateList (template.allocate Φ).1 templates).1 = Φ + (as ++ bs).length
-      rw [hblen, halen, List.length_append, Nat.add_assoc]
-    · intro t ht; exact (List.mem_append.mp ht).elim (halc t) (hblc t)
-    · intro U hr hblock
-      simp only [allocateList, List.map_cons]
-      congr 1
-      · apply haeq U (fun v hv => hr v (List.mem_append_left _ hv))
-        intro i hi
-        have heq := hblock i (by simp only [List.length_append]; omega)
-        rwa [List.getElem_append_left hi] at heq
-      · apply hbeq U (fun v hv => hr v (List.mem_append_right _ hv))
-        intro i hi
-        have heq := hblock (as.length + i) (by simp only [List.length_append]; omega)
-        rw [List.getElem_append_right (by omega)] at heq
-        simpa only [halen, Nat.add_assoc, Nat.add_sub_cancel_left] using heq
 end
 
-/-- Every LC template target is obtainable without changing the ambient
-substitution below the allocation frontier, even when the target mentions the
-new block. Authored fixed variables stay fixed. -/
+/-- A target fitting the ambient-substituted source is realizable from the
+original allocation while preserving ambient behavior below its frontier.
+Neither frozen raw leaves nor fresh target names are required. -/
+theorem Template.Fits.allocate_override_source {template : Template} {target : Ty} {S0 : Subst}
+    (h : (template.substTyFvars S0).Fits target) (hlc : target.IsLC)
+    (hS0 : ∀ p ∈ S0, p.2.IsLC) (Φ : Nat)
+    (hrigid : ∀ v ∈ template.rigidVars, v < Φ) :
+    ∃ U : Subst, (∀ p ∈ U, p.2.IsLC) ∧ Subst.AgreesBelow Φ S0 U ∧
+      U.onTy (template.allocate Φ).2 = target := by
+  obtain ⟨ts, _, hts, htemplate⟩ := transformed_hole_targets template h hlc Φ
+  obtain ⟨U, hUlc, hUagree, hUblock⟩ := Subst.override_block hS0 Φ ts hts
+  exact ⟨U, hUlc, hUagree, htemplate U
+    (fun v hv => (hUagree v (hrigid v hv)).symm) hUblock⟩
+
+/-- Fixed-source compatibility follows from the source-transforming allocator. -/
 theorem Template.Fits.allocate_override {template : Template} {target : Ty}
     (h : template.Fits target) (hlc : target.IsLC) {S0 : Subst}
     (hS0 : ∀ p ∈ S0, p.2.IsLC) (Φ : Nat)
@@ -171,10 +224,8 @@ theorem Template.Fits.allocate_override {template : Template} {target : Ty}
     (hfix : ∀ v ∈ template.rigidVars, S0.onTy (.fvar v) = .fvar v) :
     ∃ U : Subst, (∀ p ∈ U, p.2.IsLC) ∧ Subst.AgreesBelow Φ S0 U ∧
       U.onTy (template.allocate Φ).2 = target := by
-  obtain ⟨ts, _, hts, htemplate⟩ := h.hole_targets hlc Φ
-  obtain ⟨U, hUlc, hUagree, hUblock⟩ := Subst.override_block hS0 Φ ts hts
-  exact ⟨U, hUlc, hUagree, htemplate U
-    (fun v hv => (hUagree v (hrigid v hv)).symm.trans (hfix v hv)) hUblock⟩
+  have hsource : template.substTyFvars S0 = template := template.substTyFvars_eq_self_of_fixes hfix
+  exact (hsource.symm ▸ h).allocate_override_source hlc hS0 Φ hrigid
 
 end Elaboration
 

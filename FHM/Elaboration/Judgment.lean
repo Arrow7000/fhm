@@ -46,6 +46,13 @@ theorem scope_image {K : List Nat} {F : List Ty} {subst : Subst} {original v : N
 def SourceScope (K : List Nat) (F : List Ty) (input : Input) : Prop :=
   ∀ v ∈ input.rigidVars, v ∈ K ++ softVars F
 
+theorem SourceScope.subst (h : SourceScope K F input) (subst : Subst)
+    (hfix : ∀ k ∈ K, subst.onTy (.fvar k) = .fvar k) :
+    SourceScope K (substSoft subst F) (input.substTyFvars subst) := by
+  intro v hv
+  obtain ⟨original, ho, hv⟩ := Input.rigidVars_substTyFvars hv
+  exact scope_image hfix (h original ho) hv
+
 inductive Seed (K : List Nat) (frontier : Nat) : Option Template → Ty → Nat → Prop
   | absent : Seed K frontier none (.fvar frontier) (frontier + 1)
   | annotated :
@@ -221,6 +228,9 @@ theorem Seed.rigid (h : Seed K frontier ann param initial) :
   cases h with
   | absent => intro _ heq; cases heq
   | annotated _ _ hrigid => intro _ heq; cases heq; exact hrigid
+
+theorem LetCheck.not_signature (h : LetCheck K F frontier ty ann next subst) :
+    ann.isSignature = false := by cases h <;> rfl
 
 theorem LetCheck.dom_avoids (h : LetCheck K F frontier ty ann next subst) :
     ∀ pair ∈ subst, pair.1 ∉ K := by

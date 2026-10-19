@@ -720,8 +720,17 @@ def substInputBindings (subst : List (Nat × Ty)) : List Input → List Input
   | body :: rest => body.substTyFvars subst :: substInputBindings subst rest
 end
 
+@[simp] theorem LetAnn.isSignature_substTyFvars (ann : LetAnn) (subst : List (Nat × Ty)) :
+    (ann.substTyFvars subst).isSignature = ann.isSignature := by cases ann <;> rfl
+
 @[simp] theorem LetAnn.paramCount_substTyFvars (ann : LetAnn) (subst : List (Nat × Ty)) :
     (ann.substTyFvars subst).paramCount = ann.paramCount := by cases ann <;> rfl
+
+theorem substInputBranches_eq_map (subst : List (Nat × Ty)) (branches : List (MatchPattern × Input)) :
+    substInputBranches subst branches = branches.map (fun b => (b.1, b.2.substTyFvars subst)) := by
+  induction branches with
+  | nil => rfl
+  | cons head rest ih => cases head; simp only [substInputBranches, List.map_cons, ih]
 
 @[simp] theorem substInputBranches_eq_nil (subst : List (Nat × Ty))
     (branches : List (MatchPattern × Input)) :

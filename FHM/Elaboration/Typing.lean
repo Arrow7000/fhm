@@ -1,5 +1,6 @@
 import FHM.CoreBackend.Complete
-import FHM.Elaboration.Input
+import FHM.Elaboration.RecScheme
+import FHM.Elaboration.Close
 
 private theorem branch_tyFreeVars_mem {branches : List (MatchPattern × Expr)}
     {p : MatchPattern} {body : Expr} {v : Nat} (hb : (p, body) ∈ branches)
@@ -361,36 +362,28 @@ type abstraction/specialization performed when an ordinary let is generalized.
 Protected fixed variables cannot be substituted or captured by new binders.
 Scope correctness of the resulting Core is supplied by output typing. -/
 inductive Completes : List Nat → Input → Expr → Prop
-  | complete : input.toCore = some core →
-      (∀ v ∈ core.tyFreeVars, v ∈ K) → Completes K input core
+  | complete : input.toCore = some core → (∀ v ∈ core.tyFreeVars, v ∈ K) → Completes K input core
   | lambda :
       (∀ template, ann = some template → template.Fits param) →
       (∀ template, ann = some template → ∀ v ∈ template.rigidVars, v ∈ K) →
       Completes K body completed →
       Completes K (.lambda ann body) (.lambda (ann.map fun _ => param) completed)
-  | app : Completes K f fOut → Completes K x xOut →
-      Completes K (.app f x) (.app fOut xOut)
-  | specialise :
-      Completes K input output → (∀ pair ∈ subst, pair.1 ∉ K) →
-      Completes K input (output.substTyFvars subst)
-  | letIn {subst : Subst} :
-      ann.FitsMono ty →
+  | app : Completes K f fOut → Completes K arg argOut → Completes K (.app f arg) (.app fOut argOut)
+  | letIn {M : PolyTy} {L : List Nat} :
       (∀ template, ann = .template template → ∀ v ∈ template.rigidVars, v ∈ K) →
-      Completes K rhs rhsOut → Completes K body bodyOut →
-      (∀ name ∈ names, name ∉ K) → (∀ pair ∈ subst, pair.1 ∉ K) →
-      Completes K (.letIn ann rhs body)
-        (.letIn (some (subst.onPolyTy ⟨names.length, Ty.closeOver names ty⟩))
-          ((rhsOut.closeTyVars names).substTyFvars subst) bodyOut)
-  | letSignature {scheme : PolyTy} {subst : Subst} :
-      ann.SignatureCompletion written ty scheme names →
+      (∀ Xs, FreshNames L M.paramCount Xs → ann.FitsMono (M.openVars Xs)) →
+      (∀ Xs, FreshNames L M.paramCount Xs → Completes K rhs (rhsOut.openTyVars Xs)) →
+      Completes K body bodyOut →
+      Completes K (.letIn ann rhs body) (.letIn (some M) rhsOut bodyOut)
+  | letSignature {M : PolyTy} {L : List Nat} :
       (∀ v ∈ ann.rigidVars, v ∈ K) → (∀ v ∈ rhs.rigidVars, v ∈ K) →
-      (∀ name ∈ names, name ∉ K) →
-      Completes (K ++ written) (rhs.openTyVars written) rhsOut →
-      Completes K body bodyOut → (∀ pair ∈ subst, pair.1 ∉ K) →
-      Completes K (.letIn ann rhs body)
-        (.letIn (some (subst.onPolyTy scheme)) ((rhsOut.closeTyVars names).substTyFvars subst) bodyOut)
-  | match_ : Completes K scrut scrutOut →
-      CompletedBranches Completes K branches branchesOut →
+      (∀ Xs, FreshNames L M.paramCount Xs → ann.SignatureFits M Xs) →
+      (∀ Xs, FreshNames L M.paramCount Xs →
+        Completes (K ++ Xs.take ann.paramCount) (rhs.openTyVars (Xs.take ann.paramCount))
+          (rhsOut.openTyVars Xs)) →
+      Completes K body bodyOut →
+      Completes K (.letIn ann rhs body) (.letIn (some M) rhsOut bodyOut)
+  | match_ : Completes K scrut scrutOut → CompletedBranches Completes K branches branchesOut →
       Completes K (.match_ scrut branches) (.match_ scrutOut branchesOut)
 
 /-- Independent branch semantics reuse the ordinary constructor specification;
@@ -727,12 +720,6 @@ private theorem template_scope_sourceSubst {K K' : List Nat} {template : Templat
   obtain ⟨k, hk, hv⟩ := template.rigidVars_substTyFvars hv
   exact hscope k (hrigid k hk) v hv
 
-private theorem substInputBranches_eq_map (subst : Subst) (branches : List (MatchPattern × Input)) :
-    substInputBranches subst branches = branches.map (fun b => (b.1, b.2.substTyFvars subst)) := by
-  induction branches with
-  | nil => rfl
-  | cons head rest ih => cases head; simp only [substInputBranches, List.map_cons, ih]
-
 theorem LetAnn.SignatureFits.onSubst_source {ann : LetAnn} {scheme : PolyTy} {names : List Nat}
     (h : ann.SignatureFits scheme names) (subst : Subst)
     (hlc : ∀ pair ∈ subst, pair.2.IsLC) (hfresh : ∀ pair ∈ subst, pair.1 ∉ names) :
@@ -930,6 +917,19 @@ theorem Typing.rigidVars (h : Typing K ctx input ty) : ∀ v ∈ input.rigidVars
 
 /-- Fixed-source transport is a corollary of source substitution and intrinsic
 annotation scope; it needs only pointwise protection of the composite. -/
+theorem BranchTyping.onSubst_source
+    (h : BranchTyping Typing K ctx branch scrutTy resultTy) (subst : Subst)
+    (hlc : ∀ p ∈ subst, p.2.IsLC)
+    (hscope : ∀ k ∈ K, ∀ v ∈ (subst.onTy (.fvar k)).freeVars, v ∈ K') :
+    BranchTyping Typing K' (subst.onCtx ctx) (branch.1, branch.2.substTyFvars subst)
+      (subst.onTy scrutTy) (subst.onTy resultTy) := by
+  cases h with
+  | named hspec hb =>
+    refine .named (hspec.onSubst subst hlc) ?_
+    simpa only [Subst.onCtx, Subst.onEnv, List.map_append, List.map_map,
+      Subst.onPolyTy, PolyTy.mkTrivial, Function.comp_def] using hb.onSubst_source subst hlc hscope
+  | wildcard hb => exact .wildcard (hb.onSubst_source subst hlc hscope)
+
 theorem Typing.scope_mono (h : Typing K ctx input ty) (hscope : ∀ k ∈ K, k ∈ K') :
     Typing K' ctx input ty := by
   have hinput : input.substTyFvars [] = input := input.substTyFvars_eq_self_of_fixes (fun _ _ => rfl)
@@ -1317,5 +1317,294 @@ theorem Typing.binding_onSubst {ann : LetAnn} {scheme : PolyTy} {avoid : List Na
         Typing K (subst.onCtx ctx) input ((subst.onPolyTy scheme).openVars fresh)) :=
   Typing.binding_onSubst_fixes hfit htyping hrigid subst hlc (Subst.fixes_of_dom_avoids hprotected)
 
+
+end Elaboration
+
+private theorem Expr.substTyFvars_openTyVars_lc (expr : Expr) {S : Subst} {Xs : List Nat}
+    (hlc : ∀ p ∈ S, p.2.IsLC) (hfresh : ∀ p ∈ S, p.1 ∉ Xs) :
+    (expr.openTyVars Xs).substTyFvars S = (expr.substTyFvars S).openTyVars Xs := by
+  induction S generalizing expr with
+  | nil => rfl
+  | cons p rest ih =>
+    rcases p with ⟨v, ty⟩
+    simp only [Expr.substTyFvars]
+    rw [Expr.substTyFvar_openTyVars (hlc _ List.mem_cons_self) (hfresh _ List.mem_cons_self)]
+    exact ih _ (fun p hp => hlc p (List.mem_cons_of_mem _ hp))
+      (fun p hp => hfresh p (List.mem_cons_of_mem _ hp))
+
+
+namespace Elaboration
+
+private theorem template_scope {K K' : List Nat} {S : Subst} {template : Template}
+    (h : ∀ v ∈ template.rigidVars, v ∈ K)
+    (hS : ∀ k ∈ K, ∀ v ∈ (S.onTy (.fvar k)).freeVars, v ∈ K') :
+    ∀ v ∈ (template.substTyFvars S).rigidVars, v ∈ K' := by
+  intro v hv
+  obtain ⟨k, hk, hv⟩ := Template.rigidVars_substTyFvars hv
+  exact hS k (h k hk) v hv
+
+private theorem fitsMono_subst {ann : LetAnn} {ty : Ty} (h : ann.FitsMono ty) (S : Subst) :
+    (ann.substTyFvars S).FitsMono (S.onTy ty) := by
+  cases ann with
+  | absent => trivial
+  | template t => exact h.substTyFvars S
+  | complete _ => cases h
+  | partialForall _ _ => cases h
+
+/-- Global LC transport is a paired cofinite induction; no closing algebra or
+choice of renamed internal witnesses is needed. -/
+theorem Completes.onSubst_source (h : Completes K input output) (S : Subst)
+    (hlc : ∀ p ∈ S, p.2.IsLC)
+    (hscope : ∀ k ∈ K, ∀ v ∈ (S.onTy (.fvar k)).freeVars, v ∈ K') :
+    Completes K' (input.substTyFvars S) (output.substTyFvars S) := by
+  induction h using Completes.rec
+      (motive_2 := fun K branches branchesOut _ => ∀ {K'},
+        (∀ k ∈ K, ∀ v ∈ (S.onTy (.fvar k)).freeVars, v ∈ K') →
+        CompletedBranches Completes K' (substInputBranches S branches)
+          (branchesOut.map fun (pat, body) => (pat, body.substTyFvars S))) generalizing K' with
+  | @complete core K input hemb hr =>
+    refine .complete (input.toCore_substTyFvars hemb S) ?_
+    intro v hv
+    obtain ⟨k, hk, hv⟩ := Expr.mem_tyFreeVars_substTyFvars_image hv
+    exact hscope k (hr k hk) v hv
+  | @lambda ann K body completed param hfit hr _ ih =>
+    rw [Expr.substTyFvars_lambda]
+    cases ann with
+    | none =>
+      simpa only [Input.substTyFvars, Option.map_none] using
+        (Completes.lambda (ann := none) (param := S.onTy param)
+          (fun _ h => by cases h) (fun _ h => by cases h) (ih hscope))
+    | some original =>
+      simp only [Input.substTyFvars, Option.map_some]
+      refine .lambda ?_ ?_ (ih hscope)
+      · intro template heq
+        cases heq
+        exact (hfit original rfl).substTyFvars S
+      · intro template heq
+        cases heq
+        exact template_scope (hr original rfl) hscope
+
+  | app _ _ ihf ihx =>
+    rw [Expr.substTyFvars_app]
+    exact .app (ihf hscope) (ihx hscope)
+  | @letIn ann K rhs body bodyOut rhsOut M L hr hfit _ _ ihr ihb =>
+    let L' := L ++ S.map Prod.fst
+    have oldFresh : ∀ Xs, FreshNames L' M.paramCount Xs → FreshNames L M.paramCount Xs :=
+      fun Xs hf => ⟨hf.length, hf.nodup, fun v hv hm => hf.avoid v hv (List.mem_append_left _ hm)⟩
+    have domFresh : ∀ Xs, FreshNames L' M.paramCount Xs → ∀ p ∈ S, p.1 ∉ Xs := by
+      intro Xs hf p hp hv
+      exact hf.avoid p.1 hv (List.mem_append_right _ (List.mem_map.mpr ⟨p, hp, rfl⟩))
+    rw [Expr.substTyFvars_letIn]
+    refine Completes.letIn (M := S.onPolyTy M) (L := L') ?_ ?_ ?_ (ihb hscope)
+    · intro template heq
+      cases ann with
+      | absent | complete _ | partialForall _ _ => cases heq
+      | template original =>
+        cases heq
+        exact template_scope (hr original rfl) hscope
+    · intro Xs hf
+      have hfit' := fitsMono_subst (hfit Xs (oldFresh Xs hf)) S
+      simpa only [PolyTy.openVars, Subst.onPolyTy, Subst.onTy_openVars hlc (domFresh Xs hf)] using hfit'
+    · intro Xs hf
+      have hc := ihr Xs (oldFresh Xs hf) hscope
+      simpa only [Expr.substTyFvars_openTyVars_lc _ hlc (domFresh Xs hf)] using hc
+  | @letSignature K body bodyOut ann rhs rhsOut M L hann hrhs hfit _ _ ihr ihb =>
+    let L' := L ++ S.map Prod.fst
+    have oldFresh : ∀ Xs, FreshNames L' M.paramCount Xs → FreshNames L M.paramCount Xs :=
+      fun Xs hf => ⟨hf.length, hf.nodup, fun v hv hm => hf.avoid v hv (List.mem_append_left _ hm)⟩
+    have domFresh : ∀ Xs, FreshNames L' M.paramCount Xs → ∀ p ∈ S, p.1 ∉ Xs := by
+      intro Xs hf p hp hv
+      exact hf.avoid p.1 hv (List.mem_append_right _ (List.mem_map.mpr ⟨p, hp, rfl⟩))
+    rw [Expr.substTyFvars_letIn]
+    refine Completes.letSignature (M := S.onPolyTy M) (L := L') ?_ ?_ ?_ ?_ (ihb hscope)
+    · intro v hv
+      obtain ⟨k, hk, hv⟩ := LetAnn.rigidVars_substTyFvars hv
+      exact hscope k (hann k hk) v hv
+    · intro v hv
+      obtain ⟨k, hk, hv⟩ := Input.rigidVars_substTyFvars hv
+      exact hscope k (hrhs k hk) v hv
+    · intro Xs hf
+      exact (hfit Xs (oldFresh Xs hf)).onSubst_source S hlc (domFresh Xs hf)
+    · intro Xs hf
+      have hsmall : ∀ p ∈ S, p.1 ∉ Xs.take ann.paramCount :=
+        fun p hp hv => domFresh Xs hf p hp (List.mem_of_mem_take hv)
+      have hc := ihr Xs (oldFresh Xs hf) (K' := K' ++ Xs.take ann.paramCount) (fun k hk v hv => by
+        rcases List.mem_append.mp hk with hk | hk
+        · exact List.mem_append_left _ (hscope k hk v hv)
+        · rw [Subst.fixes_of_dom_avoids hsmall k hk] at hv
+          exact List.mem_append_right _ ((List.mem_singleton.mp hv) ▸ hk))
+      simpa only [LetAnn.paramCount_substTyFvars, Input.substTyFvars_openTyVars _ hlc hsmall,
+        Expr.substTyFvars_openTyVars_lc _ hlc (domFresh Xs hf)] using hc
+  | match_ _ _ ihs ihbs =>
+    rw [Expr.substTyFvars_match]
+    exact .match_ (ihs hscope) (ihbs hscope)
+  | nil => exact .nil
+  | cons _ _ ih ihs hscope => exact .cons (ih hscope) (ihs hscope)
+
+end Elaboration
+
+namespace Elaboration
+
+theorem Completes.rigidVars (h : Completes K input output) :
+    ∀ v ∈ input.rigidVars, v ∈ K := by
+  induction h using Completes.rec
+      (motive_2 := fun K branches _ _ => ∀ v ∈ rigidBranchVars branches, v ∈ K) with
+  | complete hemb hr => exact fun v hv => hr v ((Input.toCore_rigidVars _ hemb v).mp hv)
+  | lambda _ hr _ ih =>
+    intro v hv
+    rcases List.mem_append.mp hv with hv | hv
+    · expose_names
+      cases ann with
+      | none => cases hv
+      | some t => exact hr t rfl v hv
+    · exact ih v hv
+  | app _ _ ihf ihx => exact fun v hv => (List.mem_append.mp hv).elim (ihf v) (ihx v)
+  | @letIn ann K rhs body bodyOut rhsOut M L hr hf _ _ ihr ihb =>
+    obtain ⟨Xs, hlen, hnd, hav⟩ := exists_fresh_names L M.paramCount
+    have hFresh : FreshNames L M.paramCount Xs := ⟨hlen, hnd, hav⟩
+    intro v hv
+    rcases List.mem_append.mp hv with hv | hv
+    · rcases List.mem_append.mp hv with hv | hv
+      · cases ann with
+        | absent => cases hv
+        | template t => exact hr t rfl v hv
+        | complete _ => cases hf Xs hFresh
+        | partialForall _ _ => cases hf Xs hFresh
+      · exact ihr Xs hFresh v hv
+    · exact ihb v hv
+  | letSignature hann hrhs _ _ _ _ ihb =>
+    intro v hv
+    rcases List.mem_append.mp hv with hv | hv
+    · exact (List.mem_append.mp hv).elim (hann v) (hrhs v)
+    · exact ihb v hv
+  | match_ _ _ ihs ihbs => exact fun v hv => (List.mem_append.mp hv).elim (ihs v) (ihbs v)
+  | nil v hv => cases hv
+  | cons _ _ ih ihs v hv => exact (List.mem_append.mp hv).elim (ih v) (ihs v)
+
+/-- LC specialization is derived, rather than an unrestricted constructor. -/
+theorem Completes.onSubst_fixes (h : Completes K input output) (S : Subst)
+    (hlc : ∀ p ∈ S, p.2.IsLC) (hfix : ∀ k ∈ K, S.onTy (.fvar k) = .fvar k) :
+    Completes K input (output.substTyFvars S) := by
+  have ht := h.onSubst_source S hlc (fun k hk v hv => by
+    rw [hfix k hk] at hv
+    exact (List.mem_singleton.mp hv) ▸ hk)
+  rwa [input.substTyFvars_eq_self_of_fixes (fun v hv => hfix v (h.rigidVars v hv))] at ht
+
+theorem Completes.specialise (h : Completes K input output) (S : Subst)
+    (hlc : ∀ p ∈ S, p.2.IsLC) (hdom : ∀ p ∈ S, p.1 ∉ K) :
+    Completes K input (output.substTyFvars S) :=
+  h.onSubst_fixes S hlc (Subst.fixes_of_dom_avoids hdom)
+
+/-- Generated closing witnesses yield exact cofinite output openings. This uses
+only the already established scope of the completed RHS. -/
+theorem Completes.generalise_closed (h : Completes K input output) {names : List Nat}
+    (hnd : names.Nodup) (hK : ∀ name ∈ names, name ∉ K)
+    (hb : output.TyBvarBounded 0) :
+    ∀ Xs, FreshNames names names.length Xs →
+      Completes K input ((output.closeTyVars names).openTyVars Xs) := by
+  intro Xs hf
+  rw [Expr.open_closeTyVars_rename hnd hf.length
+    (fun name hn hx => hf.avoid name hx hn) hb]
+  apply h.specialise
+  · intro p hp
+    obtain ⟨_, _, heq⟩ := List.mem_map.mp (List.of_mem_zip hp).2
+    rw [← heq]
+    exact .fvar
+  · intro p hp
+    exact hK p.1 (List.of_mem_zip hp).1
+
+/-- A later LC substitution is kept after closing, exactly as in the worker. -/
+theorem Completes.generalise_closed_after (h : Completes K input output) {names : List Nat}
+    (hnd : names.Nodup) (hK : ∀ name ∈ names, name ∉ K)
+    (hb : output.TyBvarBounded 0) (S : Subst)
+    (hlc : ∀ p ∈ S, p.2.IsLC) (hdom : ∀ p ∈ S, p.1 ∉ K) :
+    ∃ L, ∀ Xs, FreshNames L names.length Xs →
+      Completes K input (((output.closeTyVars names).substTyFvars S).openTyVars Xs) := by
+  refine ⟨names ++ S.map Prod.fst, ?_⟩
+  intro Xs hf
+  have hXs : FreshNames names names.length Xs :=
+    ⟨hf.length, hf.nodup, fun x hx hm => hf.avoid x hx (List.mem_append_left _ hm)⟩
+  have hS : ∀ p ∈ S, p.1 ∉ Xs := by
+    intro p hp hv
+    exact hf.avoid p.1 hv (List.mem_append_right _ (List.mem_map.mpr ⟨p, hp, rfl⟩))
+  rw [← Expr.substTyFvars_openTyVars_lc _ hlc hS]
+  exact (h.generalise_closed hnd hK hb Xs hXs).specialise S hlc hdom
+
+end Elaboration
+
+namespace Elaboration
+/-- A generated signed prefix is renamed together with the full output binder
+block. Only the authored prefix enters the child's protected source scope. -/
+theorem Completes.generalise_opened {K Ys G : List Nat} {input : Input} {output : Expr}
+    (h : Completes (K ++ Ys) (input.openTyVars Ys) output)
+    (hnd : (Ys ++ G).Nodup) (hK : ∀ name ∈ Ys ++ G, name ∉ K)
+    (hsource : ∀ v ∈ input.rigidVars, v ∈ K) (hbound : output.TyBvarBounded 0) :
+    ∃ L, ∀ Xs, FreshNames L (Ys.length + G.length) Xs →
+      Completes (K ++ Xs.take Ys.length) (input.openTyVars (Xs.take Ys.length))
+        ((output.closeTyVars (Ys ++ G)).openTyVars Xs) := by
+  refine ⟨Ys ++ G, ?_⟩
+  intro Xs hXs
+  have htake : (Xs.take Ys.length).length = Ys.length := by
+    rw [List.length_take, hXs.length]; omega
+  have hdisj : ∀ name ∈ Ys ++ G, name ∉ Xs := fun name hn hx => hXs.avoid name hx hn
+  have hYtake : ∀ name ∈ Ys, name ∉ Xs.take Ys.length :=
+    fun name hn hx => hdisj name (List.mem_append_left _ hn) (List.mem_of_mem_take hx)
+  let RY : Subst := Ys.zip ((Xs.take Ys.length).map Ty.fvar)
+  let RG : Subst := G.zip ((Xs.drop Ys.length).map Ty.fvar)
+  have hRYlc : ∀ p ∈ RY, p.2.IsLC := by
+    intro p hp
+    obtain ⟨_, _, heq⟩ := List.mem_map.mp (List.of_mem_zip hp).2
+    rw [← heq]; exact .fvar
+  have hRGlc : ∀ p ∈ RG, p.2.IsLC := by
+    intro p hp
+    obtain ⟨_, _, heq⟩ := List.mem_map.mp (List.of_mem_zip hp).2
+    rw [← heq]; exact .fvar
+  have hRYK : ∀ k ∈ K, RY.onTy (.fvar k) = .fvar k := by
+    intro k hk
+    apply Ty.substFvars_eq_self_of_no_key
+    intro p hp hc
+    simp only [Ty.freeVars, List.mem_singleton] at hc
+    exact hK p.1 (List.mem_append_left _ (List.of_mem_zip hp).1) (hc ▸ hk)
+  have hRYscope : ∀ k ∈ K ++ Ys, ∀ v ∈ (RY.onTy (.fvar k)).freeVars, v ∈ K ++ Xs.take Ys.length := by
+    intro k hk v hv
+    rcases List.mem_append.mp hk with hk | hk
+    · rw [hRYK k hk] at hv
+      simp only [Ty.freeVars, List.mem_singleton] at hv
+      exact List.mem_append_left _ (hv ▸ hk)
+    · obtain ⟨i, hi⟩ := List.mem_iff_getElem?.mp hk
+      have hilt : i < Ys.length := (List.getElem?_eq_some_iff.mp hi).choose
+      have hit : i < (Xs.take Ys.length).length := by omega
+      have himg : RY.onTy (.fvar k) = .fvar ((Xs.take Ys.length)[i]) := by
+        apply Ty.substFvars_zip_fvar_eq' hnd.of_append_left hi
+        · simp only [List.getElem?_map, List.getElem?_eq_getElem hit, Option.map_some]
+        · intro y hy hc
+          simp only [Ty.freeVars, List.mem_singleton] at hc
+          apply hYtake y hy
+          rw [hc]
+          exact List.getElem_mem hit
+      rw [himg] at hv
+      simp only [Ty.freeVars, List.mem_singleton] at hv
+      exact List.mem_append_right _ (hv ▸ List.getElem_mem hit)
+  have hRYsource : (input.openTyVars Ys).substTyFvars RY = input.openTyVars (Xs.take Ys.length) := by
+    exact input.substTyFvars_zip_openTyVars htake.symm hnd.of_append_left
+      (fun y hy hv => hK y (List.mem_append_left _ hy) (hsource y hv)) hYtake
+  have hfirst := h.onSubst_source RY hRYlc hRYscope
+  rw [hRYsource] at hfirst
+  have hRGavoid : ∀ p ∈ RG, p.1 ∉ K ++ Xs.take Ys.length := by
+    intro p hp hc
+    have hpG := (List.of_mem_zip hp).1
+    rcases List.mem_append.mp hc with hk | hx
+    · exact hK p.1 (List.mem_append_right _ hpG) hk
+    · exact hdisj p.1 (List.mem_append_right _ hpG) (List.mem_of_mem_take hx)
+  have hsecond := hfirst.specialise RG hRGlc hRGavoid
+  have hzip : (Ys ++ G).zip (Xs.map Ty.fvar) = RY ++ RG := by
+    have hmap : Xs.map Ty.fvar = (Xs.take Ys.length).map Ty.fvar ++ (Xs.drop Ys.length).map Ty.fvar := by
+      rw [← List.map_append, List.take_append_drop]
+    rw [hmap]
+    exact List.zip_append (by simp only [List.length_map, htake])
+  rw [Expr.open_closeTyVars_rename hnd
+    (by simpa only [List.length_append] using hXs.length) hdisj hbound, hzip,
+    Expr.substTyFvars_append]
+  exact hsecond
 
 end Elaboration

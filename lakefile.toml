@@ -18,6 +18,7 @@ roots = [
   "FHM.CoreBackend.Infer",
   "FHM.CoreBackend.Complete",
   "FHM.Elaboration.Input",
+  "FHM.Elaboration.RecScheme",
   "FHM.Elaboration.Lowering",
   "FHM.Elaboration.Typing",
   "FHM.Elaboration.Close",

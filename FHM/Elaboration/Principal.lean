@@ -271,7 +271,7 @@ theorem Typing.app_inv (h : Typing K ctx (.app f arg) ty) :
         .complete hx (fun v hv => hscope v (List.mem_append_right _ hv)) htx⟩
 
 theorem Typing.letMono_inv (h : Typing K ctx (.letIn ann rhs body) ty)
-    (hmono : ann.FitsMono checkedTy) :
+    (hmode : ann.isSignature = false) :
     ∃ (M : PolyTy) (L : List Nat), M.WF ∧
       (∀ template, ann = .template template → ∀ v ∈ template.rigidVars, v ∈ K) ∧
       (∀ Xs, FreshNames L M.paramCount Xs → ann.FitsMono (M.openVars Xs)) ∧
@@ -282,13 +282,15 @@ theorem Typing.letMono_inv (h : Typing K ctx (.letIn ann rhs body) ty)
   | @letSignature _ _ _ _ _ _ M L _ _ _ hfit _ _ =>
     obtain ⟨Xs, hlen, hnd, hav⟩ := exists_fresh_names L M.paramCount
     have hs := hfit Xs ⟨hlen, hnd, hav⟩
-    cases hs <;> cases hmono
+    have := hs.isSignature
+    rw [hmode] at this
+    cases this
   | complete hemb hscope ht =>
     simp only [Input.toCore, bind, pure, Option.bind_eq_some_iff, Option.some.injEq] at hemb
     obtain ⟨ann', ha, rhs', hr, body', hb, rfl⟩ := hemb
     cases ann with
-    | complete => contradiction
-    | partialForall => contradiction
+    | complete => cases hmode
+    | partialForall => cases hmode
     | template => cases ha
     | absent =>
       cases ha
@@ -351,10 +353,10 @@ theorem Typing.let_hole_iff :
       Typing K ctx (.letIn .absent rhs body) ty := by
   constructor
   · intro h
-    obtain ⟨M, L, hwf, _, _, hr, hb⟩ := h.letMono_inv (checkedTy := .prim .unit) (.hole)
+    obtain ⟨M, L, hwf, _, _, hr, hb⟩ := h.letMono_inv rfl
     exact .letIn hwf (fun _ heq => by cases heq) (fun _ _ => True.intro) hr hb
   · intro h
-    obtain ⟨M, L, hwf, _, _, hr, hb⟩ := h.letMono_inv (checkedTy := .prim .unit) True.intro
+    obtain ⟨M, L, hwf, _, _, hr, hb⟩ := h.letMono_inv rfl
     refine .letIn hwf ?_ (fun _ _ => .hole) hr hb
     intro template heq; cases heq
     simp only [Template.rigidVars, List.not_mem_nil, false_implies, implies_true]
@@ -496,9 +498,6 @@ theorem signed_candidate_dodge (S : Subst) (hS : ∀ p ∈ S, p.2.IsLC)
     exact ⟨blockListBack_onTy_rename hd hτscratch, fun y hy =>
       blockSwap_rename_not_mem hd hτscratch y (freshVars_ge y hy) (freshVars_lt y hy)⟩
 
-/-- Residual principality retains an independently quantified protected set.
-`Typing P` scopes authored fixed types in precisely that protected set. It does
-not claim most-general fillings for every unused annotation hole. -/
 /-- Internal source-transforming residual theorem. The local freeze premise
 concerns authored frozen leaves only; unrelated K/context variables may vary. -/
 def _root_.Infer.SourcePrincipal (_h : Infer K F frontier ctx input next subst output ty) : Prop :=
@@ -514,6 +513,9 @@ def _root_.Infer.SourcePrincipal (_h : Infer K F frontier ctx input next subst o
       (∀ p ∈ P, residual.onTy (.fvar p) = .fvar p) ∧
       Subst.AgreesBelow frontier ambient (subst ++ residual)
 
+/-- Residual principality retains an independently quantified protected set.
+`Typing P` scopes authored fixed types in precisely that protected set. It does
+not claim most-general fillings for every unused annotation hole. -/
 def _root_.Infer.Principal (_h : Infer K F frontier ctx input next subst output ty) : Prop :=
   CtxWF ctx → CtxBelow frontier ctx → (∀ k ∈ K, k < frontier) →
   (∀ soft ∈ F, Ty.BelowFvars frontier soft) →
@@ -535,10 +537,8 @@ theorem _root_.Infer.SourcePrincipal.principal {h : Infer K F frontier ctx input
 
 theorem Seed.override (h : Seed K frontier ann param initial)
     (hK : ∀ k ∈ K, k < frontier) {target : Ty} (htarget : target.IsLC)
-    (hfit : ∀ template, ann = some template → template.Fits target)
     {ambient : Subst} (hlc : ∀ pair ∈ ambient, pair.2.IsLC)
-    (hfix : ∀ template, ann = some template →
-      ∀ v ∈ template.rigidVars, ambient.onTy (.fvar v) = .fvar v) :
+    (hfit : ∀ template, ann = some template → (template.substTyFvars ambient).Fits target) :
     ∃ U : Subst, (∀ pair ∈ U, pair.2.IsLC) ∧
       Subst.AgreesBelow frontier ambient U ∧ U.onTy param = target := by
   cases h with
@@ -546,29 +546,68 @@ theorem Seed.override (h : Seed K frontier ann param initial)
     obtain ⟨U, hU, hag, hb⟩ := Subst.override_block hlc frontier [target] (by simpa using htarget)
     exact ⟨U, hU, hag, by simpa using hb 0 (by simp)⟩
   | @annotated next ty template heq _ hr =>
-    obtain ⟨U, hU, hag, ht⟩ := (hfit template rfl).allocate_override htarget hlc frontier
-      (fun v hv => hK v (hr v hv)) (hfix template rfl)
+    obtain ⟨U, hU, hag, ht⟩ := (hfit template rfl).allocate_override_source htarget hlc frontier
+      (fun v hv => hK v (hr v hv))
     rw [heq] at ht
     exact ⟨U, hU, hag, ht⟩
 
-theorem _root_.Infer.principal_backend {input : Input} {core : Expr} (hemb : input.toCore = some core)
+/-- The local source freeze is stable under solving and factoring. A source
+leaf that originated in F remains marked by the full substituted F image. -/
+theorem SourceScope.residual_freeze {K : List Nat} {F : List Ty} {input : Input} {frontier : Nat}
+    {ambient solved residual : Subst}
+    (hscope : SourceScope K F input)
+    (hbelow : ∀ v ∈ input.rigidVars, v < frontier)
+    (hsolved : ∀ k ∈ K, solved.onTy (.fvar k) = .fvar k)
+    (hfreeze : ∀ v ∈ input.rigidVars, v ∈ K → v ∉ softVars F → ambient.onTy (.fvar v) = .fvar v)
+    (hagree : Subst.AgreesBelow frontier ambient (solved ++ residual)) :
+    ∀ v ∈ (input.substTyFvars solved).rigidVars,
+      v ∈ K → v ∉ softVars (substSoft solved F) → residual.onTy (.fvar v) = .fvar v := by
+  intro v hv _ hnot
+  obtain ⟨original, horiginal, himage⟩ := input.rigidVars_substTyFvars hv
+  have horiginalNotF : original ∉ softVars F := by
+    intro hin
+    exact hnot (mem_softVars_substSoft.mpr ⟨original, hin, himage⟩)
+  have horiginalK : original ∈ K := (List.mem_append.mp (hscope original horiginal)).resolve_right horiginalNotF
+  have hfixed := hsolved original horiginalK
+  rw [hfixed] at himage
+  have heq : v = original := List.mem_singleton.mp himage
+  subst v
+  have hag := hagree original (hbelow original horiginal)
+  rw [Subst.onTy_append, hfixed, hfreeze original horiginal horiginalK horiginalNotF] at hag
+  exact hag.symm
+
+theorem _root_.Infer.sourcePrincipal_backend {input : Input} {core : Expr}
+    (hemb : input.toCore = some core)
     (h : CoreBackend.Infer K frontier ctx core next subst ty)
     (hctx : CtxBelow frontier ctx) (hK : ∀ k ∈ K, k < frontier)
-    (hr : ∀ v ∈ core.tyFreeVars, v ∈ K) :
-    Infer.Principal (.backend hemb h hctx hK hr) := by
-  intro hwf hb _ ambient target P hlc hP hfix ht
+    (hr : ∀ v ∈ core.tyFreeVars, v ∈ K)
+    (hdisj : ∀ v ∈ core.tyFreeVars, v ∉ softVars F) :
+    Infer.SourcePrincipal (.backend hemb h hctx hK hr hdisj) := by
+  intro hwf hb _ _ ambient target P hlc hP hfix hfreeze ht
+  have heq : input.substTyFvars ambient = input := input.substTyFvars_eq_self_of_fixes (by
+    intro v hv
+    have hcore := (input.toCore_rigidVars hemb v).mp hv
+    exact hfreeze v hv (hr v hcore) (hdisj v hcore))
+  rw [heq] at ht
   obtain ⟨ht, hscope⟩ := ht.toCore hemb
   exact h.principal hwf hb ambient target P hlc hP hscope hfix ht
 
-theorem _root_.Infer.principal_lambda {ctx : Ctx}
-    (hs : Seed K frontier ann param initial)
-    (hb : Infer K initial { ctx with env := PolyTy.mkTrivial param :: ctx.env }
+theorem _root_.Infer.sourcePrincipal_lambda {ctx : Ctx}
+    (hscope : SourceScope K F (.lambda ann body))
+    (hs : Seed (K ++ softVars F) frontier ann param initial)
+    (hb : Infer K F initial { ctx with env := PolyTy.mkTrivial param :: ctx.env }
       body next subst completed bodyTy)
-    (ih : Infer.Principal hb) : Infer.Principal (.lambda hs hb) := by
-  intro hwf hbelow hK ambient target P hS hP hfix htyping
-  obtain ⟨paramD, resultD, rfl, hparamD, hfit, hrigid, hbodyD⟩ := htyping.lambda_inv
-  obtain ⟨U, hU, hUagree, hUparam⟩ := hs.override hK hparamD hfit hS
-    (fun t ht v hv => hfix v (hrigid t ht v hv))
+    (ih : Infer.SourcePrincipal hb) : Infer.SourcePrincipal (.lambda hscope hs hb) := by
+  intro hwf hbelow hK hF ambient target P hS hP hfix hfreeze htyping
+  obtain ⟨paramD, resultD, rfl, hparamD, hfit, _, hbodyD⟩ := htyping.lambda_inv
+  have hscopeBound : ∀ v ∈ K ++ softVars F, v < frontier :=
+    fun v hv => (List.mem_append.mp hv).elim (hK v) (softVars_lt hF v)
+  have hbodyBound : ∀ v ∈ body.rigidVars, v < frontier :=
+    fun v hv => hscopeBound v (hscope v (List.mem_append_right _ hv))
+  obtain ⟨U, hU, hUagree, hUparam⟩ := hs.override hscopeBound hparamD hS (by
+    intro t ht
+    subst ann
+    exact hfit (t.substTyFvars ambient) rfl)
   have hle := hs.frontier_le
   have hbodywf : CtxWF { ctx with env := PolyTy.mkTrivial param :: ctx.env } := by
     intro M hM
@@ -578,38 +617,45 @@ theorem _root_.Infer.principal_lambda {ctx : Ctx}
   have hbodybelow : CtxBelow initial { ctx with env := PolyTy.mkTrivial param :: ctx.env } := by
     intro M hM
     rcases List.mem_cons.mp hM with rfl | hM
-    · exact hs.belowFvars hK
+    · exact hs.belowFvars hscopeBound
     · exact (hbelow M hM).mono hle
   have hctxeq : U.onCtx { ctx with env := PolyTy.mkTrivial param :: ctx.env } =
       { ambient.onCtx ctx with env := PolyTy.mkTrivial paramD :: (ambient.onCtx ctx).env } := by
     have heq := Subst.onCtx_congr hUagree hbelow
     simpa only [Subst.onCtx, Subst.onEnv, List.map_cons, Subst.onPolyTy, PolyTy.mkTrivial,
       hUparam] using congrArg (fun c : Ctx => { c with env := PolyTy.mkTrivial paramD :: c.env }) heq.symm
+  have hsourceeq : body.substTyFvars U = body.substTyFvars ambient :=
+    body.substTyFvars_congr (fun v hv => (hUagree v (hbodyBound v hv)).symm)
   have hUfix : ∀ p ∈ P, U.onTy (.fvar p) = .fvar p :=
     fun p hp => (hUagree p (hP p hp)).symm.trans (hfix p hp)
   obtain ⟨R, hR, hresult, hRP, hag⟩ := ih hbodywf hbodybelow
-    (fun k hk => Nat.lt_of_lt_of_le (hK k hk) hle) U resultD P hU
-    (fun p hp => Nat.lt_of_lt_of_le (hP p hp) hle) hUfix (hctxeq.symm ▸ hbodyD)
+    (fun k hk => Nat.lt_of_lt_of_le (hK k hk) hle)
+    (fun t ht => (hF t ht).mono hle) U resultD P hU
+    (fun p hp => Nat.lt_of_lt_of_le (hP p hp) hle) hUfix
+    (fun v hv hk hnot => (hUagree v (hbodyBound v hv)).symm.trans
+      (hfreeze v (List.mem_append_right _ hv) hk hnot)) (by rwa [hctxeq, hsourceeq])
   refine ⟨R, hR, ?_, hRP, fun v hv => (hUagree v hv).trans (hag v (Nat.lt_of_lt_of_le hv hle))⟩
   rw [Subst.onTy_arrow, ← hresult]
   congr 1
-  have hp := Subst.onTy_congr hag (hs.belowFvars hK)
+  have hp := Subst.onTy_congr hag (hs.belowFvars hscopeBound)
   rw [Subst.onTy_append, hUparam] at hp
   exact hp
 
-theorem _root_.Infer.principal_app
-    (hf : Infer K frontier ctx f first s1 fOut fTy)
-    (ha : Infer K first (s1.onCtx ctx) arg second s2 argOut argTy)
+theorem _root_.Infer.sourcePrincipal_app
+    (hscope : SourceScope K F (.app f arg))
+    (hf : Infer K F frontier ctx f first s1 fOut fTy)
+    (ha : Infer K (substSoft s1 F) first (s1.onCtx ctx) (arg.substTyFvars s1) second s2 argOut argTy)
     (hu : RigidUnify K (s2.onTy fTy) (.arrow argTy (.fvar second)) s3)
-    (ihf : Infer.Principal hf) (iha : Infer.Principal ha) :
-    Infer.Principal (.app hf ha hu) := by
-  intro hwf hbelow hK ambient target P hS hP hfix htyping
+    (ihf : Infer.SourcePrincipal hf) (iha : Infer.SourcePrincipal ha) :
+    Infer.SourcePrincipal (.app hscope hf ha hu) := by
+  intro hwf hbelow hK hF ambient target P hS hP hfix hfreeze htyping
   obtain ⟨paramD, hfD, haD⟩ := htyping.app_inv
-  obtain ⟨Rf, hRf, hfTy, hRfP, hagf⟩ := ihf hwf hbelow hK ambient
-    (.arrow paramD target) P hS hP hfix hfD
+  obtain ⟨Rf, hRf, hfTy, hRfP, hagf⟩ := ihf hwf hbelow hK hF ambient
+    (.arrow paramD target) P hS hP hfix
+    (fun v hv => hfreeze v (List.mem_append_left _ hv)) hfD
   have hfle := hf.frontier_le
   have hale := ha.frontier_le
-  obtain ⟨hfB, hs1B⟩ := hf.belowFvars hbelow hK
+  obtain ⟨hfB, hs1B⟩ := hf.belowFvars hbelow hK hF
   obtain ⟨_, hs1lc⟩ := hf.lc hwf
   have hctx1 := Subst.onCtx_below hs1B hfle hbelow
   have hK1 : ∀ k ∈ K, k < first := fun k hk => Nat.lt_of_lt_of_le (hK k hk) hfle
@@ -617,9 +663,18 @@ theorem _root_.Infer.principal_app
   have hctxeq : ambient.onCtx ctx = Rf.onCtx (s1.onCtx ctx) := by
     rw [← Subst.onCtx_append]
     exact Subst.onCtx_congr hagf hbelow
-  obtain ⟨Ra, hRa, haTy, hRaP, haga⟩ := iha (Subst.onCtx_wf hs1lc hwf) hctx1 hK1
-    Rf paramD P hRf hP1 hRfP (hctxeq ▸ haD)
-  obtain ⟨haB, hs2B⟩ := ha.belowFvars hctx1 hK1
+  have hargScope : SourceScope K F arg := fun v hv => hscope v (List.mem_append_right _ hv)
+  have hargBelow : ∀ v ∈ arg.rigidVars, v < frontier := fun v hv =>
+    (List.mem_append.mp (hargScope v hv)).elim (hK v) (softVars_lt hF v)
+  have hF1 := substSoft_below hs1B hfle hF
+  have hsourceeq : arg.substTyFvars ambient = (arg.substTyFvars s1).substTyFvars Rf := by
+    rw [← Input.substTyFvars_append]
+    exact arg.substTyFvars_congr (fun v hv => hagf v (hargBelow v hv))
+  have hfreeze1 := hargScope.residual_freeze hargBelow (Subst.fixes_of_dom_avoids hf.dom_avoids)
+    (fun v hv => hfreeze v (List.mem_append_right _ hv)) hagf
+  obtain ⟨Ra, hRa, haTy, hRaP, haga⟩ := iha (Subst.onCtx_wf hs1lc hwf) hctx1 hK1 hF1
+    Rf paramD P hRf hP1 hRfP hfreeze1 (by rwa [← hctxeq, ← hsourceeq])
+  obtain ⟨haB, hs2B⟩ := ha.belowFvars hctx1 hK1 hF1
   have hleftB := Subst.onTy_belowFvars hs2B (hfB.mono hale)
   have hleft : Ra.onTy (s2.onTy fTy) = .arrow paramD target := by
     have heq := Subst.onTy_congr haga hfB
@@ -645,6 +700,113 @@ theorem _root_.Infer.principal_app
   refine ⟨R, hR, ?_, hRP, ?_⟩
   · exact hUret.symm.trans (hfac (.fvar second))
   · simpa only [List.append_assoc] using hag1
+
+
+
+
+
+mutual
+theorem Template.substTyFvars_openTyVarsFrom_of_fixes (template : Template) {S : Subst} {Xs : List Nat}
+    (hlc : ∀ p ∈ S, p.2.IsLC)
+    (hfix : ∀ x ∈ Xs, S.onTy (.fvar x) = .fvar x) (depth : Nat) :
+    (template.openTyVarsFrom depth Xs).substTyFvars S =
+      (template.substTyFvars S).openTyVarsFrom depth Xs := by
+  cases template with
+  | fixed ty => exact congrArg Template.fixed (Subst.onTy_openVarsFrom_of_fixes hlc hfix ty depth)
+  | hole => rfl
+  | arrow a b =>
+    simp only [Template.openTyVarsFrom, Template.substTyFvars,
+      a.substTyFvars_openTyVarsFrom_of_fixes hlc hfix depth,
+      b.substTyFvars_openTyVarsFrom_of_fixes hlc hfix depth]
+  | custom name args =>
+    exact congrArg (Template.custom name) (templateList_open_subst_of_fixes args hlc hfix depth)
+private theorem templateList_open_subst_of_fixes (templates : List Template) {S : Subst} {Xs : List Nat}
+    (hlc : ∀ p ∈ S, p.2.IsLC)
+    (hfix : ∀ x ∈ Xs, S.onTy (.fvar x) = .fvar x) (depth : Nat) :
+    substTemplateList S (openTemplateList depth Xs templates) =
+      openTemplateList depth Xs (substTemplateList S templates) := by
+  cases templates with
+  | nil => rfl
+  | cons t ts =>
+    simp only [substTemplateList, openTemplateList,
+      t.substTyFvars_openTyVarsFrom_of_fixes hlc hfix depth,
+      templateList_open_subst_of_fixes ts hlc hfix depth]
+end
+
+/-- Factor an ordinary annotation check against the transformed source. Only
+raw-source allocation bounds and independent target protection are required. -/
+theorem LetCheck.factor_source {P : List Nat} (hc : LetCheck K F first rhsTy ann checked sCheck)
+    (hrigid : ∀ v ∈ ann.rigidVars, v < first) (hP : ∀ p ∈ P, p < first)
+    (hty : Ty.BelowFvars first rhsTy)
+    {R : Subst} (hR : ∀ pair ∈ R, pair.2.IsLC)
+    (hRP : ∀ p ∈ P, R.onTy (.fvar p) = .fvar p)
+    {target : Ty} (htarget : target.IsLC) (hfit : (ann.substTyFvars R).FitsMono target)
+    (heq : target = R.onTy rhsTy) :
+    ∃ V : Subst, (∀ pair ∈ V, pair.2.IsLC) ∧
+      target = V.onTy (sCheck.onTy rhsTy) ∧
+      (∀ p ∈ P, V.onTy (.fvar p) = .fvar p) ∧
+      Subst.AgreesBelow first R (sCheck ++ V) := by
+  cases hc with
+  | absent => exact ⟨R, hR, heq, hRP, fun _ _ => rfl⟩
+  | hole => exact ⟨R, hR, heq, hRP, fun _ _ => rfl⟩
+  | @template checked expected sCheck template halloc _ _ hu =>
+    change (template.substTyFvars R).Fits target at hfit
+    obtain ⟨U, hU, hag, hUexpected⟩ := hfit.allocate_override_source htarget hR first hrigid
+    rw [halloc] at hUexpected
+    have hUty : U.onTy rhsTy = target := (Subst.onTy_congr hag hty).symm.trans heq.symm
+    have hUP : ∀ p ∈ P, U.onTy (.fvar p) = .fvar p :=
+      fun p hp => (hag p (hP p hp)).symm.trans (hRP p hp)
+    obtain ⟨V, hfac, hV, hVP⟩ := hu.unifies.greatest_K U hU
+      (hUty.trans hUexpected.symm) hUP
+    refine ⟨V, hV, hUty.symm.trans (hfac rhsTy), hVP, ?_⟩
+    intro v hv
+    simpa only [Subst.onTy_append] using (hag v hv).trans (hfac (.fvar v))
+
+/-- The signed version protects the candidate set and the written names
+pointwise, while allowing authored provisional leaves to specialize. -/
+theorem SignatureCheck.factor_source {P : List Nat}
+    (hc : SignatureCheck K F written first rhsTy ann checked sCheck)
+    (_hprefix : written.length = ann.paramCount)
+    (hrigid : ∀ v ∈ ann.rigidVars, v < first)
+    (hP : ∀ p ∈ P ++ written, p < first) (hty : Ty.BelowFvars first rhsTy)
+    {R : Subst} (hR : ∀ pair ∈ R, pair.2.IsLC)
+    (hRP : ∀ p ∈ P ++ written, R.onTy (.fvar p) = .fvar p)
+    {target : Ty} (htarget : target.IsLC) (heq : target = R.onTy rhsTy)
+    (hcomplete : ∀ scheme, ann = .complete scheme → target = (R.onPolyTy scheme).openVars written)
+    (hpartial : ∀ count template, ann = .partialForall count template →
+      ((template.substTyFvars R).openTyVarsFrom 0 written).Fits target) :
+    ∃ V : Subst, (∀ pair ∈ V, pair.2.IsLC) ∧
+      target = V.onTy (sCheck.onTy rhsTy) ∧
+      (∀ p ∈ P ++ written, V.onTy (.fvar p) = .fvar p) ∧
+      Subst.AgreesBelow first R (sCheck ++ V) := by
+  have hW : ∀ w ∈ written, R.onTy (.fvar w) = .fvar w :=
+    fun w hw => hRP w (List.mem_append_right _ hw)
+  cases hc with
+  | @complete sCheck scheme _ _ hu =>
+    have hExpected : R.onTy (scheme.openVars written) = (R.onPolyTy scheme).openVars written :=
+      Subst.onTy_openVars_of_fixes hR hW
+    have hUni : Unifies R rhsTy (scheme.openVars written) :=
+      heq.symm.trans ((hcomplete scheme rfl).trans hExpected.symm)
+    obtain ⟨V, hfac, hV, hVP⟩ := hu.unifies.greatest_K R hR hUni hRP
+    refine ⟨V, hV, heq.trans (hfac rhsTy), hVP, ?_⟩
+    intro v hv
+    simpa only [Subst.onTy_append] using hfac (.fvar v)
+  | @partialSignature checked expected sCheck count template halloc _ _ hu =>
+    have hfit := hpartial count template rfl
+    rw [← Template.substTyFvars_openTyVarsFrom_of_fixes template hR hW 0] at hfit
+    obtain ⟨U, hU, hag, hUexpected⟩ := hfit.allocate_override_source htarget hR first (by
+      intro v hv
+      exact (List.mem_append.mp (Template.open_scope (K := template.rigidVars) (fun _ h => h) v hv)).elim
+        (hrigid v) (fun hv => hP v (List.mem_append_right _ hv)))
+    rw [halloc] at hUexpected
+    have hUty : U.onTy rhsTy = target := (Subst.onTy_congr hag hty).symm.trans heq.symm
+    have hUP : ∀ p ∈ P ++ written, U.onTy (.fvar p) = .fvar p :=
+      fun p hp => (hag p (hP p hp)).symm.trans (hRP p hp)
+    obtain ⟨V, hfac, hV, hVP⟩ := hu.unifies.greatest_K U hU
+      (hUty.trans hUexpected.symm) hUP
+    refine ⟨V, hV, hUty.symm.trans (hfac rhsTy), hVP, ?_⟩
+    intro v hv
+    simpa only [Subst.onTy_append] using (hag v hv).trans (hfac (.fvar v))
 
 theorem LetCheck.factor {P : List Nat} (hc : LetCheck K first rhsTy ann checked sCheck)
     (hK : ∀ k ∈ K, k < first) (hP : ∀ p ∈ P, p < first)
@@ -1237,30 +1399,36 @@ theorem Typing.signature_dodge
 
 /-- Reconcile a checked ordinary RHS with a declarative let scheme, then
 transport its continuation. Shared by both completeness directions. -/
-theorem _root_.Infer.let_frame
-    (hr : Infer K frontier ctx rhs first s1 rhsOut rhsTy)
-    (hc : LetCheck K first rhsTy ann checked sCheck)
-    (ihr : Infer.Principal hr) :
+theorem _root_.Infer.source_let_frame
+    (hscope : SourceScope K F (.letIn ann rhs body))
+    (hr : Infer K F frontier ctx rhs first s1 rhsOut rhsTy)
+    (hc : LetCheck K (substSoft s1 F) first rhsTy (ann.substTyFvars s1) checked sCheck)
+    (ihr : Infer.SourcePrincipal hr) :
     CtxWF ctx → CtxBelow frontier ctx → (∀ k ∈ K, k < frontier) →
+    (∀ t ∈ F, Ty.BelowFvars frontier t) →
     ∀ (ambient : Subst) (target : Ty) (P : List Nat),
       (∀ pair ∈ ambient, pair.2.IsLC) → (∀ p ∈ P, p < frontier) →
       (∀ p ∈ P, ambient.onTy (.fvar p) = .fvar p) →
-      Typing P (ambient.onCtx ctx) (.letIn ann rhs body) target →
+      (∀ v ∈ (Input.letIn ann rhs body).rigidVars, v ∈ K → v ∉ softVars F → ambient.onTy (.fvar v) = .fvar v) →
+      Typing P (ambient.onCtx ctx) ((Input.letIn ann rhs body).substTyFvars ambient) target →
       ∃ V : Subst, (∀ pair ∈ V, pair.2.IsLC) ∧
         (∀ p ∈ P, V.onTy (.fvar p) = .fvar p) ∧
         Subst.AgreesBelow frontier ambient (s1 ++ sCheck ++ V) ∧
         Typing P (V.onCtx { (sCheck.onCtx (s1.onCtx ctx)) with
-        env := genScheme K (sCheck.onCtx (s1.onCtx ctx)).env (sCheck.onTy rhsTy) ::
-          (sCheck.onCtx (s1.onCtx ctx)).env }) body target ∧
+        env := genScheme (K ++ softVars (substSoft (s1 ++ sCheck) F)) (sCheck.onCtx (s1.onCtx ctx)).env (sCheck.onTy rhsTy) ::
+          (sCheck.onCtx (s1.onCtx ctx)).env }) ((body.substTyFvars (s1 ++ sCheck)).substTyFvars V) target ∧
         CtxWF { (sCheck.onCtx (s1.onCtx ctx)) with
-        env := genScheme K (sCheck.onCtx (s1.onCtx ctx)).env (sCheck.onTy rhsTy) ::
+        env := genScheme (K ++ softVars (substSoft (s1 ++ sCheck) F)) (sCheck.onCtx (s1.onCtx ctx)).env (sCheck.onTy rhsTy) ::
           (sCheck.onCtx (s1.onCtx ctx)).env } ∧ CtxBelow checked { (sCheck.onCtx (s1.onCtx ctx)) with
-        env := genScheme K (sCheck.onCtx (s1.onCtx ctx)).env (sCheck.onTy rhsTy) ::
+        env := genScheme (K ++ softVars (substSoft (s1 ++ sCheck) F)) (sCheck.onCtx (s1.onCtx ctx)).env (sCheck.onTy rhsTy) ::
           (sCheck.onCtx (s1.onCtx ctx)).env } ∧
         (∀ pair ∈ s1 ++ sCheck, Ty.BelowFvars checked pair.2) := by
-  intro hwf hbelow hK ambient target P hS hP hfix htyping
-  obtain ⟨M, L, hM, hannRigid, hannFits, hrD, hbD⟩ := htyping.letMono_inv hc.fits
-  let images := K.flatMap (fun k => (ambient.onTy (.fvar k)).freeVars)
+  intro hwf hbelow hK hF ambient target P hS hP hfix hfreeze htyping
+  have hscopeBound : ∀ v ∈ K ++ softVars F, v < frontier :=
+    fun v hv => (List.mem_append.mp hv).elim (hK v) (softVars_lt hF v)
+  have hmode : ann.isSignature = false := by simpa only [LetAnn.isSignature_substTyFvars] using hc.not_signature
+  obtain ⟨M, L, hM, hannRigid, hannFits, hrD, hbD⟩ := htyping.letMono_inv (by simpa using hmode)
+  let images := K.flatMap (fun k => (ambient.onTy (.fvar k)).freeVars) ++ softVars (substSoft ambient F)
   obtain ⟨Xs, hXlen, hXnd, hXavoid⟩ := exists_fresh_names
     (L ++ M.body.freeVars ++ (ambient.onCtx ctx).env.freeVars ++ images) M.paramCount
   have hXfresh : FreshNames L M.paramCount Xs := ⟨hXlen, hXnd, by
@@ -1273,19 +1441,29 @@ theorem _root_.Infer.let_frame
     intro x hx k hk hc
     exact hXavoid x hx (by
       simp only [List.mem_append]; right
-      exact List.mem_flatMap.mpr ⟨k, hk, hc⟩)
-  obtain ⟨R, hR, hrTy, hRP, hagR⟩ := ihr hwf hbelow hK ambient
-    (M.openVars Xs) P hS hP hfix (hrD Xs hXfresh)
+      exact List.mem_append_left _ (List.mem_flatMap.mpr ⟨k, hk, hc⟩))
+  obtain ⟨R, hR, hrTy, hRP, hagR⟩ := ihr hwf hbelow hK hF ambient
+    (M.openVars Xs) P hS hP hfix
+    (fun v hv => hfreeze v (List.mem_append_left _ (List.mem_append_right _ hv))) (hrD Xs hXfresh)
   have hrle := hr.frontier_le
   have hcle := hc.frontier_le
   have hK1 : ∀ k ∈ K, k < first := fun k hk => Nat.lt_of_lt_of_le (hK k hk) hrle
   have hP1 : ∀ p ∈ P, p < first := fun p hp => Nat.lt_of_lt_of_le (hP p hp) hrle
-  obtain ⟨hrB, hs1B⟩ := hr.belowFvars hbelow hK
+  obtain ⟨hrB, hs1B⟩ := hr.belowFvars hbelow hK hF
   obtain ⟨hrLC, hs1LC⟩ := hr.lc hwf
-  obtain ⟨V, hV, hcheckedTy, hVP, hagV⟩ := hc.factor hK1 hP1 hrB hR hRP
-    ((hrD Xs hXfresh).regular) (hannFits Xs hXfresh) hannRigid hrTy
+  have hF1 := substSoft_below hs1B hrle hF
+  have hannEq : (ann.substTyFvars s1).substTyFvars R = ann.substTyFvars ambient := by
+    rw [← LetAnn.substTyFvars_append]
+    exact ann.substTyFvars_congr (fun v hv => (hagR v
+      (hscopeBound v (hscope v (List.mem_append_left _ (List.mem_append_left _ hv))))).symm)
+  obtain ⟨V, hV, hcheckedTy, hVP, hagV⟩ := hc.factor_source
+    (fun v hv => by
+      have hs := hscope.subst s1 (Subst.fixes_of_dom_avoids hr.dom_avoids)
+      have hvscope := hs v (List.mem_append_left _ (List.mem_append_left _ hv))
+      exact (List.mem_append.mp hvscope).elim (hK1 v) (softVars_lt hF1 v))
+    hP1 hrB hR hRP ((hrD Xs hXfresh).regular) (hannEq.symm ▸ hannFits Xs hXfresh) hrTy
   have hsCheckLC := hc.lc hrLC
-  have hsCheckB := hc.belowFvars hrB hK1
+  have hsCheckB := hc.belowFvars hrB hK1 hF1
   have hprefixB : ∀ pair ∈ s1 ++ sCheck, Ty.BelowFvars checked pair.2 := by
     intro pair hp
     exact (List.mem_append.mp hp).elim (fun hp => (hs1B pair hp).mono hcle) (hsCheckB pair)
@@ -1297,21 +1475,41 @@ theorem _root_.Infer.let_frame
     apply Subst.fixes_of_dom_avoids
     intro pair hp
     exact (List.mem_append.mp hp).elim (hr.dom_avoids pair) (hc.dom_avoids pair)
-  have hVimages : ∀ x ∈ Xs, ∀ k ∈ K, x ∉ (V.onTy (.fvar k)).freeVars := by
-    intro x hx k hk
-    have heq := hagPrefix k (hK k hk)
-    rw [Subst.onTy_append, hprefixFix k hk] at heq
-    rw [← heq]
-    exact hXimages x hx k hk
+  have hVimages : ∀ x ∈ Xs, ∀ k ∈ K ++ softVars (substSoft (s1 ++ sCheck) F),
+      x ∉ (V.onTy (.fvar k)).freeVars := by
+    intro x hx k hk hv
+    rcases List.mem_append.mp hk with hk | hk
+    · have heq := hagPrefix k (hK k hk)
+      rw [Subst.onTy_append, hprefixFix k hk] at heq
+      rw [← heq] at hv
+      exact hXimages x hx k hk hv
+    · obtain ⟨ty, hty, hk⟩ := TyList.mem_freeVars_iff.mp hk
+      obtain ⟨original, ho, rfl⟩ := List.mem_map.mp hty
+      have himage : x ∈ (V.onTy ((s1 ++ sCheck).onTy original)).freeVars :=
+        Ty.mem_freeVars_substFvars_image.mpr ⟨k, hk, hv⟩
+      have heq := Subst.onTy_congr hagPrefix (hF original ho)
+      rw [Subst.onTy_append] at heq
+      rw [← heq] at himage
+      exact hXavoid x hx (by
+        simp only [List.mem_append, images]
+        right; right
+        exact TyList.mem_freeVars_iff.mpr ⟨ambient.onTy original,
+          List.mem_map.mpr ⟨original, ho, rfl⟩, himage⟩)
   have hcheckedLC := Subst.onTy_lc hsCheckLC hrLC
   have hgen := genScheme_generalizes (ctx := sCheck.onCtx (s1.onCtx ctx)) hcheckedLC hV hM hXnd hXlen hXM hcheckedTy
     (by simpa only [hctxBridge] using hXctx) hVimages
   have hbodyWeak := Typing.weaken_schemes (env := (ambient.onCtx ctx).env)
     (.cons hgen .nil) hbD
+  have hbodySource : body.substTyFvars ambient =
+      (body.substTyFvars (s1 ++ sCheck)).substTyFvars V := by
+    rw [← Input.substTyFvars_append]
+    exact body.substTyFvars_congr (fun v hv => hagPrefix v
+      (hscopeBound v (hscope v (List.mem_append_right _ hv))))
+  rw [hbodySource] at hbodyWeak
   have hbodyD : Typing P (V.onCtx
       { (sCheck.onCtx (s1.onCtx ctx)) with
-        env := genScheme K (sCheck.onCtx (s1.onCtx ctx)).env (sCheck.onTy rhsTy) ::
-          (sCheck.onCtx (s1.onCtx ctx)).env }) body target := by
+        env := genScheme (K ++ softVars (substSoft (s1 ++ sCheck) F)) (sCheck.onCtx (s1.onCtx ctx)).env (sCheck.onTy rhsTy) ::
+          (sCheck.onCtx (s1.onCtx ctx)).env }) ((body.substTyFvars (s1 ++ sCheck)).substTyFvars V) target := by
     rw [← hctxBridge] at hbodyWeak
     exact hbodyWeak
   have hcheckedWF := Subst.onCtx_wf hsCheckLC (Subst.onCtx_wf hs1LC hwf)
@@ -1319,14 +1517,14 @@ theorem _root_.Infer.let_frame
     (Subst.onCtx_below hs1B hrle hbelow)
   have hcheckedTyB := Subst.onTy_belowFvars hsCheckB (hrB.mono hcle)
   have hbodyWF : CtxWF { (sCheck.onCtx (s1.onCtx ctx)) with
-      env := genScheme K (sCheck.onCtx (s1.onCtx ctx)).env (sCheck.onTy rhsTy) ::
+      env := genScheme (K ++ softVars (substSoft (s1 ++ sCheck) F)) (sCheck.onCtx (s1.onCtx ctx)).env (sCheck.onTy rhsTy) ::
         (sCheck.onCtx (s1.onCtx ctx)).env } := by
     intro scheme hs
     rcases List.mem_cons.mp hs with rfl | hs
     · exact genScheme_wf hcheckedLC
     · exact hcheckedWF scheme hs
   have hbodyB : CtxBelow checked { (sCheck.onCtx (s1.onCtx ctx)) with
-      env := genScheme K (sCheck.onCtx (s1.onCtx ctx)).env (sCheck.onTy rhsTy) ::
+      env := genScheme (K ++ softVars (substSoft (s1 ++ sCheck) F)) (sCheck.onCtx (s1.onCtx ctx)).env (sCheck.onTy rhsTy) ::
         (sCheck.onCtx (s1.onCtx ctx)).env } := by
     intro scheme hs
     rcases List.mem_cons.mp hs with rfl | hs
@@ -1334,84 +1532,53 @@ theorem _root_.Infer.let_frame
     · exact hcheckedB scheme hs
   exact ⟨V, hV, hVP, hagPrefix, hbodyD, hbodyWF, hbodyB, hprefixB⟩
 
-theorem _root_.Infer.principal_letIn
-    (hr : Infer K frontier ctx rhs first s1 rhsOut rhsTy)
-    (hc : LetCheck K first rhsTy ann checked sCheck)
-    (hb : Infer K checked
+theorem _root_.Infer.sourcePrincipal_letIn
+    (hscope : SourceScope K F (.letIn ann rhs body))
+    (hr : Infer K F frontier ctx rhs first s1 rhsOut rhsTy)
+    (hc : LetCheck K (substSoft s1 F) first rhsTy (ann.substTyFvars s1) checked sCheck)
+    (hb : Infer K (substSoft (s1 ++ sCheck) F) checked
       { (sCheck.onCtx (s1.onCtx ctx)) with
-        env := genScheme K (sCheck.onCtx (s1.onCtx ctx)).env (sCheck.onTy rhsTy) ::
+        env := genScheme (K ++ softVars (substSoft (s1 ++ sCheck) F)) (sCheck.onCtx (s1.onCtx ctx)).env (sCheck.onTy rhsTy) ::
           (sCheck.onCtx (s1.onCtx ctx)).env }
-      body next s2 bodyOut bodyTy)
-    (ihr : Infer.Principal hr) (ihb : Infer.Principal hb) :
-    Infer.Principal (.letIn hr hc hb) := by
-  intro hwf hbelow hK ambient target P hS hP hfix htyping
+      (body.substTyFvars (s1 ++ sCheck)) next s2 bodyOut bodyTy)
+    (ihr : Infer.SourcePrincipal hr) (ihb : Infer.SourcePrincipal hb) :
+    Infer.SourcePrincipal (.letIn hscope hr hc hb) := by
+  intro hwf hbelow hK hF ambient target P hS hP hfix hfreeze htyping
   obtain ⟨V, hV, hVP, hagPrefix, hbodyD, hbodyWF, hbodyB, hprefixB⟩ :=
-    hr.let_frame hc ihr hwf hbelow hK ambient target P hS hP hfix htyping
+    hr.source_let_frame hscope hc ihr hwf hbelow hK hF ambient target P hS hP hfix hfreeze htyping
   have hle := hr.frontier_le.trans hc.frontier_le
   obtain ⟨R2, hR2, hresult, hR2P, hag2⟩ := ihb hbodyWF hbodyB
-    (fun k hk => Nat.lt_of_lt_of_le (hK k hk) hle) V target P hV
-    (fun p hp => Nat.lt_of_lt_of_le (hP p hp) hle) hVP hbodyD
+    (fun k hk => Nat.lt_of_lt_of_le (hK k hk) hle)
+    (substSoft_below hprefixB hle hF) V target P hV
+    (fun p hp => Nat.lt_of_lt_of_le (hP p hp) hle) hVP
+    ((show SourceScope K F body from fun v hv => hscope v (List.mem_append_right _ hv)).residual_freeze
+      (fun v hv => (List.mem_append.mp (hscope v (List.mem_append_right _ hv))).elim
+        (hK v) (softVars_lt hF v))
+      (Subst.fixes_of_dom_avoids (fun p hp => (List.mem_append.mp hp).elim (hr.dom_avoids p) (hc.dom_avoids p)))
+      (fun v hv => hfreeze v (List.mem_append_right _ hv)) hagPrefix) hbodyD
   exact ⟨R2, hR2, hresult, hR2P,
     Subst.AgreesBelow.trans_append hle hagPrefix hprefixB hag2⟩
 
 /-- Residual factorization for a nonempty branch thread. The independent
 protected set scopes authored annotations; both common type images are explicit. -/
-def _root_.InferBranches.Principal
-    (_h : InferBranches K frontier ctx scrutTy resultTy branches next subst completed)
+def _root_.InferBranches.SourcePrincipal
+    (_h : InferBranches K F frontier ctx scrutTy resultTy branches next subst completed)
     (_hne : branches ≠ []) : Prop :=
   CtxWF ctx → CtxBelow frontier ctx → (∀ k ∈ K, k < frontier) →
+  (∀ soft ∈ F, Ty.BelowFvars frontier soft) →
   ∀ (ambient : Subst) (scrutD resultD : Ty) (P : List Nat),
     (∀ pair ∈ ambient, pair.2.IsLC) → scrutD.IsLC → scrutTy.IsLC → resultTy.IsLC →
     Ty.BelowFvars frontier scrutTy → Ty.BelowFvars frontier resultTy →
     (∀ p ∈ P, p < frontier) →
     (∀ p ∈ P, ambient.onTy (.fvar p) = .fvar p) →
+    (∀ v ∈ rigidBranchVars branches, v ∈ K → v ∉ softVars F → ambient.onTy (.fvar v) = .fvar v) →
     resultD = ambient.onTy resultTy → scrutD = ambient.onTy scrutTy →
-    (∀ b ∈ branches, BranchTyping Typing P (ambient.onCtx ctx) b scrutD resultD) →
+    (∀ b ∈ branches, BranchTyping Typing P (ambient.onCtx ctx) (b.1, b.2.substTyFvars ambient) scrutD resultD) →
     ∃ residual : Subst, (∀ pair ∈ residual, pair.2.IsLC) ∧
       Subst.AgreesBelow frontier ambient (subst ++ residual) ∧
       (∀ p ∈ P, residual.onTy (.fvar p) = .fvar p) ∧
       resultD = residual.onTy (subst.onTy resultTy)
 
-theorem _root_.Infer.principal_match
-    (hs : Infer K frontier ctx scrut first s1 scrutOut scrutTy)
-    (hne : branches ≠ [])
-    (hb : InferBranches K (first + 1) (s1.onCtx ctx) scrutTy (.fvar first)
-      branches next s2 branchesOut)
-    (ihs : Infer.Principal hs) (ihb : InferBranches.Principal hb hne) :
-    Infer.Principal (.match_ hs hne hb) := by
-  intro hwf hbelow hK ambient target P hS hP hfix htyping
-  obtain ⟨scrutD, hsD, _, hbD⟩ := htyping.match_inv
-  obtain ⟨R1, hR1, hscrut, hR1P, hag1⟩ := ihs hwf hbelow hK ambient
-    scrutD P hS hP hfix hsD
-  have hle := hs.frontier_le
-  obtain ⟨hsB, hs1B⟩ := hs.belowFvars hbelow hK
-  obtain ⟨hsLC, hs1LC⟩ := hs.lc hwf
-  have hctxWF := Subst.onCtx_wf hs1LC hwf
-  have hctxB := Subst.onCtx_below hs1B hle hbelow
-  obtain ⟨U, hU, hagU, hblock⟩ := Subst.override_block hR1 first [target]
-    (by simpa using htyping.regular)
-  have hUtarget : U.onTy (.fvar first) = target := by simpa using hblock 0 (by simp)
-  have hctxeq : U.onCtx (s1.onCtx ctx) = ambient.onCtx ctx := by
-    trans R1.onCtx (s1.onCtx ctx)
-    · exact (Subst.onCtx_congr hagU hctxB).symm
-    · rw [← Subst.onCtx_append]
-      exact (Subst.onCtx_congr hag1 hbelow).symm
-  have hUP : ∀ p ∈ P, U.onTy (.fvar p) = .fvar p := fun p hp =>
-    (hagU p (Nat.lt_of_lt_of_le (hP p hp) hle)).symm.trans (hR1P p hp)
-  have hUst : scrutD = U.onTy scrutTy :=
-    hscrut.trans (Subst.onTy_congr hagU hsB)
-  obtain ⟨R2, hR2, hag2, hR2P, htarget⟩ := ihb hctxWF
-    (fun M hM => (hctxB M hM).mono (by omega))
-    (fun k hk => by have := hK k hk; omega) U scrutD target P hU hsD.regular hsLC .fvar
-    (hsB.mono (by omega)) (.fvar (by omega))
-    (fun p hp => by have := hP p hp; omega) hUP hUtarget.symm hUst
-    (by simpa only [hctxeq] using hbD)
-  have hag2' : Subst.AgreesBelow first R1 (s2 ++ R2) := fun v hv =>
-    (hagU v hv).trans (hag2 v (by omega))
-  exact ⟨R2, hR2, htarget, hR2P, Subst.AgreesBelow.trans_append hle hag1 hs1B hag2'⟩
-
-/-- Factor a named branch's constructor constraint while transporting its
-independent body typing into the algorithm's instantiated field context. -/
 theorem BranchTyping.factor_named
     {Φ : Nat} {ctx : Ctx} {c : CtorName} {nbr : Nat} {ctor : Ctor}
     {scrutTy scruT₀ ρe : Ty} {S₀ S₀amb : Subst} {K : List Nat} {body : Input}
@@ -1500,22 +1667,68 @@ theorem BranchTyping.factor_named
     exact ⟨R₀, hR₀, hR₀K, hAgreeBelow₀, hbE'⟩
 
 theorem _root_.InferBranches.nil_det
-    (h : InferBranches κ Φ ctx st rt [] Φ' S out) : Φ' = Φ ∧ S = [] := by
+    (h : InferBranches κ F Φ ctx st rt [] Φ' S out) : Φ' = Φ ∧ S = [] := by
   cases h
   exact ⟨rfl, rfl⟩
 
-theorem _root_.InferBranches.principal_of_body
-    (h : InferBranches κ Φ ctx scrutTy ρ brs Φ' S out) (hne : brs ≠ [])
-    (bodyIH : ∀ b ∈ brs, ∀ {f c n s o t} (hb : Infer κ f c b.2 n s o t), Infer.Principal hb) :
-    InferBranches.Principal h hne := by
-  induction brs generalizing Φ ctx scrutTy ρ Φ' S out with
-  | nil => exact False.elim (hne rfl)
-  | cons head rest ih =>
-    cases h with
-      | @cons c ctor nbr _ _ _ S₀ _ body Φ₁ S₁ bodyOut τb _ S₂ _ _ S₃ restOut hlook hn h₀Rigid hinfbody h₂Rigid hrest =>
+private theorem branch_rigid_mem {bs : List (MatchPattern × Input)} {b : MatchPattern × Input}
+    (hb : b ∈ bs) {v : Nat} (hv : v ∈ b.2.rigidVars) : v ∈ rigidBranchVars bs := by
+  induction bs with
+  | nil => cases hb
+  | cons head tail ih =>
+    exact (List.mem_cons.mp hb).elim (fun heq => List.mem_append_left _ (heq ▸ hv))
+      (fun hb => List.mem_append_right _ (ih hb))
+
+private theorem branch_candidates_frame {bs : List (MatchPattern × Input)}
+    {ambient solved residual : Subst} {Φ : Nat} {ctx ctx' : Ctx} {P : List Nat} {st rt : Ty}
+    (hbelow : ∀ v ∈ rigidBranchVars bs, v < Φ)
+    (hag : Subst.AgreesBelow Φ ambient (solved ++ residual))
+    (hctx : residual.onCtx ctx' = ambient.onCtx ctx)
+    (hbr : ∀ b ∈ bs, BranchTyping Typing P (ambient.onCtx ctx)
+      (b.1, b.2.substTyFvars ambient) st rt) :
+    ∀ b ∈ substInputBranches solved bs,
+      BranchTyping Typing P (residual.onCtx ctx') (b.1, b.2.substTyFvars residual) st rt := by
+  intro b hb
+  rw [substInputBranches_eq_map] at hb
+  obtain ⟨original, horiginal, rfl⟩ := List.mem_map.mp hb
+  have hsource : original.2.substTyFvars ambient =
+      (original.2.substTyFvars solved).substTyFvars residual := by
+    rw [← Input.substTyFvars_append]
+    exact original.2.substTyFvars_congr (fun v hv => hag v (hbelow v (branch_rigid_mem horiginal hv)))
+  rw [hctx, ← hsource]
+  exact hbr original horiginal
+
+private theorem branch_freeze_frame {κ : List Nat} {F : List Ty} {bs : List (MatchPattern × Input)}
+    {ambient solved residual : Subst} {Φ : Nat}
+    (hscope : ∀ v ∈ rigidBranchVars bs, v ∈ κ ++ softVars F)
+    (hbelow : ∀ v ∈ rigidBranchVars bs, v < Φ)
+    (hprefix : ∀ k ∈ κ, solved.onTy (.fvar k) = .fvar k)
+    (hfreeze : ∀ v ∈ rigidBranchVars bs, v ∈ κ → v ∉ softVars F → ambient.onTy (.fvar v) = .fvar v)
+    (hag : Subst.AgreesBelow Φ ambient (solved ++ residual)) :
+    ∀ v ∈ rigidBranchVars (substInputBranches solved bs),
+      v ∈ κ → v ∉ softVars (substSoft solved F) → residual.onTy (.fvar v) = .fvar v := by
+  exact SourceScope.residual_freeze (input := .match_ (.var 0) bs) hscope hbelow hprefix hfreeze hag
+set_option maxRecDepth 4096 in
+theorem _root_.InferBranches.sourcePrincipal_of_body
+    (h : InferBranches κ F Φ ctx scrutTy ρ brs Φ' S out) (hne : brs ≠ [])
+    (bodyIH : ∀ body : Input, body.size < sizeBranches brs →
+      ∀ {κ F' f c n s o t} (hb : Infer κ F' f c body n s o t), Infer.SourcePrincipal hb) :
+    InferBranches.SourcePrincipal h hne := by
+  cases h with
+      | nil => exact False.elim (hne rfl)
+      | @cons c nbr body rest κ F ctor scrutTy Φ S₀ ctx Φ₁ S₁ bodyOut τb ρ S₂ Φ' S₃ restOut hscope hlook hn h₀Rigid hinfbody h₂Rigid hrest =>
         have h₀ := h₀Rigid.unifies
         have h₂ := h₂Rigid.unifies
-        exact fun hwf hbelow hκ S₀amb scruT₀ ρe K hS₀amb hscruLC hscrutLC hρLC hbscrut hbρ hKΦ hKfix hIMGρ hIMGscru hbrs => by
+        exact fun hwf hbelow hκ hF S₀amb scruT₀ ρe K hS₀amb hscruLC hscrutLC hρLC hbscrut hbρ hKΦ hKfix hfreeze hIMGρ hIMGscru hbrs => by
+          have hrawBelow : ∀ v ∈ rigidBranchVars ((.named c nbr, body) :: rest), v < Φ := by
+            intro v hv
+            exact (List.mem_append.mp (hscope v hv)).elim (hκ v) (softVars_lt hF v)
+          have hbodyScope : SourceScope κ F body := fun v hv => hscope v (List.mem_append_left _ hv)
+          have hbodyBelow : ∀ v ∈ body.rigidVars, v < Φ := fun v hv => hrawBelow v (List.mem_append_left _ hv)
+          have hrestScope : ∀ v ∈ rigidBranchVars rest, v ∈ κ ++ softVars F :=
+            fun v hv => hscope v (List.mem_append_right _ hv)
+          have hrestBelow : ∀ v ∈ rigidBranchVars rest, v < Φ :=
+            fun v hv => hrawBelow v (List.mem_append_right _ hv)
           obtain ⟨R₀, hR₀, hR₀K, hAgreeBelow₀, hbE'⟩ :=
             BranchTyping.factor_named hlook h₀ hbelow hbscrut hS₀amb hscruLC hKΦ hKfix hIMGscru
               (hbrs (.named c nbr, body) (List.mem_cons_self ..))
@@ -1555,16 +1768,23 @@ theorem _root_.InferBranches.principal_of_body
             obtain ⟨x, hx, rfl⟩ := List.mem_map.mp hv
             exact Subst.onTy_belowFvars hS₀_bel (.fvar (by have := freshVars_lt x hx; omega))
           have hKΦ₀ : ∀ k ∈ K, k < Φ + ctor.paramCount := fun k hk => lt_of_lt_of_le (hKΦ k hk) hfle₀
+          have hsource0 : body.substTyFvars S₀amb = (body.substTyFvars S₀).substTyFvars R₀ := by
+            rw [← Input.substTyFvars_append]
+            exact body.substTyFvars_congr (fun v hv => hAgreeBelow₀ v (hbodyBelow v hv))
+          have hF0 := substSoft_below hS₀_bel hfle₀ hF
+          have hfreeze0 := hbodyScope.residual_freeze hbodyBelow
+            (Subst.fixes_of_dom_avoids h₀Rigid.dom_avoids)
+            (fun v hv => hfreeze v (List.mem_append_left _ hv)) hAgreeBelow₀
           obtain ⟨R_b, hR_b, htyb, hR_bK, hagb⟩ :=
-            (bodyIH (.named c nbr, body) (List.mem_cons_self ..) hinfbody)
-              hwf_body hbelow_body (fun k hk => Nat.lt_of_lt_of_le (hκ k hk) hfle₀)
-              R₀ ρe K hR₀ hKΦ₀ hR₀K hbE'
+            (bodyIH (body.substTyFvars S₀) (by simp only [Input.size_substTyFvars, sizeBranches]; omega) hinfbody)
+              hwf_body hbelow_body (fun k hk => Nat.lt_of_lt_of_le (hκ k hk) hfle₀) hF0
+              R₀ ρe K hR₀ hKΦ₀ hR₀K hfreeze0 (hsource0 ▸ hbE')
           have hle_b : Φ + ctor.paramCount ≤ Φ₁ := Infer.frontier_le hinfbody
           have hKΦ₁ : ∀ k ∈ K, k < Φ₁ := fun k hk => lt_of_lt_of_le (hKΦ₀ k hk) hle_b
           have hbodyLC := Infer.lc hinfbody hwf_body
           have hτb_lc : τb.IsLC := hbodyLC.1
           have hS₁lc : ∀ p ∈ S₁, p.2.IsLC := hbodyLC.2
-          have hbb := Infer.belowFvars hinfbody hbelow_body (fun k hk => Nat.lt_of_lt_of_le (hκ k hk) hfle₀)
+          have hbb := Infer.belowFvars hinfbody hbelow_body (fun k hk => Nat.lt_of_lt_of_le (hκ k hk) hfle₀) hF0
           have hτb_bel : Ty.BelowFvars Φ₁ τb := hbb.1
           have hS₁_bel : ∀ p ∈ S₁, Ty.BelowFvars Φ₁ p.2 := hbb.2
           have htyb' : Eq ρe (R_b.onTy τb) :=
@@ -1638,11 +1858,25 @@ theorem _root_.InferBranches.principal_of_body
               simpa [Subst.onCtx_append, List.append_assoc] using
                 (Subst.onCtx_congr hAgree01 hbelow).symm
             exact h1.trans h2
-          have hbr' : ∀ br ∈ rest, BranchTyping Typing K (R_u.onCtx (S₂.onCtx (S₁.onCtx (S₀.onCtx ctx))))
-              (br.1, br.2) scruT₀ ρe := by
-            intro br hbr
-            rw [hctxeq']
-            exact hbrs br (List.mem_cons_of_mem _ hbr)
+          have hAgreePrefix : Subst.AgreesBelow Φ S₀amb ((S₀ ++ S₁ ++ S₂) ++ R_u) := by
+            have hA : Subst.AgreesBelow Φ S₀amb ((S₀ ++ (S₁ ++ S₂)) ++ R_u) :=
+              @Subst.AgreesBelow.trans_append Φ (Φ + ctor.paramCount) S₀amb S₀ R₀ (S₁ ++ S₂) R_u
+                hfle₀ hAgreeBelow₀ hS₀_bel
+                (@Subst.AgreesBelow.trans_append (Φ + ctor.paramCount) Φ₁ R₀ S₁ R_b S₂ R_u
+                  hle_b hagb hS₁_bel hAgreeUni)
+            simpa [List.append_assoc] using hA
+          have hF' : ∀ t ∈ substSoft (S₀ ++ S₁ ++ S₂) F, Ty.BelowFvars Φ₁ t := by
+            simpa only [substSoft_append] using substSoft_below hS₂_bel (le_refl _)
+              (substSoft_below hS₁_bel hle_b hF0)
+          have hprefixFix : ∀ k ∈ κ, (S₀ ++ S₁ ++ S₂).onTy (.fvar k) = .fvar k := by
+            intro k hk
+            simp only [Subst.onTy_append, Subst.fixes_of_dom_avoids h₀Rigid.dom_avoids k hk,
+              Subst.fixes_of_dom_avoids hinfbody.dom_avoids k hk,
+              Subst.fixes_of_dom_avoids h₂Rigid.dom_avoids k hk]
+          have hfreeze' := branch_freeze_frame hrestScope hrestBelow hprefixFix
+            (fun v hv => hfreeze v (List.mem_append_right _ hv)) hAgreePrefix
+          have hbr' := branch_candidates_frame hrestBelow hAgreePrefix hctxeq'
+            (fun b hb => hbrs b (List.mem_cons_of_mem _ hb))
           by_cases hrestNe : rest = []
           · -- rest = []: the rest derivation is `nil`, so S₃ = [] and Φ₂ = Φ₁.
             subst hrestNe
@@ -1660,9 +1894,16 @@ theorem _root_.InferBranches.principal_of_body
           · -- rest ≠ []: recurse with the tier IH.
             have hrestNe' : rest ≠ [] := hrestNe
             obtain ⟨R_r, hR_r, hAgreeRest, hR_rK, htyRest⟩ :=
-              ih hrest hrestNe' (fun b hb => bodyIH b (List.mem_cons_of_mem _ hb))
-                hwf' hbelow' (fun k hk => Nat.lt_of_lt_of_le (hκ k hk) (by omega)) R_u scruT₀ ρe K
-                hR_u hscruLC hscrutTy'lc hρ'lc hbscrut' hbρ' hKΦ₁ hR_uK hρImg_u hscrutImg' hbr'
+              InferBranches.sourcePrincipal_of_body hrest (by
+                intro heq
+                cases rest with
+                | nil => exact hrestNe rfl
+                | cons b bs => cases heq)
+                (fun b hb {_ _ _ _ _ _ _ _} hi => bodyIH b (by
+                  rw [sizeBranches_substInputBranches] at hb
+                  simp only [sizeBranches]; omega) hi)
+                hwf' hbelow' (fun k hk => Nat.lt_of_lt_of_le (hκ k hk) (by omega)) hF' R_u scruT₀ ρe K
+                hR_u hscruLC hscrutTy'lc hρ'lc hbscrut' hbρ' hKΦ₁ hR_uK hfreeze' hρImg_u hscrutImg' hbr'
             have hAgree1 : Subst.AgreesBelow Φ₁ R_u (S₃ ++ R_r) := hAgreeRest
             have hAgree01 : Subst.AgreesBelow Φ S₀amb ((S₀ ++ S₁ ++ S₂) ++ R_u) := by
               have hA : Subst.AgreesBelow Φ S₀amb ((S₀ ++ (S₁ ++ S₂)) ++ R_u) :=
@@ -1685,22 +1926,32 @@ theorem _root_.InferBranches.principal_of_body
               simpa [List.append_assoc] using hA
             refine ⟨R_r, hR_r, hAgree, hR_rK, ?_⟩
             · simpa [Subst.onTy_append] using htyRest
-      | @consWild _ _ _ body Φ₁ S₁ bodyOut τb _ S₂ _ _ _ S₃ restOut hinfbody h₂Rigid hrest =>
+      | @consWild body rest κ F Φ ctx Φ₁ S₁ bodyOut τb ρ S₂ scrutTy Φ' S₃ restOut hscope hinfbody h₂Rigid hrest =>
         have h₂ := h₂Rigid.unifies
-        exact fun hwf hbelow hκ S₀amb scruT₀ ρe K hS₀amb hscruLC hscrutLC hρLC hbscrut hbρ hKΦ hKfix hIMGρ hIMGscru hbrs => by
+        exact fun hwf hbelow hκ hF S₀amb scruT₀ ρe K hS₀amb hscruLC hscrutLC hρLC hbscrut hbρ hKΦ hKfix hfreeze hIMGρ hIMGscru hbrs => by
+          have hrawBelow : ∀ v ∈ rigidBranchVars ((.wildcard, body) :: rest), v < Φ := by
+            intro v hv
+            exact (List.mem_append.mp (hscope v hv)).elim (hκ v) (softVars_lt hF v)
+          have hbodyScope : SourceScope κ F body := fun v hv => hscope v (List.mem_append_left _ hv)
+          have hbodyBelow : ∀ v ∈ body.rigidVars, v < Φ := fun v hv => hrawBelow v (List.mem_append_left _ hv)
+          have hrestScope : ∀ v ∈ rigidBranchVars rest, v ∈ κ ++ softVars F :=
+            fun v hv => hscope v (List.mem_append_right _ hv)
+          have hrestBelow : ∀ v ∈ rigidBranchVars rest, v < Φ :=
+            fun v hv => hrawBelow v (List.mem_append_right _ hv)
           have hdhead := hbrs (.wildcard, body) (List.mem_cons_self ..)
-          have hbodyD : Typing K (S₀amb.onCtx ctx) body ρe := by
+          have hbodyD : Typing K (S₀amb.onCtx ctx) (body.substTyFvars S₀amb) ρe := by
             cases hdhead with
             | wildcard hbodyty => exact hbodyty
           obtain ⟨R_b, hR_b, htyb, hR_bK, hagb⟩ :=
-            (bodyIH (.wildcard, body) (List.mem_cons_self ..) hinfbody)
-              hwf hbelow hκ S₀amb ρe K hS₀amb hKΦ hKfix hbodyD
+            (bodyIH body (by simp only [sizeBranches]; omega) hinfbody)
+              hwf hbelow hκ hF S₀amb ρe K hS₀amb hKΦ hKfix
+                (fun v hv => hfreeze v (List.mem_append_left _ hv)) hbodyD
           have hle_b : Φ ≤ Φ₁ := Infer.frontier_le hinfbody
           have hKΦ₁ : ∀ k ∈ K, k < Φ₁ := fun k hk => lt_of_lt_of_le (hKΦ k hk) hle_b
           have hbodyLC := Infer.lc hinfbody hwf
           have hτb_lc : τb.IsLC := hbodyLC.1
           have hS₁lc : ∀ p ∈ S₁, p.2.IsLC := hbodyLC.2
-          have hbb := Infer.belowFvars hinfbody hbelow hκ
+          have hbb := Infer.belowFvars hinfbody hbelow hκ hF
           have hτb_bel : Ty.BelowFvars Φ₁ τb := hbb.1
           have hS₁_bel : ∀ p ∈ S₁, Ty.BelowFvars Φ₁ p.2 := hbb.2
           have hρImg_b : Eq ρe (R_b.onTy (S₁.onTy ρ)) := by
@@ -1748,11 +1999,19 @@ theorem _root_.InferBranches.principal_of_body
               rw [← Subst.onCtx_append]
               exact (Subst.onCtx_congr hagb hbelow).symm
             exact h1.trans h2
-          have hbr' : ∀ br ∈ rest, BranchTyping Typing K (R_u.onCtx (S₂.onCtx (S₁.onCtx ctx)))
-              (br.1, br.2) scruT₀ ρe := by
-            intro br hbr
-            rw [hctxeq']
-            exact hbrs br (List.mem_cons_of_mem _ hbr)
+          have hAgreePrefix : Subst.AgreesBelow Φ S₀amb ((S₁ ++ S₂) ++ R_u) :=
+            Subst.AgreesBelow.trans_append hle_b hagb hS₁_bel hAgreeUni
+          have hF' : ∀ t ∈ substSoft (S₁ ++ S₂) F, Ty.BelowFvars Φ₁ t := by
+            simpa only [substSoft_append] using substSoft_below hS₂_bel (le_refl _)
+              (substSoft_below hS₁_bel hle_b hF)
+          have hprefixFix : ∀ k ∈ κ, (S₁ ++ S₂).onTy (.fvar k) = .fvar k := by
+            intro k hk
+            simp only [Subst.onTy_append, Subst.fixes_of_dom_avoids hinfbody.dom_avoids k hk,
+              Subst.fixes_of_dom_avoids h₂Rigid.dom_avoids k hk]
+          have hfreeze' := branch_freeze_frame hrestScope hrestBelow hprefixFix
+            (fun v hv => hfreeze v (List.mem_append_right _ hv)) hAgreePrefix
+          have hbr' := branch_candidates_frame hrestBelow hAgreePrefix hctxeq'
+            (fun b hb => hbrs b (List.mem_cons_of_mem _ hb))
           by_cases hrestNe : rest = []
           · subst hrestNe
             have hnil := InferBranches.nil_det hrest
@@ -1763,9 +2022,16 @@ theorem _root_.InferBranches.principal_of_body
             · simpa [Subst.onTy_append, List.append_assoc, List.append_nil] using hρImg_u
           · have hrestNe' : rest ≠ [] := hrestNe
             obtain ⟨R_r, hR_r, hAgreeRest, hR_rK, htyRest⟩ :=
-              ih hrest hrestNe' (fun b hb => bodyIH b (List.mem_cons_of_mem _ hb))
-                hwf' hbelow' (fun k hk => Nat.lt_of_lt_of_le (hκ k hk) hle_b) R_u scruT₀ ρe K
-                hR_u hscruLC hscrutTy'lc hρ'lc hbscrut' hbρ' hKΦ₁ hR_uK hρImg_u hscrutImg' hbr'
+              InferBranches.sourcePrincipal_of_body hrest (by
+                intro heq
+                cases rest with
+                | nil => exact hrestNe rfl
+                | cons b bs => cases heq)
+                (fun b hb {_ _ _ _ _ _ _ _} hi => bodyIH b (by
+                  rw [sizeBranches_substInputBranches] at hb
+                  simp only [sizeBranches]; omega) hi)
+                hwf' hbelow' (fun k hk => Nat.lt_of_lt_of_le (hκ k hk) hle_b) hF' R_u scruT₀ ρe K
+                hR_u hscruLC hscrutTy'lc hρ'lc hbscrut' hbρ' hKΦ₁ hR_uK hfreeze' hρImg_u hscrutImg' hbr'
             have hAgree : Subst.AgreesBelow Φ S₀amb ((S₁ ++ S₂ ++ S₃) ++ R_r) := by
               have hA : Subst.AgreesBelow Φ S₀amb (((S₁ ++ S₂) ++ S₃) ++ R_r) :=
                 @Subst.AgreesBelow.trans_append Φ Φ₁ S₀amb (S₁ ++ S₂) R_u S₃ R_r hle_b
@@ -1778,6 +2044,76 @@ theorem _root_.InferBranches.principal_of_body
               simpa [List.append_assoc] using hA
             refine ⟨R_r, hR_r, hAgree, hR_rK, ?_⟩
             · simpa [Subst.onTy_append] using htyRest
+
+termination_by sizeBranches brs
+decreasing_by all_goals (subst_vars; simp only [sizeBranches_substInputBranches, sizeBranches]; omega)
+
+
+theorem _root_.Infer.sourcePrincipal_match
+    (hscope : SourceScope K F (.match_ scrut branches))
+    (hs : Infer K F frontier ctx scrut first s1 scrutOut scrutTy)
+    (hne : branches ≠ [])
+    (hb : InferBranches K (substSoft s1 F) (first + 1) (s1.onCtx ctx) scrutTy (.fvar first)
+      (substInputBranches s1 branches) next s2 branchesOut)
+    (ihs : Infer.SourcePrincipal hs)
+    (bodyIH : ∀ body : Input, body.size < sizeBranches branches →
+      ∀ {κ F' f c n s o t} (hi : Infer κ F' f c body n s o t), Infer.SourcePrincipal hi) :
+    Infer.SourcePrincipal (.match_ hscope hs hne hb) := by
+  intro hwf hbelow hK hF ambient target P hS hP hfix hfreeze htyping
+  obtain ⟨scrutD, hsD, _, hbD⟩ := htyping.match_inv
+  obtain ⟨R1, hR1, hscrut, hR1P, hag1⟩ := ihs hwf hbelow hK hF ambient
+    scrutD P hS hP hfix (fun v hv => hfreeze v (List.mem_append_left _ hv)) hsD
+  have hle := hs.frontier_le
+  obtain ⟨hsB, hs1B⟩ := hs.belowFvars hbelow hK hF
+  obtain ⟨hsLC, hs1LC⟩ := hs.lc hwf
+  have hctxWF := Subst.onCtx_wf hs1LC hwf
+  have hctxB := Subst.onCtx_below hs1B hle hbelow
+  obtain ⟨U, hU, hagU, hblock⟩ := Subst.override_block hR1 first [target]
+    (by simpa using htyping.regular)
+  have hUtarget : U.onTy (.fvar first) = target := by simpa using hblock 0 (by simp)
+  have hctxeq : U.onCtx (s1.onCtx ctx) = ambient.onCtx ctx := by
+    trans R1.onCtx (s1.onCtx ctx)
+    · exact (Subst.onCtx_congr hagU hctxB).symm
+    · rw [← Subst.onCtx_append]
+      exact (Subst.onCtx_congr hag1 hbelow).symm
+  have hUP : ∀ p ∈ P, U.onTy (.fvar p) = .fvar p := fun p hp =>
+    (hagU p (Nat.lt_of_lt_of_le (hP p hp) hle)).symm.trans (hR1P p hp)
+  have hUst : scrutD = U.onTy scrutTy :=
+    hscrut.trans (Subst.onTy_congr hagU hsB)
+  have hagSU : Subst.AgreesBelow frontier ambient (s1 ++ U) := by
+    intro v hv
+    exact (hag1 v hv).trans (by
+      rw [Subst.onTy_append, Subst.onTy_append]
+      exact Subst.onTy_congr hagU (Subst.onTy_belowFvars hs1B (.fvar (Nat.lt_of_lt_of_le hv hle))))
+  have hbranchScope : ∀ v ∈ rigidBranchVars branches, v ∈ K ++ softVars F :=
+    fun v hv => hscope v (List.mem_append_right _ hv)
+  have hbranchBelow : ∀ v ∈ rigidBranchVars branches, v < frontier := fun v hv =>
+    (List.mem_append.mp (hbranchScope v hv)).elim (hK v) (softVars_lt hF v)
+  have hfreezeB := branch_freeze_frame hbranchScope hbranchBelow
+    (Subst.fixes_of_dom_avoids hs.dom_avoids)
+    (fun v hv => hfreeze v (List.mem_append_right _ hv)) hagSU
+  have hbrU := branch_candidates_frame hbranchBelow hagSU hctxeq (by
+    intro b hb
+    exact hbD (b.1, b.2.substTyFvars ambient) (by
+      rw [substInputBranches_eq_map]
+      exact List.mem_map.mpr ⟨b, hb, rfl⟩))
+  have hne' : substInputBranches s1 branches ≠ [] := by
+    cases branches with
+    | nil => exact False.elim (hne rfl)
+    | cons b bs => intro heq; cases heq
+  have ihb := hb.sourcePrincipal_of_body hne' (fun body hbody {_ _ _ _ _ _ _ _} hi =>
+    bodyIH body (by rwa [sizeBranches_substInputBranches] at hbody) hi)
+  obtain ⟨R2, hR2, hag2, hR2P, htarget⟩ := ihb hctxWF
+    (fun M hM => (hctxB M hM).mono (by omega))
+    (fun k hk => by have := hK k hk; omega)
+    (substSoft_below (fun p hp => (hs1B p hp).mono (Nat.le_succ _))
+      (hle.trans (Nat.le_succ _)) hF)
+    U scrutD target P hU hsD.regular hsLC .fvar
+    (hsB.mono (by omega)) (.fvar (by omega))
+    (fun p hp => by have := hP p hp; omega) hUP hfreezeB hUtarget.symm hUst hbrU
+  have hag2' : Subst.AgreesBelow first R1 (s2 ++ R2) := fun v hv =>
+    (hagU v hv).trans (hag2 v (by omega))
+  exact ⟨R2, hR2, htarget, hR2P, Subst.AgreesBelow.trans_append hle hag1 hs1B hag2'⟩
 
 private theorem branch_size_lt {branch : MatchPattern × Input}
     (h : branch ∈ branches) : branch.2.size < sizeBranches branches := by
