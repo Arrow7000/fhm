@@ -967,3 +967,29 @@ private def recPrefixIndependent :=
   | .letRec [.partialForall 2 (.arrow (.fixed (.bvar 0)) (.arrow (.fixed (.bvar 1)) .hole))]
       [.lambda none (.lambda none _)] _ => true
   | _ => false
+
+
+-- A complete member cuts this source cycle into residual g then f. Retain
+-- the hole and the written f prefix so complete-backend dispatch cannot mask
+-- the cross-strata sharing canary in the CLI/editor smoke suite.
+#guard lowersWith
+  ("let h : {z} z -> z = \\x -> f x\n" ++
+   "let g = \\x -> h x\n" ++
+   "let f : {a} a -> _ = \\x -> g x\nf\n") fun
+  | input@(.letRec [.partialForall 1 (.arrow (.fixed (.bvar 0)) .hole),
+      .absent, .complete h] [_, _, _] _) =>
+      h.paramCount == 1 && input.toCore.isNone
+  | _ => false
+
+
+-- This variant specializes completed g at (a,a) within the same original
+-- source SCC, rather than relying on two independently lowered groups.
+#guard lowersWith
+  ("let h : {z} z -> z = \\x -> if True then x else let q = f (x,x) in x\n" ++
+   "let g = \\x -> h x\n" ++
+   "let f : {a} (a,a) -> _ = \\x -> g x\n" ++
+   "(f (1,2), f (True,False))\n") fun
+  | input@(.letRec [.partialForall 1 (.arrow (.custom _ [.fixed (.bvar 0), .fixed (.bvar 0)]) .hole),
+      .absent, .complete h] [_, _, _] _) =>
+      h.paramCount == 1 && input.toCore.isNone
+  | _ => false

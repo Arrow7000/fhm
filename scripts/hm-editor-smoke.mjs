@@ -676,6 +676,31 @@ test("mutual partial signatures may share their separately named forall variable
   diagnose("let f : {a} a -> _ = \\x -> g x\nlet g : {b} b -> _ = \\x -> f x\nf\n");
 });
 
+// The complete h contract cuts the source cycle h → f → g → h into
+// residual components g then f. The partial f prefix must remain compatible
+// with the shared declarative pool, even after g has been generalized.
+test("a partial forall may share a root across completed residual components", () => {
+  const source = "let h : {z} z -> z = \\x -> f x\n" +
+    "let g = \\x -> h x\n" +
+    "let f : {a} a -> _ = \\x -> g x\nf\n";
+  const payload = diagnose(source);
+  hover(payload, source, 0, "h", "∀ z. z → z");
+  hover(payload, source, 2, "f", "∀ a. a → a");
+  hover(payload, source, 2, "_", "a");
+  // These functions diverge when applied; diagnose their valid typing only.
+});
+
+test("a later partial signature can specialize an already generalized member", () => {
+  const source = "let h : {z} z -> z = \\x -> if True then x else let q = f (x,x) in x\n" +
+    "let g = \\x -> h x\n" +
+    "let f : {a} (a,a) -> _ = \\x -> g x\n" +
+    "(f (1,2), f (True,False))\n";
+  const payload = diagnose(source);
+  hover(payload, source, 2, "f", "∀ a. (a, a) → (a, a)");
+  hover(payload, source, 2, "_", "(a, a)");
+  run(source, "((1, 2), (True, False))");
+});
+
 test("mutual partial signatures may permute their forall variables", () => {
   diagnose("let f : {a b} a -> b -> _ = \\x y -> if True then 1 else g y x\n" +
     "let g : {c d} c -> d -> _ = \\u v -> f v u\nf\n");
