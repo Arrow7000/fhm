@@ -4,13 +4,13 @@ import FHM.SurfaceBridge
 /-! # End-to-end demos
 
 Run the verified inferer on a Core program and pretty-print its principal type.
-`typecheck [] e` returns the principal scheme (`Option PolyTy`); we render both
+`CoreBackend.typecheck [] e` returns the principal scheme (`Option PolyTy`); we render both
 the program and the inferred type with the `Pretty` printers. -/
 
 namespace Core.Demo
 
 private def typeStr (e : Expr) : String :=
-  match typecheck [] e with
+  match CoreBackend.typecheck [] e with
   | none   => "ill-typed"
   | some σ => toString σ
 
@@ -69,7 +69,7 @@ private def demoCtors : CtorEnv := (elabDecls demoDecls).getD []
 #guard (elabDecls demoDecls).isSome
 
 private def typeStrP (e : Expr) : String :=
-  match typecheck demoCtors e with
+  match CoreBackend.typecheck demoCtors e with
   | none   => "ill-typed"
   | some σ => toString σ
 
@@ -116,7 +116,7 @@ needed — the result is a primitive `Int`). -/
 #eval showType (.app (.lambda none
     (.app (.app (.primBinOp .intAdd) (.var 0)) (.primLit (.int 1))))
   (.primLit (.int 41)))
-#guard (typecheck [] (.app (.lambda none
+#guard (CoreBackend.typecheck [] (.app (.lambda none
     (.app (.app (.primBinOp .intAdd) (.var 0)) (.primLit (.int 1))))
   (.primLit (.int 41)))).isSome = true
 
@@ -138,7 +138,7 @@ needed — the result is a primitive `Int`). -/
 
 -- intAdd ()  :  ill-typed   (a Unit operand is rejected)
 #eval showType (.app (.primBinOp .intAdd) (.primLit .unit))
-#guard (typecheck [] (.app (.primBinOp .intAdd) (.primLit .unit))).isSome = false
+#guard (CoreBackend.typecheck [] (.app (.primBinOp .intAdd) (.primLit .unit))).isSome = false
 
 
 /-! ### The comparison op `intLt` (returns the prelude `Bool`)
@@ -150,7 +150,7 @@ well-typed only relative to an env that provides `Bool` — captured by the two
 
 -- intLt 2 3  :  Bool   (typechecks against `demoCtors`, which provides Bool)
 #eval showTypeP (.app (.app (.primBinOp .intLt) (.primLit (.int 2))) (.primLit (.int 3)))
-#guard (typecheck demoCtors
+#guard (CoreBackend.typecheck demoCtors
   (.app (.app (.primBinOp .intLt) (.primLit (.int 2))) (.primLit (.int 3)))).isSome = true
 
 -- intLt 2 3  ⟹  True   and   intLt 3 2  ⟹  False   (δ emits the Bool ctor)
@@ -159,21 +159,21 @@ well-typed only relative to an env that provides `Bool` — captured by the two
 
 -- intLt 2 3  :  ill-typed against the EMPTY env — no Bool in scope (conditional soundness)
 #eval showType (.app (.app (.primBinOp .intLt) (.primLit (.int 2))) (.primLit (.int 3)))
-#guard (typecheck []
+#guard (CoreBackend.typecheck []
   (.app (.app (.primBinOp .intLt) (.primLit (.int 2))) (.primLit (.int 3)))).isSome = false
 
 -- charLt 'a' 'b'  :  Bool  (char ordering by codepoint); 'a' < 'b' ⟹ True, 'b' < 'a' ⟹ False
 #eval showTypeP (.app (.app (.primBinOp .charLt) (.primLit (.char 'a'))) (.primLit (.char 'b')))
 #guard evalStr (.app (.app (.primBinOp .charLt) (.primLit (.char 'a'))) (.primLit (.char 'b'))) = "True"
 #guard evalStr (.app (.app (.primBinOp .charLt) (.primLit (.char 'b'))) (.primLit (.char 'a'))) = "False"
-#guard (typecheck demoCtors
+#guard (CoreBackend.typecheck demoCtors
   (.app (.app (.primBinOp .charLt) (.primLit (.char 'a'))) (.primLit (.char 'b')))).isSome = true
 
 
 /-! ## Polymorphic combinators
 
 The classic SKI-zoo. Each is ~7–12 nodes and should print a fully polymorphic
-principal scheme. Good sanity that let-free, deeply-curried lambdas infer the
+principal scheme. Good sanity that let-free, deeply-curried lambdas CoreBackend.infer the
 expected types. -/
 
 -- S = λf. λg. λx. f x (g x)  :  ∀ a b c. (b → a → c) → (b → a) → b → c
@@ -278,7 +278,7 @@ algorithmic giving-up. -/
 -- λx. let y = x in y y   :  ill-typed
 -- The soundness landmine: `y`'s type = `x`'s type, which is FREE in the
 -- environment, so it must NOT be generalized. A buggy generalizer would accept
--- this (giving `y` scheme `∀a. a`) and let `y y` typecheck — unsound.
+-- this (giving `y` scheme `∀a. a`) and let `y y` CoreBackend.typecheck — unsound.
 #eval showType (.lambda none (.letIn none (.var 0) (.app (.var 0) (.var 0))))
 
 -- let y = λx. x in y y   :  ∀ a. a → a
@@ -371,7 +371,7 @@ generalisation variables. -/
 private def recAnnRefinesOuter : Expr :=
   .lambda none (.letRec [some ⟨0, .prim .int⟩] [.var 1] (.var 0))
 
-#guard match typecheck [] recAnnRefinesOuter with
+#guard match CoreBackend.typecheck [] recAnnRefinesOuter with
   | some ⟨0, .arrow (.prim .int) (.prim .int)⟩ => true
   | _ => false
 
@@ -381,7 +381,7 @@ private def recAnnSpecialisesIdentity : Expr :=
   .letRec [some ⟨0, .arrow (.prim .int) (.prim .int)⟩]
     [.lambda none (.var 0)] (.var 0)
 
-#guard match typecheck [] recAnnSpecialisesIdentity with
+#guard match CoreBackend.typecheck [] recAnnSpecialisesIdentity with
   | some ⟨0, .arrow (.prim .int) (.prim .int)⟩ => true
   | _ => false
 
@@ -389,14 +389,14 @@ private def recAnnSpecialisesIdentity : Expr :=
 private def recAnnOverclaims : Expr :=
   .letRec [some ⟨1, .bvar 0⟩] [.primLit (.int 1)] (.var 0)
 
-#guard (typecheck [] recAnnOverclaims).isNone
+#guard (CoreBackend.typecheck [] recAnnOverclaims).isNone
 
 /-- A free variable written in an annotation is source-rigid, not an inference
     metavariable which contract checking may solve. -/
 private def recAnnCannotSolveRigid : Expr :=
   .letRec [some ⟨0, .fvar 7⟩] [.primLit (.int 1)] (.var 0)
 
-#guard (typecheck [] recAnnCannotSolveRigid).isNone
+#guard (CoreBackend.typecheck [] recAnnCannotSolveRigid).isNone
 
 /-- Checking annotated `f` cannot consume `g`'s generalisation variable: `g`
     has already been inferred and generalized, so the body can instantiate it
@@ -407,7 +407,7 @@ private def recAnnKeepsSiblingPolymorphic : Expr :=
     (.letIn none (.app (.var 1) (.primLit (.int 1)))
       (.app (.var 2) (.primLit (.char 'c'))))
 
-#guard match typecheck [] recAnnKeepsSiblingPolymorphic with
+#guard match CoreBackend.typecheck [] recAnnKeepsSiblingPolymorphic with
   | some ⟨0, .prim .char⟩ => true
   | _ => false
 
@@ -547,13 +547,13 @@ private def gRhs : Expr := .lambda none (.app (.var 1) (.var 0))
 -- `Unit`; `g` independently instantiates the same declared scheme at `Int`.
 #eval showType (.letRec [some selfSig, none] [fRhs, gRhs]
   (.app (.var 1) (.primLit (.int 0))))
-#guard (typecheck [] (.letRec [some selfSig, none] [fRhs, gRhs]
+#guard (CoreBackend.typecheck [] (.letRec [some selfSig, none] [fRhs, gRhs]
   (.app (.var 1) (.primLit (.int 0))))).isSome = true
 
 -- …and the SAME program's all-unannotated reading is REJECTED (the recursive call
 -- `f ()` pins `f`'s monotype to `unit → unit`, so the body's `g 0` fails): the
 -- mixed witness genuinely needs BOTH regimes at once.
-#guard (typecheck [] (.letRec [none, none] [fRhs, gRhs]
+#guard (CoreBackend.typecheck [] (.letRec [none, none] [fRhs, gRhs]
   (.app (.var 1) (.primLit (.int 0))))).isSome = false
 
 -- let rec (f : ∀ a. a → a) = λx. g x and g = λx. f x in f
@@ -563,13 +563,13 @@ private def gRhs : Expr := .lambda none (.app (.var 1) (.var 0))
 #eval showType (.letRec [some selfSig, none]
   [.lambda none (.app (.var 2) (.var 0)), .lambda none (.app (.var 1) (.var 0))]
   (.var 0))
-#guard (typecheck [] (.letRec [some selfSig, none]
+#guard (CoreBackend.typecheck [] (.letRec [some selfSig, none]
   [.lambda none (.app (.var 2) (.var 0)), .lambda none (.app (.var 1) (.var 0))]
   (.var 0))).isSome = true
 
 -- Giving the sibling its own complete scheme makes both directions explicitly
 -- polymorphic, so the same recursive cycle is accepted.
-#guard (typecheck [] (.letRec [some selfSig, some selfSig]
+#guard (CoreBackend.typecheck [] (.letRec [some selfSig, some selfSig]
   [.lambda none (.app (.var 2) (.var 0)), .lambda none (.app (.var 1) (.var 0))]
   (.var 0))).isSome = true
 
@@ -606,14 +606,14 @@ private def bumpRhs : Expr := .lambda none (.app (.ctor ⟨"Succ"⟩) (.var 0))
 --  instantiates `slen` at `List a`; the complete annotation enables this
 --  deliberate in-group polymorphic recursion.)
 #eval showTypeP (.letRec [some slenSig, none] [slenRhs, bumpRhs] (.var 0))
-#guard (typecheck demoCtors
+#guard (CoreBackend.typecheck demoCtors
   (.letRec [some slenSig, none] [slenRhs, bumpRhs] (.var 0))).isSome = true
 
 -- …and WITHOUT the annotation the same program is REJECTED: monomorphic `slen`
 -- forces `a = List a` at the recursive call (no finite type). Adding an
 -- annotation is what unlocks polymorphic recursion, as the previous guard shows.
 #eval showTypeP (.letRec [none, none] [slenRhs, bumpRhs] (.var 0))
-#guard (typecheck demoCtors
+#guard (CoreBackend.typecheck demoCtors
   (.letRec [none, none] [slenRhs, bumpRhs] (.var 0))).isSome = false
 
 /-! A three-member mixed positive example: one annotated member recurses
@@ -635,7 +635,7 @@ recurses monomorphically over `Forest`. -/
       [ (.named ⟨"FNil"⟩ 0, .ctor ⟨"Zero"⟩)
       , (.named ⟨"FCons"⟩ 2, .app (.ctor ⟨"Succ"⟩) (.app (.var 5) (.var 1))) ]) ]
   (.lambda none (.app (.var 3) (.app (.var 2) (.var 0)))))
-#guard (typecheck demoCtors (.letRec [some selfSig, none, none]
+#guard (CoreBackend.typecheck demoCtors (.letRec [some selfSig, none, none]
   [ .lambda none (.letIn none (.app (.var 1) (.ctor ⟨"Zero"⟩)) (.var 1))
   , .lambda none (.app (.app (.ctor ⟨"FCons"⟩) (.app (.var 1) (.var 0)))
       (.app (.app (.ctor ⟨"FCons"⟩) (.var 0)) (.ctor ⟨"FNil"⟩)))
@@ -660,13 +660,13 @@ private def fUsesHTwice : Expr :=
 -- `Int` and `Unit` uses are independent instantiations.
 #eval showType (.letRec [some selfSig, none]
   [fUsesHTwice, .lambda none (.var 0)] (.var 0))
-#guard (typecheck [] (.letRec [some selfSig, none]
+#guard (CoreBackend.typecheck [] (.letRec [some selfSig, none]
   [fUsesHTwice, .lambda none (.var 0)] (.var 0))).isSome = true
 
 -- Giving `h` its own complete annotation is equivalent at this boundary.
 #eval showType (.letRec [some selfSig, some selfSig]
   [fUsesHTwice, .lambda none (.var 0)] (.var 0))
-#guard (typecheck [] (.letRec [some selfSig, some selfSig]
+#guard (CoreBackend.typecheck [] (.letRec [some selfSig, some selfSig]
   [fUsesHTwice, .lambda none (.var 0)] (.var 0))).isSome = true
 
 
@@ -716,7 +716,7 @@ end Core.Demo
 
 /-! # Surface → Core → eval demos
 
-The Core section above feeds **hand-built Core** into `typecheck` / `evaluate`.
+The Core section above feeds **hand-built Core** into `CoreBackend.typecheck` / `evaluate`.
 This section runs the **front-end pipeline**: `Surface.Program` →
 `lowerProgram` (decls + SCC desugar + `lower`) → `erase` → `evaluate`.
 
@@ -823,7 +823,7 @@ private def sPatternLet : Surface.Program :=
     (.app (.var ⟨"id"⟩) (.primLit (.bool true)))⟩
 #guard evalProgram sPatternLet = "(7, True)"
 #guard (match lowerProgram sPatternLet with
-  | some (ctors, c) => (typecheck ctors c).isSome
+  | some (ctors, c) => (CoreBackend.typecheck ctors c).isSome
   | none => false)
 example : SurfaceCovers ((elabDecls preludeDecls).getD []) sPatternLet.term :=
   checkExhaustive_sound _ (by native_decide)

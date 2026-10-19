@@ -1,11 +1,11 @@
-import FHM.AnonymousPrincipal
+import FHM.Elaboration.Principal
 
-namespace Anonymous
+namespace Elaboration
 
 /-- Producer completeness for the concrete worker, under an arbitrary LC
 specialization fixing the inference's rigid variables. Successful results
 already carry output typing and residual principality. -/
-def InferCoreComplete (input : Input) : Prop :=
+def _root_.InferCoreComplete (input : Input) : Prop :=
   ∀ (K : List Nat) (frontier : Nat) (ctx : Ctx) (ambient : Subst) (target : Ty),
     CtxWF ctx → CtxBelow frontier ctx → (∀ k ∈ K, k < frontier) →
     (∀ pair ∈ ambient, pair.2.IsLC) →
@@ -23,15 +23,15 @@ private theorem ctx_all (h : CtxBelow frontier ctx) :
   obtain ⟨scheme, hs, hv⟩ := Env.mem_freeVars_iff.mp hv
   exact decide_eq_true ((h scheme hs).mem_lt v hv)
 
-theorem inferCore_complete_backend {input : Input} {core : Expr}
+theorem _root_.inferCore_complete_backend {input : Input} {core : Expr}
     (hemb : input.toCore = some core) : InferCoreComplete input := by
   intro K frontier ctx ambient target hwf hbelow hK hS hfix ht
   obtain ⟨hcore, hscope⟩ := ht.toCore hemb
-  obtain ⟨next, subst, ty, R, hi, _⟩ := _root_.Infer.complete core K hwf hbelow hS hK hscope hfix hcore
-  have hsome := _root_.inferCore_complete core K hwf hbelow hK hscope hi
+  obtain ⟨next, subst, ty, R, hi, _⟩ := CoreBackend.Infer.complete core K hwf hbelow hS hK hscope hfix hcore
+  have hsome := CoreBackend.inferCore_complete core K hwf hbelow hK hscope hi
   obtain ⟨⟨⟨n, s, t, nodes, schemes⟩, hresult⟩, hworker⟩ := Option.isSome_iff_exists.mp hsome
-  have hroot : (_root_.inferCore K frontier ctx core).isSome := by
-    rw [_root_.inferCore, hworker]
+  have hroot : (CoreBackend.inferCore K frontier ctx core).isSome := by
+    rw [CoreBackend.inferCore, hworker]
     rfl
   obtain ⟨⟨⟨n, s, t⟩, hi⟩, hroot⟩ := Option.isSome_iff_exists.mp hroot
   have hscopeAll : core.tyFreeVars.all (fun v => decide (v ∈ K)) = true :=
@@ -45,7 +45,7 @@ theorem inferCore_complete_backend {input : Input} {core : Expr}
   · rename_i heq
     simp [hemb] at heq
 
-theorem inferCore_complete_lambda_partial
+theorem _root_.inferCore_complete_lambda_partial
     (ih : InferCoreComplete body) (hemb : (Input.lambda ann body).toCore = none) :
     InferCoreComplete (.lambda ann body) := by
   intro K frontier ctx ambient target hwf hbelow hK hS hfix ht
@@ -81,7 +81,7 @@ theorem inferCore_complete_lambda_partial
     simp [hemb] at heq
   · simp only [hseedResult, hbodyResult, Option.isSome_some]
 
-theorem inferCore_complete_app_partial
+theorem _root_.inferCore_complete_app_partial
     (ihf : InferCoreComplete f) (iha : InferCoreComplete arg)
     (hemb : (Input.app f arg).toCore = none) : InferCoreComplete (.app f arg) := by
   intro K frontier ctx ambient target hwf hbelow hK hS hfix ht
@@ -128,7 +128,7 @@ theorem inferCore_complete_app_partial
   · rename_i core heq; simp [hemb] at heq
   · simp only [hfResult, haResult, huResult, Option.isSome_some]
 
-theorem inferCore_complete_letIn_partial
+theorem _root_.inferCore_complete_letIn_partial
     (ihr : InferCoreComplete rhs) (ihb : InferCoreComplete body)
     (hemb : (Input.letIn ann rhs body).toCore = none) : InferCoreComplete (.letIn ann rhs body) := by
   intro K frontier ctx ambient target hwf hbelow hK hS hfix ht
@@ -162,7 +162,7 @@ theorem inferCore_complete_letIn_partial
 
 /-- Concrete producer completeness for exactly the independently specified
 fragment, including structured partial annotations and completed backend leaves. -/
-theorem inferCore_complete (input : Input) : InferCoreComplete input := by
+theorem _root_.inferCore_complete (input : Input) : InferCoreComplete input := by
   cases hemb : input.toCore with
   | some core => exact inferCore_complete_backend hemb
   | none =>
@@ -187,7 +187,7 @@ termination_by sizeOf input
 
 /-- Producer completeness also yields the usual relational residual contract;
 it is a corollary of concrete success and principality, not a second worker. -/
-theorem Infer.complete {input : Input} {ctx : Ctx} {K : List Nat}
+theorem _root_.Infer.complete {input : Input} {ctx : Ctx} {K : List Nat}
     {frontier : Nat} {ambient : Subst} {target : Ty}
     (hwf : CtxWF ctx) (hbelow : CtxBelow frontier ctx) (hK : ∀ k ∈ K, k < frontier)
     (hS : ∀ pair ∈ ambient, pair.2.IsLC)
@@ -205,7 +205,7 @@ theorem Infer.complete {input : Input} {ctx : Ctx} {K : List Nat}
 
 /-- Acceptance is exactly independent input typing under some admissible
 specialization of the flexible context. Written rigid variables stay fixed. -/
-theorem inferCore_accepts_iff {K : List Nat} {frontier : Nat} {ctx : Ctx} {input : Input}
+theorem _root_.inferCore_accepts_iff {K : List Nat} {frontier : Nat} {ctx : Ctx} {input : Input}
     (hwf : CtxWF ctx) (hbelow : CtxBelow frontier ctx) (hK : ∀ k ∈ K, k < frontier) :
     (inferCore K frontier ctx input).isSome ↔
       ∃ (ambient : Subst) (target : Ty), (∀ pair ∈ ambient, pair.2.IsLC) ∧
@@ -220,7 +220,7 @@ theorem inferCore_accepts_iff {K : List Nat} {frontier : Nat} {ctx : Ctx} {input
 
 /-- For closed terms no context specialization is needed: accepted inputs are
 precisely those admitted by the independent declarative fragment. -/
-theorem inferCore_empty_accepts_iff {K : List Nat} {frontier : Nat} {ctors : CtorEnv} {input : Input}
+theorem _root_.inferCore_empty_accepts_iff {K : List Nat} {frontier : Nat} {ctors : CtorEnv} {input : Input}
     (hK : ∀ k ∈ K, k < frontier) :
     (inferCore K frontier ⟨[], ctors⟩ input).isSome ↔ ∃ ty, Typing K ⟨[], ctors⟩ input ty := by
   constructor
@@ -235,4 +235,4 @@ theorem inferCore_empty_accepts_iff {K : List Nat} {frontier : Nat} {ctors : Cto
 #print axioms Infer.complete
 #print axioms inferCore_empty_accepts_iff
 
-end Anonymous
+end Elaboration

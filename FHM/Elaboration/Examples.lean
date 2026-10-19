@@ -1,11 +1,11 @@
-import FHM.AnonymousComplete
+import FHM.Elaboration.Complete
 import FHM.Decls
 
 /-! Semantic canaries for the proved anonymous lambda/ordinary-let slice.
 These run the elaborator itself; output typing follows from `Infer.sourceSound`.
 -/
 
-namespace Anonymous.Examples
+namespace Elaboration.Examples
 
 private def ctors : CtorEnv := (elabDecls preludeDecls).getD []
 private def ctx : Ctx := ⟨[], ctors⟩
@@ -137,12 +137,12 @@ private def violatesRigidLet : Input :=
   .letIn (.template rigidArrow) (.lambda none (.var 0))
     (.app (.var 0) (.primLit (.int 1)))
 
-#guard (Anonymous.inferCore [7] 8 ctx rigidIdentity).isSome
-#guard !(Anonymous.inferCore [7] 8 ctx violatesRigid).isSome
-#guard !(Anonymous.inferCore [] 8 ctx rigidIdentity).isSome
-#guard (Anonymous.inferCore [7] 8 ctx rigidLet).isSome
-#guard !(Anonymous.inferCore [7] 8 ctx violatesRigidLet).isSome
-#guard match Anonymous.inferCore [7] 8 ctx rigidLet with
+#guard (inferCore [7] 8 ctx rigidIdentity).isSome
+#guard !(inferCore [7] 8 ctx violatesRigid).isSome
+#guard !(inferCore [] 8 ctx rigidIdentity).isSome
+#guard (inferCore [7] 8 ctx rigidLet).isSome
+#guard !(inferCore [7] 8 ctx violatesRigidLet).isSome
+#guard match inferCore [7] 8 ctx rigidLet with
   | some ⟨(_, _, .letIn (some scheme) _ _, .arrow (.fvar 7) (.fvar 7)), _⟩ =>
       scheme.paramCount == 0
   | _ => false
@@ -152,10 +152,10 @@ private def polyrec : Input :=
     [.lambda none
       (.app (.var 1) (.app (.app (.ctor ⟨"Pair"⟩) (.var 0)) (.var 0)))]
     (.app (.var 0) (.ctor ⟨"True"⟩))
-#guard (Anonymous.inferCore [] 0 ctx polyrec).isSome
-#guard (Anonymous.inferCore [] 0 ctx
+#guard (inferCore [] 0 ctx polyrec).isSome
+#guard (inferCore [] 0 ctx
   (.letIn .absent (.lambda (some .hole) (.var 0)) polyrec)).isSome
-#guard !(principalType ctx.ctors polyrec.erase).isSome
+#guard !(CoreBackend.principalType ctx.ctors polyrec.erase).isSome
 
 -- Complete signatures with holes in their RHS are outside the first dispatch
 -- fragment, including cases whose holes would be compatible with its skolems.
@@ -177,4 +177,4 @@ def unusedHole : Input :=
 #print axioms Infer.completes
 #print axioms Infer.erase
 
-end Anonymous.Examples
+end Elaboration.Examples

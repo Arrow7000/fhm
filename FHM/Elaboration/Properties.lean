@@ -1,4 +1,4 @@
-import FHM.AnonymousInfer
+import FHM.Elaboration.Infer
 
 private theorem override_freshVars_getElem? {Φ n i : Nat} (hi : i < n) :
     (freshVars Φ n)[i]? = some (Φ + i) := by
@@ -83,7 +83,7 @@ theorem Subst.override_block {S0 : Subst} (hS0 : ∀ p ∈ S0, p.2.IsLC)
     have := (htargets ts[i] (List.getElem_mem hi)).mem_lt w hc
     omega
 
-namespace Anonymous
+namespace Elaboration
 
 mutual
 private theorem Template.Fits.hole_targets {template : Template} {target : Ty}
@@ -176,10 +176,10 @@ theorem Template.Fits.allocate_override {template : Template} {target : Ty}
   exact ⟨U, hUlc, hUagree, htemplate U
     (fun v hv => (hUagree v (hrigid v hv)).symm.trans (hfix v hv)) hUblock⟩
 
-end Anonymous
+end Elaboration
 
 
-namespace Anonymous
+namespace Elaboration
 
 mutual
 private theorem Template.allocate_bounds (template : Template) (frontier : Nat) :
@@ -250,20 +250,20 @@ theorem LetCheck.belowFvars (h : LetCheck K frontier ty ann next subst)
     rw [heq] at hle
     exact hu.unifies.belowFvars (hty.mono hle) hb
 
-theorem Infer.frontier_le (h : Infer K frontier ctx input next subst output ty) : frontier ≤ next := by
+theorem _root_.Infer.frontier_le (h : Infer K frontier ctx input next subst output ty) : frontier ≤ next := by
   induction h with
-  | backend _ h _ _ _ => exact _root_.Infer.frontier_le h
+  | backend _ h _ _ _ => exact CoreBackend.Infer.frontier_le h
   | lambda hs _ ih => exact hs.frontier_le.trans ih
   | app _ _ _ ihf iha => omega
   | letIn _ hc _ ihr ihb => exact ihr.trans (hc.frontier_le.trans ihb)
 
-theorem Infer.belowFvars (h : Infer K frontier ctx input next subst output ty) :
+theorem _root_.Infer.belowFvars (h : Infer K frontier ctx input next subst output ty) :
     CtxBelow frontier ctx → (∀ k ∈ K, k < frontier) →
       Ty.BelowFvars next ty ∧ ∀ p ∈ subst, Ty.BelowFvars next p.2 := by
   induction h with
   | backend _ h _ _ hr =>
     intro hctx hK
-    exact _root_.Infer.belowFvars h hctx (fun v hv => hK v (hr v hv))
+    exact CoreBackend.Infer.belowFvars h hctx (fun v hv => hK v (hr v hv))
   | lambda hs hb ih =>
     intro hctx hK
     have hle := hs.frontier_le
@@ -320,10 +320,10 @@ theorem Infer.belowFvars (h : Infer K frontier ctx input next subst output ty) :
 
 
 
-end Anonymous
+end Elaboration
 
 
-namespace Anonymous
+namespace Elaboration
 
 private theorem generalizes_lookup {new old : Env}
     (h : List.Forall₂ PolyTy.Generalizes new old) {index : Nat} {scheme : PolyTy}
@@ -397,10 +397,10 @@ theorem Typing.weaken_schemes {K : List Nat} {ctors : CtorEnv} {env : Env}
   | nil => exact hrefl
   | cons hh _ ih => exact .cons hh ih
 
-end Anonymous
+end Elaboration
 
 
-namespace Anonymous
+namespace Elaboration
 
 mutual
 /-- Allocating flexible holes preserves local closure of any matching target. -/
@@ -476,4 +476,4 @@ theorem checkLet_complete {K : List Nat} {Φ : Nat} {ann : LetAnn} {ty target : 
       | none => simp only [hu, Option.isSome_none] at hunifies; contradiction
       | some result => rcases result with ⟨subst, hun, hav⟩; rfl
 
-end Anonymous
+end Elaboration

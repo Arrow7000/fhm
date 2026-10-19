@@ -1,4 +1,4 @@
-import FHM.InferW
+import FHM.CoreBackend.Infer
 
 
 /-- Every declaratively typed Core expression has correctly scoped type annotations. -/

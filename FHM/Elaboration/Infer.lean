@@ -1,12 +1,12 @@
-import FHM.Anonymous
-import FHM.AnonymousClose
+import FHM.Elaboration.Typing
+import FHM.Elaboration.Close
 
 /-! The first anonymous-hole elaborator reuses existing inference for a WHOLE
 completed subtree. It adds only the lambda/application/ordinary-let spine around
 partial annotations; it does not implement another branch or SCC inferer.
 -/
 
-namespace Anonymous
+namespace Elaboration
 
 inductive Seed (K : List Nat) (frontier : Nat) : Option Template → Ty → Nat → Prop
   | absent : Seed K frontier none (.fvar frontier) (frontier + 1)
@@ -35,10 +35,10 @@ def letOutput (scheme : PolyTy) (names : List Nat) (rhs body : Expr) (subst : Su
 /-- Authoritative input/output judgment for the proved anonymous fragment.
 The `backend` rule uses the existing judgment only after a whole subtree embeds
 as completed Core. Partial annotation modes never use that rule. -/
-inductive Infer : List Nat → Nat → Ctx → Input → Nat → Subst → Expr → Ty → Prop
+inductive _root_.Infer : List Nat → Nat → Ctx → Input → Nat → Subst → Expr → Ty → Prop
   | backend :
       input.toCore = some core →
-      _root_.Infer K frontier ctx core next subst ty →
+      CoreBackend.Infer K frontier ctx core next subst ty →
       CtxBelow frontier ctx → (∀ k ∈ K, k < frontier) →
       (∀ v ∈ core.tyFreeVars, v ∈ K) →
       Infer K frontier ctx input next subst core ty
@@ -122,7 +122,7 @@ theorem LetCheck.rigid (h : LetCheck K frontier ty ann next subst) :
   | hole => intro _ heq; cases heq; simp [Template.rigidVars]
   | template _ _ hrigid _ => intro _ heq; cases heq; exact hrigid
 
-theorem Infer.dom_avoids (h : Infer K frontier ctx input next subst output ty) :
+theorem _root_.Infer.dom_avoids (h : Infer K frontier ctx input next subst output ty) :
     ∀ pair ∈ subst, pair.1 ∉ K := by
   induction h with
   | backend _ h _ _ _ => exact h.dom_avoids
@@ -138,7 +138,7 @@ theorem Infer.dom_avoids (h : Infer K frontier ctx input next subst output ty) :
       · exact (List.mem_append.mp hp).elim (ihr pair) (hc.dom_avoids pair)
       · exact ihb pair hp
 
-theorem Infer.lc (h : Infer K frontier ctx input next subst output ty) :
+theorem _root_.Infer.lc (h : Infer K frontier ctx input next subst output ty) :
     CtxWF ctx → ty.IsLC ∧ ∀ pair ∈ subst, pair.2.IsLC := by
   induction h with
   | backend _ h _ _ _ => exact h.lc
@@ -179,7 +179,7 @@ theorem Infer.lc (h : Infer K frontier ctx input next subst output ty) :
 /-- Successful elaboration produces ordinary annotated Core typing. The proof
 constructs the typing from the inference derivation; it does not recheck output
 with the Core inferer. -/
-theorem Infer.sourceSound (h : Infer K frontier ctx input next subst output ty) :
+theorem _root_.Infer.sourceSound (h : Infer K frontier ctx input next subst output ty) :
     CtxWF ctx → TypeOfHM (subst.onCtx ctx) output ty := by
   induction h with
   | backend _ h hbelow hK hrigid =>
@@ -258,7 +258,7 @@ theorem Infer.sourceSound (h : Infer K frontier ctx input next subst output ty) 
 
 /-- Elaboration changes type annotations and their binders, preserving the
 erased expression exactly. -/
-theorem Infer.erase (h : Infer K frontier ctx input next subst output ty) :
+theorem _root_.Infer.erase (h : Infer K frontier ctx input next subst output ty) :
     output.erase = input.erase := by
   induction h with
   | backend hemb _ _ _ _ => exact Input.toCore_erase _ hemb
@@ -269,14 +269,14 @@ theorem Infer.erase (h : Infer K frontier ctx input next subst output ty) :
       simp only [letOutput, Expr.erase, Expr.erase_substTyFvars,
         Expr.erase_closeTyVars, Input.erase, ihr, ihb]
 
-theorem Infer.sound (h : Infer K frontier ctx input next subst output ty) (hctx : CtxWF ctx) :
+theorem _root_.Infer.sound (h : Infer K frontier ctx input next subst output ty) (hctx : CtxWF ctx) :
     RuntimeTyping.RunWT (subst.onCtx ctx) input.erase ty := by
   rw [← h.erase]
   exact (h.sourceSound hctx).erase_preserves_typing
 
 /-- Fixed annotation syntax is protected throughout local filling, substitution,
 and the synthesis of enclosing scheme binders. -/
-theorem Infer.completes (h : Infer K frontier ctx input next subst output ty) :
+theorem _root_.Infer.completes (h : Infer K frontier ctx input next subst output ty) :
     Completes K input output := by
   induction h with
   | backend hemb _ _ _ hrigid => exact .complete hemb hrigid
@@ -294,7 +294,7 @@ theorem Infer.completes (h : Infer K frontier ctx input next subst output ty) :
 
 /-- Successful inference also satisfies the independent partial-input rules.
 This connects input admissibility and completed-output typing at the same type. -/
-theorem Infer.inputSound (h : Infer K frontier ctx input next subst output ty) :
+theorem _root_.Infer.inputSound (h : Infer K frontier ctx input next subst output ty) :
     CtxWF ctx → Typing K (subst.onCtx ctx) input ty := by
   induction h with
   | backend hemb h hbelow hK hrigid =>
@@ -414,7 +414,7 @@ private theorem ctxBelow_of_all {ctx : Ctx} {frontier : Nat}
 /-- One dispatch path: completed subtrees use the existing verified worker;
 partial spines elaborate while inferring. Unsupported partial constructs fail
 before any completed recursive-signature interpretation can be introduced. -/
-def inferCore (K : List Nat) (frontier : Nat) (ctx : Ctx) (input : Input) :
+def _root_.inferCore (K : List Nat) (frontier : Nat) (ctx : Ctx) (input : Input) :
     Option { result : Nat × Subst × Expr × Ty //
       Infer K frontier ctx input result.1 result.2.1 result.2.2.1 result.2.2.2 } :=
   if hK : K.all (fun v => decide (v < frontier)) = true then
@@ -422,7 +422,7 @@ def inferCore (K : List Nat) (frontier : Nat) (ctx : Ctx) (input : Input) :
       match hemb : input.toCore with
       | some core =>
           if hrigid : core.tyFreeVars.all (fun v => decide (v ∈ K)) = true then
-            match _root_.inferCore K frontier ctx core with
+            match CoreBackend.inferCore K frontier ctx core with
             | none => none
             | some ⟨(next, subst, ty), h⟩ =>
                 some ⟨(next, subst, core, ty), .backend hemb h (ctxBelow_of_all hctx)
@@ -475,4 +475,4 @@ def inferCore (K : List Nat) (frontier : Nat) (ctx : Ctx) (input : Input) :
   else none
 termination_by sizeOf input
 
-end Anonymous
+end Elaboration

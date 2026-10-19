@@ -1,6 +1,6 @@
-import FHM.AnonymousProperties
+import FHM.Elaboration.Properties
 
-namespace Anonymous
+namespace Elaboration
 
 mutual
 theorem Template.toCore_fits {template : Template} {ty : Ty}
@@ -240,7 +240,7 @@ theorem Typing.let_hole_iff :
 /-- Residual principality retains an independently quantified protected set.
 `Typing P` scopes authored fixed types in precisely that protected set. It does
 not claim most-general fillings for every unused annotation hole. -/
-def Infer.Principal (_h : Infer K frontier ctx input next subst output ty) : Prop :=
+def _root_.Infer.Principal (_h : Infer K frontier ctx input next subst output ty) : Prop :=
   CtxWF ctx → CtxBelow frontier ctx → (∀ k ∈ K, k < frontier) →
   ∀ (ambient : Subst) (target : Ty) (P : List Nat),
     (∀ pair ∈ ambient, pair.2.IsLC) → (∀ p ∈ P, p < frontier) →
@@ -269,8 +269,8 @@ theorem Seed.override (h : Seed K frontier ann param initial)
     rw [heq] at ht
     exact ⟨U, hU, hag, ht⟩
 
-theorem Infer.principal_backend {input : Input} {core : Expr} (hemb : input.toCore = some core)
-    (h : _root_.Infer K frontier ctx core next subst ty)
+theorem _root_.Infer.principal_backend {input : Input} {core : Expr} (hemb : input.toCore = some core)
+    (h : CoreBackend.Infer K frontier ctx core next subst ty)
     (hctx : CtxBelow frontier ctx) (hK : ∀ k ∈ K, k < frontier)
     (hr : ∀ v ∈ core.tyFreeVars, v ∈ K) :
     Infer.Principal (.backend hemb h hctx hK hr) := by
@@ -278,7 +278,7 @@ theorem Infer.principal_backend {input : Input} {core : Expr} (hemb : input.toCo
   obtain ⟨ht, hscope⟩ := ht.toCore hemb
   exact h.principal hwf hb ambient target P hlc hP hscope hfix ht
 
-theorem Infer.principal_lambda {ctx : Ctx}
+theorem _root_.Infer.principal_lambda {ctx : Ctx}
     (hs : Seed K frontier ann param initial)
     (hb : Infer K initial { ctx with env := PolyTy.mkTrivial param :: ctx.env }
       body next subst completed bodyTy)
@@ -315,7 +315,7 @@ theorem Infer.principal_lambda {ctx : Ctx}
   rw [Subst.onTy_append, hUparam] at hp
   exact hp
 
-theorem Infer.principal_app
+theorem _root_.Infer.principal_app
     (hf : Infer K frontier ctx f first s1 fOut fTy)
     (ha : Infer K first (s1.onCtx ctx) arg second s2 argOut argTy)
     (hu : RigidUnify K (s2.onTy fTy) (.arrow argTy (.fvar second)) s3)
@@ -431,7 +431,7 @@ theorem genScheme_generalizes {K : List Nat} {ctx : Ctx} {ty : Ty}
 
 /-- Reconcile a checked ordinary RHS with a declarative let scheme, then
 transport its continuation. Shared by both completeness directions. -/
-theorem Infer.let_frame
+theorem _root_.Infer.let_frame
     (hr : Infer K frontier ctx rhs first s1 rhsOut rhsTy)
     (hc : LetCheck K first rhsTy ann checked sCheck)
     (ihr : Infer.Principal hr) :
@@ -528,7 +528,7 @@ theorem Infer.let_frame
     · exact hcheckedB scheme hs
   exact ⟨V, hV, hVP, hagPrefix, hbodyD, hbodyWF, hbodyB, hprefixB⟩
 
-theorem Infer.principal_letIn
+theorem _root_.Infer.principal_letIn
     (hr : Infer K frontier ctx rhs first s1 rhsOut rhsTy)
     (hc : LetCheck K first rhsTy ann checked sCheck)
     (hb : Infer K checked
@@ -550,7 +550,7 @@ theorem Infer.principal_letIn
 
 /-- Every elaboration in the supported judgment is principal for independent
 input typings, with the same residual factorization frame as ordinary Core. -/
-theorem Infer.principal (h : Infer K frontier ctx input next subst output ty) :
+theorem _root_.Infer.principal (h : Infer K frontier ctx input next subst output ty) :
     Infer.Principal h := by
   induction h with
   | backend hemb hi hctx hK hr => exact Infer.principal_backend hemb hi hctx hK hr
@@ -558,4 +558,4 @@ theorem Infer.principal (h : Infer K frontier ctx input next subst output ty) :
   | app hf ha hu ihf iha => exact Infer.principal_app hf ha hu ihf iha
   | letIn hr hc hb ihr ihb => exact Infer.principal_letIn hr hc hb ihr ihb
 
-end Anonymous
+end Elaboration

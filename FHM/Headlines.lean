@@ -10,14 +10,14 @@ type system guarantees, what those guarantees *mean* in plain terms, and
 precisely how far the machine-checking currently reaches.
 
 **Status.** Type safety, inference soundness, principality, and completeness are
-closed and axiom-clean. `Infer.sourceSound` and its branch/two-phase recursive-group
-families type the annotated Core source, while `Infer.sound` derives typing for the
+closed and axiom-clean. `CoreBackend.Infer.sourceSound` and its branch/two-phase recursive-group
+families type the annotated Core source, while `CoreBackend.Infer.sound` derives typing for the
 erased runtime term. `TypeOfHM` specifies checked source, while proof-only `RunWT`
 provides substitution, canonical forms, progress, preservation, and one- and
 many-step type safety for erased execution.
 Principality factors every declarative type through a successfully inferred
 type by a locally closed residual substitution. Relational and executable
-completeness show that `principalType` and `typecheck` succeed exactly when the
+completeness show that `CoreBackend.principalType` and `CoreBackend.typecheck` succeed exactly when the
 source has a `TypeOfHM` derivation.
 
 So: do not read this file as "everything below is proved". Read section 6's
@@ -71,29 +71,29 @@ well-typed and is a value or can step again — "never gets stuck" formalised. -
 
 /-! ### Type inference is sound: source typing first, runtime erasure second
 
-`Infer` is the Algorithm-W-style inference relation; `inferCore` is its
+`CoreBackend.Infer` is the Algorithm-W-style inference relation; `CoreBackend.inferCore` is its
 proof-carrying executable implementation. **Soundness**
-`Infer.sourceSound` types the annotated source after the inferred substitution;
-`Infer.sound` then erases annotations and types the runnable `e.erase` under
+`CoreBackend.Infer.sourceSound` types the annotated source after the inferred substitution;
+`CoreBackend.Infer.sound` then erases annotations and types the runnable `e.erase` under
 proof-only `RunWT` at the same inferred type. There is no second typed output
 language or type-bearing runtime syntax. **Principality** is proved
 directly against the annotated source: every declarative type factors through a
 successful inferred type via an LC residual substitution. Producer completeness
 constructs relational derivations from declarative typings, and executable
 completeness proves that the concrete worker realizes them. -/
-#check @Infer.sound
-#check @Infer.sourceSound
-#check @Infer.principal
-#check @Infer.complete'
-#check @principalType_source_sound
-#check @principalType_principal
-#check @typecheck_principal
-#check @Infer.complete
-#check @inferCore_complete
-#check @principalType_complete
-#check @typecheck_complete
-#check @principalType_accepts_iff
-#check @typecheck_accepts_iff
+#check @CoreBackend.Infer.sound
+#check @CoreBackend.Infer.sourceSound
+#check @CoreBackend.Infer.principal
+#check @CoreBackend.Infer.complete'
+#check @CoreBackend.principalType_source_sound
+#check @CoreBackend.principalType_principal
+#check @CoreBackend.typecheck_principal
+#check @CoreBackend.Infer.complete
+#check @CoreBackend.inferCore_complete
+#check @CoreBackend.principalType_complete
+#check @CoreBackend.typecheck_complete
+#check @CoreBackend.principalType_accepts_iff
+#check @CoreBackend.typecheck_accepts_iff
 
 /-! ### Pattern-compilation correctness
 
@@ -459,7 +459,7 @@ example (ctors : CtorEnv) :
 
 `type_safety` needs TWO independent conjuncts to hold of the runtime term: it
 must be well-typed, AND all its matches must be exhaustive. These are checked
-by two entirely separate mechanisms (`typecheck` vs. `checkExhaustive`) over
+by two entirely separate mechanisms (`CoreBackend.typecheck` vs. `checkExhaustive`) over
 two different representations (the erased Core term `c.erase` vs. the surface
 term). Rather than fuse them into one opaque "is this program okay" boolean,
 we keep them as independent checks and conjoin only the PROOFS at the return
@@ -479,7 +479,7 @@ abbrev Safe (ctors : CtorEnv) :=
   { e : Expr // e.erase = e ∧ WellTyped ctors e ∧ AllMatchesExhaustive ctors e }
 
 /-- Run a whole surface program through both checks (typechecking, via
-    `typecheck`, and exhaustiveness, via `checkExhaustive`); `some ⟨ctors, ⟨e,
+    `CoreBackend.typecheck`, and exhaustiveness, via `checkExhaustive`); `some ⟨ctors, ⟨e,
     _⟩⟩` hands back a term that is well-typed AND exhaustive **by
     construction** — the proof is built once here from `program_type_safe` +
     `checkExhaustive_sound` and travels with the term from then on. `none`
@@ -488,7 +488,7 @@ def elaborateSafe (p : Surface.Program) : Option (Σ ctors : CtorEnv, Safe ctors
   match hlow : lowerProgram p with
   | none => none
   | some (ctors, c) =>
-    match htc : (typecheck ctors c).isSome with
+    match htc : (CoreBackend.typecheck ctors c).isSome with
     | false => none
     | true =>
       match hcov : checkExhaustive ctors p.term with
@@ -652,26 +652,26 @@ axiom-clean. -/
 #print axioms TypeOfHM.type_safety_star       -- expect {propext, Classical.choice, Quot.sound}
 
 -- Closed and clean: source and runtime inference soundness.
-#print axioms Infer.sound                -- expect {propext, Classical.choice, Quot.sound}
-#print axioms Infer.sourceSound          -- expect {propext, Classical.choice, Quot.sound}
-#print axioms InferBranches.sourceSound  -- expect {propext, Classical.choice, Quot.sound}
-#print axioms InferRecGroup.sourceSoundMono      -- expect {propext, Classical.choice, Quot.sound}
-#print axioms InferRecGroupPoly.sourceSoundPoly  -- expect {propext, Classical.choice, Quot.sound}
+#print axioms CoreBackend.Infer.sound                -- expect {propext, Classical.choice, Quot.sound}
+#print axioms CoreBackend.Infer.sourceSound          -- expect {propext, Classical.choice, Quot.sound}
+#print axioms CoreBackend.InferBranches.sourceSound  -- expect {propext, Classical.choice, Quot.sound}
+#print axioms CoreBackend.InferRecGroup.sourceSoundMono      -- expect {propext, Classical.choice, Quot.sound}
+#print axioms CoreBackend.InferRecGroupPoly.sourceSoundPoly  -- expect {propext, Classical.choice, Quot.sound}
 
 -- Closed and clean: principality of successful inference.
-#print axioms Infer.principal             -- expect {propext, Classical.choice, Quot.sound}
-#print axioms Infer.complete'             -- expect {propext, Classical.choice, Quot.sound}
-#print axioms principalType_source_sound  -- expect {propext, Classical.choice, Quot.sound}
-#print axioms principalType_principal     -- expect {propext, Classical.choice, Quot.sound}
-#print axioms typecheck_principal         -- expect {propext, Classical.choice, Quot.sound}
+#print axioms CoreBackend.Infer.principal             -- expect {propext, Classical.choice, Quot.sound}
+#print axioms CoreBackend.Infer.complete'             -- expect {propext, Classical.choice, Quot.sound}
+#print axioms CoreBackend.principalType_source_sound  -- expect {propext, Classical.choice, Quot.sound}
+#print axioms CoreBackend.principalType_principal     -- expect {propext, Classical.choice, Quot.sound}
+#print axioms CoreBackend.typecheck_principal         -- expect {propext, Classical.choice, Quot.sound}
 
 -- Closed and clean: relational and executable producer completeness.
-#print axioms Infer.complete               -- expect {propext, Classical.choice, Quot.sound}
-#print axioms inferCore_complete            -- expect {propext, Classical.choice, Quot.sound}
-#print axioms principalType_complete        -- expect {propext, Classical.choice, Quot.sound}
-#print axioms typecheck_complete            -- expect {propext, Classical.choice, Quot.sound}
-#print axioms principalType_accepts_iff     -- expect {propext, Classical.choice, Quot.sound}
-#print axioms typecheck_accepts_iff         -- expect {propext, Classical.choice, Quot.sound}
+#print axioms CoreBackend.Infer.complete               -- expect {propext, Classical.choice, Quot.sound}
+#print axioms CoreBackend.inferCore_complete            -- expect {propext, Classical.choice, Quot.sound}
+#print axioms CoreBackend.principalType_complete        -- expect {propext, Classical.choice, Quot.sound}
+#print axioms CoreBackend.typecheck_complete            -- expect {propext, Classical.choice, Quot.sound}
+#print axioms CoreBackend.principalType_accepts_iff     -- expect {propext, Classical.choice, Quot.sound}
+#print axioms CoreBackend.typecheck_accepts_iff         -- expect {propext, Classical.choice, Quot.sound}
 
 -- Clean: this file's own inversion lemmas.
 #print axioms TypeOfHM_app_inv           -- expect {propext, Quot.sound}
@@ -682,7 +682,7 @@ axiom-clean. -/
 -- Closed: operational bridge (erased-dynamics lemmas proved in FHM.InferW).
 #print axioms runSafe                    -- expect {propext, Classical.choice, Quot.sound}
 #print axioms runSafe_running_reduces    -- expect {propext, Classical.choice, Quot.sound}
--- Inherited from FHM.SurfaceBridge via program_type_safe → surface_type_safe → Infer.sound.
+-- Inherited from FHM.SurfaceBridge via program_type_safe → surface_type_safe → CoreBackend.Infer.sound.
 #print axioms elaborateSafe              -- expect {propext, Classical.choice, Quot.sound}
 
 end Headlines
