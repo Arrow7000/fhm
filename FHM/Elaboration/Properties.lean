@@ -181,6 +181,25 @@ end Elaboration
 
 namespace Elaboration
 
+theorem softVars_lt {F : List Ty} (hF : ∀ t ∈ F, Ty.BelowFvars frontier t) :
+    ∀ v ∈ softVars F, v < frontier := by
+  intro v hv
+  obtain ⟨t, ht, hv⟩ := TyList.mem_freeVars_iff.mp hv
+  exact (hF t ht).mem_lt v hv
+
+theorem substSoft_below {S : Subst} {F : List Ty}
+    (hS : ∀ p ∈ S, Ty.BelowFvars next p.2) (hle : frontier ≤ next)
+    (hF : ∀ t ∈ F, Ty.BelowFvars frontier t) :
+    ∀ t ∈ substSoft S F, Ty.BelowFvars next t := by
+  intro t ht
+  obtain ⟨u, hu, rfl⟩ := List.mem_map.mp ht
+  exact Subst.onTy_belowFvars hS ((hF u hu).mono hle)
+
+private theorem rigid_soft_lt {K F frontier}
+    (hK : ∀ k ∈ K, k < frontier) (hF : ∀ t ∈ F, Ty.BelowFvars frontier t) :
+    ∀ v ∈ K ++ softVars F, v < frontier :=
+  fun v hv => (List.mem_append.mp hv).elim (hK v) (softVars_lt hF v)
+
 mutual
 private theorem Template.allocate_bounds (template : Template) (frontier : Nat) :
     frontier ≤ (template.allocate frontier).1 ∧
@@ -229,7 +248,7 @@ theorem Seed.belowFvars (h : Seed K frontier ann param initial)
     have hb := (template.allocate_bounds frontier).2 (fun v hv => hK v (hr v hv))
     rwa [heq] at hb
 
-theorem LetCheck.frontier_le (h : LetCheck K frontier ty ann next subst) : frontier ≤ next := by
+theorem LetCheck.frontier_le (h : LetCheck K F frontier ty ann next subst) : frontier ≤ next := by
   cases h with
   | absent => omega
   | hole => omega
@@ -237,20 +256,21 @@ theorem LetCheck.frontier_le (h : LetCheck K frontier ty ann next subst) : front
     have hle := (sourceTemplate.allocate_bounds frontier).1
     rwa [heq] at hle
 
-theorem LetCheck.belowFvars (h : LetCheck K frontier ty ann next subst)
-    (hty : Ty.BelowFvars frontier ty) (hK : ∀ k ∈ K, k < frontier) :
+theorem LetCheck.belowFvars (h : LetCheck K F frontier ty ann next subst)
+    (hty : Ty.BelowFvars frontier ty) (hK : ∀ k ∈ K, k < frontier)
+    (hF : ∀ t ∈ F, Ty.BelowFvars frontier t) :
     ∀ p ∈ subst, Ty.BelowFvars next p.2 := by
   cases h with
   | absent => simp
   | hole => simp
   | @template next expected subst sourceTemplate heq _ hr hu =>
-    have hb := (sourceTemplate.allocate_bounds frontier).2 (fun v hv => hK v (hr v hv))
+    have hb := (sourceTemplate.allocate_bounds frontier).2 (fun v hv => rigid_soft_lt hK hF v (hr v hv))
     rw [heq] at hb
     have hle := (sourceTemplate.allocate_bounds frontier).1
     rw [heq] at hle
     exact hu.unifies.belowFvars (hty.mono hle) hb
 
-theorem SignatureCheck.frontier_le (h : SignatureCheck K written frontier ty ann next subst) :
+theorem SignatureCheck.frontier_le (h : SignatureCheck K F written frontier ty ann next subst) :
     frontier ≤ next := by
   cases h with
   | complete => exact Nat.le_refl _
@@ -258,81 +278,86 @@ theorem SignatureCheck.frontier_le (h : SignatureCheck K written frontier ty ann
       have hle := ((template.openTyVarsFrom 0 written).allocate_bounds frontier).1
       rwa [heq] at hle
 
-theorem SignatureCheck.belowFvars (h : SignatureCheck K written frontier ty ann next subst)
+theorem SignatureCheck.belowFvars (h : SignatureCheck K F written frontier ty ann next subst)
     (hty : Ty.BelowFvars frontier ty) (hK : ∀ k ∈ K, k < frontier)
-    (hwritten : ∀ name ∈ written, name < frontier) :
+    (hwritten : ∀ name ∈ written, name < frontier)
+    (hF : ∀ t ∈ F, Ty.BelowFvars frontier t) :
     ∀ p ∈ subst, Ty.BelowFvars next p.2 := by
   cases h with
   | complete _ hr hu =>
       exact hu.unifies.belowFvars hty
-        (Ty.openVars_belowFvars (Ty.BelowFvars.of_freeVars_lt (fun v hv => hK v (hr v hv))) hwritten)
+        (Ty.openVars_belowFvars (Ty.BelowFvars.of_freeVars_lt (fun v hv => rigid_soft_lt hK hF v (hr v hv))) hwritten)
   | @partialSignature next expected subst count template heq _ hr hu =>
       have hb := ((template.openTyVarsFrom 0 written).allocate_bounds frontier).2
-        (fun v hv => (List.mem_append.mp (Template.open_scope hr v hv)).elim (hK v) (hwritten v))
+        (fun v hv => (List.mem_append.mp (Template.open_scope hr v hv)).elim (rigid_soft_lt hK hF v) (hwritten v))
       rw [heq] at hb
       have hle := ((template.openTyVarsFrom 0 written).allocate_bounds frontier).1
       rw [heq] at hle
       exact hu.unifies.belowFvars (hty.mono hle) hb
 
-theorem SignatureCheck.scheme_belowFvars (h : SignatureCheck K written frontier ty ann next subst)
-    (hty : Ty.BelowFvars next (subst.onTy ty)) (hK : ∀ k ∈ K, k < next) :
-    Ty.BelowFvars next (signatureScheme ann K written ctx (subst.onTy ty)).body := by
+theorem SignatureCheck.scheme_belowFvars (h : SignatureCheck K F written frontier ty ann next subst)
+    (hty : Ty.BelowFvars next (subst.onTy ty))
+    (hrigid : ∀ v ∈ (ann.substTyFvars subst).rigidVars, v < next) :
+    Ty.BelowFvars next (signatureScheme (ann.substTyFvars subst) Q written ctx (subst.onTy ty)).body := by
   cases h with
-  | complete _ hr _ => exact Ty.BelowFvars.of_freeVars_lt (fun v hv => hK v (hr v hv))
+  | complete _ _ _ => exact Ty.BelowFvars.of_freeVars_lt hrigid
   | partialSignature => exact hty.closeOver
 
 mutual
-theorem _root_.Infer.frontier_le (h : Infer K frontier ctx input next subst output ty) : frontier ≤ next := by
+theorem _root_.Infer.frontier_le (h : Infer K F frontier ctx input next subst output ty) : frontier ≤ next := by
   match h with
-  | .backend _ hi _ _ _ => exact hi.frontier_le
-  | .lambda hs hb => exact hs.frontier_le.trans hb.frontier_le
-  | .app hf ha _ => have := hf.frontier_le; have := ha.frontier_le; omega
-  | .letIn hr hc hb => exact hr.frontier_le.trans (hc.frontier_le.trans hb.frontier_le)
-  | .letSignature _ _ _ hr hc _ hb =>
+  | .backend _ hi _ _ _ _ => exact hi.frontier_le
+  | .lambda _ hs hb => exact hs.frontier_le.trans hb.frontier_le
+  | .app _ hf ha _ => have := hf.frontier_le; have := ha.frontier_le; omega
+  | .letIn _ hr hc hb => exact hr.frontier_le.trans (hc.frontier_le.trans hb.frontier_le)
+  | .letSignature _ _ _ _ hr hc _ hb =>
       have := hr.frontier_le
       have := hc.frontier_le
       have := hb.frontier_le
       omega
-  | .match_ hs _ hb => have := hs.frontier_le; have := hb.frontier_le; omega
+  | .match_ _ hs _ hb => have := hs.frontier_le; have := hb.frontier_le; omega
 termination_by (input.size, 0)
-decreasing_by all_goals (simp only [Input.size, Input.size_openTyVars]; omega)
+decreasing_by all_goals (simp only [Input.size, Input.size_openTyVars, Input.size_substTyFvars, sizeBranches_substInputBranches]; omega)
 
 theorem _root_.InferBranches.frontier_le
-    (h : InferBranches K frontier ctx scrutTy resultTy branches next subst output) : frontier ≤ next := by
+    (h : InferBranches K F frontier ctx scrutTy resultTy branches next subst output) : frontier ≤ next := by
   match h with
   | .nil => omega
-  | .cons _ _ _ hb _ hr => have := hb.frontier_le; have := hr.frontier_le; omega
-  | .consWild hb _ hr => have := hb.frontier_le; have := hr.frontier_le; omega
+  | .cons _ _ _ _ hb _ hr => have := hb.frontier_le; have := hr.frontier_le; omega
+  | .consWild _ hb _ hr => have := hb.frontier_le; have := hr.frontier_le; omega
 termination_by (sizeBranches branches, 0)
-decreasing_by all_goals (simp only [sizeBranches]; omega)
+decreasing_by all_goals (simp only [sizeBranches, Input.size_substTyFvars, sizeBranches_substInputBranches]; omega)
 end
 
 mutual
-theorem _root_.Infer.belowFvars (h : Infer K frontier ctx input next subst output ty) :
+theorem _root_.Infer.belowFvars (h : Infer K F frontier ctx input next subst output ty) :
     CtxBelow frontier ctx → (∀ k ∈ K, k < frontier) →
+      (∀ t ∈ F, Ty.BelowFvars frontier t) →
       Ty.BelowFvars next ty ∧ ∀ p ∈ subst, Ty.BelowFvars next p.2 := by
   match h with
-  | .backend _ h _ _ hr =>
-    intro hctx hK
+  | .backend _ h _ _ hr _ =>
+    intro hctx hK _
     exact CoreBackend.Infer.belowFvars h hctx (fun v hv => hK v (hr v hv))
-  | .lambda hs hb =>
-    intro hctx hK
+  | .lambda _ hs hb =>
+    intro hctx hK hF
     have hle := hs.frontier_le
-    have hparam := hs.belowFvars hK
+    have hparam := hs.belowFvars (rigid_soft_lt hK hF)
     obtain ⟨hbTy, hbSubst⟩ := hb.belowFvars (by
       intro M hM
       rcases List.mem_cons.mp hM with rfl | hM
       · exact hparam
       · exact (hctx M hM).mono hle)
       (fun k hk => Nat.lt_of_lt_of_le (hK k hk) hle)
+      (fun t ht => (hF t ht).mono hle)
     exact ⟨.arrow (Subst.onTy_belowFvars hbSubst (hparam.mono hb.frontier_le)) hbTy, hbSubst⟩
-  | .app hf ha hu =>
-    intro hctx hK
+  | .app _ hf ha hu =>
+    intro hctx hK hF
     have hfLe := hf.frontier_le
     have haLe := ha.frontier_le
-    obtain ⟨hfTy, hfSubst⟩ := hf.belowFvars hctx hK
+    obtain ⟨hfTy, hfSubst⟩ := hf.belowFvars hctx hK hF
     obtain ⟨haTy, haSubst⟩ := ha.belowFvars (Subst.onCtx_below hfSubst hfLe hctx)
       (fun k hk => Nat.lt_of_lt_of_le (hK k hk) hfLe)
+      (substSoft_below hfSubst hfLe hF)
     have huni := hu.unifies.belowFvars
       (Subst.onTy_belowFvars (fun p hp => (haSubst p hp).mono (Nat.le_succ _))
         (hfTy.mono (haLe.trans (Nat.le_succ _))))
@@ -344,13 +369,14 @@ theorem _root_.Infer.belowFvars (h : Infer K frontier ctx input next subst outpu
       · exact (hfSubst p hp).mono (haLe.trans (Nat.le_succ _))
       · exact (haSubst p hp).mono (Nat.le_succ _)
     · exact huni p hp
-  | .letIn hr hc hb =>
-    intro hctx hK
+  | .letIn _ hr hc hb =>
+    intro hctx hK hF
     have hrLe := hr.frontier_le
     have hcLe := hc.frontier_le
     have hbLe := hb.frontier_le
-    obtain ⟨hrTy, hrSubst⟩ := hr.belowFvars hctx hK
-    have hcSubst := hc.belowFvars hrTy (fun k hk => Nat.lt_of_lt_of_le (hK k hk) hrLe)
+    obtain ⟨hrTy, hrSubst⟩ := hr.belowFvars hctx hK hF
+    have hFfirst := substSoft_below hrSubst hrLe hF
+    have hcSubst := hc.belowFvars hrTy (fun k hk => Nat.lt_of_lt_of_le (hK k hk) hrLe) hFfirst
     have hcTy := Subst.onTy_belowFvars hcSubst (hrTy.mono hcLe)
     have hcheckedCtx := Subst.onCtx_below hcSubst hcLe
       (Subst.onCtx_below hrSubst hrLe hctx)
@@ -360,6 +386,7 @@ theorem _root_.Infer.belowFvars (h : Infer K frontier ctx input next subst outpu
       · exact hcTy.closeOver
       · exact hcheckedCtx M hM)
       (fun k hk => Nat.lt_of_lt_of_le (hK k hk) (hrLe.trans hcLe))
+      (by simpa only [substSoft_append] using substSoft_below hcSubst hcLe hFfirst)
     refine ⟨hbTy, ?_⟩
     intro p hp
     rcases List.mem_append.mp hp with hp | hp
@@ -368,9 +395,9 @@ theorem _root_.Infer.belowFvars (h : Infer K frontier ctx input next subst outpu
       · exact (hcSubst p hp).mono hbLe
     · exact hbSubst p hp
 
-  | @Infer.letSignature written frontier K ctx first s1 rhsOut rhsTy ann checked sCheck body next s2 bodyOut bodyTy rhs
-      hprefix _ _ hr hc _ hb =>
-    intro hctx hK
+  | @Infer.letSignature K F ann rhs body written frontier ctx first s1 rhsOut rhsTy checked sCheck
+      next s2 bodyOut bodyTy _ hprefix _ _ hr hc _ hb =>
+    intro hctx hK hF
     have hrLe := hr.frontier_le
     have hcLe := hc.frontier_le
     have hbLe := hb.frontier_le
@@ -380,19 +407,28 @@ theorem _root_.Infer.belowFvars (h : Infer K frontier ctx input next subst outpu
         rcases List.mem_append.mp hk with hk | hk
         · exact Nat.lt_of_lt_of_le (hK k hk) (by omega)
         · exact freshVars_lt k (by rwa [← hprefix]))
+      (fun t ht => (hF t ht).mono (by omega))
     have hKfirst : ∀ k ∈ K, k < first := fun k hk => Nat.lt_of_lt_of_le (hK k hk) (by omega)
     have hWfirst : ∀ name ∈ written, name < first := fun name hn =>
       Nat.lt_of_lt_of_le (freshVars_lt name (by rwa [← hprefix])) hrLe
-    have hcSubst := hc.belowFvars hrTy hKfirst hWfirst
+    have hFfirst := substSoft_below hrSubst (by omega) hF
+    have hcSubst := hc.belowFvars hrTy hKfirst hWfirst hFfirst
     have hcTy := Subst.onTy_belowFvars hcSubst (hrTy.mono hcLe)
     have hcheckedCtx := Subst.onCtx_below hcSubst hcLe
       (Subst.onCtx_below hrSubst (by omega) hctx)
+    have hpostrigid : ∀ v ∈ ((ann.substTyFvars s1).substTyFvars sCheck).rigidVars, v < checked := by
+      intro v hv
+      obtain ⟨k, hk, hv⟩ := LetAnn.rigidVars_substTyFvars hv
+      exact (Subst.onTy_belowFvars hcSubst (.fvar
+        (Nat.lt_of_lt_of_le (rigid_soft_lt hKfirst hFfirst k (hc.rigid k hk)) hcLe))).mem_lt v hv
     obtain ⟨hbTy, hbSubst⟩ := hb.belowFvars (by
       intro M hM
       rcases List.mem_cons.mp hM with rfl | hM
-      · exact hc.scheme_belowFvars hcTy (fun k hk => Nat.lt_of_lt_of_le (hK k hk) (by omega))
+      · rw [LetAnn.substTyFvars_append]
+        exact hc.scheme_belowFvars hcTy hpostrigid
       · exact hcheckedCtx M hM)
       (fun k hk => Nat.lt_of_lt_of_le (hK k hk) (by omega))
+      (by simpa only [substSoft_append] using substSoft_below hcSubst hcLe hFfirst)
     refine ⟨hbTy, ?_⟩
     intro p hp
     rcases List.mem_append.mp hp with hp | hp
@@ -401,29 +437,31 @@ theorem _root_.Infer.belowFvars (h : Infer K frontier ctx input next subst outpu
       · exact (hcSubst p hp).mono hbLe
     · exact hbSubst p hp
 
-  | .match_ hs _ hb =>
-    intro hctx hK
-    obtain ⟨ht, hS1⟩ := hs.belowFvars hctx hK
+  | .match_ _ hs _ hb =>
+    intro hctx hK hF
+    obtain ⟨ht, hS1⟩ := hs.belowFvars hctx hK hF
     have hle := hs.frontier_le
     obtain ⟨hresult, hS2⟩ := hb.belowFvars
       (Subst.onCtx_below (fun p hp => (hS1 p hp).mono (Nat.le_succ _)) (hle.trans (Nat.le_succ _)) hctx)
       (ht.mono (Nat.le_succ _)) (.fvar (Nat.lt_succ_self _))
       (fun k hk => Nat.lt_of_lt_of_le (hK k hk) (hle.trans (Nat.le_succ _)))
+      (substSoft_below (fun p hp => (hS1 p hp).mono (Nat.le_succ _))
+        (hle.trans (Nat.le_succ _)) hF)
     refine ⟨hresult, fun p hp => ?_⟩
     rcases List.mem_append.mp hp with hp | hp
     · exact (hS1 p hp).mono ((Nat.le_succ _).trans hb.frontier_le)
     · exact hS2 p hp
 termination_by (input.size, 0)
-decreasing_by all_goals (simp only [Input.size, Input.size_openTyVars]; omega)
+decreasing_by all_goals (simp only [Input.size, Input.size_openTyVars, Input.size_substTyFvars, sizeBranches_substInputBranches]; omega)
 
 theorem _root_.InferBranches.belowFvars {Φ ctx scrutTy ρ brs Φ' S}
-    (h : InferBranches κ Φ ctx scrutTy ρ brs Φ' S out)
+    (h : InferBranches κ F Φ ctx scrutTy ρ brs Φ' S out)
     (hctx : CtxBelow Φ ctx) (hscrutTy : Ty.BelowFvars Φ scrutTy) (hρ : Ty.BelowFvars Φ ρ)
-    (hK : ∀ k ∈ κ, k < Φ) :
+    (hK : ∀ k ∈ κ, k < Φ) (hF : ∀ t ∈ F, Ty.BelowFvars Φ t) :
     Ty.BelowFvars Φ' (S.onTy ρ) ∧ (∀ p ∈ S, Ty.BelowFvars Φ' p.2) := by
   match h with
   | .nil => exact ⟨by simpa using hρ, by simp⟩
-  | @InferBranches.cons name ctor count κ scrutTy Φ S₀ ctx body Φ₁ S₁ bodyOut bodyTy ρ S₂ rest Φ' S₃ restOut hlook hn huni0Rigid hbody huniRigid hrest =>
+  | @InferBranches.cons name count body rest κ F ctor scrutTy Φ S₀ ctx Φ₁ S₁ bodyOut bodyTy ρ S₂ Φ' S₃ restOut _ hlook hn huni0Rigid hbody huniRigid hrest =>
     have huni0 := huni0Rigid.unifies
     have huni := huniRigid.unifies
     have hS₀ : ∀ p ∈ S₀, Ty.BelowFvars (Φ + ctor.paramCount) p.2 :=
@@ -440,6 +478,7 @@ theorem _root_.InferBranches.belowFvars {Φ ctx scrutTy ρ brs Φ' S}
           obtain ⟨x, hx, rfl⟩ := List.mem_map.mp hv
           exact Subst.onTy_belowFvars hS₀ (.fvar (by have := freshVars_lt x hx; omega))))
       (fun k hk => Nat.lt_of_lt_of_le (hK k hk) (by omega))
+      (substSoft_below hS₀ (by omega) hF)
     have hle0 : Φ + ctor.paramCount ≤ Φ₁ := Infer.frontier_le hbody
     have hS₀ρ : Ty.BelowFvars Φ₁ (S₀.onTy ρ) :=
       (Subst.onTy_belowFvars hS₀ (hρ.mono (by omega))).mono hle0
@@ -455,6 +494,9 @@ theorem _root_.InferBranches.belowFvars {Φ ctx scrutTy ρ brs Φ' S}
       (Subst.onTy_belowFvars hS₂ (Subst.onTy_belowFvars hS₁ hS₀scrut))
       (Subst.onTy_belowFvars hS₂ (Subst.onTy_belowFvars hS₁ hS₀ρ))
       (fun k hk => Nat.lt_of_lt_of_le (hK k hk) (by omega))
+      (by simpa only [substSoft_append] using
+        substSoft_below hS₂ (le_refl _) (substSoft_below hS₁ (le_refl _)
+          (substSoft_below (fun p hp => (hS₀ p hp).mono hle0) (by omega) hF)))
     have hbrle := InferBranches.frontier_le hrest
     refine ⟨?_, ?_⟩
     · rw [Subst.onTy_append, Subst.onTy_append, Subst.onTy_append]; exact hres
@@ -464,10 +506,10 @@ theorem _root_.InferBranches.belowFvars {Φ ctx scrutTy ρ brs Φ' S}
       · exact (hS₁ p hp).mono (by omega)
       · exact (hS₂ p hp).mono (by omega)
       · exact hS₃ p hp
-  | .consWild hbody huniRigid hrest =>
+  | .consWild _ hbody huniRigid hrest =>
     have huni := huniRigid.unifies
     obtain ⟨hτb, hS₁⟩ := Infer.belowFvars hbody hctx
-      hK
+      hK hF
     have hle1 := Infer.frontier_le hbody
     have hS₁ρ := Subst.onTy_belowFvars hS₁ (hρ.mono hle1)
     have hS₂ := UnifyRel.belowFvars huni hτb hS₁ρ
@@ -476,6 +518,8 @@ theorem _root_.InferBranches.belowFvars {Φ ctx scrutTy ρ brs Φ' S}
       (Subst.onTy_belowFvars hS₂ (Subst.onTy_belowFvars hS₁ (hscrutTy.mono hle1)))
       (Subst.onTy_belowFvars hS₂ (Subst.onTy_belowFvars hS₁ (hρ.mono hle1)))
       (fun k hk => Nat.lt_of_lt_of_le (hK k hk) hle1)
+      (by simpa only [substSoft_append] using
+        substSoft_below hS₂ (le_refl _) (substSoft_below hS₁ hle1 hF))
     have hbrle := InferBranches.frontier_le hrest
     refine ⟨?_, ?_⟩
     · rw [Subst.onTy_append, Subst.onTy_append]; exact hres
@@ -486,7 +530,7 @@ theorem _root_.InferBranches.belowFvars {Φ ctx scrutTy ρ brs Φ' S}
       · exact hS₃ p hp
 termination_by (sizeBranches brs, 0)
 decreasing_by
-  all_goals (try subst_vars; try simp only [sizeBranches]; omega)
+  all_goals (try subst_vars; try simp only [sizeBranches, Input.size_substTyFvars, sizeBranches_substInputBranches]; omega)
 end
 
 end Elaboration
