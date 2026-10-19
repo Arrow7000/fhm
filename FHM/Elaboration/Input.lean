@@ -232,6 +232,23 @@ theorem allocateList_fits (templates : List Template) (frontier : Nat) :
 end
 
 
+mutual
+/-- Term size ignores annotations, so opening written type binders preserves it. -/
+def Input.size : Input → Nat
+  | .primLit _ | .primBinOp _ | .var _ | .ctor _ => 1
+  | .lambda _ body => body.size + 1
+  | .app f arg => f.size + arg.size + 1
+  | .letIn _ rhs body => rhs.size + body.size + 1
+  | .match_ scrut branches => scrut.size + sizeBranches branches + 1
+  | .letRec _ bindings body => sizeBindings bindings + body.size + 1
+def sizeBranches : List (MatchPattern × Input) → Nat
+  | [] => 0
+  | (_, body) :: rest => 1 + body.size + sizeBranches rest
+def sizeBindings : List Input → Nat
+  | [] => 0
+  | body :: rest => 1 + body.size + sizeBindings rest
+end
+
 /-- Authored free type variables are rigid; anonymous holes contribute none. -/
 def LetAnn.rigidVars : LetAnn → List Nat
   | .absent => []
