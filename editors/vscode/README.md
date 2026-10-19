@@ -1,6 +1,6 @@
 # FHM editor extension (Cursor / VS Code)
 
-## What you get (no Core / InferW / SurfaceLang changes)
+## What you get
 
 - **Syntax highlighting** for `.fhm` via a TextMate grammar generated from `Surface.Lex`
 - **Language config** — `--` / `/- -/` comments, brackets, auto-close
@@ -8,6 +8,17 @@
 - **Type-on-hover** (v3) from actual inferred artifacts and a separate source/Core provenance map. Definitions show validated declarations or inferred schemes; occurrences show independently instantiated monotypes. Lambda/pattern binders and authored compound expressions are covered. Exact spans win before name/scope fallback. Comments and indentation have no hover; keywords and punctuation show the expression they belong to.
 - **Doc comments** (`--- …` lines or `/-- … -/`) before a `let`, `type` or constructor appear under the signature when hovering the definition or any use of it.
 - **Go to definition** for values, parameters, pattern variables, types, constructors and type variables (not for built-ins, which have no source location).
+
+The extension registers VS Code hover, definition, and diagnostic providers directly. It sends the current buffer to `fhm diagnose` and uses the returned type artifacts and source spans. There is no separate LSP server or JSON-RPC transport.
+
+Anonymous type holes work through this path, including structured annotations, partial `forall` signatures, patterns, and recursive definitions. Hover directly on an annotation's `_` to see its inferred type:
+
+```fhm
+let id = \(x : _) -> x
+(id 1, id True)
+```
+
+Here `_` hovers as `a`; it has no declaration target. Fixed annotation structure still constrains the program: `let f : Int -> _ = \x -> x` followed by `f True` reports a type mismatch. Pattern wildcards are separate from type holes.
 
 Scoped head-type-variable sugar is still unsupported; prefer explicit schemes and ordinary lambdas.
 
@@ -17,13 +28,15 @@ From the repo root:
 
 ```bash
 scripts/gen-fhm-tmgrammar.sh          # once / when Lex keyword tables change
-lake build fhm               # for parse squiggles + hover types
+lake build fhm                       # for diagnostics + hover types
 scripts/install-cursor-extension.sh   # or scripts/install-vscode-extension.sh
 ```
 
 Then **Developer: Reload Window**.
 
 The symlink target is `~/.cursor/extensions/fhm.fhm-0.0.1` → `editors/vscode/`. Grammar / `extension.js` edits apply after reload (no reinstall). Bump `version` in `package.json` if you change the folder name contract.
+
+Rebuild `fhm` after compiler changes. By default the extension uses the open workspace's `.lake/build/bin/fhm`; for another workspace, set `fhm.diagnosePath` to the rebuilt binary's absolute path.
 
 ## Diagnose JSON (v3)
 
@@ -61,7 +74,10 @@ lake build fhm
 node scripts/hm-editor-smoke.mjs
 node scripts/scratch-hm-audit.mjs
 node editors/vscode/test/lifecycle-regression.cjs
+node editors/vscode/test/anonymous-holes-integration.cjs
 ```
+
+The lifecycle regression mocks the backend to test races. The anonymous-hole integration test uses the actual extension providers and real `fhm diagnose` processes, with only the VS Code host API simulated. It checks precise hole hovers, edits, diagnostics, definition lookup, recursive holes, copied match fallbacks, and top-level pattern annotations. It does not launch an editor window or test an LSP protocol.
 
 ## Regenerate grammar
 
