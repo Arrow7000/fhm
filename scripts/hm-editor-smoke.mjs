@@ -681,6 +681,24 @@ test("mutual partial signatures may permute their forall variables", () => {
     "let g : {c d} c -> d -> _ = \\u v -> f v u\nf\n");
 });
 
+// A syntactic hole keeps this on partialForall's flexible-opening path.
+// Merely requiring each finalized slot to be a bare variable is insufficient:
+// this member's two distinct authored binders must remain distinct too.
+test("a recursive partial signature cannot collapse its own forall prefix", () => {
+  const source = "let f : {a b} a -> b -> _ = \\x y -> " +
+    "if True then (if True then x else y) else f x y\nf\n";
+  const rejected = cli(["run", "--json"], source);
+  assert.equal(rejected.status, 1);
+  assert.equal(rejected.payload.stage, "typecheck");
+});
+
+test("a recursive partial signature preserves independent forall slots", () => {
+  const source = "let f : {a b} a -> b -> _ = \\x y -> " +
+    "if True then x else f x y\n(f 1 True, f False 2)\n";
+  diagnose(source);
+  run(source, "(1, False)");
+});
+
 test("complete recursive signatures permit polymorphic calls while partial signatures forbid them", () => {
   run("let f : {a} a -> Int = \\(x : _) -> if True then 0 else f [x]\nf True\n", "0");
   const badRec = cli(["run", "--json"],

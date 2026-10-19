@@ -950,3 +950,20 @@ private def ordinaryRecProtected :=
    "(f 1 True, g False 2)\n") fun
   | .letRec [.partialForall 2 _, .partialForall 2 _] [_, _] _ => true
   | _ => false
+
+-- Keep the same-member injectivity canary on the partial-opening path: a
+-- fully written `a -> b` signature would take the complete-contract path.
+private def recPrefixCollapse :=
+  "let f : {a b} a -> b -> _ = \\x y -> " ++
+  "if True then (if True then x else y) else f x y\nf\n"
+private def recPrefixIndependent :=
+  "let f : {a b} a -> b -> _ = \\x y -> " ++
+  "if True then x else f x y\n(f 1 True, f False 2)\n"
+#guard lowersWith recPrefixCollapse fun
+  | .letRec [.partialForall 2 (.arrow (.fixed (.bvar 0)) (.arrow (.fixed (.bvar 1)) .hole))]
+      [.lambda none (.lambda none _)] _ => true
+  | _ => false
+#guard lowersWith recPrefixIndependent fun
+  | .letRec [.partialForall 2 (.arrow (.fixed (.bvar 0)) (.arrow (.fixed (.bvar 1)) .hole))]
+      [.lambda none (.lambda none _)] _ => true
+  | _ => false
