@@ -944,4 +944,150 @@ theorem completeBindings_substTyFvars (bindings : List Input) {cores : List Expr
 termination_by sizeOf bindings
 end
 
+mutual
+theorem Template.substTyFvars_zip_openTyVarsFrom (template : Template) {Ys Xs : List Nat}
+    (hlen : Ys.length = Xs.length) (hnd : Ys.Nodup) (hfresh : ∀ y ∈ Ys, y ∉ template.rigidVars)
+    (hdisj : ∀ y ∈ Ys, y ∉ Xs) (d : Nat) :
+    (template.openTyVarsFrom d Ys).substTyFvars (Ys.zip (Xs.map Ty.fvar)) =
+      template.openTyVarsFrom d Xs := by
+  cases template with
+  | fixed ty => exact congrArg Template.fixed (Ty.substFvars_zip_openVarsFrom hlen hnd hfresh hdisj)
+  | hole => rfl
+  | arrow a b =>
+      rw [Template.openTyVarsFrom, Template.substTyFvars, Template.openTyVarsFrom,
+        a.substTyFvars_zip_openTyVarsFrom hlen hnd
+          (fun y hy hv => hfresh y hy (List.mem_append_left _ hv)) hdisj d,
+        b.substTyFvars_zip_openTyVarsFrom hlen hnd
+          (fun y hy hv => hfresh y hy (List.mem_append_right _ hv)) hdisj d]
+  | custom name args =>
+      exact congrArg (Template.custom name) (substTemplateList_zip_open args hlen hnd hfresh hdisj d)
+theorem substTemplateList_zip_open (templates : List Template) {Ys Xs : List Nat}
+    (hlen : Ys.length = Xs.length) (hnd : Ys.Nodup) (hfresh : ∀ y ∈ Ys, y ∉ rigidVarsList templates)
+    (hdisj : ∀ y ∈ Ys, y ∉ Xs) (d : Nat) :
+    substTemplateList (Ys.zip (Xs.map Ty.fvar)) (openTemplateList d Ys templates) =
+      openTemplateList d Xs templates := by
+  cases templates with
+  | nil => rfl
+  | cons t ts =>
+      simp only [openTemplateList, substTemplateList,
+        t.substTyFvars_zip_openTyVarsFrom hlen hnd
+          (fun y hy hv => hfresh y hy (List.mem_append_left _ hv)) hdisj d,
+        substTemplateList_zip_open ts hlen hnd
+          (fun y hy hv => hfresh y hy (List.mem_append_right _ hv)) hdisj d]
+end
+
+theorem LetAnn.substTyFvars_zip_openTyVarsFrom (ann : LetAnn) {Ys Xs : List Nat}
+    (hlen : Ys.length = Xs.length) (hnd : Ys.Nodup) (hfresh : ∀ y ∈ Ys, y ∉ ann.rigidVars)
+    (hdisj : ∀ y ∈ Ys, y ∉ Xs) (d : Nat) :
+    (ann.openTyVarsFrom d Ys).substTyFvars (Ys.zip (Xs.map Ty.fvar)) = ann.openTyVarsFrom d Xs := by
+  cases ann with
+  | absent => rfl
+  | complete scheme =>
+      simp only [LetAnn.openTyVarsFrom, LetAnn.substTyFvars,
+        Ty.substFvars_zip_openVarsFrom hlen hnd hfresh hdisj]
+  | template t => exact congrArg LetAnn.template (t.substTyFvars_zip_openTyVarsFrom hlen hnd hfresh hdisj d)
+  | partialForall n t =>
+      exact congrArg (LetAnn.partialForall n)
+        (t.substTyFvars_zip_openTyVarsFrom hlen hnd hfresh hdisj (d + n))
+
+mutual
+/-- Replace an opening's fresh names throughout partial input syntax. As in
+Core, the names must be absent from authored leaves and from the replacement
+block, because type substitution is sequential. -/
+theorem Input.substTyFvars_zip_openTyVarsFrom (input : Input) {Ys Xs : List Nat}
+    (hlen : Ys.length = Xs.length) (hnd : Ys.Nodup) (hfresh : ∀ y ∈ Ys, y ∉ input.rigidVars)
+    (hdisj : ∀ y ∈ Ys, y ∉ Xs) (d : Nat) :
+    (input.openTyVarsFrom d Ys).substTyFvars (Ys.zip (Xs.map Ty.fvar)) = input.openTyVarsFrom d Xs := by
+  cases input with
+  | primLit | primBinOp | var | ctor => rfl
+  | lambda ann body =>
+      simp only [Input.openTyVarsFrom, Input.substTyFvars,
+        body.substTyFvars_zip_openTyVarsFrom hlen hnd
+          (fun y hy hv => hfresh y hy (List.mem_append_right _ hv)) hdisj d]
+      congr 1
+      cases ann with
+      | none => rfl
+      | some template => exact congrArg some (template.substTyFvars_zip_openTyVarsFrom hlen hnd
+          (fun y hy hv => hfresh y hy (List.mem_append_left _ hv)) hdisj d)
+  | app f a =>
+      simp only [Input.openTyVarsFrom, Input.substTyFvars,
+        f.substTyFvars_zip_openTyVarsFrom hlen hnd
+          (fun y hy hv => hfresh y hy (List.mem_append_left _ hv)) hdisj d,
+        a.substTyFvars_zip_openTyVarsFrom hlen hnd
+          (fun y hy hv => hfresh y hy (List.mem_append_right _ hv)) hdisj d]
+  | letIn ann rhs body =>
+      simp only [Input.openTyVarsFrom, Input.substTyFvars,
+        ann.substTyFvars_zip_openTyVarsFrom hlen hnd
+          (fun y hy hv => hfresh y hy (List.mem_append_left _ (List.mem_append_left _ hv))) hdisj d,
+        rhs.substTyFvars_zip_openTyVarsFrom hlen hnd
+          (fun y hy hv => hfresh y hy (List.mem_append_left _ (List.mem_append_right _ hv))) hdisj (d + ann.paramCount),
+        body.substTyFvars_zip_openTyVarsFrom hlen hnd
+          (fun y hy hv => hfresh y hy (List.mem_append_right _ hv)) hdisj d]
+  | match_ scrut branches =>
+      simp only [Input.openTyVarsFrom, Input.substTyFvars,
+        scrut.substTyFvars_zip_openTyVarsFrom hlen hnd
+          (fun y hy hv => hfresh y hy (List.mem_append_left _ hv)) hdisj d,
+        substInputBranches_zip_open branches hlen hnd
+          (fun y hy hv => hfresh y hy (List.mem_append_right _ hv)) hdisj d]
+  | letRec anns bindings body =>
+      simp only [Input.openTyVarsFrom, Input.substTyFvars,
+        body.substTyFvars_zip_openTyVarsFrom hlen hnd
+          (fun y hy hv => hfresh y hy (List.mem_append_right _ hv)) hdisj d,
+        substInputBindings_zip_open bindings anns hlen hnd
+          (fun y hy hv => hfresh y hy (List.mem_append_left _ (List.mem_append_right _ hv))) hdisj d,
+        List.map_map]
+      congr 1
+      apply List.map_congr_left
+      intro ann hann
+      exact ann.substTyFvars_zip_openTyVarsFrom hlen hnd
+        (fun y hy hv => hfresh y hy (List.mem_append_left _ (List.mem_append_left _
+          (List.mem_flatMap.mpr ⟨ann, hann, hv⟩)))) hdisj d
+termination_by sizeOf input
+
+theorem substInputBranches_zip_open (branches : List (MatchPattern × Input)) {Ys Xs : List Nat}
+    (hlen : Ys.length = Xs.length) (hnd : Ys.Nodup) (hfresh : ∀ y ∈ Ys, y ∉ rigidBranchVars branches)
+    (hdisj : ∀ y ∈ Ys, y ∉ Xs) (d : Nat) :
+    substInputBranches (Ys.zip (Xs.map Ty.fvar)) (openInputBranches d Ys branches) =
+      openInputBranches d Xs branches := by
+  cases branches with
+  | nil => rfl
+  | cons pair rest =>
+      simp only [openInputBranches, substInputBranches,
+        pair.2.substTyFvars_zip_openTyVarsFrom hlen hnd
+          (fun y hy hv => hfresh y hy (List.mem_append_left _ hv)) hdisj d,
+        substInputBranches_zip_open rest hlen hnd
+          (fun y hy hv => hfresh y hy (List.mem_append_right _ hv)) hdisj d]
+termination_by sizeOf branches
+decreasing_by all_goals (subst_vars; cases pair; simp_wf <;> omega)
+
+theorem substInputBindings_zip_open (bindings : List Input) (anns : List LetAnn) {Ys Xs : List Nat}
+    (hlen : Ys.length = Xs.length) (hnd : Ys.Nodup) (hfresh : ∀ y ∈ Ys, y ∉ rigidBindingVars bindings)
+    (hdisj : ∀ y ∈ Ys, y ∉ Xs) (d : Nat) :
+    substInputBindings (Ys.zip (Xs.map Ty.fvar)) (openInputBindings d Ys anns bindings) =
+      openInputBindings d Xs anns bindings := by
+  cases bindings with
+  | nil => rfl
+  | cons body rest =>
+      cases anns with
+      | nil => simp only [openInputBindings, substInputBindings,
+          body.substTyFvars_zip_openTyVarsFrom hlen hnd
+            (fun y hy hv => hfresh y hy (List.mem_append_left _ hv)) hdisj d,
+          substInputBindings_zip_open rest [] hlen hnd
+            (fun y hy hv => hfresh y hy (List.mem_append_right _ hv)) hdisj d]
+      | cons ann anns => simp only [openInputBindings, substInputBindings,
+          body.substTyFvars_zip_openTyVarsFrom hlen hnd
+            (fun y hy hv => hfresh y hy (List.mem_append_left _ hv)) hdisj (d + ann.paramCount),
+          substInputBindings_zip_open rest anns hlen hnd
+            (fun y hy hv => hfresh y hy (List.mem_append_right _ hv)) hdisj d]
+termination_by sizeOf bindings
+end
+
+/-- Top-level fresh-block replacement, with the same assumptions as the Core
+opening/renaming law and authored `rigidVars` in place of annotation free vars. -/
+theorem Input.substTyFvars_zip_openTyVars (input : Input) {Ys Xs : List Nat}
+    (hlen : Ys.length = Xs.length) (hnd : Ys.Nodup) (hfresh : ∀ y ∈ Ys, y ∉ input.rigidVars)
+    (hdisj : ∀ y ∈ Ys, y ∉ Xs) :
+    (input.openTyVars Ys).substTyFvars (Ys.zip (Xs.map Ty.fvar)) = input.openTyVars Xs :=
+  input.substTyFvars_zip_openTyVarsFrom hlen hnd hfresh hdisj 0
+
 end Elaboration
