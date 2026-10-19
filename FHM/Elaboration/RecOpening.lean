@@ -215,4 +215,112 @@ theorem OpenRecAnns.expectedTypes_below (h : OpenRecAnns selected index frontier
   obtain ⟨opening, hopening, he⟩ := List.mem_filterMap.mp hm
   exact h.expected_below hraw opening hopening ty he
 
+
+
+/-- Read a list of bare variable images without changing their order. -/
+private def recWrittenNames : List Ty → Option (List Nat)
+  | [] => some []
+  | .fvar name :: rest => (recWrittenNames rest).map (name :: ·)
+  | _ :: _ => none
+
+private theorem recWrittenNames_sound {images : List Ty} {names : List Nat}
+    (h : recWrittenNames images = some names) : names.map Ty.fvar = images := by
+  induction images generalizing names with
+  | nil => cases h; rfl
+  | cons ty rest ih =>
+      cases ty with
+      | fvar name =>
+          simp only [recWrittenNames, Option.map_eq_some_iff] at h
+          obtain ⟨tail, ht, rfl⟩ := h
+          simpa only [List.map_cons] using congrArg (Ty.fvar name :: ·) (ih ht)
+      | prim | arrow | bvar | customTy => cases h
+
+private theorem recWrittenNames_map (names : List Nat) :
+    recWrittenNames (names.map Ty.fvar) = some names := by
+  induction names with
+  | nil => rfl
+  | cons name rest ih => simp only [List.map_cons, recWrittenNames, ih, Option.map_some]
+
+/-- Validate one member's normalized prefix. Sharing roots with another member
+is permitted; this call checks distinctness only within the supplied prefix. -/
+def resolveRecWritten (images : List Ty) (forbidden : List Nat) :
+    Option { names : List Nat // names.map Ty.fvar = images ∧ names.Nodup ∧
+      ∀ name ∈ names, name ∉ forbidden } :=
+  match hp : recWrittenNames images with
+  | none => none
+  | some names =>
+      if hnd : names.Nodup then
+        if havoid : ∀ name ∈ names, name ∉ forbidden then
+          some ⟨names, recWrittenNames_sound hp, hnd, havoid⟩
+        else none
+      else none
+
+theorem resolveRecWritten_isSome_iff : (resolveRecWritten images forbidden).isSome ↔
+    ∃ names : List Nat, names.map Ty.fvar = images ∧ names.Nodup ∧
+      ∀ name ∈ names, name ∉ forbidden := by
+  constructor
+  · intro hs
+    obtain ⟨⟨names, hnames⟩, _⟩ := Option.isSome_iff_exists.mp hs
+    exact ⟨names, hnames⟩
+  · rintro ⟨names, rfl, hnd, havoid⟩
+    unfold resolveRecWritten
+    split
+    · rename_i hp
+      rw [recWrittenNames_map] at hp
+      cases hp
+    · rename_i names' hp
+      have heq : names' = names := Option.some.inj (hp.symm.trans (recWrittenNames_map names))
+      subst names'
+      simp only [dif_pos hnd, dif_pos havoid, Option.isSome_some]
+
+theorem resolveRecWritten_length {result}
+    (_h : resolveRecWritten images forbidden = some result) : result.val.length = images.length := by
+  exact (List.length_map ..).symm.trans (congrArg List.length result.property.1)
+
+/-- Substitution cannot erase a structured/concrete/bound type into a bare
+free variable. No LC or freshness hypothesis on the substitution is required. -/
+private theorem bare_of_subst_bare {R : Subst} {ty : Ty} {name : Nat}
+    (h : R.onTy ty = .fvar name) : ∃ original, ty = .fvar original := by
+  cases ty with
+  | fvar original => exact ⟨original, rfl⟩
+  | prim | arrow | bvar | customTy => simp only [Subst.onTy_prim, Subst.onTy_arrow, Subst.onTy_bvar, Subst.onTy_customTy, reduceCtorEq] at h
+
+private theorem bareList_of_subst_bareList {R : Subst} {images : List Ty} {candidates : List Nat}
+    (h : images.map R.onTy = candidates.map Ty.fvar) :
+    ∃ names : List Nat, names.map Ty.fvar = images := by
+  have hall : ∀ ty ∈ images, ∃ name, ty = .fvar name := by
+    intro ty ht
+    have hm : R.onTy ty ∈ candidates.map Ty.fvar := h ▸ List.mem_map.mpr ⟨ty, ht, rfl⟩
+    obtain ⟨name, _, heq⟩ := List.mem_map.mp hm
+    exact bare_of_subst_bare heq.symm
+  clear h
+  induction images with
+  | nil => exact ⟨[], rfl⟩
+  | cons ty rest ih =>
+      obtain ⟨name, rfl⟩ := hall ty List.mem_cons_self
+      obtain ⟨names, heq⟩ := ih (fun ty ht => hall ty (List.mem_cons_of_mem _ ht))
+      exact ⟨name :: names, congrArg (Ty.fvar name :: ·) heq⟩
+
+/-- A factor into a distinct bare candidate prefix certifies the concrete
+validator, provided the candidate prefix avoids the images of forbidden roots.
+These are per-call frame facts; no global candidate freshness is assumed. -/
+theorem resolveRecWritten_complete_of_factor {R : Subst} {candidates : List Nat}
+    (hfactor : images.map R.onTy = candidates.map Ty.fvar) (hnd : candidates.Nodup)
+    (havoid : ∀ name ∈ candidates, ∀ v ∈ forbidden, name ∉ (R.onTy (.fvar v)).freeVars) :
+    (resolveRecWritten images forbidden).isSome := by
+  obtain ⟨names, hbare⟩ := bareList_of_subst_bareList hfactor
+  apply resolveRecWritten_isSome_iff.mpr
+  refine ⟨names, hbare, ?_, ?_⟩
+  · have hmap := hnd.map (fun _ _ heq => Ty.fvar.inj heq)
+    rw [← hfactor, ← hbare] at hmap
+    exact hmap.of_map.of_map
+  · intro name hn hf
+    have hm : R.onTy (.fvar name) ∈ candidates.map Ty.fvar :=
+      hfactor ▸ List.mem_map.mpr ⟨.fvar name, hbare ▸ List.mem_map.mpr ⟨name, hn, rfl⟩, rfl⟩
+    obtain ⟨candidate, hc, heq⟩ := List.mem_map.mp hm
+    apply havoid candidate hc name hf
+    rw [← heq]
+    exact List.mem_cons_self
+
+
 end Elaboration

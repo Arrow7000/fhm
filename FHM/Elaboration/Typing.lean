@@ -552,6 +552,18 @@ inductive LetAnn.SignatureCompletion : LetAnn → List Nat → Ty → PolyTy →
         ⟨(written ++ extras).length, Ty.closeOver (written ++ extras) ty⟩ (written ++ extras)
 
 /-- Structural branch completion preserves patterns and completes each body. -/
+def LetAnn.RecFits (ann : LetAnn) (written : List Nat) (ty : Ty) : Prop :=
+  match ann with
+  | .absent => True
+  | .template t => t.Fits ty
+  | .partialForall count t => written.length = count ∧
+      (t.openTyVarsFrom 0 written).Fits ty
+  | .complete _ => False
+
+def LetAnn.BindingFits (ann : LetAnn) (scheme : PolyTy) (fresh : List Nat) : Prop :=
+  if ann.isSignature then ann.SignatureFits scheme fresh else ann.FitsMono (scheme.openVars fresh)
+
+
 inductive CompletedBranches (J : List Nat → Input → Expr → Prop) :
     List Nat → List (MatchPattern × Input) → List (MatchPattern × Expr) → Prop
   | nil : CompletedBranches J K [] []
@@ -588,6 +600,24 @@ inductive Completes : List Nat → Input → Expr → Prop
       Completes K (.letIn ann rhs body) (.letIn (some M) rhsOut bodyOut)
   | match_ : Completes K scrut scrutOut → CompletedBranches Completes K branches branchesOut →
       Completes K (.match_ scrut branches) (.match_ scrutOut branchesOut)
+
+  | letRec {schemes : List PolyTy} {L : List Nat} :
+    anns.length = schemes.length → bindings.length = schemes.length →
+    completed.length = schemes.length →
+    (∀ ann ∈ anns, ∀ v ∈ ann.rigidVars, v ∈ K) →
+    (∀ rhs ∈ bindings, ∀ v ∈ rhs.rigidVars, v ∈ K) →
+    (∀ (member : Nat) (ann : LetAnn) (rhs : Input) (output : Expr) (scheme : PolyTy),
+      anns[member]? = some ann → bindings[member]? = some rhs →
+      completed[member]? = some output → schemes[member]? = some scheme →
+      (∀ Xs, FreshNames L scheme.paramCount Xs → ann.BindingFits scheme Xs)) →
+    (∀ (member : Nat) (ann : LetAnn) (rhs : Input) (output : Expr) (scheme : PolyTy),
+      anns[member]? = some ann → bindings[member]? = some rhs →
+      completed[member]? = some output → schemes[member]? = some scheme →
+      (∀ Xs, FreshNames L scheme.paramCount Xs →
+        Completes (K ++ Xs.take ann.paramCount) (rhs.openTyVars (Xs.take ann.paramCount))
+          (output.openTyVars Xs))) →
+    Completes K body bodyOut →
+    Completes K (.letRec anns bindings body) (.letRec (schemes.map some) completed bodyOut)
 
 /-- Independent branch semantics reuse the ordinary constructor specification;
 the body relation is a parameter, with no inference state or substitution. -/
@@ -645,6 +675,35 @@ inductive Typing : List Nat → Ctx → Input → Ty → Prop
   | match_ : Typing K ctx scrut scrutTy → branches ≠ [] →
       (∀ branch ∈ branches, BranchTyping Typing K ctx branch scrutTy resultTy) →
       Typing K ctx (.match_ scrut branches) resultTy
+  | letRec {specs : List RecSpec} {groups : List (List Nat)} {prefixes : List (List Nat)}
+      {G L : List Nat} :
+    RecGroups.ValidResidualGroups (anns.map LetAnn.recModeAnn) (bindings.map Input.erase) groups →
+    RecSpecs.WF (anns.map LetAnn.recModeAnn) (bindings.map Input.erase) specs G →
+    RecPrefixesWF anns specs prefixes G →
+    (∀ name ∈ G, name ∉ ctx.env.freeVars ++ K) →
+    (∀ ann ∈ anns, ∀ v ∈ ann.rigidVars, v ∈ K) →
+    (∀ rhs ∈ bindings, ∀ v ∈ rhs.rigidVars, v ∈ K) →
+    (∀ (stage : Nat) (component : List Nat), groups[stage]? = some component →
+      ∀ Xs, FreshNames (G ++ L) G.length Xs →
+      ∀ (member : Nat), member ∈ component → ∀ (rhs : Input) (ann : LetAnn) (names : List Nat) (ty : Ty),
+        bindings[member]? = some rhs → anns[member]? = some ann →
+        prefixes[member]? = some names → specs[member]? = some (.mono ty) →
+        ann.RecFits (recRenameNames G Xs names) (Ty.renameG G Xs ty)) →
+    (∀ (stage : Nat) (component : List Nat), groups[stage]? = some component →
+      ∀ Xs, FreshNames (G ++ L) G.length Xs →
+      ∀ (member : Nat), member ∈ component → ∀ (rhs : Input) (ann : LetAnn) (names : List Nat) (ty : Ty),
+        bindings[member]? = some rhs → anns[member]? = some ann →
+        prefixes[member]? = some names → specs[member]? = some (.mono ty) →
+        Typing (K ++ Xs) (recStageCtx ctx specs prefixes (groups.take stage).flatten G Xs)
+          (rhs.openTyVars (recRenameNames G Xs names)) (Ty.renameG G Xs ty)) →
+    (∀ (member : Nat) (rhs : Input) (scheme : PolyTy), bindings[member]? = some rhs →
+      specs[member]? = some (.poly scheme) →
+      ∀ Ys, FreshNames L scheme.paramCount Ys →
+        Typing (K ++ Ys) (recBodyCtx ctx specs prefixes G) (rhs.openTyVars Ys) (scheme.openVars Ys)) →
+    Typing K (recBodyCtx ctx specs prefixes G) body resultTy →
+    Typing K ctx (.letRec anns bindings body) resultTy
+
+
 
 private theorem erasedBranches_eq_map (branches : List (MatchPattern × Input)) :
     eraseBranches branches = branches.map (fun branch => (branch.1, branch.2.erase)) := by

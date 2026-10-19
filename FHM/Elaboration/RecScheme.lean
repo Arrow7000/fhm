@@ -102,4 +102,44 @@ theorem _root_.RecSpec.completedScheme_wf {written pool : List Nat} {spec : RecS
   | mono ty => exact recScheme_wf h
   | poly scheme => exact h
 
+/-- Only a complete written contract cuts recursive dependencies. Partial
+annotations retain monomorphic recursive use until their component is solved. -/
+def LetAnn.recModeAnn : LetAnn → Option PolyTy
+  | .complete scheme => some scheme
+  | _ => none
+
+def LetAnn.recPrefixCount : LetAnn → Nat
+  | .partialForall count _ => count
+  | _ => 0
+
+def recRenameNames (pool fresh names : List Nat) : List Nat :=
+  names.map (fun name => (fresh[pool.idxOf name]?).getD name)
+
+def recCompletedSchemes (specs : List RecSpec) (prefixes : List (List Nat))
+    (pool : List Nat) : List PolyTy :=
+  specs.mapIdx (fun i spec => spec.completedScheme (prefixes[i]?.getD []) pool)
+
+def recBodyCtx (ctx : Ctx) (specs : List RecSpec) (prefixes : List (List Nat))
+    (pool : List Nat) : Ctx :=
+  { ctx with env := recCompletedSchemes specs prefixes pool ++ ctx.env }
+
+def recStageEntry (prefixes : List (List Nat)) (done pool fresh : List Nat)
+    (member : Nat) (spec : RecSpec) : PolyTy :=
+  match spec with
+  | .poly scheme => scheme
+  | .mono ty =>
+      if member ∈ done then recScheme (prefixes[member]?.getD []) pool ty
+      else PolyTy.mkTrivial (Ty.renameG pool fresh ty)
+
+def recStageCtx (ctx : Ctx) (specs : List RecSpec) (prefixes : List (List Nat))
+    (done pool fresh : List Nat) : Ctx :=
+  { ctx with env := specs.mapIdx (recStageEntry prefixes done pool fresh) ++ ctx.env }
+
+structure RecPrefixesWF (anns : List LetAnn) (specs : List RecSpec)
+    (prefixes : List (List Nat)) (pool : List Nat) : Prop where
+  length : prefixes.length = specs.length
+  member : ∀ (i : Nat) (ann : LetAnn) (names : List Nat), anns[i]? = some ann → prefixes[i]? = some names →
+    names.length = ann.recPrefixCount ∧ names.Nodup ∧ ∀ name ∈ names, name ∈ pool
+
+
 end Elaboration
