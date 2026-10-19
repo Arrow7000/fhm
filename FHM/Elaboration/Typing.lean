@@ -930,6 +930,13 @@ theorem Typing.rigidVars (h : Typing K ctx input ty) : ∀ v ∈ input.rigidVars
 
 /-- Fixed-source transport is a corollary of source substitution and intrinsic
 annotation scope; it needs only pointwise protection of the composite. -/
+theorem Typing.scope_mono (h : Typing K ctx input ty) (hscope : ∀ k ∈ K, k ∈ K') :
+    Typing K' ctx input ty := by
+  have hinput : input.substTyFvars [] = input := input.substTyFvars_eq_self_of_fixes (fun _ _ => rfl)
+  simpa only [Subst.onCtx_nil, Subst.onTy_nil, hinput] using
+    h.onSubst_source [] (by simp) (fun k hk v hv => hscope v ((List.mem_singleton.mp hv) ▸ hk))
+
+
 theorem Typing.onSubst_fixes (h : Typing K ctx input ty) (subst : Subst)
     (hlc : ∀ pair ∈ subst, pair.2.IsLC)
     (hprotected : ∀ v ∈ K, subst.onTy (.fvar v) = .fvar v) :
@@ -1173,6 +1180,73 @@ theorem Typing.signatureBinding_onSubst
       · exact hdom fresh hf pair hp (List.mem_of_mem_take hmem)
     have ht := (htyping fresh (hold fresh hf)).onSubst subst hlc hprotected'
     simpa only [Subst.onPolyTy, PolyTy.openVars, Subst.onTy_openVars hlc (hdom fresh hf)] using ht
+
+/-- Cofinite binding premises transport together with authored source syntax. -/
+theorem Typing.binding_onSubst_source {ann : LetAnn} {scheme : PolyTy} {avoid : List Nat}
+    (hfit : ∀ fresh, FreshNames avoid scheme.paramCount fresh → ann.FitsMono (scheme.openVars fresh))
+    (htyping : ∀ fresh, FreshNames avoid scheme.paramCount fresh → Typing K ctx input (scheme.openVars fresh))
+    (subst : Subst) (hlc : ∀ pair ∈ subst, pair.2.IsLC)
+    (hscope : ∀ k ∈ K, ∀ v ∈ (subst.onTy (.fvar k)).freeVars, v ∈ K') :
+    ∃ avoid',
+      (∀ fresh, FreshNames avoid' scheme.paramCount fresh →
+        (ann.substTyFvars subst).FitsMono ((subst.onPolyTy scheme).openVars fresh)) ∧
+      (∀ fresh, FreshNames avoid' scheme.paramCount fresh →
+        Typing K' (subst.onCtx ctx) (input.substTyFvars subst) ((subst.onPolyTy scheme).openVars fresh)) := by
+  let avoid' := avoid ++ subst.map Prod.fst
+  have hold : ∀ fresh, FreshNames avoid' scheme.paramCount fresh → FreshNames avoid scheme.paramCount fresh :=
+    fun fresh hf => ⟨hf.length, hf.nodup, fun v hv ha => hf.avoid v hv (List.mem_append_left _ ha)⟩
+  have hdom : ∀ fresh, FreshNames avoid' scheme.paramCount fresh → ∀ pair ∈ subst, pair.1 ∉ fresh := by
+    intro fresh hf pair hp hv
+    exact hf.avoid pair.1 hv (List.mem_append_right _ (List.mem_map.mpr ⟨pair, hp, rfl⟩))
+  refine ⟨avoid', ?_, ?_⟩
+  · intro fresh hf
+    simpa only [PolyTy.openVars, Subst.onPolyTy, Subst.onTy_openVars hlc (hdom fresh hf)] using
+      fitsMono_sourceSubst (hfit fresh (hold fresh hf)) subst
+  · intro fresh hf
+    simpa only [PolyTy.openVars, Subst.onPolyTy, Subst.onTy_openVars hlc (hdom fresh hf)] using
+      (htyping fresh (hold fresh hf)).onSubst_source subst hlc hscope
+
+/-- Scoped written openings also transport; fresh binders are protected only
+inside the RHS premise. -/
+theorem Typing.signatureBinding_onSubst_source
+    {ann : LetAnn} {scheme : PolyTy} {avoid : List Nat} {K K' : List Nat} {ctx : Ctx} {input : Input}
+    (hfit : ∀ fresh, FreshNames avoid scheme.paramCount fresh → ann.SignatureFits scheme fresh)
+    (htyping : ∀ fresh, FreshNames avoid scheme.paramCount fresh →
+      Typing (K ++ fresh.take ann.paramCount) ctx (input.openTyVars (fresh.take ann.paramCount)) (scheme.openVars fresh))
+    (subst : Subst) (hlc : ∀ pair ∈ subst, pair.2.IsLC)
+    (hscope : ∀ k ∈ K, ∀ v ∈ (subst.onTy (.fvar k)).freeVars, v ∈ K') :
+    ∃ avoid',
+      (∀ fresh, FreshNames avoid' scheme.paramCount fresh →
+        (ann.substTyFvars subst).SignatureFits (subst.onPolyTy scheme) fresh) ∧
+      (∀ fresh, FreshNames avoid' scheme.paramCount fresh →
+        Typing (K' ++ fresh.take (ann.substTyFvars subst).paramCount) (subst.onCtx ctx)
+          ((input.substTyFvars subst).openTyVars (fresh.take (ann.substTyFvars subst).paramCount))
+          ((subst.onPolyTy scheme).openVars fresh)) := by
+  let avoid' := avoid ++ subst.map Prod.fst
+  have hold : ∀ fresh, FreshNames avoid' scheme.paramCount fresh → FreshNames avoid scheme.paramCount fresh :=
+    fun fresh hf => ⟨hf.length, hf.nodup, fun v hv ha => hf.avoid v hv (List.mem_append_left _ ha)⟩
+  have hdom : ∀ fresh, FreshNames avoid' scheme.paramCount fresh → ∀ pair ∈ subst, pair.1 ∉ fresh := by
+    intro fresh hf pair hp hv
+    exact hf.avoid pair.1 hv (List.mem_append_right _ (List.mem_map.mpr ⟨pair, hp, rfl⟩))
+  refine ⟨avoid', ?_, ?_⟩
+  · intro fresh hf
+    exact (hfit fresh (hold fresh hf)).onSubst_source subst hlc (hdom fresh hf)
+  · intro fresh hf
+    have hsmall : ∀ pair ∈ subst, pair.1 ∉ fresh.take ann.paramCount :=
+      fun pair hp hv => hdom fresh hf pair hp (List.mem_of_mem_take hv)
+    have ht := (htyping fresh (hold fresh hf)).onSubst_source subst hlc
+      (K' := K' ++ fresh.take ann.paramCount) (fun k hk v hv => by
+        rcases List.mem_append.mp hk with hk | hk
+        · exact List.mem_append_left _ (hscope k hk v hv)
+        · have hfix : subst.onTy (.fvar k) = .fvar k := by
+            apply Ty.substFvars_eq_self_of_no_key
+            intro pair hp hc
+            exact hsmall pair hp ((List.mem_singleton.mp hc) ▸ hk)
+          rw [hfix] at hv
+          exact List.mem_append_right _ ((List.mem_singleton.mp hv) ▸ hk))
+    simpa only [LetAnn.paramCount_substTyFvars,
+      Input.substTyFvars_openTyVars _ hlc hsmall, PolyTy.openVars, Subst.onPolyTy,
+      Subst.onTy_openVars hlc (hdom fresh hf)] using ht
 
 /-- Simultaneous fresh opening of an ordinary partial binding's monotype. The
 input syntax stays unchanged because every fixed annotation variable is in K. -/
