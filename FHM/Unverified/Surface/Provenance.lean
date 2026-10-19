@@ -4,13 +4,17 @@ import FHM.SurfaceBridge
 import FHM.Elaboration.Lowering
 import FHM.InferW
 
-/-! # Construction-time Surface → Core provenance
+/-! # Construction-time Surface → Input provenance
 
-This module carries construction-time provenance through ordinary lowering and
-through `PatComp`'s compiler-owned emission trace. Source IDs are assigned to
-the parser's span tree before lowering. The lowerer then emits the Core term and
-both directions of the correspondence while it constructs the term; it never
-tries to reconcile a finished Surface tree with finished Core.
+Production lowering preserves partial annotations in `Elaboration.Input` and
+carries provenance through `PatComp`'s shared emission trace. Source IDs are
+assigned to the parser's span tree before lowering; the lowerer records both
+directions of the term-path correspondence during construction.
+`inferWithProvenance` calls the canonical worker once, retaining those paths to
+join its editor maps and returning its exact completed Core payload. Source
+spans identify artifacts; they do not allocate or identify anonymous type holes.
+This operational provenance layer is separate from the verified Core-lowering
+safety demonstration in `Headlines`.
 -/
 
 open Surface.Span

@@ -1,10 +1,12 @@
 # FHM: Formalised Hindley–Milner
 
 FHM is a small, Elm-flavoured functional language with Hindley–Milner type
-inference, formalised in Lean 4. The type system is proved sound, inference is
-proved complete and to compute principal types, and the same verified pipeline
-runs real programs through a command-line tool, a watch mode, and a browser
-playground.
+inference, formalised in Lean 4, with a command-line tool, watch mode, and browser
+playground. The completed-Core type system has proved safety, principality, and
+completeness. The canonical frontend also elaborates anonymous type holes;
+its recursive soundness and annotation-fidelity proofs are checked, while the
+final recursive principality and completeness proofs are in progress. See the
+[feature status](./docs/anonymous-type-holes.md).
 
 ## A taste of the language
 
@@ -59,6 +61,9 @@ Ill-typed programs and non-exhaustive matches are rejected before anything runs.
   and lambda parameters (`\(n : Int) -> …`). Annotations are checked, not
   trusted. The type variables an annotation introduces are in scope throughout
   the definition's body, so inner annotations can refer to them.
+- **Anonymous type holes** in expression annotations: `\(x : _) -> x` or
+  `let f : {a} a -> _ = …`. Each `_` is inferred independently; eligible
+  variables generalise, and authored forall names retain their order.
 - **Algebraic data types**, including parameterised and recursive ones.
 - **Nested pattern matching** with wildcards. Matches must be exhaustive.
   Lambda parameters accept exhaustive patterns too: `\(x, y) -> x` or
@@ -71,10 +76,10 @@ Ill-typed programs and non-exhaustive matches are rejected before anything runs.
   Like ordinary lets, evaluation is call-by-name: unused RHSs are skipped,
   and multiple uses may repeat work. Shared call-by-need evaluation is deferred.
 - **Recursion and mutual recursion** between definitions written in any order.
-  Unannotated recursive definitions follow standard HM. A definition with a
-  type annotation can be used at different types anywhere in its recursive
-  group, including in its own body (polymorphic recursion), following the
-  same rules as Haskell.
+  Unannotated recursive definitions follow standard HM. A complete written
+  polymorphic signature permits polymorphic recursive calls, including in its
+  own body. Partial signatures constrain the whole monomorphic SCC before
+  export and do not permit polymorphic recursive calls.
 - Built-in `Int`, `Bool`, pairs, and lists, with `+`, `-`, `<`, `::`, list
   literals, `if`/`then`/`else`, and `let … in` blocks.
 
@@ -93,9 +98,9 @@ starting point for reading the proofs.
 | Claim                                                                                                                                              | Main theorems                                                             |
 | -------------------------------------------------------------------------------------------------------------------------------------------------- | ------------------------------------------------------------------------- |
 | **Type safety:** a well-typed program never gets stuck. It is either a value or can take another step, and its type is preserved.                  | `TypeOfHM.progress`, `TypeOfHM.preservation`, `TypeOfHM.type_safety_star` |
-| **End-to-end safety:** a well-typed, exhaustive _surface_ program lowers to Core that never gets stuck.                                            | `program_type_safe`, `surface_type_safe`                                  |
-| **Inference is sound:** any type Algorithm W infers is a valid type for the program.                                                               | `Infer.sound`, `Infer.sourceSound`                                        |
-| **Inference is complete and principal:** if a program has _any_ type, inference succeeds, and every valid type is an instance of the inferred one. | `typecheck_accepts_iff`, `typecheck_principal`, `Infer.complete`          |
+| **Complete-Core surface safety:** a well-typed, exhaustive surface program accepted by the Core lowering bridge never gets stuck.                  | `program_type_safe`, `surface_type_safe`                                  |
+| **Canonical elaboration is sound:** successful inference returns typed completed Core and an independently typed partial input, with exact runtime erasure and annotation fidelity. | `Infer.sourceSound`, `Infer.inputSound`, `Infer.erase`, `Infer.completes` |
+| **Complete-Core inference is complete and principal:** inference succeeds exactly for well-typed Core, and every valid type factors through the inferred one. | `CoreBackend.typecheck_accepts_iff`, `CoreBackend.Infer.principal`, `CoreBackend.Infer.complete` |
 | **Pattern compilation is correct:** nested matches compile to decision trees that select the same branch with the same bindings.                   | `PatComp.compile_correct_surface`, `PatComp.lowerMatch_adequate_of_typed` |
 | **Exhaustiveness checking is sound:** if the checker accepts a match, the match is exhaustive.                                                     | `checkExhaustive_sound`                                                   |
 | **Recursive grouping is correct:** dependency analysis splits definitions into exactly their strongly connected components.                        | `sccGroups_sound`, `sccGroups_complete`, `kosaraju_sound`                 |
@@ -104,7 +109,9 @@ starting point for reading the proofs.
 **What is not verified:** the lexer, parser, CLI, editor tooling, and the
 unbounded evaluator used by `fhm run`. These live under
 [`FHM/Unverified/`](./FHM/Unverified/README.md) and are kept out of the
-verified build. The verified story starts at the parsed syntax tree. The
+verified build. Verified Core lowering theorems start at surface syntax;
+the canonical elaborator's theorems start at `Elaboration.Input`. Production
+provenance lowering and its source/editor joins remain operational code. The
 verified evaluator (`runSafe` in `Headlines.lean`) is fuel-bounded, because the
 language allows non-terminating programs.
 
@@ -174,27 +181,30 @@ scripts/install-cursor-extension.sh   # Cursor
 source text
   → parse                   (unverified)
   → surface syntax tree
-  → lower to Core           name resolution, desugaring,
-                             pattern compilation, recursive grouping
-  → infer types             Algorithm W
+  → lower to Input          name resolution, desugaring,
+                             shared pattern compilation, recursive grouping
+  → infer and complete      canonical worker returns Core and editor maps
   → check exhaustiveness
-  → erase type annotations
+  → erase completed annotations
   → evaluate                small-step semantics
 ```
 
 The surface language has names, nested patterns, and syntactic sugar. Core is
 a smaller language with de Bruijn indices and only flat, one-constructor-deep
-matches. Every step after parsing is covered by the theorems above. The
-exception is the unbounded evaluator that `fhm run` uses for convenience.
+matches. `Elaboration.Input` preserves partial annotation syntax until the
+canonical worker returns a completed Core expression. The CLI executes that
+expression's erasure; editor artifacts come from the same inference result.
+The verified inference and compiler theorems are separate from the operational
+parser, provenance/editor plumbing, and unbounded CLI evaluator.
 
 The design choices that matter most:
 
 - **Evaluation is type-free.** Annotations are used only for type checking and
   are erased before the program runs. No type information exists at runtime.
-- **Declarative and algorithmic typing are kept separate.** `TypeOfHM` defines
-  which programs are well-typed. Algorithm W (`Infer`, implemented by
-  `typecheck`) computes types and is proved sound and complete with respect to
-  `TypeOfHM`.
+- **Declarative and algorithmic typing are kept separate.** `Elaboration.Typing`
+  specifies partial inputs, and `TypeOfHM` specifies completed Core. Canonical
+  `Infer` produces the completed expression and its type; `CoreBackend` supplies
+  complete-Core inference for eligible subtrees.
 - **Type variables use a locally nameless representation** with cofinite
   quantification, following
   [Charguéraud's formalisation of mini-ML](https://github.com/charguer/formalmetacoq).
@@ -207,15 +217,16 @@ The design choices that matter most:
 | Module                                           | Contents                                                                         |
 | ------------------------------------------------ | -------------------------------------------------------------------------------- |
 | [`Core.lean`](./FHM/Core.lean)                   | Types, Core terms, the typing relation `TypeOfHM`, small-step semantics          |
-| [`InferW.lean`](./FHM/InferW.lean)               | Unification, Algorithm W, inference soundness, progress and preservation         |
-| [`Completeness.lean`](./FHM/Completeness.lean)   | Completeness and principality of inference                                       |
+| [`InferW.lean`](./FHM/InferW.lean)               | Public facade for canonical Input elaboration and soundness                      |
+| [`Completeness.lean`](./FHM/Completeness.lean)   | Public facade for canonical principality and completeness proofs                |
+| [`Elaboration/`](./FHM/Elaboration/)            | Input, lowering, judgments, canonical worker, recursive state, and proofs        |
 | [`RuntimeTyping.lean`](./FHM/RuntimeTyping.lean) | Typing for erased runtime terms, used to prove progress and preservation         |
 | [`SurfaceLang.lean`](./FHM/SurfaceLang.lean)     | Surface syntax tree                                                              |
 | [`SurfaceBridge.lean`](./FHM/SurfaceBridge.lean) | Lowering surface to Core, exhaustiveness checking, end-to-end safety             |
 | [`PatComp.lean`](./FHM/PatComp.lean)             | Pattern-match compiler and its correctness proofs                                |
 | [`Scc/Kosaraju.lean`](./FHM/Scc/Kosaraju.lean)   | Verified strongly connected components                                           |
 | [`Decls.lean`](./FHM/Decls.lean)                 | Data declaration checking                                                        |
-| [`Headlines.lean`](./FHM/Headlines.lean)         | Main theorems in one place, plus the verified `elaborateSafe`/`runSafe` pipeline |
+| [`Headlines.lean`](./FHM/Headlines.lean)         | Main theorems and a complete-Core `elaborateSafe`/`runSafe` safety demo |
 | [`Examples.lean`](./FHM/Examples.lean)           | Worked examples of programs that typecheck and programs that are rejected        |
 | [`Unverified/`](./FHM/Unverified/README.md)      | Lexer, parser, CLI, editor support, unbounded evaluator                          |
 
@@ -228,8 +239,7 @@ Near term:
 - **Better error messages.** Application errors explain mismatches at the
   offending expression; extend these diagnostics to recursive groups, matches
   and the rest of the pipeline.
-- **Signatures on function heads** (`let f (x : Int) (y : a) : a = …`) and
-  **partial annotations** with holes (`Int -> _ -> Bool`).
+- **Signatures on function heads** (`let f (x : Int) (y : a) : a = …`).
 - **String literals**.
 
 Further out:
