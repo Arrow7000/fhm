@@ -812,3 +812,43 @@ private def twoDepthScopes : List FHM.Unverified.HMDisplay.Scope := [
 #guard holeTypes "let (x,y) : (_,_) = (1,True)\n(x,y)\n" == some ["Int", "Bool"]
 #guard holeTypes "let (id,n) : (_,_) = (\\(x : _) -> x,1)\n(id True,n)\n" == some ["a → a", "Int", "a"]
 #guard holeTypes "('😀', (\\(x : _) -> x) True)\n" == some ["Bool"]
+
+-- Signed completions use the canonical worker, including binder-definition
+-- hovers, vacuous explicit slots, and copied RHS annotation scopes.
+private def signedKeep :=
+  "let keep : {element} element -> _ -> element = \\(x : element) (y : _) -> x\n" ++
+  "(keep 1 True, keep False 2)\n"
+#guard holeTypes signedKeep == some ["a", "a"]
+#guard (match hoverReport signedKeep with
+  | some r => r.programTy == "(Int, Bool)" &&
+      (match symbolAt r.symbols 1 5 with
+        | some s => s.type_ == "∀ element a. element → a → element"
+        | none => false)
+  | none => false)
+
+private def signedUnused := "let id : {unused} _ -> _ = \\x -> x\n(id 1, id True)\n"
+#guard holeTypes signedUnused == some ["a", "a"]
+#guard (match hoverReport signedUnused with
+  | some r => (symbolAt r.symbols 1 5).map (·.type_) == some "∀ unused a. a → a"
+  | none => false)
+#guard holeTypes
+  "let id : {element} element -> element = \\(x : _) -> x\n(id 1, id True)\n" == some ["element"]
+#guard holeTypes
+  "let f = \\p -> match p with | (True, True) -> 1 | _ -> let id : {item} item -> item = \\(x : _) -> x in id 2\n(f (True, False), f (False, True))\n" == some ["item"]
+
+private def signedNested :=
+  "let outer : {element} element -> _ = \\(x : element) -> " ++
+  "let inner : {item} item -> _ = \\(y : item) -> (x, y) in inner True\nouter 1\n"
+#guard holeTypes signedNested == some ["(element, Bool)", "(element, item)"]
+#guard (match hoverReport signedNested with
+  | some r => r.symbols.any fun s => s.name == "inner" &&
+      s.kind == "val" && s.type_ == "∀ item. item → (element, item)"
+  | none => false)
+
+-- A completed outer scheme includes synthetic binders that are absent from
+-- metadata's authored-name scopes. Both depths must reach the same `outer`.
+#guard holeTypes
+  ("let outer : {outer} outer -> _ = \\(x : outer) -> " ++
+   "let middle : {middle} middle -> _ -> _ = \\(y : middle) z -> " ++
+   "let inner : {inner} inner -> _ = \\(w : inner) -> x in (inner y, z) " ++
+   "in middle True\nouter 1 False\n") == some ["a → (outer, a)", "b", "(outer, b)", "outer"]

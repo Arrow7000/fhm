@@ -597,6 +597,7 @@ test("partial signature displays preserve authored names alongside inferred hole
   hover(payload, source, 0, "_", "a", 1);
   hover(payload, source, 0, "x", "element", 0);
   hover(payload, source, 0, "y", "a");
+  hover(payload, source, 0, "keep", "∀ element a. element → a → element");
   const response = run(source, "(1, False)");
   assert.equal(response.bindings.find(b => b.name === "keep")?.type,
     "∀ element a. element → a → element");
@@ -607,6 +608,7 @@ test("partial signature completion retains unused explicit binders", () => {
   const unusedPayload = diagnose(unused);
   hover(unusedPayload, unused, 0, "_", "a", 0);
   hover(unusedPayload, unused, 0, "_", "a", 1);
+  hover(unusedPayload, unused, 0, "id", "∀ unused a. a → a");
   assert.equal(run(unused, "(1, True)").bindings.find(b => b.name === "id")?.type,
     "∀ unused a. a → a");
 });
@@ -627,6 +629,7 @@ test("nested signature holes keep outer and inner authored names", () => {
   const nestedPayload = diagnose(nested);
   hover(nestedPayload, nested, 0, "_", "(element, Bool)", 0);
   hover(nestedPayload, nested, 0, "_", "(element, item)", 1);
+  hover(nestedPayload, nested, 0, "inner", "∀ item. item → (element, item)");
   run(nested, "(1, True)");
 });
 
