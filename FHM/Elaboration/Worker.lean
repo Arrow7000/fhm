@@ -251,7 +251,9 @@ def _root_.inferWithTypesCore (K : List Nat) (frontier : Nat) (ctx : Ctx) (input
                                 bodyTy, .root bodyTy ++ finalRecNodeTypes anns final ++ bodyTypes.below .letRecBody,
                                 inferredRecSchemes anns finalSchemes ++ finalRecBinderSchemes anns final ++
                                   bodySchemes.below .letRecBody),
-                                .letRec hrawScope (fun scheme hmem => PolyTy.wf_iff_bvarsBelow.mp (List.all_eq_true.mp hwf (.complete scheme) hmem))
+                                .letRec ⟨hrawScope, ctxBelow_of_all hctx,
+                                  (fun v hv => of_decide_eq_true (List.all_eq_true.mp hK v hv)),
+                                  (fun v hv => of_decide_eq_true (List.all_eq_true.mp hF v hv))⟩ (fun scheme hmem => PolyTy.wf_iff_bvarsBelow.mp (List.all_eq_true.mp hwf (.complete scheme) hmem))
                                   (RecGroups.validResidualGroupsB_sound hg) hs hp hschemes houtputs hb⟩
                           | _, _ => none
                     else none

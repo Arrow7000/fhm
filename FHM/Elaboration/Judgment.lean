@@ -178,7 +178,8 @@ inductive _root_.Infer : List Nat → List Ty → Nat → Ctx → Input → Nat 
         (.match_ (scrutOut.substTyFvars s2) branchesOut) (s2.onTy (.fvar first))
 
   | letRec {schemes : List PolyTy} {outputs : List Expr} :
-      SourceScope K F (.letRec anns bindings body) →
+      (SourceScope K F (.letRec anns bindings body) ∧ CtxBelow frontier ctx ∧
+        (∀ v ∈ K, v < frontier) ∧ (∀ v ∈ softVars F, v < frontier)) →
       (∀ scheme, .complete scheme ∈ anns → scheme.WF) →
       RecGroups.ValidResidualGroups (anns.map LetAnn.recModeAnn) (bindings.map Input.erase) groups →
       InferRecStrata K F (frontier + bindings.length) ctx anns bindings (RecState.init frontier anns)
@@ -475,7 +476,7 @@ theorem _root_.Infer.sourceScope (h : Infer K F frontier ctx input next subst ou
   | letIn hs _ _ _ => exact hs
   | letSignature hs _ _ _ _ _ _ _ => exact hs
   | match_ hs _ _ _ => exact hs
-  | letRec hs _ _ _ _ _ _ _ => exact hs
+  | letRec hs _ _ _ _ _ _ _ => exact hs.1
 
 private theorem avoids_append {K : List Nat} {S T : Subst}
     (hS : ∀ p ∈ S, p.1 ∉ K) (hT : ∀ p ∈ T, p.1 ∉ K) :

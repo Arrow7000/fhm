@@ -624,7 +624,7 @@ theorem _root_.Infer.belowFvars (h : Infer K F frontier ctx input next subst out
     expose_names
     have hanns : ∀ ann ∈ anns, ∀ v ∈ ann.rigidVars, v < frontier := by
       intro ann ha v hv
-      exact rigid_soft_lt hK hF v (hscope v (by
+      exact rigid_soft_lt hK hF v (hscope.1 v (by
         simp only [Input.rigidVars, List.mem_append]
         exact Or.inl (Or.inl (List.mem_flatMap.mpr ⟨ann, ha, hv⟩))))
     have hlen : anns.length = bindings.length := by simpa only [List.length_map] using hvalid.length

@@ -27,6 +27,7 @@ roots = [
   "FHM.Elaboration.Close",
   "FHM.Elaboration.Judgment",
   "FHM.Elaboration.Worker",
+  "FHM.Elaboration.RecSound",
   "FHM.Elaboration.Infer",
   "FHM.Elaboration.Properties",
   "FHM.Elaboration.Principal",

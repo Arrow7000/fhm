@@ -2258,3 +2258,161 @@ theorem LetAnn.SignatureCompletion.cofinite_completes
       hgen Xs (by simpa only [List.length_append] using hf)
 
 end Elaboration
+
+
+/-- Opening follows the pointwise images of its provisional roots. No
+freshness, injectivity, or literal domain avoidance is required. -/
+theorem Subst.onTy_openVarsFrom_of_images {S : Subst} {roots resolved : List Nat}
+    (hlc : ∀ p ∈ S, p.2.IsLC)
+    (himages : roots.map (fun x => S.onTy (.fvar x)) = resolved.map Ty.fvar)
+    (ty : Ty) (depth : Nat) :
+    S.onTy (Ty.openVarsFrom depth roots ty) = Ty.openVarsFrom depth resolved (S.onTy ty) := by
+  induction ty using Ty.rec_strong with
+  | prim p => simp only [Ty.openVarsFrom, Ty.instantiate, Subst.onTy_prim]
+  | bvar i =>
+    simp only [Subst.onTy_bvar, Ty.openVarsFrom, Ty.instantiate]
+    by_cases hi : i < depth
+    · simp only [if_pos hi, Subst.onTy_bvar]
+    · simp only [if_neg hi]
+      have hg := congrArg (fun ts : List Ty => ts[i - depth]?) himages
+      cases hr : roots[i - depth]? <;> cases hd : resolved[i - depth]?
+      · exact Subst.onTy_bvar
+      · simp only [List.getElem?_map, hr, hd, Option.map_none, Option.map_some] at hg
+        cases hg
+      · simp only [List.getElem?_map, hr, hd, Option.map_none, Option.map_some] at hg
+        cases hg
+      · simp only [List.getElem?_map, hr, hd, Option.map_some] at hg
+        exact Option.some.inj hg
+  | fvar v =>
+    change S.onTy (.fvar v) = Ty.openVarsFrom depth resolved (S.onTy (.fvar v))
+    exact (Ty.instantiate_eq_self_of_lc (Subst.onTy_lc hlc .fvar)).symm
+  | arrow a b iha ihb =>
+    simp only [Ty.openVarsFrom, Ty.instantiate, Subst.onTy_arrow] at *
+    exact congrArg₂ Ty.arrow iha ihb
+  | customTy name args ih =>
+    simp only [Ty.openVarsFrom, Ty.instantiate, TyList.instantiate_eq_map,
+      Subst.onTy_customTy, List.map_map]
+    congr 1
+    exact List.map_congr_left (fun t ht => ih t ht)
+
+theorem Subst.onTy_openVars_of_images {S : Subst} {roots resolved : List Nat}
+    (hlc : ∀ p ∈ S, p.2.IsLC)
+    (himages : roots.map (fun x => S.onTy (.fvar x)) = resolved.map Ty.fvar) {ty : Ty} :
+    S.onTy (Ty.openVars roots ty) = Ty.openVars resolved (S.onTy ty) := by
+  simpa only [Ty.openVarsFrom, Nat.not_lt_zero, if_false, Nat.sub_zero, Ty.openVars] using
+    Subst.onTy_openVarsFrom_of_images hlc himages ty 0
+
+namespace Elaboration
+
+mutual
+theorem Template.substTyFvars_openTyVarsFrom_of_images (template : Template) {S : Subst} {roots resolved : List Nat}
+    (hlc : ∀ p ∈ S, p.2.IsLC)
+    (himages : roots.map (fun x => S.onTy (.fvar x)) = resolved.map Ty.fvar) (depth : Nat) :
+    (template.openTyVarsFrom depth roots).substTyFvars S =
+      (template.substTyFvars S).openTyVarsFrom depth resolved := by
+  cases template with
+  | fixed ty => exact congrArg Template.fixed (Subst.onTy_openVarsFrom_of_images hlc himages ty depth)
+  | hole => rfl
+  | arrow a b =>
+    simp only [Template.openTyVarsFrom, Template.substTyFvars,
+      a.substTyFvars_openTyVarsFrom_of_images hlc himages depth,
+      b.substTyFvars_openTyVarsFrom_of_images hlc himages depth]
+  | custom name args =>
+    exact congrArg (Template.custom name) (templateList_open_subst_of_images args hlc himages depth)
+private theorem templateList_open_subst_of_images (templates : List Template) {S : Subst} {roots resolved : List Nat}
+    (hlc : ∀ p ∈ S, p.2.IsLC)
+    (himages : roots.map (fun x => S.onTy (.fvar x)) = resolved.map Ty.fvar) (depth : Nat) :
+    substTemplateList S (openTemplateList depth roots templates) =
+      openTemplateList depth resolved (substTemplateList S templates) := by
+  cases templates with
+  | nil => rfl
+  | cons t ts =>
+    simp only [substTemplateList, openTemplateList,
+      t.substTyFvars_openTyVarsFrom_of_images hlc himages depth,
+      templateList_open_subst_of_images ts hlc himages depth]
+end
+
+/-- Factor an ordinary annotation check against the transformed source. Only
+raw-source allocation bounds and independent target protection are required. -/
+
+theorem LetAnn.substTyFvars_openTyVarsFrom_of_images (ann : LetAnn) {subst : Subst} {roots resolved : List Nat}
+    (hlc : ∀ pair ∈ subst, pair.2.IsLC) (himages : roots.map (fun x => subst.onTy (.fvar x)) = resolved.map Ty.fvar) (d : Nat) :
+    (ann.openTyVarsFrom d roots).substTyFvars subst = (ann.substTyFvars subst).openTyVarsFrom d resolved := by
+  cases ann with
+  | absent => rfl
+  | complete scheme =>
+      exact congrArg (fun t => LetAnn.complete ⟨scheme.paramCount, t⟩)
+        (Subst.onTy_openVarsFrom_of_images hlc himages scheme.body (d + scheme.paramCount))
+  | template t => exact congrArg LetAnn.template (t.substTyFvars_openTyVarsFrom_of_images hlc himages d)
+  | partialForall n t =>
+      exact congrArg (LetAnn.partialForall n) (t.substTyFvars_openTyVarsFrom_of_images hlc himages (d + n))
+
+mutual
+/-- Source substitution commutes with opening through nested written signature
+binders. LC ranges need not avoid the opened names. -/
+theorem Input.substTyFvars_openTyVarsFrom_of_images (input : Input) {subst : Subst} {roots resolved : List Nat}
+    (hlc : ∀ pair ∈ subst, pair.2.IsLC) (himages : roots.map (fun x => subst.onTy (.fvar x)) = resolved.map Ty.fvar) (d : Nat) :
+    (input.openTyVarsFrom d roots).substTyFvars subst = (input.substTyFvars subst).openTyVarsFrom d resolved := by
+  cases input with
+  | primLit | primBinOp | var | ctor => rfl
+  | lambda ann body =>
+      simp only [Input.openTyVarsFrom, Input.substTyFvars,
+        body.substTyFvars_openTyVarsFrom_of_images hlc himages d]
+      congr 1
+      cases ann with
+      | none => rfl
+      | some template => exact congrArg some (template.substTyFvars_openTyVarsFrom_of_images hlc himages d)
+  | app f a => simp only [Input.openTyVarsFrom, Input.substTyFvars,
+      f.substTyFvars_openTyVarsFrom_of_images hlc himages d, a.substTyFvars_openTyVarsFrom_of_images hlc himages d]
+  | letIn ann rhs body => simp only [Input.openTyVarsFrom, Input.substTyFvars,
+      LetAnn.paramCount_substTyFvars, ann.substTyFvars_openTyVarsFrom_of_images hlc himages d,
+      rhs.substTyFvars_openTyVarsFrom_of_images hlc himages (d + ann.paramCount),
+      body.substTyFvars_openTyVarsFrom_of_images hlc himages d]
+  | match_ scrut branches => simp only [Input.openTyVarsFrom, Input.substTyFvars,
+      scrut.substTyFvars_openTyVarsFrom_of_images hlc himages d,
+      substInputBranches_openInputBranches_of_images branches hlc himages d]
+  | letRec anns bindings body =>
+      simp only [Input.openTyVarsFrom, Input.substTyFvars,
+        body.substTyFvars_openTyVarsFrom_of_images hlc himages d,
+        substInputBindings_openInputBindings_of_images bindings anns hlc himages d, List.map_map]
+      congr 1
+      apply List.map_congr_left
+      intro ann _
+      exact ann.substTyFvars_openTyVarsFrom_of_images hlc himages d
+termination_by sizeOf input
+
+theorem substInputBranches_openInputBranches_of_images (branches : List (MatchPattern × Input)) {subst : Subst} {roots resolved : List Nat}
+    (hlc : ∀ pair ∈ subst, pair.2.IsLC) (himages : roots.map (fun x => subst.onTy (.fvar x)) = resolved.map Ty.fvar) (d : Nat) :
+    substInputBranches subst (openInputBranches d roots branches) = openInputBranches d resolved (substInputBranches subst branches) := by
+  cases branches with
+  | nil => rfl
+  | cons pair rest =>
+      rcases pair with ⟨pat, body⟩
+      simp only [openInputBranches, substInputBranches, body.substTyFvars_openTyVarsFrom_of_images hlc himages d,
+        substInputBranches_openInputBranches_of_images rest hlc himages d]
+termination_by sizeOf branches
+
+theorem substInputBindings_openInputBindings_of_images (bindings : List Input) (anns : List LetAnn)
+    {subst : Subst} {roots resolved : List Nat}
+    (hlc : ∀ pair ∈ subst, pair.2.IsLC) (himages : roots.map (fun x => subst.onTy (.fvar x)) = resolved.map Ty.fvar) (d : Nat) :
+    substInputBindings subst (openInputBindings d roots anns bindings) =
+      openInputBindings d resolved (anns.map (LetAnn.substTyFvars subst)) (substInputBindings subst bindings) := by
+  cases bindings with
+  | nil => rfl
+  | cons body rest =>
+      cases anns with
+      | nil => simp only [openInputBindings, substInputBindings, List.map_nil,
+          body.substTyFvars_openTyVarsFrom_of_images hlc himages d,
+          substInputBindings_openInputBindings_of_images rest [] hlc himages d]
+      | cons ann anns => simp only [openInputBindings, substInputBindings, List.map_cons,
+          LetAnn.paramCount_substTyFvars, body.substTyFvars_openTyVarsFrom_of_images hlc himages (d + ann.paramCount),
+          substInputBindings_openInputBindings_of_images rest anns hlc himages d]
+termination_by sizeOf bindings
+end
+
+theorem Input.substTyFvars_openTyVars_of_images (input : Input) {subst : Subst} {roots resolved : List Nat}
+    (hlc : ∀ pair ∈ subst, pair.2.IsLC) (himages : roots.map (fun x => subst.onTy (.fvar x)) = resolved.map Ty.fvar) :
+    (input.openTyVars roots).substTyFvars subst = (input.substTyFvars subst).openTyVars resolved :=
+  input.substTyFvars_openTyVarsFrom_of_images hlc himages 0
+
+end Elaboration
