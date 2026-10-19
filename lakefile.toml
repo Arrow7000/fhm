@@ -20,7 +20,7 @@ roots = [
   "FHM.AnonymousClose",
   "FHM.Anonymous",
   "FHM.AnonymousInfer",
-  "FHM.AnonymousProperties",
+  "FHM.AnonymousProperties", "FHM.AnonymousPrincipal",
   "FHM.AnonymousExamples",
   "FHM.SurfaceBridge",
   "FHM.Scc.Kosaraju",

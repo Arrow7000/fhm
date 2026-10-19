@@ -214,14 +214,14 @@ private theorem allocateList_bounds (templates : List Template) (frontier : Nat)
     · exact htb (fun v hv => Nat.lt_of_lt_of_le (hr v (List.mem_append_right _ hv)) hhle) t ht
 end
 
-private theorem Seed.frontier_le (h : Seed K frontier ann param initial) : frontier ≤ initial := by
+theorem Seed.frontier_le (h : Seed K frontier ann param initial) : frontier ≤ initial := by
   cases h with
   | absent => omega
   | @annotated next ty template heq _ _ =>
     have hle := (template.allocate_bounds frontier).1
     rwa [heq] at hle
 
-private theorem Seed.belowFvars (h : Seed K frontier ann param initial)
+theorem Seed.belowFvars (h : Seed K frontier ann param initial)
     (hK : ∀ k ∈ K, k < frontier) : Ty.BelowFvars initial param := by
   cases h with
   | absent => exact .fvar (by omega)
@@ -229,7 +229,7 @@ private theorem Seed.belowFvars (h : Seed K frontier ann param initial)
     have hb := (template.allocate_bounds frontier).2 (fun v hv => hK v (hr v hv))
     rwa [heq] at hb
 
-private theorem LetCheck.frontier_le (h : LetCheck K frontier ty ann next subst) : frontier ≤ next := by
+theorem LetCheck.frontier_le (h : LetCheck K frontier ty ann next subst) : frontier ≤ next := by
   cases h with
   | absent => omega
   | hole => omega
@@ -237,7 +237,7 @@ private theorem LetCheck.frontier_le (h : LetCheck K frontier ty ann next subst)
     have hle := (sourceTemplate.allocate_bounds frontier).1
     rwa [heq] at hle
 
-private theorem LetCheck.belowFvars (h : LetCheck K frontier ty ann next subst)
+theorem LetCheck.belowFvars (h : LetCheck K frontier ty ann next subst)
     (hty : Ty.BelowFvars frontier ty) (hK : ∀ k ∈ K, k < frontier) :
     ∀ p ∈ subst, Ty.BelowFvars next p.2 := by
   cases h with
@@ -485,5 +485,82 @@ theorem Infer.sourceLocality (h : Infer K frontier ctx input next subst output t
     have hall := avoid_append (avoid_append ⟨hrS, hrDom⟩ hcA) ⟨hbS, hbDom⟩
     exact ⟨hall.1, hbTy, hall.2⟩
 
+
+end Anonymous
+
+
+namespace Anonymous
+
+private theorem generalizes_lookup {new old : Env}
+    (h : List.Forall₂ PolyTy.Generalizes new old) {index : Nat} {scheme : PolyTy}
+    (hlook : old[index]? = some scheme) :
+    ∃ scheme', new[index]? = some scheme' ∧ scheme'.Generalizes scheme := by
+  induction h generalizing index with
+  | nil => simp at hlook
+  | @cons headNew headOld tailNew tailOld hhead htail ih =>
+    cases index with
+    | zero =>
+      simp only [List.getElem?_cons_zero, Option.some.injEq] at hlook
+      subst scheme
+      exact ⟨headNew, rfl, hhead⟩
+    | succ index => exact ih hlook
+
+/-- Replacing each environment entry by a more general scheme preserves
+independent anonymous input typing, with its protected variables unchanged. -/
+theorem Typing.weaken {K : List Nat} {ctx : Ctx} {input : Input} {ty : Ty}
+    (h : Typing K ctx input ty) :
+    ∀ {env' : Env}, List.Forall₂ PolyTy.Generalizes env' ctx.env →
+      Typing K { ctx with env := env' } input ty := by
+  induction h with
+  | complete hemb hprotected hcore =>
+    intro env' hgen
+    refine .complete hemb hprotected ?_
+    simpa only [List.append_nil] using
+      TypeOfHM.weaken_schemes (env := []) hgen (by simpa only [List.append_nil] using hcore)
+  | primLit hcore =>
+    intro env' hgen
+    apply Typing.primLit
+    simpa only [List.append_nil] using
+      TypeOfHM.weaken_schemes (env := []) hgen (by simpa only [List.append_nil] using hcore)
+  | primBinOp hcore =>
+    intro env' hgen
+    apply Typing.primBinOp
+    simpa only [List.append_nil] using
+      TypeOfHM.weaken_schemes (env := []) hgen (by simpa only [List.append_nil] using hcore)
+  | lambda hlc hfit hprotected _ ih =>
+    intro env' hgen
+    refine .lambda hlc hfit hprotected ?_
+    exact ih (.cons (PolyTy.Generalizes.refl _) hgen)
+  | app _ _ ihf iha =>
+    intro env' hgen
+    exact .app (ihf hgen) (iha hgen)
+  | letIn hwf hprotected hfit _ _ ihr ihb =>
+    intro env' hgen
+    refine .letIn hwf hprotected hfit (fun Xs hf => ihr Xs hf hgen) ?_
+    exact ihb (.cons (PolyTy.Generalizes.refl _) hgen)
+  | var hlook hargs hinst =>
+    intro env' hgen
+    obtain ⟨scheme', hlook', hscheme⟩ := generalizes_lookup hgen hlook
+    obtain ⟨args', hargs', hinst'⟩ := hscheme _ _ hargs hinst
+    exact .var hlook' hargs' hinst'
+  | ctor hlook hargs hinst =>
+    intro env' _
+    exact .ctor hlook hargs hinst
+
+/-- Segment form matching the existing `TypeOfHM.weaken_schemes` contract. -/
+theorem Typing.weaken_schemes {K : List Nat} {ctors : CtorEnv} {env : Env}
+    {Ms Ms' : List PolyTy} {input : Input} {ty : Ty}
+    (hgen : List.Forall₂ PolyTy.Generalizes Ms' Ms)
+    (h : Typing K ⟨Ms ++ env, ctors⟩ input ty) :
+    Typing K ⟨Ms' ++ env, ctors⟩ input ty := by
+  apply h.weaken
+  clear h
+  have hrefl : List.Forall₂ PolyTy.Generalizes env env := by
+    induction env with
+    | nil => exact .nil
+    | cons head tail ih => exact .cons (PolyTy.Generalizes.refl head) ih
+  induction hgen with
+  | nil => exact hrefl
+  | cons hh _ ih => exact .cons hh ih
 
 end Anonymous
