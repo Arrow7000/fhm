@@ -78,26 +78,30 @@ partial def matchNameArgs (names : List String) : List Ty → List Ty → List (
   | _, _ => []
 end
 
-def rhsPath (typed : TypedLowered) (site : SurfaceBinderSite) : Option CorePath := do
-  let (_, target) ← typed.lowering.binderTargets.find? (fun p => p.1 == site)
-  let sites ← match target with | .present s => some s | .absent _ => none
-  match ← sites.head? with
-  | .letIn path => some (path ++ [.letRhs])
-  | .letRec path member => some (path ++ [.letRecRhs member])
-  | _ => none
+def rhsPaths (typed : TypedLowered) (site : SurfaceBinderSite) : List CorePath :=
+  let target : Option BinderOriginTarget := (typed.lowering.binderTargets.find? fun p => p.1 == site).map (·.2)
+  match target with
+  | some (.present sites) => sites.filterMap fun
+      | .letIn path => some (path ++ [.letRhs])
+      | .letRec path member => some (path ++ [.letRecRhs member])
+      | _ => none
+  | _ => []
+
+def rhsPath (typed : TypedLowered) (site : SurfaceBinderSite) : Option CorePath :=
+  (rhsPaths typed site).head?
 
 def scopes (typed : TypedLowered) (locations : Locations) : List Scope :=
-  locations.displays.filterMap fun display => do
-    let path ← rhsPath typed display.site
-    let rootTy ← nodeTyAtCorePath typed.inference.nodeTypes path
-    let candidates := match declaredScheme typed display.site with
-      | some sig => matchNames display.names rootTy sig.body
-      | none => []
-    let aliases := candidates.filter fun (n, name) => candidates.all fun (m, other) =>
-      (m != n || other == name) && (other != name || m == n)
-    let freeIds := (rootTy.freeVars ++ typed.sourceTypes.flatMap (fun (_, facts) =>
-      facts.flatMap fun (p, ty) => if path.isPrefixOf p then ty.freeVars else [])).eraseDups
-    pure ⟨path, display.names, aliases.eraseDups, freeIds⟩
+  locations.displays.flatMap fun display =>
+    (rhsPaths typed display.site).filterMap fun path => do
+      let rootTy ← nodeTyAtCorePath typed.inference.nodeTypes path
+      let candidates := match declaredScheme typed display.site with
+        | some sig => matchNames display.names rootTy sig.body
+        | none => []
+      let aliases := candidates.filter fun (n, name) => candidates.all fun (m, other) =>
+        (m != n || other == name) && (other != name || m == n)
+      let freeIds := (rootTy.freeVars ++ typed.sourceTypes.flatMap (fun (_, facts) =>
+        facts.flatMap fun (p, ty) => if path.isPrefixOf p then ty.freeVars else [])).eraseDups
+      pure ⟨path, display.names, aliases.eraseDups, freeIds⟩
 
 def context (scopes : List Scope) (path : CorePath) (ty : Ty) : Context :=
   let enclosing := (scopes.filter fun s => s.path.isPrefixOf path).mergeSort

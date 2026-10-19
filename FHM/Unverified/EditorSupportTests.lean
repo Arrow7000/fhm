@@ -760,3 +760,21 @@ private def copiedHoleFallback :=
                 match SurfaceBridge.Provenance.inputAtCorePath lowered.expr path with
                 | some (.lambda (some .hole) _) => true
                 | _ => false)
+
+-- Every copied signature contributes its own display scope. The source binder
+-- remains one authored token; its three generated RHS paths all retain `item`.
+#guard (match parseProgramWithSpans
+    "let f = \\p -> match p with | (True, True) -> 1 | _ -> let id : {item} item -> item = \\x -> x in id 2\nf (False, True)\n" with
+  | .error _ => false
+  | .ok (p, bs, sp) =>
+      let result := do
+        let ctors ← elabDecls preludeDecls
+        let tree ← FHM.Unverified.HMArtifacts.programSpanned p sp (programWideScope bs sp)
+        let lowered ← SurfaceBridge.Provenance.lowerWithProvenance ctors p.term tree
+        let typed ← SurfaceBridge.Provenance.inferWithProvenance ctors lowered
+        let locations := FHM.Unverified.HMArtifacts.collect bs p.term
+          (SurfaceBridge.Provenance.identify tree)
+        pure (FHM.Unverified.HMDisplay.scopes typed locations)
+      match result with
+      | none => false
+      | some scopes => (scopes.filter fun scope => scope.names == ["item"]).length == 3)
