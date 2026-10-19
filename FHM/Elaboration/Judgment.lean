@@ -1,4 +1,4 @@
-import FHM.Elaboration.Typing
+import FHM.Elaboration.RecState
 
 /-! Canonical inference elaborates partial annotations while returning completed
 Core. Whole completed subtrees reuse the verified backend once; partial lambda,
@@ -177,6 +177,21 @@ inductive _root_.Infer : List Nat → List Ty → Nat → Ctx → Input → Nat 
       Infer K F frontier ctx (.match_ scrut branches) next (s1 ++ s2)
         (.match_ (scrutOut.substTyFvars s2) branchesOut) (s2.onTy (.fvar first))
 
+  | letRec :
+      SourceScope K F (.letRec anns bindings body) →
+      (∀ scheme, .complete scheme ∈ anns → scheme.WF) →
+      RecGroups.ValidResidualGroups (anns.map LetAnn.recModeAnn) (bindings.map Input.erase) groups →
+      InferRecStrata K F (frontier + bindings.length) ctx anns bindings (RecState.init frontier anns)
+        groups first s1 state1 →
+      InferRecSigned K (substSoft s1 F) 0 first (s1.onCtx ctx)
+        (anns.map (LetAnn.substTyFvars s1)) (bindings.map (Input.substTyFvars s1)) state1
+        second s2 state2 →
+      state2.exports = schemes.map some → state2.outputs = outputs.map some →
+      Infer K (substSoft (s1 ++ s2) F) second (state2.rhsCtx ((s1 ++ s2).onCtx ctx))
+        (body.substTyFvars (s1 ++ s2)) next s3 bodyOut bodyTy →
+      Infer K F frontier ctx (.letRec anns bindings body) next (s1 ++ s2 ++ s3)
+        (.letRec ((schemes.map s3.onPolyTy).map some) (outputs.map (Expr.substTyFvars s3)) bodyOut) bodyTy
+
 inductive _root_.InferBranches : List Nat → List Ty → Nat → Ctx → Ty → Ty →
     List (MatchPattern × Input) → Nat → Subst → List (MatchPattern × Expr) → Prop
   | nil : InferBranches K F frontier ctx scrutTy resultTy [] frontier [] []
@@ -205,6 +220,81 @@ inductive _root_.InferBranches : List Nat → List Ty → Nat → Ctx → Ty →
         (substInputBranches (s0 ++ s1 ++ s2) rest) next s3 restOut →
       InferBranches K F frontier ctx scrutTy resultTy ((.named name count, body) :: rest) next
         (s0 ++ s1 ++ s2 ++ s3) ((.named name count, bodyOut.substTyFvars (s2 ++ s3)) :: restOut)
+/-- Infer one selected SCC in the original full group coordinates. Sources have
+already been opened at flexible written roots and transformed by shape solving. -/
+inductive _root_.InferRecComponent : List Nat → List Ty → List Nat → Nat → Nat → Ctx →
+    List Input → List RecSpec → Nat → Subst → List (Option Expr) → List RecFacts → Prop
+  | nil : InferRecComponent K F members index frontier ctx [] [] frontier [] [] []
+  | skipMono :
+      index ∉ members →
+      InferRecComponent K F members (index + 1) frontier ctx rest specs next subst outputs facts →
+      InferRecComponent K F members index frontier ctx (rhs :: rest) (.mono ty :: specs)
+        next subst (none :: outputs) (.empty :: facts)
+  | skipPoly :
+      InferRecComponent K F members (index + 1) frontier ctx rest specs next subst outputs facts →
+      InferRecComponent K F members index frontier ctx (rhs :: rest) (.poly scheme :: specs)
+        next subst (none :: outputs) (.empty :: facts)
+  | consSelected {bodyFacts : RecFacts} :
+      index ∈ members →
+      Infer K F frontier ctx rhs first s1 output ty →
+      RigidUnify K ty (s1.onTy expected) s2 →
+      InferRecComponent K (substSoft (s1 ++ s2) F) members (index + 1) first
+        (s2.onCtx (s1.onCtx ctx)) (rest.map (Input.substTyFvars (s1 ++ s2)))
+        (specs.map (RecSpec.onSubstSource (s1 ++ s2))) next s3 outputs facts →
+      InferRecComponent K F members index frontier ctx (rhs :: rest) (.mono expected :: specs)
+        next (s1 ++ s2 ++ s3) (some (output.substTyFvars (s2 ++ s3)) :: outputs)
+        (bodyFacts.onSubst (s2 ++ s3) :: facts)
+
+/-- Component scheduling is shared with complete Core. Only completed contracts
+cut dependencies; each partial signature is solved in its monomorphic SCC. -/
+inductive _root_.InferRecStrata : List Nat → List Ty → Nat → Ctx → List LetAnn → List Input →
+    RecState → List (List Nat) → Nat → Subst → RecState → Prop
+  | nil : InferRecStrata K F frontier ctx anns bindings state [] frontier [] state
+  | cons {state : RecState} :
+      OpenRecAnns component 0 frontier anns opened openings →
+      CheckRecShapes K ((state.installOpenings component openings).shapes component openings) pre →
+      InferRecComponent K
+        (substSoft pre (F ++ (openings.flatMap RecOpening.written).map Ty.fvar)) component 0 opened
+        (((state.installOpenings component openings).onSubst pre).rhsCtx (pre.onCtx ctx))
+        ((openRecSources openings bindings).map (Input.substTyFvars pre))
+        ((state.installOpenings component openings).onSubst pre).specs
+        first current outputs facts →
+      FinishRecComponent K (softVars (substSoft (pre ++ current) F)) component
+        ((pre ++ current).onCtx ctx) ((state.installOpenings component openings).onSubst (pre ++ current))
+        outputs facts exported →
+      InferRecStrata K (substSoft (pre ++ current) F) first ((pre ++ current).onCtx ctx)
+        (anns.map (LetAnn.substTyFvars (pre ++ current)))
+        (bindings.map (Input.substTyFvars (pre ++ current))) exported rest next tail final →
+      InferRecStrata K F frontier ctx anns bindings state (component :: rest)
+        next (pre ++ current ++ tail) final
+
+/-- Completely written recursive contracts are checked after inferred SCCs,
+under their completed final exports, with fresh rigid openings. -/
+inductive _root_.InferRecSigned : List Nat → List Ty → Nat → Nat → Ctx → List LetAnn → List Input →
+    RecState → Nat → Subst → RecState → Prop
+  | nil : InferRecSigned K F index frontier ctx [] [] state frontier [] state
+  | skip :
+      ann.recModeAnn = none →
+      InferRecSigned K F (index + 1) frontier ctx anns bindings state next subst final →
+      InferRecSigned K F index frontier ctx (ann :: anns) (rhs :: bindings) state next subst final
+  | cons {scheme : PolyTy} {rhs : Input} {state : RecState} {bodyFacts : RecFacts} :
+      scheme.WF →
+      (∀ v ∈ rhs.rigidVars, v ∈ K ++ softVars F) →
+      Infer (K ++ freshVars frontier scheme.paramCount) F (frontier + scheme.paramCount)
+        (state.rhsCtx ctx) (rhs.openTyVars (freshVars frontier scheme.paramCount))
+        first s1 output ty →
+      RigidUnify (K ++ freshVars frontier scheme.paramCount) ty
+        ((s1.onPolyTy scheme).openVars (freshVars frontier scheme.paramCount)) s2 →
+      (∀ y ∈ freshVars frontier scheme.paramCount,
+        y ∉ (((state.onSubst (s1 ++ s2)).rhsCtx ((s1 ++ s2).onCtx ctx)).env.freeVars ++
+          softVars (substSoft (s1 ++ s2) F))) →
+      InferRecSigned K (substSoft (s1 ++ s2) F) (index + 1) first ((s1 ++ s2).onCtx ctx)
+        (anns.map (LetAnn.substTyFvars (s1 ++ s2))) (bindings.map (Input.substTyFvars (s1 ++ s2)))
+        ((state.onSubst (s1 ++ s2)).setSigned index (freshVars frontier scheme.paramCount)
+          (output.substTyFvars s2) (bodyFacts.onSubst s2)) next tail final →
+      InferRecSigned K F index frontier ctx (.complete scheme :: anns) (rhs :: bindings) state
+        next (s1 ++ s2 ++ tail) final
+
 end
 
 theorem Seed.lc (h : Seed K frontier ann param initial) : param.IsLC := by

@@ -106,5 +106,42 @@ theorem CheckRecShapes.belowFvars (h : CheckRecShapes K shapes S)
       intro pair hp
       exact (List.mem_append.mp hp).elim (hfirst pair) (htail pair)
 
+
+
+private theorem recShape_unify_sourceAvoid (h : UnifyRel ty expected S)
+    (ht : w ∉ ty.freeVars) (he : w ∉ expected.freeVars) :
+    (∀ p ∈ S, w ∉ p.2.freeVars) ∧ w ∉ S.map Prod.fst := by
+  constructor
+  · intro p hp hw
+    exact (h.range_mem p hp w hw).elim ht he
+  · intro hw
+    obtain ⟨p, hp, heq⟩ := List.mem_map.mp hw
+    have hm := h.dom_mem p hp
+    rw [heq] at hm
+    exact hm.elim ht he
+
+theorem CheckRecShapes.sourceAvoid (h : CheckRecShapes K shapes S)
+    (hshapes : ∀ shape ∈ shapes, w ∉ shape.1.freeVars ∧
+      ∀ expected, shape.2 = some expected → w ∉ expected.freeVars) :
+    (∀ p ∈ S, w ∉ p.2.freeVars) ∧ w ∉ S.map Prod.fst := by
+  induction h with
+  | nil => simp
+  | skipNone _ ih => exact ih (fun shape hm => hshapes shape (List.mem_cons_of_mem _ hm))
+  | @consSome ty expected first rest tail hu ht ih =>
+      have hh := hshapes (ty, some expected) List.mem_cons_self
+      have hfirst := recShape_unify_sourceAvoid hu.unifies hh.1 (hh.2 expected rfl)
+      have htail := ih (by
+        intro shape hm
+        obtain ⟨⟨original, expected⟩, ho, heq⟩ := List.mem_map.mp hm
+        subst shape
+        have hold := hshapes (original, expected) (List.mem_cons_of_mem _ ho)
+        refine ⟨Subst.notMemOnTy hfirst.1 hold.1, ?_⟩
+        intro target ht
+        obtain ⟨old, holdEq, rfl⟩ := Option.map_eq_some_iff.mp ht
+        exact Subst.notMemOnTy hfirst.1 (hold.2 old holdEq))
+      refine ⟨fun p hp => (List.mem_append.mp hp).elim (hfirst.1 p) (htail.1 p), ?_⟩
+      simpa only [List.map_append, List.mem_append, not_or] using And.intro hfirst.2 htail.2
+
+
 end Elaboration
 

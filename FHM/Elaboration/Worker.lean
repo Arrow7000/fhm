@@ -83,10 +83,21 @@ def backendInput (K : List Nat) (F : List Ty) (input : Input) :
         else none
       else none
 
+structure RecComponentResult where
+  frontier : Nat
+  subst : Subst
+  outputs : List (Option Expr)
+  facts : List RecFacts
+
+structure RecRunResult where
+  frontier : Nat
+  subst : Subst
+  state : RecState
+
 mutual
 /-- One dispatch path: completed subtrees use the existing verified worker;
-partial spines elaborate while inferring. Unsupported partial constructs fail
-before any completed recursive-signature interpretation can be introduced. -/
+partial spines elaborate while inferring. Recursive partial signatures remain
+monomorphic until their component is solved and its ordered prefix is validated. -/
 def _root_.inferWithTypesCore (K : List Nat) (frontier : Nat) (ctx : Ctx) (input : Input) (F : List Ty := []) :
     Option { result : Nat × Subst × Expr × Ty × InferredNodeTypes × InferredBinderSchemes //
       Infer K F frontier ctx input result.1 result.2.1 result.2.2.1 result.2.2.2.1 } :=
@@ -210,13 +221,47 @@ def _root_.inferWithTypesCore (K : List Nat) (frontier : Nat) (ctx : Ctx) (input
                           .root ty ++ (scrutTypes.onSubst s2).below .matchScrut ++ branchTypes,
                           (scrutSchemes.onSubst s2).below .matchScrut ++ branchSchemes),
                           .match_ hrawScope hs (by intro heq; rw [heq] at hh; simp at hh) hb⟩
+              | .letRec anns bindings body =>
+                  if hwf : ∀ scheme, .complete scheme ∈ anns →
+                      scheme.body.bvarsBelow scheme.paramCount = true then
+                    if hg : RecGroups.validResidualGroupsB (anns.map LetAnn.recModeAnn) (bindings.map Input.erase)
+                        (RecGroup.inferenceSccs (anns.map LetAnn.recModeAnn) (bindings.map Input.erase)) = true then
+                      match inferRecStrataWithTypesCore K F (frontier + bindings.length) ctx anns bindings
+                          (RecState.init frontier anns)
+                          (RecGroup.inferenceSccs (anns.map LetAnn.recModeAnn) (bindings.map Input.erase)) with
+                      | none => none
+                      | some ⟨strata, hs⟩ =>
+                        match inferRecSignedWithTypesCore K (substSoft strata.subst F) 0 strata.frontier
+                            (strata.subst.onCtx ctx) (anns.map (LetAnn.substTyFvars strata.subst))
+                            (bindings.map (Input.substTyFvars strata.subst)) strata.state with
+                        | none => none
+                        | some ⟨signed, hp⟩ =>
+                          match collectRecValues signed.state.exports, collectRecValues signed.state.outputs with
+                          | some ⟨schemes, hschemes⟩, some ⟨outputs, houtputs⟩ =>
+                            let solved := strata.subst ++ signed.subst
+                            match inferWithTypesCore K signed.frontier (signed.state.rhsCtx (solved.onCtx ctx))
+                                (body.substTyFvars solved) (substSoft solved F) with
+                            | none => none
+                            | some ⟨(next, s3, bodyOut, bodyTy, bodyTypes, bodySchemes), hb⟩ =>
+                              let final := signed.state.onSubst s3
+                              let finalSchemes := schemes.map s3.onPolyTy
+                              some ⟨(next, strata.subst ++ signed.subst ++ s3,
+                                .letRec (finalSchemes.map some) (outputs.map (Expr.substTyFvars s3)) bodyOut,
+                                bodyTy, .root bodyTy ++ finalRecNodeTypes anns final ++ bodyTypes.below .letRecBody,
+                                inferredRecSchemes anns finalSchemes ++ finalRecBinderSchemes anns final ++
+                                  bodySchemes.below .letRecBody),
+                                .letRec hrawScope (fun scheme hmem => PolyTy.wf_iff_bvarsBelow.mp (hwf scheme hmem))
+                                  (RecGroups.validResidualGroupsB_sound hg) hs hp hschemes houtputs hb⟩
+                          | _, _ => none
+                    else none
+                  else none
               | _ => none
         else none
       else none
     else none
   else none
 termination_by (input.size, 0)
-decreasing_by all_goals (simp only [Input.size, Input.size_openTyVars, Input.size_substTyFvars, sizeBranches_substInputBranches]; omega)
+decreasing_by all_goals (simp only [Input.size, Input.size_openTyVars, Input.size_substTyFvars, sizeBranches_substInputBranches, sizeBindings_map_substTyFvars]; omega)
 
 def _root_.inferBranchesWithTypesCore (K : List Nat) (Φ : Nat) (ctx : Ctx) (scrutTy : Ty) (ρ : Ty)
     (branchIndex : Nat) (branches : List (MatchPattern × Input)) (F : List Ty := []) :
@@ -282,6 +327,128 @@ def _root_.inferBranchesWithTypesCore (K : List Nat) (Φ : Nat) (ctx : Ctx) (scr
 termination_by (sizeBranches branches, 0)
 decreasing_by
   all_goals (try simp only [sizeBranches, Input.size_substTyFvars, sizeBranches_substInputBranches]; omega)
+
+/-- One monomorphic component visit, with artifacts in original member order. -/
+def _root_.inferRecComponentWithTypesCore (K : List Nat) (F : List Ty) (members : List Nat)
+    (index frontier : Nat) (ctx : Ctx) (bindings : List Input) (specs : List RecSpec) :
+    Option { result : RecComponentResult // InferRecComponent K F members index frontier ctx bindings specs
+      result.frontier result.subst result.outputs result.facts } :=
+  match bindings, specs with
+  | [], [] => some ⟨⟨frontier, [], [], []⟩, .nil⟩
+  | rhs :: rest, .mono expected :: specs =>
+      if hm : index ∈ members then
+        match inferWithTypesCore K frontier ctx rhs F with
+        | none => none
+        | some ⟨(first, s1, output, ty, types, schemes), hi⟩ =>
+          match unifyCoreK K ty (s1.onTy expected) with
+          | none => none
+          | some ⟨s2, hu, hav⟩ =>
+            match inferRecComponentWithTypesCore K (substSoft (s1 ++ s2) F) members (index + 1) first
+                (s2.onCtx (s1.onCtx ctx)) (rest.map (Input.substTyFvars (s1 ++ s2)))
+                (specs.map (RecSpec.onSubstSource (s1 ++ s2))) with
+            | none => none
+            | some ⟨tail, ht⟩ =>
+              some ⟨⟨tail.frontier, s1 ++ s2 ++ tail.subst,
+                some (output.substTyFvars (s2 ++ tail.subst)) :: tail.outputs,
+                (RecFacts.mk types schemes).onSubst (s2 ++ tail.subst) :: tail.facts⟩,
+                .consSelected hm hi ⟨hu, hav⟩ ht⟩
+      else
+        match inferRecComponentWithTypesCore K F members (index + 1) frontier ctx rest specs with
+        | none => none
+        | some ⟨tail, ht⟩ =>
+          some ⟨⟨tail.frontier, tail.subst, none :: tail.outputs, .empty :: tail.facts⟩, .skipMono hm ht⟩
+  | _ :: rest, .poly _ :: specs =>
+      match inferRecComponentWithTypesCore K F members (index + 1) frontier ctx rest specs with
+      | none => none
+      | some ⟨tail, ht⟩ =>
+        some ⟨⟨tail.frontier, tail.subst, none :: tail.outputs, .empty :: tail.facts⟩, .skipPoly ht⟩
+  | _, _ => none
+termination_by (sizeBindings bindings, 0)
+decreasing_by all_goals (simp only [sizeBindings, sizeBindings_map_substTyFvars]; omega)
+
+/-- Solve shapes and bodies before exporting each SCC. K remains unchanged;
+written slots stay flexible until the component's checked solved resolution. -/
+def _root_.inferRecStrataWithTypesCore (K : List Nat) (F : List Ty) (frontier : Nat)
+    (ctx : Ctx) (anns : List LetAnn) (bindings : List Input) (state : RecState)
+    (groups : List (List Nat)) :
+    Option { result : RecRunResult // InferRecStrata K F frontier ctx anns bindings state groups
+      result.frontier result.subst result.state } :=
+  match groups with
+  | [] => some ⟨⟨frontier, [], state⟩, .nil⟩
+  | component :: rest =>
+      match openRecAnns component 0 frontier anns with
+      | none => none
+      | some ⟨(opened, openings), ho⟩ =>
+        let installed := state.installOpenings component openings
+        match checkRecShapes K (installed.shapes component openings) with
+        | none => none
+        | some ⟨pre, hp⟩ =>
+          match inferRecComponentWithTypesCore K
+              (substSoft pre (F ++ (openings.flatMap RecOpening.written).map Ty.fvar)) component 0 opened
+              ((installed.onSubst pre).rhsCtx (pre.onCtx ctx))
+              ((openRecSources openings bindings).map (Input.substTyFvars pre))
+              (installed.onSubst pre).specs with
+          | none => none
+          | some ⟨current, hc⟩ =>
+            let solved := pre ++ current.subst
+            match finishRecComponent K (softVars (substSoft solved F)) component (solved.onCtx ctx)
+                (installed.onSubst solved) current.outputs current.facts with
+            | none => none
+            | some ⟨exported, he⟩ =>
+              match inferRecStrataWithTypesCore K (substSoft solved F) current.frontier (solved.onCtx ctx)
+                  (anns.map (LetAnn.substTyFvars solved)) (bindings.map (Input.substTyFvars solved))
+                  exported rest with
+              | none => none
+              | some ⟨tail, ht⟩ =>
+                some ⟨⟨tail.frontier, pre ++ current.subst ++ tail.subst, tail.state⟩, .cons ho hp hc he ht⟩
+termination_by (sizeBindings bindings, groups.length + 1)
+decreasing_by
+  all_goals (simp only [sizeBindings_map_substTyFvars, sizeBindings_openRecSources, List.length_cons])
+  all_goals first | apply Prod.Lex.right; omega | omega
+
+/-- Complete contracts retain polymorphic recursive use and rigid openings. -/
+def _root_.inferRecSignedWithTypesCore (K : List Nat) (F : List Ty) (index frontier : Nat)
+    (ctx : Ctx) (anns : List LetAnn) (bindings : List Input) (state : RecState) :
+    Option { result : RecRunResult // InferRecSigned K F index frontier ctx anns bindings state
+      result.frontier result.subst result.state } :=
+  match anns, bindings with
+  | [], [] => some ⟨⟨frontier, [], state⟩, .nil⟩
+  | ann :: anns, rhs :: rest =>
+    match ann with
+    | .complete scheme =>
+      if hwf : scheme.body.bvarsBelow scheme.paramCount = true then
+        if hraw : rhs.rigidVars.all (fun v => decide (v ∈ K ++ softVars F)) = true then
+          let written := freshVars frontier scheme.paramCount
+          match inferWithTypesCore (K ++ written) (frontier + scheme.paramCount)
+              (state.rhsCtx ctx) (rhs.openTyVars written) F with
+          | none => none
+          | some ⟨(first, s1, output, ty, types, schemes), hi⟩ =>
+            match unifyCoreK (K ++ written) ty ((s1.onPolyTy scheme).openVars written) with
+            | none => none
+            | some ⟨s2, hu, hav⟩ =>
+              let solved := s1 ++ s2
+              let checked := state.onSubst solved
+              if he : ∀ y ∈ written,
+                  y ∉ (checked.rhsCtx (solved.onCtx ctx)).env.freeVars ++ softVars (substSoft solved F) then
+                match inferRecSignedWithTypesCore K (substSoft solved F) (index + 1) first (solved.onCtx ctx)
+                    (anns.map (LetAnn.substTyFvars solved)) (rest.map (Input.substTyFvars solved))
+                    (checked.setSigned index written (output.substTyFvars s2)
+                      ((RecFacts.mk types schemes).onSubst s2)) with
+                | none => none
+                | some ⟨tail, ht⟩ =>
+                  some ⟨⟨tail.frontier, s1 ++ s2 ++ tail.subst, tail.state⟩,
+                    .cons (PolyTy.wf_iff_bvarsBelow.mp hwf)
+                      (fun v hv => of_decide_eq_true (List.all_eq_true.mp hraw v hv)) hi ⟨hu, hav⟩ he ht⟩
+              else none
+        else none
+      else none
+    | .absent | .template _ | .partialForall _ _ =>
+      match inferRecSignedWithTypesCore K F (index + 1) frontier ctx anns rest state with
+      | none => none
+      | some ⟨tail, ht⟩ => some ⟨tail, .skip rfl ht⟩
+  | _, _ => none
+termination_by (sizeBindings bindings, 0)
+decreasing_by all_goals (simp only [sizeBindings, Input.size_openTyVars, sizeBindings_map_substTyFvars]; omega)
 
 end
 

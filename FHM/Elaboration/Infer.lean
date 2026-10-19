@@ -27,6 +27,61 @@ theorem _root_.InferBranches.nil_iff
     (h : InferBranches K F frontier ctx scrutTy resultTy branches next subst completed) :
     completed = [] ↔ branches = [] := by cases h <;> simp
 
+ theorem _root_.InferRecComponent.sourceSound_of_infer
+    (h : InferRecComponent K F members index frontier ctx bindings specs next S outputs facts)
+    (hInfer : ∀ {κ F' Ψ c e Ψ' T output ty}, e.size ≤ sizeBindings bindings →
+      Infer κ F' Ψ c e Ψ' T output ty → CtxWF c → TypeOfHM (T.onCtx c) output ty)
+    (hLC : ∀ {κ F' Ψ c e Ψ' T output ty}, e.size ≤ sizeBindings bindings →
+      Infer κ F' Ψ c e Ψ' T output ty → CtxWF c → ty.IsLC ∧ ∀ p ∈ T, p.2.IsLC)
+    (hctx : CtxWF ctx) (hspec : ∀ spec ∈ specs, spec.LC) :
+    ∀ (j : Nat) (target : Ty) (output : Expr), specs[j]? = some (RecSpec.mono target) → outputs[j]? = some (some output) →
+      TypeOfHM (S.onCtx ctx) output (S.onTy target) := by
+  match h with
+  | .nil => intro j target output ht; simp at ht
+  | .skipMono _ hr | .skipPoly hr =>
+      intro j target output ht ho
+      cases j with
+      | zero => cases ho
+      | succ j =>
+          exact hr.sourceSound_of_infer
+            (fun he h => hInfer (by simp only [sizeBindings]; omega) h)
+            (fun he h => hLC (by simp only [sizeBindings]; omega) h)
+            hctx (fun spec hm => hspec spec (List.mem_cons_of_mem _ hm)) j target output ht ho
+  | .consSelected _ hi hu hr =>
+      expose_names
+      obtain ⟨hiTy, hiS⟩ := hLC (by simp only [sizeBindings]; omega) hi hctx
+      have huS := hu.unifies.lc hiTy (Subst.onTy_lc hiS (hspec _ List.mem_cons_self))
+      have hS12 : ∀ p ∈ s1 ++ s2, p.2.IsLC := fun p hp => (List.mem_append.mp hp).elim (hiS p) (huS p)
+      have hrCtx := Subst.onCtx_wf huS (Subst.onCtx_wf hiS hctx)
+      have hrSpec : ∀ spec ∈ specs_1.map (RecSpec.onSubstSource (s1 ++ s2)), spec.LC := by
+        intro spec hm
+        obtain ⟨old, hold, rfl⟩ := List.mem_map.mp hm
+        exact RecSpec.lc_onSubstSource hS12 (hspec old (List.mem_cons_of_mem _ hold))
+      have hrLC := hr.lc_of_infer
+        (fun he h => hLC (by simp only [sizeBindings_map_substTyFvars] at he; simp only [sizeBindings]; omega) h)
+        hrCtx hrSpec
+      intro j target output ht ho
+      cases j with
+      | zero =>
+        cases Option.some.inj ht
+        cases Option.some.inj (Option.some.inj ho)
+        have htyped := TypeOfHM.onSubst (s2 ++ s3)
+          (fun p hp => (List.mem_append.mp hp).elim (huS p) (hrLC p))
+          (hInfer (by simp only [sizeBindings]; omega) hi hctx)
+        have heq := hu.unifies.unifies
+        change s2.onTy ty = s2.onTy (s1.onTy expected) at heq
+        simpa only [Subst.onCtx_append, Subst.onTy_append, heq] using htyped
+      | succ j =>
+        simp only [List.getElem?_cons_succ] at ht ho
+        have htail := hr.sourceSound_of_infer
+          (fun he h => hInfer (by simp only [sizeBindings_map_substTyFvars] at he; simp only [sizeBindings]; omega) h)
+          (fun he h => hLC (by simp only [sizeBindings_map_substTyFvars] at he; simp only [sizeBindings]; omega) h)
+          hrCtx hrSpec j ((s1 ++ s2).onTy target) output
+          (by simp only [List.getElem?_map, ht, Option.map_some, RecSpec.onSubstSource]) ho
+        simpa only [Subst.onCtx_append, Subst.onTy_append] using htail
+ termination_by structural h
+
+
 mutual
 /-- Successful elaboration produces ordinary annotated Core typing. The proof
 constructs the typing from the inference derivation; it does not recheck output
