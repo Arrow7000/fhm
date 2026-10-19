@@ -1,8 +1,8 @@
 import FHM.Elaboration.Typing
 
-/-! The first anonymous-hole elaborator reuses existing inference for a WHOLE
-completed subtree. It adds only the lambda/application/ordinary-let spine around
-partial annotations; it does not implement another branch or SCC inferer.
+/-! Canonical inference elaborates partial annotations while returning completed
+Core. Whole completed subtrees reuse the verified backend once; partial lambda,
+application, let, and match spines share the same recursive inference judgment.
 -/
 
 namespace Elaboration

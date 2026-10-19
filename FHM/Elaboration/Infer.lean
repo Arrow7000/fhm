@@ -246,7 +246,7 @@ decreasing_by all_goals (simp only [Input.size]; omega)
 
 theorem _root_.InferBranches.completes
     (h : InferBranches K frontier ctx scrutTy resultTy branches next subst completed) :
-    CompletedBranches (Completes K) branches completed := by
+    CompletedBranches Completes K branches completed := by
   match h with
   | .nil => exact .nil
   | .consWild hb hu hr => exact .cons (.specialise hb.completes
@@ -351,7 +351,7 @@ decreasing_by all_goals (simp only [Input.size]; omega)
 theorem _root_.InferBranches.inputSound
     (h : InferBranches K frontier ctx scrutTy resultTy branches next subst completed)
     (hctx : CtxWF ctx) (hscrut : scrutTy.IsLC) (hresult : resultTy.IsLC) :
-    ∀ branch ∈ branches, BranchTyping (Typing K) (subst.onCtx ctx) branch
+    ∀ branch ∈ branches, BranchTyping Typing K (subst.onCtx ctx) branch
       (subst.onTy scrutTy) (subst.onTy resultTy) := by
   match h with
   | .nil => intro branch hb; cases hb
@@ -403,7 +403,7 @@ theorem _root_.InferBranches.inputSound
         · simp only [args, List.length_map, freshVars_length]
         · exact forall₂_self_map (fun t ht => InstantiatesBy.openWith (ctor.bound t ht)
             (by simp only [args, List.length_map, freshVars_length]; omega))
-      have head0 : BranchTyping (Typing K) (s1.onCtx (s0.onCtx ctx))
+      have head0 : BranchTyping Typing K (s1.onCtx (s0.onCtx ctx))
           (.named name count, body) (s1.onTy (s0.onTy scrutTy)) bodyTy := by
         refine .named hspec ?_
         rw [← Subst.onCtx_branchBindings hs1]

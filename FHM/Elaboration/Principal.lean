@@ -141,14 +141,14 @@ theorem Typing.toCore (h : Typing K ctx input ty) {core : Expr}
     (hc : input.toCore = some core) :
     TypeOfHM ctx core ty ∧ (∀ v ∈ core.tyFreeVars, v ∈ K) := by
   induction h using Typing.rec
-      (motive_2 := fun ctx branch scrutTy resultTy _ =>
+      (motive_2 := fun K ctx branch scrutTy resultTy _ =>
         ∀ {body : Expr}, branch.2.toCore = some body →
           TypeOfMatchBranch ctx (branch.1, body) scrutTy resultTy ∧
             (∀ v ∈ body.tyFreeVars, v ∈ K)) generalizing core with
   | complete hemb hscope ht => cases hemb.symm.trans hc; exact ⟨ht, hscope⟩
   | primLit ht => cases hc; exact ⟨ht, by simp [Expr.tyFreeVars]⟩
   | primBinOp ht => cases hc; exact ⟨ht, by simp [Expr.tyFreeVars]⟩
-  | @lambda ann _ body _ param hlc hfits hrigid _ ih =>
+  | @lambda ann _ _ body _ param hlc hfits hrigid _ ih =>
     simp only [Input.toCore, bind, pure, Option.bind_eq_some_iff, Option.some.injEq] at hc
     obtain ⟨ann', ha, body', hb, rfl⟩ := hc
     obtain ⟨ht, hs⟩ := ih hb
@@ -179,7 +179,7 @@ theorem Typing.toCore (h : Typing K ctx input ty) {core : Expr}
     obtain ⟨htf, hsf⟩ := ihf hf
     obtain ⟨htx, hsx⟩ := ihx hx
     exact ⟨.app htf htx, fun v hv => (List.mem_append.mp hv).elim (hsf v) (hsx v)⟩
-  | @letIn ann _ rhs body _ M L hwf _ hfits _ _ ihr ihb =>
+  | @letIn ann _ _ rhs body _ M L hwf _ hfits _ _ ihr ihb =>
     simp only [Input.toCore, bind, pure, Option.bind_eq_some_iff, Option.some.injEq] at hc
     obtain ⟨ann', ha, rhs', hr, body', hb, rfl⟩ := hc
     obtain ⟨Xs, hlen, hnd, hav⟩ := exists_fresh_names L M.paramCount
@@ -301,7 +301,7 @@ theorem Typing.letMono_inv (h : Typing K ctx (.letIn ann rhs body) ty)
 field context, including when the input used the complete-subtree rule. -/
 theorem Typing.match_inv (h : Typing K ctx (.match_ scrut branches) resultTy) :
     ∃ scrutTy, Typing K ctx scrut scrutTy ∧ branches ≠ [] ∧
-      ∀ branch ∈ branches, BranchTyping (Typing K) ctx branch scrutTy resultTy := by
+      ∀ branch ∈ branches, BranchTyping Typing K ctx branch scrutTy resultTy := by
   cases h with
   | match_ hs hne hb => exact ⟨_, hs, hne, hb⟩
   | complete hemb hscope ht =>
@@ -677,7 +677,7 @@ def _root_.InferBranches.Principal
     (∀ p ∈ P, p < frontier) →
     (∀ p ∈ P, ambient.onTy (.fvar p) = .fvar p) →
     resultD = ambient.onTy resultTy → scrutD = ambient.onTy scrutTy →
-    (∀ b ∈ branches, BranchTyping (Typing P) (ambient.onCtx ctx) b scrutD resultD) →
+    (∀ b ∈ branches, BranchTyping Typing P (ambient.onCtx ctx) b scrutD resultD) →
     ∃ residual : Subst, (∀ pair ∈ residual, pair.2.IsLC) ∧
       Subst.AgreesBelow frontier ambient (subst ++ residual) ∧
       (∀ p ∈ P, residual.onTy (.fvar p) = .fvar p) ∧
@@ -733,7 +733,7 @@ theorem BranchTyping.factor_named
     (hS₀amb : ∀ pair ∈ S₀amb, pair.2.IsLC) (hscruLC : scruT₀.IsLC)
     (hKΦ : ∀ k ∈ K, k < Φ) (hKfix : ∀ k ∈ K, S₀amb.onTy (.fvar k) = .fvar k)
     (hIMGscru : scruT₀ = S₀amb.onTy scrutTy)
-    (hdhead : BranchTyping (Typing K) (S₀amb.onCtx ctx) (.named c nbr, body) scruT₀ ρe) :
+    (hdhead : BranchTyping Typing K (S₀amb.onCtx ctx) (.named c nbr, body) scruT₀ ρe) :
     ∃ R₀ : Subst, (∀ pair ∈ R₀, pair.2.IsLC) ∧
       (∀ k ∈ K, R₀.onTy (.fvar k) = .fvar k) ∧
       Subst.AgreesBelow Φ S₀amb (S₀ ++ R₀) ∧
@@ -949,7 +949,7 @@ theorem _root_.InferBranches.principal_of_body
               simpa [Subst.onCtx_append, List.append_assoc] using
                 (Subst.onCtx_congr hAgree01 hbelow).symm
             exact h1.trans h2
-          have hbr' : ∀ br ∈ rest, BranchTyping (Typing K) (R_u.onCtx (S₂.onCtx (S₁.onCtx (S₀.onCtx ctx))))
+          have hbr' : ∀ br ∈ rest, BranchTyping Typing K (R_u.onCtx (S₂.onCtx (S₁.onCtx (S₀.onCtx ctx))))
               (br.1, br.2) scruT₀ ρe := by
             intro br hbr
             rw [hctxeq']
@@ -1059,7 +1059,7 @@ theorem _root_.InferBranches.principal_of_body
               rw [← Subst.onCtx_append]
               exact (Subst.onCtx_congr hagb hbelow).symm
             exact h1.trans h2
-          have hbr' : ∀ br ∈ rest, BranchTyping (Typing K) (R_u.onCtx (S₂.onCtx (S₁.onCtx ctx)))
+          have hbr' : ∀ br ∈ rest, BranchTyping Typing K (R_u.onCtx (S₂.onCtx (S₁.onCtx ctx)))
               (br.1, br.2) scruT₀ ρe := by
             intro br hbr
             rw [hctxeq']

@@ -446,9 +446,9 @@ theorem Typing.weaken {K : List Nat} {ctx : Ctx} {input : Input} {ty : Ty}
     ∀ {env' : Env}, List.Forall₂ PolyTy.Generalizes env' ctx.env →
       Typing K { ctx with env := env' } input ty := by
   induction h using Typing.rec
-      (motive_2 := fun ctx branch scrutTy resultTy _ =>
+      (motive_2 := fun K ctx branch scrutTy resultTy _ =>
         ∀ {env' : Env}, List.Forall₂ PolyTy.Generalizes env' ctx.env →
-          BranchTyping (Typing K) { ctx with env := env' } branch scrutTy resultTy) with
+          BranchTyping Typing K { ctx with env := env' } branch scrutTy resultTy) with
   | complete hemb hprotected hcore =>
     intro env' hgen
     refine .complete hemb hprotected ?_
@@ -487,7 +487,7 @@ theorem Typing.weaken {K : List Nat} {ctx : Ctx} {input : Input} {ty : Ty}
   | match_ _ hne _ ihscrut ihbranches =>
     intro env' hgen
     exact .match_ (ihscrut hgen) hne (fun branch hb => ihbranches branch hb hgen)
-  | @named name count scrutTy ctor args fields ctx body resultTy hspec _ ih =>
+  | @named name count scrutTy ctor args fields K ctx body resultTy hspec _ ih =>
     rename_i env' hgen
     refine .named hspec (ih ?_)
     have hextra : ∀ extra : Env,

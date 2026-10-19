@@ -95,18 +95,19 @@ theorem Subst.fixes_of_dom_avoids {K : List Nat} {subst : Subst}
 namespace Elaboration
 
 /-- Structural branch completion preserves patterns and completes each body. -/
-inductive CompletedBranches (J : Input → Expr → Prop) :
-    List (MatchPattern × Input) → List (MatchPattern × Expr) → Prop
-  | nil : CompletedBranches J [] []
-  | cons : J source output → CompletedBranches J rest restOut →
-      CompletedBranches J ((pat, source) :: rest) ((pat, output) :: restOut)
+inductive CompletedBranches (J : List Nat → Input → Expr → Prop) :
+    List Nat → List (MatchPattern × Input) → List (MatchPattern × Expr) → Prop
+  | nil : CompletedBranches J K [] []
+  | cons {source : Input} {output : Expr} {K : List Nat} :
+      J K source output → CompletedBranches J K rest restOut →
+      CompletedBranches J K ((pat, source) :: rest) ((pat, output) :: restOut)
 
 /-- Structural annotation completion. This is distinct from input admissibility
 (`Typing` below): it records fixed syntax, individual hole fillings, and the
 type abstraction/specialization performed when an ordinary let is generalized.
 Protected fixed variables cannot be substituted or captured by new binders.
 Scope correctness of the resulting Core is supplied by output typing. -/
-inductive Completes (K : List Nat) : Input → Expr → Prop
+inductive Completes : List Nat → Input → Expr → Prop
   | complete : input.toCore = some core →
       (∀ v ∈ core.tyFreeVars, v ∈ K) → Completes K input core
   | lambda :
@@ -128,17 +129,17 @@ inductive Completes (K : List Nat) : Input → Expr → Prop
         (.letIn (some (subst.onPolyTy ⟨names.length, Ty.closeOver names ty⟩))
           ((rhsOut.closeTyVars names).substTyFvars subst) bodyOut)
   | match_ : Completes K scrut scrutOut →
-      CompletedBranches (Completes K) branches branchesOut →
+      CompletedBranches Completes K branches branchesOut →
       Completes K (.match_ scrut branches) (.match_ scrutOut branchesOut)
 
 /-- Independent branch semantics reuse the ordinary constructor specification;
 the body relation is a parameter, with no inference state or substitution. -/
-inductive BranchTyping (J : Ctx → Input → Ty → Prop) :
-    Ctx → (MatchPattern × Input) → Ty → Ty → Prop
+inductive BranchTyping (J : List Nat → Ctx → Input → Ty → Prop) :
+    List Nat → Ctx → (MatchPattern × Input) → Ty → Ty → Prop
   | named : BranchCtorSpec ctx.ctors name count scrutTy ctor args fields →
-      J { ctx with env := fields.map PolyTy.mkTrivial ++ ctx.env } body resultTy →
-      BranchTyping J ctx (.named name count, body) scrutTy resultTy
-  | wildcard : J ctx body resultTy → BranchTyping J ctx (.wildcard, body) scrutTy resultTy
+      J K { ctx with env := fields.map PolyTy.mkTrivial ++ ctx.env } body resultTy →
+      BranchTyping J K ctx (.named name count, body) scrutTy resultTy
+  | wildcard : J K ctx body resultTy → BranchTyping J K ctx (.wildcard, body) scrutTy resultTy
 
 /-- Independent input typing for the first fragment. `K` contains ambient rigid
 annotation variables; free variables in context monotypes can remain flexible.
@@ -152,7 +153,7 @@ conservative Core embedding. Complete annotated lets with partial syntax
 in their RHS or continuation, and partial recursive spines, have no rule
 in this first fragment.
 -/
-inductive Typing (K : List Nat) : Ctx → Input → Ty → Prop
+inductive Typing : List Nat → Ctx → Input → Ty → Prop
   /-- Existing complete Core programs retain their existing declarative meaning.
   The checked embedding rejects every partial annotation mode. -/
   | complete : input.toCore = some core →
@@ -181,7 +182,7 @@ inductive Typing (K : List Nat) : Ctx → Input → Ty → Prop
       (∀ arg ∈ args, arg.IsLC) → ctor.toTy.InstantiatesTo args ty →
       Typing K ctx (.ctor name) ty
   | match_ : Typing K ctx scrut scrutTy → branches ≠ [] →
-      (∀ branch ∈ branches, BranchTyping (Typing K) ctx branch scrutTy resultTy) →
+      (∀ branch ∈ branches, BranchTyping Typing K ctx branch scrutTy resultTy) →
       Typing K ctx (.match_ scrut branches) resultTy
 
 private theorem erasedBranches_eq_map (branches : List (MatchPattern × Input)) :
@@ -195,7 +196,7 @@ of elaboration. Annotation matching restricts this meaning; it never grants a
 new runtime typing rule. -/
 theorem Typing.erase (h : Typing K ctx input ty) : RuntimeTyping.RunWT ctx input.erase ty := by
   induction h using Typing.rec
-      (motive_2 := fun ctx branch scrutTy resultTy _ =>
+      (motive_2 := fun K ctx branch scrutTy resultTy _ =>
         RuntimeTyping.RunWTMatchBranch ctx (branch.1, branch.2.erase) scrutTy resultTy) with
   | complete hemb _ htyping =>
       rw [← Input.toCore_erase _ hemb]
@@ -224,7 +225,7 @@ theorem Typing.erase (h : Typing K ctx input ty) : RuntimeTyping.RunWT ctx input
   | wildcard _ ihbody => exact .wildcard ihbody
 
 /-- Independently typed branch bodies retain ordinary erased branch semantics. -/
-theorem BranchTyping.erase (h : BranchTyping (Typing K) ctx branch scrutTy resultTy) :
+theorem BranchTyping.erase (h : BranchTyping Typing K ctx branch scrutTy resultTy) :
     RuntimeTyping.RunWTMatchBranch ctx (branch.1, branch.2.erase) scrutTy resultTy := by
   cases h with
   | named hspec hbody => exact .mk hspec hbody.erase
@@ -318,8 +319,8 @@ theorem Typing.onSubst_fixes (h : Typing K ctx input ty) (subst : Subst)
     (hprotected : ∀ v ∈ K, subst.onTy (.fvar v) = .fvar v) :
     Typing K (subst.onCtx ctx) input (subst.onTy ty) := by
   induction h using Typing.rec
-      (motive_2 := fun ctx branch scrutTy resultTy _ =>
-        BranchTyping (Typing K) (subst.onCtx ctx) branch (subst.onTy scrutTy) (subst.onTy resultTy)) with
+      (motive_2 := fun K ctx branch scrutTy resultTy _ =>
+        (∀ v ∈ K, subst.onTy (.fvar v) = .fvar v) → BranchTyping Typing K (subst.onCtx ctx) branch (subst.onTy scrutTy) (subst.onTy resultTy)) with
   | complete hemb hrigid htyping =>
       exact .complete hemb hrigid (TypeOfHM.onSubst_fixed subst hlc
         (Expr.substTyFvars_eq_self_of_fixes (fun v hv => hprotected v (hrigid v hv))) htyping)
@@ -335,11 +336,11 @@ theorem Typing.onSubst_fixes (h : Typing K ctx input ty) (subst : Subst)
       · intro template heq
         exact (hfit template heq).onSubst_fixes (hrigid template heq) hprotected
       · simpa only [Subst.onCtx, Subst.onEnv, List.map_cons, Subst.onPolyTy,
-          PolyTy.mkTrivial] using ihbody
+          PolyTy.mkTrivial] using ihbody hprotected
   | app _ _ ihf ihx =>
       simp only [Subst.onTy_arrow] at ihf ⊢
-      exact .app ihf ihx
-  | @letIn ctx ann rhs body bodyTy scheme avoid hwf hrigid hfit hgeneral hbody ihgeneral ihbody =>
+      exact .app (ihf hprotected) (ihx hprotected)
+  | @letIn K ctx ann rhs body bodyTy scheme avoid hwf hrigid hfit hgeneral hbody ihgeneral ihbody =>
       let avoid' := avoid ++ subst.map Prod.fst
       have oldFresh : ∀ fresh, FreshNames avoid' scheme.paramCount fresh → FreshNames avoid scheme.paramCount fresh :=
         fun fresh hf => ⟨hf.length, hf.nodup, fun v hv ha => hf.avoid v hv (List.mem_append_left _ ha)⟩
@@ -354,8 +355,8 @@ theorem Typing.onSubst_fixes (h : Typing K ctx input ty) (subst : Subst)
           Subst.onTy_openVars hlc (domFresh fresh hf)] using hs
       · intro fresh hf
         simpa only [PolyTy.openVars, Subst.onPolyTy,
-          Subst.onTy_openVars hlc (domFresh fresh hf)] using ihgeneral fresh (oldFresh fresh hf)
-      · simpa only [Subst.onCtx, Subst.onEnv, List.map_cons] using ihbody
+          Subst.onTy_openVars hlc (domFresh fresh hf)] using ihgeneral fresh (oldFresh fresh hf) hprotected
+      · simpa only [Subst.onCtx, Subst.onEnv, List.map_cons] using ihbody hprotected
   | var hlookup hargs hinst =>
       exact .complete rfl (by simp [Expr.tyFreeVars]) (TypeOfHM.onSubst_fixed subst hlc
         (Expr.substTyFvars_eq_self_of_tyFreeVars_nil _ rfl) (.var hlookup hargs hinst))
@@ -363,18 +364,19 @@ theorem Typing.onSubst_fixes (h : Typing K ctx input ty) (subst : Subst)
       exact .complete rfl (by simp [Expr.tyFreeVars]) (TypeOfHM.onSubst_fixed subst hlc
         (Expr.substTyFvars_eq_self_of_tyFreeVars_nil _ rfl) (.ctor hlookup hargs hinst))
 
-  | match_ _ hne _ ihscrut ihbranches => exact .match_ ihscrut hne ihbranches
-  | named hspec _ ihbody =>
+  | match_ _ hne _ ihscrut ihbranches => exact .match_ (ihscrut hprotected) hne (fun b hb => ihbranches b hb hprotected)
+  | named hspec _ ihbody hprotected =>
     refine .named (hspec.onSubst subst hlc) ?_
     simpa only [Subst.onCtx, Subst.onEnv, List.map_append, List.map_map,
-      Subst.onPolyTy, PolyTy.mkTrivial, Function.comp_def] using ihbody
-  | wildcard _ ihbody => exact .wildcard ihbody
+      Subst.onPolyTy, PolyTy.mkTrivial, Function.comp_def] using ihbody hprotected
+  | wildcard _ ihbody hprotected =>
+    exact .wildcard (ihbody hprotected)
 
 /-- Pointwise-fixed transport for an independently typed match branch. -/
-theorem BranchTyping.onSubst_fixes (h : BranchTyping (Typing K) ctx branch scrutTy resultTy)
+theorem BranchTyping.onSubst_fixes (h : BranchTyping Typing K ctx branch scrutTy resultTy)
     (subst : Subst) (hlc : ∀ pair ∈ subst, pair.2.IsLC)
     (hprotected : ∀ v ∈ K, subst.onTy (.fvar v) = .fvar v) :
-    BranchTyping (Typing K) (subst.onCtx ctx) branch (subst.onTy scrutTy) (subst.onTy resultTy) := by
+    BranchTyping Typing K (subst.onCtx ctx) branch (subst.onTy scrutTy) (subst.onTy resultTy) := by
   cases h with
   | named hspec hbody =>
     refine .named (hspec.onSubst subst hlc) ?_

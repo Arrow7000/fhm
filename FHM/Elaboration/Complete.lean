@@ -32,7 +32,7 @@ def _root_.InferBranchesWithTypesCoreComplete (branches : List (MatchPattern × 
     (∀ k ∈ K, ambient.onTy (.fvar k) = .fvar k) →
     scrutTy.IsLC → resultTy.IsLC →
     Ty.BelowFvars frontier scrutTy → Ty.BelowFvars frontier resultTy →
-    (∀ b ∈ branches, BranchTyping (Typing K) (ambient.onCtx ctx) b
+    (∀ b ∈ branches, BranchTyping Typing K (ambient.onCtx ctx) b
       (ambient.onTy scrutTy) (ambient.onTy resultTy)) →
     (inferBranchesWithTypesCore K frontier ctx scrutTy resultTy branchIndex branches).isSome
 
@@ -133,7 +133,7 @@ theorem _root_.inferBranchesWithTypesCore_complete_named
     obtain ⟨⟨s0, hu0⟩, hu0Result⟩ := Option.isSome_iff_exists.mp
       (unifyCoreK_complete hscrut hcustomLC hU hUni hUK)
     rcases hu0 with ⟨hun0, hav0⟩
-    have hhead : BranchTyping (Typing K) (ambient.onCtx ctx) (.named name count, body)
+    have hhead : BranchTyping Typing K (ambient.onCtx ctx) (.named name count, body)
         (ambient.onTy scrutTy) (ambient.onTy resultTy) := .named hspec hbodyD
     obtain ⟨V, hV, hVK, hag0, hbD⟩ := hhead.factor_named hlookup hun0 hbelow hscrutB hS
       (Subst.onTy_lc hS hscrut) hK hfix rfl
@@ -333,7 +333,7 @@ theorem _root_.inferWithTypesCore_complete_letIn_partial
   have hlet := ht
   cases ht with
   | complete hemb' _ _ => simp [hemb] at hemb'
-  | @letIn ann _ rhs body target M L hM hannRigid hannFits hrD hbD =>
+  | @letIn ann _ _ rhs body target M L hM hannRigid hannFits hrD hbD =>
     obtain ⟨Xs, hXlen, hXnd, hXavoid⟩ := exists_fresh_names L M.paramCount
     have hXs : FreshNames L M.paramCount Xs := ⟨hXlen, hXnd, hXavoid⟩
     obtain ⟨⟨⟨first, s1, rhsOut, rhsTy, rhsTypes, rhsSchemes⟩, hr⟩, hrResult⟩ := Option.isSome_iff_exists.mp
