@@ -121,7 +121,7 @@ partial def probe (K : List Nat) (Φ : Nat) (ctx : Ctx)
         match inferCore K Φ ctx rhs with
         | none => (probe K Φ ctx rhs).map (Error.below .letRhs)
         | some ⟨(Φ₁, S₁, _, τ₁), _⟩ => do
-            let checked ← Elaboration.checkLet K Φ₁ ann τ₁
+            let checked ← Elaboration.checkLet K [] Φ₁ ann τ₁
             let ctx₁ := checked.val.2.onCtx (S₁.onCtx ctx)
             let σ := genScheme K ctx₁.env (checked.val.2.onTy τ₁)
             (probe K checked.val.1 { ctx₁ with env := σ :: ctx₁.env } body).map
