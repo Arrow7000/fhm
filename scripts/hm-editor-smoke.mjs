@@ -576,11 +576,16 @@ test("actual pattern compilation preserves holes in copied fallback arms", () =>
   run("let f = \\((a,b) : (_, _)) -> (b,a)\nf (1, True)\n", "(True, 1)");
 });
 
-test("partial forall preserves named rigidity and complete signatures permit partial RHSs", () => {
+test("partial forall signatures preserve independent named rigidity", () => {
   run("let id : {a} a -> _ = \\(x : a) -> x\n(id 1, id True)\n", "(1, True)");
   const bad = cli(["run", "--json"], "let f : {a b} a -> b -> _ = \\x y -> x + y\nf\n");
   assert.equal(bad.payload.stage, "typecheck");
-  run("let id : {a} a -> a = \\(x : _) -> x\n(id 1, id True)\n", "(1, True)");
+});
+
+test("complete signatures permit partial RHSs and preserve their scoped names", () => {
+  const source = "let id : {element} element -> element = \\(x : _) -> x\n(id 1, id True)\n";
+  hover(diagnose(source), source, 0, "_", "element");
+  run(source, "(1, True)");
   run("let id : {a} a -> a = \\x -> x\n(\\(x : _) -> id x) 1\n", "1");
 });
 
@@ -595,6 +600,9 @@ test("partial signature displays preserve authored names alongside inferred hole
   const response = run(source, "(1, False)");
   assert.equal(response.bindings.find(b => b.name === "keep")?.type,
     "∀ element a. element → a → element");
+});
+
+test("partial signature completion retains unused explicit binders", () => {
   const unused = "let id : {unused} _ -> _ = \\x -> x\n(id 1, id True)\n";
   const unusedPayload = diagnose(unused);
   hover(unusedPayload, unused, 0, "_", "a", 0);
@@ -603,7 +611,7 @@ test("partial signature displays preserve authored names alongside inferred hole
     "∀ unused a. a → a");
 });
 
-test("copied and nested signature holes keep their authored scope names", () => {
+test("copied signature holes keep every generated scope name", () => {
   const copied = "let f = \\p -> match p with | (True, True) -> 1 | _ -> " +
     "let id : {item} item -> item = \\(x : _) -> x in id 2\n" +
     "(f (True, False), f (False, True))\n";
@@ -611,12 +619,18 @@ test("copied and nested signature holes keep their authored scope names", () => 
   assert.equal(payload.symbols.filter(s => s.kind === "typeHole").length, 1);
   hover(payload, copied, 0, "_", "item", 1);
   run(copied, "(2, 2)");
+});
+
+test("nested signature holes keep outer and inner authored names", () => {
   const nested = "let outer : {element} element -> _ = \\(x : element) -> " +
     "let inner : {item} item -> _ = \\(y : item) -> (x, y) in inner True\nouter 1\n";
   const nestedPayload = diagnose(nested);
   hover(nestedPayload, nested, 0, "_", "(element, Bool)", 0);
   hover(nestedPayload, nested, 0, "_", "(element, item)", 1);
   run(nested, "(1, True)");
+});
+
+test("completed signature holes count synthetic binders in every enclosing scope", () => {
   const deep = "let outer : {outer} outer -> _ = \\(x : outer) -> " +
     "let middle : {middle} middle -> _ -> _ = \\(y : middle) z -> " +
     "let inner : {inner} inner -> _ = \\(w : inner) -> x in (inner y, z) " +
@@ -626,15 +640,24 @@ test("copied and nested signature holes keep their authored scope names", () => 
   run(deep, "(1, False)");
 });
 
-test("recursive partial signatures constrain the SCC without permitting polymorphic recursion", () => {
+test("recursive partial signature structure constrains the entire SCC", () => {
   const shape = "let f : {a} (Int,a) -> _ = \\x -> g x\n" +
     "let g = \\x -> if True then x else f x\n";
   run(shape + "g (1, True)\n", "(1, True)");
   const badShape = cli(["run", "--json"], shape + "g True\n");
   assert.equal(badShape.payload.stage, "typecheck");
+});
+
+test("mutual partial signatures may share their separately named forall variables", () => {
   diagnose("let f : {a} a -> _ = \\x -> g x\nlet g : {b} b -> _ = \\x -> f x\nf\n");
+});
+
+test("mutual partial signatures may permute their forall variables", () => {
   diagnose("let f : {a b} a -> b -> _ = \\x y -> if True then 1 else g y x\n" +
     "let g : {c d} c -> d -> _ = \\u v -> f v u\nf\n");
+});
+
+test("complete recursive signatures permit polymorphic calls while partial signatures forbid them", () => {
   run("let f : {a} a -> Int = \\(x : _) -> if True then 0 else f [x]\nf True\n", "0");
   const badRec = cli(["run", "--json"],
     "let f : {a} a -> _ = \\(x : _) -> if True then 0 else f [x]\nf True\n");
