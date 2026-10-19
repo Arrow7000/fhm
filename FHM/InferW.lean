@@ -1276,13 +1276,6 @@ theorem Ctor.isBoolCtor_of_typeOfHM {ctx : Ctx} {name : CtorName}
   cases h with
   | ctor hlook _ hinst => exact ⟨_, hlook, Ctor.IsBoolCtor.of_instantiatesTo hinst⟩
 
-/-! The ceiling solver below is retained as auxiliary substitution algebra from
-the monomorphic-recursion implementation. Contract-stratified recursive
-inference does not call it: signed members are checked in the second phase by
-`InferRecGroupPoly.consPoly`. -/
-
-
-
 
 /-- A substitution whose domain avoids every free variable of a scheme leaves
     that scheme literally unchanged. -/
@@ -4832,6 +4825,9 @@ theorem Subst.eliminates_onCtx {S : Subst} {w : Nat} {ctx : Ctx}
   exact hS M0.body
 
 mutual
+/-- Flexible assignments eliminate their domains from the resulting types.
+    The source-variable premise also protects annotations outside `κ`;
+    intrinsic `dom_avoids` alone only protects variables recorded in `κ`. -/
 theorem Infer.eliminates {Φ ctx e Φ' S τ} (h : Infer κ Φ ctx e Φ' S τ)
     (hctx : CtxBelow Φ ctx) (hΦ : ∀ y ∈ e.tyFreeVars, y < Φ)
     (hSe : ∀ p ∈ S, p.1 ∉ e.tyFreeVars) :
@@ -10361,18 +10357,18 @@ theorem RecSpecs.PendingSeeds.stage_avoid_pool {base : Nat} {ctx : Ctx}
 
 theorem InferRecComponent.newPool_avoid_rigidSet
     {component Φ ctx bindings specs Φ' S base done G rigid} {K : List Nat}
-    (h : InferRecComponent κ component 0 Φ (RecSpecs.algorithmStageCtx ctx specs done G)
+    (h : InferRecComponent K component 0 Φ (RecSpecs.algorithmStageCtx ctx specs done G)
       bindings specs Φ' S)
     (hpending : RecSpecs.PendingSeeds base ctx specs done)
     (hnotDone : ∀ member ∈ component, member ∉ done)
     (hbase : base ≤ Φ) (hK : ∀ g ∈ K, g < base)
-    (hSK : ∀ p ∈ S, p.1 ∉ K)
     (hdomG : ∀ p ∈ S, p.1 ∉ G) (hranG : ∀ p ∈ S, ∀ g ∈ p.2.freeVars, g ∉ G)
     (hbindRigid : ∀ g ∈ Expr.tyFreeVars.RecGroup.tyFreeVars bindings, g ∈ rigid)
     (hpolyRigid : ∀ σ, .poly σ ∈ specs → ∀ g ∈ σ.body.freeVars, g ∈ rigid) :
     ∀ g ∈ genGroupVars (rigid ++ G)
       (RecSpecs.generalizationCtx (S.onCtx ctx) (specs.map (RecSpec.onSubst S)) done G).env
       (RecSpecs.monoTysAt (specs.map (RecSpec.onSubst S)) component), g ∉ K := by
+  have hSK := h.dom_avoids
   intro g hg hgK
   have hgen := genGroupVars_spec hg
   have hgRigid : g ∉ rigid := fun hc => hgen.2.2 (List.mem_append_left _ hc)
@@ -10527,12 +10523,13 @@ termination_by groups.length
 decreasing_by all_goals (simp_wf; try omega)
 
 set_option maxHeartbeats 1_000_000 in
-/-- Dependency-first scheduling preserves untouched pending seeds, so each
-    incoming generalisation pool is frozen during the next component. -/
+/-- Dependency-first scheduling freezes each incoming generalization pool.
+    Protecting the ambient rigid set additionally needs that set below the
+    seed block and disjoint from the incoming pool. -/
 theorem InferRecStrata.frozen_and_pool_avoid_of_sourceLocality
     {rigid bindings Φ ctx specs done G groups Φ' S specs' G'}
-    (h : InferRecStrata κ rigid bindings Φ ctx specs done G groups Φ' S specs' G')
-    (hInfer : ∀ {Ψ c e Ψ' T τ}, Infer κ Ψ c e Ψ' T τ →
+    (h : InferRecStrata K rigid bindings Φ ctx specs done G groups Φ' S specs' G')
+    (hInfer : ∀ {Ψ c e Ψ' T τ}, Infer K Ψ c e Ψ' T τ →
       ∀ {w}, w < Ψ →
       e.ForallOuter (fun i => ∀ M, c.env[i]? = some M → w ∉ M.body.freeVars) 0 →
       w ∉ e.tyFreeVars →
@@ -10550,11 +10547,11 @@ theorem InferRecStrata.frozen_and_pool_avoid_of_sourceLocality
     (hGbelow : ∀ g ∈ G, g < Φ)
     (hGrigid : ∀ g ∈ G, g ∉ rigid)
     (hGctx : ∀ g ∈ G, ∀ M ∈ ctx.env, g ∉ M.body.freeVars)
-    (hGseed : ∀ member τ, specs[member]? = some (.mono τ) → member ∉ done → base + member ∉ G)
-    (K : List Nat) (hKbelow : ∀ g ∈ K, g < base) (hSK : ∀ p ∈ S, p.1 ∉ K)
-    (hGset : ∀ g ∈ G, g ∉ K) : h.Frozen ∧ ∀ g ∈ G', g ∉ K := by
+    (hGseed : ∀ member τ, specs[member]? = some (.mono τ) → member ∉ done → base + member ∉ G) :
+    h.Frozen ∧
+      ((∀ g ∈ K, g < base) → (∀ g ∈ G, g ∉ K) → ∀ g ∈ G', g ∉ K) := by
   match h with
-  | .nil => exact ⟨.nil,hGset⟩
+  | .nil => exact ⟨.nil, fun _ hGset => hGset⟩
   | .cons hcomponent hspecEq hGeq hrest =>
     expose_names
     have hlen := InferRecComponent.length_eq hcomponent
@@ -10616,7 +10613,7 @@ theorem InferRecStrata.frozen_and_pool_avoid_of_sourceLocality
     have hspecs₁B : ∀ s ∈ specs₁, s.BelowFvars Φ₁ := by
       rw [hspecEq]; intro s hs; obtain ⟨old,hold,rfl⟩ := List.mem_map.mp hs
       exact RecSpec.BelowFvars.onSubst hS₁B ((hspecsB old hold).mono hle)
-    have hstep : InferRecStrata κ rigid bindings Φ ctx specs done G [component]
+    have hstep : InferRecStrata K rigid bindings Φ ctx specs done G [component]
         Φ₁ (S₁ ++ []) specs₁ (G ++ Gcurrent) := .cons hcomponent hspecEq hGeq .nil
     have hfrstep : hstep.Frozen := .cons (hcomponent := hcomponent)
       (hspecs := hspecEq) (hG := hGeq) hdom hran .nil
@@ -10634,15 +10631,6 @@ theorem InferRecStrata.frozen_and_pool_avoid_of_sourceLocality
         exact RecSpecs.PendingSeeds.seed_notMem_newPool (G := G) (rigid := rigid ++ G)
           (boundaryDone := done) (component := component) hseeds₁ ht hm
           (fun j hj => List.mem_append_right _ hj) hc
-    have hS₁K : ∀ p ∈ S₁, p.1 ∉ K := fun p hp => hSK p (List.mem_append_left _ hp)
-    have hS₂K : ∀ p ∈ S₂, p.1 ∉ K := fun p hp => hSK p (List.mem_append_right _ hp)
-    have hGnextSet : ∀ g ∈ G ++ Gcurrent, g ∉ K := by
-      intro g hg
-      rcases List.mem_append.mp hg with hg | hg
-      · exact hGset g hg
-      · rw [hGeq, hspecEq] at hg
-        exact InferRecComponent.newPool_avoid_rigidSet hcomponent hpending hcomponent_not_done
-          (by omega) hKbelow hS₁K hdom hran hbindRigid hpolyRigid g hg
     have htail := InferRecStrata.frozen_and_pool_avoid_of_sourceLocality hrest hInfer
       (past := past ++ [component])
       (by simpa only [List.append_assoc, List.singleton_append] using hvalid)
@@ -10651,9 +10639,18 @@ theorem InferRecStrata.frozen_and_pool_avoid_of_sourceLocality
       (Subst.onCtx_wf hS₁LC hctx) (Subst.onCtx_below hS₁B hle hbelow) hspecs₁LC hspecs₁B
       (by omega) hrigid hbindRigid
       (fun σ hσ => hpolyRigid σ (RecSpec.poly_mem_map_onSubst.mp (hspecEq ▸ hσ)))
-      hseeds₁ hGnextBelow hGnextRigid hGnextCtx hGnextSeed K hKbelow hS₂K hGnextSet
-    exact ⟨InferRecStrata.Frozen.cons (hcomponent := hcomponent) (hspecs := hspecEq)
-      (hG := hGeq) hdom hran htail.1, htail.2⟩
+      hseeds₁ hGnextBelow hGnextRigid hGnextCtx hGnextSeed
+    refine ⟨InferRecStrata.Frozen.cons (hcomponent := hcomponent) (hspecs := hspecEq)
+      (hG := hGeq) hdom hran htail.1, ?_⟩
+    intro hKbelow hGset
+    have hGnextSet : ∀ g ∈ G ++ Gcurrent, g ∉ K := by
+      intro g hg
+      rcases List.mem_append.mp hg with hg | hg
+      · exact hGset g hg
+      · rw [hGeq, hspecEq] at hg
+        exact InferRecComponent.newPool_avoid_rigidSet hcomponent hpending hcomponent_not_done
+          (by omega) hKbelow hdom hran hbindRigid hpolyRigid g hg
+    exact htail.2 hKbelow hGnextSet
 termination_by groups.length
 decreasing_by all_goals (simp_wf; try omega)
 
@@ -10677,7 +10674,7 @@ theorem InferRecStrata.frozen_of_sourceLocality
     h.Frozen :=
   (InferRecStrata.frozen_and_pool_avoid_of_sourceLocality h hInfer hvalid hdone hanns
     hctx hbelow hspecs hspecsB hbase hrigid hbindRigid hpolyRigid hpending
-    hGbelow hGrigid hGctx hGseed [] (by simp) (by simp) (by simp)).1
+    hGbelow hGrigid hGctx hGseed).1
 
 /-- Exact head locality for one concrete residual-strata constructor.  Unlike
     eliminating `Frozen`, this statement retains the constructor's actual
@@ -11628,14 +11625,15 @@ theorem Infer.sourceSound {Φ ctx e Φ' S τ} (h : Infer K Φ ctx e Φ' S τ) :
         ∀ y ∈ σ.body.freeVars, y ∈ RecGroup.rigidVars anns bindings :=
       fun σ hσ y hy => List.mem_append_left _
         (Expr.scheme_body_mem_annList_tyFreeVars (RecSpec.poly_mem_init hσ) hy)
-    obtain ⟨hfrozen,hGK⟩ := InferRecStrata.frozen_and_pool_avoid_of_sourceLocality
+    obtain ⟨hfrozen,hpool⟩ := InferRecStrata.frozen_and_pool_avoid_of_sourceLocality
       hstrata Infer.sourceLocality_holds (base := Φ) (past := [])
       (by simpa using hvalid) rfl (RecSpec.map_ann_init Φ anns)
       hctx hctxB hinitLC hinitB (le_refl _) (fun y hy => hKΦ y (hRigidK y hy))
       hBindRigid hinitPolyRigid
       (RecSpecs.PendingSeeds.init hbelow
         (fun σ hσ => Ty.BelowFvars.of_freeVars_lt (fun y hy => hKΦ y (hKsch σ hσ y hy))))
-      (by simp) (by simp) (by simp) (by simp) K hKΦ hS₁K (by simp)
+      (by simp) (by simp) (by simp) (by simp)
+    have hGK := hpool hKΦ (by simp)
     have hle₁ := InferRecStrata.frontier_le hstrata
     have hS₁LC := InferRecStrata.lc hstrata hctx hinitLC
     have hBindBelow : ∀ y ∈ Expr.tyFreeVars.RecGroup.tyFreeVars bindings,

@@ -2045,7 +2045,9 @@ def Subst.Factors (U S R : Subst) : Prop :=
 
 /-- Principality of the inference output `(S, τ)`: whenever the source program
     types declaratively under an ambient substitution, every such typing factors
-    through `τ` via an LC residual fixing `K`. -/
+    through `τ` via an LC residual fixing `K`. This protected set is quantified
+    independently of the inference index `κ`: it constrains the ambient
+    specialization and the returned residual, not just the inferred substitution. -/
 def Infer.Principal {Φ : Nat} {ctx : Ctx} {e : Expr} {Φ' : Nat} {S : Subst} {τ : Ty}
     (_h : Infer κ Φ ctx e Φ' S τ) : Prop :=
   CtxWF ctx → CtxBelow Φ ctx →
@@ -2511,13 +2513,10 @@ theorem customTy_factor_dodge {Φ : Nat} {scrutTy : Ty} {R S₀ : Subst}
 algorithm's fresh recursive block to the declarative monotype witnesses. The
 principality proof then consumes member typings already transported by `R₀`. -/
 
-/-! ### Recursive-ceiling solver factoring
+/-! ### Structural-unifier factorization
 
-The `Sc` pass is a sequence of ordinary structural unifications. A single
-witness which satisfies one such equation already absorbs the solution chosen
-for it.  This is stronger than merely obtaining an arbitrary MGU residual and
-is the algebra that lets the same witness thread through the whole pass.
-Every equality here is `Eq`: no structural recovery is used. -/
+A substitution which unifies an equation absorbs its structural unifier.
+The pointwise binding laws below additionally describe each raw assignment. -/
 
 mutual
 /-- A unifier of an equation absorbs its `UnifyRel` solution. -/
@@ -2580,10 +2579,8 @@ theorem UnifyRelList.factors_self : {as bs : List Ty} → {S : Subst} →
       exact (h₁U x).trans (h₂U (S₁.onTy x))
 end
 
-/-- Pointwise erased satisfaction of a substitution's raw bindings makes the
-substitution self-absorbing.  This is the projection-friendly form of the
-ceiling factor invariant: after filtering out pool domains one merely keeps
-the corresponding pointwise facts. -/
+/-- Pointwise satisfaction of a substitution's raw bindings makes the
+    substitution self-absorbing. -/
 theorem Subst.Factors.of_satisfies {U S : Subst}
     (h : ∀ p ∈ S, U.onTy (.fvar p.1) = U.onTy p.2) :
     Subst.Factors U S U := by
