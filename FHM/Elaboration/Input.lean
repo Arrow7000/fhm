@@ -1316,4 +1316,184 @@ theorem substInputBindings_eq_self_of_fixes (bindings : List Input) {subst : Lis
 termination_by sizeOf bindings
 end
 
+private theorem ty_substFvars_append (ty : Ty) (first second : List (Nat × Ty)) :
+    ty.substFvars (first ++ second) = (ty.substFvars first).substFvars second := by
+  induction first generalizing ty with
+  | nil => rfl
+  | cons pair rest ih => cases pair; exact ih _
+
+mutual
+theorem Template.substTyFvars_append (template : Template) (first second : List (Nat × Ty)) :
+    template.substTyFvars (first ++ second) = (template.substTyFvars first).substTyFvars second := by
+  cases template with
+  | fixed ty => exact congrArg Template.fixed (ty_substFvars_append ty first second)
+  | hole => rfl
+  | arrow a b => simp only [Template.substTyFvars,
+      a.substTyFvars_append first second, b.substTyFvars_append first second]
+  | custom name args => exact congrArg (Template.custom name) (substTemplateList_append args first second)
+theorem substTemplateList_append (templates : List Template) (first second : List (Nat × Ty)) :
+    substTemplateList (first ++ second) templates = substTemplateList second (substTemplateList first templates) := by
+  cases templates with
+  | nil => rfl
+  | cons t ts => simp only [substTemplateList, t.substTyFvars_append first second,
+      substTemplateList_append ts first second]
+end
+
+theorem LetAnn.substTyFvars_append (ann : LetAnn) (first second : List (Nat × Ty)) :
+    ann.substTyFvars (first ++ second) = (ann.substTyFvars first).substTyFvars second := by
+  cases ann with
+  | absent => rfl
+  | complete scheme => simp only [LetAnn.substTyFvars, ty_substFvars_append]
+  | template t => exact congrArg LetAnn.template (t.substTyFvars_append first second)
+  | partialForall n t => exact congrArg (LetAnn.partialForall n) (t.substTyFvars_append first second)
+
+mutual
+/-- Source type substitutions compose in the same left-to-right order as Core. -/
+theorem Input.substTyFvars_append (input : Input) (first second : List (Nat × Ty)) :
+    input.substTyFvars (first ++ second) = (input.substTyFvars first).substTyFvars second := by
+  cases input with
+  | primLit | primBinOp | var | ctor => rfl
+  | lambda ann body =>
+      simp only [Input.substTyFvars, body.substTyFvars_append first second, Option.map_map]
+      congr 1
+      cases ann with
+      | none => rfl
+      | some t => exact congrArg some (t.substTyFvars_append first second)
+  | app f a => simp only [Input.substTyFvars, f.substTyFvars_append first second, a.substTyFvars_append first second]
+  | letIn ann rhs body => simp only [Input.substTyFvars, ann.substTyFvars_append first second,
+      rhs.substTyFvars_append first second, body.substTyFvars_append first second]
+  | match_ scrut branches => simp only [Input.substTyFvars, scrut.substTyFvars_append first second,
+      substInputBranches_append branches first second]
+  | letRec anns bindings body =>
+      simp only [Input.substTyFvars, body.substTyFvars_append first second,
+        substInputBindings_append bindings first second, List.map_map]
+      congr 1
+      exact List.map_congr_left (fun ann _ => ann.substTyFvars_append first second)
+termination_by sizeOf input
+
+theorem substInputBranches_append (branches : List (MatchPattern × Input)) (first second : List (Nat × Ty)) :
+    substInputBranches (first ++ second) branches = substInputBranches second (substInputBranches first branches) := by
+  cases branches with
+  | nil => rfl
+  | cons pair rest =>
+      rcases pair with ⟨pat, body⟩
+      simp only [substInputBranches, body.substTyFvars_append first second, substInputBranches_append rest first second]
+termination_by sizeOf branches
+
+theorem substInputBindings_append (bindings : List Input) (first second : List (Nat × Ty)) :
+    substInputBindings (first ++ second) bindings = substInputBindings second (substInputBindings first bindings) := by
+  cases bindings with
+  | nil => rfl
+  | cons body rest => simp only [substInputBindings, body.substTyFvars_append first second,
+      substInputBindings_append rest first second]
+termination_by sizeOf bindings
+end
+
+private theorem ty_substFvars_congr {subst other : List (Nat × Ty)} {ty : Ty}
+    (h : ∀ v ∈ ty.freeVars, (Ty.fvar v).substFvars subst = (Ty.fvar v).substFvars other) : ty.substFvars subst = ty.substFvars other := by
+  induction ty using Ty.rec_strong with
+  | prim p => simp only [Ty.substFvars_prim]
+  | bvar i => simp only [Ty.substFvars_bvar]
+  | fvar n => exact h n (by simp only [Ty.freeVars, List.mem_singleton])
+  | arrow a b iha ihb =>
+      rw [Ty.substFvars_arrow, Ty.substFvars_arrow,
+        iha (fun v hv => h v (by simp only [Ty.freeVars, List.mem_dedup, List.mem_append]; exact .inl hv)),
+        ihb (fun v hv => h v (by simp only [Ty.freeVars, List.mem_dedup, List.mem_append]; exact .inr hv))]
+  | customTy name args ih =>
+      rw [Ty.substFvars_customTy, Ty.substFvars_customTy]
+      congr 1
+      apply List.map_congr_left
+      intro ty hty
+      exact ih ty hty (fun v hv => h v (TyList.mem_freeVars_of_mem hty hv))
+
+mutual
+theorem Template.substTyFvars_congr (template : Template) {subst other : List (Nat × Ty)}
+    (h : ∀ v ∈ template.rigidVars, (Ty.fvar v).substFvars subst = (Ty.fvar v).substFvars other) :
+    template.substTyFvars subst = template.substTyFvars other := by
+  cases template with
+  | fixed ty => exact congrArg Template.fixed (ty_substFvars_congr h)
+  | hole => rfl
+  | arrow a b => simp only [Template.substTyFvars,
+      a.substTyFvars_congr (fun v hv => h v (List.mem_append_left _ hv)),
+      b.substTyFvars_congr (fun v hv => h v (List.mem_append_right _ hv))]
+  | custom name args =>
+      exact congrArg (Template.custom name) (substTemplateList_congr args h)
+theorem substTemplateList_congr (templates : List Template) {subst other : List (Nat × Ty)}
+    (h : ∀ v ∈ rigidVarsList templates, (Ty.fvar v).substFvars subst = (Ty.fvar v).substFvars other) :
+    substTemplateList subst templates = substTemplateList other templates := by
+  cases templates with
+  | nil => rfl
+  | cons t ts => simp only [substTemplateList,
+      t.substTyFvars_congr (fun v hv => h v (List.mem_append_left _ hv)),
+      substTemplateList_congr ts (fun v hv => h v (List.mem_append_right _ hv))]
+end
+
+theorem LetAnn.substTyFvars_congr (ann : LetAnn) {subst other : List (Nat × Ty)}
+    (h : ∀ v ∈ ann.rigidVars, (Ty.fvar v).substFvars subst = (Ty.fvar v).substFvars other) : ann.substTyFvars subst = ann.substTyFvars other := by
+  cases ann with
+  | absent => rfl
+  | complete scheme => simp only [LetAnn.substTyFvars, ty_substFvars_congr h]
+  | template t => exact congrArg LetAnn.template (t.substTyFvars_congr h)
+  | partialForall n t => exact congrArg (LetAnn.partialForall n) (t.substTyFvars_congr h)
+
+mutual
+/-- Substitutions agreeing on all authored free type variables produce the
+same input syntax, including beneath written signature binders. -/
+theorem Input.substTyFvars_congr (input : Input) {subst other : List (Nat × Ty)}
+    (h : ∀ v ∈ input.rigidVars, (Ty.fvar v).substFvars subst = (Ty.fvar v).substFvars other) : input.substTyFvars subst = input.substTyFvars other := by
+  cases input with
+  | primLit | primBinOp | var | ctor => rfl
+  | lambda ann body =>
+      simp only [Input.substTyFvars,
+        body.substTyFvars_congr (fun v hv => h v (List.mem_append_right _ hv))]
+      congr 1
+      cases ann with
+      | none => rfl
+      | some template =>
+          exact congrArg some (template.substTyFvars_congr (fun v hv => h v (List.mem_append_left _ hv)))
+  | app f a => simp only [Input.substTyFvars,
+      f.substTyFvars_congr (fun v hv => h v (List.mem_append_left _ hv)),
+      a.substTyFvars_congr (fun v hv => h v (List.mem_append_right _ hv))]
+  | letIn ann rhs body => simp only [Input.substTyFvars,
+      ann.substTyFvars_congr (fun v hv => h v (List.mem_append_left _ (List.mem_append_left _ hv))),
+      rhs.substTyFvars_congr (fun v hv => h v (List.mem_append_left _ (List.mem_append_right _ hv))),
+      body.substTyFvars_congr (fun v hv => h v (List.mem_append_right _ hv))]
+  | match_ scrut branches => simp only [Input.substTyFvars,
+      scrut.substTyFvars_congr (fun v hv => h v (List.mem_append_left _ hv)),
+      substInputBranches_congr branches (fun v hv => h v (List.mem_append_right _ hv))]
+  | letRec anns bindings body =>
+      simp only [Input.substTyFvars,
+        body.substTyFvars_congr (fun v hv => h v (List.mem_append_right _ hv)),
+        substInputBindings_congr bindings (fun v hv => h v (List.mem_append_left _ (List.mem_append_right _ hv)))]
+      congr 1
+      apply List.map_congr_left
+      intro ann hann
+      exact ann.substTyFvars_congr (fun v hv => h v (List.mem_append_left _
+        (List.mem_append_left _ (List.mem_flatMap.mpr ⟨ann, hann, hv⟩))))
+termination_by sizeOf input
+
+theorem substInputBranches_congr (branches : List (MatchPattern × Input)) {subst other : List (Nat × Ty)}
+    (h : ∀ v ∈ rigidBranchVars branches, (Ty.fvar v).substFvars subst = (Ty.fvar v).substFvars other) :
+    substInputBranches subst branches = substInputBranches other branches := by
+  cases branches with
+  | nil => rfl
+  | cons pair rest =>
+      simp only [substInputBranches,
+        pair.2.substTyFvars_congr (fun v hv => h v (List.mem_append_left _ hv)),
+        substInputBranches_congr rest (fun v hv => h v (List.mem_append_right _ hv))]
+termination_by sizeOf branches
+decreasing_by all_goals (subst_vars; cases pair; simp_wf <;> omega)
+
+theorem substInputBindings_congr (bindings : List Input) {subst other : List (Nat × Ty)}
+    (h : ∀ v ∈ rigidBindingVars bindings, (Ty.fvar v).substFvars subst = (Ty.fvar v).substFvars other) :
+    substInputBindings subst bindings = substInputBindings other bindings := by
+  cases bindings with
+  | nil => rfl
+  | cons body rest => simp only [substInputBindings,
+      body.substTyFvars_congr (fun v hv => h v (List.mem_append_left _ hv)),
+      substInputBindings_congr rest (fun v hv => h v (List.mem_append_right _ hv))]
+termination_by sizeOf bindings
+end
+
+
 end Elaboration
