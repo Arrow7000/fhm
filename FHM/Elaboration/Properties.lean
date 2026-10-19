@@ -807,6 +807,118 @@ theorem Typing.weaken {K : List Nat} {ctx : Ctx} {input : Input} {ty : Ty}
   | match_ _ hne _ ihscrut ihbranches =>
     intro env' hgen
     exact .match_ (ihscrut hgen) hne (fun branch hb => ihbranches branch hb hgen)
+  | @letRec anns K bindings ctx body resultTy specs groups prefixes G L hg hw hp hG hAnn hRhs hFits _ _ _ ihMono ihPoly ihBody =>
+    intro env' hgen
+    have hextra : ∀ extra : Env, List.Forall₂ PolyTy.Generalizes (extra ++ env') (extra ++ ctx.env) := by
+      intro extra
+      induction extra with
+      | nil => exact hgen
+      | cons head tail ih => exact .cons (PolyTy.Generalizes.refl head) ih
+    let avoid := K ++ env'.freeVars ++ G ++ specs.flatMap RecSpec.freeVars
+    obtain ⟨W, hWlen, hWnd, hWavoid⟩ := exists_fresh_names avoid G.length
+    have hGW : ∀ g ∈ G, g ∉ W := by
+      intro g hg hw
+      exact hWavoid g hw (by simp only [avoid, List.mem_append]; tauto)
+    have hWmono : ∀ ty, .mono ty ∈ specs → ∀ w ∈ W, w ∉ ty.freeVars := by
+      intro ty ht w hw hv
+      exact hWavoid w hw (by
+        simp only [avoid, List.mem_append]
+        right
+        exact List.mem_flatMap.mpr ⟨.mono ty, ht, hv⟩)
+    let specs' := specs.map (fun spec => RecSpec.onSubstSource [] (RecSpec.onSubst (G.zip (W.map Ty.fvar)) spec))
+    let prefixes' := prefixes.map (recRenameNames G W)
+    let L' := G ++ W ++ L
+    have annNil : anns.map (LetAnn.substTyFvars []) = anns := by
+      conv_rhs => rw [← List.map_id anns]
+      apply List.map_congr_left
+      intro ann _
+      exact ann.substTyFvars_eq_self_of_fixes (fun _ _ => rfl)
+    have hw' : RecSpecs.WF (anns.map LetAnn.recModeAnn) (bindings.map Input.erase) specs' W := by
+      simpa only [annNil] using Elaboration.RecSpecs.WF.subst_fresh_pool (S := []) hw (by simp) hWnd
+    have hp' : RecPrefixesWF anns specs' prefixes' W := by
+      simpa only [annNil] using hp.subst_fresh_pool (S := []) hWlen hWnd
+    have hannsLen : anns.length = specs.length := by
+      have hh := congrArg List.length hw.anns_eq
+      simpa using hh.symm
+    have hpData := fun i hi => hp.get hannsLen (i := i) hi
+    have mapNil : ∀ xs : List PolyTy, xs.map (Subst.onPolyTy []) = xs := by
+      intro xs
+      rw [show Subst.onPolyTy [] = id from funext Subst.onPolyTy_nil, List.map_id]
+    have hcompleted : recCompletedSchemes specs' prefixes' W = recCompletedSchemes specs prefixes G := by
+      simpa only [mapNil] using recCompletedSchemes_subst_fresh_pool (S := []) (by simp) hWlen hw.nodup hWnd
+        hGW hWmono (by simp) (by simp) hw.mono_lc hpData
+    have oldFresh : ∀ Xs, FreshNames (W ++ L') W.length Xs → FreshNames (G ++ L) G.length Xs := by
+      intro Xs hf
+      refine ⟨hf.length.trans hWlen, hf.nodup, ?_⟩
+      intro x hx hl
+      exact hf.avoid x hx (by simp only [L', List.mem_append] at hl ⊢; tauto)
+    have hGXs : ∀ Xs, FreshNames (W ++ L') W.length Xs → ∀ g ∈ G, g ∉ Xs := by
+      intro Xs hf g hg hx
+      exact hf.avoid g hx (by simp only [L', List.mem_append]; tauto)
+    have hWXs : ∀ Xs, FreshNames (W ++ L') W.length Xs → ∀ w ∈ W, w ∉ Xs := by
+      intro Xs hf w hw hx
+      exact hf.avoid w hx (List.mem_append_left _ hw)
+    have hstage : ∀ Xs, FreshNames (W ++ L') W.length Xs → ∀ done,
+        specs'.mapIdx (recStageEntry prefixes' done W Xs) = specs.mapIdx (recStageEntry prefixes done G Xs) := by
+      intro Xs hf done
+      simpa only [mapNil] using recStageSchemes_subst_fresh_pool (S := []) (done := done) (by simp)
+        hWlen hw.nodup hWnd hGW hWmono (by simp) (by simp) hw.mono_lc hpData
+        (hf.length.trans hWlen) (hGXs Xs hf) (hWXs Xs hf) (by simp)
+    have hsquare : ∀ ty, .mono ty ∈ specs → ∀ Xs, FreshNames (W ++ L') W.length Xs →
+        Ty.renameG W Xs (Ty.renameG G W ty) = Ty.renameG G Xs ty := by
+      intro ty ht Xs hf
+      simpa only [Subst.onTy_nil] using Ty.renameG_subst_fresh_pool (S := []) (hw.mono_lc ty ht) (by simp)
+        hWlen hw.nodup hWnd hGW (hWmono ty ht) (by simp) (by simp)
+        (hf.length.trans hWlen) (hGXs Xs hf) (hWXs Xs hf) (by simp)
+    refine Typing.letRec (specs := specs') (groups := groups) (prefixes := prefixes') (G := W) (L := L')
+      hg hw' hp' ?_ hAnn hRhs ?_ ?_ ?_ ?_
+    · intro w hw hm
+      exact hWavoid w hw (by simp only [avoid, List.mem_append] at hm ⊢; tauto)
+    · intro stage component hs Xs hf member hm rhs ann names ty hri hai hni hti
+      rw [List.getElem?_map] at hni hti
+      obtain ⟨names0, hn0, rfl⟩ := Option.map_eq_some_iff.mp hni
+      obtain ⟨spec, ht0, heq⟩ := Option.map_eq_some_iff.mp hti
+      cases spec with
+      | poly scheme => cases heq
+      | mono ty0 =>
+        cases heq
+        obtain ⟨_, _, hsub⟩ := hp.member member ann names0 hai hn0
+        change ann.RecFits (recRenameNames W Xs (recRenameNames G W names0))
+          (Ty.renameG W Xs (Ty.renameG G W ty0))
+        rw [recRenameNames_composition hWlen (hf.length.trans hWlen) hWnd hsub,
+          hsquare ty0 (List.mem_of_getElem? ht0) Xs hf]
+        exact hFits stage component hs Xs (oldFresh Xs hf) member hm rhs ann names0 ty0 hri hai hn0 ht0
+    · intro stage component hs Xs hf member hm rhs ann names ty hri hai hni hti
+      rw [List.getElem?_map] at hni hti
+      obtain ⟨names0, hn0, rfl⟩ := Option.map_eq_some_iff.mp hni
+      obtain ⟨spec, ht0, heq⟩ := Option.map_eq_some_iff.mp hti
+      cases spec with
+      | poly scheme => cases heq
+      | mono ty0 =>
+        cases heq
+        obtain ⟨_, _, hsub⟩ := hp.member member ann names0 hai hn0
+        change Typing (K ++ Xs)
+          (recStageCtx { ctx with env := env' } specs' prefixes' (groups.take stage).flatten W Xs)
+          (rhs.openTyVars (recRenameNames W Xs (recRenameNames G W names0)))
+          (Ty.renameG W Xs (Ty.renameG G W ty0))
+        rw [recRenameNames_composition hWlen (hf.length.trans hWlen) hWnd hsub,
+          hsquare ty0 (List.mem_of_getElem? ht0) Xs hf]
+        have hc := ihMono stage component hs Xs (oldFresh Xs hf) member hm rhs ann names0 ty0 hri hai hn0 ht0
+          (hextra (specs.mapIdx (recStageEntry prefixes (groups.take stage).flatten G Xs)))
+        simpa only [recStageCtx, hstage Xs hf] using hc
+    · intro member rhs scheme hri hsi Ys hy
+      rw [List.getElem?_map] at hsi
+      obtain ⟨spec, hs0, heq⟩ := Option.map_eq_some_iff.mp hsi
+      cases spec with
+      | mono ty => cases heq
+      | poly scheme0 =>
+        cases heq
+        have hy0 : FreshNames L scheme0.paramCount Ys :=
+          ⟨hy.length, hy.nodup, fun y hy' hl => hy.avoid y hy' (by simp only [L', List.mem_append]; tauto)⟩
+        have hc := ihPoly member rhs scheme0 hri hs0 Ys hy0 (hextra (recCompletedSchemes specs prefixes G))
+        simpa only [recBodyCtx, hcompleted] using hc
+    · have hc := ihBody (hextra (recCompletedSchemes specs prefixes G))
+      simpa only [recBodyCtx, hcompleted] using hc
   | @named name count scrutTy ctor args fields K ctx body resultTy hspec _ ih =>
     rename_i env' hgen
     refine .named hspec (ih ?_)
