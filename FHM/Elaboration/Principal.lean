@@ -1245,6 +1245,139 @@ interval. Gaps are permitted; targets may mention any selected slot. -/
   · exact prefixRepresentatives_fixed hlen hassign v hr
 
 
+
+ theorem OpenRecAnn.factor_source {S0 : Subst} {names : List Nat} {target : Ty}
+    (h : OpenRecAnn frontier ann next opening)
+    (hS0 : ∀ p ∈ S0,p.2.IsLC) (hraw : ∀ v ∈ ann.rigidVars,v < frontier)
+    (hfit : (ann.substTyFvars S0).RecFits names target)
+    (hcount : names.length = ann.recPrefixCount) (htarget : target.IsLC) :
+    ∃ U : Subst,(∀ p ∈ U,p.2.IsLC) ∧ Subst.AgreesBelow frontier S0 U ∧
+      opening.written.map (fun v => U.onTy (.fvar v)) = names.map Ty.fvar ∧
+      ∀ expected,opening.expected = some expected → U.onTy expected = target := by
+  cases h with
+  | absent =>
+    have hn : names = [] := List.eq_nil_of_length_eq_zero hcount
+    subst names
+    exact ⟨S0,hS0,fun _ _ => rfl,rfl,fun _ he => by cases he⟩
+  | complete => exact False.elim hfit
+  | @template next ty frontier template heq hlc =>
+    have hn : names = [] := List.eq_nil_of_length_eq_zero hcount
+    subst names
+    obtain ⟨U,hU,hag,hallocated⟩ := Template.Fits.allocate_override_source hfit htarget hS0 frontier hraw
+    refine ⟨U,hU,hag,rfl,?_⟩
+    intro expected hex
+    cases Option.some.inj hex
+    simpa only [heq] using hallocated
+  | @partialForall next ty frontier count template heq hlc =>
+    have hlen : names.length = count := hcount
+    obtain ⟨U0,hU0,hag0,hblock⟩ := Subst.override_block hS0 frontier (names.map Ty.fvar)
+      (by intro t ht;obtain ⟨_,_,rfl⟩ := List.mem_map.mp ht;exact .fvar)
+    have himages : (freshVars frontier count).map (fun v => U0.onTy (.fvar v)) = names.map Ty.fvar := by
+      apply List.ext_getElem
+      · simp only [List.length_map,freshVars_length];exact hlen.symm
+      · intro i hi hj
+        have hin : i < names.length := by simpa only [List.length_map] using hj
+        have hh := hblock i (by simpa only [List.length_map] using hin)
+        simpa only [List.getElem_map,freshVars,List.getElem_range] using hh
+    have hnewFit : ((template.openTyVarsFrom 0 (freshVars frontier count)).substTyFvars U0).Fits target := by
+      rw [Template.substTyFvars_openTyVarsFrom_of_images _ hU0 himages 0]
+      have heqSource : template.substTyFvars U0 = template.substTyFvars S0 :=
+        template.substTyFvars_congr (fun v hv => (hag0 v (hraw v hv)).symm)
+      rw [heqSource]
+      exact hfit.2
+    have hopenedRaw : ∀ v ∈ (template.openTyVarsFrom 0 (freshVars frontier count)).rigidVars,v < frontier+count := by
+      intro v hv
+      rcases List.mem_append.mp (template.openTyVarsFrom_scope (K := template.rigidVars) (fun _ h => h) 0 _ v hv) with hv | hv
+      · have := hraw v hv;omega
+      · exact freshVars_lt v hv
+    obtain ⟨U,hU,hag,hallocated⟩ := hnewFit.allocate_override_source htarget hU0 (frontier+count) hopenedRaw
+    refine ⟨U,hU,fun v hv => (hag0 v hv).trans (hag v (by omega)),?_,?_⟩
+    · change (freshVars frontier count).map (fun v => U.onTy (.fvar v)) = _
+      calc
+        _ = (freshVars frontier count).map (fun v => U0.onTy (.fvar v)) :=
+          List.map_congr_left (fun v hv => (hag v (freshVars_lt v hv)).symm)
+        _ = names.map Ty.fvar := himages
+    · intro expected hex
+      cases Option.some.inj hex
+      simpa only [heq] using hallocated
+
+ theorem OpenRecAnns.factor_source {S0 : Subst}
+    (h : OpenRecAnns members index frontier anns next openings)
+    (hS0 : ∀ p ∈ S0,p.2.IsLC) (hraw : ∀ ann ∈ anns,∀ v ∈ ann.rigidVars,v < frontier)
+    (targetNames : List (List Nat)) (targetTypes : List Ty)
+    (hNames : targetNames.length = anns.length) (hTypes : targetTypes.length = anns.length)
+    (hfit : ∀ (j : Nat) (ann : LetAnn) (names : List Nat) (target : Ty),index+j ∈ members →
+      anns[j]? = some ann → targetNames[j]? = some names → targetTypes[j]? = some target →
+      (ann.substTyFvars S0).RecFits names target ∧ names.length = ann.recPrefixCount ∧ target.IsLC) :
+    ∃ U : Subst,(∀ p ∈ U,p.2.IsLC) ∧ Subst.AgreesBelow frontier S0 U ∧
+      ∀ (j : Nat) (opening : RecOpening) (names : List Nat) (target : Ty),index+j ∈ members →
+        openings[j]? = some opening → targetNames[j]? = some names → targetTypes[j]? = some target →
+        opening.written.map (fun v => U.onTy (.fvar v)) = names.map Ty.fvar ∧
+        ∀ expected,opening.expected = some expected → U.onTy expected = target := by
+  induction h generalizing S0 targetNames targetTypes with
+  | nil =>
+    refine ⟨S0,hS0,fun _ _ => rfl,?_⟩
+    intro j opening names target _ ho
+    simp at ho
+  | @skip index frontier rest next openings ann hn hr ih =>
+    cases targetNames with
+    | nil => simp at hNames
+    | cons names targetNames =>
+      cases targetTypes with
+      | nil => simp at hTypes
+      | cons target targetTypes =>
+        obtain ⟨U,hU,hag,htail⟩ := ih hS0
+          (fun ann ha => hraw ann (List.mem_cons_of_mem _ ha)) targetNames targetTypes
+          (Nat.succ.inj hNames) (Nat.succ.inj hTypes)
+          (fun j ann names target hm ha hn ht => hfit (j+1) ann names target
+            (by simpa [Nat.add_assoc,Nat.add_comm,Nat.add_left_comm] using hm) ha hn ht)
+        refine ⟨U,hU,hag,?_⟩
+        intro j opening names target hm ho hn' ht
+        cases j with
+        | zero => exact False.elim (hn (by simpa using hm))
+        | succ j =>
+          exact htail j opening names target
+            (by simpa [Nat.add_assoc,Nat.add_comm,Nat.add_left_comm] using hm) ho hn' ht
+  | @cons index frontier ann middle opening rest next openings hm hh hr ih =>
+    cases targetNames with
+    | nil => simp at hNames
+    | cons names targetNames =>
+      cases targetTypes with
+      | nil => simp at hTypes
+      | cons target targetTypes =>
+        obtain ⟨hfitHead,hcountHead,hLCHead⟩ := hfit 0 ann names target (by simpa using hm) rfl rfl rfl
+        obtain ⟨U1,hU1,hag1,himHead,hexHead⟩ := hh.factor_source hS0 (hraw ann List.mem_cons_self)
+          hfitHead hcountHead hLCHead
+        have hle := hh.frontier_le
+        obtain ⟨U,hU,hag,htail⟩ := ih hU1
+          (fun ann ha v hv => (hraw ann (List.mem_cons_of_mem _ ha) v hv).trans_le hle)
+          targetNames targetTypes (Nat.succ.inj hNames) (Nat.succ.inj hTypes)
+          (by
+            intro j ann names target hm ha hn ht
+            have hfitOld := hfit (j+1) ann names target
+              (by simpa [Nat.add_assoc,Nat.add_comm,Nat.add_left_comm] using hm) ha hn ht
+            have heq : ann.substTyFvars U1 = ann.substTyFvars S0 :=
+              ann.substTyFvars_congr (fun v hv => (hag1 v (hraw ann (List.mem_cons_of_mem _ (List.mem_of_getElem? ha)) v hv)).symm)
+            rw [heq]
+            exact hfitOld)
+        refine ⟨U,hU,fun v hv => (hag1 v hv).trans (hag v (hv.trans_le hle)),?_⟩
+        intro j opening' names' target' hm' ho hn ht
+        cases j with
+        | zero =>
+          cases Option.some.inj ho
+          cases Option.some.inj hn
+          cases Option.some.inj ht
+          refine ⟨?_,?_⟩
+          · calc
+              opening.written.map (fun v => U.onTy (.fvar v)) = opening.written.map (fun v => U1.onTy (.fvar v)) :=
+                List.map_congr_left (fun v hv => (hag v (hh.written_range v hv).2).symm)
+              _ = names.map Ty.fvar := himHead
+          · intro expected he
+            exact (Subst.onTy_congr hag (hh.expected_below (hraw ann List.mem_cons_self) he)).symm.trans (hexHead expected he)
+        | succ j =>
+          exact htail j opening' names' target'
+            (by simpa [Nat.add_assoc,Nat.add_comm,Nat.add_left_comm] using hm') ho hn ht
+
 theorem _root_.Infer.sourcePrincipal_backend {input : Input} {core : Expr}
     (hemb : input.toCore = some core)
     (h : CoreBackend.Infer K frontier ctx core next subst ty)

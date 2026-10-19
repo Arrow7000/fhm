@@ -784,3 +784,62 @@ def RecState.InputTrace (Q : List Nat) (ctx : Ctx) (anns : List LetAnn)
 
 
 end Elaboration
+
+namespace Elaboration
+
+private theorem boundary_freeVarsList_mem {tys : List Ty} (ht : ty ∈ tys) (hv : v ∈ ty.freeVars) :
+    v ∈ Ty.freeVarsList tys := by
+  induction tys with
+  | nil => cases ht
+  | cons head rest ih =>
+    apply List.mem_dedup.mpr
+    rcases List.mem_cons.mp ht with rfl | ht
+    · exact List.mem_append_left _ hv
+    · exact List.mem_append_right _ (ih ht)
+
+/-- Finalization includes every selected monotype variable outside its fixed
+boundary, regardless of slot images, graph order, or type-variable bounds. -/
+theorem RecState.componentPool_covers {state : RecState}
+    (hi : i ∈ members) (ht : state.specs[i]? = some (.mono ty)) (hv : v ∈ ty.freeVars)
+    (hctx : v ∉ (state.fixedCtx ctx).env.freeVars) (hK : v ∉ K) (hsoft : v ∉ soft) :
+    v ∈ state.componentPool K soft members ctx written := by
+  by_cases hp : v ∈ state.pool
+  · exact List.mem_append_left _ hp
+  · have hty : ty ∈ RecSpecs.monoTysAt state.specs members := by
+      apply List.mem_filterMap.mpr
+      exact ⟨i,hi,by simp [ht,RecSpec.monoTy?]⟩
+    have hgen : v ∈ genGroupVars (K ++ soft ++ state.pool) (state.fixedCtx ctx).env
+        (RecSpecs.monoTysAt state.specs members) := by
+      apply List.mem_filter.mpr
+      exact ⟨boundary_freeVarsList_mem hty hv,by simp [hctx,hK,hsoft,hp]⟩
+    exact List.mem_append_right _ (List.mem_filter.mpr
+      ⟨List.mem_dedup.mpr (List.mem_append_right _ hgen),decide_eq_true hp⟩)
+
+/-- An exported selected monotype has no free variables outside the fixed
+outer/export context, the frozen set, and the live soft-variable boundary. -/
+theorem FinishRecComponent.export_freeVars_boundary
+    (h : FinishRecComponent K soft members ctx state outputs facts final)
+    (hi : i ∈ members) (ht : state.specs[i]? = some (.mono ty))
+    (hex : final.exports[i]? = some (some scheme)) :
+    ∀ v ∈ scheme.body.freeVars, v ∈ (state.fixedCtx ctx).env.freeVars ∨ v ∈ K ∨ v ∈ soft := by
+  cases h with
+  | mk hresolve =>
+    expose_names
+    rw [RecState.exportComponent,List.getElem?_mapIdx] at hex
+    obtain ⟨old,_,heq⟩ := Option.map_eq_some_iff.mp hex
+    simp only [if_pos hi,ht,RecSpec.completedScheme] at heq
+    have hs : recScheme (written[i]?.getD [])
+        (state.componentPool K soft members ctx written) ty = scheme := Option.some.inj heq
+    subst scheme
+    intro v hv
+    by_cases hctx : v ∈ (state.fixedCtx ctx).env.freeVars
+    · exact Or.inl hctx
+    by_cases hK : v ∈ K
+    · exact Or.inr (Or.inl hK)
+    by_cases hsoft : v ∈ soft
+    · exact Or.inr (Or.inr hsoft)
+    have hfree := Ty.freeVars_closeOver_subset hv
+    have hpool := state.componentPool_covers (written := written) hi ht hfree hctx hK hsoft
+    exact False.elim (Ty.not_mem_closeOver_freeVars (mem_recNames_of_mem_pool hpool hfree) hv)
+
+end Elaboration
