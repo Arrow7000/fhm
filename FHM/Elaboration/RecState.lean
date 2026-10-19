@@ -393,3 +393,184 @@ def RecState.LC (state : RecState) : Prop :=
   exact hstate.exportComponent
 
 end Elaboration
+
+
+namespace Elaboration
+
+/-- Bounds for live recursive types; completed expressions and metadata are separate. -/
+def RecState.Below (frontier : Nat) (state : RecState) : Prop :=
+  (∀ spec ∈ state.specs, spec.BelowFvars frontier) ∧
+  (∀ images ∈ state.slots, ∀ ty ∈ images, Ty.BelowFvars frontier ty) ∧
+  (∀ scheme, some scheme ∈ state.exports → Ty.BelowFvars frontier scheme.body) ∧
+  (∀ name ∈ state.pool, name < frontier)
+
+ theorem RecState.Below.init {base : Nat} {anns : List LetAnn}
+    (hanns : ∀ ann ∈ anns, ∀ v ∈ ann.rigidVars, v < base) :
+    (RecState.init base anns).Below (base + anns.length) := by
+  have hmode : ∀ scheme, some scheme ∈ anns.map LetAnn.recModeAnn → Ty.BelowFvars (base + anns.length) scheme.body := by
+    intro scheme hm
+    obtain ⟨ann, hann, heq⟩ := List.mem_map.mp hm
+    cases ann with
+    | absent | template t | partialForall n t => cases heq
+    | complete σ =>
+      have hs : σ = scheme := Option.some.inj heq
+      subst scheme
+      exact Ty.BelowFvars.of_freeVars_lt (fun v hv => Nat.lt_of_lt_of_le (hanns _ hann v hv) (by omega))
+  refine ⟨?_, ?_, hmode, by simp [RecState.init]⟩
+  · intro spec hm
+    rcases RecSpec.mem_init hm with ⟨m, _, hupper, rfl⟩ | ⟨scheme, hs, rfl⟩
+    · exact .fvar (by simpa only [List.length_map] using hupper)
+    · exact hmode scheme hs
+  · intro images hm ty ht
+    obtain ⟨ann, _, heq⟩ := List.mem_map.mp hm
+    cases heq
+    cases ht
+
+ theorem RecState.Below.mono {state : RecState} (h : state.Below frontier) (hle : frontier ≤ next) :
+    state.Below next :=
+  ⟨fun spec hs => (h.1 spec hs).mono hle,
+    fun images hi ty ht => (h.2.1 images hi ty ht).mono hle,
+    fun scheme hs => (h.2.2.1 scheme hs).mono hle,
+    fun name hn => Nat.lt_of_lt_of_le (h.2.2.2 name hn) hle⟩
+
+ theorem RecState.Below.onSubst {state : RecState} (h : state.Below frontier)
+    (hS : ∀ p ∈ S, Ty.BelowFvars next p.2) (hle : frontier ≤ next) :
+    (state.onSubst S).Below next := by
+  refine ⟨?_, ?_, ?_, fun name hn => Nat.lt_of_lt_of_le (h.2.2.2 name hn) hle⟩
+  · intro spec hm
+    obtain ⟨old, hold, rfl⟩ := List.mem_map.mp hm
+    cases old with
+    | mono ty => exact Subst.onTy_belowFvars hS ((h.1 _ hold).mono hle)
+    | poly scheme => exact Subst.onTy_belowFvars hS ((h.1 _ hold).mono hle)
+  · intro images hm ty ht
+    obtain ⟨old, hold, rfl⟩ := List.mem_map.mp hm
+    obtain ⟨original, ho, rfl⟩ := List.mem_map.mp ht
+    exact Subst.onTy_belowFvars hS ((h.2.1 old hold original ho).mono hle)
+  · intro scheme hm
+    obtain ⟨old, hold, heq⟩ := List.mem_map.mp hm
+    obtain ⟨original, ho, rfl⟩ := Option.map_eq_some_iff.mp heq
+    exact Subst.onTy_belowFvars hS ((h.2.2.1 original (ho ▸ hold)).mono hle)
+
+ theorem RecState.Below.setSigned {state : RecState} (h : state.Below frontier) {facts : RecFacts} :
+    (state.setSigned member names output facts).Below frontier := h
+
+ theorem RecState.Below.rhsCtx {state : RecState} (h : state.Below frontier) (hctx : CtxBelow frontier ctx) :
+    CtxBelow frontier (state.rhsCtx ctx) := by
+  intro scheme hm
+  rcases List.mem_append.mp hm with hm | hm
+  · obtain ⟨⟨spec, exported⟩, hp, heq⟩ := List.mem_map.mp hm
+    have hmem := List.of_mem_zip hp
+    cases exported with
+    | none =>
+      subst scheme
+      cases spec with
+      | mono ty => exact h.1 _ hmem.1
+      | poly σ => exact h.1 _ hmem.1
+    | some σ => cases heq; exact h.2.2.1 σ hmem.2
+  · exact hctx scheme hm
+
+ theorem RecState.Below.fixedCtx {state : RecState} (h : state.Below frontier) (hctx : CtxBelow frontier ctx) :
+    CtxBelow frontier (state.fixedCtx ctx) := by
+  intro scheme hm
+  rcases List.mem_append.mp hm with hm | hm
+  · obtain ⟨old, hold, heq⟩ := List.mem_filterMap.mp hm
+    exact h.2.2.1 scheme (heq ▸ hold)
+  · exact hctx scheme hm
+
+ theorem RecState.Below.installOpenings {state : RecState} (h : state.Below frontier)
+    (hopen : OpenRecAnns members index frontier anns next openings) :
+    (state.installOpenings members openings).Below next := by
+  have hb := h.mono hopen.frontier_le
+  refine ⟨hb.1, ?_, hb.2.2⟩
+  intro images hm ty ht
+  obtain ⟨i, hi, heq⟩ := List.mem_mapIdx.mp hm
+  split at heq
+  · cases ho : openings[i]? with
+    | none => simp [ho, RecOpening.empty] at heq; subst images; cases ht
+    | some opening =>
+      simp only [ho, Option.getD_some] at heq
+      subst images
+      obtain ⟨name, hn, rfl⟩ := List.mem_map.mp ht
+      exact .fvar ((hopen.written_range name (List.mem_flatMap.mpr
+        ⟨opening, List.mem_of_getElem? ho, hn⟩)).2)
+  · exact hb.2.1 _ (List.getElem_mem hi) ty (heq ▸ ht)
+
+ theorem ResolveRecSlots.names_below
+    (h : ResolveRecSlots members forbidden index slots names)
+    (hslots : ∀ images ∈ slots, ∀ ty ∈ images, Ty.BelowFvars frontier ty) :
+    ∀ name ∈ names.flatten, name < frontier := by
+  induction h with
+  | nil => intro name hn; cases hn
+  | skip _ _ ih =>
+    exact ih (fun images hi => hslots images (List.mem_cons_of_mem _ hi))
+  | cons _ hbare _ _ _ ih =>
+    intro name hn
+    rcases List.mem_append.mp hn with hn | hn
+    · have hb := hslots _ List.mem_cons_self (.fvar name)
+        (hbare ▸ List.mem_map.mpr ⟨name, hn, rfl⟩)
+      exact hb.mem_lt name (by simp [Ty.freeVars])
+    · exact ih (fun images hi => hslots images (List.mem_cons_of_mem _ hi)) name hn
+
+private theorem monoTysAt_below {specs : List RecSpec}
+    (h : ∀ spec ∈ specs, spec.BelowFvars frontier) :
+    ∀ ty ∈ RecSpecs.monoTysAt specs members, Ty.BelowFvars frontier ty := by
+  intro ty hm
+  obtain ⟨i, _, heq⟩ := List.mem_filterMap.mp hm
+  cases hs : specs[i]? with
+  | none => simp [hs] at heq
+  | some spec =>
+    cases spec with
+    | poly σ => simp [hs, RecSpec.monoTy?] at heq
+    | mono original =>
+      simp [hs, RecSpec.monoTy?] at heq
+      subst ty
+      exact h _ (List.mem_of_getElem? hs)
+
+private theorem freeVarsList_below {tys : List Ty}
+    (h : ∀ ty ∈ tys, Ty.BelowFvars frontier ty) :
+    ∀ v ∈ Ty.freeVarsList tys, v < frontier := by
+  induction tys with
+  | nil => intro v hv; cases hv
+  | cons ty rest ih =>
+    intro v hv
+    rcases List.mem_append.mp (List.mem_dedup.mp hv) with hv | hv
+    · exact (h ty List.mem_cons_self).mem_lt v hv
+    · exact ih (fun t ht => h t (List.mem_cons_of_mem _ ht)) v hv
+
+ theorem RecState.Below.componentPool {state : RecState} (h : state.Below frontier)
+    (hnames : ∀ v ∈ written.flatten, v < frontier) :
+    ∀ v ∈ state.componentPool K soft members ctx written, v < frontier := by
+  intro v hv
+  rcases List.mem_append.mp hv with hv | hv
+  · exact h.2.2.2 v hv
+  · have hm := List.mem_dedup.mp (List.mem_filter.mp hv).1
+    rcases List.mem_append.mp hm with hm | hm
+    · exact hnames v hm
+    · have hf := (List.mem_filter.mp hm).1
+      exact freeVarsList_below (monoTysAt_below h.1) v hf
+
+ theorem RecState.Below.exportComponent {state : RecState} (h : state.Below frontier)
+    {pool : List Nat} {outputs : List (Option Expr)} {facts : List RecFacts}
+    (hpool : ∀ v ∈ pool, v < frontier) :
+    (state.exportComponent members written pool outputs facts).Below frontier := by
+  refine ⟨h.1, h.2.1, ?_, hpool⟩
+  intro scheme hm
+  obtain ⟨i, hi, heq⟩ := List.mem_mapIdx.mp hm
+  split at heq
+  · cases hs : state.specs[i]? with
+    | none => simp [hs] at heq
+    | some spec =>
+      simp [hs] at heq
+      subst scheme
+      cases spec with
+      | mono ty => exact (h.1 _ (List.mem_of_getElem? hs)).closeOver
+      | poly σ => exact h.1 _ (List.mem_of_getElem? hs)
+  · exact h.2.2.1 scheme (heq ▸ List.getElem_mem hi)
+
+ theorem FinishRecComponent.below (h : FinishRecComponent K soft members ctx state outputs facts final)
+    (hstate : state.Below frontier) : final.Below frontier := by
+  cases h with
+  | mk hslots =>
+      exact hstate.exportComponent (hstate.componentPool (hslots.names_below hstate.2.1))
+
+end Elaboration

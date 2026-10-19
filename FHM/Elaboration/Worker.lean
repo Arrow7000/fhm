@@ -222,8 +222,9 @@ def _root_.inferWithTypesCore (K : List Nat) (frontier : Nat) (ctx : Ctx) (input
                           (scrutSchemes.onSubst s2).below .matchScrut ++ branchSchemes),
                           .match_ hrawScope hs (by intro heq; rw [heq] at hh; simp at hh) hb⟩
               | .letRec anns bindings body =>
-                  if hwf : ∀ scheme, .complete scheme ∈ anns →
-                      scheme.body.bvarsBelow scheme.paramCount = true then
+                  if hwf : anns.all (fun ann => match ann with
+                      | .complete scheme => scheme.body.bvarsBelow scheme.paramCount
+                      | _ => true) = true then
                     if hg : RecGroups.validResidualGroupsB (anns.map LetAnn.recModeAnn) (bindings.map Input.erase)
                         (RecGroup.inferenceSccs (anns.map LetAnn.recModeAnn) (bindings.map Input.erase)) = true then
                       match inferRecStrataWithTypesCore K F (frontier + bindings.length) ctx anns bindings
@@ -250,7 +251,7 @@ def _root_.inferWithTypesCore (K : List Nat) (frontier : Nat) (ctx : Ctx) (input
                                 bodyTy, .root bodyTy ++ finalRecNodeTypes anns final ++ bodyTypes.below .letRecBody,
                                 inferredRecSchemes anns finalSchemes ++ finalRecBinderSchemes anns final ++
                                   bodySchemes.below .letRecBody),
-                                .letRec hrawScope (fun scheme hmem => PolyTy.wf_iff_bvarsBelow.mp (hwf scheme hmem))
+                                .letRec hrawScope (fun scheme hmem => PolyTy.wf_iff_bvarsBelow.mp (List.all_eq_true.mp hwf (.complete scheme) hmem))
                                   (RecGroups.validResidualGroupsB_sound hg) hs hp hschemes houtputs hb⟩
                           | _, _ => none
                     else none
@@ -404,7 +405,8 @@ def _root_.inferRecStrataWithTypesCore (K : List Nat) (F : List Ty) (frontier : 
 termination_by (sizeBindings bindings, groups.length + 1)
 decreasing_by
   all_goals (simp only [sizeBindings_map_substTyFvars, sizeBindings_openRecSources, List.length_cons])
-  all_goals first | apply Prod.Lex.right; omega | omega
+  all_goals apply Prod.Lex.right
+  all_goals omega
 
 /-- Complete contracts retain polymorphic recursive use and rigid openings. -/
 def _root_.inferRecSignedWithTypesCore (K : List Nat) (F : List Ty) (index frontier : Nat)
