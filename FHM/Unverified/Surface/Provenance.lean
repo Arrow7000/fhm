@@ -550,7 +550,7 @@ def lowerIdentifiedExpr (ke : KindEnv) (tvs vs : List ValName) :
       pure (combineAuthored source (.app fn'.expr arg'.expr)
         [fn'.belowPath [.appFun], arg'.belowPath [.appArg]])
   | .letIn name tyParams params ann rhs body, .letIn source srhs sbody => do
-      let annF := finalizeAnn tyParams params ann
+      let annF := Elaboration.finalizeInputAnn tyParams params ann
       let ann' ← Elaboration.lowerInputLetAnn ke tvs annF
       let tvs' := letAnnTyPrefix tyParams annF ++ tvs
       let rhsCore ← lowerIdentifiedExpr ke tvs' (paramTermScope params vs) rhs srhs
@@ -563,7 +563,7 @@ def lowerIdentifiedExpr (ke : KindEnv) (tvs vs : List ValName) :
   | .letRecIn binds body, .letRecIn source srhss sbody => do
       let recScope := binds.map (fun b => b.name) ++ vs
       let anns' ← binds.mapM fun b =>
-        Elaboration.lowerInputLetAnn ke tvs (finalizeAnn b.tyParams b.params b.ann)
+        Elaboration.lowerInputLetAnn ke tvs (Elaboration.finalizeInputAnn b.tyParams b.params b.ann)
       let bindings' ← lowerIdentifiedRecBinds ke tvs recScope source 0 binds srhss
       let body' ← lowerIdentifiedExpr ke tvs recScope body sbody
       let bindingExprs := bindings'.map fun r => r.expr
@@ -617,7 +617,8 @@ def lowerIdentifiedRecBinds (ke : KindEnv) (tvs recScope : List ValName)
     (owner : SourceNode) : Nat → List Surface.Binding → List IdentifiedExpr → Option (List InputLowered)
   | _, [], [] => some []
   | member, b :: rest, srhs :: srest => do
-      let tvs' := bindingLowerTyScope b tvs
+      let tvs' := letAnnTyPrefix b.tyParams
+        (Elaboration.finalizeInputAnn b.tyParams b.params b.ann) ++ tvs
       let rhsCore ← lowerIdentifiedExpr ke tvs' (paramTermScope b.params recScope) b.rhs srhs
       let rhs' ← wrapParamsWithProvenance ke tvs' owner
         (fun i => .letRecParam owner.id member i) 0 b.params rhsCore

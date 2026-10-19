@@ -37,8 +37,44 @@ def lowerTemplateAnn (ke : KindEnv) (tvs : List ValName) :
   | none => some none
   | some ty => (lowerTemplate ke tvs ty).map some
 
+/-- Normalize binding-head sugar for the canonical input pipeline.
+A result annotation describes the RHS after every head parameter. Missing
+parameter types become independent holes; a head forall without a result
+annotation retains its scope using a partial signature. Parameter-only heads
+without a result annotation keep ordinary HM lambda inference. -/
+def finalizeInputAnn (tyParams : List ValName)
+    (params : List (ValName × Option Surface.Ty)) (ann : Option Surface.PolyTy) :
+    Option Surface.PolyTy :=
+  if tyParams.isEmpty && params.isEmpty then SurfaceBridge.mergeTyParams [] ann
+  else if tyParams.isEmpty && ann.isNone then none
+  else
+    some {
+      foralls := SurfaceBridge.mergeTyParamNames tyParams ((ann.map (·.foralls)).getD [])
+      body := params.foldr (fun (_, domain) result => .arrow (domain.getD .hole) result)
+        ((ann.map (·.body)).getD .hole) }
+
+@[simp] theorem finalizeInputAnn_noHead (ann : Option Surface.PolyTy) :
+    finalizeInputAnn [] [] ann = SurfaceBridge.finalizeAnn [] [] ann := rfl
+
+example : finalizeInputAnn [] [] (some ⟨[], .prim .int⟩) = some ⟨[], .prim .int⟩ := rfl
+
+example : finalizeInputAnn [] [(.mk "x", none), (.mk "y", some (.prim .bool))]
+    (some ⟨[], .prim .int⟩) =
+  some ⟨[], .arrow .hole (.arrow (.prim .bool) (.prim .int))⟩ := rfl
+
+example : finalizeInputAnn [.mk "a"] [(.mk "x", some (.tvar (.mk "a")))] none =
+  some ⟨[.mk "a"], .arrow (.tvar (.mk "a")) .hole⟩ := rfl
+
+example : finalizeInputAnn [.mk "unused"] [] none = some ⟨[.mk "unused"], .hole⟩ := rfl
+
+example : finalizeInputAnn [] [(.mk "x", some (.prim .int)), (.mk "y", none)] none = none := rfl
+
+example : finalizeInputAnn [.mk "a"] [(.mk "x", none)]
+    (some ⟨[.mk "b"], .tvar (.mk "b")⟩) =
+  some ⟨[.mk "a", .mk "b"], .arrow .hole (.tvar (.mk "b"))⟩ := rfl
+
 /-- Classify a finalized binding signature by whether its lowered template is
-complete. The caller applies `SurfaceBridge.finalizeAnn` before this adapter. -/
+complete. The caller applies `finalizeInputAnn` before this adapter. -/
 def lowerInputLetAnn (ke : KindEnv) (tvs : List ValName) :
     Option Surface.PolyTy → Option LetAnn
   | none => some .absent
