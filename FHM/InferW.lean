@@ -1548,9 +1548,6 @@ structure RigidUnify (K : List Nat) (a b : Ty) (S : Subst) : Prop where
   unifies : UnifyRel a b S
   dom_avoids : ∀ p ∈ S, p.1 ∉ K
 
-instance {K a b S} : CoeOut (RigidUnify K a b S) (UnifyRel a b S) :=
-  ⟨RigidUnify.unifies⟩
-
 mutual
 inductive Infer : List Nat → Nat → Ctx → Expr → Nat → Subst → Ty → Prop
   | primLitUnit {κ Φ ctx} :
@@ -1616,7 +1613,6 @@ inductive Infer : List Nat → Nat → Ctx → Expr → Nat → Subst → Ty →
     Φ ≤ N →
     Infer (κ ++ freshVars N σ.paramCount) (N + σ.paramCount) ctx (rhs.openTyVars (freshVars N σ.paramCount)) Φ₁ S₁ τ₁ →
     RigidUnify (κ ++ freshVars N σ.paramCount) τ₁ (σ.openVars (freshVars N σ.paramCount)) Schk →
-    (∀ y ∈ freshVars N σ.paramCount, y ∉ (S₁ ++ Schk).map Prod.fst) →
     (∀ y ∈ freshVars N σ.paramCount, y ∉ (Schk.onCtx (S₁.onCtx ctx)).env.freeVars) →
     Infer κ Φ₁
       { (Schk.onCtx (S₁.onCtx ctx)) with env := σ :: (Schk.onCtx (S₁.onCtx ctx)).env }
@@ -1682,7 +1678,7 @@ inductive InferBranches : List Nat →
       (S₂.onTy (S₁.onTy scrutTy)) (S₂.onTy (S₁.onTy ρ)) rest Φ₂ S₃ →
     InferBranches κ Φ ctx scrutTy ρ ((.wildcard, body) :: rest) Φ₂ (S₁ ++ S₂ ++ S₃)
 
-/-- Infer κ exactly one residual component, retaining original member positions.
+/-- Infer exactly one residual component, retaining original member positions.
     Unselected monomorphic members and every annotated member are skipped. -/
 inductive InferRecComponent : List Nat →
     List Nat → Nat → Nat → Ctx → List Expr → List RecSpec → Nat → Subst → Prop
@@ -1754,7 +1750,6 @@ inductive InferRecGroupPoly : List Nat → Nat → Ctx → List Expr → List Re
     Infer (κ ++ freshVars N σ.paramCount) (N + σ.paramCount) ctx
       (e.openTyVars (freshVars N σ.paramCount)) Φ₁ S₁ τ →
     RigidUnify (κ ++ freshVars N σ.paramCount) τ (σ.openVars (freshVars N σ.paramCount)) Schk →
-    (∀ y ∈ freshVars N σ.paramCount, y ∉ (S₁ ++ Schk).map Prod.fst) →
     (∀ y ∈ freshVars N σ.paramCount,
       y ∉ (Schk.onCtx (S₁.onCtx ctx)).env.freeVars) →
     InferRecGroupPoly κ Φ₁ (Schk.onCtx (S₁.onCtx ctx)) rest
@@ -1885,6 +1880,100 @@ theorem Expr.substTyFvars_tyBvarBounded {S : List (Nat × Ty)} (hS : ∀ p ∈ S
 /-! ### Invariant layer for `Infer` soundness -/
 
 /-! The fresh-variable frontier only ever grows (`Infer.frontier_le`). -/
+private theorem domAvoids_append {K : List Nat} {S T : Subst}
+    (hS : ∀ p ∈ S, p.1 ∉ K) (hT : ∀ p ∈ T, p.1 ∉ K) :
+    ∀ p ∈ S ++ T, p.1 ∉ K :=
+  fun p hp => (List.mem_append.mp hp).elim (hS p) (hT p)
+
+mutual
+/-- Inference never assigns an ambient rigid variable. -/
+theorem Infer.dom_avoids {κ Φ ctx e Φ' S τ} (h : Infer κ Φ ctx e Φ' S τ) :
+    ∀ p ∈ S, p.1 ∉ κ := by
+  match h with
+  | .primLitUnit | .primLitInt | .primLitNat | .primLitChar
+    | .primBinOpIntAdd | .primBinOpIntSub | .primBinOpIntLt .. | .primBinOpCharLt ..
+    | .var .. | .ctor .. => simp
+  | .lambda _ hb => exact Infer.dom_avoids hb
+  | .app hf ha hu =>
+    exact domAvoids_append (domAvoids_append (Infer.dom_avoids hf) (Infer.dom_avoids ha)) hu.dom_avoids
+  | .letIn hr hb => exact domAvoids_append (Infer.dom_avoids hr) (Infer.dom_avoids hb)
+  | .letInAnn _ _ hr hu _ hb =>
+    apply domAvoids_append
+    · intro p hp hk
+      exact domAvoids_append (Infer.dom_avoids hr) hu.dom_avoids p hp (List.mem_append_left _ hk)
+    · exact Infer.dom_avoids hb
+  | .match_ hs _ hbs => exact domAvoids_append (Infer.dom_avoids hs) (InferBranches.dom_avoids hbs)
+  | .letRec _ _ hm hp _ hb =>
+    exact domAvoids_append (domAvoids_append (InferRecStrata.dom_avoids hm)
+      (InferRecGroupPoly.dom_avoids hp)) (Infer.dom_avoids hb)
+termination_by (e.size, 0)
+decreasing_by all_goals (try subst_vars; simp only [Expr.size, Expr.size_openTyVars]; omega)
+
+theorem InferBranches.dom_avoids {κ Φ ctx scrutTy ρ brs Φ' S}
+    (h : InferBranches κ Φ ctx scrutTy ρ brs Φ' S) : ∀ p ∈ S, p.1 ∉ κ := by
+  match h with
+  | .nil => simp
+  | .cons _ _ hu₀ hb hu hr =>
+    exact domAvoids_append (domAvoids_append (domAvoids_append hu₀.dom_avoids
+      (Infer.dom_avoids hb)) hu.dom_avoids) (InferBranches.dom_avoids hr)
+  | .consWild hb hu hr =>
+    exact domAvoids_append (domAvoids_append (Infer.dom_avoids hb) hu.dom_avoids)
+      (InferBranches.dom_avoids hr)
+termination_by (Expr.sizeBranches brs, 0)
+decreasing_by all_goals (try subst_vars; simp only [Expr.sizeBranches]; omega)
+
+theorem InferRecComponent.dom_avoids {κ members memberIndex Φ ctx bindings specs Φ' S}
+    (h : InferRecComponent κ members memberIndex Φ ctx bindings specs Φ' S) :
+    ∀ p ∈ S, p.1 ∉ κ := by
+  match h with
+  | .nil => simp
+  | .consSelected _ he hu hr =>
+    exact domAvoids_append (domAvoids_append (Infer.dom_avoids he) hu.dom_avoids)
+      (InferRecComponent.dom_avoids hr)
+  | .skipMono _ hr | .skipPoly hr => exact InferRecComponent.dom_avoids hr
+termination_by (Expr.sizeRecGroup bindings, 0)
+decreasing_by all_goals (simp only [Expr.sizeRecGroup]; omega)
+
+theorem InferRecStrata.dom_avoids {κ rigid bindings Φ ctx specs done G groups Φ' S specs' G'}
+    (h : InferRecStrata κ rigid bindings Φ ctx specs done G groups Φ' S specs' G') :
+    ∀ p ∈ S, p.1 ∉ κ := by
+  match h with
+  | .nil => simp
+  | .cons hc _ _ hr => exact domAvoids_append (InferRecComponent.dom_avoids hc) (InferRecStrata.dom_avoids hr)
+termination_by (Expr.sizeRecGroup bindings, groups.length)
+decreasing_by all_goals (try subst_vars; simp_wf; try omega)
+
+theorem InferRecGroup.dom_avoids {κ Φ ctx bindings specs Φ' S}
+    (h : InferRecGroup κ Φ ctx bindings specs Φ' S) : ∀ p ∈ S, p.1 ∉ κ := by
+  match h with
+  | .nil => simp
+  | .consMono he hu hr =>
+    exact domAvoids_append (domAvoids_append (Infer.dom_avoids he) hu.dom_avoids) (InferRecGroup.dom_avoids hr)
+  | .skipPoly hr => exact InferRecGroup.dom_avoids hr
+termination_by (Expr.sizeRecGroup bindings, 0)
+decreasing_by all_goals (simp only [Expr.sizeRecGroup]; omega)
+
+theorem InferRecGroupPoly.dom_avoids {κ Φ ctx bindings specs Φ' S}
+    (h : InferRecGroupPoly κ Φ ctx bindings specs Φ' S) : ∀ p ∈ S, p.1 ∉ κ := by
+  match h with
+  | .nil => simp
+  | .skipMono hr => exact InferRecGroupPoly.dom_avoids hr
+  | .consPoly _ he hu _ hr =>
+    apply domAvoids_append
+    · intro p hp hk
+      exact domAvoids_append (Infer.dom_avoids he) hu.dom_avoids p hp (List.mem_append_left _ hk)
+    · exact InferRecGroupPoly.dom_avoids hr
+termination_by (Expr.sizeRecGroup bindings, 0)
+decreasing_by all_goals (simp only [Expr.sizeRecGroup, Expr.size_openTyVars]; omega)
+end
+
+theorem Subst.skolem_dom_avoids {κ Ys : List Nat} {S T : Subst}
+    (hS : ∀ p ∈ S, p.1 ∉ κ ++ Ys) (hT : ∀ p ∈ T, p.1 ∉ κ ++ Ys) :
+    ∀ y ∈ Ys, y ∉ (S ++ T).map Prod.fst := by
+  intro y hy hm
+  obtain ⟨p, hp, he⟩ := List.mem_map.mp hm
+  exact domAvoids_append hS hT p hp (he ▸ List.mem_append_right _ hy)
+
 mutual
 theorem Infer.frontier_le {Φ ctx e Φ' S τ} (h : Infer κ Φ ctx e Φ' S τ) : Φ ≤ Φ' := by
   match h with
@@ -1901,7 +1990,7 @@ theorem Infer.frontier_le {Φ ctx e Φ' S τ} (h : Infer κ Φ ctx e Φ' S τ) :
   | .var _ => omega
   | .ctor _ => omega
   | .letIn hrhs hbody => have := Infer.frontier_le hrhs; have := Infer.frontier_le hbody; omega
-  | .letInAnn _ _hΦN hrhs _ _ _ hbody =>
+  | .letInAnn _ _hΦN hrhs _ _ hbody =>
     have := Infer.frontier_le hrhs; have := Infer.frontier_le hbody; omega
   | .match_ hscrut _ hbr =>
     have := Infer.frontier_le hscrut; have := InferBranches.frontier_le hbr; omega
@@ -1964,7 +2053,7 @@ theorem InferRecGroupPoly.frontier_le {Φ ctx bindings specs Φ' S}
   match h with
   | .nil => omega
   | .skipMono hrest => exact InferRecGroupPoly.frontier_le hrest
-  | .consPoly hΦN hinfer _ _ _ hrest =>
+  | .consPoly hΦN hinfer _ _ hrest =>
     have := Infer.frontier_le hinfer
     have := InferRecGroupPoly.frontier_le hrest
     omega
@@ -2021,7 +2110,7 @@ theorem InferRecGroupPoly.length_eq {Φ ctx bindings specs Φ' S}
     cases h with
     | skipMono hrest =>
       have := ih hrest; simp only [List.length_cons] at this ⊢; omega
-    | consPoly _ _ _ _ _ hrest =>
+    | consPoly _ _ _ _ hrest =>
       have := ih hrest; simp only [List.length_cons, List.length_map] at this ⊢; omega
 
 /-! ### Scoped-variable invariants
@@ -2190,7 +2279,8 @@ theorem Infer.lc {Φ ctx e Φ' S τ} (h : Infer κ Φ ctx e Φ' S τ) :
         · exact hpc
         · exact hctx M hM)
       exact ⟨.arrow (Subst.onTy_lc hb_s hpc) hb_lc, hb_s⟩
-  | .app hf harg huni =>
+  | .app hf harg huniRigid =>
+    have huni := huniRigid.unifies
     intro hctx
     obtain ⟨hf_lc, hf_s⟩ := Infer.lc hf hctx
     obtain ⟨harg_lc, harg_s⟩ := Infer.lc harg (Subst.onCtx_wf hf_s hctx)
@@ -2220,7 +2310,8 @@ theorem Infer.lc {Φ ctx e Φ' S τ} (h : Infer κ Φ ctx e Φ' S τ) :
     rcases hp with hp | hp
     · exact hrhs_s p hp
     · exact hbody_s p hp
-  | .letInAnn hσwf _hΦN hrhs huni _hesc1 _hesc2 hbody =>
+  | .letInAnn hσwf _hΦN hrhs huniRigid _hesc2 hbody =>
+    have huni := huniRigid.unifies
     intro hctx
     expose_names
     obtain ⟨hrhs_lc, hrhs_s⟩ := Infer.lc hrhs hctx
@@ -2294,7 +2385,9 @@ theorem InferBranches.lc {Φ ctx scrutTy ρ brs Φ' S}
     (S.onTy ρ).IsLC ∧ (∀ p ∈ S, p.2.IsLC) := by
   match h with
   | .nil => exact ⟨by simpa using hρ, by simp⟩
-  | .cons hlook hn huni0 hbody huni hrest =>
+  | .cons hlook hn huni0Rigid hbody huniRigid hrest =>
+    have huni0 := huni0Rigid.unifies
+    have huni := huniRigid.unifies
     have hS₀ := huni0.lc hscrutTy
       (.customTy (fun t ht => by obtain ⟨x, _, rfl⟩ := List.mem_map.mp ht; exact ContainsBvarsUpTo.fvar))
     obtain ⟨hτb_lc, hS₁⟩ := Infer.lc hbody
@@ -2317,7 +2410,8 @@ theorem InferBranches.lc {Φ ctx scrutTy ρ brs Φ' S}
       · exact hS₁ p hp
       · exact hS₂ p hp
       · exact hS₃ p hp
-  | .consWild hbody huni hrest =>
+  | .consWild hbody huniRigid hrest =>
+    have huni := huniRigid.unifies
     obtain ⟨hτb_lc, hS₁⟩ := Infer.lc hbody hctx
     have hS₂ := huni.lc hτb_lc (Subst.onTy_lc hS₁ hρ)
     obtain ⟨hres, hS₃⟩ := InferBranches.lc hrest
@@ -2340,7 +2434,8 @@ theorem InferRecComponent.lc {members memberIndex Φ ctx bindings specs Φ' S}
     ∀ p ∈ S, p.2.IsLC := by
   match h with
   | .nil => simp
-  | .consSelected _ he huni hrest =>
+  | .consSelected _ he huniRigid hrest =>
+    have huni := huniRigid.unifies
     expose_names
     obtain ⟨hτ', hS₁⟩ := Infer.lc he hctx
     have hτ : τ.IsLC := hspecs (.mono τ) List.mem_cons_self
@@ -2394,7 +2489,8 @@ theorem InferRecGroup.lc {Φ ctx bindings specs Φ' S}
     (∀ p ∈ S, p.2.IsLC) := by
   match h with
   | .nil => simp
-  | .consMono he huni hrest =>
+  | .consMono he huniRigid hrest =>
+    have huni := huniRigid.unifies
     expose_names
     obtain ⟨hτ', hS₁⟩ := Infer.lc he hctx
     have hτ : τ.IsLC := hspecs (.mono τ) List.mem_cons_self
@@ -2426,7 +2522,9 @@ theorem InferRecGroupPoly.lc {Φ ctx bindings specs Φ' S}
   | .skipMono hrest =>
     exact InferRecGroupPoly.lc hrest hctx
       (fun s hs => hspecs s (List.mem_cons_of_mem _ hs))
-  | .consPoly hΦN hinfer huni hesc1 hesc2 hrest =>
+  | .consPoly hΦN hinfer huniRigid hesc2 hrest =>
+    have hesc1 := Subst.skolem_dom_avoids (Infer.dom_avoids hinfer) huniRigid.dom_avoids
+    have huni := huniRigid.unifies
     expose_names
     obtain ⟨hτ, hS₁⟩ := Infer.lc hinfer hctx
     have hσwf : σ.WF := hspecs (.poly σ) List.mem_cons_self
@@ -3446,7 +3544,8 @@ theorem Infer.belowFvars {Φ ctx e Φ' S τ} (h : Infer κ Φ ctx e Φ' S τ) :
         · exact hctx M hM)
         (fun y hy => htfv y (.inr hy))
       exact ⟨.arrow (Subst.onTy_belowFvars hb_s (hparamTy.mono (Infer.frontier_le hbody))) hb_τ, hb_s⟩
-  | .app hf harg huni =>
+  | .app hf harg huniRigid =>
+    have huni := huniRigid.unifies
     intro hctx htfv
     simp only [Expr.tyFreeVars, List.mem_append] at htfv
     obtain ⟨hf_τ, hf_s⟩ := Infer.belowFvars hf hctx (fun y hy => htfv y (.inl hy))
@@ -3494,7 +3593,8 @@ theorem Infer.belowFvars {Φ ctx e Φ' S τ} (h : Infer κ Φ ctx e Φ' S τ) :
     rcases hp with hp | hp
     · exact (hr_s p hp).mono (Infer.frontier_le hbody)
     · exact hb_s p hp
-  | .letInAnn hσwf hΦN hrhs huni _hesc1 _hesc2 hbody =>
+  | .letInAnn hσwf hΦN hrhs huniRigid _hesc2 hbody =>
+    have huni := huniRigid.unifies
     intro hctx htfv
     expose_names
     simp only [Expr.tyFreeVars, Option.elim_some, List.mem_append] at htfv
@@ -3610,7 +3710,9 @@ theorem InferBranches.belowFvars {Φ ctx scrutTy ρ brs Φ' S}
     Ty.BelowFvars Φ' (S.onTy ρ) ∧ (∀ p ∈ S, Ty.BelowFvars Φ' p.2) := by
   match h with
   | .nil => exact ⟨by simpa using hρ, by simp⟩
-  | .cons hlook hn huni0 hbody huni hrest =>
+  | .cons hlook hn huni0Rigid hbody huniRigid hrest =>
+    have huni0 := huni0Rigid.unifies
+    have huni := huniRigid.unifies
     expose_names
     simp only [Expr.tyFreeVars.BranchList.tyFreeVars, List.mem_append] at htfv
     have hS₀ : ∀ p ∈ S₀, Ty.BelowFvars (Φ + ctor.paramCount) p.2 :=
@@ -3651,7 +3753,8 @@ theorem InferBranches.belowFvars {Φ ctx scrutTy ρ brs Φ' S}
       · exact (hS₁ p hp).mono (by omega)
       · exact (hS₂ p hp).mono (by omega)
       · exact hS₃ p hp
-  | .consWild hbody huni hrest =>
+  | .consWild hbody huniRigid hrest =>
+    have huni := huniRigid.unifies
     simp only [Expr.tyFreeVars.BranchList.tyFreeVars, List.mem_append] at htfv
     obtain ⟨hτb, hS₁⟩ := Infer.belowFvars hbody hctx
       (fun y hy => htfv y (.inl hy))
@@ -3682,7 +3785,8 @@ theorem InferRecComponent.belowFvars {members memberIndex Φ ctx bindings specs 
     (∀ p ∈ S, Ty.BelowFvars Φ' p.2) := by
   match h with
   | .nil => simp
-  | .consSelected _ he huni hrest =>
+  | .consSelected _ he huniRigid hrest =>
+    have huni := huniRigid.unifies
     expose_names
     simp only [Expr.tyFreeVars.RecGroup.tyFreeVars, List.mem_append] at htfv
     obtain ⟨hτ', hS₁⟩ := Infer.belowFvars he hctx (fun y hy => htfv y (.inl hy))
@@ -3744,7 +3848,8 @@ theorem InferRecGroup.belowFvars {Φ ctx bindings specs Φ' S}
     (∀ p ∈ S, Ty.BelowFvars Φ' p.2) := by
   match h with
   | .nil => simp
-  | .consMono he huni hrest =>
+  | .consMono he huniRigid hrest =>
+    have huni := huniRigid.unifies
     expose_names
     simp only [Expr.tyFreeVars.RecGroup.tyFreeVars, List.mem_append] at htfv
     obtain ⟨hτ', hS₁⟩ := Infer.belowFvars he hctx (fun y hy => htfv y (.inl hy))
@@ -3789,7 +3894,9 @@ theorem InferRecGroupPoly.belowFvars {Φ ctx bindings specs Φ' S}
       (fun y hy => htfv y (by
         simp only [Expr.tyFreeVars.RecGroup.tyFreeVars, List.mem_append]
         exact .inr hy))
-  | .consPoly hΦN hinfer huni hesc1 hesc2 hrest =>
+  | .consPoly hΦN hinfer huniRigid hesc2 hrest =>
+    have hesc1 := Subst.skolem_dom_avoids (Infer.dom_avoids hinfer) huniRigid.dom_avoids
+    have huni := huniRigid.unifies
     expose_names
     simp only [Expr.tyFreeVars.RecGroup.tyFreeVars, List.mem_append] at htfv
     have hσB : Ty.BelowFvars Φ σ.body := hspecs (.poly σ) List.mem_cons_self
@@ -3867,7 +3974,8 @@ theorem Infer.dom_below {Φ ctx e Φ' S τ} (h : Infer κ Φ ctx e Φ' S τ) :
         · exact hparamTy
         · exact hctx M hM)
         (fun y hy => htfv y (.inr hy))
-  | .app hf harg huni =>
+  | .app hf harg huniRigid =>
+    have huni := huniRigid.unifies
     intro hctx htfv
     simp only [Expr.tyFreeVars, List.mem_append] at htfv
     have hfle := Infer.frontier_le hf
@@ -3909,7 +4017,8 @@ theorem Infer.dom_below {Φ ctx e Φ' S τ} (h : Infer κ Φ ctx e Φ' S τ) :
     rcases hp with hp | hp
     · have := hr_dom p hp; have := Infer.frontier_le hbody; omega
     · exact hb_dom p hp
-  | .letInAnn hσwf hΦN hrhs huni _hesc1 _hesc2 hbody =>
+  | .letInAnn hσwf hΦN hrhs huniRigid _hesc2 hbody =>
+    have huni := huniRigid.unifies
     intro hctx htfv
     expose_names
     simp only [Expr.tyFreeVars, Option.elim_some, List.mem_append] at htfv
@@ -4028,7 +4137,9 @@ theorem InferBranches.dom_below {Φ ctx scrutTy ρ brs Φ' S}
     (∀ p ∈ S, p.1 < Φ') := by
   match h with
   | .nil => simp
-  | .cons hlook hn huni0 hbody huni hrest =>
+  | .cons hlook hn huni0Rigid hbody huniRigid hrest =>
+    have huni0 := huni0Rigid.unifies
+    have huni := huniRigid.unifies
     expose_names
     simp only [Expr.tyFreeVars.BranchList.tyFreeVars, List.mem_append] at htfv
     have hS₀ : ∀ p ∈ S₀, Ty.BelowFvars (Φ + ctor.paramCount) p.2 :=
@@ -4082,7 +4193,8 @@ theorem InferBranches.dom_below {Φ ctx scrutTy ρ brs Φ' S}
     · have := hS₁dom p hp; omega
     · have := hS₂dom p hp; omega
     · exact hrest_dom p hp
-  | .consWild hbody huni hrest =>
+  | .consWild hbody huniRigid hrest =>
+    have huni := huniRigid.unifies
     expose_names
     simp only [Expr.tyFreeVars.BranchList.tyFreeVars, List.mem_append] at htfv
     have hle1 := Infer.frontier_le hbody
@@ -4117,7 +4229,8 @@ theorem InferRecComponent.dom_below {members memberIndex Φ ctx bindings specs �
     (∀ p ∈ S, p.1 < Φ') := by
   match h with
   | .nil => simp
-  | .consSelected _ he huni hrest =>
+  | .consSelected _ he huniRigid hrest =>
+    have huni := huniRigid.unifies
     expose_names
     simp only [Expr.tyFreeVars.RecGroup.tyFreeVars, List.mem_append] at htfv
     have hle1 := Infer.frontier_le he
@@ -4186,7 +4299,8 @@ theorem InferRecGroup.dom_below {Φ ctx bindings specs Φ' S}
     (∀ p ∈ S, p.1 < Φ') := by
   match h with
   | .nil => simp
-  | .consMono he huni hrest =>
+  | .consMono he huniRigid hrest =>
+    have huni := huniRigid.unifies
     expose_names
     simp only [Expr.tyFreeVars.RecGroup.tyFreeVars, List.mem_append] at htfv
     have hle1 := Infer.frontier_le he
@@ -4237,7 +4351,9 @@ theorem InferRecGroupPoly.dom_below {Φ ctx bindings specs Φ' S}
       (fun y hy => htfv y (by
         simp only [Expr.tyFreeVars.RecGroup.tyFreeVars, List.mem_append]
         exact .inr hy))
-  | .consPoly hΦN hinfer huni hesc1 hesc2 hrest =>
+  | .consPoly hΦN hinfer huniRigid hesc2 hrest =>
+    have hesc1 := Subst.skolem_dom_avoids (Infer.dom_avoids hinfer) huniRigid.dom_avoids
+    have huni := huniRigid.unifies
     expose_names
     simp only [Expr.tyFreeVars.RecGroup.tyFreeVars, List.mem_append] at htfv
     have hσB : Ty.BelowFvars Φ σ.body := hspecs (.poly σ) List.mem_cons_self
@@ -4660,7 +4776,8 @@ theorem Infer.range_avoid {Φ ctx e Φ' S τ} (h : Infer κ Φ ctx e Φ' S τ) :
       refine ⟨hbS, ?_⟩
       simp only [Ty.freeVars, List.mem_dedup, List.mem_append, not_or]
       exact ⟨Subst.notMemOnTy hbS hwe.1, hbτ⟩
-  | .app hf harg huni =>
+  | .app hf harg huniRigid =>
+    have huni := huniRigid.unifies
     intro w hwΦ hctx hwe
     expose_names
     simp only [Expr.tyFreeVars, List.mem_append, not_or] at hwe
@@ -4705,7 +4822,8 @@ theorem Infer.range_avoid {Φ ctx e Φ' S τ} (h : Infer κ Φ ctx e Φ' S τ) :
     rcases hp with hp | hp
     · exact hrS p hp
     · exact hbS p hp
-  | .letInAnn hσwf hΦN hrhs huni _hesc1 _hesc2 hbody =>
+  | .letInAnn hσwf hΦN hrhs huniRigid _hesc2 hbody =>
+    have huni := huniRigid.unifies
     intro w hwΦ hctx hwe
     expose_names
     simp only [Expr.tyFreeVars, Option.elim_some, List.mem_append, not_or] at hwe
@@ -4806,7 +4924,9 @@ theorem InferBranches.range_avoid {Φ ctx scrutTy ρ brs Φ' S}
   | .nil =>
     intro w _ _ _ hρ _
     exact ⟨by simp, by simpa using hρ⟩
-  | .cons hlook hn huni0 hbody huni hrest =>
+  | .cons hlook hn huni0Rigid hbody huniRigid hrest =>
+    have huni0 := huni0Rigid.unifies
+    have huni := huniRigid.unifies
     intro w hwΦ hctx hscrut hρ hbrs
     expose_names
     simp only [Expr.tyFreeVars.BranchList.tyFreeVars, List.mem_append, not_or] at hbrs
@@ -4854,7 +4974,8 @@ theorem InferBranches.range_avoid {Φ ctx scrutTy ρ brs Φ' S}
       · exact hS₂ p hp
       · exact hrS p hp
     · rw [Subst.onTy_append, Subst.onTy_append, Subst.onTy_append]; exact hrρ
-  | .consWild hbody huni hrest =>
+  | .consWild hbody huniRigid hrest =>
+    have huni := huniRigid.unifies
     intro w hwΦ hctx hscrut hρ hbrs
     expose_names
     simp only [Expr.tyFreeVars.BranchList.tyFreeVars, List.mem_append, not_or] at hbrs
@@ -4890,7 +5011,8 @@ theorem InferRecComponent.range_avoid {members memberIndex Φ ctx bindings specs
     (∀ p ∈ S, w ∉ p.2.freeVars) := by
   match h with
   | .nil => intro w _ _ _ _; simp
-  | .consSelected _ he huni hrest =>
+  | .consSelected _ he huniRigid hrest =>
+    have huni := huniRigid.unifies
     intro w hwΦ hctx hspecs hbinds
     expose_names
     simp only [Expr.tyFreeVars.RecGroup.tyFreeVars, List.mem_append, not_or] at hbinds
@@ -4957,7 +5079,8 @@ theorem InferRecGroup.range_avoid {Φ ctx bindings specs Φ' S}
     (∀ p ∈ S, w ∉ p.2.freeVars) := by
   match h with
   | .nil => intro w _ _ _ _; simp
-  | .consMono he huni hrest =>
+  | .consMono he huniRigid hrest =>
+    have huni := huniRigid.unifies
     intro w hwΦ hctx hspecs hbinds
     expose_names
     simp only [Expr.tyFreeVars.RecGroup.tyFreeVars, List.mem_append, not_or] at hbinds
@@ -5009,7 +5132,9 @@ theorem InferRecGroupPoly.range_avoid {Φ ctx bindings specs Φ' S}
       (fun hc => hbinds (by
         simp only [Expr.tyFreeVars.RecGroup.tyFreeVars, List.mem_append]
         exact .inr hc))
-  | .consPoly hΦN hinfer huni hesc1 hesc2 hrest =>
+  | .consPoly hΦN hinfer huniRigid hesc2 hrest =>
+    have hesc1 := Subst.skolem_dom_avoids (Infer.dom_avoids hinfer) huniRigid.dom_avoids
+    have huni := huniRigid.unifies
     intro w hwΦ hctx hspecs hbinds
     expose_names
     simp only [Expr.tyFreeVars.RecGroup.tyFreeVars, List.mem_append, not_or] at hbinds
@@ -5226,7 +5351,8 @@ theorem Infer.eliminates {Φ ctx e Φ' S τ} (h : Infer κ Φ ctx e Φ' S τ)
       intro p hp
       simp only [Ty.freeVars, List.mem_dedup, List.mem_append, not_or]
       exact ⟨hbE p hp paramTy, hbR p hp⟩
-  | .app hf harg huni =>
+  | .app hf harg huniRigid =>
+    have huni := huniRigid.unifies
     expose_names
     have hfle := Infer.frontier_le hf
     have hargle := Infer.frontier_le harg
@@ -5328,7 +5454,9 @@ theorem Infer.eliminates {Φ ctx e Φ' S τ} (h : Infer κ Φ ctx e Φ' S τ)
     rcases List.mem_append.mp hp with hpS₁ | hpS₂
     · exact (Infer.range_avoid hbody (w := p.1) (hr_dom p hpS₁) (hbavoid p hpS₁) (hSb1 p hpS₁)).2
     · exact hbR p hpS₂
-  | .letInAnn hσwf hΦN hrhs huni hesc1 _hesc2 hbody =>
+  | .letInAnn hσwf hΦN hrhs huniRigid _hesc2 hbody =>
+    have hesc1 := Subst.skolem_dom_avoids (Infer.dom_avoids hrhs) huniRigid.dom_avoids
+    have huni := huniRigid.unifies
     expose_names
     have hrle := Infer.frontier_le hrhs
     have hΦσ : ∀ y ∈ σ.body.freeVars, y < Φ := fun y hy => hΦ y (by
@@ -5605,7 +5733,9 @@ theorem InferBranches.eliminates {Φ ctx scrutTy ρ brs Φ' S}
     (∀ p ∈ S, ∀ x : Ty, p.1 ∉ (S.onTy x).freeVars) := by
   match h with
   | .nil => simp
-  | .cons hlook hn huni0 hbody huni hrest =>
+  | .cons hlook hn huni0Rigid hbody huniRigid hrest =>
+    have huni0 := huni0Rigid.unifies
+    have huni := huniRigid.unifies
     expose_names
     have hle0 : Φ + ctor.paramCount ≤ Φ₁ := Infer.frontier_le hbody
     have hΦhead : ∀ y ∈ body.tyFreeVars, y < Φ := fun y hy => hΦ y (by
@@ -5708,7 +5838,8 @@ theorem InferBranches.eliminates {Φ ctx scrutTy ρ brs Φ' S}
         (happ3 scrutTy ▸ hE012 p hp scrutTy)
         (happ3 ρ ▸ hE012 p hp ρ) (hSrestAll p hp)).1 q hq
     exact Subst.eliminates_append hE012 hrestE cross0123
-  | .consWild hbody huni hrest =>
+  | .consWild hbody huniRigid hrest =>
+    have huni := huniRigid.unifies
     expose_names
     have hle1 := Infer.frontier_le hbody
     have hΦhead : ∀ y ∈ body.tyFreeVars, y < Φ := fun y hy => hΦ y (by
@@ -5773,7 +5904,8 @@ theorem InferRecComponent.eliminates {members memberIndex Φ ctx bindings specs 
     (∀ p ∈ S, ∀ x : Ty, p.1 ∉ (S.onTy x).freeVars) := by
   match h with
   | .nil => simp
-  | .consSelected _ he huni hrest =>
+  | .consSelected _ he huniRigid hrest =>
+    have huni := huniRigid.unifies
     expose_names
     have hle1 := Infer.frontier_le he
     have hΦe : ∀ y ∈ e.tyFreeVars, y < Φ := fun y hy => hΦ y (by
@@ -5896,7 +6028,8 @@ theorem InferRecGroup.eliminates {Φ ctx bindings specs Φ' S}
     (∀ p ∈ S, ∀ x : Ty, p.1 ∉ (S.onTy x).freeVars) := by
   match h with
   | .nil => simp
-  | .consMono he huni hrest =>
+  | .consMono he huniRigid hrest =>
+    have huni := huniRigid.unifies
     expose_names
     have hle1 := Infer.frontier_le he
     have hΦe : ∀ y ∈ e.tyFreeVars, y < Φ := fun y hy => hΦ y (by
@@ -5982,7 +6115,9 @@ theorem InferRecGroupPoly.eliminates {Φ ctx bindings specs Φ' S}
       (fun y hy => hΦ y (by exact List.mem_append_right _ hy))
       (fun p hp hc => hSe p hp (by exact List.mem_append_right _ hc))
       (fun p hp σ hσ => hSsch p hp σ (List.mem_cons_of_mem _ hσ))
-  | .consPoly hΦN hinfer huni hesc1 hesc2 hrest =>
+  | .consPoly hΦN hinfer huniRigid hesc2 hrest =>
+    have hesc1 := Subst.skolem_dom_avoids (Infer.dom_avoids hinfer) huniRigid.dom_avoids
+    have huni := huniRigid.unifies
     expose_names
     have hrle := Infer.frontier_le hinfer
     have hσBel : Ty.BelowFvars Φ σ.body := hspecs (.poly σ) List.mem_cons_self
@@ -6354,7 +6489,8 @@ theorem Infer.dom_avoid {Φ ctx e Φ' S τ} (h : Infer κ Φ ctx e Φ' S τ) :
             · simpa only [PolyTy.mkTrivial] using hwe.1
             · exact hctx M hM)
         hwe.2
-  | .app hf harg huni =>
+  | .app hf harg huniRigid =>
+    have huni := huniRigid.unifies
     intro w hwΦ hctx hwe
     expose_names
     simp only [Expr.tyFreeVars, List.mem_append, not_or] at hwe
@@ -6393,7 +6529,9 @@ theorem Infer.dom_avoid {Φ ctx e Φ' S τ} (h : Infer κ Φ ctx e Φ' S τ) :
     rcases hc with hc | hc
     · exact hrdom hc
     · exact hbdom hc
-  | .letInAnn hσwf hΦN hrhs huni hesc1 hesc2 hbody =>
+  | .letInAnn hσwf hΦN hrhs huniRigid hesc2 hbody =>
+    have hesc1 := Subst.skolem_dom_avoids (Infer.dom_avoids hrhs) huniRigid.dom_avoids
+    have huni := huniRigid.unifies
     intro w hwΦ hctx hwe
     expose_names
     simp only [Expr.tyFreeVars, Option.elim_some, List.mem_append, not_or] at hwe
@@ -6510,7 +6648,9 @@ theorem InferBranches.dom_avoid {Φ ctx scrutTy ρ brs Φ' S}
     w ∉ S.map Prod.fst := by
   match h with
   | .nil => intro w _ _ _ _ _; simp
-  | .cons hlook hn huni0 hbody huni hrest =>
+  | .cons hlook hn huni0Rigid hbody huniRigid hrest =>
+    have huni0 := huni0Rigid.unifies
+    have huni := huniRigid.unifies
     intro w hwΦ hctx hscrut hρ hbrs
     expose_names
     simp only [Expr.tyFreeVars.BranchList.tyFreeVars, List.mem_append, not_or] at hbrs
@@ -6567,7 +6707,8 @@ theorem InferBranches.dom_avoid {Φ ctx scrutTy ρ brs Φ' S}
     · exact hbdom hc
     · exact hS₂dom hc
     · exact hrdom hc
-  | .consWild hbody huni hrest =>
+  | .consWild hbody huniRigid hrest =>
+    have huni := huniRigid.unifies
     intro w hwΦ hctx hscrut hρ hbrs
     expose_names
     simp only [Expr.tyFreeVars.BranchList.tyFreeVars, List.mem_append, not_or] at hbrs
@@ -6608,7 +6749,8 @@ theorem InferRecComponent.dom_avoid {members memberIndex Φ ctx bindings specs �
     w ∉ S.map Prod.fst := by
   match h with
   | .nil => intro w _ _ _ _; simp
-  | .consSelected _ he huni hrest =>
+  | .consSelected _ he huniRigid hrest =>
+    have huni := huniRigid.unifies
     intro w hwΦ hctx hspecs hbinds
     expose_names
     simp only [Expr.tyFreeVars.RecGroup.tyFreeVars, List.mem_append, not_or] at hbinds
@@ -6678,7 +6820,8 @@ theorem InferRecGroup.dom_avoid {Φ ctx bindings specs Φ' S}
     w ∉ S.map Prod.fst := by
   match h with
   | .nil => intro w _ _ _ _; simp
-  | .consMono he huni hrest =>
+  | .consMono he huniRigid hrest =>
+    have huni := huniRigid.unifies
     intro w hwΦ hctx hspecs hbinds
     expose_names
     simp only [Expr.tyFreeVars.RecGroup.tyFreeVars, List.mem_append, not_or] at hbinds
@@ -6730,7 +6873,9 @@ theorem InferRecGroupPoly.dom_avoid {Φ ctx bindings specs Φ' S}
     exact InferRecGroupPoly.dom_avoid hrest hwΦ hctx
       (fun σ hσ => hspecs σ (List.mem_cons_of_mem _ hσ))
       (fun hc => hbinds (by exact List.mem_append_right _ hc))
-  | .consPoly hΦN hinfer huni hesc1 hesc2 hrest =>
+  | .consPoly hΦN hinfer huniRigid hesc2 hrest =>
+    have hesc1 := Subst.skolem_dom_avoids (Infer.dom_avoids hinfer) huniRigid.dom_avoids
+    have huni := huniRigid.unifies
     intro w hwΦ hctx hspecs hbinds
     expose_names
     simp only [Expr.tyFreeVars.RecGroup.tyFreeVars, List.mem_append, not_or] at hbinds
@@ -7101,7 +7246,7 @@ theorem RecSpecs.algorithmStageEntries_avoid {specs : List RecSpec} {w : Nat}
 
 /-- Lookup-sensitive range, result, and domain locality for one inference. -/
 def Infer.SourceLocality : Prop :=
-  ∀ {Ψ c e Ψ' T τ}, Infer κ Ψ c e Ψ' T τ →
+  ∀ {κ Ψ c e Ψ' T τ}, Infer κ Ψ c e Ψ' T τ →
     ∀ {w}, w < Ψ →
     e.ForallOuter
       (fun i => ∀ M, c.env[i]? = some M → w ∉ M.body.freeVars) 0 →
@@ -7130,7 +7275,8 @@ theorem InferRecComponent.range_dom_avoid_selected_of_infer
     (∀ p ∈ S, w ∉ p.2.freeVars) ∧ w ∉ S.map Prod.fst := by
   match h with
   | .nil => intro w _ _ _ _; exact ⟨by simp, by simp⟩
-  | .consSelected hsel he huni hrest =>
+  | .consSelected hsel he huniRigid hrest =>
+    have huni := huniRigid.unifies
     intro w hwΦ hrefs htargets hbinds
     expose_names
     simp only [Expr.tyFreeVars.RecGroup.tyFreeVars, List.mem_append, not_or] at hbinds
@@ -7352,7 +7498,8 @@ theorem Infer.sourceLocality {Φ ctx e Φ' S τ} (h : Infer κ Φ ctx e Φ' S τ
       obtain ⟨hbS, hbτ, hbD⟩ := Infer.sourceLocality hbody hw hbrefs hwe.2
       exact ⟨hbS, by simpa only [Ty.freeVars, List.mem_dedup, List.mem_append, not_or]
         using And.intro (Subst.notMemOnTy hbS hwe.1) hbτ, hbD⟩
-  | .app hf ha hu =>
+  | .app hf ha huRigid =>
+    have hu := huRigid.unifies
     intro w hw hrefs hwe
     expose_names
     simp only [Expr.ForallOuter, Expr.rec_strong] at hrefs
@@ -7383,7 +7530,8 @@ theorem Infer.sourceLocality {Φ ctx e Φ' S τ} (h : Infer κ Φ ctx e Φ' S τ
     obtain ⟨hbS, hbτ, hbD⟩ := Infer.sourceLocality hb (by omega) hbrefs hwe.2
     have hA := Subst.sourceAvoid_append ⟨hrS, hrD⟩ ⟨hbS, hbD⟩
     exact ⟨hA.1, hbτ, hA.2⟩
-  | .letInAnn hσ hΦN hr hu _ _ hb =>
+  | .letInAnn hσ hΦN hr huRigid _ hb =>
+    have hu := huRigid.unifies
     intro w hw hrefs hwe
     expose_names
     simp only [Expr.ForallOuter, Expr.rec_strong, Nat.zero_add] at hrefs
@@ -7486,7 +7634,9 @@ theorem InferBranches.sourceLocality {Φ ctx scrutTy ρ brs Φ' S}
     (∀ p ∈ S, w ∉ p.2.freeVars) ∧ w ∉ (S.onTy ρ).freeVars ∧ w ∉ S.map Prod.fst := by
   match h with
   | .nil => intro w _ _ _ hρ _; exact ⟨by simp, by simpa using hρ, by simp⟩
-  | .cons hlook hn hu₀ hb hu hr =>
+  | .cons hlook hn hu₀Rigid hb huRigid hr =>
+    have hu₀ := hu₀Rigid.unifies
+    have hu := huRigid.unifies
     intro w hw hrefs hscrut hρ hbrs
     expose_names
     simp only [Expr.tyFreeVars.BranchList.tyFreeVars, List.mem_append, not_or] at hbrs
@@ -7525,7 +7675,8 @@ theorem InferBranches.sourceLocality {Φ ctx scrutTy ρ brs Φ' S}
     have hA := Subst.sourceAvoid_append
       (Subst.sourceAvoid_append (Subst.sourceAvoid_append hA₀ ⟨hbS, hbD⟩) hA₂) ⟨hrS, hrD⟩
     exact ⟨hA.1, by simpa only [Subst.onTy_append] using hrρ, hA.2⟩
-  | .consWild hb hu hr =>
+  | .consWild hb huRigid hr =>
+    have hu := huRigid.unifies
     intro w hw hrefs hscrut hρ hbrs
     expose_names
     simp only [Expr.tyFreeVars.BranchList.tyFreeVars, List.mem_append, not_or] at hbrs
@@ -7561,7 +7712,8 @@ theorem InferRecGroupPoly.sourceLocality {Φ ctx bindings specs Φ' S}
       (fun e he => hrefs e (List.mem_cons_of_mem _ he))
       (fun σ hσ => hspecs σ (List.mem_cons_of_mem _ hσ))
     exact fun hc => hbinds (by simp only [Expr.tyFreeVars.RecGroup.tyFreeVars, List.mem_append]; exact Or.inr hc)
-  | .consPoly hΦN hi hu _ _ hr =>
+  | .consPoly hΦN hi huRigid _ hr =>
+    have hu := huRigid.unifies
     intro w hw hrefs hspecs hbinds
     expose_names
     simp only [Expr.tyFreeVars.RecGroup.tyFreeVars, List.mem_append, not_or] at hbinds
@@ -10434,7 +10586,7 @@ inductive InferRecStrata.Frozen :
     {Φ' : Nat} → {S : Subst} → {specs' : List RecSpec} → {G' : List Nat} →
     InferRecStrata κ rigid bindings Φ ctx specs done G groups Φ' S specs' G' → Prop
   | nil {rigid bindings Φ ctx specs done G} :
-      Frozen (@InferRecStrata.nil rigid bindings Φ ctx specs done G)
+      Frozen (@InferRecStrata.nil κ rigid bindings Φ ctx specs done G)
   | cons {rigid bindings Φ ctx specs done G component rest Φ₁ Φ₂ S₁ S₂ specs₁ specs₂ Gcurrent Gfinal}
       {hcomponent : InferRecComponent κ component 0 Φ
         (RecSpecs.algorithmStageCtx ctx specs done G) bindings specs Φ₁ S₁}
@@ -11111,7 +11263,7 @@ termination_by groups.length
 decreasing_by all_goals (simp_wf; try omega)
 
 private abbrev Infer.SourceSoundAt (e : Expr) : Prop :=
-  ∀ {Φ ctx Φ' S τ}, Infer κ Φ ctx e Φ' S τ →
+  ∀ {κ Φ ctx Φ' S τ}, Infer κ Φ ctx e Φ' S τ →
     CtxWF ctx → CtxBelow Φ ctx → (K : List Nat) → (∀ k ∈ K, k < Φ) →
     (∀ y ∈ e.tyFreeVars, y ∈ K) → (∀ p ∈ S, p.1 ∉ K) →
     TypeOfHM (S.onCtx ctx) e τ
@@ -11159,7 +11311,8 @@ theorem InferRecComponent.sourceSoundMono_of {members memberIndex Φ ctx binding
           simp only [Expr.tyFreeVars.RecGroup.tyFreeVars, List.mem_append]; exact Or.inr hy))
         hSK offset rhs τ (by simpa only [Nat.add_assoc, Nat.add_comm 1 offset] using hmember)
         (by simpa using hrhs) (by simpa using hτ)
-  | .consSelected _ he huni hrest =>
+  | .consSelected _ he huniRigid hrest =>
+    have huni := huniRigid.unifies
     expose_names
     simp only [Expr.tyFreeVars.RecGroup.tyFreeVars, List.mem_append] at hKbr
     obtain ⟨hτ'_lc, hS₁⟩ := Infer.lc he hctx
@@ -11300,6 +11453,7 @@ theorem InferRecStrata.sourceSoundMono_of {rigid bindings Φ ctx specs done G gr
 termination_by groups.length
 decreasing_by all_goals (simp_wf; try omega)
 
+set_option maxRecDepth 4096 in
 set_option maxHeartbeats 800_000 in
 mutual
 /-- Backward soundness: inference implies declarative typing for the source term. -/
@@ -11386,7 +11540,8 @@ theorem Infer.sourceSound {Φ ctx e Φ' S τ} (h : Infer κ Φ ctx e Φ' S τ) :
           rwa [hSparam]) rfl ?_
       simpa only [Subst.onCtx, Subst.onEnv, List.map_cons]
         using ih
-  | app hf harg huni =>
+  | app hf harg huniRigid =>
+    have huni := huniRigid.unifies
     intro hctx hbelow K hKΦ hKe hSK
     expose_names
     simp only [Expr.tyFreeVars, List.mem_append] at hKe
@@ -11442,7 +11597,7 @@ theorem Infer.sourceSound {Φ ctx e Φ' S τ} (h : Infer κ Φ ctx e Φ' S τ) :
         simp only [← Subst.onCtx_append, List.append_assoc]
       rwa [hctx_eq] at harg3
     exact TypeOfHM.app hf_arr harg_arr
-  | @var Φ ctx i polyTy hlook =>
+  | @var κ Φ ctx i polyTy hlook =>
     intro hctx _ _ _ _ _
     simp only [Subst.onCtx_nil]
     refine TypeOfHM.var (polyTy := polyTy)
@@ -11452,7 +11607,7 @@ theorem Infer.sourceSound {Φ ctx e Φ' S τ} (h : Infer κ Φ ctx e Φ' S τ) :
       exact ContainsBvarsUpTo.fvar
     · exact InstantiatesBy.openVars
         (hctx _ (List.mem_of_getElem? hlook)) (by simp [freshVars_length])
-  | @ctor Φ ctx name ctor hlook =>
+  | @ctor κ Φ ctx name ctor hlook =>
     intro _ _ _ _ _ _
     simp only [Subst.onCtx_nil]
     refine TypeOfHM.ctor (ctor := ctor)
@@ -11624,7 +11779,9 @@ theorem Infer.sourceSound {Φ ctx e Φ' S τ} (h : Infer κ Φ ctx e Φ' S τ) :
           hgenV_env' p.1 (List.of_mem_zip hp).1 hc)
       rwa [hctxfix] at hren
     · simpa only [Mres, hschemeeq] using hbody_pack
-  | letInAnn hσwf hΦN hrhs huni hesc1 hesc2 hbody =>
+  | letInAnn hσwf hΦN hrhs huniRigid hesc2 hbody =>
+    have hesc1 := Subst.skolem_dom_avoids (Infer.dom_avoids hrhs) huniRigid.dom_avoids
+    have huni := huniRigid.unifies
     intro hctx hbelow K hKΦ hKe hSK
     expose_names
     simp only [Expr.tyFreeVars, Option.elim_some, List.mem_append] at hKe
@@ -12044,7 +12201,7 @@ theorem Infer.sourceSound {Φ ctx e Φ' S τ} (h : Infer κ Φ ctx e Φ' S τ) :
     have hmonoS := InferRecStrata.sourceSoundMono_of hfrozen
       (fun rhs hrhs => by
         have hsize := Expr.sourceLocality_size_mem hrhs
-        intro Ψ c Ψ' T τ he hc hb KK hKK hke htk
+        intro κ Ψ c Ψ' T τ he hc hb KK hKK hke htk
         exact Infer.sourceSound he hc hb KK hKK hke htk)
       hctx hctxB hinitLC hinitB K (fun k hk => by have := hKΦ k hk; omega)
       hKbind (fun σ hσ => hKsch σ (RecSpec.poly_mem_init hσ)) hS₁K
@@ -12147,7 +12304,9 @@ theorem InferBranches.sourceSound {Φ ctx scrutTy ρ brs Φ' S}
         ((S.onTy scrutTy)) ((S.onTy ρ)) := by
   cases h with
   | nil => intro p hp; simp at hp
-  | cons hlook hn huni0 hbody huni hrest =>
+  | cons hlook hn huni0Rigid hbody huniRigid hrest =>
+    have huni0 := huni0Rigid.unifies
+    have huni := huniRigid.unifies
     expose_names
     have hΦ : ∀ y ∈ Expr.tyFreeVars.BranchList.tyFreeVars
         ((MatchPattern.named c n, body) :: rest), y < Φ :=
@@ -12326,7 +12485,8 @@ theorem InferBranches.sourceSound {Φ ctx scrutTy ρ brs Φ' S}
         simp only [Subst.onTy_append, List.append_assoc]
       have key := hrest_sound p hp_rest
       rwa [hctx_eq, hscrut_eq, hρ_eq] at key
-  | consWild hbody huni hrest =>
+  | consWild hbody huniRigid hrest =>
+    have huni := huniRigid.unifies
     expose_names
     have hSe : ∀ p ∈ S₁ ++ S₂ ++ S₃,
         p.1 ∉ Expr.tyFreeVars.BranchList.tyFreeVars ((MatchPattern.wildcard, body) :: rest) :=
@@ -12428,7 +12588,8 @@ theorem InferRecGroup.sourceSoundMono {Φ ctx bindings specs Φ' S}
         (fun y hy => hKbr y (by
           simp only [Expr.tyFreeVars.RecGroup.tyFreeVars, List.mem_append]
           exact Or.inr hy)) hSK p hp τ0 hτ0
-  | consMono he huni hrest =>
+  | consMono he huniRigid hrest =>
+    have huni := huniRigid.unifies
     expose_names
     simp only [Expr.tyFreeVars.RecGroup.tyFreeVars, List.mem_append] at hKbr
     obtain ⟨hτ'_lc, hS₁⟩ := Infer.lc he hctx
@@ -12537,7 +12698,9 @@ theorem InferRecGroupPoly.sourceSoundPoly {Φ ctx bindings specs Φ' S}
     rcases hp with rfl | hp
     · exact absurd hσ (by simp [RecSpec.onSubst])
     · exact htail p hp σ hσ Xs hXs
-  | consPoly hN he huni hesc1 hesc2 hrest =>
+  | consPoly hN he huniRigid hesc2 hrest =>
+    have hesc1 := Subst.skolem_dom_avoids (Infer.dom_avoids he) huniRigid.dom_avoids
+    have huni := huniRigid.unifies
     expose_names
     simp only [Expr.tyFreeVars.RecGroup.tyFreeVars, List.mem_append] at hKbr
     have hσwf : σ.WF := hspecs (.poly σ) List.mem_cons_self
@@ -13676,18 +13839,18 @@ structure InferRecStrataOutput where
 mutual
 def inferWithTypesCore (K : List Nat) (Φ : Nat) (ctx : Ctx) (e : Expr) :
     Option { r : Nat × Subst × Ty × InferredNodeTypes × InferredBinderSchemes //
-      Infer K Φ ctx e r.1 r.2.1 r.2.2.1 ∧ (∀ p ∈ r.2.1, p.1 ∉ K) } :=
+      Infer K Φ ctx e r.1 r.2.1 r.2.2.1 } :=
   match e with
-  | .primLit .unit => some ⟨(Φ, [], .prim .unit, .root (.prim .unit), []), .primLitUnit, by simp⟩
-  | .primLit (.int n) => some ⟨(Φ, [], .prim .int, .root (.prim .int), []), .primLitInt, by simp⟩
-  | .primLit (.nat n) => some ⟨(Φ, [], .prim .nat, .root (.prim .nat), []), .primLitNat, by simp⟩
-  | .primLit (.char c) => some ⟨(Φ, [], .prim .char, .root (.prim .char), []), .primLitChar, by simp⟩
+  | .primLit .unit => some ⟨(Φ, [], .prim .unit, .root (.prim .unit), []), .primLitUnit⟩
+  | .primLit (.int n) => some ⟨(Φ, [], .prim .int, .root (.prim .int), []), .primLitInt⟩
+  | .primLit (.nat n) => some ⟨(Φ, [], .prim .nat, .root (.prim .nat), []), .primLitNat⟩
+  | .primLit (.char c) => some ⟨(Φ, [], .prim .char, .root (.prim .char), []), .primLitChar⟩
   | .primBinOp .intAdd =>
       let ty := .arrow (.prim .int) (.arrow (.prim .int) (.prim .int))
-      some ⟨(Φ, [], ty, .root ty, []), .primBinOpIntAdd, by simp⟩
+      some ⟨(Φ, [], ty, .root ty, []), .primBinOpIntAdd⟩
   | .primBinOp .intSub =>
       let ty := .arrow (.prim .int) (.arrow (.prim .int) (.prim .int))
-      some ⟨(Φ, [], ty, .root ty, []), .primBinOpIntSub, by simp⟩
+      some ⟨(Φ, [], ty, .root ty, []), .primBinOpIntSub⟩
   | .primBinOp .intLt =>
       match hT : LookupList.get? ctx.ctors ⟨"True"⟩ with
       | none => none
@@ -13699,7 +13862,7 @@ def inferWithTypesCore (K : List Nat) (Φ : Nat) (ctx : Ctx) (e : Expr) :
             if hfc : fc.isBoolCtor = true then
               let ty := .arrow (.prim .int) (.arrow (.prim .int) (.customTy ⟨"Bool"⟩ []))
               some ⟨(Φ, [], ty, .root ty, []),
-                    .primBinOpIntLt hT (Ctor.isBoolCtor_iff.mp htc) hF (Ctor.isBoolCtor_iff.mp hfc), by simp⟩
+                    .primBinOpIntLt hT (Ctor.isBoolCtor_iff.mp htc) hF (Ctor.isBoolCtor_iff.mp hfc)⟩
             else none
           else none
   | .primBinOp .charLt =>
@@ -13713,33 +13876,33 @@ def inferWithTypesCore (K : List Nat) (Φ : Nat) (ctx : Ctx) (e : Expr) :
             if hfc : fc.isBoolCtor = true then
               let ty := .arrow (.prim .char) (.arrow (.prim .char) (.customTy ⟨"Bool"⟩ []))
               some ⟨(Φ, [], ty, .root ty, []),
-                    .primBinOpCharLt hT (Ctor.isBoolCtor_iff.mp htc) hF (Ctor.isBoolCtor_iff.mp hfc), by simp⟩
+                    .primBinOpCharLt hT (Ctor.isBoolCtor_iff.mp htc) hF (Ctor.isBoolCtor_iff.mp hfc)⟩
             else none
           else none
   | .lambda none body =>
       match inferWithTypesCore K (Φ + 1) { ctx with env := PolyTy.mkTrivial (.fvar Φ) :: ctx.env } body with
       | none => none
-      | some ⟨(Φ', S, τb, bodyTypes, bodySchemes), hbody, hav⟩ =>
+      | some ⟨(Φ', S, τb, bodyTypes, bodySchemes), hbody⟩ =>
         let ty := .arrow (S.onTy (.fvar Φ)) τb
         some ⟨(Φ', S, ty, .root ty ++ bodyTypes.below .lambdaBody,
-            bodySchemes.below .lambdaBody), .lambda .none hbody, hav⟩
+            bodySchemes.below .lambdaBody), .lambda .none hbody⟩
   | .lambda (some T) body =>
       if hT : Ty.bvarsBelow 0 T = true then
         match inferWithTypesCore K Φ { ctx with env := PolyTy.mkTrivial T :: ctx.env } body with
         | none => none
-        | some ⟨(Φ', S, τb, bodyTypes, bodySchemes), hbody, hav⟩ =>
+        | some ⟨(Φ', S, τb, bodyTypes, bodySchemes), hbody⟩ =>
           let ty := .arrow (S.onTy T) τb
           some ⟨(Φ', S, ty, .root ty ++ bodyTypes.below .lambdaBody,
               bodySchemes.below .lambdaBody),
-            .lambda (.some T ((Ty.bvarsBelow_iff T).mp hT)) hbody, hav⟩
+            .lambda (.some T ((Ty.bvarsBelow_iff T).mp hT)) hbody⟩
       else none
   | .app f arg =>
       match inferWithTypesCore K Φ ctx f with
       | none => none
-      | some ⟨(Φ₁, S₁, τf, fTypes, fSchemes), hf, hav₁⟩ =>
+      | some ⟨(Φ₁, S₁, τf, fTypes, fSchemes), hf⟩ =>
         match inferWithTypesCore K Φ₁ (S₁.onCtx ctx) arg with
         | none => none
-        | some ⟨(Φ₂, S₂, τa, argTypes, argSchemes), harg, hav₂⟩ =>
+        | some ⟨(Φ₂, S₂, τa, argTypes, argSchemes), harg⟩ =>
           match unifyCoreK K (S₂.onTy τf) (.arrow τa (.fvar Φ₂)) with
           | none => none
           | some ⟨S₃, h₃, hav₃⟩ =>
@@ -13749,37 +13912,32 @@ def inferWithTypesCore (K : List Nat) (Φ : Nat) (ctx : Ctx) (e : Expr) :
               (argTypes.onSubst S₃).below .appArg
             let schemes := (fSchemes.onSubst (S₂ ++ S₃)).below .appFun ++
               (argSchemes.onSubst S₃).below .appArg
-            some ⟨(Φ₂ + 1, S₁ ++ S₂ ++ S₃, ty, nodeTypes, schemes), .app hf harg h₃, by
-              intro p hp; rcases List.mem_append.mp hp with h | h
-              · rcases List.mem_append.mp h with h | h
-                · exact hav₁ p h
-                · exact hav₂ p h
-              · exact hav₃ p h⟩
+            some ⟨(Φ₂ + 1, S₁ ++ S₂ ++ S₃, ty, nodeTypes, schemes), .app hf harg ⟨h₃, hav₃⟩⟩
   | .var i =>
       match h : ctx.env[i]? with
       | none => none
       | some polyTy =>
         let ty := polyTy.openVars (freshVars Φ polyTy.paramCount)
-        some ⟨(Φ + polyTy.paramCount, [], ty, .root ty, []), .var h, by simp⟩
+        some ⟨(Φ + polyTy.paramCount, [], ty, .root ty, []), .var h⟩
   | .ctor name =>
       match h : LookupList.get? ctx.ctors name with
       | none => none
       | some ctorr =>
         let ty := ctorr.toTy.openVars (freshVars Φ ctorr.paramCount)
         some ⟨(Φ + ctorr.paramCount, [], ty, .root ty, []),
-          .ctor h, by simp⟩
+          .ctor h⟩
   | .letIn ann rhs body =>
       match ann with
       | none =>
         match inferWithTypesCore K Φ ctx rhs with
         | none => none
-        | some ⟨(Φ₁, S₁, τ₁, rhsTypes, rhsSchemes), hrhs, hav₁⟩ =>
+        | some ⟨(Φ₁, S₁, τ₁, rhsTypes, rhsSchemes), hrhs⟩ =>
         match inferWithTypesCore K Φ₁
             { (S₁.onCtx ctx) with
               env := genScheme rhs.tyFreeVars (S₁.onCtx ctx).env τ₁ :: (S₁.onCtx ctx).env }
             body with
         | none => none
-        | some ⟨(Φ₂, S₂, τ₂, bodyTypes, bodySchemes), hbody, hav₂⟩ =>
+        | some ⟨(Φ₂, S₂, τ₂, bodyTypes, bodySchemes), hbody⟩ =>
           let binderScheme := genScheme rhs.tyFreeVars (S₁.onCtx ctx).env τ₁
           let binderFact : InferredBinderScheme :=
             { site := .letIn [], scheme := S₂.onPolyTy binderScheme, tyDepth := 0 }
@@ -13788,10 +13946,7 @@ def inferWithTypesCore (K : List Nat) (Φ : Nat) (ctx : Ctx) (e : Expr) :
           let nodeTypes := .root τ₂ ++
             (rhsTypes.onSubst S₂).below .letRhs ++ bodyTypes.below .letBody
           some ⟨(Φ₂, S₁ ++ S₂, τ₂, nodeTypes, schemes),
-            .letIn hrhs hbody, by
-            intro p hp; rcases List.mem_append.mp hp with h | h
-            · exact hav₁ p h
-            · exact hav₂ p h⟩
+            .letIn hrhs hbody⟩
       | some σ =>
         -- Annotated `let`: skolemize `σ` with `Ys = freshVars Φ pc`, infer the
         -- *opened* rhs `rhs.openTyVars Ys` at frontier `Φ + pc` **with `Ys` added to
@@ -13803,61 +13958,51 @@ def inferWithTypesCore (K : List Nat) (Φ : Nat) (ctx : Ctx) (e : Expr) :
           match inferWithTypesCore (K ++ freshVars Φ σ.paramCount) (Φ + σ.paramCount) ctx
               (rhs.openTyVars (freshVars Φ σ.paramCount)) with
           | none => none
-          | some ⟨(Φ₁, S₁, τ₁, rhsTypes, rhsSchemes), hrhs, hav₁⟩ =>
+          | some ⟨(Φ₁, S₁, τ₁, rhsTypes, rhsSchemes), hrhs⟩ =>
             match unifyCoreK (K ++ freshVars Φ σ.paramCount) τ₁
                 (σ.openVars (freshVars Φ σ.paramCount)) with
             | none => none
             | some ⟨Schk, hSchk, havS⟩ =>
-              if hesc1 : (∀ y ∈ freshVars Φ σ.paramCount, y ∉ (S₁ ++ Schk).map Prod.fst) then
-                if hesc2 : (∀ y ∈ freshVars Φ σ.paramCount,
-                    y ∉ (Schk.onCtx (S₁.onCtx ctx)).env.freeVars) then
-                  match inferWithTypesCore K Φ₁
-                      { (Schk.onCtx (S₁.onCtx ctx)) with
-                        env := σ :: (Schk.onCtx (S₁.onCtx ctx)).env }
-                      body with
-                  | none => none
-                  | some ⟨(Φ₂, S₂, τ₂, bodyTypes, bodySchemes), hbody, hav₂⟩ =>
-                    let Ys := freshVars Φ σ.paramCount
-                    let rhsFinalTypes :=
-                      (((rhsTypes.onSubst Schk).closeTyVars Ys).onSubst S₂)
-                        |>.underTyBinders σ.paramCount
-                        |>.below .letRhs
-                    let rhsFinalSchemes :=
-                      (((rhsSchemes.onSubst Schk).closeTyVars Ys).onSubst S₂)
-                        |>.underTyBinders σ.paramCount
-                        |>.below .letRhs
-                    let schemes := rhsFinalSchemes ++ bodySchemes.below .letBody
-                    let nodeTypes := .root τ₂ ++ rhsFinalTypes ++ bodyTypes.below .letBody
-                    some ⟨(Φ₂, S₁ ++ Schk ++ S₂, τ₂, nodeTypes, schemes),
-                      .letInAnn (PolyTy.wf_iff_bvarsBelow.mp hσwf) (Nat.le_refl Φ)
-                        hrhs hSchk hesc1 hesc2 hbody, by
-                      intro p hp; rcases List.mem_append.mp hp with h | h
-                      · rcases List.mem_append.mp h with h | h
-                        · exact fun hc => hav₁ p h (List.mem_append_left _ hc)
-                        · exact fun hc => havS p h (List.mem_append_left _ hc)
-                      · exact hav₂ p h⟩
-                else none
+              if hesc2 : (∀ y ∈ freshVars Φ σ.paramCount,
+                  y ∉ (Schk.onCtx (S₁.onCtx ctx)).env.freeVars) then
+                match inferWithTypesCore K Φ₁
+                    { (Schk.onCtx (S₁.onCtx ctx)) with
+                      env := σ :: (Schk.onCtx (S₁.onCtx ctx)).env }
+                    body with
+                | none => none
+                | some ⟨(Φ₂, S₂, τ₂, bodyTypes, bodySchemes), hbody⟩ =>
+                  let Ys := freshVars Φ σ.paramCount
+                  let rhsFinalTypes :=
+                    (((rhsTypes.onSubst Schk).closeTyVars Ys).onSubst S₂)
+                      |>.underTyBinders σ.paramCount
+                      |>.below .letRhs
+                  let rhsFinalSchemes :=
+                    (((rhsSchemes.onSubst Schk).closeTyVars Ys).onSubst S₂)
+                      |>.underTyBinders σ.paramCount
+                      |>.below .letRhs
+                  let schemes := rhsFinalSchemes ++ bodySchemes.below .letBody
+                  let nodeTypes := .root τ₂ ++ rhsFinalTypes ++ bodyTypes.below .letBody
+                  some ⟨(Φ₂, S₁ ++ Schk ++ S₂, τ₂, nodeTypes, schemes),
+                    .letInAnn (PolyTy.wf_iff_bvarsBelow.mp hσwf) (Nat.le_refl Φ)
+                      hrhs ⟨hSchk, havS⟩ hesc2 hbody⟩
               else none
         else none
   | .match_ scrut branches =>
       match inferWithTypesCore K Φ ctx scrut with
       | none => none
-      | some ⟨(Φ₁, S₁, τs, scrutTypes, scrutSchemes), hscrut, hav₁⟩ =>
+      | some ⟨(Φ₁, S₁, τs, scrutTypes, scrutSchemes), hscrut⟩ =>
         match hh : branches.head? with
         | none => none
         | some _ =>
           match inferBranchesWithTypesCore K (Φ₁ + 1) (S₁.onCtx ctx) τs (.fvar Φ₁) 0 branches with
           | none => none
-          | some ⟨(Φ₂, S₂, branchTypes, branchSchemes), hbranches, hav₂⟩ =>
+          | some ⟨(Φ₂, S₂, branchTypes, branchSchemes), hbranches⟩ =>
             let ty := S₂.onTy (.fvar Φ₁)
             let schemes := (scrutSchemes.onSubst S₂).below .matchScrut ++ branchSchemes
             let nodeTypes := .root ty ++
               (scrutTypes.onSubst S₂).below .matchScrut ++ branchTypes
             some ⟨(Φ₂, S₁ ++ S₂, ty, nodeTypes, schemes),
-                  .match_ hscrut (by intro hc; rw [hc] at hh; simp at hh) hbranches, by
-                  intro p hp; rcases List.mem_append.mp hp with h | h
-                  · exact hav₁ p h
-                  · exact hav₂ p h⟩
+                  .match_ hscrut (by intro hc; rw [hc] at hh; simp at hh) hbranches⟩
   | .letRec anns bindings body =>
       -- Complete signatures are dependency cuts: solve unsigned members,
       -- generalise them, then check signed members under the final schemes.
@@ -13869,7 +14014,7 @@ def inferWithTypesCore (K : List Nat) (Φ : Nat) (ctx : Ctx) (e : Expr) :
               (Φ + bindings.length) ctx (RecSpec.init Φ anns) [] []
               (RecGroup.inferenceSccs anns bindings) with
           | none => none
-          | some ⟨strata, hstrata, hav₁⟩ =>
+          | some ⟨strata, hstrata⟩ =>
             let Φ₁ := strata.frontier
             let S₁ := strata.subst
             let specs1 := strata.specs
@@ -13879,7 +14024,7 @@ def inferWithTypesCore (K : List Nat) (Φ : Nat) (ctx : Ctx) (e : Expr) :
                   env := specs1.map (RecSpec.bodyScheme G) ++ (S₁.onCtx ctx).env }
                 0 bindings specs1 with
             | none => none
-            | some ⟨(Φ₂, S₂, polyTypes, polySchemes), hpoly, hav₂⟩ =>
+            | some ⟨(Φ₂, S₂, polyTypes, polySchemes), hpoly⟩ =>
               let specs2 := specs1.map (RecSpec.onSubst S₂)
               match inferWithTypesCore K Φ₂
                   { (S₂.onCtx (S₁.onCtx ctx)) with
@@ -13887,7 +14032,7 @@ def inferWithTypesCore (K : List Nat) (Φ : Nat) (ctx : Ctx) (e : Expr) :
                       (S₂.onCtx (S₁.onCtx ctx)).env }
                   body with
               | none => none
-              | some ⟨(Φ₃, S₃, τ₃, bodyTypes, bodySchemes), hbody, hav₃⟩ =>
+              | some ⟨(Φ₃, S₃, τ₃, bodyTypes, bodySchemes), hbody⟩ =>
                 let groupSchemes := inferredLetRecSchemes 0 anns
                   ((specs2.map (RecSpec.bodyScheme G)).map S₃.onPolyTy)
                 let rhsSchemes :=
@@ -13898,13 +14043,7 @@ def inferWithTypesCore (K : List Nat) (Φ : Nat) (ctx : Ctx) (e : Expr) :
                 let nodeTypes := .root τ₃ ++ rhsTypes ++ bodyTypes.below .letRecBody
                 some ⟨(Φ₃, S₁ ++ S₂ ++ S₃, τ₃, nodeTypes, schemes),
                   .letRec (fun σ hσ => PolyTy.wf_iff_bvarsBelow.mp (hwf (some σ) hσ σ rfl))
-                    hgroups hstrata hpoly rfl hbody, by
-                  intro p hp
-                  rcases List.mem_append.mp hp with hp | hp
-                  · rcases List.mem_append.mp hp with hp | hp
-                    · exact hav₁ p hp
-                    · exact hav₂ p hp
-                  · exact hav₃ p hp⟩
+                    hgroups hstrata hpoly rfl hbody⟩
         else none
       else none
 termination_by (e.size, 0)
@@ -13914,32 +14053,27 @@ decreasing_by
 def inferBranchesWithTypesCore (K : List Nat) (Φ : Nat) (ctx : Ctx) (scrutTy : Ty) (ρ : Ty)
     (branchIndex : Nat) (branches : List (MatchPattern × Expr)) :
     Option { r : Nat × Subst × InferredNodeTypes × InferredBinderSchemes //
-      InferBranches K Φ ctx scrutTy ρ branches r.1 r.2.1 ∧ (∀ p ∈ r.2.1, p.1 ∉ K) } :=
+      InferBranches K Φ ctx scrutTy ρ branches r.1 r.2.1 } :=
   match branches with
-  | [] => some ⟨(Φ, [], [], []), .nil, by simp⟩
+  | [] => some ⟨(Φ, [], [], []), .nil⟩
   | (.wildcard, body) :: rest =>
       match inferWithTypesCore K Φ ctx body with
       | none => none
-      | some ⟨(Φ₁, S₁, τb, bodyTypes, bodySchemes), hbody, hav₁⟩ =>
+      | some ⟨(Φ₁, S₁, τb, bodyTypes, bodySchemes), hbody⟩ =>
         match unifyCoreK K τb (S₁.onTy ρ) with
         | none => none
         | some ⟨S₂, huni, hav₂⟩ =>
           match inferBranchesWithTypesCore K Φ₁ (S₂.onCtx (S₁.onCtx ctx))
               (S₂.onTy (S₁.onTy scrutTy)) (S₂.onTy (S₁.onTy ρ)) (branchIndex + 1) rest with
           | none => none
-          | some ⟨(Φ₂, S₃, restTypes, restSchemes), hrest, hav₃⟩ =>
+          | some ⟨(Φ₂, S₃, restTypes, restSchemes), hrest⟩ =>
             let schemes := (bodySchemes.onSubst (S₂ ++ S₃)).below
               (.matchBranch branchIndex) ++ restSchemes
             let nodeTypes := (bodyTypes.onSubst (S₂ ++ S₃)).below
               (.matchBranch branchIndex) ++ restTypes
             some ⟨(Φ₂, S₁ ++ S₂ ++ S₃,
                 nodeTypes, schemes),
-                .consWild hbody huni hrest, by
-              intro p hp; rcases List.mem_append.mp hp with h | h
-              · rcases List.mem_append.mp h with h | h
-                · exact hav₁ p h
-                · exact hav₂ p h
-              · exact hav₃ p h⟩
+                .consWild hbody ⟨huni, hav₂⟩ hrest⟩
   | (.named c n, body) :: rest =>
       match hget : LookupList.get? ctx.ctors c with
       | none => none
@@ -13956,7 +14090,7 @@ def inferBranchesWithTypesCore (K : List Nat) (Φ : Nat) (ctx : Ctx) (scrutTy : 
                     ++ (S₀.onCtx ctx).env }
                 body with
             | none => none
-            | some ⟨(Φ₁, S₁, τb, bodyTypes, bodySchemes), hbody, hav₁⟩ =>
+            | some ⟨(Φ₁, S₁, τb, bodyTypes, bodySchemes), hbody⟩ =>
               match unifyCoreK K τb (S₁.onTy (S₀.onTy ρ)) with
               | none => none
               | some ⟨S₂, huni, hav₂⟩ =>
@@ -13964,22 +14098,14 @@ def inferBranchesWithTypesCore (K : List Nat) (Φ : Nat) (ctx : Ctx) (scrutTy : 
                     (S₂.onTy (S₁.onTy (S₀.onTy scrutTy))) (S₂.onTy (S₁.onTy (S₀.onTy ρ)))
                     (branchIndex + 1) rest with
                 | none => none
-                | some ⟨(Φ₂, S₃, restTypes, restSchemes), hrest, hav₃⟩ =>
+                | some ⟨(Φ₂, S₃, restTypes, restSchemes), hrest⟩ =>
                   let schemes := (bodySchemes.onSubst (S₂ ++ S₃)).below
                     (.matchBranch branchIndex) ++ restSchemes
                   let nodeTypes := (bodyTypes.onSubst (S₂ ++ S₃)).below
                     (.matchBranch branchIndex) ++ restTypes
                   some ⟨(Φ₂, S₀ ++ S₁ ++ S₂ ++ S₃,
                       nodeTypes, schemes),
-                      .cons hget hcont huni0 hbody huni hrest, by
-                    intro p hp
-                    rcases List.mem_append.mp hp with h | h
-                    · rcases List.mem_append.mp h with h | h
-                      · rcases List.mem_append.mp h with h | h
-                        · exact hav0 p h
-                        · exact hav₁ p h
-                      · exact hav₂ p h
-                    · exact hav₃ p h⟩
+                      .cons hget hcont ⟨huni0, hav0⟩ hbody ⟨huni, hav₂⟩ hrest⟩
         else none
 termination_by (Expr.sizeBranches branches, 0)
 decreasing_by
@@ -13992,14 +14118,14 @@ def inferRecComponentWithTypesCore (K : List Nat) (members : List Nat)
     (bindings : List Expr) (specs : List RecSpec) :
     Option { r : InferRecComponentOutput //
       InferRecComponent K members memberIndex Φ ctx bindings specs
-        r.frontier r.subst ∧ (∀ p ∈ r.subst, p.1 ∉ K) } :=
+        r.frontier r.subst } :=
   match bindings, specs with
-  | [], [] => some ⟨⟨Φ, [], [], []⟩, .nil, by simp⟩
+  | [], [] => some ⟨⟨Φ, [], [], []⟩, .nil⟩
   | e :: rest, .mono τ :: specs' =>
       if hmember : memberIndex ∈ members then
         match inferWithTypesCore K Φ ctx e with
         | none => none
-        | some ⟨(Φ₁, S₁, τ', eTypes, eSchemes), he, hav₁⟩ =>
+        | some ⟨(Φ₁, S₁, τ', eTypes, eSchemes), he⟩ =>
           match unifyCoreK K τ' (S₁.onTy τ) with
           | none => none
           | some ⟨S₂, huni, hav₂⟩ =>
@@ -14007,7 +14133,7 @@ def inferRecComponentWithTypesCore (K : List Nat) (members : List Nat)
                 (S₂.onCtx (S₁.onCtx ctx)) rest
                 (specs'.map (RecSpec.onSubst (S₁ ++ S₂))) with
             | none => none
-            | some ⟨tail, htail, hav₃⟩ =>
+            | some ⟨tail, htail⟩ =>
               let schemes :=
                 (eSchemes.onSubst (S₂ ++ tail.subst)).below (.letRecRhs memberIndex) ++
                   tail.binderSchemes
@@ -14015,29 +14141,23 @@ def inferRecComponentWithTypesCore (K : List Nat) (members : List Nat)
                 (eTypes.onSubst (S₂ ++ tail.subst)).below (.letRecRhs memberIndex) ++
                   tail.nodeTypes
               some ⟨⟨tail.frontier, S₁ ++ S₂ ++ tail.subst, nodeTypes, schemes⟩,
-                .consSelected hmember he huni htail, by
-                  intro p hp
-                  rcases List.mem_append.mp hp with hp | hp
-                  · rcases List.mem_append.mp hp with hp | hp
-                    · exact hav₁ p hp
-                    · exact hav₂ p hp
-                  · exact hav₃ p hp⟩
+                .consSelected hmember he ⟨huni, hav₂⟩ htail⟩
       else
         match inferRecComponentWithTypesCore K members (memberIndex + 1) Φ ctx rest specs' with
         | none => none
-        | some ⟨tail, htail, hav⟩ =>
-            some ⟨tail, .skipMono hmember htail, hav⟩
+        | some ⟨tail, htail⟩ =>
+            some ⟨tail, .skipMono hmember htail⟩
   | _e :: rest, .poly _σ :: specs' =>
       match inferRecComponentWithTypesCore K members (memberIndex + 1) Φ ctx rest specs' with
       | none => none
-      | some ⟨tail, htail, hav⟩ =>
-          some ⟨tail, .skipPoly htail, hav⟩
+      | some ⟨tail, htail⟩ =>
+          some ⟨tail, .skipPoly htail⟩
   | _, _ => none
 termination_by (Expr.sizeRecGroup bindings, 0)
 decreasing_by
   all_goals (try simp only [Expr.sizeRecGroup]; omega)
 
-/-- Infer K and generalise residual SCCs dependency-first.  Each completed
+/-- Infer and generalise residual SCCs dependency-first.  Each completed
     component becomes polymorphic for subsequent components, while unsolved
     members retain their positional monotype placeholders. -/
 def inferRecStrataWithTypesCore (K rigid : List Nat) (bindings : List Expr)
@@ -14045,15 +14165,14 @@ def inferRecStrataWithTypesCore (K rigid : List Nat) (bindings : List Expr)
     (groups : List (List Nat)) :
     Option { r : InferRecStrataOutput //
       InferRecStrata K rigid bindings Φ ctx specs done G groups
-        r.frontier r.subst r.specs r.genVars ∧
-      (∀ p ∈ r.subst, p.1 ∉ K) } :=
+        r.frontier r.subst r.specs r.genVars } :=
   match groups with
-  | [] => some ⟨⟨Φ, [], specs, G, [], []⟩, .nil, by simp⟩
+  | [] => some ⟨⟨Φ, [], specs, G, [], []⟩, .nil⟩
   | component :: rest =>
       match inferRecComponentWithTypesCore K component 0 Φ
           (RecSpecs.algorithmStageCtx ctx specs done G) bindings specs with
       | none => none
-      | some ⟨current, hcurrent, hav₁⟩ =>
+      | some ⟨current, hcurrent⟩ =>
         let specs₁ := specs.map (RecSpec.onSubst current.subst)
         let Gcurrent := genGroupVars (rigid ++ G)
           (RecSpecs.generalizationCtx (current.subst.onCtx ctx) specs₁ done G).env
@@ -14061,16 +14180,12 @@ def inferRecStrataWithTypesCore (K rigid : List Nat) (bindings : List Expr)
         match inferRecStrataWithTypesCore K rigid bindings current.frontier
             (current.subst.onCtx ctx) specs₁ (done ++ component) (G ++ Gcurrent) rest with
         | none => none
-        | some ⟨tail, htail, hav₂⟩ =>
+        | some ⟨tail, htail⟩ =>
           let nodeTypes := current.nodeTypes.onSubst tail.subst ++ tail.nodeTypes
           let schemes := current.binderSchemes.onSubst tail.subst ++ tail.binderSchemes
           some ⟨⟨tail.frontier, current.subst ++ tail.subst, tail.specs,
               tail.genVars, nodeTypes, schemes⟩,
-            .cons hcurrent rfl rfl htail, by
-              intro p hp
-              rcases List.mem_append.mp hp with hp | hp
-              · exact hav₁ p hp
-              · exact hav₂ p hp⟩
+            .cons hcurrent rfl rfl htail⟩
 termination_by (Expr.sizeRecGroup bindings, groups.length + 1)
 decreasing_by
   all_goals
@@ -14082,36 +14197,31 @@ decreasing_by
 def inferRecGroupWithTypesCore (K : List Nat) (Φ : Nat) (ctx : Ctx) (memberIndex : Nat)
     (bindings : List Expr) (specs : List RecSpec) :
     Option { r : Nat × Subst × InferredNodeTypes × InferredBinderSchemes //
-      InferRecGroup K Φ ctx bindings specs r.1 r.2.1 ∧ (∀ p ∈ r.2.1, p.1 ∉ K) } :=
+      InferRecGroup K Φ ctx bindings specs r.1 r.2.1 } :=
   match bindings, specs with
-  | [], [] => some ⟨(Φ, [], [], []), .nil, by simp⟩
+  | [], [] => some ⟨(Φ, [], [], []), .nil⟩
   | e :: rest, .mono τ :: specs' =>
       match inferWithTypesCore K Φ ctx e with
       | none => none
-      | some ⟨(Φ₁, S₁, τ', eTypes, eSchemes), he, hav₁⟩ =>
+      | some ⟨(Φ₁, S₁, τ', eTypes, eSchemes), he⟩ =>
         match unifyCoreK K τ' (S₁.onTy τ) with
         | none => none
         | some ⟨S₂, huni, hav₂⟩ =>
           match inferRecGroupWithTypesCore K Φ₁ (S₂.onCtx (S₁.onCtx ctx)) (memberIndex + 1) rest
               (specs'.map (RecSpec.onSubst (S₁ ++ S₂))) with
           | none => none
-          | some ⟨(Φ₂, S₃, restTypes, restSchemes), hrest, hav₃⟩ =>
+          | some ⟨(Φ₂, S₃, restTypes, restSchemes), hrest⟩ =>
             let schemes := (eSchemes.onSubst (S₂ ++ S₃)).below (.letRecRhs memberIndex) ++
               restSchemes
             let nodeTypes := (eTypes.onSubst (S₂ ++ S₃)).below (.letRecRhs memberIndex) ++
               restTypes
             some ⟨(Φ₂, S₁ ++ S₂ ++ S₃,
-                nodeTypes, schemes), .consMono he huni hrest, by
-              intro p hp; rcases List.mem_append.mp hp with h | h
-              · rcases List.mem_append.mp h with h | h
-                · exact hav₁ p h
-                · exact hav₂ p h
-              · exact hav₃ p h⟩
+                nodeTypes, schemes), .consMono he ⟨huni, hav₂⟩ hrest⟩
   | e :: rest, .poly σ :: specs' =>
       match inferRecGroupWithTypesCore K Φ ctx (memberIndex + 1) rest specs' with
       | none => none
-      | some ⟨(Φ', S, restTypes, restSchemes), hrest, hav⟩ =>
-          some ⟨(Φ', S, restTypes, restSchemes), .skipPoly hrest, hav⟩
+      | some ⟨(Φ', S, restTypes, restSchemes), hrest⟩ =>
+          some ⟨(Φ', S, restTypes, restSchemes), .skipPoly hrest⟩
   | _, _ => none
 termination_by (Expr.sizeRecGroup bindings, 0)
 decreasing_by
@@ -14122,43 +14232,36 @@ decreasing_by
 def inferRecGroupPolyWithTypesCore (K : List Nat) (Φ : Nat) (ctx : Ctx) (memberIndex : Nat)
     (bindings : List Expr) (specs : List RecSpec) :
     Option { r : Nat × Subst × InferredNodeTypes × InferredBinderSchemes //
-      InferRecGroupPoly K Φ ctx bindings specs r.1 r.2.1 ∧ (∀ p ∈ r.2.1, p.1 ∉ K) } :=
+      InferRecGroupPoly K Φ ctx bindings specs r.1 r.2.1 } :=
   match bindings, specs with
-  | [], [] => some ⟨(Φ, [], [], []), .nil, by simp⟩
+  | [], [] => some ⟨(Φ, [], [], []), .nil⟩
   | e :: rest, .mono τ :: specs' =>
       match inferRecGroupPolyWithTypesCore K Φ ctx (memberIndex + 1) rest specs' with
       | none => none
-      | some ⟨(Φ', S, restTypes, restSchemes), hrest, hav⟩ =>
-          some ⟨(Φ', S, restTypes, restSchemes), .skipMono hrest, hav⟩
+      | some ⟨(Φ', S, restTypes, restSchemes), hrest⟩ =>
+          some ⟨(Φ', S, restTypes, restSchemes), .skipMono hrest⟩
   | e :: rest, .poly σ :: specs' =>
       let Ys := freshVars Φ σ.paramCount
       match inferWithTypesCore (K ++ Ys) (Φ + σ.paramCount) ctx
           (e.openTyVars Ys) with
       | none => none
-      | some ⟨(Φ₁, S₁, τ, eTypes, eSchemes), he, hav₁⟩ =>
+      | some ⟨(Φ₁, S₁, τ, eTypes, eSchemes), he⟩ =>
         match unifyCoreK (K ++ Ys) τ (σ.openVars Ys) with
         | none => none
         | some ⟨Schk, hSchk, havS⟩ =>
-          if hesc1 : (∀ y ∈ Ys, y ∉ (S₁ ++ Schk).map Prod.fst) then
-            if hesc2 : (∀ y ∈ Ys,
-                y ∉ (Schk.onCtx (S₁.onCtx ctx)).env.freeVars) then
-              match inferRecGroupPolyWithTypesCore K Φ₁ (Schk.onCtx (S₁.onCtx ctx))
-                  (memberIndex + 1) rest
-                  (specs'.map (RecSpec.onSubst (S₁ ++ Schk))) with
-              | none => none
-              | some ⟨(Φ₂, S₂, restTypes, restSchemes), hrest, hav₂⟩ =>
-                let schemes := (((eSchemes.onSubst Schk).closeTyVars Ys).onSubst S₂).below
-                    (.letRecRhs memberIndex) ++ restSchemes
-                let nodeTypes := (((eTypes.onSubst Schk).closeTyVars Ys).onSubst S₂).below
-                    (.letRecRhs memberIndex) ++ restTypes
-                some ⟨(Φ₂, S₁ ++ Schk ++ S₂, nodeTypes, schemes),
-                  .consPoly (Nat.le_refl Φ) he hSchk hesc1 hesc2 hrest, by
-                  intro p hp; rcases List.mem_append.mp hp with h | h
-                  · rcases List.mem_append.mp h with h | h
-                    · exact fun hc => hav₁ p h (List.mem_append_left _ hc)
-                    · exact fun hc => havS p h (List.mem_append_left _ hc)
-                  · exact hav₂ p h⟩
-            else none
+          if hesc2 : (∀ y ∈ Ys,
+              y ∉ (Schk.onCtx (S₁.onCtx ctx)).env.freeVars) then
+            match inferRecGroupPolyWithTypesCore K Φ₁ (Schk.onCtx (S₁.onCtx ctx))
+                (memberIndex + 1) rest
+                (specs'.map (RecSpec.onSubst (S₁ ++ Schk))) with
+            | none => none
+            | some ⟨(Φ₂, S₂, restTypes, restSchemes), hrest⟩ =>
+              let schemes := (((eSchemes.onSubst Schk).closeTyVars Ys).onSubst S₂).below
+                  (.letRecRhs memberIndex) ++ restSchemes
+              let nodeTypes := (((eTypes.onSubst Schk).closeTyVars Ys).onSubst S₂).below
+                  (.letRecRhs memberIndex) ++ restTypes
+              some ⟨(Φ₂, S₁ ++ Schk ++ S₂, nodeTypes, schemes),
+                .consPoly (Nat.le_refl Φ) he ⟨hSchk, havS⟩ hesc2 hrest⟩
           else none
   | _, _ => none
 termination_by (Expr.sizeRecGroup bindings, 0)
@@ -14170,11 +14273,11 @@ end
     inference is repeated and existing proof-facing callers keep their API. -/
 def inferCore (K : List Nat) (Φ : Nat) (ctx : Ctx) (e : Expr) :
     Option { r : Nat × Subst × Ty //
-      Infer K Φ ctx e r.1 r.2.1 r.2.2 ∧ (∀ p ∈ r.2.1, p.1 ∉ K) } :=
+      Infer K Φ ctx e r.1 r.2.1 r.2.2 } :=
   match inferWithTypesCore K Φ ctx e with
   | none => none
-  | some ⟨(Φ', S, ty, _nodeTypes, _schemes), hInfer, hAvoid⟩ =>
-      some ⟨(Φ', S, ty), hInfer, hAvoid⟩
+  | some ⟨(Φ', S, ty, _nodeTypes, _schemes), hInfer⟩ =>
+      some ⟨(Φ', S, ty), hInfer⟩
 
 /-- Public inference output with the discovered type at every logical Core node. -/
 structure InferenceResult where
@@ -14193,13 +14296,13 @@ def infer (Φ : Nat) (ctx : Ctx) (e : Expr) : Option (Nat × Subst × Ty) :=
 /-- `infer` soundness: a returned `(Φ', S, τ)` is a genuine `Infer` derivation
     (immediate — `inferCore` carries it). -/
 theorem infer_sound {Φ : Nat} {ctx : Ctx} {e : Expr} {Φ' : Nat} {S : Subst} {τ : Ty}
-    (h : infer Φ ctx e = some (Φ', S, τ)) : Infer K Φ ctx e Φ' S τ := by
+    (h : infer Φ ctx e = some (Φ', S, τ)) : Infer [] Φ ctx e Φ' S τ := by
   rw [infer] at h
   rcases hc : inferCore [] Φ ctx e with _ | ⟨r, hr⟩ <;> rw [hc] at h
   · exact absurd h (by simp)
   · simp only [Option.map_some, Option.some.injEq] at h
     subst h
-    exact hr.1
+    exact hr
 
 /-! ### Executable sanity checks
 
@@ -14303,10 +14406,11 @@ theorem principalType_sound {ctors : CtorEnv} {e : Expr} {τ : Ty}
     (h : principalType ctors e = some τ) :
     RuntimeTyping.RunWT ⟨[], ctors⟩ e.erase τ := by
   rw [principalType] at h
-  rcases hc : inferCore e.tyFreeVars e.freshFloor ⟨[], ctors⟩ e with _ | ⟨⟨Φ', S, τ'⟩, hInfer, hSK⟩ <;>
+  rcases hc : inferCore e.tyFreeVars e.freshFloor ⟨[], ctors⟩ e with _ | ⟨⟨Φ', S, τ'⟩, hInfer⟩ <;>
     rw [hc] at h
   · simp at h
-  · simp only [Option.map_some, Option.some.injEq] at h
+  · have hSK := Infer.dom_avoids hInfer
+    simp only [Option.map_some, Option.some.injEq] at h
     subst h
     have helim := Infer.eliminates hInfer CtxBelow.empty
       (fun y hy => Expr.lt_freshFloor hy)
@@ -14332,7 +14436,7 @@ def typecheck (ctors : CtorEnv) (e : Expr) : Option PolyTy :=
 theorem typecheck_closed {ctors : CtorEnv} {e : Expr} {σ : PolyTy}
     (h : typecheck ctors e = some σ) : NoFreeVars σ.body ∧ σ.WF := by
   rw [typecheck, principalType] at h
-  rcases hi : inferCore e.tyFreeVars e.freshFloor ⟨[], ctors⟩ e with _ | ⟨⟨Φ', S, τ⟩, hInfer, hSK⟩ <;>
+  rcases hi : inferCore e.tyFreeVars e.freshFloor ⟨[], ctors⟩ e with _ | ⟨⟨Φ', S, τ⟩, hInfer⟩ <;>
     rw [hi] at h
   · simp at h
   · simp only [Option.map_some, Option.some.injEq] at h

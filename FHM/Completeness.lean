@@ -1457,7 +1457,7 @@ theorem Infer.gap_avoid {lo hi : Nat} {Φ ctx e Φ' S τ} (h : Infer κ Φ ctx e
   | primBinOpIntSub => intro _ _ _; refine ⟨?_, by simp, by simp⟩; intro v hv; simp [Ty.freeVars] at hv
   | primBinOpIntLt => intro _ _ _; refine ⟨?_, by simp, by simp⟩; intro v hv; simp [Ty.freeVars, TyList.freeVars] at hv
   | primBinOpCharLt => intro _ _ _; refine ⟨?_, by simp, by simp⟩; intro v hv; simp [Ty.freeVars, TyList.freeVars] at hv
-  | @lambda Φ ctx ann paramTy body Φ₀ Φ' S τb hseed hbody =>
+  | @lambda κ Φ ctx ann paramTy body Φ₀ Φ' S τb hseed hbody =>
     cases hseed with
     | none =>
       intro hhi hctx htfv
@@ -1497,7 +1497,8 @@ theorem Infer.gap_avoid {lo hi : Nat} {Φ ctx e Φ' S τ} (h : Infer κ Φ ctx e
       rcases hv with hv | hv
       · exact Subst.onTy_avoidsItv hbR hTavoid v hv
       · exact hbτ v hv
-  | @app Φ ctx f arg Φ₁ Φ₂ S₁ S₂ S₃ τf τa hf harg huni =>
+  | @app κ Φ ctx f arg Φ₁ Φ₂ S₁ S₂ S₃ τf τa hf harg huniRigid =>
+    have huni := huniRigid.unifies
     intro hhi hctx htfv
     simp only [Expr.tyFreeVars, List.mem_append] at htfv
     obtain ⟨hfτ, hfD, hfR⟩ := Infer.gap_avoid hf hhi hctx (fun y hy => htfv y (.inl hy))
@@ -1528,21 +1529,21 @@ theorem Infer.gap_avoid {lo hi : Nat} {Φ ctx e Φ' S τ} (h : Infer κ Φ ctx e
       · exact hfR p hp
       · exact hargR p hp
       · exact h3R p hp
-  | @var Φ ctx i polyTy hlook =>
+  | @var κ Φ ctx i polyTy hlook =>
     intro hhi hctx _
     refine ⟨?_, by simp, by simp⟩
     intro v hv
     rcases Ty.freeVars_openVars_subset v hv with h | h
     · exact hctx polyTy (List.mem_of_getElem? hlook) v h
     · exact Or.inr (by have := freshVars_ge v h; omega)
-  | @ctor Φ ctx name ctor hlook =>
+  | @ctor κ Φ ctx name ctor hlook =>
     intro hhi _ _
     refine ⟨?_, by simp, by simp⟩
     intro v hv
     rcases Ty.freeVars_openVars_subset v hv with h | h
     · exact absurd h (NoFreeVars.not_mem_freeVars (Ctor.toTy_body_noFreeVars ctor) v)
     · exact Or.inr (by have := freshVars_ge v h; omega)
-  | @letIn Φ ctx rhs body Φ₁ Φ₂ S₁ S₂ τ₁ τ₂ hrhs hbody =>
+  | @letIn κ Φ ctx rhs body Φ₁ Φ₂ S₁ S₂ τ₁ τ₂ hrhs hbody =>
     intro hhi hctx htfv
     simp only [Expr.tyFreeVars, Option.elim_none, List.nil_append, List.mem_append] at htfv
     obtain ⟨hrτ, hrD, hrR⟩ := Infer.gap_avoid hrhs hhi hctx (fun y hy => htfv y (.inl hy))
@@ -1562,7 +1563,8 @@ theorem Infer.gap_avoid {lo hi : Nat} {Φ ctx e Φ' S τ} (h : Infer κ Φ ctx e
     · intro p hp; simp only [List.mem_append] at hp; rcases hp with hp | hp
       · exact hrR p hp
       · exact hbR p hp
-  | @letInAnn Φ N ctx σ rhs body Φ₁ Φ₂ S₁ Schk S₂ τ₁ τ₂ _ hN hrhs huni _hesc1 _hesc2 hbody =>
+  | @letInAnn κ Φ N ctx σ rhs body Φ₁ Φ₂ S₁ Schk S₂ τ₁ τ₂ _ hN hrhs huniRigid _hesc2 hbody =>
+    have huni := huniRigid.unifies
     intro hhi hctx htfv
     simp only [Expr.tyFreeVars, Option.elim_some, List.mem_append] at htfv
     have hle1 := Infer.frontier_le hrhs
@@ -1600,7 +1602,7 @@ theorem Infer.gap_avoid {lo hi : Nat} {Φ ctx e Φ' S τ} (h : Infer κ Φ ctx e
       · exact hrR p hp
       · exact hSchkR p hp
       · exact hbR p hp
-  | @match_ Φ ctx scrut branches Φ₁ Φ₂ S₁ S₂ τs hscrut hne hbr =>
+  | @match_ κ Φ ctx scrut branches Φ₁ Φ₂ S₁ S₂ τs hscrut hne hbr =>
     intro hhi hctx htfv
     simp only [Expr.tyFreeVars, List.mem_append] at htfv
     obtain ⟨hsτ, hsD, hsR⟩ := Infer.gap_avoid hscrut hhi hctx (fun y hy => htfv y (.inl hy))
@@ -1621,7 +1623,7 @@ theorem Infer.gap_avoid {lo hi : Nat} {Φ ctx e Φ' S τ} (h : Infer κ Φ ctx e
       rcases hp with hp | hp
       · exact hsR p hp
       · exact h3R p hp
-  | @letRec Φ ctx anns bindings body Φ₁ Φ₂ Φ₃ S₁ S₂ S₃ τ₃ G specs1 specs2
+  | @letRec κ Φ ctx anns bindings body Φ₁ Φ₂ Φ₃ S₁ S₂ S₃ τ₃ G specs1 specs2
       _ _ hstrata hpoly hspecs2 hbody =>
     intro hhi hctx htfv
     simp only [Expr.tyFreeVars] at htfv
@@ -1705,7 +1707,7 @@ theorem Infer.gap_avoid {lo hi : Nat} {Φ ctx e Φ' S τ} (h : Infer κ Φ ctx e
       · exact hpR p hp
       · exact hbR p hp
   /-
-  | @letRec Φ ctx anns bindings body Φ₁ Φ₂ S₁ S₂ τ₂ G specs1
+  | @letRec κ Φ ctx anns bindings body Φ₁ Φ₂ S₁ S₂ τ₂ G specs1
       _ hgroup hspecs1 _ hbody =>
     intro hhi hctx htfv
     simp only [Expr.tyFreeVars] at htfv
@@ -1793,8 +1795,9 @@ theorem InferBranches.gap_avoid {lo hi : Nat} {Φ ctx scrutTy ρ brs Φ' S}
   | nil =>
     intro _ _ _ hρ _
     exact ⟨by simpa [Subst.onTy_nil] using hρ, by simp, by simp⟩
-  | @cons Φ ctx scrutTy ρ c n body rest ctor Φ₁ Φ₂ S₀ S₁ S₂ S₃ τb
-      hlook hn huni0 hbody huni hrest =>
+  | @cons κ Φ ctx scrutTy ρ c n body rest ctor Φ₁ Φ₂ S₀ S₁ S₂ S₃ τb hlook hn huni0Rigid hbody huniRigid hrest =>
+    have huni0 := huni0Rigid.unifies
+    have huni := huniRigid.unifies
     intro hhi hctx hscrutTy hρ htfv
     simp only [Expr.tyFreeVars.BranchList.tyFreeVars, List.mem_append] at htfv
     have hcustomAvoid : ∀ v ∈ (Ty.customTy ctor.tyName
@@ -1855,7 +1858,8 @@ theorem InferBranches.gap_avoid {lo hi : Nat} {Φ ctx scrutTy ρ brs Φ' S}
       · exact hbR p hp
       · exact h2R p hp
       · exact h3R p hp
-  | @consWild Φ ctx scrutTy ρ body rest Φ₁ Φ₂ S₁ S₂ S₃ τb hbody huni hrest =>
+  | @consWild κ Φ ctx scrutTy ρ body rest Φ₁ Φ₂ S₁ S₂ S₃ τb hbody huniRigid hrest =>
+    have huni := huniRigid.unifies
     intro hhi hctx hscrutTy hρ htfv
     simp only [Expr.tyFreeVars.BranchList.tyFreeVars, List.mem_append] at htfv
     obtain ⟨hτb, hbD, hbR⟩ := Infer.gap_avoid hbody hhi hctx (fun y hy => htfv y (.inl hy))
@@ -1896,8 +1900,8 @@ theorem InferRecComponent.gap_avoid {lo hi : Nat}
       (∀ p ∈ S, ∀ v ∈ p.2.freeVars, v < lo ∨ hi ≤ v) := by
   cases h with
   | nil => intro _ _ _ _; exact ⟨by simp, by simp⟩
-  | @consSelected members memberIndex Φ ctx e rest τ specs Φ₁ Φ₂ S₁ S₂ S₃ τ'
-      _ he huni hrest =>
+  | @consSelected κ members memberIndex Φ ctx e rest τ specs Φ₁ Φ₂ S₁ S₂ S₃ τ' _ he huniRigid hrest =>
+    have huni := huniRigid.unifies
     intro hhi hctx hspecs htfv
     simp only [Expr.tyFreeVars.RecGroup.tyFreeVars, List.mem_append] at htfv
     obtain ⟨hτ', hD₁, hR₁⟩ := Infer.gap_avoid he hhi hctx
@@ -1936,12 +1940,12 @@ theorem InferRecComponent.gap_avoid {lo hi : Nat}
       · exact hR₁ p hp
       · exact hR₂ p hp
       · exact hR₃ p hp
-  | @skipMono members memberIndex Φ ctx e rest τ specs Φ' S _ hrest =>
+  | @skipMono κ members memberIndex Φ ctx e rest τ specs Φ' S _ hrest =>
     intro hhi hctx hspecs htfv
     exact InferRecComponent.gap_avoid hrest hhi hctx
       (fun s hs => hspecs s (List.mem_cons_of_mem _ hs))
       (fun y hy => htfv y (List.mem_append.mpr (.inr hy)))
-  | @skipPoly members memberIndex Φ ctx e rest σ specs Φ' S hrest =>
+  | @skipPoly κ members memberIndex Φ ctx e rest σ specs Φ' S hrest =>
     intro hhi hctx hspecs htfv
     exact InferRecComponent.gap_avoid hrest hhi hctx
       (fun s hs => hspecs s (List.mem_cons_of_mem _ hs))
@@ -1964,7 +1968,7 @@ theorem InferRecStrata.gap_avoid {lo hi : Nat}
       (∀ p ∈ S, ∀ v ∈ p.2.freeVars, v < lo ∨ hi ≤ v) := by
   cases h with
   | nil => intro _ _ _ _; exact ⟨by simp, by simp⟩
-  | @cons rigid bindings Φ ctx specs done G component rest Φ₁ Φ₂ S₁ S₂
+  | @cons κ rigid bindings Φ ctx specs done G component rest Φ₁ Φ₂ S₁ S₂
       specs₁ specs₂ Gcurrent Gfinal hcomponent heq _ hrest =>
     intro hhi hctx hspecs htfv
     obtain ⟨hD₁, hR₁⟩ := InferRecComponent.gap_avoid hcomponent hhi
@@ -2003,12 +2007,13 @@ theorem InferRecGroupPoly.gap_avoid {lo hi : Nat} {Φ ctx bindings specs Φ' S}
     (∀ p ∈ S, p.1 < lo ∨ hi ≤ p.1) ∧ (∀ p ∈ S, ∀ v ∈ p.2.freeVars, v < lo ∨ hi ≤ v) := by
   cases h with
   | nil => intro _ _ _ _; exact ⟨by simp, by simp⟩
-  | @skipMono Φ ctx τ specs e rest Φ' S hrest =>
+  | @skipMono κ Φ ctx τ specs e rest Φ' S hrest =>
     intro hhi hctx hspecs htfv
     exact InferRecGroupPoly.gap_avoid hrest hhi hctx
       (fun β hβ => hspecs β (List.mem_cons_of_mem _ hβ))
       (fun y hy => htfv y (List.mem_append.mpr (Or.inr hy)))
-  | @consPoly Φ N ctx σ specs e rest Φ₁ Φ₂ S₁ Schk S₂ τ hN he huni _hesc1 _hesc2 hrest =>
+  | @consPoly κ Φ N ctx σ specs e rest Φ₁ Φ₂ S₁ Schk S₂ τ hN he huniRigid _hesc2 hrest =>
+    have huni := huniRigid.unifies
     intro hhi hctx hspecs htfv
     set Ys := freshVars N σ.paramCount with hYsdef
     have hσav : ∀ v ∈ σ.body.freeVars, v < lo ∨ hi ≤ v :=
@@ -2254,7 +2259,8 @@ theorem InferRecComponent.toInferRecGroup
   | nil => cases h; exact .nil
   | cons e rest ih =>
       cases h with
-      | consSelected hselected he huni hrest =>
+      | consSelected hselected he huniRigid hrest =>
+        have huni := huniRigid.unifies
           simp only [RecSpecs.selectComponent, if_pos hselected]
           apply InferRecGroup.consMono he huni
           rw [← RecSpecs.selectComponent_onSubst]
@@ -2290,7 +2296,8 @@ private theorem InferRecGroup.toInferRecComponent
               by_cases hm : memberIndex ∈ selected
               · simp only [RecSpecs.selectComponent, if_pos hm] at h
                 cases h with
-                | consMono he huni hrest =>
+                | consMono he huniRigid hrest =>
+                  have huni := huniRigid.unifies
                     apply InferRecComponent.consSelected hm he huni
                     apply ih (specs := specs.map (RecSpec.onSubst _))
                     · rw [RecSpecs.selectComponent_onSubst]
@@ -5808,7 +5815,7 @@ theorem Infer.principals_mut (n : Nat) :
             (.customTy ⟨"Bool"⟩ [])))) =  (Subst.onTy S₀
             (.arrow (.prim .char) (.arrow (.prim .char) (.customTy ⟨"Bool"⟩ []))))
           simp [Subst.onTy_arrow, Subst.onTy_customTy]
-      | @var Φ ctx i polyTy hlook =>
+      | @var κ Φ ctx i polyTy hlook =>
         exact fun hwf hbelow S₀ τe K hS₀ hKΦ hKe hKfix hty => by
           -- STEP 0: the looked-up scheme `polyTy` from the raw `ctx` (`hlook`).
           have hmem : polyTy ∈ ctx.env := List.mem_of_getElem? hlook
@@ -5987,7 +5994,7 @@ theorem Infer.principals_mut (n : Nat) :
                 blockListBack_onTy_rename hd (hWblock_of_belowW hbelowfv)
               rw [Subst.onTy_append, Subst.onTy_append, hconjv, hzipnoop, hback]
               exact hKfix k hk
-      | @ctor Φ ctx name ctorData hlook =>
+      | @ctor κ Φ ctx name ctorData hlook =>
         exact fun hwf hbelow S₀ τe K hS₀ hKΦ hKe hKfix hty => by
           let ctor := ctorData
           change LookupList.get? ctx.ctors name = some ctor at hlook
@@ -6173,7 +6180,7 @@ theorem Infer.principals_mut (n : Nat) :
                 blockListBack_onTy_rename hd (hWblock_of_belowW hbelowfv)
               rw [Subst.onTy_append, Subst.onTy_append, hconjv, hzipnoop, hback]
               exact hKfix k hk
-      | @lambda Φ ctx ann paramTy body Φ₀ Φ' S τb hseed hbody =>
+      | @lambda κ Φ ctx ann paramTy body Φ₀ Φ' S τb hseed hbody =>
         exact fun hwf hbelow S₀ τe K hS₀ hKΦ hKe hKfix hty => by
           cases hty with
           | lambda hpc hann heq hbodyD =>
@@ -6532,7 +6539,8 @@ theorem Infer.principals_mut (n : Nat) :
               show Ty.arrow paramTy bodyTy =
                 Ty.arrow (R_b.onTy (S.onTy paramTy)) (R_b.onTy τb)
               exact congrArg₂ Ty.arrow hparam htyb'
-      | @app Φ ctx f arg Φ₁ Φ₂ S₁ S₂ S₃ τf τa hf harg huni =>
+      | @app κ Φ ctx f arg Φ₁ Φ₂ S₁ S₂ S₃ τf τa hf harg huniRigid =>
+        have huni := huniRigid.unifies
         exact fun hwf hbelow S₀ τe K hS₀ hKΦ hKe hKfix hty => by
           cases hty with
           | app hfD hargD =>
@@ -6701,7 +6709,7 @@ theorem Infer.principals_mut (n : Nat) :
               rwa [hUΦ₂] at h
             refine ⟨R, hRlc, hAgreeOut, hRK, ?_⟩
             · simpa [List.append_assoc] using hAgree
-      | @letIn Φ ctx rhs body Φ₁ Φ₂ S₁ S₂ τ₁ τ₂ hrhs hbody =>
+      | @letIn κ Φ ctx rhs body Φ₁ Φ₂ S₁ S₂ τ₁ τ₂ hrhs hbody =>
         exact fun hwf hbelow S₀ τe K hS₀ hKΦ hKe hKfix hty => by
           cases hty with
           | letIn hwfM hann hcofin heq hbodyD =>
@@ -6858,7 +6866,8 @@ theorem Infer.principals_mut (n : Nat) :
             have hAgree : Subst.AgreesBelow Φ S₀ ((S₁ ++ S₂) ++ R₂) :=
               @Subst.AgreesBelow.trans_append Φ Φ₁ S₀ S₁ R₁ S₂ R₂ hfle hAgree₁ hS₁_bel hAgree₂
             refine ⟨R₂, hR₂, by simpa [Eq] using htyb₂, hR₂K, hAgree⟩
-      | @letInAnn Φ N ctx σ rhs body Φ₁ Φ₂ S₁ Schk S₂ τ₁ τ₂ hσwf hN hrhs huni _hesc1 _hesc2 hbody =>
+      | @letInAnn κ Φ N ctx σ rhs body Φ₁ Φ₂ S₁ Schk S₂ τ₁ τ₂ hσwf hN hrhs huniRigid _hesc2 hbody =>
+        have huni := huniRigid.unifies
         exact fun hwf hbelow S₀ τe K hS₀ hKΦ hKe hKfix hty => by
           cases hty with
           | letIn hwfM hann hcofin heq hbodyD =>
@@ -7184,7 +7193,7 @@ theorem Infer.principals_mut (n : Nat) :
                 (by omega) hAgreeΦ hS₁_bel_all hAgree₂
             refine ⟨R₂, hR₂, htyb₂, hR₂K, ?_⟩
             · simpa [List.append_assoc] using hAgree
-      | @match_ Φ ctx scrut branches Φ₁ Φ₂ S₁ S₂ τs hscrut hne hbr =>
+      | @match_ κ Φ ctx scrut branches Φ₁ Φ₂ S₁ S₂ τs hscrut hne hbr =>
         exact fun hwf hbelow S₀ τe K hS₀ hKΦ hKe hKfix hty => by
           cases hty with
           | match_ hscrutD hneD hbrD =>
@@ -7318,7 +7327,7 @@ theorem Infer.principals_mut (n : Nat) :
               @Subst.AgreesBelow.trans_append Φ Φ₁ S₀ S₁ R₁ S₂ R₂ hfle hAgree₁ hS₁_bel hAgree₂'
             refine ⟨R₂, hR₂, hty₂, hR₂K, ?_⟩
             · simpa [List.append_assoc] using hAgree
-      | @letRec Φ ctx anns bindings body Φ₁ Φ₂ Φ₃ S₁ S₂ S₃ τ₃ G specs1 specs2
+      | @letRec κ Φ ctx anns bindings body Φ₁ Φ₂ Φ₃ S₁ S₂ S₃ τ₃ G specs1 specs2
           hannswf hgroup hstrata hpoly hspecs2 hbody =>
         exact fun hwf hbelow S₀ τe K hS₀ hKΦ hKe hKfix hty => by
           cases hty with
@@ -7661,7 +7670,9 @@ theorem Infer.principals_mut (n : Nat) :
       cases h with
       | nil =>
         intro; exact absurd rfl hne
-      | cons hlook hn h₀ hinfbody h₂ hrest =>
+      | cons hlook hn h₀Rigid hinfbody h₂Rigid hrest =>
+        have h₀ := h₀Rigid.unifies
+        have h₂ := h₂Rigid.unifies
         rename_i c nbr body rest ctor Φ₁ S₀ S₁ S₂ S₃ τb
         exact fun hwf hbelow S₀amb scruT₀ ρe K hS₀amb hscruLC hscrutLC hρLC hbscrut hbρ hKΦ hKe hKfix hIMGρ hIMGscru hbrs => by
           -- brs = (.named c nbr, body) :: rest; constructor data: `c nbr body rest ctor Φ₁ S₀ S₁ S₂ S₃ τb`
@@ -7915,7 +7926,8 @@ theorem Infer.principals_mut (n : Nat) :
                 simpa [List.append_assoc] using hA
               refine ⟨R_r, hR_r, hAgree, hR_rK, ?_⟩
               · simpa [Subst.onTy_append] using htyRest
-      | consWild hinfbody h₂ hrest =>
+      | consWild hinfbody h₂Rigid hrest =>
+        have h₂ := h₂Rigid.unifies
         rename_i body rest Φ₁ S₁ S₂ S₃ τb
         exact fun hwf hbelow S₀amb scruT₀ ρe K hS₀amb hscruLC hscrutLC hρLC hbscrut hbρ hKΦ hKe hKfix hIMGρ hIMGscru hbrs => by
           -- brs = (.wildcard, body) :: rest; constructor data:
@@ -8037,7 +8049,8 @@ theorem Infer.principals_mut (n : Nat) :
           exact fun v hv => Eq.symm (hAgree v hv)
         · rw [List.nil_append]
           exact fun v hv => Eq.refl _
-      | consMono h₀ h₂ hrest =>
+      | consMono h₀ h₂Rigid hrest =>
+        have h₂ := h₂Rigid.unifies
         rename_i e rest τ specs Φ₁ S₁ S₂ S₃ τ'
         exact fun hwf hbelow S₀ L K R₀ hS₀ hKΦ hKe hKfix hSpecLC hSpecBelow hKsch hR₀ hR₀K hAgree hMonoMem => by
           -- SPINE-GROUP-MONO
@@ -11588,7 +11601,9 @@ private theorem InferRecGroupPoly.complete_poly_head
     Infer.complete_letIn_ann_aux ih Infer.complete_prim hwf hbelow hS₀ hKΦ hKe
       (by simp [Expr.tyFreeVars]) hKσ hKfix hσwf hdecl .primLitUnit
   cases hinf with
-  | letInAnn _ hN he huni hesc₁ hesc₂ hb =>
+  | letInAnn _ hN he huniRigid hesc₂ hb =>
+    have hesc₁ := Subst.skolem_dom_avoids (Infer.dom_avoids he) huniRigid.dom_avoids
+    have huni := huniRigid.unifies
       cases hb with
       | primLitUnit =>
           expose_names
@@ -11720,7 +11735,8 @@ theorem InferRecGroup.complete_mixed
           have hcombined : InferRecGroup κ Φ ctx (e :: rest) (s :: ss)
               Φ₂ (Sh ++ St) := by
             cases hinfh with
-            | consMono he hu hn =>
+            | consMono he huRigid hn =>
+              have hu := huRigid.unifies
                 cases hn
                 simp only [List.append_nil, Subst.onCtx_append] at hinft
                 simpa only [List.append_nil, List.append_assoc] using
@@ -12075,7 +12091,9 @@ theorem InferRecGroupPoly.complete_mixed
               have hcombined : InferRecGroupPoly κ Φ ctx (e :: rest) (.poly σ :: ss)
                   Φ₂ (Sh ++ St) := by
                 cases hinfh with
-                | consPoly hN he hu hesc₁ hesc₂ hn =>
+                | consPoly hN he huRigid hesc₂ hn =>
+                  have hesc₁ := Subst.skolem_dom_avoids (Infer.dom_avoids he) huRigid.dom_avoids
+                  have hu := huRigid.unifies
                     cases hn
                     simp only [List.append_nil, Subst.onCtx_append] at hinft
                     simpa only [List.append_nil, List.append_assoc] using
@@ -12568,8 +12586,9 @@ theorem Infer.letInAnn_block_fresh {Φ : Nat} {ctx : Ctx} {σ : PolyTy}
     (∀ y ∈ freshVars Φ σ.paramCount, y ∉ S.map Prod.fst) ∧
     (∀ y ∈ freshVars Φ σ.paramCount, y ∉ (S.onCtx ctx).env.freeVars) := by
   cases h with
-  | @letInAnn _ N _ _ _ _ Φ₁ Φ₂ S₁ Schk S₂ τ₁ τ₂
-      hσwf hΦN hrhs huni hesc1 hesc2 hbody =>
+  | @letInAnn κ _ N _ _ _ _ Φ₁ Φ₂ S₁ Schk S₂ τ₁ τ₂ hσwf hΦN hrhs huniRigid hesc2 hbody =>
+    have hesc1 := Subst.skolem_dom_avoids (Infer.dom_avoids hrhs) huniRigid.dom_avoids
+    have huni := huniRigid.unifies
     simp only [Expr.tyFreeVars, Option.elim_some, List.mem_append] at htfv
     have hctxGap : ∀ M ∈ ctx.env, ∀ v ∈ M.body.freeVars, v < Φ ∨ N ≤ v :=
       fun M hM v hv => Or.inl ((hbelow M hM).mem_lt v hv)
@@ -12807,7 +12826,8 @@ theorem inferCore_complete_app {f arg : Expr}
   intro Φ ctx Φ' S τ K hwf hbelow hKΦ hKe hSK h
   have happ := Infer.sourceSound h hwf hbelow K hKΦ hKe hSK
   cases h with
-  | @app _ _ _ _ Φ₁ Φ₂ S₁ S₂ S₃ τf τa hf harg huni =>
+  | @app κ _ _ _ _ Φ₁ Φ₂ S₁ S₂ S₃ τf τa hf harg huniRigid =>
+    have huni := huniRigid.unifies
       simp only [Expr.tyFreeVars, List.mem_append] at hKe
       have hKef : ∀ y ∈ f.tyFreeVars, y ∈ K := fun y hy => hKe y (.inl hy)
       have hKea : ∀ y ∈ arg.tyFreeVars, y ∈ K := fun y hy => hKe y (.inr hy)
@@ -12898,7 +12918,7 @@ theorem inferCore_complete_letIn_none {rhs body : Expr}
   have hSlc : ∀ p ∈ S, p.2.IsLC := (Infer.lc h hwf).2
   have hlet := Infer.sourceSound h hwf hbelow K hKΦ hKe hSK
   cases h with
-  | @letIn _ _ _ _ Φ₁d Φ₂d S₁d S₂d τ₁d τ₂ hrhs hbodyRel =>
+  | @letIn κ _ _ _ _ Φ₁d Φ₂d S₁d S₂d τ₁d τ₂ hrhs hbodyRel =>
       cases hlet with
       | letIn hMwf hann hcofin hbodyCtxEq hbodyD =>
         rename_i bodyCtx M L
@@ -13713,7 +13733,7 @@ theorem inferCore_complete_match {scrut : Expr}
     simpa [resultTy] using hsource
   have hSlc : ∀ p ∈ S, p.2.IsLC := (Infer.lc h hwf).2
   cases h with
-  | @match_ _ _ _ _ Φ₁d Φ₂d S₁d S₂d τsd hscrutD hne hbranchesD =>
+  | @match_ κ _ _ _ _ Φ₁d Φ₂d S₁d S₂d τsd hscrutD hne hbranchesD =>
       cases hsource' with
       | match_ hscrutDecl hneSource hbranchesSource =>
         rename_i scrutTy
