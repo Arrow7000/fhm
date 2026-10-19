@@ -37,8 +37,12 @@
 --
 -- Signatures only affect type inference; evaluation is unchanged.
 --
--- Out of scope: head-binder sugar (`let f {a} (x : a) : a = ...`) and
--- annotations on patterns (`Just (x : a)`); neither is supported syntax.
+-- Function heads are also supported: `let idHead {a} (x : a) : a = x`.
+-- A trailing head annotation describes the return type, not the whole function;
+-- parameters and the return may be annotated, contain holes, or be omitted.
+-- See anonymous-type-holes.fhm for a runnable mix of these forms.
+-- An annotation on a constructor subpattern (`Just (x : a)`) is not supported;
+-- whole lambda patterns may be annotated, as in `\((x,y) : (Int,Bool)) -> x`.
 
 type Maybe a = Just a | Nothing
 

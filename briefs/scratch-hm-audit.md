@@ -1,6 +1,11 @@
 # Scratch HM audit (non-`polyrec` corpus)
 
-Run on 2026-09-13 using `.lake/build/bin/fhm`.
+Historical audit run on 2026-09-13 using `.lake/build/bin/fhm`.
+
+Current note: ordinary function heads, including scoped type variables and
+partial annotations, are now supported. The unsupported-head observations below
+describe that older run; see `scratch/anonymous-type-holes.fhm` and the current
+`scripts/scratch-hm-audit.mjs` manifest.
 
 ## HM / editor payload
 

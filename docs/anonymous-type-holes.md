@@ -10,11 +10,29 @@ Core `Ty` and `TypeOfHM` describe completed types and expressions.
 
 Run [the commented playground](../scratch/anonymous-type-holes.fhm) with
 `.lake/build/bin/fhm run scratch/anonymous-type-holes.fhm`, or open it in the
-editor and hover its annotation holes. It covers structured and datatype holes,
-patterns, matches, partial forall signatures, and terminating mutual recursion.
+editor and hover its parameters and annotation holes. Its six sections mix
+function heads with explicit lambdas, structured and datatype holes, patterns,
+matches, partial forall signatures, and terminating mutual recursion.
 [The deliberately rejected example](../scratch/anonymous-type-holes-errors.fhm)
 shows that a hole still enforces the fixed parts of its annotation; change its
 `True` argument to `41` to make it succeed.
+
+## Function heads
+
+Head parameters may be unannotated, concretely annotated, or contain holes:
+
+```text
+let add (x : Int) y : Int = x + y
+let pair left right = (left, right)
+let apply (fn : _ -> _) value = fn value
+let keep {element} (value : element) ignored : element = value
+```
+
+A type after the parameters is the **return** type, so `add` has two `Int`
+parameters and an `Int` result. Missing parameter and result annotations are
+inferred. Named forall variables remain in scope through the RHS, including
+nested headed bindings; unused authored binders are retained. Heads without
+annotations use ordinary HM inference. Explicit lambda RHSs remain supported.
 
 ## Architecture
 
@@ -22,6 +40,14 @@ shows that a hole still enforces the fixed parts of its annotation; change its
 contain fixed types, independent anonymous holes, arrows, and datatype
 applications. Let annotations distinguish absent, complete, monomorphic partial,
 and explicitly quantified partial signatures.
+
+The production path expands function heads with `Elaboration.finalizeInputAnn`
+before existing input lowering. It combines parameter domains with the return
+annotation and supplies holes for omitted types when a forall or return
+annotation needs a full signature. Unannotated heads retain ordinary HM inference.
+The legacy `SurfaceBridge.finalizeAnn` and complete-Core lowering bridge remain
+for the conservative proof/demo path; their partial-head restrictions do not
+specify the production frontend's head policy.
 
 The canonical judgment is
 `Infer K F frontier ctx input next subst completedExpr ty`. `K` contains frozen
@@ -153,11 +179,16 @@ the full proof stack above. Final verification passed:
 
 - `lake build`: 745 jobs, including the recursive proof examples.
 - `lake build FHMEditorTests fhm`: 1,663 jobs.
-- `node scripts/hm-editor-smoke.mjs`: 66/66 CLI/editor semantic checks.
-- `node editors/vscode/test/anonymous-holes-integration.cjs`: eight provider
+- `node scripts/hm-editor-smoke.mjs`: 74/74 CLI/editor semantic checks.
+- `node editors/vscode/test/anonymous-holes-integration.cjs`: 11 provider
   scenarios passed using the real CLI backend and a simulated VS Code host API;
   this checks the extension's providers, not an LSP protocol or a live editor UI.
   The existing provider lifecycle test also passed.
+- `node scripts/scratch-hm-audit.mjs`: 14 files, 11 accepted and three
+  expected type errors; `lake env lean --run scratch/PolyRecTest.lean`: 11/11.
+- The expanded playground ran to its six expected result sections; all 20
+  authored hole tokens had precise, distinct source hovers, alongside checked
+  headed-parameter hovers and the deliberately rejected Int/Bool example.
 - `npm --prefix editors/web test`: 31/31 tests.
 - `scripts/check-unverified-boundary.sh`: passed; `Core.lean` and
   `RuntimeTyping.lean` are unchanged by this feature.

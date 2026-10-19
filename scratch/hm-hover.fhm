@@ -1,4 +1,4 @@
--- Small HM hover playground (no Bounds syntax or scoped header sugar).
+-- Small HM hover playground using explicit lambda RHSs; function heads also work.
 -- `keep`'s definition shows its declared scheme; both `value` tokens show
 -- the named type `element`. Later calls show their own instantiated types.
 let keep : {element} element -> element =

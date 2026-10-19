@@ -1,5 +1,5 @@
 -- Custom ADTs in the spotlight — less “lists of ints”, more trees & colours.
--- Explicit schemes and ordinary lambdas while scoped header sugar is parked.
+-- Explicit schemes and ordinary lambdas; function heads are supported too.
 
 type Maybe a =
   | Just a
@@ -14,7 +14,7 @@ type Tree a =
 
 type Color = Red | Green | Blue
 
--- Equivalent explicit scheme/lambdas for the formerly scoped head binders.
+-- Explicit scheme/lambda spelling; anonymous-type-holes.fhm also shows heads.
 let map : {a b} (a -> b) -> List a -> List b =
   \f xs ->
     match xs with

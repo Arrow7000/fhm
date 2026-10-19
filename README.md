@@ -60,6 +60,9 @@ Ill-typed programs and non-exhaustive matches are rejected before anything runs.
   and lambda parameters (`\(n : Int) -> …`). Annotations are checked, not
   trusted. The type variables an annotation introduces are in scope throughout
   the definition's body, so inner annotations can refer to them.
+  Function heads can mix typed and untyped parameters: `let add (x : Int) y : Int = x + y`.
+  A type after head parameters describes the return value; omitted types are
+  inferred. `let keep {a} (x : a) ignored : a = x` scopes `a` through the body.
 - **Anonymous type holes** in expression annotations: `\(x : _) -> x` or
   `let f : {a} a -> _ = …`. Each `_` is inferred independently; eligible
   variables generalise, and authored forall names retain their order.
@@ -83,7 +86,8 @@ Ill-typed programs and non-exhaustive matches are rejected before anything runs.
   literals, `if`/`then`/`else`, and `let … in` blocks.
 
 [`scratch/anonymous-type-holes.fhm`](./scratch/anonymous-type-holes.fhm) is a
-runnable hole-annotation playground: try the examples and hover their `_` tokens.
+runnable playground with scattered function-head annotations and anonymous holes:
+try the examples and hover their parameters and `_` tokens.
 [`scratch/language-guide.fhm`](./scratch/language-guide.fhm) walks through
 annotations and recursion with runnable examples, and
 [`recursion-language-comparison/`](./recursion-language-comparison/) compares

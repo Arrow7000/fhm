@@ -1,8 +1,0 @@
--- Deliberately unsupported surface sugar. Head binders require a coherent
--- design for holes/partial annotations before they can be lowered faithfully,
--- so this program must currently be rejected by parsing. Use an explicit
--- lambda RHS for supported scoped type variables.
-
-let id1 {a} (x : a) : a = x
-
-id1 5

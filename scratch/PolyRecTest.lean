@@ -15,8 +15,8 @@ erase Core annotations -> evaluate`.
 
 Complete annotations enable polymorphic use inside an SCC without changing
 runtime terms. Unannotated members remain monomorphic within the SCC. The
-typing negatives assert rejection specifically at inference; the unsupported
-head-binder syntax fixture asserts rejection at parsing.
+typing negatives assert rejection specifically at inference. Scoped function
+heads are a positive syntax and typing fixture.
 -/
 
 open Surface.Parse
@@ -57,7 +57,7 @@ def checkPipelineDM (src : String) : Except PipelineError CheckedProgram := do
     | none => throw ⟨.lower,
         "lowering failed (unbound name, bad declaration, or rejected sugar)"⟩
     | some x => pure x
-  let ty <- match infer core.freshFloor ⟨[], ctors⟩ core with
+  let ty <- match CoreBackend.infer core.freshFloor ⟨[], ctors⟩ core with
     | none => throw ⟨.infer, "typechecking failed"⟩
     | some (_, _, ty) => pure ty
   if !(checkExhaustive ctors program.term) then
@@ -133,9 +133,9 @@ def main : IO UInt32 := do
     , { path := "scratch/polyrec-inner-poly-unannotated-must-fail.fhm"
         motivation := "the two-instantiation unannotated variant also fails"
         expected := .rejectAt .infer }
-    , { path := "scratch/polyrec-head-binder-scoped-must-fail.fhm"
-        motivation := "head-binder syntax remains unsupported (explicit lambdas are required)"
-        expected := .rejectAt .parse }
+    , { path := "scratch/polyrec-head-binder-scoped.fhm"
+        motivation := "scoped head binders contribute parameter domains and a return type"
+        expected := .pass "5" }
     , { path := "scratch/polyrec-nested.fhm"
         motivation := "a complete annotation enables recursion over a nested datatype"
         expected := .pass "7" }

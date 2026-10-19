@@ -1,10 +1,10 @@
--- Deliberately rejected anonymous-hole example; this file does NOT run.
+-- Deliberately rejected function-head example; this file does NOT run.
 --
 --   .lake/build/bin/fhm diagnose scratch/anonymous-type-holes-errors.fhm
 --   .lake/build/bin/fhm run scratch/anonymous-type-holes-errors.fhm
 --
--- The result hole is inferred as Int. It does not erase the fixed Int input
+-- The return hole is inferred as Int. It does not erase the fixed Int parameter
 -- constraint, so the Bool argument below must be rejected.
 -- Change True to 41 to get a nearby accepted program with result 41.
-let onlyInt : Int -> _ = \value -> value
+let onlyInt (value : Int) : _ = value
 onlyInt True

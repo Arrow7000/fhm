@@ -1,0 +1,7 @@
+-- A scoped type variable in a function head is supported syntax.
+-- The return annotation describes the result; parameter annotations contribute
+-- the function's domains. Hover x for a, and id1 for forall a. a -> a.
+-- Run: .lake/build/bin/fhm run scratch/polyrec-head-binder-scoped.fhm
+let id1 {a} (x : a) : a = x
+
+id1 5

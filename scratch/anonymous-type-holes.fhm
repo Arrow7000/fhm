@@ -1,67 +1,101 @@
--- Anonymous type holes: a runnable editor playground.
+-- Anonymous type holes and function heads: a runnable editor playground.
 --
 --   .lake/build/bin/fhm run scratch/anonymous-type-holes.fhm
 --   .lake/build/bin/fhm diagnose scratch/anonymous-type-holes.fhm
 --
--- Open this file in the FHM editor and hover an annotation's `_`, a parameter,
--- or a definition name. Each type hole is inferred independently; a pattern
--- wildcard such as `_ -> ...` is a different feature. Named holes are deferred.
--- The final expression exercises every example and terminates.
+-- Hover an annotation's `_`, a parameter, or a definition name. Each type hole
+-- is inferred independently. Pattern wildcards are different; named type holes
+-- are deferred. All six result sections below terminate. You can replace the
+-- final expression with one section name to explore it on its own.
 
 type Maybe element = Just element | Nothing
 
--- A lambda hole generalizes: idHole works at both Int and Bool.
--- Hover `_`: a. Hover idHole: forall a. a -> a.
+-- 1. Explicit lambdas still work, including holes inside structured types.
+-- Hover idHole's `_`: a; idHole itself: forall a. a -> a.
 let idHole = \(value : _) -> value
-
--- Structured holes are independent: the input is arbitrary, the output is Int.
--- Hover the two `_` tokens: a, then Int.
+-- The two holes are independent: arbitrary input a, fixed output Int.
 let alwaysOne : _ -> _ = \ignored -> 1
+let basics = (idHole 3, (idHole True, alwaysOne False))
 
--- A hole inside a datatype application is inferred too.
--- Hover wrap: forall a. a -> Maybe a.
-let wrap : _ -> Maybe _ = \value -> Just value
+-- 2. Function heads: annotations may be present, absent, or partial.
+-- A `: ...` after the parameters describes the RETURN, not the whole function.
+let increment (n : Int) : Int = n + 1
+-- No argument annotation; arithmetic determines n : Int.
+let inferredArgument n : Int = n + 1
+-- Typed argument, omitted return; inference determines Bool -> Int.
+let inferredReturn (flag : Bool) = if flag then 1 else 0
+-- No annotations at all: forall a b. a -> b -> (a, b).
+let plainPair left right = (left, right)
+-- Three scattered head annotations: value has a hole, middle is unannotated,
+-- flag stays Bool, and the return hole becomes the same type as value.
+-- Hover scattered: forall a b. b -> a -> Bool -> b.
+let scattered (value : _) middle (flag : Bool) : _ =
+  if flag then value else value
+let heads = ((increment 4, inferredArgument 5),
+  (inferredReturn True, (plainPair 1 False, scattered 8 99 True)))
 
--- Exhaustive lambda patterns keep their annotation and its two hole owners.
--- Hover the two `_` tokens: b, then a.
-let swap = \((left, right) : (_, _)) -> (right, left)
-
--- Pattern lets generalize each bound name separately.
--- Hover these three `_` tokens: a -> a, Int, then a.
-let (patternId, seed) : (_, _) = (\(value : _) -> value, 7)
-
--- Partial forall: keep the authored name, then infer an extra binder.
--- Hover keep: forall element a. element -> a -> element.
--- Both `_` tokens hover as a; the value parameter keeps the name element.
-let keep : {element} element -> _ -> element = \(value : element) (ignored : _) -> value
-
--- Matches constrain both holes to Int; Nothing and Just are both covered.
-let choose : Maybe _ -> _ = \option ->
+-- 3. Higher-order heads, local heads, and datatype result annotations.
+-- Hover apply: forall a b. (a -> b) -> a -> b.
+let apply (fn : _ -> _) value = fn value
+let localIncrement n =
+  let bump (value : Int) : Int = value + 1 in
+  bump n
+-- The missing argument type and Maybe's hole are connected by Just.
+let wrap value : Maybe _ = Just value
+-- A concrete match result constrains the datatype's hole to Int.
+let choose (option : Maybe _) : Int =
   match option with
   | Nothing -> 0
   | Just value -> value
+let higher = (apply (\(n : _) -> n + 1) 9,
+  (localIncrement 4, choose (wrap 7)))
 
--- An ordinary recursive function solves its lambda hole as Int.
-let sum = \(n : _) -> if n < 1 then 0 else n + sum (n - 1)
+-- 4. Pattern annotations retain all their individual hole owners.
+-- swap's holes hover as b, then a (names follow its inferred result order).
+let swap = \((left, right) : (_, _)) -> (right, left)
+-- Top-level pattern lets generalize each bound name separately.
+-- The three holes hover as a -> a, Int, then a, even after earlier definitions.
+let (patternId, seed) : (_, _) = (\(value : _) -> value, 7)
+let patterns = (swap (1, True), (patternId False, seed))
 
--- A recursive partial signature retains item and completes its result as List item.
--- Recursive calls within this component use one monomorphic instance.
-let copy : {item} List item -> _ = \items ->
+-- 5. Named forall prefixes coexist with inferred head/return types.
+-- No type for ignored: synthesize a hole, then generalize it after element.
+-- Hover keep: forall element a. element -> a -> element.
+let keep {element} (value : element) ignored : element = value
+-- Keep an unused authored binder, too: forall unused item. item -> item.
+let unusedId {unused item} (value : item) : item = value
+-- Explicit return hole, plus an anonymous lambda hole scoped by element.
+let scopedId {element} (value : element) : _ =
+  (\(copy : _) -> copy) value
+-- The inner function returns the outer variable's type, not its own argument's.
+-- Both return annotations are omitted or local: outer remains in scope inside.
+let nestedKeep {outer} (value : outer) =
+  let retain {inner} (other : inner) : outer = value in
+  retain True
+let quantified = ((keep 9 False, keep True 0),
+  (unusedId 3, (scopedId False, nestedKeep True)))
+
+-- 6. Head annotations also work with finite self and mutual recursion.
+-- sum's parameter hole is Int; a concrete return annotation is still checked.
+let sum (n : _) : Int = if n < 1 then 0 else n + sum (n - 1)
+-- copy's return hole is item; its declared prefix is retained on export.
+let copy {item} (items : List item) : List _ =
   match items with
   | [] -> []
   | first :: rest -> first :: copy rest
-
--- Mutual recursion also supports a partial signature; both branches terminate.
-let evenSteps : {item} Int -> item -> _ = \n value ->
+-- A partial signature constrains the whole monomorphic recursive component.
+let evenSteps {item} (n : Int) (value : item) : _ =
   if n < 1 then value else oddSteps (n - 1) value
-let oddSteps = \n value ->
+let oddSteps n value =
   if n < 1 then value else evenSteps (n - 1) value
+let recursion = (sum 4, (copy [1, 2, 3], evenSteps 3 True))
 
--- Expected result:
--- ((3, True), ((1, 7), ((True, 1), ((False, 7), ((9, True), (10, ([1, 2, 3], True)))))))
-((idHole 3, idHole True),
- ((alwaysOne False, choose (wrap 7)),
-  (swap (1, True),
-   ((patternId False, seed),
-    ((keep 9 False, keep True 0),
-     (sum 4, (copy [1, 2, 3], evenSteps 3 True)))))))
+-- Expected section values:
+-- basics:     (3, (True, 1))
+-- heads:      ((5, 6), (1, ((1, False), 8)))
+-- higher:     (10, (5, 7))
+-- patterns:   ((True, 1), (False, 7))
+-- quantified: ((9, True), (3, (False, True)))
+-- recursion:  (10, ([1, 2, 3], True))
+-- Each pair contains the next numbered result section.
+(basics, (heads, (higher, (patterns, (quantified, recursion)))))

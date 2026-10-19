@@ -14,9 +14,11 @@ parse -> lower -> infer -> exhaustiveness -> erase Core annotations -> evaluate
 ```
 
 Successful programs must reach a specific value. Negative programs must get as
-far as lowering and then be rejected specifically by Infer; a parse/lower error
-does not count as a successful typing-negative test. The unsupported head-binder
-syntax case separately expects a parse error.
+far as lowering and then be rejected specifically by inference; a parse/lower
+error does not count as a successful typing-negative test. Scoped function heads
+are a positive fixture. This legacy driver uses complete-Core lowering and
+`CoreBackend.infer`; the CLI/editor and scratch audit exercise canonical `Input`
+lowering, including partial annotations.
 
 ## Semantic boundary pinned by the matrix
 
@@ -35,9 +37,11 @@ The checker uses a mixed recursive group:
 - Unannotated polymorphic recursion remains uninferable.
 - All runtime annotations are erased; checking introduces no type-passing terms.
 
-Head-binder sugar remains unsupported; explicit lambda RHSs support scoped type
-variables. The syntax negative records that distinction, not a typing restriction.
-The matrix and executable driver are authoritative.
+Function heads support ordinary named parameters with concrete, partial, or
+omitted annotations. A trailing annotation describes the return type, while
+`{a}` scopes the authored type variable throughout the RHS. Explicit lambda RHSs
+remain supported. Try `anonymous-type-holes.fhm` for mixed head annotations and
+`polyrec-head-binder-scoped.fhm` for a small complete scoped example.
 
 ## Test matrix
 
@@ -53,7 +57,7 @@ The matrix and executable driver are authoritative.
 | `polyrec-inner-poly-unannotated-must-fail.fhm` | Infer rejects | two in-SCC instantiations without an annotation |
 | `polyrec-nested.fhm` | pass, `7` | annotated polymorphic recursion over a nested datatype |
 | `polyrec-groups-nested.fhm` | pass, `7` | annotated polyrec in a larger multi-SCC program |
-| `polyrec-head-binder-scoped-must-fail.fhm` | Parse rejects | head-binder sugar remains unsupported |
+| `polyrec-head-binder-scoped.fhm` | pass, `5` | scoped head parameter and return annotations form `forall a. a -> a` |
 
 The historical `polyrec-skolem-leak-must-fail.fhm` fixture was renamed to
 `polyrec-mixed-fixed-instantiation.fhm`. The earlier simultaneous checker rejected
