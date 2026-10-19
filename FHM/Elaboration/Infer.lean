@@ -305,6 +305,184 @@ termination_by (sizeBranches branches, 0)
 decreasing_by all_goals (simp only [sizeBranches, Input.size_substTyFvars, sizeBranches_substInputBranches]; omega)
 end
 
+
+private theorem eraseBindings_eq_map (bindings : List Input) :
+    bindings.map Input.erase = eraseBindings bindings := by
+  induction bindings with
+  | nil => rfl
+  | cons rhs rest ih => simp only [List.map_cons, eraseBindings, ih]
+
+/-- Every stored completed RHS retains the erased source at its original slot. -/
+def RecState.Erases (erased : List Expr) (state : RecState) : Prop :=
+  state.outputs.length = erased.length ∧
+  ∀ (i : Nat) (output : Expr), state.outputs[i]? = some (some output) → erased[i]? = some output.erase
+
+ theorem RecState.Erases.init {base : Nat} {anns : List LetAnn}
+    (hlen : anns.length = erased.length) : (RecState.init base anns).Erases erased := by
+  constructor
+  · simpa only [RecState.init, List.length_map] using hlen
+  · intro i output hget
+    simp only [RecState.init, List.getElem?_map] at hget
+    cases ha : anns[i]? <;> simp [ha] at hget
+
+ theorem RecState.Erases.onSubst {state : RecState} (h : state.Erases erased) (S : Subst) :
+    (state.onSubst S).Erases erased := by
+  refine ⟨by simpa only [RecState.onSubst, List.length_map] using h.1, ?_⟩
+  intro i output hget
+  rw [RecState.onSubst, List.getElem?_map] at hget
+  obtain ⟨old, ho, heq⟩ := Option.map_eq_some_iff.mp hget
+  obtain ⟨rhs, hrhs, rfl⟩ := Option.map_eq_some_iff.mp heq
+  simpa only [Expr.erase_substTyFvars] using h.2 i rhs (hrhs ▸ ho)
+
+ theorem RecState.Erases.installOpenings {state : RecState} (h : state.Erases erased) :
+    (state.installOpenings members openings).Erases erased := h
+
+ theorem RecState.Erases.exportComponent {state : RecState} (h : state.Erases erased)
+    {outputs : List (Option Expr)} {facts : List RecFacts} {pool : List Nat}
+    (hout : ∀ (i : Nat) (output : Expr), outputs[i]? = some (some output) → erased[i]? = some output.erase) :
+    (state.exportComponent members written pool outputs facts).Erases erased := by
+  refine ⟨by simpa only [RecState.exportComponent, List.length_mapIdx] using h.1, ?_⟩
+  intro i output hget
+  rw [RecState.exportComponent, List.getElem?_mapIdx] at hget
+  obtain ⟨old, hold, heq⟩ := Option.map_eq_some_iff.mp hget
+  split at heq
+  · obtain ⟨spec, _, hbind⟩ := Option.bind_eq_some_iff.mp heq
+    obtain ⟨ty, _, hbind⟩ := Option.bind_eq_some_iff.mp hbind
+    obtain ⟨rhs, hrhs, hclose⟩ := Option.bind_eq_some_iff.mp hbind
+    obtain ⟨inner, hinner, hinnerEq⟩ := Option.bind_eq_some_iff.mp hrhs
+    cases hinnerEq
+    cases Option.some.inj hclose
+    simpa only [Expr.erase_closeTyVars] using hout i rhs hinner
+  · exact h.2 i output (heq ▸ hold)
+
+ theorem FinishRecComponent.erases
+    (h : FinishRecComponent K soft members ctx state outputs facts final)
+    (hstate : state.Erases erased)
+    (hout : ∀ (i : Nat) (output : Expr), outputs[i]? = some (some output) → erased[i]? = some output.erase) :
+    final.Erases erased := by
+  cases h
+  exact hstate.exportComponent hout
+
+ theorem RecState.Erases.setSigned {state : RecState} (h : state.Erases erased)
+    {facts : RecFacts} (hout : erased[member]? = some output.erase) :
+    (state.setSigned member names output facts).Erases erased := by
+  refine ⟨by simpa only [RecState.setSigned, List.length_set] using h.1, ?_⟩
+  intro i rhs hget
+  by_cases hi : member = i
+  · subst i
+    have hlt : member < state.outputs.length := by
+      rw [h.1]
+      exact List.getElem?_eq_some_iff.mp hout |>.1
+    rw [RecState.setSigned, List.getElem?_set_self hlt] at hget
+    cases Option.some.inj (Option.some.inj hget)
+    simpa only [Expr.erase_closeTyVars] using hout
+  · exact h.2 i rhs (by simpa only [RecState.setSigned, List.getElem?_set_ne hi] using hget)
+
+ theorem RecState.Erases.outputs_eq {state : RecState} {outputs : List Expr} (h : state.Erases erased)
+    (hout : state.outputs = outputs.map some) : outputs.map Expr.erase = erased := by
+  have hlen : outputs.length = erased.length := by simpa only [hout, List.length_map] using h.1
+  apply List.ext_getElem?
+  intro i
+  cases ho : outputs[i]? with
+  | none =>
+      have hi : outputs.length ≤ i := List.getElem?_eq_none_iff.mp ho
+      simp only [List.getElem?_map, ho, Option.map_none]
+      exact (List.getElem?_eq_none_iff.mpr (hlen ▸ hi)).symm
+  | some output =>
+      exact (by simpa only [List.getElem?_map, ho, Option.map_some] using
+        (h.2 i output (by rw [hout, List.getElem?_map, ho]; rfl)).symm)
+
+@[simp] theorem erase_openRecSources (openings : List RecOpening) (bindings : List Input) :
+    (openRecSources openings bindings).map Input.erase = bindings.map Input.erase := by
+  induction bindings generalizing openings with
+  | nil => cases openings <;> rfl
+  | cons rhs rest ih =>
+    cases openings with
+    | nil => rfl
+    | cons opening openings => simp only [openRecSources, List.map_cons, Input.erase_openTyVars, ih]
+
+@[simp] theorem erase_map_subst_inputs (bindings : List Input) (S : Subst) :
+    (bindings.map (Input.substTyFvars S)).map Input.erase = bindings.map Input.erase := by
+  simp only [List.map_map, Function.comp_def, Input.erase_substTyFvars]
+
+ theorem _root_.InferRecComponent.erase_of_infer
+    (h : InferRecComponent K F members index frontier ctx bindings specs next S outputs facts)
+    (hInfer : ∀ {κ F' Ψ c e Ψ' T output ty}, e.size ≤ sizeBindings bindings →
+      Infer κ F' Ψ c e Ψ' T output ty → output.erase = e.erase) :
+    ∀ (i : Nat) (output : Expr), outputs[i]? = some (some output) → (bindings.map Input.erase)[i]? = some output.erase := by
+  match h with
+  | .nil => intro i output hget; simp at hget
+  | .skipMono _ hr | .skipPoly hr =>
+      intro i output hget
+      cases i with
+      | zero => cases hget
+      | succ i =>
+          exact hr.erase_of_infer
+            (fun he h => hInfer (by simp only [sizeBindings]; omega) h) i output hget
+  | .consSelected _ hi _ hr =>
+      intro i output hget
+      cases i with
+      | zero =>
+        cases Option.some.inj (Option.some.inj hget)
+        simp only [List.map_cons, List.getElem?_cons_zero, Expr.erase_substTyFvars,
+          hInfer (by simp only [sizeBindings]; omega) hi]
+      | succ i =>
+        have hh := hr.erase_of_infer
+          (fun he h => hInfer (by simp only [sizeBindings_map_substTyFvars] at he; simp only [sizeBindings]; omega) h)
+          i output hget
+        simpa only [erase_map_subst_inputs] using hh
+ termination_by structural h
+
+ theorem _root_.InferRecStrata.erase_of_infer
+    (h : InferRecStrata K F frontier ctx anns bindings state groups next S final)
+    (hInfer : ∀ {κ F' Ψ c e Ψ' T output ty}, e.size ≤ sizeBindings bindings →
+      Infer κ F' Ψ c e Ψ' T output ty → output.erase = e.erase)
+    (hstate : state.Erases (bindings.map Input.erase)) : final.Erases (bindings.map Input.erase) := by
+  match h with
+  | .nil => exact hstate
+  | .cons _ _ hc he hr =>
+      have hcomponent := hc.erase_of_infer
+        (fun hsize h => hInfer (by simpa only [sizeBindings_map_substTyFvars, sizeBindings_openRecSources] using hsize) h)
+      have hready := he.erases ((hstate.installOpenings).onSubst _) (by
+        simpa only [erase_map_subst_inputs, erase_openRecSources] using hcomponent)
+      have htail := hr.erase_of_infer
+        (fun hsize h => hInfer (by simpa only [sizeBindings_map_substTyFvars] using hsize) h)
+        (by simpa only [erase_map_subst_inputs] using hready)
+      simpa only [erase_map_subst_inputs] using htail
+ termination_by structural h
+
+private theorem erased_remaining_tail {erased : List Expr} {rhs : Input} {bindings : List Input}
+    (h : (rhs :: bindings).map Input.erase = erased.drop index) :
+    bindings.map Input.erase = erased.drop (index + 1) := by
+  have ht := congrArg (List.drop 1) h
+  simpa only [List.map_cons, List.drop_succ_cons, List.drop_zero, List.drop_drop] using ht
+
+ theorem _root_.InferRecSigned.erase_of_infer
+    (h : InferRecSigned K F index frontier ctx anns bindings state next S final)
+    (hInfer : ∀ {κ F' Ψ c e Ψ' T output ty}, e.size ≤ sizeBindings bindings →
+      Infer κ F' Ψ c e Ψ' T output ty → output.erase = e.erase)
+    (hstate : state.Erases erased) (hremaining : bindings.map Input.erase = erased.drop index) :
+    final.Erases erased := by
+  match h with
+  | .nil => exact hstate
+  | .skip _ hr =>
+      exact hr.erase_of_infer (fun he h => hInfer (by simp only [sizeBindings]; omega) h)
+        hstate (erased_remaining_tail hremaining)
+  | .cons _ _ hi _ _ hr =>
+      expose_names
+      have he := hInfer (by simp only [Input.size_openTyVars, sizeBindings]; omega) hi
+      have hhead := congrArg (fun xs => xs[0]?) hremaining
+      simp only [List.map_cons, List.getElem?_cons_zero, List.getElem?_drop, Nat.add_zero] at hhead
+      have hready : ((state.onSubst (s1 ++ s2)).setSigned index (freshVars frontier scheme.paramCount)
+          (output.substTyFvars s2) (bodyFacts.onSubst s2)).Erases erased :=
+        (hstate.onSubst _).setSigned (by
+        simpa only [Expr.erase_substTyFvars, Input.erase_openTyVars, he] using hhead.symm)
+      exact hr.erase_of_infer
+        (fun he h => hInfer (by simp only [sizeBindings_map_substTyFvars] at he; simp only [sizeBindings]; omega) h)
+        hready (by simpa only [erase_map_subst_inputs] using erased_remaining_tail hremaining)
+ termination_by structural h
+
+
 mutual
 /-- Elaboration changes annotations and binders while preserving runtime syntax. -/
 theorem _root_.Infer.erase (h : Infer K F frontier ctx input next subst output ty) :
@@ -324,8 +502,25 @@ theorem _root_.Infer.erase (h : Infer K F frontier ctx input next subst output t
         Expr.erase_closeTyVars, Input.erase, hr.erase, hb.erase, Input.erase_openTyVars, Input.erase_substTyFvars]
   | .match_ _ hs _ hb =>
       simp only [Expr.erase, Expr.erase_substTyFvars, Input.erase, hs.erase, hb.erase, eraseBranches_substInputBranches]
+  | .letRec _ _ hv hs hp _ hout hb =>
+      expose_names
+      have hstate1 := hs.erase_of_infer (fun _ hi => hi.erase)
+        (RecState.Erases.init (by simpa only [List.length_map] using hv.length))
+      have hstate2 := hp.erase_of_infer (fun _ hi => hi.erase)
+        (by simpa only [erase_map_subst_inputs] using hstate1)
+        (by simp only [erase_map_subst_inputs, List.drop_zero])
+      have houtputs := hstate2.outputs_eq hout
+      have hlen := congrArg List.length houtputs
+      simp only [List.length_map] at hlen
+      simp only [Expr.erase_letRec, Input.erase, List.map_map, Function.comp_def,
+        Expr.erase_substTyFvars, houtputs, hb.erase, Input.erase_substTyFvars,
+        eraseBindings_eq_map]
+      congr 1
+      simpa only [List.map_const'] using congrArg (fun n => List.replicate n (none : Option PolyTy)) hlen
 termination_by (input.size, 0)
-decreasing_by all_goals (simp only [Input.size, Input.size_openTyVars, Input.size_substTyFvars, sizeBranches_substInputBranches]; omega)
+decreasing_by
+  all_goals simp only [sizeBindings_map_substTyFvars] at *
+  all_goals (simp only [Input.size, Input.size_openTyVars, Input.size_substTyFvars, sizeBranches_substInputBranches]; omega)
 
 theorem _root_.InferBranches.erase
     (h : InferBranches K F frontier ctx scrutTy resultTy branches next subst completed) :
