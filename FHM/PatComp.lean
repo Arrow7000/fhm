@@ -1,5 +1,5 @@
 import FHM.SurfaceLang
-import FHM.InferW
+import FHM.CoreBackend.Infer
 
 /-! # Verified pattern-match compilation
 
@@ -1411,62 +1411,93 @@ sees capture `j` at de Bruijn index `j` exactly — the innermost let is capture
 0. Body vars ≥ (number of captures) are outer-context references and are
 shifted past the match/let binders introduced by the tree. -/
 
-/-- The variable currently holding the value at `occ`. (Garbage if `occ ∉ env`;
-    the emitter invariant proves every emitted occurrence is
-    bound.) -/
+/-- Term construction used by decision-tree emission. An ordinary let has no
+signature; shifting adjusts only term binders and preserves annotation syntax. -/
+structure EmissionOps (Term : Type) where
+  var : Nat → Term
+  ctor : CtorName → Term
+  letIn : Term → Term → Term
+  match_ : Term → List (MatchPattern × Term) → Term
+  shiftFrom : Nat → Nat → Term → Term
+
+/-- Core specialization of the annotation-independent emission operations. -/
+def coreEmissionOps : EmissionOps Expr :=
+  { var := Expr.var
+    ctor := Expr.ctor
+    letIn := Expr.letIn none
+    match_ := Expr.match_
+    shiftFrom := Expr.shiftFrom }
+
+/-- The variable currently holding an occurrence. The emitter invariant ensures
+that the occurrence is present in `env`. -/
+def resolveOccWith {Term : Type} (ops : EmissionOps Term)
+    (env : List Occ) (occ : Occ) : Term :=
+  ops.var (env.idxOf occ)
+
 def resolveOcc (env : List Occ) (occ : Occ) : Expr :=
   .var (env.idxOf occ)
 
-/-- Wrap `body` in `letIn`s re-binding `binds` so that capture `j` sits at de
-    Bruijn index `j` in `body` (innermost let = capture 0). RHS `i` (counting
-    from the outermost let, which re-binds the LAST capture) sits under `i`
-    lets, so its env lookup is shifted by `i`. Body vars past the captures are
-    shifted over the `env` binders the tree introduced. -/
+/-- Rebind captures in reverse order so capture zero is innermost. The leaf
+body is shifted past the decision-tree binders while preserving its captures. -/
+def emitLetsWith {Term : Type} (ops : EmissionOps Term)
+    (env : List Occ) (binds : List Occ) (body : Term) : Term :=
+  go binds.reverse 0
+where
+  go : List Occ → Nat → Term
+    | [], _ => ops.shiftFrom binds.length env.length body
+    | b :: rest, depth =>
+      ops.letIn (ops.var (env.idxOf b + depth)) (go rest (depth + 1))
+
+/-- Core capture-let specialization. `go` retains the existing proof API. -/
 def emitLets (env : List Occ) (binds : List Occ) (body : Expr) : Expr :=
   go binds.reverse 0
 where
-  go : List Occ → Nat → Expr
-    | [], _ => body.shiftFrom binds.length env.length
-    | b :: rest, depth =>
-      .letIn none (.var (env.idxOf b + depth)) (go rest (depth + 1))
+  go (rest : List Occ) (depth : Nat) : Expr :=
+    emitLetsWith.go coreEmissionOps env binds body rest depth
 
 mutual
 
-/-- Render a tree as nested Core matches. A switch becomes a `match_` on the
-    var holding its occurrence, with one `named` branch per case and a trailing
-    `wildcard` branch for the default. `fail` becomes a canonical stuck term
-    (a branchless match on an inert ctor) — unreachable when the surface match
-    is exhaustive. -/
-def emit (env : List Occ) (bodies : Nat → Expr) : DTree → Expr
-  | .fail => .match_ (.ctor (.mk "PatCompFail")) []
-  | .leaf act binds => emitLets env binds (bodies act)
+/-- The shared decision-tree emitter. A failed default emits no wildcard;
+other defaults retain the source catch-all body. Holes in leaf bodies are
+copied as syntax and are untouched by this algorithm. -/
+def emitWith {Term : Type} (ops : EmissionOps Term)
+    (env : List Occ) (bodies : Nat → Term) : DTree → Term
+  | .fail => ops.match_ (ops.ctor (.mk "PatCompFail")) []
+  | .leaf act binds => emitLetsWith ops env binds (bodies act)
   | .switch occ cases dflt =>
-    -- When the default is `.fail` (complete signature — no surface catch-all,
-    -- default matrix empty) emit NO wildcard branch: the named cases already
-    -- cover every constructor, so the match is exhaustive AND typeable. Emitting
-    -- a `.wildcard` here unconditionally (as an earlier version did) rendered
-    -- `.fail` as an untypeable `PatCompFail` sentinel in the wildcard body, which
-    -- broke `typecheck` for every enumerated/complete match (including `if`). A
-    -- non-`fail` default is a genuine catch-all body → emitted as the wildcard.
-    .match_ (resolveOcc env occ)
-      (emitCases env bodies occ cases ++
+    ops.match_ (ops.var (env.idxOf occ))
+      (emitCasesWith ops env bodies occ cases ++
         (match dflt with
           | .fail => []
-          | d     => [(.wildcard, emit env bodies d)]))
+          | d => [(.wildcard, emitWith ops env bodies d)]))
 
-def emitCases (env : List Occ) (bodies : Nat → Expr) (occ : Occ) :
-    List (CtorName × Nat × DTree) → List (MatchPattern × Expr)
+def emitCasesWith {Term : Type} (ops : EmissionOps Term)
+    (env : List Occ) (bodies : Nat → Term) (occ : Occ) :
+    List (CtorName × Nat × DTree) → List (MatchPattern × Term)
   | [] => []
   | (c, a, t) :: rest =>
-    (.named c a, emit (subOccs occ a ++ env) bodies t)
-      :: emitCases env bodies occ rest
+    (.named c a, emitWith ops (subOccs occ a ++ env) bodies t)
+      :: emitCasesWith ops env bodies occ rest
 
 end
 
-/-- The packaged lowering of one surface match: bind the scrutinee, then run
-    the compiled tree against it (env `[[]]`: var 0 = the scrutinee). -/
+/-- Core specialization of the shared decision-tree emitter. -/
+def emit (env : List Occ) (bodies : Nat → Expr) : DTree → Expr :=
+  emitWith coreEmissionOps env bodies
+
+/-- Core specialization of case-list emission. -/
+def emitCases (env : List Occ) (bodies : Nat → Expr) (occ : Occ) :
+    List (CtorName × Nat × DTree) → List (MatchPattern × Expr) :=
+  emitCasesWith coreEmissionOps env bodies occ
+
+/-- Bind the scrutinee once before emitting the compiled decision tree. -/
+def lowerMatchWith {Term : Type} (ops : EmissionOps Term) (scrut : Term)
+    (pats : List Surface.Pattern) (bodies : Nat → Term) : Term :=
+  ops.letIn scrut (emitWith ops [[]] bodies (compile [[]] (initMatrix pats)))
+
+/-- Existing Core lowering, specialized from the shared emitter. -/
 def lowerMatch (scrut : Expr) (pats : List Surface.Pattern) (bodies : Nat → Expr) : Expr :=
-  .letIn none scrut (emit [[]] bodies (compile [[]] (initMatrix pats)))
+  lowerMatchWith coreEmissionOps scrut pats bodies
 
 
 /-! ## Exhaustiveness: internal totality layer
@@ -2458,7 +2489,9 @@ private theorem emitCases_eq_map (env : List Occ) (bodies : Nat → Expr) (occ :
             emit (subOccs occ x.2.1 ++ env) bodies x.2.2))
   | [] => rfl
   | (c, a, t) :: rest => by
-    rw [emitCases, emitCases_eq_map env bodies occ rest, List.map_cons]
+    change (MatchPattern.named c a, emit (subOccs occ a ++ env) bodies t)
+      :: emitCases env bodies occ rest = _
+    rw [emitCases_eq_map env bodies occ rest, List.map_cons]
 
 /-- `evalSwitch` is first-match search over the case list (re-derivation of
     PatComp's private `evalSwitch_eq_find`). -/

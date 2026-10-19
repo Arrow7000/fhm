@@ -88,23 +88,34 @@ def traceEmitCases (index : Nat) : List (CtorName × Nat × DTree) → EmissionT
 
 end
 
-/-- Core expression plus its compiler-owned construction trace. -/
-structure TracedLowering where
-  expr : Expr
+/-- Emitted term plus its compiler-owned construction trace. The default
+preserves the existing Core API. Trace paths depend only on the decision tree. -/
+structure TracedLowering (Term : Type := Expr) where
+  expr : Term
   trace : EmissionTrace
 
-/-- The ordinary verified lowering and its administrative construction trace.
-    The trace is relative to the whole outer scrutinee `letIn`. -/
-def lowerMatchTrace (scrut : Expr) (pats : List Surface.Pattern)
-    (bodies : Nat → Expr) : TracedLowering :=
+/-- Emit a term and trace the same compiled tree. The trace is relative to the
+whole outer scrutinee let, independent of the term's annotation representation. -/
+def lowerMatchTraceWith {Term : Type} (ops : EmissionOps Term) (scrut : Term)
+    (pats : List Surface.Pattern) (bodies : Nat → Term) : TracedLowering Term :=
   let tree := compile [[]] (initMatrix pats)
   let emittedTrace := (traceEmit tree).belowPath [.letBody]
-  { expr := .letIn none scrut (emit [[]] bodies tree)
+  { expr := ops.letIn scrut (emitWith ops [[]] bodies tree)
     trace := {
       generated := [([], .scrutineeLet)] ++
         emittedTrace.generated
       armBodyRoots := emittedTrace.armBodyRoots
       captureLets := emittedTrace.captureLets } }
+
+/-- Existing Core specialization of traced pattern lowering. -/
+def lowerMatchTrace (scrut : Expr) (pats : List Surface.Pattern)
+    (bodies : Nat → Expr) : TracedLowering :=
+  lowerMatchTraceWith coreEmissionOps scrut pats bodies
+
+/-- The generic trace does not change the emitted term. -/
+theorem lowerMatchTraceWith_expr {Term : Type} (ops : EmissionOps Term)
+    (scrut : Term) (pats : List Surface.Pattern) (bodies : Nat → Term) :
+    (lowerMatchTraceWith ops scrut pats bodies).expr = lowerMatchWith ops scrut pats bodies := rfl
 
 /-- Instrumentation is observationally transparent to the verified lowering. -/
 theorem lowerMatchTrace_expr (scrut : Expr) (pats : List Surface.Pattern)
