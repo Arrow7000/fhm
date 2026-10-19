@@ -778,85 +778,6 @@ theorem SignatureCheck.factor_source {P : List Nat}
     intro v hv
     simpa only [Subst.onTy_append] using (hag v hv).trans (hfac (.fvar v))
 
-theorem LetCheck.factor {P : List Nat} (hc : LetCheck K first rhsTy ann checked sCheck)
-    (hK : ∀ k ∈ K, k < first) (hP : ∀ p ∈ P, p < first)
-    (hty : Ty.BelowFvars first rhsTy)
-    {R : Subst} (hR : ∀ pair ∈ R, pair.2.IsLC)
-    (hRP : ∀ p ∈ P, R.onTy (.fvar p) = .fvar p)
-    {target : Ty} (htarget : target.IsLC) (hfit : ann.FitsMono target)
-    (hrigid : ∀ template, ann = .template template → ∀ v ∈ template.rigidVars, v ∈ P)
-    (heq : target = R.onTy rhsTy) :
-    ∃ V : Subst, (∀ pair ∈ V, pair.2.IsLC) ∧
-      target = V.onTy (sCheck.onTy rhsTy) ∧
-      (∀ p ∈ P, V.onTy (.fvar p) = .fvar p) ∧
-      Subst.AgreesBelow first R (sCheck ++ V) := by
-  cases hc with
-  | absent => exact ⟨R, hR, heq, hRP, fun _ _ => rfl⟩
-  | hole => exact ⟨R, hR, heq, hRP, fun _ _ => rfl⟩
-  | @template checked expected sCheck template halloc _ hr hu =>
-    change template.Fits target at hfit
-    obtain ⟨U, hU, hag, hUexpected⟩ := hfit.allocate_override htarget hR first
-      (fun v hv => hK v (hr v hv)) (fun v hv => hRP v (hrigid template rfl v hv))
-    rw [halloc] at hUexpected
-    have hUty : U.onTy rhsTy = target := (Subst.onTy_congr hag hty).symm.trans heq.symm
-    have hUP : ∀ p ∈ P, U.onTy (.fvar p) = .fvar p := by
-      intro p hp
-      exact (hag p (hP p hp)).symm.trans (hRP p hp)
-    obtain ⟨V, hfac, hV, hVP⟩ := hu.unifies.greatest_K U hU
-      (hUty.trans hUexpected.symm) hUP
-    refine ⟨V, hV, hUty.symm.trans (hfac rhsTy), hVP, ?_⟩
-    intro v hv
-    simpa only [Subst.onTy_append] using (hag v hv).trans (hfac (.fvar v))
-
-/-- Factor a signed check against an independently protected target. Target
-free variables may coincide with any fresh inference IDs. -/
-theorem SignatureCheck.factor {P : List Nat}
-    (hc : SignatureCheck K written first rhsTy ann checked sCheck)
-    (hK : ∀ k ∈ K ++ written, k < first) (hP : ∀ p ∈ P ++ written, p < first)
-    (hty : Ty.BelowFvars first rhsTy)
-    {R : Subst} (hR : ∀ pair ∈ R, pair.2.IsLC)
-    (hRP : ∀ p ∈ P ++ written, R.onTy (.fvar p) = .fvar p)
-    {target : Ty} (htarget : target.IsLC)
-    (hrigid : ∀ v ∈ ann.rigidVars, v ∈ P)
-    (heq : target = R.onTy rhsTy)
-    (hcomplete : ∀ scheme, ann = .complete scheme → target = scheme.openVars written)
-    (hpartial : ∀ count template, ann = .partialForall count template →
-      (template.openTyVarsFrom 0 written).Fits target) :
-    ∃ V : Subst, (∀ pair ∈ V, pair.2.IsLC) ∧
-      target = V.onTy (sCheck.onTy rhsTy) ∧
-      (∀ p ∈ P ++ written, V.onTy (.fvar p) = .fvar p) ∧
-      Subst.AgreesBelow first R (sCheck ++ V) := by
-  cases hc with
-  | @complete sCheck scheme _ _ hu =>
-      have hExpected : R.onTy (scheme.openVars written) = scheme.openVars written := by
-        apply Subst.onTy_eq_self_of_fixes
-        intro v hv
-        rcases Ty.freeVars_openVars_subset v hv with hv | hv
-        · exact hRP v (List.mem_append_left _ (hrigid v hv))
-        · exact hRP v (List.mem_append_right _ hv)
-      have hUni : Unifies R rhsTy (scheme.openVars written) := by
-        change R.onTy rhsTy = R.onTy (scheme.openVars written)
-        rw [hExpected, ← heq, hcomplete scheme rfl]
-      obtain ⟨V, hfac, hV, hVP⟩ := hu.unifies.greatest_K R hR hUni hRP
-      refine ⟨V, hV, heq.trans (hfac rhsTy), hVP, ?_⟩
-      intro v hv
-      simpa only [Subst.onTy_append] using hfac (.fvar v)
-  | @partialSignature checked expected sCheck count template halloc _ hr hu =>
-      have hfit := hpartial count template rfl
-      obtain ⟨U, hU, hag, hUexpected⟩ := hfit.allocate_override htarget hR first
-        (fun v hv => hK v (Template.open_scope hr v hv))
-        (fun v hv => hRP v (Template.open_scope hrigid v hv))
-      rw [halloc] at hUexpected
-      have hUty : U.onTy rhsTy = target := (Subst.onTy_congr hag hty).symm.trans heq.symm
-      have hUP : ∀ p ∈ P ++ written, U.onTy (.fvar p) = .fvar p := fun p hp =>
-        (hag p (hP p hp)).symm.trans (hRP p hp)
-      obtain ⟨V, hfac, hV, hVP⟩ := hu.unifies.greatest_K U hU
-        (hUty.trans hUexpected.symm) hUP
-      refine ⟨V, hV, hUty.symm.trans (hfac rhsTy), hVP, ?_⟩
-      intro v hv
-      simpa only [Subst.onTy_append] using (hag v hv).trans (hfac (.fvar v))
-
-
 theorem closeScheme_generalizes {K names : List Nat} {ctx : Ctx} {ty : Ty}
     {V : Subst} {M : PolyTy} {Xs : List Nat}
     (hty : ty.IsLC) (hV : ∀ pair ∈ V, pair.2.IsLC) (hM : M.WF)
@@ -951,38 +872,52 @@ theorem SignatureCheck.scheme_generalizes
   exact closeScheme_generalizes (Subst.onTy_lc (h.lc hlen hlc) hlc)
     hV hM hXnodup hXlen hXM htarget hXctx hXK (h.cover hlen hlc hsource)
 
-theorem _root_.Infer.signature_frame_aligned {rhs body : Input} {ann : LetAnn}
-    (hr : Infer (K ++ Ys) (frontier + ann.paramCount) ctx (rhs.openTyVars Ys) first s1 rhsOut rhsTy)
-    (hc : SignatureCheck K Ys first rhsTy ann checked sCheck) (ihr : Infer.Principal hr)
+theorem _root_.Infer.source_signature_frame_aligned {rhs body : Input} {ann : LetAnn}
+    (hscope : SourceScope K F (.letIn ann rhs body))
+    (hr : Infer (K ++ Ys) F (frontier + ann.paramCount) ctx (rhs.openTyVars Ys) first s1 rhsOut rhsTy)
+    (hc : SignatureCheck K (substSoft s1 F) Ys first rhsTy (ann.substTyFvars s1) checked sCheck)
+    (ihr : Infer.SourcePrincipal hr)
     (hprefix : Ys = freshVars frontier ann.paramCount)
     (hwf : CtxWF ctx) (hbelow : CtxBelow frontier ctx) (hK : ∀ k ∈ K, k < frontier)
+    (hF : ∀ t ∈ F, Ty.BelowFvars frontier t)
     {ambient : Subst} {P : List Nat} {M : PolyTy} {Xs : List Nat} {target : Ty}
     (hS : ∀ pair ∈ ambient, pair.2.IsLC) (hP : ∀ p ∈ P, p < frontier)
     (hfix : ∀ p ∈ P ++ Ys, ambient.onTy (.fvar p) = .fvar p)
-    (hM : M.WF) (hannRigid : ∀ v ∈ ann.rigidVars, v ∈ P)
+    (hfreeze : ∀ v ∈ (Input.letIn ann rhs body).rigidVars,
+      v ∈ K → v ∉ softVars F → ambient.onTy (.fvar v) = .fvar v)
+    (hM : M.WF) (_hannRigid : ∀ v ∈ (ann.substTyFvars ambient).rigidVars, v ∈ P)
     (hXlen : Xs.length = M.paramCount) (hXnd : Xs.Nodup) (hXtake : Xs.take ann.paramCount = Ys)
-    (hannFits : ann.SignatureFits M Xs)
-    (hrD : Typing (P ++ Ys) (ambient.onCtx ctx) (rhs.openTyVars Ys) (M.openVars Xs))
-    (hbD : Typing P { ambient.onCtx ctx with env := M :: (ambient.onCtx ctx).env } body target)
+    (hannFits : (ann.substTyFvars ambient).SignatureFits M Xs)
+    (hrD : Typing (P ++ Ys) (ambient.onCtx ctx)
+      ((rhs.substTyFvars ambient).openTyVars Ys) (M.openVars Xs))
+    (hbD : Typing P { ambient.onCtx ctx with env := M :: (ambient.onCtx ctx).env }
+      (body.substTyFvars ambient) target)
     (hXM : ∀ x ∈ Xs, x ∉ M.body.freeVars)
     (hXctx : ∀ x ∈ Xs, x ∉ (ambient.onCtx ctx).env.freeVars)
-    (hXimages : ∀ x ∈ Xs, ∀ k ∈ K, x ∉ (ambient.onTy (.fvar k)).freeVars) :
+    (hXimages : ∀ x ∈ Xs, ∀ k ∈ K, x ∉ (ambient.onTy (.fvar k)).freeVars)
+    (hXsoft : ∀ x ∈ Xs, x ∉ softVars (substSoft ambient F)) :
     let checkedCtx := sCheck.onCtx (s1.onCtx ctx)
-    let scheme := signatureScheme ann K Ys checkedCtx (sCheck.onTy rhsTy)
+    let soft := substSoft (s1 ++ sCheck) F
+    let scheme := signatureScheme (ann.substTyFvars (s1 ++ sCheck)) (K ++ softVars soft) Ys checkedCtx (sCheck.onTy rhsTy)
     ∃ V : Subst, (∀ pair ∈ V, pair.2.IsLC) ∧
       (∀ p ∈ P ++ Ys, V.onTy (.fvar p) = .fvar p) ∧
       Subst.AgreesBelow (frontier + ann.paramCount) ambient ((s1 ++ sCheck) ++ V) ∧
-      Typing P (V.onCtx { checkedCtx with env := scheme :: checkedCtx.env }) body target ∧
+      Typing P (V.onCtx { checkedCtx with env := scheme :: checkedCtx.env })
+        ((body.substTyFvars (s1 ++ sCheck)).substTyFvars V) target ∧
       CtxWF { checkedCtx with env := scheme :: checkedCtx.env } ∧
       CtxBelow checked { checkedCtx with env := scheme :: checkedCtx.env } ∧
-      (∀ pair ∈ s1 ++ sCheck, Ty.BelowFvars checked pair.2) := by
+      (∀ pair ∈ s1 ++ sCheck, Ty.BelowFvars checked pair.2) ∧
+      (∀ y ∈ Ys, y ∉ checkedCtx.env.freeVars ++ softVars soft) := by
+
   dsimp only
+  have hscopeBound : ∀ v ∈ K ++ softVars F, v < frontier :=
+    fun v hv => (List.mem_append.mp hv).elim (hK v) (softVars_lt hF v)
   have hYlen : Ys.length = ann.paramCount := by rw [hprefix, freshVars_length]
   have hYnd : Ys.Nodup := hprefix ▸ freshVars_nodup
   have hYavoid : ∀ y ∈ Ys, y ∉ K := by
     intro y hy hk
-    have hge := freshVars_ge y (hprefix ▸ hy)
-    have hlt := hK y hk
+    have := freshVars_ge y (hprefix ▸ hy)
+    have := hK y hk
     omega
   have hKopen : ∀ k ∈ K ++ Ys, k < frontier + ann.paramCount := by
     intro k hk
@@ -996,35 +931,69 @@ theorem _root_.Infer.signature_frame_aligned {rhs body : Input} {ann : LetAnn}
     · exact freshVars_lt p (hprefix ▸ hp)
   have hbelowOpen : CtxBelow (frontier + ann.paramCount) ctx :=
     fun scheme hs => (hbelow scheme hs).mono (by omega)
-  obtain ⟨R, hR, hrTy, hRP, hagR⟩ := ihr hwf hbelowOpen hKopen ambient
-    (M.openVars Xs) (P ++ Ys) hS hPopen hfix hrD
+  have hFopen : ∀ t ∈ F, Ty.BelowFvars (frontier + ann.paramCount) t :=
+    fun t ht => (hF t ht).mono (by omega)
+  have hfreezeOpen : ∀ v ∈ (rhs.openTyVars Ys).rigidVars,
+      v ∈ K ++ Ys → v ∉ softVars F → ambient.onTy (.fvar v) = .fvar v := by
+    intro v hv hk hn
+    rcases Input.rigidVars_openTyVarsFrom hv with hv | hy
+    · by_cases hy : v ∈ Ys
+      · exact hfix v (List.mem_append_right _ hy)
+      · have hvK : v ∈ K := (List.mem_append.mp hk).resolve_right hy
+        exact hfreeze v (List.mem_append_left _ (List.mem_append_right _ hv)) hvK hn
+    · exact hfix v (List.mem_append_right _ hy)
+  have hrD' : Typing (P ++ Ys) (ambient.onCtx ctx)
+      ((rhs.openTyVars Ys).substTyFvars ambient) (M.openVars Xs) := by
+    rw [rhs.substTyFvars_openTyVars_of_fixes hS (fun y hy => hfix y (List.mem_append_right _ hy))]
+    exact hrD
+  obtain ⟨R, hR, hrTy, hRP, hagR⟩ := ihr hwf hbelowOpen hKopen hFopen ambient
+    (M.openVars Xs) (P ++ Ys) hS hPopen hfix hfreezeOpen hrD'
   have hrle := hr.frontier_le
   have hcle := hc.frontier_le
   have hK1 : ∀ k ∈ K ++ Ys, k < first := fun k hk => Nat.lt_of_lt_of_le (hKopen k hk) hrle
   have hP1 : ∀ p ∈ P ++ Ys, p < first := fun p hp => Nat.lt_of_lt_of_le (hPopen p hp) hrle
-  obtain ⟨hrB, hs1B⟩ := hr.belowFvars hbelowOpen hKopen
+  obtain ⟨hrB, hs1B⟩ := hr.belowFvars hbelowOpen hKopen hFopen
   obtain ⟨hrLC, hs1LC⟩ := hr.lc hwf
-  obtain ⟨V, hV, hcheckedTy, hVP, hagV⟩ := hc.factor hK1 hP1 hrB hR hRP
-    hrD.regular hannRigid hrTy
+  have hF1 := substSoft_below hs1B hrle hFopen
+  have hs1Fix : ∀ k ∈ K, s1.onTy (.fvar k) = .fvar k :=
+    Subst.fixes_of_dom_avoids (fun p hp hk => hr.dom_avoids p hp (List.mem_append_left _ hk))
+  have hannEq : (ann.substTyFvars s1).substTyFvars R = ann.substTyFvars ambient := by
+    rw [← LetAnn.substTyFvars_append]
+    exact ann.substTyFvars_congr (fun v hv => (hagR v (by
+      have := hscopeBound v (hscope v (List.mem_append_left _ (List.mem_append_left _ hv)))
+      omega)).symm)
+  have hannBound : ∀ v ∈ (ann.substTyFvars s1).rigidVars, v < first := by
+    intro v hv
+    have hs := hscope.subst s1 hs1Fix
+    exact (List.mem_append.mp (hs v (List.mem_append_left _ (List.mem_append_left _ hv)))).elim
+      (fun hk => hK1 v (List.mem_append_left _ hk)) (softVars_lt hF1 v)
+  have hYlen' : Ys.length = (ann.substTyFvars s1).paramCount := by simpa using hYlen
+  have hannFits' : ((ann.substTyFvars s1).substTyFvars R).SignatureFits M Xs := hannEq.symm ▸ hannFits
+  obtain ⟨V, hV, hcheckedTy, hVP, hagV⟩ := hc.factor_source hYlen' hannBound hP1 hrB hR hRP
+    hrD.regular hrTy
     (by
       intro scheme heq
-      subst ann
-      cases hannFits
-      have htake : Xs.take M.paramCount = Xs := List.take_of_length_le hXlen.le
-      change Xs.take M.paramCount = Ys at hXtake
-      rw [htake] at hXtake
-      exact congrArg M.openVars hXtake)
+      rw [heq] at hannFits'
+      cases hannFits'
+      have htake : Xs.take (R.onPolyTy scheme).paramCount = Xs := List.take_of_length_le hXlen.le
+      have hcounts : ann.paramCount = (R.onPolyTy scheme).paramCount := by
+        have := congrArg LetAnn.paramCount heq
+        simpa using this
+      rw [hcounts, htake] at hXtake
+      exact congrArg (R.onPolyTy scheme).openVars hXtake)
     (by
       intro count template heq
-      subst ann
-      cases hannFits with
+      rw [heq] at hannFits'
+      cases hannFits' with
       | partialSignature _ hfits =>
-          change Xs.take count = Ys at hXtake
-          simpa only [hXtake] using hfits)
-  have hsCheckLC := hc.lc hYlen hrLC
+        have hcounts : ann.paramCount = count := by
+          have := congrArg LetAnn.paramCount heq
+          simpa using this
+        simpa only [← hcounts, hXtake] using hfits)
+  have hsCheckLC := hc.lc hYlen' hrLC
   have hsCheckB := hc.belowFvars hrB
     (fun k hk => hK1 k (List.mem_append_left _ hk))
-    (fun y hy => hK1 y (List.mem_append_right _ hy))
+    (fun y hy => hK1 y (List.mem_append_right _ hy)) hF1
   have hprefixB : ∀ pair ∈ s1 ++ sCheck, Ty.BelowFvars checked pair.2 := by
     intro pair hp
     exact (List.mem_append.mp hp).elim (fun hp => (hs1B pair hp).mono hcle) (hsCheckB pair)
@@ -1038,45 +1007,100 @@ theorem _root_.Infer.signature_frame_aligned {rhs body : Input} {ann : LetAnn}
     exact (List.mem_append.mp hp).elim
       (fun hp => fun hk => hr.dom_avoids pair hp (List.mem_append_left _ hk))
       (fun hp => fun hk => hc.dom_avoids pair hp (List.mem_append_left _ hk))
-  have hVimages : ∀ x ∈ Xs, ∀ k ∈ K, x ∉ (V.onTy (.fvar k)).freeVars := by
-    intro x hx k hk
-    have heq := hagPrefix k (hKopen k (List.mem_append_left _ hk))
-    rw [Subst.onTy_append, hprefixFix k hk] at heq
-    rw [← heq]
-    exact hXimages x hx k hk
+  have hVimages : ∀ x ∈ Xs, ∀ k ∈ K ++ softVars (substSoft (s1 ++ sCheck) F),
+      x ∉ (V.onTy (.fvar k)).freeVars := by
+    intro x hx k hk hv
+    rcases List.mem_append.mp hk with hk | hk
+    · have heq := hagPrefix k (hKopen k (List.mem_append_left _ hk))
+      rw [Subst.onTy_append, hprefixFix k hk] at heq
+      rw [← heq] at hv
+      exact hXimages x hx k hk hv
+    · obtain ⟨ty, hty, hk⟩ := TyList.mem_freeVars_iff.mp hk
+      obtain ⟨original, ho, rfl⟩ := List.mem_map.mp hty
+      have himage : x ∈ (V.onTy ((s1 ++ sCheck).onTy original)).freeVars :=
+        Ty.mem_freeVars_substFvars_image.mpr ⟨k, hk, hv⟩
+      have heq := Subst.onTy_congr hagPrefix (hFopen original ho)
+      rw [Subst.onTy_append] at heq
+      rw [← heq] at himage
+      exact hXsoft x hx (TyList.mem_freeVars_iff.mpr ⟨ambient.onTy original,
+        List.mem_map.mpr ⟨original, ho, rfl⟩, himage⟩)
+  have hYX : ∀ y ∈ Ys, y ∈ Xs := by
+    intro y hy
+    rw [← hXtake] at hy
+    exact List.mem_of_mem_take hy
+  have hescape : ∀ y ∈ Ys, y ∉ (sCheck.onCtx (s1.onCtx ctx)).env.freeVars ++
+      softVars (substSoft (s1 ++ sCheck) F) := by
+    intro y hy hc
+    have hfixy := hVP y (List.mem_append_right _ hy)
+    rcases List.mem_append.mp hc with hc | hc
+    · obtain ⟨scheme, hm, hyM⟩ := Env.mem_freeVars_iff.mp hc
+      have himage : y ∈ (V.onPolyTy scheme).body.freeVars :=
+        Ty.mem_freeVars_substFvars_image.mpr ⟨y, hyM, by change y ∈ (V.onTy (.fvar y)).freeVars; rw [hfixy]; exact List.mem_cons_self⟩
+      apply hXctx y (hYX y hy)
+      rw [← hctxBridge]
+      exact Env.mem_freeVars_iff.mpr ⟨V.onPolyTy scheme, List.mem_map.mpr ⟨scheme, hm, rfl⟩, himage⟩
+    · exact hVimages y (hYX y hy) y (List.mem_append_right _ hc) (by rw [hfixy]; exact List.mem_cons_self)
+
+  have hpostScope := hscope.subst (s1 ++ sCheck) hprefixFix
+  have hannSource : ∀ v ∈ ((ann.substTyFvars s1).substTyFvars sCheck).rigidVars,
+      v ∈ K ++ softVars (substSoft (s1 ++ sCheck) F) := by
+    intro v hv
+    rw [← LetAnn.substTyFvars_append] at hv
+    exact hpostScope v (List.mem_append_left _ (List.mem_append_left _ hv))
+  have havoidQ : ∀ y ∈ Ys, y ∉ K ++ softVars (substSoft (s1 ++ sCheck) F) := by
+    intro y hy hc
+    exact (List.mem_append.mp hc).elim (hYavoid y hy)
+      (fun hc => hescape y hy (List.mem_append_right _ hc))
   have hcheckedLC := Subst.onTy_lc hsCheckLC hrLC
-  have hgen := hc.scheme_generalizes (ctx := sCheck.onCtx (s1.onCtx ctx)) hYlen hYnd hYavoid
-    hcheckedLC hV hM hXnd hXlen hXM hcheckedTy
+  have hgen := hc.scheme_generalizes (ctx := sCheck.onCtx (s1.onCtx ctx)) hYlen' hYnd hrLC
+    hannSource havoidQ hV hM hXnd hXlen hXM hcheckedTy
     (by simpa only [hctxBridge] using hXctx) hVimages
+  rw [← LetAnn.substTyFvars_append] at hgen
   have hbodyWeak := Typing.weaken_schemes (env := (ambient.onCtx ctx).env) (.cons hgen .nil) hbD
+  have hbodySource : body.substTyFvars ambient =
+      (body.substTyFvars (s1 ++ sCheck)).substTyFvars V := by
+    rw [← Input.substTyFvars_append]
+    exact body.substTyFvars_congr (fun v hv => hagPrefix v (by
+      have := hscopeBound v (hscope v (List.mem_append_right _ hv)); omega))
+  rw [hbodySource] at hbodyWeak
   have hbodyD : Typing P (V.onCtx
       { (sCheck.onCtx (s1.onCtx ctx)) with
-        env := signatureScheme ann K Ys (sCheck.onCtx (s1.onCtx ctx)) (sCheck.onTy rhsTy) ::
-          (sCheck.onCtx (s1.onCtx ctx)).env }) body target := by
+        env := signatureScheme (ann.substTyFvars (s1 ++ sCheck))
+          (K ++ softVars (substSoft (s1 ++ sCheck) F)) Ys
+          (sCheck.onCtx (s1.onCtx ctx)) (sCheck.onTy rhsTy) ::
+          (sCheck.onCtx (s1.onCtx ctx)).env }) ((body.substTyFvars (s1 ++ sCheck)).substTyFvars V) target := by
     rw [← hctxBridge] at hbodyWeak
     exact hbodyWeak
   have hcheckedWF := Subst.onCtx_wf hsCheckLC (Subst.onCtx_wf hs1LC hwf)
-  have hcheckedB := Subst.onCtx_below hsCheckB hcle (Subst.onCtx_below hs1B (by omega) hbelow)
+  have hcheckedB := Subst.onCtx_below hsCheckB hcle
+    (Subst.onCtx_below hs1B (by omega) hbelow)
   have hcheckedTyB := Subst.onTy_belowFvars hsCheckB (hrB.mono hcle)
+  have hpostAnnBound : ∀ v ∈ ((ann.substTyFvars s1).substTyFvars sCheck).rigidVars, v < checked := by
+    intro v hv
+    obtain ⟨k, hk, himage⟩ := (ann.substTyFvars s1).rigidVars_substTyFvars hv
+    exact (Subst.onTy_belowFvars hsCheckB (Ty.BelowFvars.fvar (Nat.lt_of_lt_of_le (hannBound k hk) hcle))).mem_lt v himage
   have hbodyWF : CtxWF { (sCheck.onCtx (s1.onCtx ctx)) with
-      env := signatureScheme ann K Ys (sCheck.onCtx (s1.onCtx ctx)) (sCheck.onTy rhsTy) ::
+      env := signatureScheme (ann.substTyFvars (s1 ++ sCheck))
+        (K ++ softVars (substSoft (s1 ++ sCheck) F)) Ys
+        (sCheck.onCtx (s1.onCtx ctx)) (sCheck.onTy rhsTy) ::
         (sCheck.onCtx (s1.onCtx ctx)).env } := by
     intro scheme hs
     rcases List.mem_cons.mp hs with rfl | hs
-    · exact hc.scheme_wf hcheckedLC
+    · simpa only [← LetAnn.substTyFvars_append] using hc.scheme_wf (Q := K ++ softVars (substSoft (s1 ++ sCheck) F))
+        (ctx := sCheck.onCtx (s1.onCtx ctx)) hYlen' hrLC
     · exact hcheckedWF scheme hs
   have hbodyB : CtxBelow checked { (sCheck.onCtx (s1.onCtx ctx)) with
-      env := signatureScheme ann K Ys (sCheck.onCtx (s1.onCtx ctx)) (sCheck.onTy rhsTy) ::
+      env := signatureScheme (ann.substTyFvars (s1 ++ sCheck))
+        (K ++ softVars (substSoft (s1 ++ sCheck) F)) Ys
+        (sCheck.onCtx (s1.onCtx ctx)) (sCheck.onTy rhsTy) ::
         (sCheck.onCtx (s1.onCtx ctx)).env } := by
     intro scheme hs
     rcases List.mem_cons.mp hs with rfl | hs
-    · exact hc.scheme_belowFvars hcheckedTyB (fun k hk => Nat.lt_of_lt_of_le (hK k hk) (by omega))
+    · simpa only [← LetAnn.substTyFvars_append] using hc.scheme_belowFvars
+        (Q := K ++ softVars (substSoft (s1 ++ sCheck) F)) (ctx := sCheck.onCtx (s1.onCtx ctx)) hcheckedTyB hpostAnnBound
     · exact hcheckedB scheme hs
-  exact ⟨V, hV, hVP, hagPrefix, hbodyD, hbodyWF, hbodyB, hprefixB⟩
+  exact ⟨V, hV, hVP, hagPrefix, hbodyD, hbodyWF, hbodyB, hprefixB, hescape⟩
 
-/-- Align only a candidate signature's written prefix with algorithmic skolems.
-The freshness hypotheses concern the already dodged candidate. Additional
-quantifiers receive fresh names disjoint from an arbitrary caller avoid set. -/
 theorem Typing.align_partial_prefix_with_fits {P : List Nat} {ctx : Ctx} {rhs : Input}
     {scheme : PolyTy} {ann : LetAnn} {count : Nat} {L Ys : List Nat}
     (hcount : count = ann.paramCount)
@@ -1224,33 +1248,43 @@ theorem Typing.align_partial_prefix_with_fits {P : List Nat} {ctx : Ctx} {rhs : 
 
 /-- Shared signed continuation frame for an internally dodged candidate. The
 cofinite template and RHS premises use one aligned opening and one extra block. -/
-theorem _root_.Infer.signature_frame {rhs body : Input} {ann : LetAnn}
-    (hr : Infer (K ++ Ys) (frontier + ann.paramCount) ctx (rhs.openTyVars Ys) first s1 rhsOut rhsTy)
-    (hc : SignatureCheck K Ys first rhsTy ann checked sCheck) (ihr : Infer.Principal hr)
+theorem _root_.Infer.source_signature_frame {rhs body : Input} {ann : LetAnn}
+    (hscope : SourceScope K F (.letIn ann rhs body))
+    (hr : Infer (K ++ Ys) F (frontier + ann.paramCount) ctx (rhs.openTyVars Ys) first s1 rhsOut rhsTy)
+    (hc : SignatureCheck K (substSoft s1 F) Ys first rhsTy (ann.substTyFvars s1) checked sCheck)
+    (ihr : Infer.SourcePrincipal hr)
     (hprefix : Ys = freshVars frontier ann.paramCount)
     (hwf : CtxWF ctx) (hbelow : CtxBelow frontier ctx) (hK : ∀ k ∈ K, k < frontier)
+    (hF : ∀ t ∈ F, Ty.BelowFvars frontier t)
     {ambient : Subst} {P : List Nat} {M : PolyTy} {L : List Nat} {target : Ty}
     (hS : ∀ pair ∈ ambient, pair.2.IsLC) (hP : ∀ p ∈ P, p < frontier)
     (hfix : ∀ p ∈ P ++ Ys, ambient.onTy (.fvar p) = .fvar p)
-    (hM : M.WF) (hannRigid : ∀ v ∈ ann.rigidVars, v ∈ P)
-    (hrhsRigid : ∀ v ∈ rhs.rigidVars, v ∈ P)
-    (hannFits : ∀ Xs, FreshNames L M.paramCount Xs → ann.SignatureFits M Xs)
+    (hfreeze : ∀ v ∈ (Input.letIn ann rhs body).rigidVars,
+      v ∈ K → v ∉ softVars F → ambient.onTy (.fvar v) = .fvar v)
+    (hM : M.WF) (hannRigid : ∀ v ∈ (ann.substTyFvars ambient).rigidVars, v ∈ P)
+    (hrhsRigid : ∀ v ∈ (rhs.substTyFvars ambient).rigidVars, v ∈ P)
+    (hannFits : ∀ Xs, FreshNames L M.paramCount Xs → (ann.substTyFvars ambient).SignatureFits M Xs)
     (hrD : ∀ Xs, FreshNames L M.paramCount Xs →
       Typing (P ++ Xs.take ann.paramCount) (ambient.onCtx ctx)
-        (rhs.openTyVars (Xs.take ann.paramCount)) (M.openVars Xs))
-    (hbD : Typing P { ambient.onCtx ctx with env := M :: (ambient.onCtx ctx).env } body target)
+        ((rhs.substTyFvars ambient).openTyVars (Xs.take ann.paramCount)) (M.openVars Xs))
+    (hbD : Typing P { ambient.onCtx ctx with env := M :: (ambient.onCtx ctx).env }
+      (body.substTyFvars ambient) target)
     (hYsM : ∀ y ∈ Ys, y ∉ M.body.freeVars)
     (hYsCtx : ∀ y ∈ Ys, y ∉ (ambient.onCtx ctx).env.freeVars)
-    (hYsImages : ∀ y ∈ Ys, ∀ k ∈ K, y ∉ (ambient.onTy (.fvar k)).freeVars) :
+    (hYsImages : ∀ y ∈ Ys, ∀ k ∈ K, y ∉ (ambient.onTy (.fvar k)).freeVars)
+    (hYsSoft : ∀ y ∈ Ys, y ∉ softVars (substSoft ambient F)) :
     let checkedCtx := sCheck.onCtx (s1.onCtx ctx)
-    let scheme := signatureScheme ann K Ys checkedCtx (sCheck.onTy rhsTy)
+    let soft := substSoft (s1 ++ sCheck) F
+    let scheme := signatureScheme (ann.substTyFvars (s1 ++ sCheck)) (K ++ softVars soft) Ys checkedCtx (sCheck.onTy rhsTy)
     ∃ V : Subst, (∀ pair ∈ V, pair.2.IsLC) ∧
       (∀ p ∈ P ++ Ys, V.onTy (.fvar p) = .fvar p) ∧
       Subst.AgreesBelow (frontier + ann.paramCount) ambient ((s1 ++ sCheck) ++ V) ∧
-      Typing P (V.onCtx { checkedCtx with env := scheme :: checkedCtx.env }) body target ∧
+      Typing P (V.onCtx { checkedCtx with env := scheme :: checkedCtx.env })
+        ((body.substTyFvars (s1 ++ sCheck)).substTyFvars V) target ∧
       CtxWF { checkedCtx with env := scheme :: checkedCtx.env } ∧
       CtxBelow checked { checkedCtx with env := scheme :: checkedCtx.env } ∧
-      (∀ pair ∈ s1 ++ sCheck, Ty.BelowFvars checked pair.2) := by
+      (∀ pair ∈ s1 ++ sCheck, Ty.BelowFvars checked pair.2) ∧
+      (∀ y ∈ Ys, y ∉ checkedCtx.env.freeVars ++ softVars soft) := by
   have hYlen : Ys.length = ann.paramCount := by rw [hprefix, freshVars_length]
   have hYnd : Ys.Nodup := hprefix ▸ freshVars_nodup
   have hYsP : ∀ y ∈ Ys, y ∉ P := by
@@ -1260,9 +1294,10 @@ theorem _root_.Infer.signature_frame {rhs body : Input} {ann : LetAnn}
     omega
   obtain ⟨Ns, hNlen, hNnd, hNavoid⟩ := exists_fresh_names L M.paramCount
   have hle := (hannFits Ns ⟨hNlen, hNnd, hNavoid⟩).prefix_le
-  let images := K.flatMap (fun k => (ambient.onTy (.fvar k)).freeVars)
+  simp only [LetAnn.paramCount_substTyFvars] at hle
+  let images := K.flatMap (fun k => (ambient.onTy (.fvar k)).freeVars) ++ softVars (substSoft ambient F)
   obtain ⟨extras, hElen, hXsNd, hExtra, hAll, hAligned, hAlignedFits⟩ :=
-    Typing.align_partial_prefix_with_fits rfl hannFits hannRigid hrD hle hrhsRigid
+    Typing.align_partial_prefix_with_fits (by simp) hannFits hannRigid hrD hle hrhsRigid
       hYlen hYnd hYsP hYsCtx hYsM images
   have hXsLen : (Ys ++ extras).length = M.paramCount := by
     simp only [List.length_append, hYlen, hElen]; omega
@@ -1272,13 +1307,20 @@ theorem _root_.Infer.signature_frame {rhs body : Input} {ann : LetAnn}
     rcases List.mem_append.mp hx with hy | he
     · exact hYsImages x hy k hk hv
     · apply hExtra x he
-      have himages : x ∈ images := List.mem_flatMap.mpr ⟨k, hk, hv⟩
+      have himages : x ∈ images := List.mem_append_left _ (List.mem_flatMap.mpr ⟨k, hk, hv⟩)
       simp only [List.mem_append]
       tauto
-  exact hr.signature_frame_aligned hc ihr hprefix hwf hbelow hK hS hP hfix hM hannRigid
+  have hXSoft : ∀ x ∈ Ys ++ extras, x ∉ softVars (substSoft ambient F) := by
+    intro x hx hv
+    rcases List.mem_append.mp hx with hy | he
+    · exact hYsSoft x hy hv
+    · apply hExtra x he
+      have himages : x ∈ images := List.mem_append_right _ hv
+      simp only [List.mem_append]
+      tauto
+  exact Infer.source_signature_frame_aligned hscope hr hc ihr hprefix hwf hbelow hK hF hS hP hfix hfreeze hM hannRigid
     hXsLen hXsNd hXsTake hAlignedFits hAligned hbD
-    (fun x hx => (hAll x hx).2.2) (fun x hx => (hAll x hx).2.1) hXImages
-
+    (fun x hx => (hAll x hx).2.2) (fun x hx => (hAll x hx).2.1) hXImages hXSoft
 
 /-- Dodge candidate collisions while retaining the source-transformed signed
 contract. Authored candidate leaves lie in P and hence are fixed by the move. -/
@@ -2142,33 +2184,52 @@ private theorem branch_size_lt {branch : MatchPattern × Input}
     · simp only [sizeBranches]; omega
     · have := ih h; simp only [sizeBranches]; omega
 
-theorem _root_.Infer.principal_letSignature {rhs body : Input} {ann : LetAnn}
+theorem _root_.Infer.sourcePrincipal_letSignature {rhs body : Input} {ann : LetAnn}
+    (hscope : SourceScope K F (.letIn ann rhs body))
     (hprefix : written = freshVars frontier ann.paramCount)
-    (havoid : ∀ name ∈ written, name ∉ K) (hraw : ∀ v ∈ rhs.rigidVars, v ∈ K)
-    (hr : Infer (K ++ written) (frontier + ann.paramCount) ctx (rhs.openTyVars written) first s1 rhsOut rhsTy)
-    (hc : SignatureCheck K written first rhsTy ann checked sCheck)
-    (hescape : ∀ name ∈ written, name ∉ (sCheck.onCtx (s1.onCtx ctx)).env.freeVars)
-    (hb : Infer K checked
+    (havoid : ∀ name ∈ written, name ∉ K ++ softVars F)
+    (hraw : ∀ v ∈ rhs.rigidVars, v ∈ K ++ softVars F)
+    (hr : Infer (K ++ written) F (frontier + ann.paramCount) ctx (rhs.openTyVars written) first s1 rhsOut rhsTy)
+    (hc : SignatureCheck K (substSoft s1 F) written first rhsTy (ann.substTyFvars s1) checked sCheck)
+    (hescape : ∀ name ∈ written, name ∉ (sCheck.onCtx (s1.onCtx ctx)).env.freeVars ++ softVars (substSoft (s1 ++ sCheck) F))
+    (hb : Infer K (substSoft (s1 ++ sCheck) F) checked
       { sCheck.onCtx (s1.onCtx ctx) with
-        env := signatureScheme ann K written (sCheck.onCtx (s1.onCtx ctx)) (sCheck.onTy rhsTy) ::
-          (sCheck.onCtx (s1.onCtx ctx)).env } body next s2 bodyOut bodyTy)
-    (ihr : Infer.Principal hr) (ihb : Infer.Principal hb) :
-    Infer.Principal (.letSignature hprefix havoid hraw hr hc hescape hb) := by
-  intro hwf hbelow hK ambient target P hS hP hfix ht
+        env := signatureScheme (ann.substTyFvars (s1 ++ sCheck)) (K ++ softVars (substSoft (s1 ++ sCheck) F))
+          written (sCheck.onCtx (s1.onCtx ctx)) (sCheck.onTy rhsTy) ::
+          (sCheck.onCtx (s1.onCtx ctx)).env }
+      (body.substTyFvars (s1 ++ sCheck)) next s2 bodyOut bodyTy)
+    (ihr : Infer.SourcePrincipal hr) (ihb : Infer.SourcePrincipal hb) :
+    Infer.SourcePrincipal (.letSignature hscope hprefix havoid hraw hr hc hescape hb) := by
+  intro hwf hbelow hK hF ambient target P hS hP hfix hfreeze ht
   subst written
-  have hmode : ann.isSignature = true := by cases hc <;> rfl
+  have hmode : ann.isSignature = true := by
+    have hm : (ann.substTyFvars s1).isSignature = true := by cases ann <;> cases hc <;> rfl
+    simpa only [LetAnn.isSignature_substTyFvars] using hm
   obtain ⟨W, M, L, hMoved, hMovedFix, hBackAmbient, hBackLC, hBackP, hRestore,
-      hM, hann, hrhs, hfits, htypes, hbodyD, hYsM, hYsCtx, hYsImages⟩ :=
-    ht.signature_dodge (K := K) hmode hbelow hP hK hS hfix
-  obtain ⟨V, hV, hVP, hagPrefix, hbodyV, hbodyWF, hbodyB, hprefixB⟩ :=
-    hr.signature_frame hc ihr rfl hwf hbelow hK hMoved hP hMovedFix hM hann hrhs
-      hfits htypes hbodyD hYsM hYsCtx hYsImages
+      hMovedFreeze, hM, hann, hrhs, hfits, htypes, hbodyD, hYsM, hYsCtx, hYsSoft, hYsImages⟩ :=
+    ht.signature_dodge_source hmode hscope hbelow hP hK hF hS hfix hfreeze
+  obtain ⟨V, hV, hVP, hagPrefix, hbodyV, hbodyWF, hbodyB, hprefixB, _⟩ :=
+    Infer.source_signature_frame hscope hr hc ihr rfl hwf hbelow hK hF hMoved hP hMovedFix hMovedFreeze
+      hM hann hrhs hfits htypes hbodyD hYsM hYsCtx hYsImages hYsSoft
   have hleOpen := hr.frontier_le.trans hc.frontier_le
   have hle : frontier ≤ checked := (Nat.le_add_right frontier ann.paramCount).trans hleOpen
+  have hprefixFix : ∀ k ∈ K, (s1 ++ sCheck).onTy (.fvar k) = .fvar k := by
+    apply Subst.fixes_of_dom_avoids
+    intro p hp hk
+    exact (List.mem_append.mp hp).elim
+      (fun hp => hr.dom_avoids p hp (List.mem_append_left _ hk))
+      (fun hp => hc.dom_avoids p hp (List.mem_append_left _ hk))
+  have hbodyFreeze :=
+    (show SourceScope K F body from fun v hv => hscope v (List.mem_append_right _ hv)).residual_freeze
+      (fun v hv => (List.mem_append.mp (hscope v (List.mem_append_right _ hv))).elim
+        (hK v) (softVars_lt hF v)) hprefixFix
+      (fun v hv => hMovedFreeze v (List.mem_append_right _ hv))
+      (fun v hv => hagPrefix v (by omega))
   obtain ⟨R, hR, hresult, hRP, hagBody⟩ := ihb hbodyWF hbodyB
-    (fun k hk => Nat.lt_of_lt_of_le (hK k hk) hle) V _ P hV
+    (fun k hk => Nat.lt_of_lt_of_le (hK k hk) hle)
+    (substSoft_below hprefixB hle hF) V _ P hV
     (fun p hp => Nat.lt_of_lt_of_le (hP p hp) hle)
-    (fun p hp => hVP p (List.mem_append_left _ hp)) hbodyV
+    (fun p hp => hVP p (List.mem_append_left _ hp)) hbodyFreeze hbodyV
   have hag := Subst.AgreesBelow.trans_append hleOpen hagPrefix hprefixB hagBody
   refine ⟨R ++ blockListBack frontier W ann.paramCount,
     (fun p hp => (List.mem_append.mp hp).elim (hR p) (hBackLC p)), ?_, ?_, ?_⟩
@@ -2181,22 +2242,25 @@ theorem _root_.Infer.principal_letSignature {rhs body : Input} {ann : LetAnn}
     rw [hBackAmbient v hv] at heq
     simpa only [Subst.onTy_append, List.append_assoc] using heq
 
-/-- Every elaboration is principal for independent input typings, retaining
-ordinary Core's residual factorization and protected-set guarantees. -/
-theorem _root_.Infer.principal (h : Infer K frontier ctx input next subst output ty) :
-    Infer.Principal h := by
+/-- Every scoped elaboration admits source-transforming residual factorization. -/
+theorem _root_.Infer.sourcePrincipal (h : Infer K F frontier ctx input next subst output ty) :
+    Infer.SourcePrincipal h := by
   match h with
-  | .backend hemb hi hctx hK hr => exact Infer.principal_backend hemb hi hctx hK hr
-  | .lambda hs hb => exact Infer.principal_lambda hs hb hb.principal
-  | .app hf ha hu => exact Infer.principal_app hf ha hu hf.principal ha.principal
-  | .letIn hr hc hb => exact Infer.principal_letIn hr hc hb hr.principal hb.principal
-  | .letSignature hp ha hs hr hc he hb =>
-    exact Infer.principal_letSignature hp ha hs hr hc he hb hr.principal hb.principal
-  | .match_ hs hne hb =>
-      exact Infer.principal_match hs hne hb hs.principal
-        (hb.principal_of_body hne (fun b hm {_ _ _ _ _ _} hi => hi.principal))
+  | .backend hemb hi hctx hK hr hd => exact Infer.sourcePrincipal_backend hemb hi hctx hK hr hd
+  | .lambda hs seed hb => exact Infer.sourcePrincipal_lambda hs seed hb hb.sourcePrincipal
+  | .app hs hf ha hu => exact Infer.sourcePrincipal_app hs hf ha hu hf.sourcePrincipal ha.sourcePrincipal
+  | .letIn hs hr hc hb => exact Infer.sourcePrincipal_letIn hs hr hc hb hr.sourcePrincipal hb.sourcePrincipal
+  | .letSignature hs hp ha hs' hr hc he hb =>
+    exact Infer.sourcePrincipal_letSignature hs hp ha hs' hr hc he hb hr.sourcePrincipal hb.sourcePrincipal
+  | .match_ hscope hs hne hb =>
+    exact Infer.sourcePrincipal_match hscope hs hne hb hs.sourcePrincipal
+      (fun body hbody {_ _ _ _ _ _ _ _} hi => hi.sourcePrincipal)
 termination_by input.size
 decreasing_by
-  all_goals (simp only [Input.size, Input.size_openTyVars]; first | omega | have := branch_size_lt hm; omega)
+  all_goals (simp only [Input.size, Input.size_openTyVars, Input.size_substTyFvars]; omega)
+
+/-- The public residual contract retains independent P and its protection. -/
+theorem _root_.Infer.principal (h : Infer K F frontier ctx input next subst output ty) :
+    Infer.Principal h := h.sourcePrincipal.principal
 
 end Elaboration

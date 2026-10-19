@@ -22,6 +22,7 @@ roots = [
   "FHM.Elaboration.Lowering",
   "FHM.Elaboration.Typing",
   "FHM.Elaboration.RecOpening",
+  "FHM.Elaboration.RecShapeCheck",
   "FHM.Elaboration.Close",
   "FHM.Elaboration.Judgment",
   "FHM.Elaboration.Worker",
