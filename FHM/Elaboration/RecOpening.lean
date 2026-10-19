@@ -324,3 +324,66 @@ theorem resolveRecWritten_complete_of_factor {R : Subst} {candidates : List Nat}
 
 
 end Elaboration
+
+namespace Elaboration
+
+
+theorem OpenRecAnn.recFits_of_images {S : Subst}
+    (h : OpenRecAnn frontier ann next opening) (hmode : ann.recModeAnn = none)
+    (hS : ∀ p ∈ S, p.2.IsLC)
+    (himages : opening.written.map (fun x => S.onTy (.fvar x)) = resolved.map Ty.fvar)
+    (htarget : ∀ expected, opening.expected = some expected → target = S.onTy expected) :
+    (ann.substTyFvars S).RecFits resolved target := by
+  cases h with
+  | absent => trivial
+  | complete => cases hmode
+  | @template next ty frontier template heq _ =>
+      have hfit := template.allocate_fits frontier
+      rw [heq] at hfit
+      rw [htarget ty rfl]
+      exact hfit.substTyFvars S
+  | @partialForall next ty frontier count template heq _ =>
+      have hfit := (template.openTyVarsFrom 0 (freshVars frontier count)).allocate_fits (frontier + count)
+      rw [heq] at hfit
+      have hcount := congrArg List.length himages
+      simp only [List.length_map, freshVars_length] at hcount
+      refine ⟨hcount.symm, ?_⟩
+      have hfitS := hfit.substTyFvars S
+      rw [Template.substTyFvars_openTyVarsFrom_of_images _ hS himages 0] at hfitS
+      rw [htarget ty rfl]
+      exact hfitS
+
+/-- Closing a recursively checked annotation retains its cofinite binding fit. -/
+theorem LetAnn.RecFits.cofinite_bindingFits {ann : LetAnn} {written pool Q : List Nat} {ty : Ty}
+    (hfit : ann.RecFits written ty) (hcount : written.length = ann.recPrefixCount)
+    (hnd : written.Nodup) (hsub : ∀ v ∈ written, v ∈ pool) (hpool : pool.Nodup)
+    (hlc : ty.IsLC) (hsource : ∀ v ∈ ann.rigidVars, v ∈ Q)
+    (havoid : ∀ v ∈ pool, v ∉ Q) :
+    ∃ L, ∀ Xs, FreshNames L (recScheme written pool ty).paramCount Xs →
+      ann.BindingFits (recScheme written pool ty) Xs := by
+  have hnames := recNames_nodup (ty := ty) hnd hpool
+  have hnamesQ : ∀ v ∈ recNames written pool ty, v ∉ Q := by
+    intro v hv
+    rcases mem_recNames.mp hv with hv | ⟨hv, _, _⟩
+    · exact havoid v (hsub v hv)
+    · exact havoid v hv
+  cases ann with
+  | absent => exact ⟨[], fun _ _ => trivial⟩
+  | complete => cases hfit
+  | template template =>
+      refine ⟨recNames written pool ty, ?_⟩
+      intro Xs hXs
+      change template.Fits (Ty.openVars Xs (Ty.closeOver (recNames written pool ty) ty))
+      rw [Ty.openVars_closeOver_rename hlc hnames hXs.length
+        (fun v hv hx => hXs.avoid v hx hv)]
+      exact Template.Fits.onSubst hfit hsource
+        (fun pair hp => hnamesQ pair.1 (List.of_mem_zip hp).1)
+  | partialForall count template =>
+      have hcomp : (LetAnn.partialForall count template).SignatureCompletion written ty
+          (recScheme written pool ty) (recNames written pool ty) :=
+        .partialSignature hcount hfit.2
+      obtain ⟨L, hL⟩ := hcomp.cofinite_fits hnames hnamesQ hsource hlc
+      exact ⟨L, fun Xs hXs => hL Xs hXs⟩
+
+
+end Elaboration

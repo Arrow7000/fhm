@@ -2416,3 +2416,243 @@ theorem Input.substTyFvars_openTyVars_of_images (input : Input) {subst : Subst} 
   input.substTyFvars_openTyVarsFrom_of_images hlc himages 0
 
 end Elaboration
+
+namespace Elaboration
+
+private theorem scope_branch_rigid_mem {bs : List (MatchPattern × Input)} {b : MatchPattern × Input}
+    (hb : b ∈ bs) {v : Nat} (hv : v ∈ b.2.rigidVars) : v ∈ rigidBranchVars bs := by
+  induction bs with
+  | nil => cases hb
+  | cons head tail ih =>
+    exact (List.mem_cons.mp hb).elim (fun heq => List.mem_append_left _ (heq ▸ hv))
+      (fun hb => List.mem_append_right _ (ih hb))
+
+private theorem scope_binding_rigid_mem {bs : List Input} {b : Input}
+    (hb : b ∈ bs) {v : Nat} (hv : v ∈ b.rigidVars) : v ∈ rigidBindingVars bs := by
+  induction bs with
+  | nil => cases hb
+  | cons head tail ih =>
+    exact (List.mem_cons.mp hb).elim (fun heq => List.mem_append_left _ (heq ▸ hv))
+      (fun hb => List.mem_append_right _ (ih hb))
+private theorem scope_ann_nil (ann : LetAnn) : ann.substTyFvars [] = ann :=
+  ann.substTyFvars_eq_self_of_fixes (fun _ _ => rfl)
+private theorem scope_ann_nil_fun : LetAnn.substTyFvars [] = id := funext scope_ann_nil
+private theorem scope_poly_nil : Subst.onPolyTy [] = id := funext Subst.onPolyTy_nil
+/-- The independent scope index protects authored source variables only.
+Unused index entries do not constrain candidate types or the context. -/
+theorem Typing.scope_restrict {Q P : List Nat} {ctx : Ctx} {input : Input} {ty : Ty}
+    (h : Typing Q ctx input ty) (hscope : ∀ v ∈ input.rigidVars, v ∈ P) : Typing P ctx input ty := by
+  induction h using Typing.rec
+      (motive_2 := fun _ ctx branch st rt _ => ∀ {P : List Nat},
+        (∀ v ∈ branch.2.rigidVars, v ∈ P) → BranchTyping Typing P ctx branch st rt) generalizing P with
+  | complete hemb _ ht =>
+    exact .complete hemb (fun v hv => hscope v ((Input.toCore_rigidVars _ hemb v).mpr hv)) ht
+  | primLit ht => exact .primLit ht
+  | primBinOp ht => exact .primBinOp ht
+  | @lambda ann Q ctx body bodyTy param hlc hfit _ _ ih =>
+    refine .lambda hlc hfit ?_ (ih (fun v hv => hscope v (List.mem_append_right _ hv)))
+    intro t heq v hv
+    subst ann
+    exact hscope v (List.mem_append_left _ hv)
+  | app _ _ ihf ihx =>
+    exact .app (ihf (fun v hv => hscope v (List.mem_append_left _ hv)))
+      (ihx (fun v hv => hscope v (List.mem_append_right _ hv)))
+  | @letIn ann Q ctx rhs body bodyTy M L hM _ hfit _ _ ihr ihb =>
+    refine .letIn (L := L) hM ?_ hfit ?_ (ihb (fun v hv => hscope v (List.mem_append_right _ hv)))
+    · intro t heq v hv
+      subst ann
+      exact hscope v (List.mem_append_left _ (List.mem_append_left _ hv))
+    · intro Xs hf
+      exact ihr Xs hf (fun v hv => hscope v (List.mem_append_left _ (List.mem_append_right _ hv)))
+  | @letSignature Q ctx body bodyTy ann rhs M L hM _ _ hfit _ _ ihr ihb =>
+    have ha : ∀ v ∈ ann.rigidVars, v ∈ P :=
+      fun v hv => hscope v (List.mem_append_left _ (List.mem_append_left _ hv))
+    have hr : ∀ v ∈ rhs.rigidVars, v ∈ P :=
+      fun v hv => hscope v (List.mem_append_left _ (List.mem_append_right _ hv))
+    refine .letSignature (L := L) hM ha hr hfit ?_
+      (ihb (fun v hv => hscope v (List.mem_append_right _ hv)))
+    intro Xs hf
+    exact ihr Xs hf (rhs.openTyVars_scope hr (Xs.take ann.paramCount))
+  | letRec hgroups hwf hp hG hAnn hRhs hFits _ _ _ ihMono ihPoly ihBody =>
+    expose_names
+    have hAnnP : ∀ ann ∈ anns, ∀ v ∈ ann.rigidVars, v ∈ P := by
+      intro ann ha v hv
+      exact hscope v (List.mem_append_left _ (List.mem_append_left _
+        (List.mem_flatMap.mpr ⟨ann, ha, hv⟩)))
+    have hRhsP : ∀ rhs ∈ bindings, ∀ v ∈ rhs.rigidVars, v ∈ P := by
+      intro rhs hr v hv
+      have hmem := scope_binding_rigid_mem hr hv
+      exact hscope v (List.mem_append_left _ (List.mem_append_right _ hmem))
+    let avoid := P ++ ctx_1.env.freeVars ++ G ++ specs.flatMap RecSpec.freeVars
+    obtain ⟨W, hWlen, hWnd, hWavoid⟩ := exists_fresh_names avoid G.length
+    have hGW : ∀ g ∈ G, g ∉ W := by
+      intro g hg hw
+      exact hWavoid g hw (by simp only [avoid, List.mem_append]; tauto)
+    have hWmono : ∀ t, .mono t ∈ specs → ∀ w ∈ W, w ∉ t.freeVars := by
+      intro t ht w hw hv
+      exact hWavoid w hw (by simp only [avoid, List.mem_append]; right; exact List.mem_flatMap.mpr ⟨.mono t, ht, hv⟩)
+    have hS : ∀ p ∈ ([] : Subst), p.2.IsLC := by simp
+    have hdom : ∀ p ∈ ([] : Subst), p.1 ∉ W := by simp
+    have hran : ∀ p ∈ ([] : Subst), ∀ v ∈ p.2.freeVars, v ∉ W := by simp
+    let specs' := specs.map (fun spec => RecSpec.onSubstSource [] (RecSpec.onSubst (G.zip (W.map Ty.fvar)) spec))
+    let prefixes' := prefixes.map (recRenameNames G W)
+    let L' := G ++ W ++ L
+    have hannsLen : anns.length = specs.length := by
+      have hh := congrArg List.length hwf.anns_eq
+      simpa using hh.symm
+    have hpData := fun i hi => hp.get hannsLen (i := i) hi
+    have hcompleted := recCompletedSchemes_subst_fresh_pool hS hWlen hwf.nodup hWnd hGW hWmono hdom hran hwf.mono_lc hpData
+    have hbodyCtx : recBodyCtx ctx_1 specs' prefixes' W = recBodyCtx ctx_1 specs prefixes G := by
+      simp only [recBodyCtx]
+      simp only [scope_poly_nil, List.map_id] at hcompleted
+      rw [hcompleted]
+    have oldFresh : ∀ Xs, FreshNames (W ++ L') W.length Xs → FreshNames (G ++ L) G.length Xs := by
+      intro Xs hf
+      refine ⟨hf.length.trans hWlen, hf.nodup, ?_⟩
+      intro v hv hm
+      exact hf.avoid v hv (by simp only [L', List.mem_append] at hm ⊢; tauto)
+    have hGXs : ∀ Xs, FreshNames (W ++ L') W.length Xs → ∀ g ∈ G, g ∉ Xs := by
+      intro Xs hf g hg hx
+      exact hf.avoid g hx (by simp only [L', List.mem_append]; tauto)
+    have hWXs : ∀ Xs, FreshNames (W ++ L') W.length Xs → ∀ w ∈ W, w ∉ Xs := by
+      intro Xs hf w hw hx
+      exact hf.avoid w hx (List.mem_append_left _ hw)
+    refine Typing.letRec (specs := specs') (groups := groups) (prefixes := prefixes') (G := W) (L := L')
+      hgroups ?_ ?_ ?_ hAnnP hRhsP ?_ ?_ ?_ ?_
+    · simpa only [scope_ann_nil_fun, List.map_id] using
+        Elaboration.RecSpecs.WF.subst_fresh_pool hwf hS hWnd
+    · simpa only [scope_ann_nil_fun, List.map_id] using
+        hp.subst_fresh_pool (S := []) hWlen hWnd
+    · intro w hw hm
+      exact hWavoid w hw (by simp only [avoid, List.mem_append] at hm ⊢; tauto)
+    · intro stage component hs Xs hf member hm rhs ann names ty hr ha hn ht
+      rw [List.getElem?_map] at hn ht
+      obtain ⟨names0, hn0, rfl⟩ := Option.map_eq_some_iff.mp hn
+      obtain ⟨spec0, ht0, heq⟩ := Option.map_eq_some_iff.mp ht
+      cases spec0 with
+      | poly scheme => cases heq
+      | mono ty0 =>
+        cases heq
+        obtain ⟨_, _, hsub⟩ := hp.member member ann names0 ha hn0
+        have hrename := Ty.renameG_subst_fresh_pool (hwf.mono_lc ty0 (List.mem_of_getElem? ht0)) hS hWlen hwf.nodup hWnd hGW
+          (hWmono ty0 (List.mem_of_getElem? ht0)) hdom hran (hf.length.trans hWlen) (hGXs Xs hf)
+          (hWXs Xs hf) (by simp)
+        simp only [Subst.onTy_nil] at hrename
+        change ann.RecFits (recRenameNames W Xs (recRenameNames G W names0)) (Ty.renameG W Xs (Ty.renameG G W ty0))
+        rw [recRenameNames_composition hWlen (hf.length.trans hWlen) hWnd hsub, hrename]
+        exact hFits stage component hs Xs (oldFresh Xs hf) member hm rhs ann names0 ty0 hr ha hn0 ht0
+    · intro stage component hs Xs hf member hm rhs ann names ty hr ha hn ht
+      rw [List.getElem?_map] at hn ht
+      obtain ⟨names0, hn0, rfl⟩ := Option.map_eq_some_iff.mp hn
+      obtain ⟨spec0, ht0, heq⟩ := Option.map_eq_some_iff.mp ht
+      cases spec0 with
+      | poly scheme => cases heq
+      | mono ty0 =>
+        cases heq
+        obtain ⟨_, _, hsub⟩ := hp.member member ann names0 ha hn0
+        have hc := ihMono stage component hs Xs (oldFresh Xs hf) member hm rhs ann names0 ty0 hr ha hn0 ht0
+          (P := P ++ Xs) (fun v hv => by
+            rcases Input.rigidVars_openTyVarsFrom hv with hv | hv
+            · exact List.mem_append_left _ (hRhsP rhs (List.mem_of_getElem? hr) v hv)
+            · exact List.mem_append_right _ (recRenameNames_mem (hf.length.trans hWlen) hsub v hv))
+        have hstage := recStageSchemes_subst_fresh_pool (done := (groups.take stage).flatten) hS hWlen hwf.nodup hWnd hGW hWmono hdom hran
+          hwf.mono_lc hpData (hf.length.trans hWlen) (hGXs Xs hf) (hWXs Xs hf) (by simp)
+        simp only [scope_poly_nil, List.map_id] at hstage
+        have hstageCtx : recStageCtx ctx_1 specs' prefixes' (groups.take stage).flatten W Xs =
+            recStageCtx ctx_1 specs prefixes (groups.take stage).flatten G Xs := by
+          simp only [recStageCtx]
+          rw [hstage]
+        have hrename := Ty.renameG_subst_fresh_pool (hwf.mono_lc ty0 (List.mem_of_getElem? ht0)) hS hWlen hwf.nodup hWnd hGW
+          (hWmono ty0 (List.mem_of_getElem? ht0)) hdom hran (hf.length.trans hWlen) (hGXs Xs hf)
+          (hWXs Xs hf) (by simp)
+        simp only [Subst.onTy_nil] at hrename
+        change Typing (P ++ Xs) (recStageCtx ctx_1 specs' prefixes' (groups.take stage).flatten W Xs)
+          (rhs.openTyVars (recRenameNames W Xs (recRenameNames G W names0))) (Ty.renameG W Xs (Ty.renameG G W ty0))
+        rw [hstageCtx, recRenameNames_composition hWlen (hf.length.trans hWlen) hWnd hsub, hrename]
+        exact hc
+    · intro member rhs scheme hr hs Ys hy
+      rw [List.getElem?_map] at hs
+      obtain ⟨spec0, hs0, heq⟩ := Option.map_eq_some_iff.mp hs
+      cases spec0 with
+      | mono ty => cases heq
+      | poly scheme0 =>
+        cases heq
+        have hy0 : FreshNames L scheme0.paramCount Ys :=
+          ⟨hy.length, hy.nodup, fun y hy' hl => hy.avoid y hy' (by simp only [L', List.mem_append]; tauto)⟩
+        rw [hbodyCtx]
+        exact ihPoly member rhs scheme0 hr hs0 Ys hy0 (rhs.openTyVars_scope (hRhsP rhs (List.mem_of_getElem? hr)) Ys)
+    · rw [hbodyCtx]
+      exact ihBody (fun v hv => hscope v (List.mem_append_right _ hv))
+  | var hl ha hi => exact .var hl ha hi
+  | ctor hl ha hi => exact .ctor hl ha hi
+  | match_ _ hne _ ihs ihbs =>
+    refine .match_ (ihs (fun v hv => hscope v (List.mem_append_left _ hv))) hne ?_
+    intro b hb
+    exact ihbs b hb (fun v hv => hscope v
+      (List.mem_append_right _ (scope_branch_rigid_mem hb hv)))
+  | named hs _ ih =>
+    rename_i P hscope
+    exact .named hs (ih hscope)
+  | wildcard _ ih =>
+    rename_i P hscope
+    exact .wildcard (ih hscope)
+
+/-- Completion scopes only authored input leaves, independently of output holes. -/
+theorem Completes.scope_restrict {Q P : List Nat} {input : Input} {output : Expr}
+    (h : Completes Q input output) (hscope : ∀ v ∈ input.rigidVars, v ∈ P) :
+    Completes P input output := by
+  induction h using Completes.rec
+      (motive_2 := fun _ branches outputs _ => ∀ {P : List Nat},
+        (∀ v ∈ rigidBranchVars branches, v ∈ P) → CompletedBranches Completes P branches outputs)
+      generalizing P with
+  | complete hemb _ =>
+    exact .complete hemb (fun v hv => hscope v ((Input.toCore_rigidVars _ hemb v).mpr hv))
+  | @lambda ann Q body completed param hfit _ _ ih =>
+    refine .lambda hfit ?_ (ih (fun v hv => hscope v (List.mem_append_right _ hv)))
+    intro t heq v hv
+    subst ann
+    exact hscope v (List.mem_append_left _ hv)
+  | app _ _ ihf ihx =>
+    exact .app (ihf (fun v hv => hscope v (List.mem_append_left _ hv)))
+      (ihx (fun v hv => hscope v (List.mem_append_right _ hv)))
+  | @letIn ann Q rhs body bodyOut rhsOut M L _ hfit _ _ ihr ihb =>
+    refine .letIn (L := L) ?_ hfit ?_ (ihb (fun v hv => hscope v (List.mem_append_right _ hv)))
+    · intro t heq v hv
+      subst ann
+      exact hscope v (List.mem_append_left _ (List.mem_append_left _ hv))
+    · intro Xs hf
+      exact ihr Xs hf (fun v hv => hscope v (List.mem_append_left _ (List.mem_append_right _ hv)))
+  | @letSignature Q body bodyOut ann rhs rhsOut M L _ _ hfit _ _ ihr ihb =>
+    have ha : ∀ v ∈ ann.rigidVars, v ∈ P :=
+      fun v hv => hscope v (List.mem_append_left _ (List.mem_append_left _ hv))
+    have hr : ∀ v ∈ rhs.rigidVars, v ∈ P :=
+      fun v hv => hscope v (List.mem_append_left _ (List.mem_append_right _ hv))
+    refine .letSignature (L := L) ha hr hfit ?_
+      (ihb (fun v hv => hscope v (List.mem_append_right _ hv)))
+    intro Xs hf
+    exact ihr Xs hf (rhs.openTyVars_scope hr (Xs.take ann.paramCount))
+  | match_ _ _ ihs ihbs =>
+    exact .match_ (ihs (fun v hv => hscope v (List.mem_append_left _ hv)))
+      (ihbs (fun v hv => hscope v (List.mem_append_right _ hv)))
+  | letRec ha hb ho _ _ hfit _ _ ihr ihb =>
+    expose_names
+    have hAnnP : ∀ ann ∈ anns, ∀ v ∈ ann.rigidVars, v ∈ P := by
+      intro ann ha v hv
+      exact hscope v (List.mem_append_left _ (List.mem_append_left _
+        (List.mem_flatMap.mpr ⟨ann, ha, hv⟩)))
+    have hRhsP : ∀ rhs ∈ bindings, ∀ v ∈ rhs.rigidVars, v ∈ P := by
+      intro rhs hr v hv
+      exact hscope v (List.mem_append_left _ (List.mem_append_right _ (scope_binding_rigid_mem hr hv)))
+    refine .letRec ha hb ho hAnnP hRhsP hfit ?_
+      (ihb (fun v hv => hscope v (List.mem_append_right _ hv)))
+    intro member ann rhs output scheme ha hr ho hs Xs hf
+    exact ihr member ann rhs output scheme ha hr ho hs Xs hf
+      (rhs.openTyVars_scope (hRhsP rhs (List.mem_of_getElem? hr)) (Xs.take ann.paramCount))
+  | nil => exact .nil
+  | cons _ _ ihb iht =>
+    rename_i P hscope
+    exact .cons (ihb (fun v hv => hscope v (List.mem_append_left _ hv)))
+      (iht (fun v hv => hscope v (List.mem_append_right _ hv)))
+
+
+end Elaboration

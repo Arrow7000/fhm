@@ -1098,7 +1098,7 @@ end
     simpa only [heq] using Template.allocate_avoid hw
       (fun hc => (List.mem_append.mp (Template.openTyVarsFrom_scope _ (K := _) (fun _ h => h) 0 written w hc)).elim hann hwr)
 
-private theorem Input.avoid_subst {input : Input} {S : Subst} {w : Nat}
+theorem Input.avoid_subst {input : Input} {S : Subst} {w : Nat}
     (hS : ∀ p ∈ S, w ∉ p.2.freeVars) (h : w ∉ input.rigidVars) :
     w ∉ (input.substTyFvars S).rigidVars := by
   intro hw

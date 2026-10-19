@@ -731,4 +731,56 @@ structure RecState.Frame (base : Nat) (K : List Nat) (F : List Ty)
   · simpa only [hd, ↓reduceIte] using hm
 
 
+/-- Read completed members' ordered written representatives from the retained
+slot images. Complete contracts introduce no provisional slots. -/
+def RecState.prefixes (state : RecState) : List (List Nat) :=
+  state.specs.mapIdx (fun i spec => match spec with
+    | .poly _ => []
+    | .mono _ => (state.slots[i]?.getD []).filterMap recSlotName)
+
+/-- A historical SCC stage exposes only exports from earlier components.
+Later exports cannot change the environment in which an earlier RHS was checked. -/
+def RecState.stageEntries (state : RecState) (earlier : List Nat) : List PolyTy :=
+  state.specs.mapIdx (fun i spec => if i ∈ earlier then
+    ((state.exports[i]?).join).getD spec.monoEntry else spec.monoEntry)
+
+def RecState.stageCtx (state : RecState) (ctx : Ctx) (earlier : List Nat) : Ctx :=
+  { ctx with env := state.stageEntries earlier ++ ctx.env }
+
+ theorem RecState.stageEntries_onSubst (state : RecState) (S : Subst) (earlier : List Nat) :
+    (state.onSubst S).stageEntries earlier = S.onEnv (state.stageEntries earlier) := by
+  apply List.ext_getElem?
+  intro i
+  simp only [RecState.stageEntries, RecState.onSubst, Subst.onEnv,
+    List.getElem?_mapIdx, List.getElem?_map, Option.map_map]
+  cases hs : state.specs[i]? with
+  | none => rfl
+  | some spec =>
+    simp only [Option.map_some]
+    by_cases hi : i ∈ earlier
+    · simp only [hi, if_pos]
+      cases he : state.exports[i]? with
+      | none => cases spec <;> rfl
+      | some exported => cases exported <;> cases spec <;> rfl
+    · simp only [hi]
+      cases spec <;> rfl
+
+ theorem RecState.stageCtx_onSubst (state : RecState) (S : Subst) (ctx : Ctx) (earlier : List Nat) :
+    (state.onSubst S).stageCtx (S.onCtx ctx) earlier = S.onCtx (state.stageCtx ctx earlier) := by
+  simp only [RecState.stageCtx, RecState.stageEntries_onSubst, Subst.onCtx, Subst.onEnv, List.map_append]
+
+/-- Historical monomorphic checks retain each component's original stage.
+Only the type state changes under later substitutions; earlier checks are not
+silently rechecked in an environment where their own SCC is polymorphic. -/
+def RecState.InputTrace (Q : List Nat) (ctx : Ctx) (anns : List LetAnn)
+    (bindings : List Input) (past : List (List Nat)) (state : RecState) : Prop :=
+  ∀ (stage : Nat) (component : List Nat), past[stage]? = some component →
+    ∀ (i : Nat) (ann : LetAnn) (rhs : Input) (ty : Ty), i ∈ component →
+      anns[i]? = some ann → bindings[i]? = some rhs → state.specs[i]? = some (.mono ty) →
+      ann.RecFits (state.prefixes[i]?.getD []) ty ∧
+      Typing (Q ++ state.prefixes[i]?.getD [])
+        (state.stageCtx ctx (past.take stage).flatten)
+        (rhs.openTyVars (state.prefixes[i]?.getD [])) ty
+
+
 end Elaboration
