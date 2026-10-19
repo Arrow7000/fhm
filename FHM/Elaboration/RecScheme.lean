@@ -597,7 +597,7 @@ private theorem recRenameNames_getD (G W : List Nat) (prefixes : List (List Nat)
 commutes with the literal ordered/vacuous export list. -/
 theorem recCompletedSchemes_subst_fresh_pool {S : Subst} {G W : List Nat}
     {specs : List RecSpec} {prefixes : List (List Nat)}
-    (hS : ∀ p ∈ S, p.2.IsLC) (hlen : W.length = G.length) (hG : G.Nodup) (hW : W.Nodup)
+    (_hS : ∀ p ∈ S, p.2.IsLC) (hlen : W.length = G.length) (hG : G.Nodup) (hW : W.Nodup)
     (hGW : ∀ g ∈ G, g ∉ W)
     (hWmono : ∀ ty, .mono ty ∈ specs → ∀ w ∈ W, w ∉ ty.freeVars)
     (hdomW : ∀ p ∈ S, p.1 ∉ W)
@@ -731,5 +731,68 @@ theorem _root_.RecSpec.lc_onSubstSource {S : Subst} (hS : ∀ p ∈ S, p.2.IsLC)
  theorem _root_.RecSpec.onSubstSource_append (spec : RecSpec) (first second : Subst) :
     spec.onSubstSource (first ++ second) = (spec.onSubstSource first).onSubstSource second := by
   cases spec <;> simp only [RecSpec.onSubstSource, Subst.onTy_append, Subst.onPolyTy_append]
+
+/-- A factor through a fresh declarative pool opening generalizes its group scheme. -/
+theorem recScheme_generalizes_genGroup_of_renameG
+    {algWritten algPool declPool Xs : List Nat} {algTy declTy : Ty} {R : Subst}
+    (hAlg : algTy.IsLC) (hDecl : declTy.IsLC) (hR : ∀ p ∈ R, p.2.IsLC)
+    (hPool : declPool.Nodup) (hLen : Xs.length = declPool.length) (hXs : Xs.Nodup)
+    (hDisjoint : ∀ g ∈ declPool, g ∉ Xs) (hFreshTy : ∀ x ∈ Xs, x ∉ declTy.freeVars)
+    (hConnect : R.onTy algTy = Ty.renameG declPool Xs declTy)
+    (hFreshExport : ∀ x ∈ Xs,
+      x ∉ (R.onPolyTy (recScheme algWritten algPool algTy)).body.freeVars) :
+    (R.onPolyTy (recScheme algWritten algPool algTy)).Generalizes (PolyTy.genGroup declPool declTy) := by
+  let selected := Ty.genFilter Xs (Ty.renameG declPool Xs declTy)
+  have hscheme : PolyTy.genGroup declPool declTy =
+      PolyTy.genGroup Xs (Ty.renameG declPool Xs declTy) :=
+    PolyTy.genGroup_renameG hDecl hLen hPool hXs hDisjoint hFreshTy
+  have hselectedLen : selected.length = (Ty.genFilter declPool declTy).length := by
+    have hh := congrArg PolyTy.paramCount hscheme
+    exact hh.symm
+  have hselectedND : selected.Nodup := hXs.filter _
+  have hselectedSub : ∀ x ∈ selected, x ∈ Xs := fun _ hx => Ty.mem_of_mem_genFilter hx
+  have hfilteredND : (Ty.genFilter declPool declTy).Nodup := hPool.filter _
+  have hfilteredDisjoint : ∀ g ∈ Ty.genFilter declPool declTy, g ∉ selected :=
+    fun g hg hx => hDisjoint g (Ty.mem_of_mem_genFilter hg) (hselectedSub g hx)
+  apply closeOver_generalizes (g := recNames algWritten algPool algTy)
+    (Xs := selected) hAlg hR (PolyTy.genGroup_wf hDecl) hselectedND hselectedLen
+  · intro x hx hv
+    exact hFreshTy x (hselectedSub x hx) (Ty.freeVars_closeOver_subset hv)
+  · change Ty.openVars selected (Ty.closeOver (Ty.genFilter declPool declTy) declTy) = R.onTy algTy
+    rw [Ty.openVars_closeOver_rename hDecl hfilteredND hselectedLen hfilteredDisjoint, hConnect]
+    exact (Ty.renameG_eq_genFilter hLen hPool hXs hDisjoint hFreshTy).symm
+  · intro x hx
+    exact hFreshExport x (hselectedSub x hx)
+
+/-- Ordered and vacuous authored prefixes preserve the candidate's scheme instances. -/
+theorem recScheme_generalizes_of_renameG
+    {algWritten algPool declWritten declPool Xs : List Nat} {algTy declTy : Ty} {R : Subst}
+    (hAlg : algTy.IsLC) (hDecl : declTy.IsLC) (hR : ∀ p ∈ R, p.2.IsLC)
+    (hPool : declPool.Nodup) (hWritten : declWritten.Nodup)
+    (hWrittenPool : ∀ v ∈ declWritten, v ∈ declPool)
+    (hLen : Xs.length = declPool.length) (hXs : Xs.Nodup)
+    (hDisjoint : ∀ g ∈ declPool, g ∉ Xs) (hFreshTy : ∀ x ∈ Xs, x ∉ declTy.freeVars)
+    (hConnect : R.onTy algTy = Ty.renameG declPool Xs declTy)
+    (hFreshExport : ∀ x ∈ Xs,
+      x ∉ (R.onPolyTy (recScheme algWritten algPool algTy)).body.freeVars) :
+    (R.onPolyTy (recScheme algWritten algPool algTy)).Generalizes
+      (recScheme declWritten declPool declTy) :=
+  (recScheme_generalizes_genGroup_of_renameG hAlg hDecl hR hPool hLen hXs hDisjoint hFreshTy hConnect hFreshExport).trans
+    (genGroup_generalizes_recScheme hDecl hPool hWritten hWrittenPool)
+
+/-- A dependency already exported by the fine schedule can remain mono in a coarser candidate stage. -/
+theorem recScheme_generalizes_opened_mono_of_renameG
+    {algWritten algPool declPool Xs : List Nat} {algTy declTy : Ty} {R : Subst}
+    (hAlg : algTy.IsLC) (hDecl : declTy.IsLC) (hR : ∀ p ∈ R, p.2.IsLC)
+    (hPool : declPool.Nodup) (hLen : Xs.length = declPool.length) (hXs : Xs.Nodup)
+    (hDisjoint : ∀ g ∈ declPool, g ∉ Xs) (hFreshTy : ∀ x ∈ Xs, x ∉ declTy.freeVars)
+    (hConnect : R.onTy algTy = Ty.renameG declPool Xs declTy)
+    (hFreshExport : ∀ x ∈ Xs,
+      x ∉ (R.onPolyTy (recScheme algWritten algPool algTy)).body.freeVars)
+    (opened : List Nat) :
+    (R.onPolyTy (recScheme algWritten algPool algTy)).Generalizes
+      (PolyTy.mkTrivial (Ty.renameG declPool opened declTy)) :=
+  (recScheme_generalizes_genGroup_of_renameG hAlg hDecl hR hPool hLen hXs hDisjoint hFreshTy hConnect hFreshExport).trans
+    (genGroup_generalizes_rename_mono hDecl)
 
 end Elaboration
