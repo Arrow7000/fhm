@@ -1,7 +1,7 @@
 import FHM.Elaboration.Complete
 import FHM.Decls
 
-/-! Semantic canaries for anonymous lambda, ordinary-let, and match elaboration.
+/-! Semantic canaries for anonymous lambda, let-signature, and match elaboration.
 These run the elaborator itself; output typing follows from `Infer.sourceSound`.
 -/
 
@@ -45,9 +45,41 @@ def fixedDomainRejected : Input :=
   .letIn (.template (.arrow (.fixed (.prim .int)) .hole)) (.lambda none (.var 0))
     (.app (.var 0) (.ctor ⟨"True"⟩))
 
-def rejectsPartialForall : Input :=
+def quantifiedId : Input :=
   .letIn (.partialForall 1 (.arrow (.fixed (.bvar 0)) .hole))
     (.lambda none (.var 0)) (.var 0)
+
+def quantifiedExtras : Input :=
+  .letIn (.partialForall 1 (.arrow (.fixed (.bvar 0)) .hole))
+    (.lambda none (.lambda none (.var 1))) (.var 0)
+
+def vacuousWritten : Input :=
+  .letIn (.partialForall 1 .hole) (.primLit (.int 1)) (.var 0)
+
+def quantifiedRigidRejected : Input :=
+  .letIn (.partialForall 1 (.arrow .hole (.fixed (.bvar 0))))
+    (.lambda none (.primLit (.int 0))) (.var 0)
+
+def signedRhsHole : Input :=
+  .letIn (.complete ⟨1, .arrow (.bvar 0) (.bvar 0)⟩)
+    (.lambda (some .hole) (.var 0))
+    (pair (.app (.var 0) (.primLit (.int 1))) (.app (.var 0) (.ctor ⟨"True"⟩)))
+
+def signedBodyHole : Input :=
+  .letIn (.complete ⟨1, .arrow (.bvar 0) (.bvar 0)⟩)
+    (.lambda none (.var 0)) (.lambda (some .hole) (.app (.var 1) (.var 0)))
+
+#guard (inferCore [] 0 ctx quantifiedExtras).isSome
+#guard (inferCore [] 0 ctx vacuousWritten).isSome
+#guard !(inferCore [] 0 ctx quantifiedRigidRejected).isSome
+#guard (inferCore [] 0 ctx signedRhsHole).isSome
+#guard (inferCore [] 0 ctx signedBodyHole).isSome
+#guard match inferCore [] 0 ctx quantifiedExtras with
+  | some ⟨(_, _, .letIn (some ⟨2, .arrow (.bvar 0) (.arrow (.bvar 1) (.bvar 0))⟩) _ _, _), _⟩ => true
+  | _ => false
+#guard match inferCore [] 0 ctx vacuousWritten with
+  | some ⟨(_, _, .letIn (some scheme) _ _, _), _⟩ => scheme.paramCount == 1
+  | _ => false
 
 def rejectsPartialRecursion : Input :=
   .letRec [.template (.arrow .hole (.fixed (.prim .int)))]
@@ -60,7 +92,7 @@ def rejectsPartialRecursion : Input :=
 #guard !(inferCore [] 0 ctx occursCheck).isSome
 #guard (inferCore [] 0 ctx fixedDomainAccepted).isSome
 #guard !(inferCore [] 0 ctx fixedDomainRejected).isSome
-#guard !(inferCore [] 0 ctx rejectsPartialForall).isSome
+#guard (inferCore [] 0 ctx quantifiedId).isSome
 #guard !(inferCore [] 0 ctx rejectsPartialRecursion).isSome
 
 /- The id canary really introduces a scheme binder and closes the lambda
@@ -169,12 +201,11 @@ private def polyrec : Input :=
   (.letIn .absent (.lambda (some .hole) (.var 0)) polyrec)).isSome
 #guard !(CoreBackend.principalType ctx.ctors polyrec.erase).isSome
 
--- Complete signatures with holes in their RHS are outside the first dispatch
--- fragment, including cases whose holes would be compatible with its skolems.
+-- Complete signatures protect their authored skolems while filling RHS holes.
 def completeForallWithPartialRhs : Input :=
   .letIn (.complete ⟨1, .arrow (.bvar 0) (.bvar 0)⟩)
     (.lambda (some .hole) (.var 0)) (.var 0)
-#guard !(inferCore [] 0 ctx completeForallWithPartialRhs).isSome
+#guard (inferCore [] 0 ctx completeForallWithPartialRhs).isSome
 
 -- An unused hole still generalizes at its own binding even when it is absent
 -- from the whole-program result type.

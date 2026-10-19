@@ -225,6 +225,61 @@ theorem _root_.inferBranchesWithTypesCore_complete_named
       rw [dif_pos hspec.bind_count]
       simp only [hu0Result, hbResult, hu2Result, hrResult, Option.isSome_some]
 
+theorem checkSignature_complete {K written : List Nat} {frontier : Nat} {ann : LetAnn} {ty target : Ty}
+    {R : Subst} (hmode : ann.isSignature = true) (hprefix : written.length = ann.paramCount)
+    (hK : ∀ k ∈ K ++ written, k < frontier) (hty : ty.IsLC) (hbelow : Ty.BelowFvars frontier ty)
+    (hR : ∀ pair ∈ R, pair.2.IsLC) (hRfix : ∀ k ∈ K ++ written, R.onTy (.fvar k) = .fvar k)
+    (htarget : target.IsLC) (hrigid : ∀ v ∈ ann.rigidVars, v ∈ K)
+    (heq : target = R.onTy ty)
+    (hcomplete : ∀ scheme, ann = .complete scheme → scheme.WF ∧ target = scheme.openVars written)
+    (hpartial : ∀ count template, ann = .partialForall count template →
+      (template.openTyVarsFrom 0 written).Fits target) :
+    (checkSignature K written frontier ann ty).isSome := by
+  cases ann with
+  | absent => cases hmode
+  | template => cases hmode
+  | complete scheme =>
+      have hSchemeWF := (hcomplete scheme rfl).1
+      have hSchemeB : scheme.body.bvarsBelow scheme.paramCount = true := PolyTy.wf_iff_bvarsBelow.mpr hSchemeWF
+      have hscope : scheme.body.freeVars.all (fun v => decide (v ∈ K)) = true :=
+        List.all_eq_true.mpr (fun v hv => decide_eq_true (hrigid v hv))
+      have hexpected := PolyTy.openVars_isLC hSchemeWF hprefix.ge
+      have hExpected : R.onTy (scheme.openVars written) = scheme.openVars written := by
+        apply Subst.onTy_eq_self_of_fixes
+        intro v hv
+        rcases Ty.freeVars_openVars_subset v hv with hv | hv
+        · exact hRfix v (List.mem_append_left _ (hrigid v hv))
+        · exact hRfix v (List.mem_append_right _ hv)
+      have hUni : Unifies R ty (scheme.openVars written) := by
+        change R.onTy ty = R.onTy (scheme.openVars written)
+        rw [hExpected, ← heq, (hcomplete scheme rfl).2]
+      have hunifies := unifyCoreK_complete hty hexpected hR hUni hRfix
+      simp only [checkSignature, hSchemeB, hscope, dite_true]
+      cases hu : unifyCoreK (K ++ written) ty (scheme.openVars written) with
+      | none => simp only [hu, Option.isSome_none] at hunifies; contradiction
+      | some result => rcases result with ⟨subst, hun, hav⟩; rfl
+  | partialForall count template =>
+      have hfit := hpartial count template rfl
+      have hexpected := hfit.allocate_lc htarget frontier
+      have hExpectedB : ((template.openTyVarsFrom 0 written).allocate frontier).2.bvarsBelow 0 = true :=
+        (Ty.bvarsBelow_iff _).mpr hexpected
+      have hscope : template.rigidVars.all (fun v => decide (v ∈ K)) = true :=
+        List.all_eq_true.mpr (fun v hv => decide_eq_true (hrigid v hv))
+      obtain ⟨U, hU, hag, hUexpected⟩ := hfit.allocate_override htarget hR frontier
+        (fun v hv => hK v (Template.open_scope hrigid v hv))
+        (fun v hv => hRfix v (Template.open_scope hrigid v hv))
+      have hUty : U.onTy ty = target := (Subst.onTy_congr hag hbelow).symm.trans heq.symm
+      have hUni : Unifies U ty ((template.openTyVarsFrom 0 written).allocate frontier).2 :=
+        hUty.trans hUexpected.symm
+      have hUfix : ∀ k ∈ K ++ written, U.onTy (.fvar k) = .fvar k := fun k hk =>
+        (hag k (hK k hk)).symm.trans (hRfix k hk)
+      have hunifies := unifyCoreK_complete hty hexpected hU hUni hUfix
+      simp only [checkSignature, hExpectedB, hscope, dite_true]
+      cases hu : unifyCoreK (K ++ written) ty ((template.openTyVarsFrom 0 written).allocate frontier).2 with
+      | none => simp only [hu, Option.isSome_none] at hunifies; contradiction
+      | some result => rcases result with ⟨subst, hun, hav⟩; rfl
+
+
 theorem _root_.inferWithTypesCore_complete_backend {input : Input} {core : Expr}
     (hemb : input.toCore = some core) : InferWithTypesCoreComplete input := by
   intro K frontier ctx ambient target hwf hbelow hK hS hfix ht
@@ -326,13 +381,113 @@ theorem _root_.inferWithTypesCore_complete_app_partial
   · rename_i core heq; simp [hemb] at heq
   · simp only [hfResult, haResult, huResult, Option.isSome_some]
 
+theorem _root_.inferWithTypesCore_complete_signature_partial
+    {ann : LetAnn} {rhs body : Input}
+    (ihr : ∀ written, InferWithTypesCoreComplete (rhs.openTyVars written))
+    (ihb : InferWithTypesCoreComplete body) (hmode : ann.isSignature = true)
+    (hemb : (Input.letIn ann rhs body).toCore = none) :
+    InferWithTypesCoreComplete (.letIn ann rhs body) := by
+  intro K frontier ctx ambient target hwf hbelow hK hS hfix ht
+  obtain ⟨W, M, L, hMoved, hMovedFix, _, _, _, _, hM, hann, hrhs, hfits, htypes, hbodyD,
+      hYsM, hYsCtx, hYsImages⟩ := ht.signature_dodge (K := K) hmode hbelow hK hK hS hfix
+  let written := freshVars frontier ann.paramCount
+  let moved := Subst.conj (blockSwap frontier W ann.paramCount) ambient
+  have hYlen : written.length = ann.paramCount := freshVars_length _ _
+  have hYnd : written.Nodup := freshVars_nodup
+  have hYsK : ∀ y ∈ written, y ∉ K := by
+    intro y hy hk
+    have hge := freshVars_ge y hy
+    have hlt := hK y hk
+    omega
+  obtain ⟨Ns, hNlen, hNnd, hNavoid⟩ := exists_fresh_names L M.paramCount
+  have hCount := (hfits Ns ⟨hNlen, hNnd, hNavoid⟩).prefix_le
+  obtain ⟨extras, hElen, hXsNd, _, hAll, hAligned, hAlignedFits⟩ :=
+    Typing.align_partial_prefix_with_fits rfl hfits hann htypes hCount hrhs
+      hYlen hYnd hYsK hYsCtx hYsM []
+  have hFullLen : (written ++ extras).length = M.paramCount := by
+    simp only [List.length_append, hYlen, hElen]; omega
+  have hTake : (written ++ extras).take ann.paramCount = written := by rw [← hYlen]; simp
+  have hCtxOpen : CtxBelow (frontier + ann.paramCount) ctx :=
+    fun M hM => (hbelow M hM).mono (Nat.le_add_right _ _)
+  have hKOpen : ∀ k ∈ K ++ written, k < frontier + ann.paramCount := by
+    intro k hk
+    rcases List.mem_append.mp hk with hk | hk
+    · have := hK k hk; omega
+    · exact freshVars_lt k hk
+  obtain ⟨⟨⟨first, s1, rhsOut, rhsTy, rhsTypes, rhsSchemes⟩, hr⟩, hrResult⟩ :=
+    Option.isSome_iff_exists.mp (ihr written (K ++ written) (frontier + ann.paramCount) ctx
+      moved (M.openVars (written ++ extras)) hwf hCtxOpen hKOpen hMoved hMovedFix hAligned)
+  obtain ⟨R, hR, hRty, hRfix, _⟩ := hr.principal hwf hCtxOpen hKOpen moved
+    (M.openVars (written ++ extras)) (K ++ written) hMoved hKOpen hMovedFix hAligned
+  have hrle := hr.frontier_le
+  obtain ⟨hrB, _⟩ := hr.belowFvars hCtxOpen hKOpen
+  obtain ⟨hrLC, _⟩ := hr.lc hwf
+  have hKFirst : ∀ k ∈ K ++ written, k < first :=
+    fun k hk => Nat.lt_of_lt_of_le (hKOpen k hk) hrle
+  have hComplete : ∀ scheme, ann = .complete scheme →
+      scheme.WF ∧ M.openVars (written ++ extras) = scheme.openVars written := by
+    intro scheme heq
+    subst ann
+    cases hAlignedFits
+    have hFull : written ++ extras = written := by
+      have ht : (written ++ extras).take M.paramCount = written ++ extras := by
+        rw [← hFullLen, List.take_length]
+      exact ht.symm.trans hTake
+    exact ⟨hM, congrArg M.openVars hFull⟩
+  have hPartial : ∀ count template, ann = .partialForall count template →
+      (template.openTyVarsFrom 0 written).Fits (M.openVars (written ++ extras)) := by
+    intro count template heq
+    subst ann
+    cases hAlignedFits with
+    | partialSignature _ hf =>
+      have ht : (written ++ extras).take count = written := by simpa only [LetAnn.paramCount] using hTake
+      simpa only [ht] using hf
+  obtain ⟨⟨⟨checked, sCheck⟩, hc⟩, hcResult⟩ := Option.isSome_iff_exists.mp
+    (checkSignature_complete hmode hYlen hKFirst hrLC hrB hR hRfix hAligned.regular hann hRty hComplete hPartial)
+  obtain ⟨V, hV, hVK, hagPrefix, hbodyV, hbodyWF, hbodyB, _⟩ :=
+    hr.signature_frame hc hr.principal rfl hwf hbelow hK hMoved hK hMovedFix hM hann hrhs
+      hfits htypes hbodyD hYsM hYsCtx hYsImages
+  have hctxeq : V.onCtx (sCheck.onCtx (s1.onCtx ctx)) = moved.onCtx ctx := by
+    rw [← Subst.onCtx_append, ← Subst.onCtx_append]
+    simpa only [List.append_assoc] using (Subst.onCtx_congr hagPrefix hCtxOpen).symm
+  have hescape : ∀ y ∈ written, y ∉ (sCheck.onCtx (s1.onCtx ctx)).env.freeVars := by
+    intro y hy hcenv
+    apply hYsCtx y hy
+    rw [← hctxeq]
+    obtain ⟨scheme, hs, hv⟩ := Env.mem_freeVars_iff.mp hcenv
+    apply Env.mem_freeVars_iff.mpr
+    refine ⟨V.onPolyTy scheme, List.mem_map.mpr ⟨scheme, hs, rfl⟩, ?_⟩
+    apply Ty.mem_freeVars_onTy_iff.mpr
+    refine ⟨y, hv, ?_⟩
+    rw [hVK y (List.mem_append_right _ hy)]
+    exact List.mem_singleton_self y
+  have hle : frontier ≤ checked :=
+    (Nat.le_add_right frontier ann.paramCount).trans (hrle.trans hc.frontier_le)
+  have hKChecked : ∀ k ∈ K, k < checked := fun k hk => Nat.lt_of_lt_of_le (hK k hk) hle
+  obtain ⟨⟨⟨next, s2, bodyOut, bodyTy, bodyTypes, bodySchemes⟩, hb⟩, hbResult⟩ :=
+    Option.isSome_iff_exists.mp (ihb K checked _ V _ hbodyWF hbodyB hKChecked hV
+      (fun k hk => hVK k (List.mem_append_left _ hk)) hbodyV)
+  have hraw : rhs.rigidVars.all (fun v => decide (v ∈ K)) = true :=
+    List.all_eq_true.mpr (fun v hv => decide_eq_true (hrhs v hv))
+  rw [inferWithTypesCore, dif_pos (rigid_all hK), dif_pos (ctx_all hbelow)]
+  split
+  · rename_i core heq; simp [hemb] at heq
+  · simp only [written] at hrResult hcResult hbResult hescape
+    simp only [hmode, ↓reduceIte, hraw, dite_true, hrResult, hcResult,
+      dif_pos hescape, hbResult, Option.isSome_some]
+
 theorem _root_.inferWithTypesCore_complete_letIn_partial
     (ihr : InferWithTypesCoreComplete rhs) (ihb : InferWithTypesCoreComplete body)
+    (hmode : ann.isSignature = false)
     (hemb : (Input.letIn ann rhs body).toCore = none) : InferWithTypesCoreComplete (.letIn ann rhs body) := by
   intro K frontier ctx ambient target hwf hbelow hK hS hfix ht
   have hlet := ht
   cases ht with
   | complete hemb' _ _ => simp [hemb] at hemb'
+  | @letSignature ann K ctx rhs body target M L _ _ _ hfit _ _ =>
+    obtain ⟨Xs, hlen, hnd, hav⟩ := exists_fresh_names L M.paramCount
+    have hm := (hfit Xs ⟨hlen, hnd, hav⟩).isSignature
+    simp only [hmode, Bool.false_eq_true] at hm
   | @letIn ann _ _ rhs body target M L hM hannRigid hannFits hrD hbD =>
     obtain ⟨Xs, hXlen, hXnd, hXavoid⟩ := exists_fresh_names L M.paramCount
     have hXs : FreshNames L M.paramCount Xs := ⟨hXlen, hXnd, hXavoid⟩
@@ -356,7 +511,7 @@ theorem _root_.inferWithTypesCore_complete_letIn_partial
     rw [inferWithTypesCore, dif_pos (rigid_all hK), dif_pos (ctx_all hbelow)]
     split
     · rename_i core heq; simp [hemb] at heq
-    · simp only [hrResult, hcResult, hbResult, Option.isSome_some]
+    · simp only [hmode, Bool.false_eq_true, ↓reduceIte, hrResult, hcResult, hbResult, Option.isSome_some]
 
 theorem _root_.inferBranchesWithTypesCore_complete_of_body
     (bodyIH : ∀ branch ∈ branches, InferWithTypesCoreComplete branch.2) :
@@ -436,7 +591,14 @@ theorem _root_.inferWithTypesCore_complete (input : Input) : InferWithTypesCoreC
     | lambda ann body => exact inferWithTypesCore_complete_lambda_partial (inferWithTypesCore_complete body) hemb
     | app f arg => exact inferWithTypesCore_complete_app_partial (inferWithTypesCore_complete f) (inferWithTypesCore_complete arg) hemb
     | letIn ann rhs body =>
-      exact inferWithTypesCore_complete_letIn_partial (inferWithTypesCore_complete rhs) (inferWithTypesCore_complete body) hemb
+      cases hmode : ann.isSignature with
+      | false =>
+        exact inferWithTypesCore_complete_letIn_partial (inferWithTypesCore_complete rhs)
+          (inferWithTypesCore_complete body) hmode hemb
+      | true =>
+        exact inferWithTypesCore_complete_signature_partial
+          (fun written => inferWithTypesCore_complete (rhs.openTyVars written))
+          (inferWithTypesCore_complete body) hmode hemb
     | match_ scrut branches =>
       exact inferWithTypesCore_complete_match_partial (inferWithTypesCore_complete scrut)
         (inferBranchesWithTypesCore_complete_of_body (fun branch hm => inferWithTypesCore_complete branch.2)) hemb
@@ -446,7 +608,7 @@ theorem _root_.inferWithTypesCore_complete (input : Input) : InferWithTypesCoreC
       | complete hemb' _ _ => simp [hemb] at hemb'
 termination_by input.size
 decreasing_by
-  all_goals (simp only [Input.size]; first | omega | have := branch_size_lt hm; omega)
+  all_goals (simp only [Input.size, Input.size_openTyVars]; first | omega | have := branch_size_lt hm; omega)
 
 /-- Completeness of the plain result API follows by projection of the same run. -/
 def _root_.InferCoreComplete (input : Input) : Prop :=

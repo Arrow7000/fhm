@@ -332,6 +332,10 @@ theorem LetAnn.SignatureFits.prefix_le {ann : LetAnn} {scheme : PolyTy} {names :
   | complete => exact Nat.le_refl _
   | partialSignature h _ => exact h
 
+theorem LetAnn.SignatureFits.isSignature {ann : LetAnn} {scheme : PolyTy} {names : List Nat}
+    (h : ann.SignatureFits scheme names) :
+    ann.isSignature = true := by cases h <;> rfl
+
 /-- A checked monotype is closed under the written prefix and any inferred
 extra binders. Complete signatures retain their exact authored scheme. -/
 inductive LetAnn.SignatureCompletion : LetAnn → List Nat → Ty → PolyTy → List Nat → Prop
