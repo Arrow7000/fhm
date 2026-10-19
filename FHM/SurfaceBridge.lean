@@ -10,19 +10,19 @@ and type safety.
 
 ## Design
 
-1. **Spec/impl separation, `Infer`-style.** `Lowers` is the declarative
+1. **Spec/impl separation, `CoreBackend.Infer`-style.** `Lowers` is the declarative
    relation; `lower` is the executable function. Soundness and completeness
    connect them. `Lowers` pins the same deterministic match tree produced by
    `lowerMatch`; behavioral adequacy is proved separately by
    `PatComp.lowerMatch_adequate_of_typed`.
 
 2. **The payoff is a TWO-hop composition over the executable pipeline.** The
-   runtime object is the lowered term `c = lower s`: `typecheck`/`Lowers` speak
+   runtime object is the lowered term `c = lower s`: `CoreBackend.typecheck`/`Lowers` speak
    the DECLARATIVE `TypeOfHM`, and the dynamics (`Step`, `progress`,
    `type_safety`) are stated on the erased residual `c.erase` recovered through
-   `infer` + `Infer.sound`. So the headline goes
-   `s → lower → c → infer → c.erase → type_safety_star`. `typecheck` alone is
-   insufficient, which is why the pipeline runs through `infer`.
+   `CoreBackend.infer` + `CoreBackend.Infer.sound`. So the headline goes
+   `s → lower → c → CoreBackend.infer → c.erase → type_safety_star`. `CoreBackend.typecheck` alone is
+   insufficient, which is why the pipeline runs through `CoreBackend.infer`.
 
 3. **Exhaustiveness is a separate, mandatory conjunct.** `type_safety` requires
    `AllMatchesExhaustive` on the runtime term, which typechecking never gives.
@@ -150,6 +150,7 @@ def tvarIndex : List ValName → ValName → Option Nat
 mutual
 /-- Lower a surface type against a kind env and a tyvar scope. -/
 def lowerTy (ke : KindEnv) (tvs : List ValName) : Surface.Ty → Option Ty
+  | .hole => none
   | .prim .unit => some (.prim .unit)
   | .prim .int  => some (.prim .int)
   | .prim .nat  => some (.prim .nat)
@@ -234,6 +235,7 @@ theorem lowerTyList_wellKinded {ke : KindEnv} {tvs : List ValName}
 theorem lowerTy_wellKinded {ke : KindEnv} {tvs : List ValName} {s : Surface.Ty} {c : Ty}
     (h : lowerTy ke tvs s = some c) : Ty.WellKinded ke tvs.length c := by
   cases s with
+  | hole => cases h
   | prim p =>
     cases p with
     | unit | int | nat | char =>
@@ -852,7 +854,7 @@ private def sForest : Surface.DataDecl :=
 
 The value-level ctors the sugar/pattern layers emit (`True`/`False`/`Pair`/
 `Cons`/`Nil`). `lower` just *emits* these — whether they exist / have the right
-arity is Core's `typecheck`'s job (Core has the ctor env), unlike *type*-level
+arity is Core's `CoreBackend.typecheck`'s job (Core has the ctor env), unlike *type*-level
 kinding which we must do ourselves. -/
 
 def cTrue  : CtorName := .mk "True"
@@ -3394,7 +3396,7 @@ theorem sccGroups_complete {binds : List Surface.Binding}
   have hn := h.namesNodup
   simp [sccGroups, guard, hn]
 
-/-- Build a `Program` from a flat binding list: SCC-infer groups, keep
+/-- Build a `Program` from a flat binding list: SCC-CoreBackend.infer groups, keep
     `desugarGroups` as the sole consumer of `List (List Binding)`.
     Fails (`none`) iff binding names are not unique. -/
 def Program.ofFlat (decls : List Surface.DataDecl)
@@ -4408,7 +4410,7 @@ sugar `pair`/`cons`/`list` desugaring to `Pair`/`Cons`/`Nil`). The bridge lemma
 `match`, patterns must cover the scrutinee's ADT type `T` (every ctor of `T` has
 a testing branch, or a trailing irrefutable catch-all). The type `T` is carried
 in the `SurfaceCovers.match_` witness; the lowering proof instantiates it from
-scrutinee typing after `typecheck`. -/
+scrutinee typing after `CoreBackend.typecheck`. -/
 
 /-- **Surface pattern well-formedness**, defined as `GPatWF` of the *normalised*
     pattern. Defining it via `norm` (rather than as a fresh surface-native
@@ -4601,7 +4603,7 @@ def matchExhaustiveB (ctors : CtorEnv) (T : TyName) (tyArgs : List Ty)
 
 mutual
 
-/-- Infer only the type constraints contributed by constructor tests. Wildcards
+/-- CoreBackend.Infer only the type constraints contributed by constructor tests. Wildcards
     and binders impose none. This proposes a coverage witness; acceptance still
     goes through `matchExhaustiveB` and its soundness theorem. -/
 private def constrainCoveragePat (ctors : CtorEnv) :
@@ -6151,14 +6153,14 @@ inductive SurfaceWTExpr (ctors : CtorEnv) (ke : KindEnv) :
 
       @TODO(ann-open-tvs): premise `tvs = []` is a **metatheory** restriction on this
       *constructor*, not a SurfaceLang authoring ban. The executable pipeline
-      (`lower` / `typecheck` / `surface_type_safe`) does **not** consult it.
+      (`lower` / `CoreBackend.typecheck` / `surface_type_safe`) does **not** consult it.
 
       What it blocks: inhabiting `SurfaceWTExpr` *via this structural rule* when the
       ambient open tyvar index `tvs` is already non-empty — e.g. while typing the RHS
       of an outer binding that extended `tvs` with `{a}`:
 
       ```
-      -- surface (may still lower + Core-typecheck fine)
+      -- surface (may still lower + Core-CoreBackend.typecheck fine)
       let outer {a} : a → a =
         (\\x -> let inner (y : Int) : Int = y in x) in outer
       ```
@@ -6321,14 +6323,14 @@ def SurfaceWT (ctors : CtorEnv) (s : Surface.Expr) : Prop :=
 
 /-- Weak (pre-1a) SurfaceWT, retained for the match-free uniqueness transfer. -/
 def SurfaceWT_weak (ctors : CtorEnv) (s : Surface.Expr) : Prop :=
-  ∃ c, Lowers ctors s c ∧ (typecheck ctors c).isSome
+  ∃ c, Lowers ctors s c ∧ (CoreBackend.typecheck ctors c).isSome
 
-/-- Match-free corollary: `SurfaceWT_weak` + `lower` ⇒ `typecheck`. -/
+/-- Match-free corollary: `SurfaceWT_weak` + `lower` ⇒ `CoreBackend.typecheck`. -/
 theorem typecheck_of_lower_of_SurfaceWT_of_NoMatch {ctors : CtorEnv} {s : Surface.Expr}
     {c : Expr}
     (hnm : SurfaceExprNoMatch s)
     (hwt : SurfaceWT_weak ctors s) (hlow : lower ctors s = some c) :
-    (typecheck ctors c).isSome := by
+    (CoreBackend.typecheck ctors c).isSome := by
   obtain ⟨c₀, hL, htc₀⟩ := hwt
   have heq : c₀ = c := by
     simp only [Lowers, lower] at hL hlow
@@ -6517,13 +6519,13 @@ theorem emitLets_typeable {ctors : CtorEnv} {Γ_env Γ_outer : Env}
     intro rem k hsum hrem
     induction rem generalizing k with
     | nil =>
-      simp only [List.length_nil, List.drop_zero, emitLets.go] at hsum ⊢
+      simp only [List.length_nil, List.drop_zero, emitLets.go, emitLetsWith.go, coreEmissionOps] at hsum ⊢
       subst hsum
       have hw := TypeOfHM.weaken_env (env_pre := bindTys.map PolyTy.mkTrivial)
         (env_extra := Γ_env) (env := Γ_outer) hbody
       simpa only [List.length_map, hlen_binds, hlen_env, List.append_assoc] using hw
     | cons b rest ih =>
-      simp only [emitLets.go]
+      simp only [emitLets.go, emitLetsWith.go, coreEmissionOps]
       have hsum' : k + 1 + rest.length = binds.length := by
         simp only [List.length_cons] at hsum; omega
       have hrest : rest = binds.reverse.drop (k + 1) := by
@@ -6614,7 +6616,9 @@ private theorem emitCases_eq_map' (env : List Occ) (bodies : Nat → Expr) (occ 
             emit (subOccs occ x.2.1 ++ env) bodies x.2.2))
   | [] => rfl
   | (_c, _a, _t) :: rest => by
-    rw [emitCases, emitCases_eq_map' env bodies occ rest, List.map_cons]
+    change (MatchPattern.named _c _a, emit (subOccs occ _a ++ env) bodies _t)
+      :: emitCases env bodies occ rest = _
+    rw [emitCases_eq_map' env bodies occ rest, List.map_cons]
 
 /-- Branches in `emitCases` are always named patterns. -/
 private theorem emitCases_named_mem (env : List Occ) (bodies : Nat → Expr) (occ : Occ)
@@ -6631,7 +6635,7 @@ private theorem emitCases_ne_nil (env : List Occ) (bodies : Nat → Expr) (occ :
     emitCases env bodies occ cases ≠ [] := by
   cases cases with
   | nil => exact (hne rfl).elim
-  | cons _ _ => simp [emitCases]
+  | cons _ _ => simp [emitCases, emitCasesWith]
 
 /-- `List.Forall₂` for a pointwise map (local copy of InferW's private lemma). -/
 private theorem List.forall₂_self_map {α β} {R : α → β → Prop} {f : α → β} :
@@ -6707,7 +6711,7 @@ theorem emit_DTreeTypeable {ctors : CtorEnv} {Γ_outer : Env} {ectx : EmitTyCtx 
       hlen_env hlen hbound hbind_look hbody
     simpa only [emit, Γ_env, hΓ] using ht
   | @switchFail ectx occ cases T tyArgs hne hag hlook hmem hlc htyped hsub hcover ih =>
-    simp only [emit]
+    simp only [emit, emitWith]
     obtain ⟨Γ_env, hlen_env, hΓ, hlook', hlc_scrut⟩ :=
       EmitTyCtx.agrees_lookup hag hmem hlook
     have hscrut : TypeOfHM ⟨ectx.Γ, ctors⟩ (resolveOcc ectx.occEnv occ) (.customTy T tyArgs) :=
@@ -8555,6 +8559,7 @@ theorem lowerTy_isSome_appendTyScope {ke : KindEnv} {tvs tvs' : List ValName}
     (lowerTy ke (tvs' ++ tvs) τ).isSome := by
   revert h
   induction τ using Surface.Ty.rec_strong with
+  | hole => simp [lowerTy]
   | prim p =>
     intro h
     cases p with
@@ -8628,6 +8633,7 @@ theorem lowerTy_isSome_appendTyScopeMid {ke : KindEnv} {A tvs' B : List ValName}
     (lowerTy ke (A ++ tvs' ++ B) τ).isSome := by
   revert h
   induction τ using Surface.Ty.rec_strong with
+  | hole => simp [lowerTy]
   | prim p =>
     intro h
     cases p with
@@ -10351,7 +10357,7 @@ private theorem emitLets_tyBvarBounded (n : Nat) (env : List Occ) (binds : List 
   | nil => intro depth; exact hshift
   | cons _ rest ih =>
     intro depth
-    simp only [emitLets.go, Expr.TyBvarBounded]
+    simp only [emitLets.go, emitLetsWith.go, coreEmissionOps, Expr.TyBvarBounded]
     refine And.intro ?_ (ih (depth + 1))
     trivial
 
@@ -10361,32 +10367,32 @@ private theorem emit_tyBvarBounded (n : Nat) (env : List Occ) (bodies : Nat → 
     (emit env bodies t).TyBvarBounded n := by
   match t with
   | .fail =>
-    rw [emit]
-    simp only [Expr.TyBvarBounded, Expr.TyBvarBounded.BranchList]
+    rw [emit, emitWith]
+    simp only [coreEmissionOps, Expr.TyBvarBounded, Expr.TyBvarBounded.BranchList]
     trivial
   | .leaf act binds =>
-    rw [emit]
+    rw [emit, emitWith]
     exact emitLets_tyBvarBounded n env binds (bodies act) (hb act)
   | .switch occ cases dflt =>
     cases dflt with
     | fail =>
-      rw [emit]
+      rw [emit, emitWith]
       have hcases := emitCases_tyBvarBounded n env bodies occ cases hb
-      simp only [Expr.TyBvarBounded, resolveOcc, List.append_nil]
+      simp only [coreEmissionOps, Expr.TyBvarBounded, List.append_nil]
       exact And.intro (by trivial) hcases
     | leaf act binds =>
-      rw [emit]
+      rw [emit, emitWith]
       have hcases := emitCases_tyBvarBounded n env bodies occ cases hb
       have hd := emit_tyBvarBounded n env bodies (.leaf act binds) hb
-      simp only [Expr.TyBvarBounded, resolveOcc]
+      simp only [coreEmissionOps, Expr.TyBvarBounded]
       refine And.intro ?_ ((TyBvarBounded_BranchList_append_wildcard n _ _).mpr (And.intro hcases hd))
       trivial
       intro h; cases h
     | switch occ' cases' dflt' =>
-      rw [emit]
+      rw [emit, emitWith]
       have hcases := emitCases_tyBvarBounded n env bodies occ cases hb
       have hd := emit_tyBvarBounded n env bodies (.switch occ' cases' dflt') hb
-      simp only [Expr.TyBvarBounded, resolveOcc]
+      simp only [coreEmissionOps, Expr.TyBvarBounded]
       refine And.intro ?_ ((TyBvarBounded_BranchList_append_wildcard n _ _).mpr (And.intro hcases hd))
       trivial
       intro h; cases h
@@ -10398,7 +10404,7 @@ private theorem emitCases_tyBvarBounded (n : Nat) (env : List Occ) (bodies : Nat
   match cases with
   | [] => exact trivial
   | (_c, a, t) :: rest =>
-    simp only [emitCases, Expr.TyBvarBounded.BranchList]
+    simp only [emitCases, emitCasesWith, Expr.TyBvarBounded.BranchList]
     exact And.intro (emit_tyBvarBounded n (subOccs occ a ++ env) bodies t hb)
       (emitCases_tyBvarBounded n env bodies occ rest hb)
 end
@@ -10407,7 +10413,7 @@ theorem lowerMatch_tyBvarBounded (n : Nat) (scrut : Expr) (pats : List Surface.P
     (bodies : Nat → Expr)
     (hs : scrut.TyBvarBounded n) (hb : ∀ i, (bodies i).TyBvarBounded n) :
     (lowerMatch scrut pats bodies).TyBvarBounded n := by
-  simp only [lowerMatch, Expr.TyBvarBounded]
+  simp only [lowerMatch, lowerMatchWith, coreEmissionOps, Expr.TyBvarBounded]
   exact And.intro hs (emit_tyBvarBounded n [[]] bodies (compile [[]] (initMatrix pats)) hb)
 
 theorem mkList_tyBvarBounded (n : Nat) :
@@ -11574,10 +11580,10 @@ theorem TypeOfHM_of_lowerExpr_of_SurfaceWTExpr {ctors : CtorEnv} {ke : KindEnv}
             (τscrut := .customTy nBool []) (τres := τ)
             rfl (by simp) (ihc hcL) hpats hbodies' hexh hcons hfields hkind hwk
 
-/-! ## 8. The runtime term: lower, then infer
+/-! ## 8. The runtime term: lower, then CoreBackend.infer
 
-The Core term that actually executes is the lowered `c = lower s`; `infer`
-confirms typing (recovering the substitution) and `Infer.sound` gives the
+The Core term that actually executes is the lowered `c = lower s`; `CoreBackend.infer`
+confirms typing (recovering the substitution) and `CoreBackend.Infer.sound` gives the
 residual typing of the erased term. For a closed program the frontier seed is
 `c.freshFloor` and the rigid set is empty. -/
 
@@ -11840,7 +11846,7 @@ private theorem emitLets_tyFreeVars (env : List Occ) (binds : List Occ) (body : 
   | nil => intro depth; exact hshift
   | cons _ rest ih =>
     intro depth
-    simp only [emitLets.go, Expr.tyFreeVars, List.append_eq_nil_iff]
+    simp only [emitLets.go, emitLetsWith.go, coreEmissionOps, Expr.tyFreeVars, List.append_eq_nil_iff]
     exact ⟨⟨rfl, trivial⟩, ih (depth + 1)⟩
 
 mutual
@@ -11849,10 +11855,10 @@ private theorem emit_tyFreeVars (env : List Occ) (bodies : Nat → Expr) (t : DT
     (emit env bodies t).tyFreeVars = [] := by
   match t with
   | .fail =>
-    rw [emit]
-    simp only [Expr.tyFreeVars, Expr.tyFreeVars.BranchList.tyFreeVars, List.nil_append]
+    rw [emit, emitWith]
+    simp only [coreEmissionOps, Expr.tyFreeVars, Expr.tyFreeVars.BranchList.tyFreeVars, List.nil_append]
   | .leaf act binds =>
-    rw [emit]
+    rw [emit, emitWith]
     exact emitLets_tyFreeVars env binds (bodies act) (hb act)
   | .switch occ cases dflt =>
     have happ : ∀ cs (e : Expr),
@@ -11864,22 +11870,27 @@ private theorem emit_tyFreeVars (env : List Occ) (bodies : Nat → Expr) (t : DT
         intro e; simp [Expr.tyFreeVars.BranchList.tyFreeVars, ih]
     cases dflt with
     | fail =>
-      rw [emit]
+      rw [emit, emitWith]
       have hcases := emitCases_tyFreeVars env bodies occ cases hb
-      simp [Expr.tyFreeVars, resolveOcc, hcases]
+      simp only [emitCases, coreEmissionOps] at hcases
+      simpa only [coreEmissionOps, Expr.tyFreeVars, List.nil_append, List.append_nil] using hcases
     | leaf act binds =>
-      rw [emit]
+      rw [emit, emitWith]
       have hcases := emitCases_tyFreeVars env bodies occ cases hb
+      simp only [emitCases, coreEmissionOps] at hcases
       have hd := emit_tyFreeVars env bodies (.leaf act binds) hb
-      simp only [Expr.tyFreeVars, resolveOcc]
+      simp only [emit, coreEmissionOps] at hd
+      simp only [coreEmissionOps, Expr.tyFreeVars]
       rw [happ, hcases, hd]
       simp
       intro h; cases h
     | switch occ' cases' dflt' =>
-      rw [emit]
+      rw [emit, emitWith]
       have hcases := emitCases_tyFreeVars env bodies occ cases hb
+      simp only [emitCases, coreEmissionOps] at hcases
       have hd := emit_tyFreeVars env bodies (.switch occ' cases' dflt') hb
-      simp only [Expr.tyFreeVars, resolveOcc]
+      simp only [emit, coreEmissionOps] at hd
+      simp only [coreEmissionOps, Expr.tyFreeVars]
       rw [happ, hcases, hd]
       simp
       intro h; cases h
@@ -11891,7 +11902,7 @@ private theorem emitCases_tyFreeVars (env : List Occ) (bodies : Nat → Expr) (o
       Expr.tyFreeVars.BranchList.tyFreeVars (emitCases env bodies occ cases) = []
   | [], _ => rfl
   | (_c, a, t) :: rest, hb => by
-    simp only [emitCases, Expr.tyFreeVars.BranchList.tyFreeVars, List.append_eq_nil_iff]
+    simp only [emitCases, emitCasesWith, Expr.tyFreeVars.BranchList.tyFreeVars, List.append_eq_nil_iff]
     exact ⟨emit_tyFreeVars (subOccs occ a ++ env) bodies t hb,
       emitCases_tyFreeVars env bodies occ rest hb⟩
 end
@@ -11899,7 +11910,7 @@ end
 theorem lowerMatch_tyFreeVars (scrut : Expr) (pats : List Surface.Pattern) (bodies : Nat → Expr)
     (hs : scrut.tyFreeVars = []) (hb : ∀ i, (bodies i).tyFreeVars = []) :
     (lowerMatch scrut pats bodies).tyFreeVars = [] := by
-  simp only [lowerMatch, Expr.tyFreeVars, Option.elim, List.nil_append, hs]
+  simp only [lowerMatch, lowerMatchWith, coreEmissionOps, Expr.tyFreeVars, Option.elim, List.nil_append, hs]
   exact emit_tyFreeVars [[]] bodies (compile [[]] (initMatrix pats)) hb
 
 theorem mkList_tyFreeVars :
@@ -12195,17 +12206,17 @@ theorem lower_tyClosed {ctors : CtorEnv} {s : Surface.Expr} {c : Expr}
   exact lowerExpr_tyFreeVars h
 
 /-- **Typechecking ⇒ inference succeeds (recovering the runtime term).**
-    For a type-closed `c`, `typecheck` and `infer` run the *same* `inferCore`
-    call (`principalType` seeds `c.tyFreeVars = []`, matching `infer`'s empty
-    rigid set), so a successful `typecheck` yields the inferred `(Φ', S, τ)`.
-    Mechanical from `typecheck`/`principalType`/`infer` unfolding. -/
+    For a type-closed `c`, `CoreBackend.typecheck` and `CoreBackend.infer` run the *same* `CoreBackend.inferCore`
+    call (`CoreBackend.principalType` seeds `c.tyFreeVars = []`, matching `CoreBackend.infer`'s empty
+    rigid set), so a successful `CoreBackend.typecheck` yields the inferred `(Φ', S, τ)`.
+    Mechanical from `CoreBackend.typecheck`/`CoreBackend.principalType`/`CoreBackend.infer` unfolding. -/
 theorem infer_of_typecheck {ctors : CtorEnv} {c : Expr}
-    (hclosed : c.tyFreeVars = []) (htc : (typecheck ctors c).isSome) :
-    ∃ Φ' S τ, infer c.freshFloor ⟨[], ctors⟩ c = some (Φ', S, τ) := by
-  simp only [typecheck, principalType, Option.isSome_map] at htc
+    (hclosed : c.tyFreeVars = []) (htc : (CoreBackend.typecheck ctors c).isSome) :
+    ∃ Φ' S τ, CoreBackend.infer c.freshFloor ⟨[], ctors⟩ c = some (Φ', S, τ) := by
+  simp only [CoreBackend.typecheck, CoreBackend.principalType, Option.isSome_map] at htc
   rw [hclosed] at htc
-  simp only [infer]
-  rcases hcore : inferCore [] c.freshFloor ⟨[], ctors⟩ c with _ | ⟨⟨Φ', S, τ⟩, _⟩
+  simp only [CoreBackend.infer]
+  rcases hcore : CoreBackend.inferCore [] c.freshFloor ⟨[], ctors⟩ c with _ | ⟨⟨Φ', S, τ⟩, _⟩
   · simp [hcore] at htc
   · exact ⟨Φ', S, τ, by simp⟩
 
@@ -12242,7 +12253,7 @@ private theorem emitCases_AllBranchBodiesExhaustive {ctors : CtorEnv}
   | nil => exact .nil
   | cons hd tl ih =>
     obtain ⟨c, a, t⟩ := hd
-    rw [emitCases]
+    rw [emitCases, emitCasesWith]
     exact .cons (h c a t List.mem_cons_self)
       (ih fun c' a' t' hm => h c' a' t' (List.mem_cons_of_mem _ hm))
 
@@ -12274,7 +12285,7 @@ theorem emit_DTreeExhaustive {ctors : CtorEnv} (bodies : Nat → Expr)
   induction hexh with
   | leaf =>
     intro env
-    simp only [emit]
+    simp only [emit, emitWith]
     exact emitLets_AllMatchesExhaustive env _ (hbodies _)
   | @switchFail octx occ cases T tyArgs hlook htyped hsub hcover ih =>
     intro env
@@ -12808,10 +12819,10 @@ private def pScopedRigidReject : Surface.Program :=
   | .letRecIn [_] (.var (.mk "loop")) => true
   | _ => false
 #guard match lowerProgram pScopedSingleton with
-  | some (ctors, core) => (typecheck ctors core).isSome
+  | some (ctors, core) => (CoreBackend.typecheck ctors core).isSome
   | none => false
 #guard match lowerProgram pScopedRigidReject with
-  | some (ctors, core) => (typecheck ctors core).isNone
+  | some (ctors, core) => (CoreBackend.typecheck ctors core).isNone
   | none => false
 #guard (Program.ofFlat [] [bA, { name := .mk "a", ann := none, rhs := .primLit (.int 0) }]
   (.primLit (.int 0))).isNone
@@ -12824,7 +12835,7 @@ example : ∀ ctors, SurfaceCovers ctors pMaybeId.term := fun _ =>
 
 A well-typed, exhaustive surface program elaborates to a Core term that is
 type-safe and never gets stuck. Stated over the executable pipeline (`lower`
-succeeds, `typecheck` succeeds, patterns cover) — the object that actually runs.
+succeeds, `CoreBackend.typecheck` succeeds, patterns cover) — the object that actually runs.
 
 The declarative `SurfaceWT` corollary closes the specification/implementation
 loop: structural surface typing plus coverage implies that the concrete `lower`
@@ -12835,7 +12846,7 @@ output typechecks, after which `surface_type_safe` applies. -/
     do not enter `SmallStep.Step`. -/
 theorem surface_type_safe {ctors : CtorEnv} {s : Surface.Expr} {c : Expr}
     (hlow : lower ctors s = some c)
-    (htc : (typecheck ctors c).isSome)
+    (htc : (CoreBackend.typecheck ctors c).isSome)
     (hcov : SurfaceCovers ctors s) :
     ∃ τ, RuntimeTyping.RunWT ⟨[], ctors⟩ (c.erase) τ ∧
       AllMatchesExhaustive ctors (c.erase) ∧
@@ -12843,30 +12854,30 @@ theorem surface_type_safe {ctors : CtorEnv} {s : Surface.Expr} {c : Expr}
         (IsValue e' ∨ ∃ e'', Step e' e'') := by
   -- The lowered term is type-closed, so inference's rigid seed is empty.
   have hclosed : c.tyFreeVars = [] := lower_tyClosed hlow
-  -- `typecheck` and `infer` run the same `inferCore` call, so a successful
-  -- `typecheck` recovers the inferred `(Φ', S, τ)` from `infer`.
+  -- `CoreBackend.typecheck` and `CoreBackend.infer` run the same `CoreBackend.inferCore` call, so a successful
+  -- `CoreBackend.typecheck` recovers the inferred `(Φ', S, τ)` from `CoreBackend.infer`.
   obtain ⟨Φ', S, τ, hinfer⟩ := infer_of_typecheck hclosed htc
-  -- `infer` is sound: the returned tuple is a genuine `Infer` derivation.
-  have hInf : Infer [] c.freshFloor ⟨[], ctors⟩ c Φ' S τ := infer_sound hinfer
-  -- `K := []`: the closed term has no free type vars, so `Infer.eliminates`
-  -- shows `S`'s keys avoid `τ`, collapsing `Infer.sound`'s `S.onTy τ` to `τ`.
+  -- `CoreBackend.infer` is sound: the returned tuple is a genuine `CoreBackend.Infer` derivation.
+  have hInf : CoreBackend.Infer [] c.freshFloor ⟨[], ctors⟩ c Φ' S τ := CoreBackend.infer_sound hinfer
+  -- `K := []`: the closed term has no free type vars, so `CoreBackend.Infer.eliminates`
+  -- shows `S`'s keys avoid `τ`, collapsing `CoreBackend.Infer.sound`'s `S.onTy τ` to `τ`.
   have helim : (∀ p ∈ S, ∀ x : Ty, p.1 ∉ (S.onTy x).freeVars) ∧ (∀ p ∈ S, p.1 ∉ τ.freeVars) :=
-    Infer.eliminates hInf CtxBelow.empty
+    CoreBackend.Infer.eliminates hInf CtxBelow.empty
       (fun y hy => by simp [hclosed] at hy)
       (fun p hp hc => by simp [hclosed] at hc)
   have hSτ : S.onTy τ = τ := Ty.substFvars_eq_self_of_no_key (fun p hp => helim.2 p hp)
-  -- Typing: `Infer.sound` crosses from checked source to proof-only runtime
+  -- Typing: `CoreBackend.Infer.sound` crosses from checked source to proof-only runtime
   -- typing at `S.onCtx ⟨[], ctors⟩`.
   have hty : RuntimeTyping.RunWT ⟨[], ctors⟩ (c.erase) τ := by
     simpa [Subst.onCtx, Subst.onEnv, hSτ] using
-      Infer.sound hInf CtxWF.empty CtxBelow.empty
+      CoreBackend.Infer.sound hInf CtxWF.empty CtxBelow.empty
         (by simp) (by simp [hclosed])
   -- Exhaustiveness: coverage survives `lower` and `erase`.
   have hexh : AllMatchesExhaustive ctors (c.erase) :=
     SmallStep.AllMatchesExhaustive.erase (lower_exhaustive hcov hlow)
   have hsource : TypeOfHM ⟨[], ctors⟩ c τ := by
     simpa [Subst.onCtx, Subst.onEnv, hSτ] using
-      Infer.sourceSound hInf CtxWF.empty CtxBelow.empty
+      CoreBackend.Infer.sourceSound hInf CtxWF.empty CtxBelow.empty
         (by simp) (by simp [hclosed])
   have hexhSource : AllMatchesExhaustive ctors c := lower_exhaustive hcov hlow
   -- Check first, erase second: the source derivation launches the erased
@@ -12881,7 +12892,7 @@ theorem surface_type_safe {ctors : CtorEnv} {s : Surface.Expr} {c : Expr}
     Composes decl elaboration with `surface_type_safe` on the desugared term. -/
 theorem program_type_safe {p : Surface.Program} {ctors : CtorEnv} {c : Expr}
     (hlow : lowerProgram p = some (ctors, c))
-    (htc : (typecheck ctors c).isSome)
+    (htc : (CoreBackend.typecheck ctors c).isSome)
     (hcov : SurfaceCovers ctors p.term) :
     ∃ τ, RuntimeTyping.RunWT ⟨[], ctors⟩ (c.erase) τ ∧
       AllMatchesExhaustive ctors (c.erase) ∧
