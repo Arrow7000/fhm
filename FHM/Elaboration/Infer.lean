@@ -414,18 +414,18 @@ private theorem ctxBelow_of_all {ctx : Ctx} {frontier : Nat}
 /-- One dispatch path: completed subtrees use the existing verified worker;
 partial spines elaborate while inferring. Unsupported partial constructs fail
 before any completed recursive-signature interpretation can be introduced. -/
-def _root_.inferCore (K : List Nat) (frontier : Nat) (ctx : Ctx) (input : Input) :
-    Option { result : Nat × Subst × Expr × Ty //
-      Infer K frontier ctx input result.1 result.2.1 result.2.2.1 result.2.2.2 } :=
+def _root_.inferWithTypesCore (K : List Nat) (frontier : Nat) (ctx : Ctx) (input : Input) :
+    Option { result : Nat × Subst × Expr × Ty × InferredNodeTypes × InferredBinderSchemes //
+      Infer K frontier ctx input result.1 result.2.1 result.2.2.1 result.2.2.2.1 } :=
   if hK : K.all (fun v => decide (v < frontier)) = true then
     if hctx : ctx.env.freeVars.all (fun v => decide (v < frontier)) = true then
       match hemb : input.toCore with
       | some core =>
           if hrigid : core.tyFreeVars.all (fun v => decide (v ∈ K)) = true then
-            match CoreBackend.inferCore K frontier ctx core with
+            match CoreBackend.inferWithTypesCore K frontier ctx core with
             | none => none
-            | some ⟨(next, subst, ty), h⟩ =>
-                some ⟨(next, subst, core, ty), .backend hemb h (ctxBelow_of_all hctx)
+            | some ⟨(next, subst, ty, nodeTypes, schemes), h⟩ =>
+                some ⟨(next, subst, core, ty, nodeTypes, schemes), .backend hemb h (ctxBelow_of_all hctx)
                   (fun v hv => of_decide_eq_true (List.all_eq_true.mp hK v hv))
                   (fun v hv => of_decide_eq_true (List.all_eq_true.mp hrigid v hv))⟩
           else none
@@ -435,28 +435,33 @@ def _root_.inferCore (K : List Nat) (frontier : Nat) (ctx : Ctx) (input : Input)
               match seed K frontier ann with
               | none => none
               | some ⟨(initial, param), hs⟩ =>
-                  match inferCore K initial { ctx with env := PolyTy.mkTrivial param :: ctx.env } body with
+                  match inferWithTypesCore K initial { ctx with env := PolyTy.mkTrivial param :: ctx.env } body with
                   | none => none
-                  | some ⟨(next, subst, completed, bodyTy), hb⟩ =>
-                      some ⟨(next, subst, lambdaOutput ann param subst completed,
-                        .arrow (subst.onTy param) bodyTy), .lambda hs hb⟩
+                  | some ⟨(next, subst, completed, bodyTy, bodyTypes, bodySchemes), hb⟩ =>
+                      let ty := .arrow (subst.onTy param) bodyTy
+                      some ⟨(next, subst, lambdaOutput ann param subst completed, ty,
+                        .root ty ++ bodyTypes.below .lambdaBody, bodySchemes.below .lambdaBody), .lambda hs hb⟩
           | .app f arg =>
-              match inferCore K frontier ctx f with
+              match inferWithTypesCore K frontier ctx f with
               | none => none
-              | some ⟨(first, s1, fOut, fTy), hf⟩ =>
-                  match inferCore K first (s1.onCtx ctx) arg with
+              | some ⟨(first, s1, fOut, fTy, fTypes, fSchemes), hf⟩ =>
+                  match inferWithTypesCore K first (s1.onCtx ctx) arg with
                   | none => none
-                  | some ⟨(second, s2, argOut, argTy), ha⟩ =>
+                  | some ⟨(second, s2, argOut, argTy, argTypes, argSchemes), ha⟩ =>
                       match unifyCoreK K (s2.onTy fTy) (.arrow argTy (.fvar second)) with
                       | none => none
                       | some ⟨s3, hu, hd⟩ =>
+                          let ty := s3.onTy (.fvar second)
                           some ⟨(second + 1, s1 ++ s2 ++ s3,
-                            .app (fOut.substTyFvars (s2 ++ s3)) (argOut.substTyFvars s3),
-                            s3.onTy (.fvar second)), .app hf ha ⟨hu, hd⟩⟩
+                            .app (fOut.substTyFvars (s2 ++ s3)) (argOut.substTyFvars s3), ty,
+                            .root ty ++ (fTypes.onSubst (s2 ++ s3)).below .appFun ++
+                              (argTypes.onSubst s3).below .appArg,
+                            (fSchemes.onSubst (s2 ++ s3)).below .appFun ++
+                              (argSchemes.onSubst s3).below .appArg), .app hf ha ⟨hu, hd⟩⟩
           | .letIn ann rhs body =>
-              match inferCore K frontier ctx rhs with
+              match inferWithTypesCore K frontier ctx rhs with
               | none => none
-              | some ⟨(first, s1, rhsOut, rhsTy), hr⟩ =>
+              | some ⟨(first, s1, rhsOut, rhsTy, rhsTypes, rhsSchemes), hr⟩ =>
                   match checkLet K first ann rhsTy with
                   | none => none
                   | some ⟨(checked, sCheck), hc⟩ =>
@@ -465,14 +470,92 @@ def _root_.inferCore (K : List Nat) (frontier : Nat) (ctx : Ctx) (input : Input)
                       let checkedOut := rhsOut.substTyFvars sCheck
                       let scheme := genScheme K checkedCtx.env checkedTy
                       let names := genVars K checkedCtx.env checkedTy
-                      match inferCore K checked { checkedCtx with env := scheme :: checkedCtx.env } body with
+                      match inferWithTypesCore K checked { checkedCtx with env := scheme :: checkedCtx.env } body with
                       | none => none
-                      | some ⟨(next, s2, bodyOut, bodyTy), hb⟩ =>
+                      | some ⟨(next, s2, bodyOut, bodyTy, bodyTypes, bodySchemes), hb⟩ =>
+                          let binder : InferredBinderScheme :=
+                            { site := .letIn [], scheme := s2.onPolyTy scheme, tyDepth := 0 }
                           some ⟨(next, s1 ++ sCheck ++ s2,
-                            letOutput scheme names checkedOut bodyOut s2, bodyTy), .letIn hr hc hb⟩
+                            letOutput scheme names checkedOut bodyOut s2, bodyTy,
+                            .root bodyTy ++ (rhsTypes.onSubst (sCheck ++ s2)).below .letRhs ++
+                              bodyTypes.below .letBody,
+                            binder :: (rhsSchemes.onSubst (sCheck ++ s2)).below .letRhs ++
+                              bodySchemes.below .letBody), .letIn hr hc hb⟩
           | _ => none
     else none
   else none
 termination_by sizeOf input
+
+/-- The plain certificate API projects the one metadata-producing run. -/
+def _root_.inferCore (K : List Nat) (frontier : Nat) (ctx : Ctx) (input : Input) :
+    Option { result : Nat × Subst × Expr × Ty //
+      Infer K frontier ctx input result.1 result.2.1 result.2.2.1 result.2.2.2 } :=
+  match inferWithTypesCore K frontier ctx input with
+  | none => none
+  | some ⟨(next, subst, output, ty, _, _), h⟩ => some ⟨(next, subst, output, ty), h⟩
+
+@[simp] theorem _root_.inferCore_isSome (K : List Nat) (frontier : Nat) (ctx : Ctx) (input : Input) :
+    (inferCore K frontier ctx input).isSome = (inferWithTypesCore K frontier ctx input).isSome := by
+  unfold inferCore
+  cases inferWithTypesCore K frontier ctx input with
+  | none => rfl
+  | some result => rcases result with ⟨⟨next, subst, output, ty, nodes, schemes⟩, h⟩; rfl
+
+/-- Public artifacts and completed ordinary Core come from the same inference. -/
+structure _root_.InferenceResult where
+  frontier : Nat
+  subst : Subst
+  completedExpr : Expr
+  ty : Ty
+  nodeTypes : NodeTypeMap
+  binderSchemes : BinderSchemeMap
+
+def Input.freshFloor (input : Input) : Nat := tyVarCeil input.rigidVars
+
+theorem Input.lt_freshFloor {input : Input} {v : Nat} (h : v ∈ input.rigidVars) :
+    v < input.freshFloor := lt_tyVarCeil h
+
+def _root_.inferWithTypes (ctors : CtorEnv) (input : Input) : Option InferenceResult :=
+  (inferWithTypesCore input.rigidVars input.freshFloor ⟨[], ctors⟩ input).map fun result =>
+    { frontier := result.val.1
+      subst := result.val.2.1
+      completedExpr := result.val.2.2.1
+      ty := result.val.2.2.2.1
+      nodeTypes := result.val.2.2.2.2.1.toMap
+      binderSchemes := result.val.2.2.2.2.2.toMap }
+
+def _root_.principalType (ctors : CtorEnv) (input : Input) : Option Ty :=
+  (inferCore input.rigidVars input.freshFloor ⟨[], ctors⟩ input).map (·.val.2.2.2)
+
+def _root_.typecheck (ctors : CtorEnv) (input : Input) : Option PolyTy :=
+  (principalType ctors input).map (genScheme [] [])
+
+/-- A public artifact result carries the canonical elaboration derivation. -/
+theorem _root_.inferWithTypes_infer {ctors : CtorEnv} {input : Input} {result : InferenceResult}
+    (h : inferWithTypes ctors input = some result) :
+    Infer input.rigidVars input.freshFloor ⟨[], ctors⟩ input result.frontier result.subst
+      result.completedExpr result.ty := by
+  unfold inferWithTypes at h
+  cases hcore : inferWithTypesCore input.rigidVars input.freshFloor ⟨[], ctors⟩ input with
+  | none => simp only [hcore, Option.map_none, reduceCtorEq] at h
+  | some r =>
+    rcases r with ⟨⟨next, subst, output, ty, nodes, schemes⟩, hi⟩
+    simp only [hcore, Option.map_some, Option.some.injEq] at h
+    subst result
+    exact hi
+
+/-- The exact completed Core returned to the runtime is source typed. -/
+theorem _root_.inferWithTypes_source_sound {ctors : CtorEnv} {input : Input} {result : InferenceResult}
+    (h : inferWithTypes ctors input = some result) :
+    TypeOfHM ⟨[], ctors⟩ result.completedExpr result.ty := by
+  simpa only [Subst.onCtx_empty] using (inferWithTypes_infer h).sourceSound CtxWF.empty
+
+theorem _root_.inferWithTypes_erase {ctors : CtorEnv} {input : Input} {result : InferenceResult}
+    (h : inferWithTypes ctors input = some result) : result.completedExpr.erase = input.erase :=
+  (inferWithTypes_infer h).erase
+
+theorem _root_.inferWithTypes_input_sound {ctors : CtorEnv} {input : Input} {result : InferenceResult}
+    (h : inferWithTypes ctors input = some result) : Typing input.rigidVars ⟨[], ctors⟩ input result.ty := by
+  simpa only [Subst.onCtx_empty] using (inferWithTypes_infer h).inputSound CtxWF.empty
 
 end Elaboration

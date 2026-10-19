@@ -232,6 +232,29 @@ theorem allocateList_fits (templates : List Template) (frontier : Nat) :
 end
 
 
+/-- Authored free type variables are rigid; anonymous holes contribute none. -/
+def LetAnn.rigidVars : LetAnn → List Nat
+  | .absent => []
+  | .complete scheme => scheme.body.freeVars
+  | .template t => t.rigidVars
+  | .partialForall _ t => t.rigidVars
+
+mutual
+def Input.rigidVars : Input → List Nat
+  | .primLit _ | .primBinOp _ | .var _ | .ctor _ => []
+  | .lambda ann body => ann.elim [] Template.rigidVars ++ body.rigidVars
+  | .app f arg => f.rigidVars ++ arg.rigidVars
+  | .letIn ann rhs body => ann.rigidVars ++ rhs.rigidVars ++ body.rigidVars
+  | .match_ scrut branches => scrut.rigidVars ++ rigidBranchVars branches
+  | .letRec anns bindings body => anns.flatMap LetAnn.rigidVars ++ rigidBindingVars bindings ++ body.rigidVars
+def rigidBranchVars : List (MatchPattern × Input) → List Nat
+  | [] => []
+  | (_, body) :: rest => body.rigidVars ++ rigidBranchVars rest
+def rigidBindingVars : List Input → List Nat
+  | [] => []
+  | body :: rest => body.rigidVars ++ rigidBindingVars rest
+end
+
 /-- Embed complete ordinary Core without changing annotation modes. -/
 def LetAnn.ofCore : Option PolyTy → LetAnn
   | none => .absent

@@ -5,12 +5,12 @@ namespace Elaboration
 /-- Producer completeness for the concrete worker, under an arbitrary LC
 specialization fixing the inference's rigid variables. Successful results
 already carry output typing and residual principality. -/
-def _root_.InferCoreComplete (input : Input) : Prop :=
+def _root_.InferWithTypesCoreComplete (input : Input) : Prop :=
   ∀ (K : List Nat) (frontier : Nat) (ctx : Ctx) (ambient : Subst) (target : Ty),
     CtxWF ctx → CtxBelow frontier ctx → (∀ k ∈ K, k < frontier) →
     (∀ pair ∈ ambient, pair.2.IsLC) →
     (∀ k ∈ K, ambient.onTy (.fvar k) = .fvar k) →
-    Typing K (ambient.onCtx ctx) input target → (inferCore K frontier ctx input).isSome
+    Typing K (ambient.onCtx ctx) input target → (inferWithTypesCore K frontier ctx input).isSome
 
 private theorem rigid_all {K : List Nat} (h : ∀ k ∈ K, k < frontier) :
     K.all (fun v => decide (v < frontier)) = true :=
@@ -23,31 +23,27 @@ private theorem ctx_all (h : CtxBelow frontier ctx) :
   obtain ⟨scheme, hs, hv⟩ := Env.mem_freeVars_iff.mp hv
   exact decide_eq_true ((h scheme hs).mem_lt v hv)
 
-theorem _root_.inferCore_complete_backend {input : Input} {core : Expr}
-    (hemb : input.toCore = some core) : InferCoreComplete input := by
+theorem _root_.inferWithTypesCore_complete_backend {input : Input} {core : Expr}
+    (hemb : input.toCore = some core) : InferWithTypesCoreComplete input := by
   intro K frontier ctx ambient target hwf hbelow hK hS hfix ht
   obtain ⟨hcore, hscope⟩ := ht.toCore hemb
   obtain ⟨next, subst, ty, R, hi, _⟩ := CoreBackend.Infer.complete core K hwf hbelow hS hK hscope hfix hcore
   have hsome := CoreBackend.inferCore_complete core K hwf hbelow hK hscope hi
   obtain ⟨⟨⟨n, s, t, nodes, schemes⟩, hresult⟩, hworker⟩ := Option.isSome_iff_exists.mp hsome
-  have hroot : (CoreBackend.inferCore K frontier ctx core).isSome := by
-    rw [CoreBackend.inferCore, hworker]
-    rfl
-  obtain ⟨⟨⟨n, s, t⟩, hi⟩, hroot⟩ := Option.isSome_iff_exists.mp hroot
   have hscopeAll : core.tyFreeVars.all (fun v => decide (v ∈ K)) = true :=
     List.all_eq_true.mpr (fun v hv => decide_eq_true (hscope v hv))
-  rw [inferCore, dif_pos (rigid_all hK), dif_pos (ctx_all hbelow)]
+  rw [inferWithTypesCore, dif_pos (rigid_all hK), dif_pos (ctx_all hbelow)]
   split
   · rename_i core' heq
     have hcoreeq := Option.some.inj (heq.symm.trans hemb)
     subst core'
-    simp only [hscopeAll, dite_true, hroot, Option.isSome_some]
+    simp only [hscopeAll, dite_true, hworker, Option.isSome_some]
   · rename_i heq
     simp [hemb] at heq
 
-theorem _root_.inferCore_complete_lambda_partial
-    (ih : InferCoreComplete body) (hemb : (Input.lambda ann body).toCore = none) :
-    InferCoreComplete (.lambda ann body) := by
+theorem _root_.inferWithTypesCore_complete_lambda_partial
+    (ih : InferWithTypesCoreComplete body) (hemb : (Input.lambda ann body).toCore = none) :
+    InferWithTypesCoreComplete (.lambda ann body) := by
   intro K frontier ctx ambient target hwf hbelow hK hS hfix ht
   obtain ⟨paramD, resultD, rfl, hparamD, hfit, hrigid, hbodyD⟩ := ht.lambda_inv
   obtain ⟨⟨⟨initial, param⟩, hs⟩, hseedResult⟩ :=
@@ -74,19 +70,19 @@ theorem _root_.inferCore_complete_lambda_partial
     fun k hk => (hUagree k (hK k hk)).symm.trans (hfix k hk)
   have hbody := ih K initial _ U resultD hbodywf hbodybelow
     (fun k hk => Nat.lt_of_lt_of_le (hK k hk) hle) hU hUfix (hctxeq.symm ▸ hbodyD)
-  obtain ⟨⟨⟨next, subst, completed, bodyTy⟩, hb⟩, hbodyResult⟩ := Option.isSome_iff_exists.mp hbody
-  rw [inferCore, dif_pos (rigid_all hK), dif_pos (ctx_all hbelow)]
+  obtain ⟨⟨⟨next, subst, completed, bodyTy, bodyTypes, bodySchemes⟩, hb⟩, hbodyResult⟩ := Option.isSome_iff_exists.mp hbody
+  rw [inferWithTypesCore, dif_pos (rigid_all hK), dif_pos (ctx_all hbelow)]
   split
   · rename_i core heq
     simp [hemb] at heq
   · simp only [hseedResult, hbodyResult, Option.isSome_some]
 
-theorem _root_.inferCore_complete_app_partial
-    (ihf : InferCoreComplete f) (iha : InferCoreComplete arg)
-    (hemb : (Input.app f arg).toCore = none) : InferCoreComplete (.app f arg) := by
+theorem _root_.inferWithTypesCore_complete_app_partial
+    (ihf : InferWithTypesCoreComplete f) (iha : InferWithTypesCoreComplete arg)
+    (hemb : (Input.app f arg).toCore = none) : InferWithTypesCoreComplete (.app f arg) := by
   intro K frontier ctx ambient target hwf hbelow hK hS hfix ht
   obtain ⟨paramD, hfD, haD⟩ := ht.app_inv
-  obtain ⟨⟨⟨first, s1, fOut, fTy⟩, hf⟩, hfResult⟩ := Option.isSome_iff_exists.mp
+  obtain ⟨⟨⟨first, s1, fOut, fTy, fTypes, fSchemes⟩, hf⟩, hfResult⟩ := Option.isSome_iff_exists.mp
     (ihf K frontier ctx ambient (.arrow paramD target) hwf hbelow hK hS hfix hfD)
   obtain ⟨Rf, hRf, hfTy, hRfK, hagf⟩ := hf.principal hwf hbelow hK ambient
     (.arrow paramD target) K hS hK hfix hfD
@@ -98,7 +94,7 @@ theorem _root_.inferCore_complete_app_partial
   have hctxeq : ambient.onCtx ctx = Rf.onCtx (s1.onCtx ctx) := by
     rw [← Subst.onCtx_append]
     exact Subst.onCtx_congr hagf hbelow
-  obtain ⟨⟨⟨second, s2, argOut, argTy⟩, ha⟩, haResult⟩ := Option.isSome_iff_exists.mp
+  obtain ⟨⟨⟨second, s2, argOut, argTy, argTypes, argSchemes⟩, ha⟩, haResult⟩ := Option.isSome_iff_exists.mp
     (iha K first (s1.onCtx ctx) Rf paramD (Subst.onCtx_wf hs1LC hwf) hctx1 hK1
       hRf hRfK (hctxeq ▸ haD))
   obtain ⟨Ra, hRa, haTy, hRaK, haga⟩ := ha.principal (Subst.onCtx_wf hs1LC hwf) hctx1 hK1
@@ -123,14 +119,14 @@ theorem _root_.inferCore_complete_app_partial
   have hsome := unifyCoreK_complete (Subst.onTy_lc hs2LC hfLC) (.arrow haLC .fvar) hU hUni hUK
   obtain ⟨⟨s3, hu⟩, huResult⟩ := Option.isSome_iff_exists.mp hsome
   rcases hu with ⟨hun, havoid⟩
-  rw [inferCore, dif_pos (rigid_all hK), dif_pos (ctx_all hbelow)]
+  rw [inferWithTypesCore, dif_pos (rigid_all hK), dif_pos (ctx_all hbelow)]
   split
   · rename_i core heq; simp [hemb] at heq
   · simp only [hfResult, haResult, huResult, Option.isSome_some]
 
-theorem _root_.inferCore_complete_letIn_partial
-    (ihr : InferCoreComplete rhs) (ihb : InferCoreComplete body)
-    (hemb : (Input.letIn ann rhs body).toCore = none) : InferCoreComplete (.letIn ann rhs body) := by
+theorem _root_.inferWithTypesCore_complete_letIn_partial
+    (ihr : InferWithTypesCoreComplete rhs) (ihb : InferWithTypesCoreComplete body)
+    (hemb : (Input.letIn ann rhs body).toCore = none) : InferWithTypesCoreComplete (.letIn ann rhs body) := by
   intro K frontier ctx ambient target hwf hbelow hK hS hfix ht
   have hlet := ht
   cases ht with
@@ -138,7 +134,7 @@ theorem _root_.inferCore_complete_letIn_partial
   | @letIn ann _ rhs body target M L hM hannRigid hannFits hrD hbD =>
     obtain ⟨Xs, hXlen, hXnd, hXavoid⟩ := exists_fresh_names L M.paramCount
     have hXs : FreshNames L M.paramCount Xs := ⟨hXlen, hXnd, hXavoid⟩
-    obtain ⟨⟨⟨first, s1, rhsOut, rhsTy⟩, hr⟩, hrResult⟩ := Option.isSome_iff_exists.mp
+    obtain ⟨⟨⟨first, s1, rhsOut, rhsTy, rhsTypes, rhsSchemes⟩, hr⟩, hrResult⟩ := Option.isSome_iff_exists.mp
       (ihr K frontier ctx ambient (M.openVars Xs) hwf hbelow hK hS hfix (hrD Xs hXs))
     obtain ⟨R, hR, hrTy, hRK, _⟩ := hr.principal hwf hbelow hK ambient
       (M.openVars Xs) K hS hK hfix (hrD Xs hXs)
@@ -153,28 +149,28 @@ theorem _root_.inferCore_complete_letIn_partial
       hr.let_frame hc hr.principal hwf hbelow hK ambient target K hS hK hfix hlet
     have hle := hrle.trans hc.frontier_le
     have hKchecked : ∀ k ∈ K, k < checked := fun k hk => Nat.lt_of_lt_of_le (hK k hk) hle
-    obtain ⟨⟨⟨next, s2, bodyOut, bodyTy⟩, hb⟩, hbResult⟩ := Option.isSome_iff_exists.mp
+    obtain ⟨⟨⟨next, s2, bodyOut, bodyTy, bodyTypes, bodySchemes⟩, hb⟩, hbResult⟩ := Option.isSome_iff_exists.mp
       (ihb K checked _ V target hbodyWF hbodyB hKchecked hV hVK hbodyD)
-    rw [inferCore, dif_pos (rigid_all hK), dif_pos (ctx_all hbelow)]
+    rw [inferWithTypesCore, dif_pos (rigid_all hK), dif_pos (ctx_all hbelow)]
     split
     · rename_i core heq; simp [hemb] at heq
     · simp only [hrResult, hcResult, hbResult, Option.isSome_some]
 
 /-- Concrete producer completeness for exactly the independently specified
 fragment, including structured partial annotations and completed backend leaves. -/
-theorem _root_.inferCore_complete (input : Input) : InferCoreComplete input := by
+theorem _root_.inferWithTypesCore_complete (input : Input) : InferWithTypesCoreComplete input := by
   cases hemb : input.toCore with
-  | some core => exact inferCore_complete_backend hemb
+  | some core => exact inferWithTypesCore_complete_backend hemb
   | none =>
     cases input with
     | primLit => cases hemb
     | primBinOp => cases hemb
     | var => cases hemb
     | ctor => cases hemb
-    | lambda ann body => exact inferCore_complete_lambda_partial (inferCore_complete body) hemb
-    | app f arg => exact inferCore_complete_app_partial (inferCore_complete f) (inferCore_complete arg) hemb
+    | lambda ann body => exact inferWithTypesCore_complete_lambda_partial (inferWithTypesCore_complete body) hemb
+    | app f arg => exact inferWithTypesCore_complete_app_partial (inferWithTypesCore_complete f) (inferWithTypesCore_complete arg) hemb
     | letIn ann rhs body =>
-      exact inferCore_complete_letIn_partial (inferCore_complete rhs) (inferCore_complete body) hemb
+      exact inferWithTypesCore_complete_letIn_partial (inferWithTypesCore_complete rhs) (inferWithTypesCore_complete body) hemb
     | match_ scrut branches =>
       intro K frontier ctx ambient target hwf hbelow hK hS hfix ht
       cases ht with
@@ -184,6 +180,19 @@ theorem _root_.inferCore_complete (input : Input) : InferCoreComplete input := b
       cases ht with
       | complete hemb' _ _ => simp [hemb] at hemb'
 termination_by sizeOf input
+
+/-- Completeness of the plain result API follows by projection of the same run. -/
+def _root_.InferCoreComplete (input : Input) : Prop :=
+  ∀ (K : List Nat) (frontier : Nat) (ctx : Ctx) (ambient : Subst) (target : Ty),
+    CtxWF ctx → CtxBelow frontier ctx → (∀ k ∈ K, k < frontier) →
+    (∀ pair ∈ ambient, pair.2.IsLC) →
+    (∀ k ∈ K, ambient.onTy (.fvar k) = .fvar k) →
+    Typing K (ambient.onCtx ctx) input target → (inferCore K frontier ctx input).isSome
+
+theorem _root_.inferCore_complete (input : Input) : InferCoreComplete input := by
+  intro K frontier ctx ambient target hwf hbelow hK hS hfix ht
+  rw [inferCore_isSome]
+  exact inferWithTypesCore_complete input K frontier ctx ambient target hwf hbelow hK hS hfix ht
 
 /-- Producer completeness also yields the usual relational residual contract;
 it is a corollary of concrete success and principality, not a second worker. -/
@@ -230,6 +239,37 @@ theorem _root_.inferCore_empty_accepts_iff {K : List Nat} {frontier : Nat} {ctor
   · rintro ⟨ty, ht⟩
     exact inferCore_complete input K frontier ⟨[], ctors⟩ [] ty CtxWF.empty CtxBelow.empty hK
       (by simp) (by simp) (by simpa only [Subst.onCtx, Subst.onEnv, List.map_nil] using ht)
+
+/-- Public artifact inference is complete for independent input typing. -/
+theorem _root_.inferWithTypes_complete {ctors : CtorEnv} {input : Input} {ty : Ty}
+    (ht : Typing input.rigidVars ⟨[], ctors⟩ input ty) : (inferWithTypes ctors input).isSome := by
+  unfold inferWithTypes
+  rw [Option.isSome_map]
+  exact inferWithTypesCore_complete input input.rigidVars input.freshFloor ⟨[], ctors⟩ [] ty
+    CtxWF.empty CtxBelow.empty (fun v hv => Input.lt_freshFloor hv) (by simp) (by simp)
+    (by simpa only [Subst.onCtx_empty] using ht)
+
+theorem _root_.inferWithTypes_accepts_iff {ctors : CtorEnv} {input : Input} :
+    (inferWithTypes ctors input).isSome ↔ ∃ ty, Typing input.rigidVars ⟨[], ctors⟩ input ty := by
+  constructor
+  · intro hsome
+    obtain ⟨result, hresult⟩ := Option.isSome_iff_exists.mp hsome
+    exact ⟨result.ty, inferWithTypes_input_sound hresult⟩
+  · rintro ⟨ty, ht⟩; exact inferWithTypes_complete ht
+
+/-- The public result retains protected-variable residual principality. -/
+theorem _root_.inferWithTypes_principal {ctors : CtorEnv} {input : Input} {result : InferenceResult}
+    (h : inferWithTypes ctors input = some result) :
+    ∀ target, Typing input.rigidVars ⟨[], ctors⟩ input target →
+      ∃ R : Subst, (∀ pair ∈ R, pair.2.IsLC) ∧ target = R.onTy result.ty ∧
+        (∀ v ∈ input.rigidVars, R.onTy (.fvar v) = .fvar v) := by
+  intro target ht
+  have hi := inferWithTypes_infer h
+  obtain ⟨R, hR, hty, hfix, _⟩ := hi.principal CtxWF.empty CtxBelow.empty
+    (fun v hv => Input.lt_freshFloor hv) [] target input.rigidVars (by simp)
+    (fun v hv => Input.lt_freshFloor hv) (by simp)
+    (by simpa only [Subst.onCtx_empty] using ht)
+  exact ⟨R, hR, hty, hfix⟩
 
 #print axioms inferCore_complete
 #print axioms Infer.complete

@@ -172,6 +172,16 @@ def unusedHole : Input :=
   | some ⟨(_, _, .letIn (some ⟨1, .customTy ⟨"List"⟩ [.bvar 0]⟩) _ _, .prim .int), _⟩ => true
   | _ => false
 
+-- Public artifacts and completed output come from the same run. Synthetic
+-- scheme binders do not turn source hover monotypes into dangling bvars.
+#guard match inferWithTypes ctors polymorphicId with
+  | some result => result.binderSchemes.any (fun fact => fact.2.paramCount == 1)
+  | none => false
+#guard match (inferWithTypes ctors polymorphicId).bind (fun result =>
+    result.nodeTypes.find? (fun fact => fact.1 == [.letRhs])) with
+  | some (_, .arrow (.fvar 0) (.fvar 0)) => true
+  | _ => false
+
 #print axioms Infer.sourceSound
 #print axioms Infer.inputSound
 #print axioms Infer.completes
