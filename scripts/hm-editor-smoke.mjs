@@ -515,5 +515,72 @@ test("pattern lets reject duplicate captures and self/mutual cycles by name", ()
   assert.match(duplicate.payload.diagnostics[0]?.message || "", /duplicate names in let pattern/);
 });
 
+test("anonymous lambda holes generalize and expose precise token hovers", () => {
+  const source = "let id = \\(x : _) -> x\n(id 1, id True)\n";
+  const payload = diagnose(source);
+  hover(payload, source, 0, "_", "a");
+  const response = run(source, "(1, True)");
+  assert.match(response.bindings.find(b => b.name === "id")?.type || "", /^∀ .+\. .+ → .+$/);
+});
+
+test("structured anonymous holes are independent and retain fixed type constraints", () => {
+  const source = "let f : _ -> _ = \\x -> 1\n(f True, f 2)\n";
+  const payload = diagnose(source);
+  hover(payload, source, 0, "_", "a", 0);
+  hover(payload, source, 0, "_", "Int", 1);
+  run(source, "(1, 1)");
+  const bad = cli(["run", "--json"], "let f : Int -> _ = \\x -> x\nf True\n");
+  assert.equal(bad.payload.stage, "typecheck");
+  const occurs = cli(["diagnose"], "let f = \\(x : _) -> x x\nf\n");
+  assert.equal(occurs.payload.diagnostics[0]?.code, "type.infiniteType");
+});
+
+test("datatype holes and adjacent lambda holes show their actual inferred types", () => {
+  for (const [source, expected, value] of [
+    ["(\\(x : _) (y : _) -> (x,y)) 1 True\n", ["Int", "Bool"], "(1, True)"],
+    ["(\\(x : List _) -> x) [1,2]\n", ["Int"], "[1, 2]"],
+    ["(\\(x : (_, _)) -> x) (1, True)\n", ["Int", "Bool"], "(1, True)"],
+  ]) {
+    const payload = diagnose(source);
+    expected.forEach((type, i) => hover(payload, source, 0, "_", type, i));
+    run(source, value);
+  }
+  const wildcard = diagnose("let f = \\_ -> 1\nf True\n");
+  assert.ok(!wildcard.symbols.some(s => s.kind === "typeHole"));
+});
+
+test("actual pattern compilation preserves holes in copied fallback arms", () => {
+  const source = "let f = \\p -> match p with | (True, True) -> 1 | _ -> let id = \\(x : _) -> x in id 2\n" +
+    "(f (True, False), f (False, True))\n";
+  const payload = diagnose(source);
+  assert.equal(payload.symbols.filter(s => s.kind === "typeHole").length, 1);
+  run(source, "(2, 2)");
+  run("match (\\(x : _) -> x) True with | True -> 1 | False -> 2\n", "1");
+  run("let f = \\((a,b) : (_, _)) -> (b,a)\nf (1, True)\n", "(True, 1)");
+});
+
+test("partial forall preserves named rigidity and complete signatures permit partial RHSs", () => {
+  run("let id : {a} a -> _ = \\(x : a) -> x\n(id 1, id True)\n", "(1, True)");
+  const bad = cli(["run", "--json"], "let f : {a b} a -> b -> _ = \\x y -> x + y\nf\n");
+  assert.equal(bad.payload.stage, "typecheck");
+  run("let id : {a} a -> a = \\(x : _) -> x\n(id 1, id True)\n", "(1, True)");
+  run("let id : {a} a -> a = \\x -> x\n(\\(x : _) -> id x) 1\n", "1");
+});
+
+test("recursive partial signatures constrain the SCC without permitting polymorphic recursion", () => {
+  const shape = "let f : {a} (Int,a) -> _ = \\x -> g x\n" +
+    "let g = \\x -> if True then x else f x\n";
+  run(shape + "g (1, True)\n", "(1, True)");
+  const badShape = cli(["run", "--json"], shape + "g True\n");
+  assert.equal(badShape.payload.stage, "typecheck");
+  diagnose("let f : {a} a -> _ = \\x -> g x\nlet g : {b} b -> _ = \\x -> f x\nf\n");
+  diagnose("let f : {a b} a -> b -> _ = \\x y -> if True then 1 else g y x\n" +
+    "let g : {c d} c -> d -> _ = \\u v -> f v u\nf\n");
+  run("let f : {a} a -> Int = \\(x : _) -> if True then 0 else f [x]\nf True\n", "0");
+  const badRec = cli(["run", "--json"],
+    "let f : {a} a -> _ = \\(x : _) -> if True then 0 else f [x]\nf True\n");
+  assert.equal(badRec.payload.stage, "typecheck");
+});
+
 console.log(`${tests - failures}/${tests} HM CLI/editor semantic smoke checks passed.`);
 process.exitCode = failures ? 1 : 0;

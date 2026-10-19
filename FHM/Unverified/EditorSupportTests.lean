@@ -711,3 +711,27 @@ def patternLetSrc : String :=
   | some r => r.diagnostics.any fun d => d.code? == some "match.notExhaustive" &&
       d.missingPatterns == ["(False, _)"]
   | none => false)
+
+-- Anonymous annotation holes use the production lowering/inference path.
+private def holeTypes (src : String) : Option (List String) := do
+  let r ← hoverReport src
+  if !r.diagnostics.isEmpty then none else
+    some ((r.symbols.filter fun s => s.kind == "typeHole").map (·.type_))
+
+private def holeIdSrc := "let id = \\(x : _) -> x\n(id 1, id True)\n"
+#guard holeTypes holeIdSrc == some ["a"]
+#guard ((hoverReport holeIdSrc).map (·.programTy)) == some "(Int, Bool)"
+#guard holeTypes "let f : _ -> _ = \\x -> 1\nf True\n" == some ["a", "Int"]
+#guard holeTypes "(\\(x : _) (y : _) -> (x,y)) 1 True\n" == some ["Int", "Bool"]
+#guard holeTypes "(\\(f : Int -> _) -> f 1) (\\x -> True)\n" == some ["Bool"]
+#guard holeTypes "(\\(x : List _) -> x) [1,2]\n" == some ["Int"]
+#guard holeTypes "(\\(x : (_, _)) -> x) (1, True)\n" == some ["Int", "Bool"]
+#guard (match hoverReport "let f = \\(x : _) -> x x\nf\n" with
+  | some r => r.diagnostics.any fun d => d.code? == some "type.infiniteType"
+  | none => false)
+#guard (match hoverReport "let f : Int -> _ = \\x -> x\nf True\n" with
+  | some r => !r.diagnostics.isEmpty
+  | none => false)
+
+-- Pattern underscores remain wildcards, with no inferred-hole symbol.
+#guard holeTypes "let f = \\_ -> 1\nf True\n" == some []

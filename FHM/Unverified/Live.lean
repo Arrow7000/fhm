@@ -220,10 +220,14 @@ def checkPipeline (src : String) :
 
   -- On failure, `collectHover` reruns the editor pipeline to locate the error.
   let firstDiag := fun () => (collectHover src p binders sp).diagnostics.head?
-  let (ctors, _) ← match lowerProgram p with
+  let userDecls ← match lowerDataDeclsIn preludeKindEnv p.decls with
     | none => return .error (diagnosedErr .lower (firstDiag ())
-        "lowering failed (unbound name, bad decl, or rejected sugar)")
-    | some x => pure x
+        "declaration lowering failed")
+    | some decls => pure decls
+  let ctors ← match elabDecls (preludeDecls ++ userDecls) with
+    | none => return .error (diagnosedErr .lower (firstDiag ())
+        "declaration elaboration failed")
+    | some ctors => pure ctors
 
   let scope :=
     let spans := binders.map (·.span) ++ sp.groups.flatMap (·.map Surface.Span.SpannedExpr.span)
@@ -245,7 +249,7 @@ def checkPipeline (src : String) :
   let inference := typed.inference
   let tCheck1 ← IO.monoNanosNow
   let bodyσ := genScheme [] [] τ
-  let bindings ← match topBindingTypes p.groups lowered.expr inference.binderSchemes with
+  let bindings ← match topBindingTypes p.groups typed.lowering.expr inference.binderSchemes with
     | some bindings => pure bindings
     | none => return .error {
         stage := .typecheck
@@ -267,7 +271,7 @@ def checkPipeline (src : String) :
         (SurfaceBridge.Provenance.identify tree) (bodyDiagSpan sp.body)))
       "match not exhaustive")
 
-  let e := lowered.expr.erase
+  let e := typed.inference.completedExpr.erase
 
   return .ok {
     report := report

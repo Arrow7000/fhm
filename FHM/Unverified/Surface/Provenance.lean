@@ -1,6 +1,8 @@
 import FHM.PatComp.Trace
 import FHM.Surface.Span
 import FHM.SurfaceBridge
+import FHM.Elaboration.Lowering
+import FHM.InferW
 
 /-! # Construction-time Surface → Core provenance
 
@@ -129,6 +131,21 @@ end
     parsed snapshot; no claim is made that they survive arbitrary text edits. -/
 def identify (s : SpannedExpr) : IdentifiedExpr := (identifyFrom 0 s).2
 
+/-- A span-free mirror for diagnostic probes assembled from Surface syntax.
+    Production editor requests use the parser's real span tree. -/
+partial def diagnosticSpans (e : Surface.Expr) : SpannedExpr :=
+  match e with
+  | .pair a b => .pair .empty (diagnosticSpans a) (diagnosticSpans b)
+  | .cons a b => .cons .empty (diagnosticSpans a) (diagnosticSpans b)
+  | .list es => .list .empty (es.map diagnosticSpans)
+  | .lambda _ _ b => .lambda .empty (diagnosticSpans b)
+  | .app f a => .app .empty (diagnosticSpans f) (diagnosticSpans a)
+  | .letIn _ _ _ _ r b => .letIn .empty (diagnosticSpans r) (diagnosticSpans b)
+  | .letRecIn bs b => .letRecIn .empty (bs.map fun b => diagnosticSpans b.rhs) (diagnosticSpans b)
+  | .ife c t f => .ife .empty (diagnosticSpans c) (diagnosticSpans t) (diagnosticSpans f)
+  | .match_ s arms => .match_ .empty (diagnosticSpans s) (arms.map fun a => diagnosticSpans a.2)
+  | _ => .leaf .empty
+
 mutual
 def IdentifiedExpr.nodes : IdentifiedExpr → List SourceNode
   | .leaf n => [n]
@@ -206,8 +223,8 @@ abbrev SourceTargetMap := List (SourceId × OriginTarget)
 abbrev CoreOriginMap := List (CorePath × Origin)
 abbrev BinderTargetMap := List (SurfaceBinderSite × BinderOriginTarget)
 
-structure Lowered where
-  expr : Expr
+structure Lowered (Term : Type := Expr) where
+  expr : Term
   sourceNodes : List SourceNode
   sourceTargets : SourceTargetMap
   coreOrigins : CoreOriginMap
@@ -215,23 +232,32 @@ structure Lowered where
 
 namespace Lowered
 
-def belowPath (pre : CorePath) (r : Lowered) : Lowered :=
+def belowPath {Term : Type} (pre : CorePath) (r : Lowered Term) : Lowered Term :=
   { r with
     sourceTargets := r.sourceTargets.map fun (id, target) => (id, target.belowPath pre)
     coreOrigins := r.coreOrigins.map fun (path, origin) => (pre ++ path, origin)
     binderTargets := r.binderTargets.map fun (source, target) =>
       (source, target.belowPath pre) }
 
-def metadata (expr : Expr) (parts : List Lowered) : Lowered :=
+def metadata {Term : Type} (expr : Term) (parts : List (Lowered Term)) : Lowered Term :=
   { expr
     sourceNodes := parts.flatMap (fun r => r.sourceNodes)
     sourceTargets := parts.flatMap (fun r => r.sourceTargets)
     coreOrigins := parts.flatMap (fun r => r.coreOrigins)
     binderTargets := parts.flatMap (fun r => r.binderTargets) }
 
+/-- Completion changes annotation syntax while retaining construction-time
+source paths. The expression payload changes only at this explicit boundary. -/
+def mapExpr {Term Result : Type} (r : Lowered Term) (f : Term → Result) : Lowered Result :=
+  { expr := f r.expr
+    sourceNodes := r.sourceNodes
+    sourceTargets := r.sourceTargets
+    coreOrigins := r.coreOrigins
+    binderTargets := r.binderTargets }
+
 end Lowered
 
-def authoredRoot (source : SourceNode) (expr : Expr) : Lowered :=
+def authoredRoot {Term : Type} (source : SourceNode) (expr : Term) : Lowered Term :=
   { expr
     sourceNodes := [source]
     sourceTargets := [(source.id, .present [[]])]
@@ -242,8 +268,8 @@ def generatedOrigin (source : SourceNode) (path : CorePath) (reason : Generation
     CorePath × Origin :=
   (path, ⟨source, .generated reason⟩)
 
-def combineAuthored (source : SourceNode) (expr : Expr) (parts : List Lowered)
-    (generated : CoreOriginMap := []) (binders : BinderTargetMap := []) : Lowered :=
+def combineAuthored {Term : Type} (source : SourceNode) (expr : Term) (parts : List (Lowered Term))
+    (generated : CoreOriginMap := []) (binders : BinderTargetMap := []) : Lowered Term :=
   let children := Lowered.metadata expr parts
   { expr
     sourceNodes := source :: children.sourceNodes
@@ -317,13 +343,15 @@ def Lowered.binderTargetsResolve (r : Lowered) : Bool :=
 def Lowered.provenanceTotal (r : Lowered) : Bool :=
   r.coreOriginsTotal && r.sourceTargetsTotal && r.binderTargetsResolve
 
+abbrev InputLowered := Lowered Elaboration.Input
+
 def wrapParamsWithProvenance (ke : KindEnv) (tvs : List ValName) (owner : SourceNode)
     (site : Nat → SurfaceBinderSite) :
-    Nat → List (ValName × Option Surface.Ty) → Lowered → Option Lowered
+    Nat → List (ValName × Option Surface.Ty) → InputLowered → Option InputLowered
   | _, [], rhs => some rhs
   | index, (_name, ann) :: rest, rhs => do
       let inner ← wrapParamsWithProvenance ke tvs owner site (index + 1) rest rhs
-      let ann' ← lowerAnn ke tvs ann
+      let ann' ← Elaboration.lowerTemplateAnn ke tvs ann
       let child := inner.belowPath [.lambdaBody]
       pure {
         expr := .lambda ann' inner.expr
@@ -397,17 +425,18 @@ def mergeBinderTargets (raw : BinderTargetMap) : Option BinderTargetMap :=
     else
       some (source, .present sites)
 
-def absentSourceTargets (reason : OriginAbsence) (r : Lowered) : SourceTargetMap :=
+def absentSourceTargets {Term : Type} (reason : OriginAbsence) (r : Lowered Term) : SourceTargetMap :=
   r.sourceNodes.map fun node => (node.id, .absent reason)
 
-def absentBinderTargets (reason : OriginAbsence) (r : Lowered) : BinderTargetMap :=
+def absentBinderTargets {Term : Type} (reason : OriginAbsence) (r : Lowered Term) : BinderTargetMap :=
   r.binderTargets.map fun (site, _target) => (site, .absent reason)
 
 def traceArmRoots (act : Nat) (trace : PatComp.EmissionTrace) : List CorePath :=
   trace.armBodyRoots.filterMap fun (candidate, path) =>
     if candidate == act then some path else none
 
-def clonedArmParts (trace : PatComp.EmissionTrace) (arms : List Lowered) : List Lowered :=
+def clonedArmParts {Term : Type} (trace : PatComp.EmissionTrace)
+    (arms : List (Lowered Term)) : List (Lowered Term) :=
   arms.mapIdx (fun act arm => (traceArmRoots act trace).map fun path => arm.belowPath path)
     |>.flatten
 
@@ -425,9 +454,9 @@ def traceCaptureTargets (owner : SourceId)
 
 /-- Translate PatComp's source-agnostic construction trace into the surface
     provenance vocabulary, merging duplicated arms and preserving elimination. -/
-def lowerTracedMatch (source : SourceNode) (scrut : Lowered)
-    (pats : List Surface.Pattern) (arms : List Lowered)
-    (traced : PatComp.TracedLowering) : Option Lowered := do
+def lowerTracedMatch (source : SourceNode) (scrut : InputLowered)
+    (pats : List Surface.Pattern) (arms : List InputLowered)
+    (traced : PatComp.TracedLowering Elaboration.Input) : Option InputLowered := do
   let scrutPart := scrut.belowPath [.letRhs]
   let armParts := clonedArmParts traced.trace arms
   let nodes := source :: scrut.sourceNodes ++ arms.flatMap (fun arm => arm.sourceNodes)
@@ -455,7 +484,7 @@ def lowerTracedMatch (source : SourceNode) (scrut : Lowered)
 
 mutual
 def lowerIdentifiedExpr (ke : KindEnv) (tvs vs : List ValName) :
-    Surface.Expr → IdentifiedExpr → Option Lowered
+    Surface.Expr → IdentifiedExpr → Option InputLowered
   | .primLit (.bool b), .leaf source =>
       some (authoredRoot source (.ctor (if b then cTrue else cFalse)))
   | .primLit .unit, .leaf source => some (authoredRoot source (.primLit .unit))
@@ -483,7 +512,7 @@ def lowerIdentifiedExpr (ke : KindEnv) (tvs vs : List ValName) :
       let items' ← lowerIdentifiedList ke tvs vs items sitems
       lowerListWithProvenance source 0 true items'
   | .lambda param paramAnn body, .lambda source sbody => do
-      let ann' ← lowerAnn ke tvs paramAnn
+      let ann' ← Elaboration.lowerTemplateAnn ke tvs paramAnn
       match param with
       | .name name => do
           let body' ← lowerIdentifiedExpr ke tvs (name :: vs) body sbody
@@ -497,13 +526,13 @@ def lowerIdentifiedExpr (ke : KindEnv) (tvs vs : List ValName) :
             [(.lambda source.id, .present [.lambda []])])
       | _ => do
           let body' ← lowerIdentifiedExpr ke tvs (patVars param ++ .mk "_" :: vs) body sbody
-          let scrut : Lowered := {
+          let scrut : InputLowered := {
             expr := .var 0
             sourceNodes := []
             sourceTargets := []
             coreOrigins := [generatedOrigin source [] .patternLambdaScrutinee]
             binderTargets := [] }
-          let traced := PatComp.lowerMatchTrace scrut.expr [param]
+          let traced := Elaboration.lowerInputMatchTrace scrut.expr [param]
             (fun i => [body'.expr].getD i (.ctor cNil))
           let matched ← lowerTracedMatch source scrut [param] [body'] traced
           let inner := { matched with
@@ -518,7 +547,7 @@ def lowerIdentifiedExpr (ke : KindEnv) (tvs vs : List ValName) :
         [fn'.belowPath [.appFun], arg'.belowPath [.appArg]])
   | .letIn name tyParams params ann rhs body, .letIn source srhs sbody => do
       let annF := finalizeAnn tyParams params ann
-      let ann' ← lowerPolyAnnIn ke tvs annF
+      let ann' ← Elaboration.lowerInputLetAnn ke tvs annF
       let tvs' := letAnnTyPrefix tyParams annF ++ tvs
       let rhsCore ← lowerIdentifiedExpr ke tvs' (paramTermScope params vs) rhs srhs
       let rhs' ← wrapParamsWithProvenance ke tvs' source
@@ -530,7 +559,7 @@ def lowerIdentifiedExpr (ke : KindEnv) (tvs vs : List ValName) :
   | .letRecIn binds body, .letRecIn source srhss sbody => do
       let recScope := binds.map (fun b => b.name) ++ vs
       let anns' ← binds.mapM fun b =>
-        lowerPolyAnnIn ke tvs (finalizeAnn b.tyParams b.params b.ann)
+        Elaboration.lowerInputLetAnn ke tvs (finalizeAnn b.tyParams b.params b.ann)
       let bindings' ← lowerIdentifiedRecBinds ke tvs recScope source 0 binds srhss
       let body' ← lowerIdentifiedExpr ke tvs recScope body sbody
       let bindingExprs := bindings'.map fun r => r.expr
@@ -550,20 +579,20 @@ def lowerIdentifiedExpr (ke : KindEnv) (tvs vs : List ValName) :
       let else' ← lowerIdentifiedExpr ke tvs vs else_ selse
       let pats : List Surface.Pattern := [.ctor cTrue [], .ctor cFalse []]
       let arms := [then', else']
-      let traced := PatComp.lowerMatchTrace cond'.expr pats
+      let traced := Elaboration.lowerInputMatchTrace cond'.expr pats
         (fun i => (arms.map (fun arm => arm.expr)).getD i (.ctor cNil))
       lowerTracedMatch source cond' pats arms traced
   | .match_ scrut branches, .match_ source sscrut sarms => do
       let scrut' ← lowerIdentifiedExpr ke tvs vs scrut sscrut
       let arms' ← lowerIdentifiedBranches ke tvs vs branches sarms
       let pats := branches.map Prod.fst
-      let traced := PatComp.lowerMatchTrace scrut'.expr pats
+      let traced := Elaboration.lowerInputMatchTrace scrut'.expr pats
         (fun i => (arms'.map (fun arm => arm.expr)).getD i (.ctor cNil))
       lowerTracedMatch source scrut' pats arms' traced
   | _, _ => none
 
 def lowerIdentifiedList (ke : KindEnv) (tvs vs : List ValName) :
-    List Surface.Expr → List IdentifiedExpr → Option (List Lowered)
+    List Surface.Expr → List IdentifiedExpr → Option (List InputLowered)
   | [], [] => some []
   | e :: es, se :: ses => do
       let e' ← lowerIdentifiedExpr ke tvs vs e se
@@ -572,7 +601,7 @@ def lowerIdentifiedList (ke : KindEnv) (tvs vs : List ValName) :
   | _, _ => none
 
 def lowerIdentifiedBranches (ke : KindEnv) (tvs vs : List ValName) :
-    List (Surface.Pattern × Surface.Expr) → List IdentifiedExpr → Option (List Lowered)
+    List (Surface.Pattern × Surface.Expr) → List IdentifiedExpr → Option (List InputLowered)
   | [], [] => some []
   | (pat, body) :: rest, sbody :: srest => do
       let body' ← lowerIdentifiedExpr ke tvs (patVars pat ++ vs) body sbody
@@ -581,7 +610,7 @@ def lowerIdentifiedBranches (ke : KindEnv) (tvs vs : List ValName) :
   | _, _ => none
 
 def lowerIdentifiedRecBinds (ke : KindEnv) (tvs recScope : List ValName)
-    (owner : SourceNode) : Nat → List Surface.Binding → List IdentifiedExpr → Option (List Lowered)
+    (owner : SourceNode) : Nat → List Surface.Binding → List IdentifiedExpr → Option (List InputLowered)
   | _, [], [] => some []
   | member, b :: rest, srhs :: srest => do
       let tvs' := bindingLowerTyScope b tvs
@@ -593,7 +622,7 @@ def lowerIdentifiedRecBinds (ke : KindEnv) (tvs recScope : List ValName)
   | _, _, _ => none
 
 def lowerListWithProvenance (owner : SourceNode) (index : Nat) (isRoot : Bool) :
-    List Lowered → Option Lowered
+    List InputLowered → Option InputLowered
   | [] =>
       let originKind := if isRoot then OriginKind.authored else .generated (.listCtor index)
       some {
@@ -625,7 +654,7 @@ end
 /-- Construction-time lowering. The `SpannedExpr` must mirror the
     Surface tree; shape mismatches fail instead of silently corrupting paths. -/
 def lowerWithProvenance (ctors : CtorEnv) (surface : Surface.Expr)
-    (spanned : SpannedExpr) : Option Lowered := do
+    (spanned : SpannedExpr) : Option InputLowered := do
   let identified := identify spanned
   let lowered ← lowerIdentifiedExpr (kindEnvOfCtors ctors) [] [] surface identified
   -- The ID pass, rather than the lowering recursion, is authoritative for the
@@ -640,9 +669,30 @@ abbrev SourceTypeMap := List (SourceId × List (CorePath × Ty))
 abbrev InferredSurfaceBinderSchemes := List (SurfaceBinderSite × PolyTy)
 abbrev PatternBinderTypeMap := List (SurfaceBinderSite × List (CorePath × Ty))
 
+/-- Input and completed Core share logical term paths; only annotations differ. -/
+def inputAtCorePath : Elaboration.Input → CorePath → Option Elaboration.Input
+  | input, [] => some input
+  | .lambda _ body, .lambdaBody :: rest => inputAtCorePath body rest
+  | .app fn _, .appFun :: rest => inputAtCorePath fn rest
+  | .app _ arg, .appArg :: rest => inputAtCorePath arg rest
+  | .letIn _ rhs _, .letRhs :: rest => inputAtCorePath rhs rest
+  | .letIn _ _ body, .letBody :: rest => inputAtCorePath body rest
+  | .match_ scrut _, .matchScrut :: rest => inputAtCorePath scrut rest
+  | .match_ _ arms, .matchBranch index :: rest => do
+      let (_, body) ← arms[index]?
+      inputAtCorePath body rest
+  | .letRec _ rhss _, .letRecRhs member :: rest => do
+      let rhs ← rhss[member]?
+      inputAtCorePath rhs rest
+  | .letRec _ _ body, .letRecBody :: rest => inputAtCorePath body rest
+  | _, _ => none
+termination_by _ path => path.length
+
 structure TypedLowered where
   /-- The declaration environment shared by lowering and HM inference. -/
   ctors : CtorEnv
+  /-- Authored annotation modes before completion. -/
+  input : Elaboration.Input
   lowering : Lowered
   inference : InferenceResult
   sourceTypes : SourceTypeMap
@@ -743,13 +793,14 @@ def patternBinderTypesAt (nodeTypes : NodeTypeMap) (targets : BinderTargetMap) :
     | .patCapture _ _ _, .absent _ => some (surface, [])
     | _, _ => none
 
-/-- Infer exactly the lowered Core term, then join types and inferred schemes by
-    the paths emitted during lowering. No Surface/Core structural zip occurs. -/
-def inferWithProvenance (ctors : CtorEnv) (lowering : Lowered) : Option TypedLowered := do
+/-- Infer and complete the lowered input once, retaining its emitted paths for
+    all type and scheme joins. The completed output is the runtime/Core payload. -/
+def inferWithProvenance (ctors : CtorEnv) (lowering : InputLowered) : Option TypedLowered := do
   let inference ← inferWithTypes ctors lowering.expr
   pure {
     ctors
-    lowering
+    input := lowering.expr
+    lowering := lowering.mapExpr (fun _ => inference.completedExpr)
     inference
     sourceTypes := lowering.sourceTargets.map fun (id, target) =>
       (id, typesAtTarget inference.nodeTypes target)

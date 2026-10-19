@@ -277,12 +277,11 @@ def diagAtSpan (msg : String) (s? : Option Span) : HoverDiag :=
   | none => { message := msg }
 
 def hmInfer (ctors : CtorEnv) (term : Surface.Expr) : Option (Expr × Ty) :=
-  match lower ctors term with
-  | none => none
-  | some c =>
-    match infer c.freshFloor ⟨[], ctors⟩ c with
-    | some (_, _, τ) => some (c, τ)
-    | none => none
+  do
+    let lowered ← SurfaceBridge.Provenance.lowerWithProvenance ctors term
+      (SurfaceBridge.Provenance.diagnosticSpans term)
+    let typed ← SurfaceBridge.Provenance.inferWithProvenance ctors lowered
+    pure (typed.inference.completedExpr, typed.inference.ty)
 
 def hmSucceeds (ctors : CtorEnv) (term : Surface.Expr) : Bool :=
   (hmInfer ctors term).isSome
@@ -395,7 +394,7 @@ def collectHover (src : String) (p : Surface.Program) (binders : List BinderSpan
                 fail { diagAtSpan reason.message (some span) with code? := some reason.code }
             | none => fail (locateTypecheckFail ctors ke p binders sp)
           | some typed =>
-            if !lowered.provenanceTotal || !typed.nodeTypesTotal || !typed.sourceTypesTotal ||
+            if !typed.lowering.provenanceTotal || !typed.nodeTypesTotal || !typed.sourceTypesTotal ||
                 !typed.patternBinderTypesTotal then
               fail (diagAtSpan "internal inferred provenance coverage failure" (some scope))
             else
@@ -469,20 +468,25 @@ def collectHover (src : String) (p : Surface.Program) (binders : List BinderSpan
               let prelude := (preludeTypeCtorSymbols ctors scope ++ primTypeSymbols scope).filter fun s =>
                 !(syntaxSyms.any fun b => b.name == s.name && b.kind == s.kind)
               let references := sp.references.filterMap fun ref => do
-                let kind := match ref.kind with
-                  | .type => "type"
-                  | .typeVar => "param"
-                  | .ctor => "ctor"
+                let kind ← match ref.kind with
+                  | .type => some "type"
+                  | .typeVar => some "param"
+                  | .ctor => some "ctor"
+                  | .typeHole => none
                 let candidates := (prelude ++ syntaxSyms).filter fun s =>
                   s.kind == kind
                 let target ← symbolAtUseSite candidates ref.span.startLine ref.span.startCol ref.name
                 pure { target with span := ref.span, scope := ref.span, isDef := false }
+              let holeSymbols :=
+                (FHM.Unverified.HMDisplay.holeDisplays typed displayScopes binders sp.references p.term identified).filterMap
+                  fun hole => if hole.types.isEmpty then none else
+                    some (mkSym "_" "typeHole" (String.intercalate " | " hole.types) hole.span hole.span)
               let sugarOps := (collectLitOpSymbols src ctors).filter fun s => s.name == "::"
               -- Typing succeeded, so hovers stay available alongside this error.
               let exhaustiveness :=
                 if checkExhaustive ctors p.term then []
                 else [exhaustivenessDiag typed p.term identified (bodyDiagSpan sp.body)]
-              { symbols := prelude ++ syntaxSyms ++ values ++ sugarOps ++ occurrences ++ references
+              { symbols := prelude ++ syntaxSyms ++ values ++ sugarOps ++ occurrences ++ references ++ holeSymbols
                 programTy := FHM.Unverified.HMDisplay.scheme {} []
                   (genScheme [] [] typed.inference.ty)
                 diagnostics := exhaustiveness }

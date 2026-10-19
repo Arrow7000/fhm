@@ -186,14 +186,17 @@ def declaredScheme (typed : TypedLowered) (site : SurfaceBinderSite) : Option Po
   let core ← sites.head?
   match core with
   | .letIn path =>
-      let node ← typed.lowering.expr.atCorePath path
+      let node ← inputAtCorePath typed.input path
       match node with
-      | .letIn ann _ _ => ann
+      | .letIn (.complete scheme) _ _ => some scheme
       | _ => none
   | .letRec path member =>
-      let node ← typed.lowering.expr.atCorePath path
+      let node ← inputAtCorePath typed.input path
       match node with
-      | .letRec anns _ _ => (anns[member]?).join
+      | .letRec anns _ _ => do
+          match ← anns[member]? with
+          | .complete scheme => some scheme
+          | _ => none
       | _ => none
   | _ => none
 
