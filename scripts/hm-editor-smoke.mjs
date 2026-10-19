@@ -769,5 +769,65 @@ test("ordinary nested lets preserve an outer authored forall without generalizin
   run(source, "(1, True)");
 });
 
+
+test("shared recursive roots retain each member's authored scope and definition", () => {
+  const source = "let f : {left} left -> _ = \\(x : left) -> if True then x else g x\n" +
+    "let g : {right} right -> _ = \\(y : right) -> f y\n(f 1, g True)\n";
+  const payload = diagnose(source);
+  hover(payload, source, 0, "f", "∀ left. left → left");
+  hover(payload, source, 1, "g", "∀ right. right → right");
+  hover(payload, source, 0, "_", "left");
+  hover(payload, source, 1, "_", "right");
+  hover(payload, source, 0, "x", "left", 0);
+  hover(payload, source, 1, "y", "right", 0);
+  run(source, "(1, True)");
+});
+
+test("permuted recursive prefixes retain member-specific hole and parameter types", () => {
+  const source = "let f : {alpha beta} alpha -> beta -> _ = \\(x : alpha) (y : beta) -> " +
+    "if True then (x, y) else g y x\n" +
+    "let g : {gamma delta} gamma -> delta -> _ = \\(u : gamma) (v : delta) -> f v u\n" +
+    "(f 1 True, g False 2)\n";
+  const payload = diagnose(source);
+  hover(payload, source, 0, "f", "∀ alpha beta. alpha → beta → (alpha, beta)");
+  hover(payload, source, 1, "g", "∀ gamma delta. gamma → delta → (delta, gamma)");
+  hover(payload, source, 0, "_", "(alpha, beta)");
+  hover(payload, source, 1, "_", "(delta, gamma)");
+  hover(payload, source, 0, "x", "alpha", 0);
+  hover(payload, source, 0, "y", "beta", 0);
+  hover(payload, source, 1, "u", "gamma", 0);
+  hover(payload, source, 1, "v", "delta", 0);
+  run(source, "((1, True), (2, False))");
+});
+
+test("recursive completions preserve unused prefix order before an inferred binder", () => {
+  const source = "let f : {unused left} left -> _ -> _ = \\(x : left) z -> " +
+    "if True then (x, z) else g x z\n" +
+    "let g : {right spare} right -> _ -> _ = \\(y : right) w -> f y w\n" +
+    "(f 1 True, g False 2)\n";
+  const payload = diagnose(source);
+  const fType = payload.symbols.find(s => s.name === "f" && s.kind === "val")?.type;
+  const gType = payload.symbols.find(s => s.name === "g" && s.kind === "val")?.type;
+  // The synthetic spelling is presentation policy; authored order and the
+  // single additional quantified slot are semantic/display obligations.
+  const fMatch = /^∀ unused left ([A-Za-z][A-Za-z0-9']*)\. left → \1 → \(left, \1\)$/.exec(fType || "");
+  const gMatch = /^∀ right spare ([A-Za-z][A-Za-z0-9']*)\. right → \1 → \(right, \1\)$/.exec(gType || "");
+  assert.ok(fMatch, `Unexpected f scheme: ${fType}`);
+  assert.ok(gMatch, `Unexpected g scheme: ${gType}`);
+  assert.ok(!["unused", "left"].includes(fMatch[1]));
+  assert.ok(!["right", "spare"].includes(gMatch[1]));
+  hover(payload, source, 0, "f", fType);
+  hover(payload, source, 1, "g", gType);
+  hover(payload, source, 0, "_", fMatch[1], 0);
+  hover(payload, source, 0, "_", `(left, ${fMatch[1]})`, 1);
+  hover(payload, source, 1, "_", gMatch[1], 0);
+  hover(payload, source, 1, "_", `(right, ${gMatch[1]})`, 1);
+  hover(payload, source, 0, "x", "left", 0);
+  hover(payload, source, 1, "y", "right", 0);
+  hover(payload, source, 0, "z", fMatch[1], 0);
+  hover(payload, source, 1, "w", gMatch[1], 0);
+  run(source, "((1, True), (False, 2))");
+});
+
 console.log(`${tests - failures}/${tests} HM CLI/editor semantic smoke checks passed.`);
 process.exitCode = failures ? 1 : 0;

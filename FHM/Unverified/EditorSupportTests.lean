@@ -927,3 +927,26 @@ private def ordinaryRecProtected :=
   | .letRec [.partialForall 1 _]
       [.lambda none (.letIn .absent (.lambda (some (.fixed (.bvar 0))) _) _)] _ => true
   | _ => false
+
+-- These sources exercise distinct member prefixes over shared/permuted roots.
+-- Their exact hovers and runtime pairs remain independent smoke targets until
+-- recursive artifacts are produced by the canonical worker.
+#guard lowersWith
+  ("let f : {left} left -> _ = \\(x : left) -> if True then x else g x\n" ++
+   "let g : {right} right -> _ = \\(y : right) -> f y\n(f 1, g True)\n") fun
+  | .letRec [.partialForall 1 _, .partialForall 1 _] [_, _] _ => true
+  | _ => false
+#guard lowersWith
+  ("let f : {alpha beta} alpha -> beta -> _ = \\(x : alpha) (y : beta) -> " ++
+   "if True then (x, y) else g y x\n" ++
+   "let g : {gamma delta} gamma -> delta -> _ = \\(u : gamma) (v : delta) -> f v u\n" ++
+   "(f 1 True, g False 2)\n") fun
+  | .letRec [.partialForall 2 _, .partialForall 2 _] [_, _] _ => true
+  | _ => false
+#guard lowersWith
+  ("let f : {unused left} left -> _ -> _ = \\(x : left) z -> " ++
+   "if True then (x, z) else g x z\n" ++
+   "let g : {right spare} right -> _ -> _ = \\(y : right) w -> f y w\n" ++
+   "(f 1 True, g False 2)\n") fun
+  | .letRec [.partialForall 2 _, .partialForall 2 _] [_, _] _ => true
+  | _ => false
