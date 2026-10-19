@@ -78,12 +78,73 @@ theorem completeTypes_rigidVars {templates : List Template} {tys : List Ty}
       Template.toCore_rigidVars ht, completeTypes_rigidVars hts]
 end
 
+private theorem completeBranches_length {inputs : List (MatchPattern × Input)}
+    {cores : List (MatchPattern × Expr)} (h : completeBranches inputs = some cores) :
+    inputs.length = cores.length := by
+  induction inputs generalizing cores with
+  | nil => cases h; rfl
+  | cons head rest ih =>
+    rcases head with ⟨pat, body⟩
+    simp only [completeBranches, bind, pure, Option.bind_eq_some_iff, Option.some.injEq] at h
+    obtain ⟨body', _, rest', hr, rfl⟩ := h
+    simp only [List.length_cons, ih hr]
+
+private theorem completeBranches_forward {inputs : List (MatchPattern × Input)}
+    {cores : List (MatchPattern × Expr)} (h : completeBranches inputs = some cores)
+    {branch : MatchPattern × Input} (hb : branch ∈ inputs) :
+    ∃ core, (branch.1, core) ∈ cores ∧ branch.2.toCore = some core := by
+  induction inputs generalizing cores with
+  | nil => cases hb
+  | cons head rest ih =>
+    rcases head with ⟨pat, body⟩
+    simp only [completeBranches, bind, pure, Option.bind_eq_some_iff, Option.some.injEq] at h
+    obtain ⟨body', hh, rest', hr, rfl⟩ := h
+    rcases List.mem_cons.mp hb with rfl | hb
+    · exact ⟨body', List.mem_cons_self, hh⟩
+    · obtain ⟨core, hc, heq⟩ := ih hr hb
+      exact ⟨core, List.mem_cons_of_mem _ hc, heq⟩
+
+private theorem completeBranches_backward {inputs : List (MatchPattern × Input)}
+    {cores : List (MatchPattern × Expr)} (h : completeBranches inputs = some cores)
+    {branch : MatchPattern × Expr} (hb : branch ∈ cores) :
+    ∃ body, (branch.1, body) ∈ inputs ∧ body.toCore = some branch.2 := by
+  induction inputs generalizing cores with
+  | nil => cases h; cases hb
+  | cons head rest ih =>
+    rcases head with ⟨pat, body⟩
+    simp only [completeBranches, bind, pure, Option.bind_eq_some_iff, Option.some.injEq] at h
+    obtain ⟨body', hh, rest', hr, rfl⟩ := h
+    rcases List.mem_cons.mp hb with rfl | hb
+    · exact ⟨body, List.mem_cons_self, hh⟩
+    · obtain ⟨source, hs, heq⟩ := ih hr hb
+      exact ⟨source, List.mem_cons_of_mem _ hs, heq⟩
+
+private theorem branchFreeVars_iff {branches : List (MatchPattern × Expr)} {v : Nat} :
+    v ∈ Expr.tyFreeVars.BranchList.tyFreeVars branches ↔
+      ∃ branch ∈ branches, v ∈ branch.2.tyFreeVars := by
+  induction branches with
+  | nil => simp [Expr.tyFreeVars.BranchList.tyFreeVars]
+  | cons head rest ih =>
+    rcases head with ⟨pat, body⟩
+    simp only [Expr.tyFreeVars.BranchList.tyFreeVars, List.mem_append, ih, List.mem_cons]
+    constructor
+    · rintro (hv | ⟨b, hb, hv⟩)
+      · exact ⟨_, Or.inl rfl, hv⟩
+      · exact ⟨b, Or.inr hb, hv⟩
+    · rintro ⟨b, rfl | hb, hv⟩
+      · exact Or.inl hv
+      · exact Or.inr ⟨b, hb, hv⟩
+
 /-- The independent rules conservatively recover ordinary typing whenever the
 input is already complete. This retains complete annotations and recursion. -/
 theorem Typing.toCore (h : Typing K ctx input ty) {core : Expr}
     (hc : input.toCore = some core) :
     TypeOfHM ctx core ty ∧ (∀ v ∈ core.tyFreeVars, v ∈ K) := by
-  induction h generalizing core with
+  induction h using Typing.rec
+      (motive_2 := fun ctx branch scrutTy resultTy _ =>
+        ∀ {body : Expr}, branch.2.toCore = some body →
+          TypeOfMatchBranch ctx (branch.1, body) scrutTy resultTy ∧
+            (∀ v ∈ body.tyFreeVars, v ∈ K)) generalizing core with
   | complete hemb hscope ht => cases hemb.symm.trans hc; exact ⟨ht, hscope⟩
   | primLit ht => cases hc; exact ⟨ht, by simp [Expr.tyFreeVars]⟩
   | primBinOp ht => cases hc; exact ⟨ht, by simp [Expr.tyFreeVars]⟩
@@ -138,6 +199,33 @@ theorem Typing.toCore (h : Typing K ctx input ty) {core : Expr}
       · exact hsb v hv
   | var hlook hlc hinst => cases hc; exact ⟨.var hlook hlc hinst, by simp [Expr.tyFreeVars]⟩
   | ctor hlook hlc hinst => cases hc; exact ⟨.ctor hlook hlc hinst, by simp [Expr.tyFreeVars]⟩
+
+  | match_ _ hne _ ihs ihbranches =>
+    simp only [Input.toCore, bind, pure, Option.bind_eq_some_iff, Option.some.injEq] at hc
+    obtain ⟨scrut', hs, branches', hbs, rfl⟩ := hc
+    obtain ⟨hts, hscopes⟩ := ihs hs
+    refine ⟨.match_ hts ?_ ?_, ?_⟩
+    · intro hempty
+      have hlen := completeBranches_length hbs
+      rw [hempty, List.length_nil] at hlen
+      exact hne (List.length_eq_zero_iff.mp hlen)
+    · intro branch hb
+      obtain ⟨body, hbody, heq⟩ := completeBranches_backward hbs hb
+      exact (ihbranches (branch.1, body) hbody heq).1
+    · intro v hv
+      rcases List.mem_append.mp hv with hv | hv
+      · exact hscopes v hv
+      · obtain ⟨branch, hb, hv⟩ := branchFreeVars_iff.mp hv
+        obtain ⟨body, hbody, heq⟩ := completeBranches_backward hbs hb
+        exact (ihbranches (branch.1, body) hbody heq).2 v hv
+  | named hspec _ ih =>
+    rename_i body heq
+    obtain ⟨ht, hs⟩ := ih heq
+    exact ⟨.mk hspec rfl ht, hs⟩
+  | wildcard _ ih =>
+    rename_i body heq
+    obtain ⟨ht, hs⟩ := ih heq
+    exact ⟨.wildcard ht, hs⟩
 
 /-- Lambda inversion covers both partial syntax and the complete-subtree rule. -/
 theorem Typing.lambda_inv (h : Typing K ctx (.lambda ann body) ty) :
@@ -208,6 +296,35 @@ theorem Typing.letMono_inv (h : Typing K ctx (.letIn ann rhs body) ty)
         · intro Xs hXs
           exact .complete hr (fun v hv => hscope v (List.mem_append_left _ hv)) (hcofin Xs hXs)
         · intro v hv; exact hscope v (List.mem_append_right _ hv)
+
+/-- Match inversion preserves each constructor's existential arguments and
+field context, including when the input used the complete-subtree rule. -/
+theorem Typing.match_inv (h : Typing K ctx (.match_ scrut branches) resultTy) :
+    ∃ scrutTy, Typing K ctx scrut scrutTy ∧ branches ≠ [] ∧
+      ∀ branch ∈ branches, BranchTyping (Typing K) ctx branch scrutTy resultTy := by
+  cases h with
+  | match_ hs hne hb => exact ⟨_, hs, hne, hb⟩
+  | complete hemb hscope ht =>
+    simp only [Input.toCore, bind, pure, Option.bind_eq_some_iff, Option.some.injEq] at hemb
+    obtain ⟨scrut', hs, branches', hbs, rfl⟩ := hemb
+    cases ht with
+    | match_ hscrut hne hbranches =>
+      refine ⟨_, .complete hs (fun v hv => hscope v (List.mem_append_left _ hv)) hscrut, ?_, ?_⟩
+      · intro hempty
+        subst branches
+        cases hbs
+        exact hne rfl
+      · intro branch hb
+        obtain ⟨core, hc, heq⟩ := completeBranches_forward hbs hb
+        have hcoreScope : ∀ v ∈ core.tyFreeVars, v ∈ K := fun v hv =>
+          hscope v (List.mem_append_right _ (branchFreeVars_iff.mpr ⟨_, hc, hv⟩))
+        have hbranch := hbranches (branch.1, core) hc
+        rcases branch with ⟨pat, body⟩
+        cases hbranch with
+        | mk hspec hctx hbody =>
+          subst hctx
+          exact .named hspec (.complete heq hcoreScope hbody)
+        | wildcard hbody => exact .wildcard (.complete heq hcoreScope hbody)
 
 /-- A whole lambda-parameter hole has exactly omission's independent meaning. -/
 theorem Typing.lambda_hole_iff :
