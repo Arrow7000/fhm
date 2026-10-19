@@ -23,6 +23,208 @@ private theorem ctx_all (h : CtxBelow frontier ctx) :
   obtain ⟨scheme, hs, hv⟩ := Env.mem_freeVars_iff.mp hv
   exact decide_eq_true ((h scheme hs).mem_lt v hv)
 
+/-- Concrete branch producer completeness shares one common scrutinee and result. -/
+def _root_.InferBranchesWithTypesCoreComplete (branches : List (MatchPattern × Input)) : Prop :=
+  ∀ (K : List Nat) (frontier : Nat) (ctx : Ctx) (scrutTy resultTy : Ty)
+    (branchIndex : Nat) (ambient : Subst),
+    CtxWF ctx → CtxBelow frontier ctx → (∀ k ∈ K, k < frontier) →
+    (∀ pair ∈ ambient, pair.2.IsLC) →
+    (∀ k ∈ K, ambient.onTy (.fvar k) = .fvar k) →
+    scrutTy.IsLC → resultTy.IsLC →
+    Ty.BelowFvars frontier scrutTy → Ty.BelowFvars frontier resultTy →
+    (∀ b ∈ branches, BranchTyping (Typing K) (ambient.onCtx ctx) b
+      (ambient.onTy scrutTy) (ambient.onTy resultTy)) →
+    (inferBranchesWithTypesCore K frontier ctx scrutTy resultTy branchIndex branches).isSome
+
+theorem _root_.inferBranchesWithTypesCore_complete_nil : InferBranchesWithTypesCoreComplete [] := by
+  unfold InferBranchesWithTypesCoreComplete
+  intros
+  simp only [inferBranchesWithTypesCore, Option.isSome_some]
+
+theorem _root_.inferBranchesWithTypesCore_complete_wildcard
+    (ihbody : InferWithTypesCoreComplete body)
+    (ihrest : InferBranchesWithTypesCoreComplete rest) :
+    InferBranchesWithTypesCoreComplete ((.wildcard, body) :: rest) := by
+  intro K frontier ctx scrutTy resultTy branchIndex ambient hwf hbelow hK hS hfix
+    hscrut hresult hscrutB hresultB htyping
+  have hbodyD := htyping (.wildcard, body) List.mem_cons_self
+  cases hbodyD with
+  | wildcard hbodyD =>
+    obtain ⟨⟨⟨first, s1, bodyOut, bodyTy, bodyTypes, bodySchemes⟩, hb⟩, hbResult⟩ :=
+      Option.isSome_iff_exists.mp
+        (ihbody K frontier ctx ambient (ambient.onTy resultTy) hwf hbelow hK hS hfix hbodyD)
+    obtain ⟨R, hR, hbodyTy, hRK, hag⟩ := hb.principal
+      hwf hbelow hK ambient (ambient.onTy resultTy) K hS hK hfix hbodyD
+    have hle := hb.frontier_le
+    obtain ⟨hbB, hs1B⟩ := hb.belowFvars hbelow hK
+    obtain ⟨hbLC, hs1LC⟩ := hb.lc hwf
+    have hctx1 := Subst.onCtx_below hs1B hle hbelow
+    have hK1 : ∀ k ∈ K, k < first := fun k hk => Nat.lt_of_lt_of_le (hK k hk) hle
+    have hrightB := Subst.onTy_belowFvars hs1B (hresultB.mono hle)
+    have hscrut1B := Subst.onTy_belowFvars hs1B (hscrutB.mono hle)
+    have hUni : Unifies R bodyTy (s1.onTy resultTy) := by
+      change R.onTy bodyTy = R.onTy (s1.onTy resultTy)
+      rw [show R.onTy bodyTy = ambient.onTy resultTy from hbodyTy.symm]
+      simpa only [Subst.onTy_append] using Subst.onTy_congr hag hresultB
+    obtain ⟨⟨s2, hu⟩, huResult⟩ := Option.isSome_iff_exists.mp
+      (unifyCoreK_complete hbLC (Subst.onTy_lc hs1LC hresult) hR hUni hRK)
+    rcases hu with ⟨hun, havoid⟩
+    obtain ⟨V, hfac, hV, hVK⟩ := hun.greatest_K R hR hUni hRK
+    have hs2LC := hun.lc hbLC (Subst.onTy_lc hs1LC hresult)
+    have hs2B := hun.belowFvars hbB hrightB
+    have hctx2 := Subst.onCtx_below hs2B (Nat.le_refl _) hctx1
+    have hctxeq : V.onCtx (s2.onCtx (s1.onCtx ctx)) = ambient.onCtx ctx := by
+      have heq : Subst.AgreesBelow frontier ambient (s1 ++ s2 ++ V) := by
+        intro v hv
+        rw [Subst.onTy_append, Subst.onTy_append]
+        exact (show ambient.onTy (.fvar v) = R.onTy (s1.onTy (.fvar v)) from
+          by simpa only [Subst.onTy_append] using hag v hv).trans (hfac (s1.onTy (.fvar v)))
+      rw [← Subst.onCtx_append, ← Subst.onCtx_append]
+      simpa only [List.append_assoc] using (Subst.onCtx_congr heq hbelow).symm
+    have hscruteq : V.onTy (s2.onTy (s1.onTy scrutTy)) = ambient.onTy scrutTy := by
+      simpa only [Subst.onTy_append] using
+        (hfac (s1.onTy scrutTy)).symm.trans (show R.onTy (s1.onTy scrutTy) = ambient.onTy scrutTy from
+          by simpa only [Subst.onTy_append] using (Subst.onTy_congr hag hscrutB).symm)
+    have hresulteq : V.onTy (s2.onTy (s1.onTy resultTy)) = ambient.onTy resultTy := by
+      exact (hfac (s1.onTy resultTy)).symm.trans (show R.onTy (s1.onTy resultTy) = ambient.onTy resultTy from
+          by simpa only [Subst.onTy_append] using (Subst.onTy_congr hag hresultB).symm)
+    obtain ⟨⟨⟨next, s3, restOut, restTypes, restSchemes⟩, hr⟩, hrResult⟩ :=
+      Option.isSome_iff_exists.mp
+        (ihrest K first _ _ _ (branchIndex + 1) V
+          (Subst.onCtx_wf hs2LC (Subst.onCtx_wf hs1LC hwf)) hctx2 hK1 hV hVK
+          (Subst.onTy_lc hs2LC (Subst.onTy_lc hs1LC hscrut))
+          (Subst.onTy_lc hs2LC (Subst.onTy_lc hs1LC hresult))
+          (Subst.onTy_belowFvars hs2B hscrut1B)
+          (Subst.onTy_belowFvars hs2B hrightB)
+          (by simpa only [hctxeq, hscruteq, hresulteq] using
+            (fun b hb => htyping b (List.mem_cons_of_mem _ hb))))
+    simp only [inferBranchesWithTypesCore, hbResult, huResult, hrResult, Option.isSome_some]
+
+theorem _root_.inferBranchesWithTypesCore_complete_named
+    (ihbody : InferWithTypesCoreComplete body)
+    (ihrest : InferBranchesWithTypesCoreComplete rest) :
+    InferBranchesWithTypesCoreComplete ((.named name count, body) :: rest) := by
+  intro K frontier ctx scrutTy resultTy branchIndex ambient hwf hbelow hK hS hfix
+    hscrut hresult hscrutB hresultB htyping
+  have hhead := htyping (.named name count, body) List.mem_cons_self
+  cases hhead with
+  | named hspec hbodyD =>
+    rename_i ctor args fields
+    have hlookup : LookupList.get? ctx.ctors name = some ctor := hspec.lookup
+    have hargsLC : ∀ t ∈ args, t.IsLC := by
+      have hh := Subst.onTy_lc hS hscrut
+      rw [hspec.scrut_eq] at hh
+      cases hh with | customTy hh => exact hh
+    obtain ⟨U, hU, hagU, hblock⟩ := Subst.override_block hS frontier args hargsLC
+    have hargs : ((freshVars frontier ctor.paramCount).map Ty.fvar).map U.onTy = args := by
+      apply List.ext_getElem
+      · simp only [List.length_map, freshVars_length, hspec.arity]
+      · intro i hi hi'
+        simp only [List.getElem_map, freshVars, List.getElem_range]
+        exact hblock i hi'
+    have hUK : ∀ k ∈ K, U.onTy (.fvar k) = .fvar k := fun k hk =>
+      (hagU k (hK k hk)).symm.trans (hfix k hk)
+    have hUni : Unifies U scrutTy
+        (.customTy ctor.tyName ((freshVars frontier ctor.paramCount).map Ty.fvar)) := by
+      change U.onTy scrutTy = U.onTy _
+      rw [← Subst.onTy_congr hagU hscrutB, hspec.scrut_eq, Subst.onTy_customTy, hargs]
+    have hcustomLC : (Ty.customTy ctor.tyName ((freshVars frontier ctor.paramCount).map Ty.fvar)).IsLC :=
+      .customTy (fun t ht => by obtain ⟨_, _, rfl⟩ := List.mem_map.mp ht; exact .fvar)
+    obtain ⟨⟨s0, hu0⟩, hu0Result⟩ := Option.isSome_iff_exists.mp
+      (unifyCoreK_complete hscrut hcustomLC hU hUni hUK)
+    rcases hu0 with ⟨hun0, hav0⟩
+    have hhead : BranchTyping (Typing K) (ambient.onCtx ctx) (.named name count, body)
+        (ambient.onTy scrutTy) (ambient.onTy resultTy) := .named hspec hbodyD
+    obtain ⟨V, hV, hVK, hag0, hbD⟩ := hhead.factor_named hlookup hun0 hbelow hscrutB hS
+      (Subst.onTy_lc hS hscrut) hK hfix rfl
+    have hs0LC := hun0.lc hscrut hcustomLC
+    have hcustomB : Ty.BelowFvars (frontier + ctor.paramCount)
+        (.customTy ctor.tyName ((freshVars frontier ctor.paramCount).map Ty.fvar)) := by
+      exact .customTy (fun t ht => by
+        obtain ⟨v, hv, rfl⟩ := List.mem_map.mp ht
+        exact .fvar (freshVars_lt v hv))
+    have hs0B := hun0.belowFvars (hscrutB.mono (Nat.le_add_right _ _)) hcustomB
+    have hargs0LC : ∀ t ∈ ((freshVars frontier ctor.paramCount).map Ty.fvar).map s0.onTy, t.IsLC := by
+      intro t ht
+      obtain ⟨v, hv, rfl⟩ := List.mem_map.mp ht
+      obtain ⟨_, _, rfl⟩ := List.mem_map.mp hv
+      exact Subst.onTy_lc hs0LC .fvar
+    have hargs0B : ∀ t ∈ ((freshVars frontier ctor.paramCount).map Ty.fvar).map s0.onTy,
+        Ty.BelowFvars (frontier + ctor.paramCount) t := by
+      intro t ht
+      obtain ⟨v, hv, rfl⟩ := List.mem_map.mp ht
+      obtain ⟨x, hx, rfl⟩ := List.mem_map.mp hv
+      exact Subst.onTy_belowFvars hs0B (.fvar (freshVars_lt x hx))
+    have hbodyWF := branchBindings_wf (ctorr := ctor)
+      (ta := ((freshVars frontier ctor.paramCount).map Ty.fvar).map s0.onTy)
+      (Subst.onCtx_wf hs0LC hwf) hargs0LC (by simp)
+    have hbodyB := branchBindings_below (ctorr := ctor)
+      (ta := ((freshVars frontier ctor.paramCount).map Ty.fvar).map s0.onTy)
+      (Subst.onCtx_below hs0B (Nat.le_add_right _ _) hbelow) hargs0B
+    have hK0 : ∀ k ∈ K, k < frontier + ctor.paramCount :=
+      fun k hk => Nat.lt_of_lt_of_le (hK k hk) (Nat.le_add_right _ _)
+    obtain ⟨⟨⟨first, s1, bodyOut, bodyTy, bodyTypes, bodySchemes⟩, hb⟩, hbResult⟩ :=
+      Option.isSome_iff_exists.mp (ihbody K _ _ V (ambient.onTy resultTy)
+        hbodyWF hbodyB hK0 hV hVK hbD)
+    obtain ⟨R, hR, hbodyTy, hRK, hag1⟩ := hb.principal hbodyWF hbodyB hK0
+      V (ambient.onTy resultTy) K hV hK0 hVK hbD
+    have hle := hb.frontier_le
+    obtain ⟨hbB, hs1B⟩ := hb.belowFvars hbodyB hK0
+    obtain ⟨hbLC, hs1LC⟩ := hb.lc hbodyWF
+    have hctx0B := Subst.onCtx_below hs0B (Nat.le_add_right _ _) hbelow
+    have hctx1B := Subst.onCtx_below hs1B hle hctx0B
+    have hK1 : ∀ k ∈ K, k < first := fun k hk => Nat.lt_of_lt_of_le (hK0 k hk) hle
+    have hres0B := Subst.onTy_belowFvars hs0B (hresultB.mono (Nat.le_add_right _ _))
+    have hscrut0B := Subst.onTy_belowFvars hs0B (hscrutB.mono (Nat.le_add_right _ _))
+    have hres1B := Subst.onTy_belowFvars hs1B (hres0B.mono hle)
+    have hscrut1B := Subst.onTy_belowFvars hs1B (hscrut0B.mono hle)
+    have hUni2 : Unifies R bodyTy (s1.onTy (s0.onTy resultTy)) := by
+      change R.onTy bodyTy = R.onTy (s1.onTy (s0.onTy resultTy))
+      rw [← hbodyTy]
+      have heq := Subst.onTy_congr hag0 hresultB
+      have heq1 := Subst.onTy_congr hag1 hres0B
+      simp only [Subst.onTy_append] at heq heq1
+      exact heq.trans heq1
+    obtain ⟨⟨s2, hu2⟩, hu2Result⟩ := Option.isSome_iff_exists.mp
+      (unifyCoreK_complete hbLC (Subst.onTy_lc hs1LC (Subst.onTy_lc hs0LC hresult)) hR hUni2 hRK)
+    rcases hu2 with ⟨hun2, hav2⟩
+    obtain ⟨W, hfac, hW, hWK⟩ := hun2.greatest_K R hR hUni2 hRK
+    have hs2LC := hun2.lc hbLC (Subst.onTy_lc hs1LC (Subst.onTy_lc hs0LC hresult))
+    have hs2B := hun2.belowFvars hbB hres1B
+    have hag : Subst.AgreesBelow frontier ambient (s0 ++ s1 ++ s2 ++ W) := by
+      have hag2 : Subst.AgreesBelow (frontier + ctor.paramCount) V (s1 ++ s2 ++ W) := by
+        intro v hv
+        have heq := hag1 v hv
+        simp only [Subst.onTy_append] at heq
+        simpa only [Subst.onTy_append] using heq.trans (hfac (s1.onTy (.fvar v)))
+      have heq := Subst.AgreesBelow.trans_append (Nat.le_add_right frontier ctor.paramCount) hag0 hs0B hag2
+      simpa only [List.append_assoc] using heq
+    have hctxeq : W.onCtx (s2.onCtx (s1.onCtx (s0.onCtx ctx))) = ambient.onCtx ctx := by
+      simpa only [Subst.onCtx_append] using (Subst.onCtx_congr hag hbelow).symm
+    have hscruteq : W.onTy (s2.onTy (s1.onTy (s0.onTy scrutTy))) = ambient.onTy scrutTy := by
+      simpa only [Subst.onTy_append] using (Subst.onTy_congr hag hscrutB).symm
+    have hresulteq : W.onTy (s2.onTy (s1.onTy (s0.onTy resultTy))) = ambient.onTy resultTy := by
+      simpa only [Subst.onTy_append] using (Subst.onTy_congr hag hresultB).symm
+    obtain ⟨⟨⟨next, s3, restOut, restTypes, restSchemes⟩, hr⟩, hrResult⟩ :=
+      Option.isSome_iff_exists.mp (ihrest K first _ _ _ (branchIndex + 1) W
+        (Subst.onCtx_wf hs2LC (Subst.onCtx_wf hs1LC (Subst.onCtx_wf hs0LC hwf)))
+        (Subst.onCtx_below hs2B (Nat.le_refl _) hctx1B) hK1 hW hWK
+        (Subst.onTy_lc hs2LC (Subst.onTy_lc hs1LC (Subst.onTy_lc hs0LC hscrut)))
+        (Subst.onTy_lc hs2LC (Subst.onTy_lc hs1LC (Subst.onTy_lc hs0LC hresult)))
+        (Subst.onTy_belowFvars hs2B hscrut1B) (Subst.onTy_belowFvars hs2B hres1B)
+        (by simpa only [hctxeq, hscruteq, hresulteq] using
+          (fun b hb => htyping b (List.mem_cons_of_mem _ hb))))
+    rw [inferBranchesWithTypesCore]
+    change LookupList.get? ctx.ctors name = some ctor at hlookup
+    split
+    · rename_i heq
+      simp only [hlookup, reduceCtorEq] at heq
+    · rename_i ctor' heq
+      have hct := Option.some.inj (heq.symm.trans hlookup)
+      subst ctor'
+      rw [dif_pos hspec.bind_count]
+      simp only [hu0Result, hbResult, hu2Result, hrResult, Option.isSome_some]
+
 theorem _root_.inferWithTypesCore_complete_backend {input : Input} {core : Expr}
     (hemb : input.toCore = some core) : InferWithTypesCoreComplete input := by
   intro K frontier ctx ambient target hwf hbelow hK hS hfix ht
@@ -156,6 +358,70 @@ theorem _root_.inferWithTypesCore_complete_letIn_partial
     · rename_i core heq; simp [hemb] at heq
     · simp only [hrResult, hcResult, hbResult, Option.isSome_some]
 
+theorem _root_.inferBranchesWithTypesCore_complete_of_body
+    (bodyIH : ∀ branch ∈ branches, InferWithTypesCoreComplete branch.2) :
+    InferBranchesWithTypesCoreComplete branches := by
+  induction branches with
+  | nil => exact inferBranchesWithTypesCore_complete_nil
+  | cons head rest ih =>
+    have hb := bodyIH head List.mem_cons_self
+    have hr := ih (fun b hb => bodyIH b (List.mem_cons_of_mem _ hb))
+    rcases head with ⟨pat, body⟩
+    cases pat with
+    | wildcard =>
+        exact inferBranchesWithTypesCore_complete_wildcard hb hr
+    | named name count => exact inferBranchesWithTypesCore_complete_named hb hr
+
+theorem _root_.inferWithTypesCore_complete_match_partial
+    (ihs : InferWithTypesCoreComplete scrut)
+    (ihb : InferBranchesWithTypesCoreComplete branches)
+    (hemb : (Input.match_ scrut branches).toCore = none) :
+    InferWithTypesCoreComplete (.match_ scrut branches) := by
+  intro K frontier ctx ambient target hwf hbelow hK hS hfix ht
+  obtain ⟨scrutD, hsD, hne, hbD⟩ := ht.match_inv
+  obtain ⟨⟨⟨first, s1, scrutOut, scrutTy, scrutTypes, scrutSchemes⟩, hs⟩, hsResult⟩ :=
+    Option.isSome_iff_exists.mp (ihs K frontier ctx ambient scrutD hwf hbelow hK hS hfix hsD)
+  obtain ⟨R, hR, hscrut, hRK, hag⟩ := hs.principal hwf hbelow hK ambient
+    scrutD K hS hK hfix hsD
+  have hle := hs.frontier_le
+  obtain ⟨hsB, hs1B⟩ := hs.belowFvars hbelow hK
+  obtain ⟨hsLC, hs1LC⟩ := hs.lc hwf
+  have hctxB := Subst.onCtx_below hs1B hle hbelow
+  obtain ⟨U, hU, hagU, hblock⟩ := Subst.override_block hR first [target]
+    (by simpa using ht.regular)
+  have hUtarget : U.onTy (.fvar first) = target := by simpa using hblock 0 (by simp)
+  have hUK : ∀ k ∈ K, U.onTy (.fvar k) = .fvar k := fun k hk =>
+    (hagU k (Nat.lt_of_lt_of_le (hK k hk) hle)).symm.trans (hRK k hk)
+  have hctxeq : U.onCtx (s1.onCtx ctx) = ambient.onCtx ctx := by
+    trans R.onCtx (s1.onCtx ctx)
+    · exact (Subst.onCtx_congr hagU hctxB).symm
+    · rw [← Subst.onCtx_append]; exact (Subst.onCtx_congr hag hbelow).symm
+  have hUst : U.onTy scrutTy = scrutD :=
+    (Subst.onTy_congr hagU hsB).symm.trans hscrut.symm
+  obtain ⟨⟨⟨next, s2, branchOut, branchTypes, branchSchemes⟩, hb⟩, hbResult⟩ :=
+    Option.isSome_iff_exists.mp (ihb K (first + 1) (s1.onCtx ctx) scrutTy (.fvar first) 0 U
+      (Subst.onCtx_wf hs1LC hwf) (fun M hM => (hctxB M hM).mono (by omega))
+      (fun k hk => by have := hK k hk; omega) hU hUK hsLC .fvar
+      (hsB.mono (by omega)) (.fvar (by omega))
+      (by simpa only [hctxeq, hUst, hUtarget] using hbD))
+  rw [inferWithTypesCore, dif_pos (rigid_all hK), dif_pos (ctx_all hbelow)]
+  split
+  · rename_i core heq; simp [hemb] at heq
+  · simp only [hsResult]
+    split
+    · rename_i hh
+      exact False.elim (hne (List.head?_eq_none_iff.mp hh))
+    · simp only [hbResult, Option.isSome_some]
+
+private theorem branch_size_lt {branch : MatchPattern × Input}
+    (h : branch ∈ branches) : branch.2.size < sizeBranches branches := by
+  induction branches with
+  | nil => cases h
+  | cons head rest ih =>
+    rcases List.mem_cons.mp h with rfl | h
+    · simp only [sizeBranches]; omega
+    · have := ih h; simp only [sizeBranches]; omega
+
 /-- Concrete producer completeness for exactly the independently specified
 fragment, including structured partial annotations and completed backend leaves. -/
 theorem _root_.inferWithTypesCore_complete (input : Input) : InferWithTypesCoreComplete input := by
@@ -172,14 +438,15 @@ theorem _root_.inferWithTypesCore_complete (input : Input) : InferWithTypesCoreC
     | letIn ann rhs body =>
       exact inferWithTypesCore_complete_letIn_partial (inferWithTypesCore_complete rhs) (inferWithTypesCore_complete body) hemb
     | match_ scrut branches =>
-      intro K frontier ctx ambient target hwf hbelow hK hS hfix ht
-      cases ht with
-      | complete hemb' _ _ => simp [hemb] at hemb'
+      exact inferWithTypesCore_complete_match_partial (inferWithTypesCore_complete scrut)
+        (inferBranchesWithTypesCore_complete_of_body (fun branch hm => inferWithTypesCore_complete branch.2)) hemb
     | letRec anns bindings body =>
       intro K frontier ctx ambient target hwf hbelow hK hS hfix ht
       cases ht with
       | complete hemb' _ _ => simp [hemb] at hemb'
-termination_by sizeOf input
+termination_by input.size
+decreasing_by
+  all_goals (simp only [Input.size]; first | omega | have := branch_size_lt hm; omega)
 
 /-- Completeness of the plain result API follows by projection of the same run. -/
 def _root_.InferCoreComplete (input : Input) : Prop :=

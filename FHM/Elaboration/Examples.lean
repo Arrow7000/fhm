@@ -1,7 +1,7 @@
 import FHM.Elaboration.Complete
 import FHM.Decls
 
-/-! Semantic canaries for the proved anonymous lambda/ordinary-let slice.
+/-! Semantic canaries for anonymous lambda, ordinary-let, and match elaboration.
 These run the elaborator itself; output typing follows from `Infer.sourceSound`.
 -/
 
@@ -96,11 +96,23 @@ def sharedOuterRejected : Input :=
 private def branches (yes no : Input) : List (MatchPattern × Input) :=
   [(.named ⟨"True"⟩ 0, yes), (.named ⟨"False"⟩ 0, no)]
 
--- Direct partial match currently unsupported, even if only the scrutinee has a hole.
+-- Partial scrutinees use the same branch inference and constructor checks.
 def directPartialScrutinee : Input :=
   .match_ (.app idHole (.ctor ⟨"True"⟩))
     (branches (.primLit (.int 1)) (.primLit (.int 0)))
-#guard !(inferCore [] 0 ctx directPartialScrutinee).isSome
+#guard (inferCore [] 0 ctx directPartialScrutinee).isSome
+
+-- Anonymous parameters in named and fallback bodies are solved in one thread.
+def partialBranches : Input :=
+  .match_ (.ctor ⟨"True"⟩) (branches idHole idHole)
+#guard (inferCore [] 0 ctx partialBranches).isSome
+
+-- Every branch must agree on the result; fresh local holes do not relax it.
+def incompatiblePartialBranches : Input :=
+  .match_ (.ctor ⟨"True"⟩)
+    [(.wildcard, .app idHole (.primLit (.int 1))),
+     (.wildcard, .app idHole (.ctor ⟨"True"⟩))]
+#guard !(inferCore [] 0 ctx incompatiblePartialBranches).isSome
 
 -- Equivalent normal lowering shape: the match scrutinee is bound once first.
 def loweredPartialScrutinee : Input :=
