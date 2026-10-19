@@ -752,5 +752,22 @@ test("complete nested signatures cannot specialize an outer authored forall", ()
   assert.equal(rejected.payload.stage, "typecheck");
 });
 
+
+// Ordinary generalization must protect outer provisional F even when those
+// variables do not occur in the term environment or the outer signature type.
+test("ordinary nested lets cannot generalize an outer provisional forall root", () => {
+  const source = "let f : {a} _ = \\x -> let id = \\(y : a) -> y " +
+    "in if True then (id 1, id True) else f x\nf 0\n";
+  const rejected = cli(["run", "--json"], source);
+  assert.equal(rejected.status, 1);
+  assert.equal(rejected.payload.stage, "typecheck");
+});
+
+test("ordinary nested lets preserve an outer authored forall without generalizing it", () => {
+  const source = "let f : {a} a -> _ = \\x -> let id = \\(y : a) -> y " +
+    "in if True then id x else f x\n(f 1, f True)\n";
+  run(source, "(1, True)");
+});
+
 console.log(`${tests - failures}/${tests} HM CLI/editor semantic smoke checks passed.`);
 process.exitCode = failures ? 1 : 0;

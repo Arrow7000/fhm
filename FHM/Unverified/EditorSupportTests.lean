@@ -910,3 +910,20 @@ private def recCompleteNestedSpecialized :=
   | _ => false
 #guard lowersWith recCompleteLambdaSpecialized (fun _ => true)
 #guard lowersWith recCompleteNestedSpecialized (fun _ => true)
+
+-- An ordinary nested let must protect provisional F during generalization,
+-- independently of the signed-pop escape checks above.
+private def ordinaryRecCapture :=
+  "let f : {a} _ = \\x -> let id = \\(y : a) -> y " ++
+  "in if True then (id 1, id True) else f x\nf 0\n"
+private def ordinaryRecProtected :=
+  "let f : {a} a -> _ = \\x -> let id = \\(y : a) -> y " ++
+  "in if True then id x else f x\n(f 1, f True)\n"
+#guard lowersWith ordinaryRecCapture fun
+  | .letRec [.partialForall 1 .hole]
+      [.lambda none (.letIn .absent (.lambda (some (.fixed (.bvar 0))) _) _)] _ => true
+  | _ => false
+#guard lowersWith ordinaryRecProtected fun
+  | .letRec [.partialForall 1 _]
+      [.lambda none (.letIn .absent (.lambda (some (.fixed (.bvar 0))) _) _)] _ => true
+  | _ => false
