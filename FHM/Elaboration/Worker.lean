@@ -254,7 +254,7 @@ def _root_.inferWithTypesCore (K : List Nat) (frontier : Nat) (ctx : Ctx) (input
                                 .letRec ⟨hrawScope, ctxBelow_of_all hctx,
                                   (fun v hv => of_decide_eq_true (List.all_eq_true.mp hK v hv)),
                                   (fun v hv => of_decide_eq_true (List.all_eq_true.mp hF v hv))⟩ (fun scheme hmem => PolyTy.wf_iff_bvarsBelow.mp (List.all_eq_true.mp hwf (.complete scheme) hmem))
-                                  (RecGroups.validResidualGroupsB_sound hg) hs hp hschemes houtputs hb⟩
+                                  ⟨RecGroups.validResidualGroupsB_sound hg, rfl⟩ hs hp hschemes houtputs hb⟩
                           | _, _ => none
                     else none
                   else none

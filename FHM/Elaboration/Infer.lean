@@ -1,6 +1,43 @@
 import FHM.Elaboration.RecSound
 
 namespace Elaboration
+private theorem substInputBindings_eq_map_global (S : Subst) (bindings : List Input) :
+    substInputBindings S bindings = bindings.map (Input.substTyFvars S) := by
+  induction bindings with
+  | nil => rfl
+  | cons rhs rest ih => simp only [substInputBindings, List.map_cons, ih]
+
+ theorem RecState.Frame.rhsCtx_eq_recBodyCtx {state : RecState}
+    (h : state.Frame base K F ctx anns done)
+    (hdone : ∀ i ty, state.specs[i]? = some (.mono ty) → i ∈ done) :
+    state.rhsCtx ctx = recBodyCtx ctx state.specs state.prefixes state.pool := by
+  have heq : state.entries = recCompletedSchemes state.specs state.prefixes state.pool := by
+    apply List.ext_getElem?
+    intro i
+    cases hs : state.specs[i]? with
+    | none =>
+      have hi : state.specs.length ≤ i := List.getElem?_eq_none_iff.mp hs
+      simp only [recCompletedSchemes, List.getElem?_mapIdx, hs, Option.map_none]
+      exact List.getElem?_eq_none_iff.mpr (by
+        simp only [RecState.entries, List.length_map, List.length_zip]
+        omega)
+    | some spec =>
+      have he : state.exports[i]? = some (some (spec.completedScheme (state.prefixes[i]?.getD []) state.pool)) := by
+        cases spec with
+        | poly sigma => simpa only [RecSpec.completedScheme_poly] using h.poly i sigma hs
+        | mono ty =>
+          obtain ⟨names, hslots, _, _, _, hex⟩ := if_pos (hdone i ty hs) ▸ h.mono i ty hs
+          have hp : state.prefixes[i]? = some names := by
+            simp only [RecState.prefixes, List.getElem?_mapIdx, hs, Option.map_some, hslots, Option.getD_some]
+            congr 1
+            rw [List.filterMap_map]
+            change names.filterMap some = names
+            simp
+          simpa only [RecSpec.completedScheme_mono, hp, Option.getD_some] using hex
+      have hz : (state.specs.zip state.exports)[i]? = some (spec, some (spec.completedScheme (state.prefixes[i]?.getD []) state.pool)) := List.getElem?_zip_eq_some.mpr ⟨hs, he⟩
+      simp only [RecState.entries, List.getElem?_map, hz, Option.map_some, Option.getD_some,
+        recCompletedSchemes, List.getElem?_mapIdx, hs]
+  simp only [RecState.rhsCtx, recBodyCtx, heq]
 
 private theorem forall₂_self_map {α β} {R : α → β → Prop} {f : α → β} :
     ∀ {xs : List α}, (∀ x ∈ xs, R x (f x)) → List.Forall₂ R xs (xs.map f)
@@ -187,6 +224,7 @@ theorem _root_.Infer.sourceSound (h : Infer K F frontier ctx input next subst ou
   | .letRec hscope hann hvalid hstrata hsigned hexports houtputs hbody =>
     intro hctxWF
     expose_names
+    have hvalid := hvalid.1
     obtain ⟨hraw, hctx, hK, hFvars⟩ := hscope
     have hF : ∀ t ∈ F, Ty.BelowFvars frontier t := by
       intro t ht
@@ -527,6 +565,7 @@ theorem _root_.Infer.erase (h : Infer K F frontier ctx input next subst output t
       simp only [Expr.erase, Expr.erase_substTyFvars, Input.erase, hs.erase, hb.erase, eraseBranches_substInputBranches]
   | .letRec _ _ hv hs hp _ hout hb =>
       expose_names
+      have hv := hv.1
       have hstate1 := hs.erase_of_infer (fun _ hi => hi.erase)
         (RecState.Erases.init (by simpa only [List.length_map] using hv.length))
       have hstate2 := hp.erase_of_infer (fun _ hi => hi.erase)
@@ -813,6 +852,161 @@ theorem _root_.Infer.inputSound_source (h : Infer K F frontier ctx input next su
     intro fresh hfresh
     simpa only [← Subst.onCtx_append, List.append_assoc] using htypesFinal fresh hfresh
 
+  | .letRec hscope hann hvalid hstrata hsigned hexports houtputs hbody =>
+    intro hctxWF
+    expose_names
+    have hvalid := hvalid.1
+    obtain ⟨hraw, hctx, hK, hFvars⟩ := hscope
+    have hF : ∀ t ∈ F, Ty.BelowFvars frontier t := by
+      intro t ht
+      apply Ty.BelowFvars.of_freeVars_lt
+      intro v hv
+      exact hFvars v (TyList.mem_freeVars_iff.mpr ⟨t, ht, hv⟩)
+    have hannscope : ∀ ann ∈ anns, ∀ v ∈ ann.rigidVars, v ∈ K ++ softVars F := by
+      intro ann ha v hv
+      exact hraw v (List.mem_append_left _ (List.mem_append_left _ (List.mem_flatMap.mpr ⟨ann, ha, hv⟩)))
+    have hrhsscope : ∀ rhs ∈ bindings, SourceScope K F rhs := by
+      intro rhs hr v hv
+      exact hraw v (List.mem_append_left _ (List.mem_append_right _ (rec_rhs_rigid_mem hr hv)))
+    have hannbelow : ∀ ann ∈ anns, ∀ v ∈ ann.rigidVars, v < frontier := by
+      intro ann ha v hv
+      exact (List.mem_append.mp (hannscope ann ha v hv)).elim (hK v) (hFvars v)
+    have hlen : anns.length = bindings.length := by simpa only [List.length_map] using hvalid.length
+    have hinitFrame := RecState.Frame.init hctx
+      (fun v hv => by obtain ⟨ann, ha, hv⟩ := List.mem_flatMap.mp hv; exact hannbelow ann ha v hv) hK hFvars
+    have hinitLC := RecState.LC.init (base := frontier) hann
+    have hinitBelow : (RecState.init frontier anns).Below (frontier + bindings.length) := by
+      simpa only [hlen] using RecState.Below.init hannbelow
+    have hctxSeed : CtxBelow (frontier + bindings.length) ctx :=
+      fun M hm => (hctx M hm).mono (by omega)
+    have hFSeed : ∀ t ∈ F, Ty.BelowFvars (frontier + bindings.length) t :=
+      fun t ht => (hF t ht).mono (by omega)
+    have hvalid0 : RecGroups.ValidResidualGroups (anns.map LetAnn.recModeAnn) (bindings.map Input.erase) ([] ++ groups) := hvalid
+    obtain ⟨hframe1, _⟩ := hstrata.frame_of_infer
+      (fun _ hi => hi.sourceLocality) hvalid0 hinitFrame hinitLC hctxWF hinitBelow hctxSeed hFSeed
+      (by omega) hannscope hrhsscope
+    have htrace1 := hstrata.inputTrace_of_infer
+      (fun _ hi => hi.sourceLocality) hvalid0 hinitFrame hinitLC hctxWF hinitBelow hctxSeed hFSeed
+      (by omega) hannscope hrhsscope (fun _ hi => hi.inputSound_source) (by
+        intro stage component hc
+        cases hc)
+    obtain ⟨hS1, hLC1⟩ := hstrata.lc_of_infer (fun _ hi => hi.lc) hctxWF hinitLC
+    obtain ⟨hB1, hBelow1⟩ := hstrata.belowFvars_of_infer (fun _ hi => hi.belowFvars)
+      hctxSeed (fun k hk => Nat.lt_of_lt_of_le (hK k hk) (by omega)) hFSeed hinitBelow
+      (fun ann ha v hv => Nat.lt_of_lt_of_le (hannbelow ann ha v hv) (by omega))
+    have hvalid1 := recValid_subst hvalid s1
+    have hdone1 := hframe1.all_mono_done hvalid1
+    obtain ⟨hframe2, hpool2⟩ := hsigned.frame_of_infer
+      (fun _ hi => hi.sourceLocality) hframe1 (by simp) hdone1 hBelow1.2.2.2
+    obtain ⟨hS2, hLC2⟩ := hsigned.lc_of_infer (fun _ hi => hi.lc) (Subst.onCtx_wf hS1 hctxWF) hLC1
+    have hbase1 : frontier ≤ first := (Nat.le_add_right frontier bindings.length).trans hstrata.frontier_le
+    have hbase2 : frontier ≤ second := hbase1.trans hsigned.frontier_le
+    have hctx1 := Subst.onCtx_below hB1 hbase1 hctx
+    have hF1 := substSoft_below hB1 hbase1 hF
+    obtain ⟨hB2, hBelow2⟩ := hsigned.belowFvars_of_infer (fun _ hi => hi.belowFvars)
+      hctx1 (fun k hk => Nat.lt_of_lt_of_le (hK k hk) hbase1) hF1 hBelow1
+      (by
+        intro ann hm v hv
+        obtain ⟨original, ho, rfl⟩ := List.mem_map.mp hm
+        obtain ⟨k, hk, hv⟩ := LetAnn.rigidVars_substTyFvars hv
+        exact (Subst.onTy_belowFvars (hB1) ((Ty.BelowFvars.fvar (hannbelow original ho k hk)).mono hbase1)).mem_lt v hv)
+    have hfix2 := Subst.fixes_of_dom_avoids hsigned.dom_avoids
+    have htrace2' := htrace1.onSubst hframe1 s2 hS2 hfix2 hpool2
+    have hfields := hsigned.type_fields
+    have htrace2 := htrace2'.congr_types hfields.1 hfields.2.1 hfields.2.2.1
+    have hscope1 : ∀ ann ∈ anns.map (LetAnn.substTyFvars s1), ∀ v ∈ ann.rigidVars,
+        v ∈ K ++ softVars (substSoft s1 F) := by
+      intro ann hm v hv
+      obtain ⟨original, ho, rfl⟩ := List.mem_map.mp hm
+      obtain ⟨k, hk, hv⟩ := LetAnn.rigidVars_substTyFvars hv
+      exact scope_image (Subst.fixes_of_dom_avoids hstrata.dom_avoids) (hannscope original ho k hk) hv
+    have hcomplete2 := hsigned.inputSound_of_infer (fullAnns := anns.map (LetAnn.substTyFvars s1))
+      (fullBindings := bindings.map (Input.substTyFvars s1)) (fun _ hi => hi.inputSound_source)
+      (Subst.onCtx_wf hS1 hctxWF) hLC1
+      (fun k hk => Nat.lt_of_lt_of_le (hK k hk) hbase1) (by simp) (by simp) hscope1 RecState.CompleteInput.init
+    have hbodyCtx := hLC2.rhsCtx (Subst.onCtx_wf hS2 (Subst.onCtx_wf hS1 hctxWF))
+    rw [← Subst.onCtx_append] at hbodyCtx
+    have hbodyTyped := hbody.inputSound_source hbodyCtx
+    have hS3 := (hbody.lc hbodyCtx).2
+    have hvalid2 := recValid_subst hvalid1 s2
+    have hdone2 := hframe2.all_mono_done hvalid2
+    have hpool3 : ∀ g ∈ state2.pool,
+        (∀ p ∈ s3, g ∉ p.2.freeVars) ∧ g ∉ s3.map Prod.fst := by
+      intro g hg
+      have henv := hframe2.pool_rhsCtx g hg
+      have href : (body.substTyFvars (s1 ++ s2)).erase.ForallOuter
+          (fun i => ∀ M, (state2.rhsCtx ((s1 ++ s2).onCtx ctx)).env[i]? = some M → g ∉ M.body.freeVars) 0 := by
+        apply Expr.ForallOuter.of_recGroupRefs_with_outer (n := 0)
+        · intro i _ scheme hs hv
+          apply henv
+          simpa only [Subst.onCtx_append] using Env.mem_freeVars_iff.mpr ⟨scheme, List.mem_of_getElem? hs, hv⟩
+        · intro i _ scheme hs hv
+          apply henv
+          simpa only [Subst.onCtx_append] using Env.mem_freeVars_iff.mpr ⟨scheme, List.mem_of_getElem? hs, hv⟩
+      have hsource : g ∉ (body.substTyFvars (s1 ++ s2)).rigidVars := by
+        intro hm
+        exact (List.mem_append.mp (hbody.sourceScope g hm)).elim
+          (hframe2.pool_rigid g hg) (by simpa only [← substSoft_append] using hframe2.pool_soft g hg)
+      have hl := hbody.sourceLocality (hBelow2.2.2.2 g hg) href hsource
+      exact ⟨hl.1, hl.2.2⟩
+    have hframe3 := hframe2.onSubst hpool3 (fun i target hs hn => False.elim (hn (hdone2 i target hs)))
+    have htrace3 := htrace2.onSubst hframe2 s3 hS3 (Subst.fixes_of_dom_avoids hbody.dom_avoids) hpool3
+    have hcomplete3 := hcomplete2.onSubst s3 hS3
+      (fun k hk v hv => scope_image (Subst.fixes_of_dom_avoids hbody.dom_avoids) hk hv)
+    have hLC3 := hLC2.onSubst hS3
+    have hvalid3 := recValid_subst hvalid2 s3
+    have hdone3 := hframe3.all_mono_done hvalid3
+    have hctxeq := hframe3.rhsCtx_eq_recBodyCtx hdone3
+    have hfix123 : ∀ k ∈ K, (s1 ++ s2 ++ s3).onTy (.fvar k) = .fvar k :=
+      Subst.fixes_of_dom_avoids (fun p hp => (List.mem_append.mp hp).elim
+        (fun hp => (List.mem_append.mp hp).elim (hstrata.dom_avoids p) (hsigned.dom_avoids p))
+        (hbody.dom_avoids p))
+    have hannFinal : ∀ ann ∈ anns.map (LetAnn.substTyFvars (s1 ++ s2 ++ s3)), ∀ v ∈ ann.rigidVars,
+        v ∈ K ++ softVars (substSoft (s1 ++ s2 ++ s3) F) := by
+      intro ann hm v hv
+      obtain ⟨original, ho, rfl⟩ := List.mem_map.mp hm
+      obtain ⟨k, hk, hv⟩ := LetAnn.rigidVars_substTyFvars hv
+      exact scope_image hfix123 (hannscope original ho k hk) hv
+    have hrhsFinal : ∀ rhs ∈ bindings.map (Input.substTyFvars (s1 ++ s2 ++ s3)), ∀ v ∈ rhs.rigidVars,
+        v ∈ K ++ softVars (substSoft (s1 ++ s2 ++ s3) F) := by
+      intro rhs hm
+      obtain ⟨original, ho, rfl⟩ := List.mem_map.mp hm
+      exact (hrhsscope original ho).subst _ hfix123
+    simp only [List.map_map, Function.comp_def, ← LetAnn.substTyFvars_append,
+      ← Input.substTyFvars_append, ← substSoft_append, ← Subst.onCtx_append] at hframe3 htrace3 hcomplete3 hctxeq
+    change (state2.onSubst s3).Frame frontier K (substSoft s3 (substSoft (s1 ++ s2) F))
+      ((s1 ++ s2 ++ s3).onCtx ctx) (anns.map (LetAnn.substTyFvars (s1 ++ s2 ++ s3)))
+      groups.flatten at hframe3
+    simp only [← substSoft_append] at hframe3
+    simp only [List.map_map, Function.comp_def, ← LetAnn.substTyFvars_append,
+      ← Input.substTyFvars_append, List.nil_append] at hvalid3 htrace3 hframe3
+    obtain ⟨L, hcomplete3⟩ := hcomplete3
+    have hresult := RecState.InputTrace.toTyping
+      (bindings := bindings.map (Input.substTyFvars (s1 ++ s2 ++ s3))) hframe3 hLC3
+      (by simpa only [List.map_map, Function.comp_def] using hvalid3) hannFinal hrhsFinal htrace3
+      (L := L) (by
+        intro i rhs scheme hr hs Xs hXs
+        have hm := congrArg (fun ss : List (Option PolyTy) => ss[i]?) hframe3.modes
+        change (List.map RecSpec.ann (state2.onSubst s3).specs)[i]? =
+          (List.map LetAnn.recModeAnn (anns.map (LetAnn.substTyFvars (s1 ++ s2 ++ s3))))[i]? at hm
+        rw [List.getElem?_map, hs] at hm
+        change some (some scheme) = _ at hm
+        cases ha : (anns.map (LetAnn.substTyFvars (s1 ++ s2 ++ s3)))[i]? with
+        | none => rw [List.getElem?_map, ha] at hm; cases hm
+        | some ann =>
+          have hmode : ann.recModeAnn = some scheme := by rw [List.getElem?_map, ha] at hm; exact Option.some.inj hm.symm
+          have haComplete : (anns.map (LetAnn.substTyFvars (s1 ++ s2 ++ s3)))[i]? = some (.complete scheme) := by
+            cases ann <;> simp_all only [LetAnn.recModeAnn, Option.some.injEq, reduceCtorEq]
+          have hi : i < (anns.map (LetAnn.substTyFvars s1)).length := by
+            have := (List.getElem?_eq_some_iff.mp hr).1
+            simpa only [List.length_map, hlen] using this
+          rw [← hctxeq]
+          exact hcomplete3 i _ rhs hi haComplete hr Xs hXs)
+      (by
+        rw [← hctxeq]
+        simpa only [RecState.rhsCtx_onSubst, Subst.onCtx_append, ← substSoft_append,
+          ← Input.substTyFvars_append] using hbodyTyped)
+    simpa only [Input.substTyFvars, Subst.onCtx_append, substInputBindings_eq_map_global] using hresult
   | .match_ _ hs hne hb =>
     intro hctx
     have hs1 := (hs.lc hctx).2
@@ -831,7 +1025,9 @@ theorem _root_.Infer.inputSound_source (h : Infer K F frontier ctx input next su
     simpa only [← substSoft_append, ← Input.substTyFvars_append, Subst.onCtx_append] using ht
 
 termination_by (input.size, 0)
-decreasing_by all_goals (simp only [Input.size, Input.size_openTyVars, Input.size_substTyFvars, sizeBranches_substInputBranches]; omega)
+decreasing_by
+  all_goals simp only [sizeBindings_map_substTyFvars] at *
+  all_goals (simp only [Input.size, Input.size_openTyVars, Input.size_substTyFvars, sizeBranches_substInputBranches]; omega)
 
 theorem _root_.InferBranches.inputSound_source
     (h : InferBranches K F frontier ctx scrutTy resultTy branches next subst completed)
@@ -1168,6 +1364,104 @@ theorem _root_.Infer.completes_source (h : Infer K F frontier ctx input next sub
       simpa only [List.append_assoc, LetAnn.paramCount_substTyFvars] using
         hcompleteFinal fresh ⟨hf.length, hf.nodup, fun v hv hm => hf.avoid v hv (List.mem_append_right _ hm)⟩
 
+  | .letRec hscope hann hvalid hstrata hsigned hexports houtputs hbody =>
+    intro hctxWF
+    expose_names
+    have hvalid := hvalid.1
+    obtain ⟨hraw, hctx, hK, hFvars⟩ := hscope
+    have hF : ∀ t ∈ F, Ty.BelowFvars frontier t := by
+      intro t ht
+      apply Ty.BelowFvars.of_freeVars_lt
+      intro v hv
+      exact hFvars v (TyList.mem_freeVars_iff.mpr ⟨t, ht, hv⟩)
+    have hannscope : ∀ ann ∈ anns, ∀ v ∈ ann.rigidVars, v ∈ K ++ softVars F := by
+      intro ann ha v hv
+      exact hraw v (List.mem_append_left _ (List.mem_append_left _ (List.mem_flatMap.mpr ⟨ann, ha, hv⟩)))
+    have hrhsscope : ∀ rhs ∈ bindings, SourceScope K F rhs := by
+      intro rhs hr v hv
+      exact hraw v (List.mem_append_left _ (List.mem_append_right _ (rec_rhs_rigid_mem hr hv)))
+    have hannbelow : ∀ ann ∈ anns, ∀ v ∈ ann.rigidVars, v < frontier := by
+      intro ann ha v hv
+      exact (List.mem_append.mp (hannscope ann ha v hv)).elim (hK v) (hFvars v)
+    have hlen : anns.length = bindings.length := by simpa only [List.length_map] using hvalid.length
+    have hinitFrame := RecState.Frame.init hctx
+      (fun v hv => by obtain ⟨ann, ha, hv⟩ := List.mem_flatMap.mp hv; exact hannbelow ann ha v hv) hK hFvars
+    have hinitLC := RecState.LC.init (base := frontier) hann
+    have hinitBelow : (RecState.init frontier anns).Below (frontier + bindings.length) := by
+      simpa only [hlen] using RecState.Below.init hannbelow
+    have hctxSeed : CtxBelow (frontier + bindings.length) ctx :=
+      fun M hm => (hctx M hm).mono (by omega)
+    have hFSeed : ∀ t ∈ F, Ty.BelowFvars (frontier + bindings.length) t :=
+      fun t ht => (hF t ht).mono (by omega)
+    have hvalid0 : RecGroups.ValidResidualGroups (anns.map LetAnn.recModeAnn) (bindings.map Input.erase) ([] ++ groups) := hvalid
+    obtain ⟨hframe1, _⟩ := hstrata.frame_of_infer
+      (fun _ hi => hi.sourceLocality) hvalid0 hinitFrame hinitLC hctxWF hinitBelow hctxSeed hFSeed
+      (by omega) hannscope hrhsscope
+    have hfid1 := hstrata.fidelity_of_infer
+      (fun _ hi => hi.sourceLocality) hvalid0 hinitFrame hinitLC hctxWF hinitBelow hctxSeed hFSeed
+      (by omega) hannscope hrhsscope (fun _ hi => hi.completes_source) (fun _ hi => hi.sourceSound)
+      RecState.Fidelity.init
+    obtain ⟨hS1, hLC1⟩ := hstrata.lc_of_infer (fun _ hi => hi.lc) hctxWF hinitLC
+    obtain ⟨hB1, hBelow1⟩ := hstrata.belowFvars_of_infer (fun _ hi => hi.belowFvars)
+      hctxSeed (fun k hk => Nat.lt_of_lt_of_le (hK k hk) (by omega)) hFSeed hinitBelow
+      (fun ann ha v hv => Nat.lt_of_lt_of_le (hannbelow ann ha v hv) (by omega))
+    have hvalid1 := recValid_subst hvalid s1
+    have hdone1 := hframe1.all_mono_done hvalid1
+    obtain ⟨hframe2, _⟩ := hsigned.frame_of_infer
+      (fun _ hi => hi.sourceLocality) hframe1 (by simp) hdone1 hBelow1.2.2.2
+    have hfid2 := hsigned.completes_of_infer
+      (fun _ hi => hi.completes_source) (fun _ hi => hi.sourceSound)
+      (Subst.onCtx_wf hS1 hctxWF) hLC1
+      (fun k hk => by have := hK k hk; have := hstrata.frontier_le; omega)
+      (by simp) (by simp) hframe1.outputs_length
+      (fun j scheme ha => by simpa only [Nat.zero_add] using hframe1.complete_export ha) hfid1
+    simp only [← substSoft_append, List.map_map, Function.comp_def,
+      ← LetAnn.substTyFvars_append, ← Input.substTyFvars_append] at hfid2
+    obtain ⟨hS2, hLC2⟩ := hsigned.lc_of_infer (fun _ hi => hi.lc) (Subst.onCtx_wf hS1 hctxWF) hLC1
+    have hbodyCtx := hLC2.rhsCtx (Subst.onCtx_wf hS2 (Subst.onCtx_wf hS1 hctxWF))
+    rw [← Subst.onCtx_append] at hbodyCtx
+    obtain ⟨_, hS3⟩ := hbody.lc hbodyCtx
+    have hbodyComplete := hbody.completes_source hbodyCtx
+    simp only [← substSoft_append, ← Input.substTyFvars_append] at hbodyComplete
+    have hfidFinal := hfid2.onSubst_source hS3
+      (fun k hk v hv => scope_image (Subst.fixes_of_dom_avoids hbody.dom_avoids) hk hv)
+    simp only [← substSoft_append, List.map_map, Function.comp_def,
+      ← LetAnn.substTyFvars_append, ← Input.substTyFvars_append] at hfidFinal
+    have hfinalExports : (state2.onSubst s3).exports = (schemes.map s3.onPolyTy).map some := by
+      simp only [RecState.onSubst, hexports, List.map_map]
+      rfl
+    have hfinalOutputs : (state2.onSubst s3).outputs = (outputs.map (Expr.substTyFvars s3)).map some := by
+      simp only [RecState.onSubst, houtputs, List.map_map]
+      rfl
+    have hschemeLen : schemes.length = anns.length := by
+      have hh := congrArg List.length hexports
+      simp only [List.length_map] at hh
+      exact hh.symm.trans (by simpa only [List.length_map] using hframe2.exports_length)
+    have houtputLen : outputs.length = schemes.length := by
+      have hh := congrArg List.length houtputs
+      simp only [List.length_map] at hh
+      exact hh.symm.trans (by simpa only [List.length_map, hschemeLen] using hframe2.outputs_length)
+    have hfixAll : ∀ k ∈ K, (s1 ++ s2 ++ s3).onTy (.fvar k) = .fvar k :=
+      Subst.fixes_of_dom_avoids (fun p hp => (List.mem_append.mp hp).elim
+        (fun hp => (List.mem_append.mp hp).elim (hstrata.dom_avoids p) (hsigned.dom_avoids p)) (hbody.dom_avoids p))
+    have hAnnFinal : ∀ ann ∈ anns.map (LetAnn.substTyFvars (s1 ++ s2 ++ s3)),
+        ∀ v ∈ ann.rigidVars, v ∈ K ++ softVars (substSoft (s1 ++ s2 ++ s3) F) := by
+      intro ann hm v hv
+      obtain ⟨original, ho, rfl⟩ := List.mem_map.mp hm
+      obtain ⟨k, hk, himage⟩ := LetAnn.rigidVars_substTyFvars hv
+      exact scope_image hfixAll (hannscope original ho k hk) himage
+    have hRhsFinal : ∀ rhs ∈ bindings.map (Input.substTyFvars (s1 ++ s2 ++ s3)),
+        ∀ v ∈ rhs.rigidVars, v ∈ K ++ softVars (substSoft (s1 ++ s2 ++ s3) F) := by
+      intro rhs hm
+      obtain ⟨original, ho, rfl⟩ := List.mem_map.mp hm
+      exact (hrhsscope original ho).subst (s1 ++ s2 ++ s3) hfixAll
+    have hresult := hfidFinal.toCompletes
+      (by simpa only [List.length_map] using hschemeLen.symm)
+      (by simpa only [List.length_map] using hlen.symm.trans hschemeLen.symm)
+      (by simpa only [List.length_map] using houtputLen)
+      hfinalExports hfinalOutputs hAnnFinal hRhsFinal hbodyComplete
+    simpa only [Input.substTyFvars, substInputBindings_eq_map_global] using hresult
+
   | .match_ _ hs _ hb =>
     intro hctx
     have hs1 := (hs.lc hctx).2
@@ -1179,7 +1473,9 @@ theorem _root_.Infer.completes_source (h : Infer K F frontier ctx input next sub
     simpa only [Input.substTyFvars, ← substSoft_append, substInputBranches_append] using
       Completes.match_ hscrut hbranches
 termination_by (input.size, 0)
-decreasing_by all_goals (simp only [Input.size, Input.size_openTyVars, Input.size_substTyFvars, sizeBranches_substInputBranches]; omega)
+decreasing_by
+  all_goals simp only [sizeBindings_map_substTyFvars] at *
+  all_goals (simp only [Input.size, Input.size_openTyVars, Input.size_substTyFvars, sizeBranches_substInputBranches]; omega)
 
 theorem _root_.InferBranches.completes_source
     (h : InferBranches K F frontier ctx scrutTy resultTy branches next subst completed)

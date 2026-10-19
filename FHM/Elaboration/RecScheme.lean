@@ -725,4 +725,11 @@ theorem _root_.RecSpec.lc_onSubstSource {S : Subst} (hS : ∀ p ∈ S, p.2.IsLC)
   | mono ty => exact Subst.onTy_lc hS hs
   | poly scheme => exact Subst.onPolyTy_wf hS hs
 
+@[simp] theorem _root_.RecSpec.onSubstSource_nil (spec : RecSpec) : spec.onSubstSource [] = spec := by
+  cases spec <;> simp [RecSpec.onSubstSource, Subst.onPolyTy, Subst.onTy, Ty.substFvars]
+
+ theorem _root_.RecSpec.onSubstSource_append (spec : RecSpec) (first second : Subst) :
+    spec.onSubstSource (first ++ second) = (spec.onSubstSource first).onSubstSource second := by
+  cases spec <;> simp only [RecSpec.onSubstSource, Subst.onTy_append, Subst.onPolyTy_append]
+
 end Elaboration

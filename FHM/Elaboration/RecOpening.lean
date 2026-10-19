@@ -387,3 +387,21 @@ theorem LetAnn.RecFits.cofinite_bindingFits {ann : LetAnn} {written pool Q : Lis
 
 
 end Elaboration
+
+namespace Elaboration
+theorem OpenRecAnns.selected_lookup (h : OpenRecAnns members index frontier anns next openings)
+    (hi : index + i ∈ members) (ha : anns[i]? = some ann) :
+    ∃ a b opening, openings[i]? = some opening ∧ OpenRecAnn a ann b opening := by
+  induction h generalizing i with
+  | nil => simp at ha
+  | skip hn hr ih =>
+    cases i with
+    | zero => exact False.elim (hn (by simpa using hi))
+    | succ i => exact ih (by simpa [Nat.add_assoc,Nat.add_comm,Nat.add_left_comm] using hi) ha
+  | cons hm hh hr ih =>
+    cases i with
+    | zero => cases Option.some.inj ha; exact ⟨_, _, _, rfl, hh⟩
+    | succ i => exact ih (by simpa [Nat.add_assoc,Nat.add_comm,Nat.add_left_comm] using hi) ha
+
+
+end Elaboration

@@ -147,6 +147,25 @@ end Elaboration
 
 
 namespace Elaboration
+theorem CheckRecShapes.solves (h : CheckRecShapes K shapes S)
+    (hm : (ty, some expected) ∈ shapes) : S.onTy ty = S.onTy expected := by
+  induction h generalizing ty expected with
+  | nil => cases hm
+  | skipNone hr ih =>
+    rcases List.mem_cons.mp hm with hh | hm
+    · cases hh
+    · exact ih hm
+  | consSome hu hr ih =>
+    rcases List.mem_cons.mp hm with hh | hm
+    · cases hh
+      simpa only [Subst.onTy_append] using congrArg _ hu.unifies.unifies
+    · have hh := ih (List.mem_map.mpr ⟨_, hm, rfl⟩)
+      simpa only [Subst.onTy_append] using hh
+
+
+end Elaboration
+
+namespace Elaboration
 
 private theorem recShape_solutions_factor {shapes : List RecShape} {S U R : Subst}
     (hsolve : ∀ ty expected, (ty,some expected) ∈ shapes → U.onTy ty = U.onTy expected)

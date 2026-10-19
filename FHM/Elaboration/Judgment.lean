@@ -181,7 +181,8 @@ inductive _root_.Infer : List Nat → List Ty → Nat → Ctx → Input → Nat 
       (SourceScope K F (.letRec anns bindings body) ∧ CtxBelow frontier ctx ∧
         (∀ v ∈ K, v < frontier) ∧ (∀ v ∈ softVars F, v < frontier)) →
       (∀ scheme, .complete scheme ∈ anns → scheme.WF) →
-      RecGroups.ValidResidualGroups (anns.map LetAnn.recModeAnn) (bindings.map Input.erase) groups →
+      (RecGroups.ValidResidualGroups (anns.map LetAnn.recModeAnn) (bindings.map Input.erase) groups ∧
+        groups = RecGroup.inferenceSccs (anns.map LetAnn.recModeAnn) (bindings.map Input.erase)) →
       InferRecStrata K F (frontier + bindings.length) ctx anns bindings (RecState.init frontier anns)
         groups first s1 state1 →
       InferRecSigned K (substSoft s1 F) 0 first (s1.onCtx ctx)
