@@ -1090,4 +1090,118 @@ theorem Input.substTyFvars_zip_openTyVars (input : Input) {Ys Xs : List Nat}
     (input.openTyVars Ys).substTyFvars (Ys.zip (Xs.map Ty.fvar)) = input.openTyVars Xs :=
   input.substTyFvars_zip_openTyVarsFrom hlen hnd hfresh hdisj 0
 
+/-- Sequential free substitution commutes with offset opening when its ranges
+are locally closed and its domain avoids the opening names. -/
+theorem _root_.Ty.substFvars_openVarsFrom {subst : List (Nat × Ty)} {Xs : List Nat}
+    (hlc : ∀ pair ∈ subst, pair.2.IsLC) (hfresh : ∀ pair ∈ subst, pair.1 ∉ Xs)
+    (ty : Ty) (d : Nat) :
+    (ty.openVarsFrom d Xs).substFvars subst = (ty.substFvars subst).openVarsFrom d Xs := by
+  induction subst generalizing ty with
+  | nil => rfl
+  | cons pair rest ih =>
+      rcases pair with ⟨name, replacement⟩
+      simp only [Ty.substFvars]
+      rw [Ty.substFvar_openVarsFrom (hlc _ List.mem_cons_self) (hfresh _ List.mem_cons_self)]
+      exact ih (fun p hp => hlc p (List.mem_cons_of_mem _ hp))
+        (fun p hp => hfresh p (List.mem_cons_of_mem _ hp)) _
+
+mutual
+theorem Template.substTyFvars_openTyVarsFrom (template : Template) {subst : List (Nat × Ty)} {Xs : List Nat}
+    (hlc : ∀ pair ∈ subst, pair.2.IsLC) (hfresh : ∀ pair ∈ subst, pair.1 ∉ Xs) (d : Nat) :
+    (template.openTyVarsFrom d Xs).substTyFvars subst = (template.substTyFvars subst).openTyVarsFrom d Xs := by
+  cases template with
+  | fixed ty => exact congrArg Template.fixed (Ty.substFvars_openVarsFrom hlc hfresh ty d)
+  | hole => rfl
+  | arrow a b => simp only [Template.openTyVarsFrom, Template.substTyFvars,
+      a.substTyFvars_openTyVarsFrom hlc hfresh d, b.substTyFvars_openTyVarsFrom hlc hfresh d]
+  | custom name args =>
+      exact congrArg (Template.custom name) (substTemplateList_openTemplateList args hlc hfresh d)
+theorem substTemplateList_openTemplateList (templates : List Template) {subst : List (Nat × Ty)} {Xs : List Nat}
+    (hlc : ∀ pair ∈ subst, pair.2.IsLC) (hfresh : ∀ pair ∈ subst, pair.1 ∉ Xs) (d : Nat) :
+    substTemplateList subst (openTemplateList d Xs templates) = openTemplateList d Xs (substTemplateList subst templates) := by
+  cases templates with
+  | nil => rfl
+  | cons t ts => simp only [openTemplateList, substTemplateList,
+      t.substTyFvars_openTyVarsFrom hlc hfresh d, substTemplateList_openTemplateList ts hlc hfresh d]
+end
+
+theorem LetAnn.substTyFvars_openTyVarsFrom (ann : LetAnn) {subst : List (Nat × Ty)} {Xs : List Nat}
+    (hlc : ∀ pair ∈ subst, pair.2.IsLC) (hfresh : ∀ pair ∈ subst, pair.1 ∉ Xs) (d : Nat) :
+    (ann.openTyVarsFrom d Xs).substTyFvars subst = (ann.substTyFvars subst).openTyVarsFrom d Xs := by
+  cases ann with
+  | absent => rfl
+  | complete scheme => simp only [LetAnn.openTyVarsFrom, LetAnn.substTyFvars,
+      Ty.substFvars_openVarsFrom hlc hfresh]
+  | template t => exact congrArg LetAnn.template (t.substTyFvars_openTyVarsFrom hlc hfresh d)
+  | partialForall n t =>
+      exact congrArg (LetAnn.partialForall n) (t.substTyFvars_openTyVarsFrom hlc hfresh (d + n))
+
+mutual
+/-- Source substitution commutes with opening through nested written signature
+binders. LC ranges need not avoid the opened names. -/
+theorem Input.substTyFvars_openTyVarsFrom (input : Input) {subst : List (Nat × Ty)} {Xs : List Nat}
+    (hlc : ∀ pair ∈ subst, pair.2.IsLC) (hfresh : ∀ pair ∈ subst, pair.1 ∉ Xs) (d : Nat) :
+    (input.openTyVarsFrom d Xs).substTyFvars subst = (input.substTyFvars subst).openTyVarsFrom d Xs := by
+  cases input with
+  | primLit | primBinOp | var | ctor => rfl
+  | lambda ann body =>
+      simp only [Input.openTyVarsFrom, Input.substTyFvars,
+        body.substTyFvars_openTyVarsFrom hlc hfresh d]
+      congr 1
+      cases ann with
+      | none => rfl
+      | some template => exact congrArg some (template.substTyFvars_openTyVarsFrom hlc hfresh d)
+  | app f a => simp only [Input.openTyVarsFrom, Input.substTyFvars,
+      f.substTyFvars_openTyVarsFrom hlc hfresh d, a.substTyFvars_openTyVarsFrom hlc hfresh d]
+  | letIn ann rhs body => simp only [Input.openTyVarsFrom, Input.substTyFvars,
+      LetAnn.paramCount_substTyFvars, ann.substTyFvars_openTyVarsFrom hlc hfresh d,
+      rhs.substTyFvars_openTyVarsFrom hlc hfresh (d + ann.paramCount),
+      body.substTyFvars_openTyVarsFrom hlc hfresh d]
+  | match_ scrut branches => simp only [Input.openTyVarsFrom, Input.substTyFvars,
+      scrut.substTyFvars_openTyVarsFrom hlc hfresh d,
+      substInputBranches_openInputBranches branches hlc hfresh d]
+  | letRec anns bindings body =>
+      simp only [Input.openTyVarsFrom, Input.substTyFvars,
+        body.substTyFvars_openTyVarsFrom hlc hfresh d,
+        substInputBindings_openInputBindings bindings anns hlc hfresh d, List.map_map]
+      congr 1
+      apply List.map_congr_left
+      intro ann _
+      exact ann.substTyFvars_openTyVarsFrom hlc hfresh d
+termination_by sizeOf input
+
+theorem substInputBranches_openInputBranches (branches : List (MatchPattern × Input)) {subst : List (Nat × Ty)} {Xs : List Nat}
+    (hlc : ∀ pair ∈ subst, pair.2.IsLC) (hfresh : ∀ pair ∈ subst, pair.1 ∉ Xs) (d : Nat) :
+    substInputBranches subst (openInputBranches d Xs branches) = openInputBranches d Xs (substInputBranches subst branches) := by
+  cases branches with
+  | nil => rfl
+  | cons pair rest =>
+      rcases pair with ⟨pat, body⟩
+      simp only [openInputBranches, substInputBranches, body.substTyFvars_openTyVarsFrom hlc hfresh d,
+        substInputBranches_openInputBranches rest hlc hfresh d]
+termination_by sizeOf branches
+
+theorem substInputBindings_openInputBindings (bindings : List Input) (anns : List LetAnn)
+    {subst : List (Nat × Ty)} {Xs : List Nat}
+    (hlc : ∀ pair ∈ subst, pair.2.IsLC) (hfresh : ∀ pair ∈ subst, pair.1 ∉ Xs) (d : Nat) :
+    substInputBindings subst (openInputBindings d Xs anns bindings) =
+      openInputBindings d Xs (anns.map (LetAnn.substTyFvars subst)) (substInputBindings subst bindings) := by
+  cases bindings with
+  | nil => rfl
+  | cons body rest =>
+      cases anns with
+      | nil => simp only [openInputBindings, substInputBindings, List.map_nil,
+          body.substTyFvars_openTyVarsFrom hlc hfresh d,
+          substInputBindings_openInputBindings rest [] hlc hfresh d]
+      | cons ann anns => simp only [openInputBindings, substInputBindings, List.map_cons,
+          LetAnn.paramCount_substTyFvars, body.substTyFvars_openTyVarsFrom hlc hfresh (d + ann.paramCount),
+          substInputBindings_openInputBindings rest anns hlc hfresh d]
+termination_by sizeOf bindings
+end
+
+theorem Input.substTyFvars_openTyVars (input : Input) {subst : List (Nat × Ty)} {Xs : List Nat}
+    (hlc : ∀ pair ∈ subst, pair.2.IsLC) (hfresh : ∀ pair ∈ subst, pair.1 ∉ Xs) :
+    (input.openTyVars Xs).substTyFvars subst = (input.substTyFvars subst).openTyVars Xs :=
+  input.substTyFvars_openTyVarsFrom hlc hfresh 0
+
 end Elaboration
