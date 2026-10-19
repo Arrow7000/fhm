@@ -574,3 +574,161 @@ private theorem freeVarsList_below {tys : List Ty}
       exact hstate.exportComponent (hstate.componentPool (hslots.names_below hstate.2.1))
 
 end Elaboration
+
+namespace Elaboration
+
+/-- The live type state of a dependency-first recursion solve. Completed members
+are compared through their exported schemes; exact seed equations are retained
+only for members that have not yet been solved. -/
+structure RecState.Frame (base : Nat) (K : List Nat) (F : List Ty)
+    (ctx : Ctx) (anns : List LetAnn) (done : List Nat) (state : RecState) : Prop where
+  specs_length : state.specs.length = anns.length
+  slots_length : state.slots.length = anns.length
+  exports_length : state.exports.length = anns.length
+  outputs_length : state.outputs.length = anns.length
+  facts_length : state.facts.length = anns.length
+  modes : state.specs.map RecSpec.ann = anns.map LetAnn.recModeAnn
+  poly : ∀ (i : Nat) (scheme : PolyTy), state.specs[i]? = some (RecSpec.poly scheme) →
+    state.exports[i]? = some (some scheme)
+  mono : ∀ (i : Nat) (ty : Ty), state.specs[i]? = some (RecSpec.mono ty) →
+    if i ∈ done then ∃ written,
+      state.slots[i]? = some (written.map Ty.fvar) ∧
+      written.length = (anns[i]?.getD .absent).recPrefixCount ∧ written.Nodup ∧
+      (∀ v ∈ written, v ∈ state.pool) ∧
+      state.exports[i]? = some (some (recScheme written state.pool ty))
+    else state.exports[i]? = some none
+  pending : RecSpecs.PendingSeeds base ctx state.specs done
+  pool_nodup : state.pool.Nodup
+  pool_ctx : ∀ v ∈ state.pool, v ∉ ctx.env.freeVars
+  pool_rigid : ∀ v ∈ state.pool, v ∉ K
+  pool_soft : ∀ v ∈ state.pool, v ∉ TyList.freeVars F
+  pool_poly : ∀ (scheme : PolyTy), (∃ i : Nat, state.specs[i]? = some (.poly scheme)) →
+    ∀ v ∈ state.pool, v ∉ scheme.body.freeVars
+  pool_pending : ∀ (i : Nat) (ty : Ty), state.specs[i]? = some (RecSpec.mono ty) → i ∉ done →
+    base + i ∉ state.pool
+  rigid_below : ∀ v ∈ K, v < base
+  pending_soft : ∀ (i : Nat) (ty : Ty), state.specs[i]? = some (RecSpec.mono ty) → i ∉ done →
+    base + i ∉ TyList.freeVars F
+
+ theorem RecState.Frame.entries_length {state : RecState} {base : Nat} {K : List Nat}
+    {F : List Ty} {ctx : Ctx} {anns : List LetAnn} {done : List Nat}
+    (h : state.Frame base K F ctx anns done) :
+    state.entries.length = anns.length := by
+  rw [state.entries_length (h.exports_length.trans h.specs_length.symm), h.specs_length]
+
+ theorem RecState.Frame.init {base : Nat} {K : List Nat} {F : List Ty} {ctx : Ctx}
+    {anns : List LetAnn} (hctx : CtxBelow base ctx)
+    (hanns : ∀ v ∈ anns.flatMap LetAnn.rigidVars, v < base)
+    (hK : ∀ v ∈ K, v < base) (hF : ∀ v ∈ TyList.freeVars F, v < base) :
+    (RecState.init base anns).Frame base K F ctx anns [] := by
+  obtain ⟨h1, h2, h3, h4, h5⟩ := RecState.init_lengths base anns
+  refine ⟨h1, h2, h3, h4, h5, ?_, ?_, ?_, ?_, by simp [RecState.init],
+    by simp [RecState.init], by simp [RecState.init], by simp [RecState.init],
+    by simp [RecState.init], by simp [RecState.init], hK, ?_⟩
+  · exact RecSpec.map_ann_init base _
+  · intro i scheme hspec
+    have heq := congrArg (fun specs : List RecSpec => (specs.map RecSpec.ann)[i]?)
+      (show (RecState.init base anns).specs = RecSpec.init base (anns.map LetAnn.recModeAnn) from rfl)
+    have hm := congrArg (fun xs : List (Option PolyTy) => xs[i]?)
+      (RecSpec.map_ann_init base (anns.map LetAnn.recModeAnn))
+    simp only [List.getElem?_map, ← heq, hspec, Option.map_some, RecSpec.ann] at hm
+    simpa only [RecState.init, List.getElem?_map] using hm.symm
+  · intro i ty hspec
+    simp only [List.not_mem_nil, ↓reduceIte]
+    have hm := congrArg (fun xs : List (Option PolyTy) => xs[i]?)
+      (RecSpec.map_ann_init base (anns.map LetAnn.recModeAnn))
+    change (RecState.init base anns).exports[i]? = some none
+    simp only [RecState.init, List.getElem?_map] at hspec ⊢
+    have heq : (RecSpec.init base (anns.map LetAnn.recModeAnn))[i]? = some (.mono ty) := hspec
+    simpa only [List.getElem?_map, heq, Option.map_some, RecSpec.ann] using hm.symm
+  · apply RecSpecs.PendingSeeds.init hctx
+    intro scheme hm
+    apply Ty.BelowFvars.of_freeVars_lt
+    intro v hv
+    obtain ⟨ann, ha, heq⟩ := List.mem_map.mp hm
+    have hs : scheme.body.freeVars = ann.rigidVars := by
+      cases ann <;> simp_all [LetAnn.recModeAnn, LetAnn.rigidVars]
+    exact hanns v (List.mem_flatMap.mpr ⟨ann, ha, hs ▸ hv⟩)
+  · intro i ty _ _ hmem
+    have := hF (base + i) hmem
+    omega
+
+
+ theorem RecState.Frame.pool_entries {state : RecState} {base : Nat} {K : List Nat}
+    {F : List Ty} {ctx : Ctx} {anns : List LetAnn} {done : List Nat}
+    (h : state.Frame base K F ctx anns done) :
+    ∀ v ∈ state.pool, ∀ scheme ∈ state.entries, v ∉ scheme.body.freeVars := by
+  intro v hv scheme hm
+  obtain ⟨i, hi⟩ := List.mem_iff_getElem?.mp hm
+  rw [RecState.entries, List.getElem?_map] at hi
+  obtain ⟨⟨spec, exported⟩, hz, heq⟩ := Option.map_eq_some_iff.mp hi
+  obtain ⟨hs, he⟩ := List.getElem?_zip_eq_some.mp hz
+  cases spec with
+  | poly sigma =>
+    have hex := h.poly i sigma hs
+    have heqex := Option.some.inj (he.symm.trans hex)
+    change exported = some sigma at heqex
+    subst exported
+    change sigma = scheme at heq
+    subst scheme
+    have hother : v ∉ sigma.body.freeVars := by
+      have hfixed : sigma ∈ state.exports.filterMap id := by
+        apply List.mem_filterMap.mpr
+        exact ⟨some sigma, List.mem_of_getElem? hex, rfl⟩
+      -- Complete contracts are entries in the fixed boundary. Their free
+      -- variables must be excluded from a previously generalized pool.
+      exact h.pool_poly sigma ⟨i, hs⟩ v hv
+    exact hother
+  | mono ty =>
+    have hx := h.mono i ty hs
+    by_cases hd : i ∈ done
+    · simp only [hd, ↓reduceIte] at hx
+      obtain ⟨written, _, _, _, _, hex⟩ := hx
+      have heqex := Option.some.inj (he.symm.trans hex)
+      change exported = some (recScheme written state.pool ty) at heqex
+      subst exported
+      change recScheme written state.pool ty = scheme at heq
+      subst scheme
+      exact fun hm => Ty.not_mem_closeOver_freeVars
+        (mem_recNames_of_mem_pool hv (Ty.freeVars_closeOver_subset hm)) hm
+    · simp only [hd, ↓reduceIte] at hx
+      have heqex := Option.some.inj (he.symm.trans hx)
+      change exported = none at heqex
+      subst exported
+      change PolyTy.mkTrivial ty = scheme at heq
+      subst scheme
+      rw [h.pending.mono i ty hs hd]
+      simp only [PolyTy.mkTrivial, Ty.freeVars, List.mem_singleton]
+      exact fun heq => h.pool_pending i ty hs hd (heq ▸ hv)
+
+ theorem RecState.Frame.pool_rhsCtx {state : RecState} {base : Nat} {K : List Nat}
+    {F : List Ty} {ctx : Ctx} {anns : List LetAnn} {done : List Nat}
+    (h : state.Frame base K F ctx anns done) :
+    ∀ v ∈ state.pool, v ∉ (state.rhsCtx ctx).env.freeVars := by
+  intro v hv hm
+  obtain ⟨scheme, hs, ht⟩ := Env.mem_freeVars_iff.mp hm
+  exact (List.mem_append.mp hs).elim
+    (fun hentry => h.pool_entries v hv scheme hentry ht)
+    (fun houter => h.pool_ctx v hv (Env.mem_freeVars_iff.mpr ⟨scheme, houter, ht⟩))
+
+ theorem RecState.Frame.installOpenings {state : RecState} {base : Nat} {K : List Nat}
+    {F : List Ty} {ctx : Ctx} {anns : List LetAnn} {done members : List Nat}
+    {openings : List RecOpening} (h : state.Frame base K F ctx anns done)
+    (hnot : ∀ i ∈ members, i ∉ done) :
+    (state.installOpenings members openings).Frame base K F ctx anns done := by
+  refine ⟨h.specs_length, by simpa only [RecState.installOpenings, List.length_mapIdx] using h.slots_length,
+    h.exports_length, h.outputs_length, h.facts_length, h.modes, h.poly, ?_, h.pending,
+    h.pool_nodup, h.pool_ctx, h.pool_rigid, h.pool_soft, h.pool_poly, h.pool_pending,
+    h.rigid_below, h.pending_soft⟩
+  intro i ty hs
+  have hm := h.mono i ty hs
+  by_cases hd : i ∈ done
+  · simp only [hd, ↓reduceIte] at hm ⊢
+    obtain ⟨written, hslot, hcount, hnd, hpool, hex⟩ := hm
+    refine ⟨written, ?_, hcount, hnd, hpool, hex⟩
+    have hi : i ∉ members := fun hc => hnot i hc hd
+    simp only [RecState.installOpenings, List.getElem?_mapIdx, hslot, Option.map_some, if_neg hi]
+  · simpa only [hd, ↓reduceIte] using hm
+
+
+end Elaboration

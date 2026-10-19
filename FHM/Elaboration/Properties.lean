@@ -1365,3 +1365,99 @@ theorem RecSpecs.PendingSeeds.onSubst_source {base : Nat} {ctx : Ctx} {specs : L
     obtain ⟨old, hold, _⟩ := RecSpec.mono_getElem?_map_onSubstSource hty
     exact Subst.onCtx_avoid (h.env member old hold (fun hc => hm (hdone member hc)))
       (havoid member old hold hm).1
+
+namespace Elaboration
+
+private theorem soft_avoids_subst {F : List Ty} {S : Subst} {v : Nat}
+    (hF : v ∉ TyList.freeVars F) (hS : ∀ p ∈ S, v ∉ p.2.freeVars) :
+    v ∉ TyList.freeVars (F.map S.onTy) := by
+  intro hm
+  obtain ⟨ty, ht, hv⟩ := TyList.mem_freeVars_iff.mp hm
+  obtain ⟨old, ho, rfl⟩ := List.mem_map.mp ht
+  exact Subst.notMemOnTy hS (fun hv => hF (TyList.mem_freeVars_iff.mpr ⟨old, ho, hv⟩)) hv
+
+ theorem RecState.Frame.onSubst {state : RecState} {S : Subst}
+    (h : state.Frame base K F ctx anns done)
+    (hpool : ∀ g ∈ state.pool, (∀ p ∈ S, g ∉ p.2.freeVars) ∧ g ∉ S.map Prod.fst)
+    (hpending : ∀ i ty, state.specs[i]? = some (.mono ty) → i ∉ done →
+      (∀ p ∈ S, base + i ∉ p.2.freeVars) ∧ base + i ∉ S.map Prod.fst) :
+    (state.onSubst S).Frame base K (F.map S.onTy) (S.onCtx ctx)
+      (anns.map (LetAnn.substTyFvars S)) done := by
+  have hdom : ∀ p ∈ S, p.1 ∉ state.pool := by
+    intro p hp hg
+    exact (hpool p.1 hg).2 (List.mem_map.mpr ⟨p, hp, rfl⟩)
+  have hran : ∀ p ∈ S, ∀ g ∈ p.2.freeVars, g ∉ state.pool :=
+    fun p hp g hg hgp => (hpool g hgp).1 p hp hg
+  have hfix : ∀ g ∈ state.pool, S.onTy (.fvar g) = .fvar g := Subst.fixes_of_dom_avoids hdom
+  refine ⟨?_, ?_, ?_, ?_, ?_, ?_, ?_, ?_, ?_, h.pool_nodup, ?_, h.pool_rigid, ?_, ?_, ?_, h.rigid_below, ?_⟩
+  · simpa only [RecState.onSubst, List.length_map] using h.specs_length
+  · simpa only [RecState.onSubst, List.length_map] using h.slots_length
+  · simpa only [RecState.onSubst, List.length_map] using h.exports_length
+  · simpa only [RecState.onSubst, List.length_map] using h.outputs_length
+  · simpa only [RecState.onSubst, List.length_map] using h.facts_length
+  · have hm : ((state.onSubst S).specs).map RecSpec.ann =
+        (state.specs.map RecSpec.ann).map (Option.map S.onPolyTy) := by
+      simp only [RecState.onSubst, List.map_map]
+      apply List.map_congr_left
+      intro spec _
+      cases spec <;> rfl
+    rw [hm, h.modes]
+    simp only [List.map_map, Function.comp_def, LetAnn.recModeAnn_subst_source]
+  · intro i scheme hget
+    rw [RecState.onSubst, List.getElem?_map] at hget
+    obtain ⟨old, hold, heq⟩ := Option.map_eq_some_iff.mp hget
+    cases old with
+    | mono ty => cases heq
+    | poly σ =>
+      cases RecSpec.poly.inj heq
+      simp only [RecState.onSubst, List.getElem?_map, h.poly i σ hold, Option.map_some]
+  · intro i ty hget
+    rw [RecState.onSubst, List.getElem?_map] at hget
+    obtain ⟨old, hold, heq⟩ := Option.map_eq_some_iff.mp hget
+    cases old with
+    | poly scheme => cases heq
+    | mono original =>
+      cases RecSpec.mono.inj heq
+      by_cases hi : i ∈ done
+      · obtain ⟨written, hslots, hcount, hnd, hsub, hexport⟩ := if_pos hi ▸ h.mono i original hold
+        rw [if_pos hi]
+        refine ⟨written, ?_, ?_, hnd, hsub, ?_⟩
+        · simp only [RecState.onSubst, List.getElem?_map, hslots, Option.map_some, List.map_map]
+          congr 1
+          apply List.map_congr_left
+          intro name hn
+          exact hfix name (hsub name hn)
+        · cases ha : anns[i]? with
+          | none => simpa only [List.getElem?_map, ha, Option.map_none] using hcount
+          | some ann => simpa only [List.getElem?_map, ha, Option.map_some, Option.getD_some,
+              LetAnn.recPrefixCount_subst_source] using hcount
+        · simp only [RecState.onSubst, List.getElem?_map, hexport, Option.map_some]
+          rw [recScheme_subst_pool_avoid hdom hran hsub]
+      · rw [if_neg hi]
+        have he := if_neg hi ▸ h.mono i original hold
+        simp only [RecState.onSubst, List.getElem?_map, he, Option.map_some, Option.map_none]
+  · exact h.pending.onSubst_source (fun _ hm => hm) hpending
+  · intro g hg hm
+    obtain ⟨scheme, hs, hv⟩ := Env.mem_freeVars_iff.mp hm
+    obtain ⟨old, ho, rfl⟩ := List.mem_map.mp hs
+    exact Subst.notMemOnTy (hpool g hg).1
+      (fun hv => h.pool_ctx g hg (Env.mem_freeVars_iff.mpr ⟨old, ho, hv⟩)) hv
+  · intro g hg
+    exact soft_avoids_subst (h.pool_soft g hg) (hpool g hg).1
+  · intro scheme ⟨i, hget⟩ g hg
+    rw [RecState.onSubst, List.getElem?_map] at hget
+    obtain ⟨old, hold, heq⟩ := Option.map_eq_some_iff.mp hget
+    cases old with
+    | mono ty => cases heq
+    | poly σ =>
+      cases RecSpec.poly.inj heq
+      exact Subst.notMemOnTy (hpool g hg).1 (h.pool_poly σ ⟨i, hold⟩ g hg)
+  · intro i ty hget hi
+    obtain ⟨old, hold, _⟩ := RecSpec.mono_getElem?_map_onSubstSource hget
+    exact h.pool_pending i old hold hi
+  · intro i ty hget hi
+    obtain ⟨old, hold, _⟩ := RecSpec.mono_getElem?_map_onSubstSource hget
+    exact soft_avoids_subst (h.pending_soft i old hold hi) (hpending i old hold hi).1
+
+
+end Elaboration

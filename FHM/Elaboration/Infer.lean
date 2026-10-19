@@ -27,6 +27,109 @@ theorem _root_.InferBranches.nil_iff
     (h : InferBranches K F frontier ctx scrutTy resultTy branches next subst completed) :
     completed = [] ↔ branches = [] := by cases h <;> simp
 
+
+/-- More-general environment schemes preserve an annotated cofinite RHS check. -/
+theorem GeneralisesTo.weaken_annotated {ctx : Ctx} {rhs : Expr} {scheme : PolyTy}
+    {avoid : List Nat} {env' : Env} (hwf : scheme.WF)
+    (h : GeneralisesTo TypeOfHM ctx (some scheme) rhs scheme avoid)
+    (henv : List.Forall₂ PolyTy.Generalizes env' ctx.env) :
+    ∃ avoid', GeneralisesTo TypeOfHM { ctx with env := env' } (some scheme) rhs scheme avoid' := by
+  have hlet : TypeOfHM ctx (.letIn (some scheme) rhs (.primLit .unit)) (.prim .unit) :=
+    .letIn hwf (fun _ heq => Option.some.inj heq) h rfl .primLitUnit
+  have hweaken : TypeOfHM { ctx with env := env' } (.letIn (some scheme) rhs (.primLit .unit)) (.prim .unit) := by
+    have old : TypeOfHM ⟨ctx.env ++ [], ctx.ctors⟩ (.letIn (some scheme) rhs (.primLit .unit)) (.prim .unit) := by
+      simpa only [List.append_nil] using hlet
+    simpa only [List.append_nil] using TypeOfHM.weaken_schemes (env := []) henv old
+  cases hweaken with
+  | letIn _ hpins hgen _ _ =>
+    have heq := hpins _ rfl
+    subst heq
+    exact ⟨_, hgen⟩
+
+/-- Closing a selected monotype can only increase the available instances.
+The written prefix and pool need no freshness assumptions for this direction. -/
+theorem RecState.exportComponent_entries_generalize {state : RecState}
+    {outputs : List (Option Expr)} {facts : List RecFacts} {pool : List Nat}
+    (hlen : state.exports.length = state.specs.length)
+    (hlc : ∀ spec ∈ state.specs, spec.LC)
+    (hclosed : ∀ i ∈ members, state.exports[i]? = some none)
+    (hmono : ∀ i ∈ members, ∃ ty, state.specs[i]? = some (.mono ty)) :
+    List.Forall₂ PolyTy.Generalizes
+      (state.exportComponent members written pool outputs facts).entries state.entries := by
+  apply List.forall₂_iff_zip.mpr
+  constructor
+  · rw [RecState.entries_length _ (by simpa only [RecState.exportComponent, List.length_mapIdx] using hlen),
+      RecState.entries_length _ hlen]
+    rfl
+  · intro newer older hpair
+    obtain ⟨i, hget⟩ := List.mem_iff_getElem?.mp hpair
+    obtain ⟨hnew, hold⟩ := List.getElem?_zip_eq_some.mp hget
+    rw [RecState.entries, List.getElem?_map] at hold
+    obtain ⟨⟨spec, exported⟩, hzip, heqOld⟩ := Option.map_eq_some_iff.mp hold
+    obtain ⟨hspec, hexport⟩ := List.getElem?_zip_eq_some.mp hzip
+    by_cases hi : i ∈ members
+    · obtain ⟨ty, hty⟩ := hmono i hi
+      have hspecEq : spec = .mono ty := Option.some.inj (hspec.symm.trans hty)
+      subst spec
+      have he : exported = none := Option.some.inj (hexport.symm.trans (hclosed i hi))
+      subst exported
+      have hnewExport : (state.exportComponent members written pool outputs facts).exports[i]? =
+          some (some (recScheme (written[i]?.getD []) pool ty)) := by
+        simp only [RecState.exportComponent, List.getElem?_mapIdx, hclosed i hi, Option.map_some,
+          if_pos hi, hty]
+        rfl
+      have hnewEntry : (state.exportComponent members written pool outputs facts).entries[i]? =
+          some (recScheme (written[i]?.getD []) pool ty) := by
+        have hz : ((state.exportComponent members written pool outputs facts).specs.zip
+            (state.exportComponent members written pool outputs facts).exports)[i]? =
+            some (.mono ty, some (recScheme (written[i]?.getD []) pool ty)) :=
+          List.getElem?_zip_eq_some.mpr ⟨hspec, hnewExport⟩
+        rw [RecState.entries, List.getElem?_map, hz]
+        rfl
+      have heqNew : newer = recScheme (written[i]?.getD []) pool ty := Option.some.inj (hnew.symm.trans hnewEntry)
+      change PolyTy.mkTrivial ty = older at heqOld
+      rw [heqNew, ← heqOld]
+      exact recScheme_generalizes_mono (hlc _ (List.mem_of_getElem? hspec))
+    · have hnewExport : (state.exportComponent members written pool outputs facts).exports[i]? = some exported := by
+        simp only [RecState.exportComponent, List.getElem?_mapIdx, hexport, Option.map_some, if_neg hi]
+      have hnewEntry : (state.exportComponent members written pool outputs facts).entries[i]? = some older := by
+        have hz : ((state.exportComponent members written pool outputs facts).specs.zip
+            (state.exportComponent members written pool outputs facts).exports)[i]? = some (spec, exported) :=
+          List.getElem?_zip_eq_some.mpr ⟨hspec, hnewExport⟩
+        rw [RecState.entries, List.getElem?_map, hz]
+        exact congrArg some heqOld
+      have heqNew : newer = older := Option.some.inj (hnew.symm.trans hnewEntry)
+      rw [heqNew]
+      exact PolyTy.Generalizes.refl older
+
+
+/-- Completed RHSs are stored under their exact exported scheme and the
+current full recursive environment. Metadata is intentionally absent. -/
+def RecState.SourceTyped (ctx : Ctx) (state : RecState) : Prop :=
+  ∀ (i : Nat) (scheme : PolyTy) (output : Expr),
+    state.exports[i]? = some (some scheme) → state.outputs[i]? = some (some output) →
+    scheme.WF ∧ ∃ L, GeneralisesTo TypeOfHM (state.rhsCtx ctx) (some scheme) output scheme L
+
+ theorem RecState.SourceTyped.init : (RecState.init base anns).SourceTyped ctx := by
+  intro i scheme output _ ho
+  simp only [RecState.init, List.getElem?_map] at ho
+  cases h : anns[i]? <;> simp [h] at ho
+
+ theorem RecState.SourceTyped.onSubst {state : RecState} {ctx : Ctx}
+    (h : state.SourceTyped ctx) (S : Subst) (hlc : ∀ p ∈ S, p.2.IsLC) :
+    (state.onSubst S).SourceTyped (S.onCtx ctx) := by
+  intro i scheme output hs ho
+  simp only [RecState.onSubst, List.getElem?_map] at hs ho
+  obtain ⟨oldScheme, hscheme, heqScheme⟩ := Option.map_eq_some_iff.mp hs
+  obtain ⟨sigma, hsigma, heq⟩ := Option.map_eq_some_iff.mp heqScheme
+  cases heq
+  obtain ⟨oldOutput, houtput, heqOutput⟩ := Option.map_eq_some_iff.mp ho
+  obtain ⟨rhs, hrhs, heq⟩ := Option.map_eq_some_iff.mp heqOutput
+  cases heq
+  obtain ⟨hwf, L, hgen⟩ := h i sigma rhs (hsigma ▸ hscheme) (hrhs ▸ houtput)
+  refine ⟨Subst.onPolyTy_wf hlc hwf, ?_⟩
+  simpa only [RecState.rhsCtx_onSubst] using hgen.onSubst_annotated hwf S hlc
+
  theorem _root_.InferRecComponent.sourceSound_of_infer
     (h : InferRecComponent K F members index frontier ctx bindings specs next S outputs facts)
     (hInfer : ∀ {κ F' Ψ c e Ψ' T output ty}, e.size ≤ sizeBindings bindings →
