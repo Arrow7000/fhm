@@ -37,8 +37,9 @@ annotation tokens to their owners and existing inferred artifacts.
 
 ## Proof contracts
 
-Lambda, application, ordinary let, and named/wildcard match inference have
-checked proofs of:
+Lambda, application, ordinary let, nonrecursive explicit signatures (including
+partial `forall` and complete signatures with partial RHSs or continuations),
+and named/wildcard match inference have checked proofs of:
 
 - completed Core typing (`Infer.sourceSound`), runtime erasure (`Infer.erase`),
   and annotation fidelity (`Infer.completes`);
@@ -52,6 +53,11 @@ Eligible unsolved hole variables generalize. Variables reachable through the
 context and written rigid variables do not. A whole `_` has the same independent
 typing meaning as an omitted lambda or ordinary-let annotation.
 
+Completed partial signatures preserve the authored forall prefix in its exact
+order, including unused binders, and append newly generalized hole variables.
+Editor definition hovers, hole hovers, and runtime binding reports preserve
+these names.
+
 These principal-type results concern the result type and flexible context.
 They do not claim a universal most-general filling for every unused annotation.
 
@@ -61,25 +67,51 @@ They do not claim a universal most-general filling for every unused annotation.
 - [x] Annotation lowering through shared pattern emission, with erasure proofs.
 - [x] Parser spans, completed-expression runtime handoff, basic hole hovers.
 - [x] Match inference and its complete soundness/principality/completeness stack.
-- [ ] Explicit signatures with partial RHSs or continuations; partial `forall`.
+- [x] Nonrecursive explicit signatures with partial RHSs or continuations;
+  partial `forall`, including soundness, principality, and completeness.
 - [ ] Recursive groups with partial syntax and signatures. Partial signatures
   must constrain the entire monomorphic SCC before export and must not grant
   polymorphic recursive calls. Complete signatures retain existing polyrec.
 - [ ] Full source-level regressions, normal builds, CLI/editor and web tests,
   verified-boundary and axiom audits.
 
-`FHM.Elaboration.Examples` exercises the proved expression and match rules. Editor canaries live
-in `FHM.Unverified.EditorSupportTests`; `scripts/hm-editor-smoke.mjs` includes
-end-to-end acceptance targets for the remaining constructs. Some targets remain
-intentionally red during this WIP extension; this checklist is the feature's
-completion criterion.
+## Remaining recursive work
 
-Pending recursive regressions include paired acceptance/rejection cases for a
-nested partial recursive group under a vacuous outer forall. The inner written
-prefix must remain independent of the outer provisional forall roots, including
-roots absent from the current term environment and annotation type. Complete
-lambda annotations and nested complete signatures may refer to these outer
-roots; successful conversion to Core alone does not make backend delegation
-eligible. Their accepted cases must use structural inference when needed.
-The editor guards currently check these sources' lowering and provenance; the
-independent smoke groups record their eventual runtime acceptance and rejection.
+The reviewed recursive design gives partial explicit-forall slots provisional
+monotypes while solving the whole SCC. Their fixed structure constrains every
+member before export; each member then retains its own written prefix and
+appends inferred binders. Shared or permuted roots must not be treated as
+independent rigid skolems or identified merely by ordinal position. Complete
+signatures continue to permit polymorphic recursive calls; partial signatures
+do not.
+
+The proposed recursive extension carries `F`, the current type images of live
+provisional slots, alongside frozen `K`. These images participate in scope and
+are excluded from nested generalization, while unification may refine them.
+Nested signature escape checks must protect both the outer environment and
+outer `F`, including roots absent from the environment or annotation type.
+This extension is work in progress; the committed canonical judgment above
+still has no `F` index.
+
+## Regression coverage and completion
+
+`FHM.Elaboration.Examples` exercises the proved expression, match, and signed-let
+rules. `FHM.Unverified.EditorSupportTests` checks source lowering, provenance,
+and available inferred artifacts. `scripts/hm-editor-smoke.mjs` keeps independent
+runtime/editor targets for the remaining recursive cases, including:
+
+- shared and permuted member prefixes, authored definition/parameter/hole names,
+  unused written binders, and extra inferred binders;
+- SCC-wide structural constraints and complete-versus-partial polymorphic calls;
+- nested signature escape and ordinary-let generalization under a vacuous outer
+  forall, each paired with a nearby accepted program;
+- complete annotations referring to outer provisional slots, which require
+  structural inference when backend delegation is ineligible;
+- completed annotation depths versus metadata's explicit-only binder depths.
+
+Recursive lowering guards already check the intended input shapes; pending
+runtime positives remain intentionally red until the canonical worker supports
+them. A rejection without its accepted control does not establish correctness.
+The feature is complete only when all supported annotation syntax, including
+recursive groups, has the full proof stack above and the retained source,
+CLI/editor, web, normal-build, verified-boundary, and axiom checks pass.
