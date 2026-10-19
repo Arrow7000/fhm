@@ -238,6 +238,7 @@ def Surface.prettyPrimLit : Surface.PrimLitExpr → String
 mutual
 
 def Surface.Ty.prettyAux (prec : Nat) : Surface.Ty → String
+  | .hole          => "_"
   | .prim p        => Surface.prettyPrimTy p
   | .tvar v        => prettyValName v
   | .pair a b      => "(" ++ Surface.Ty.prettyAux 0 a ++ ", " ++ Surface.Ty.prettyAux 0 b ++ ")"

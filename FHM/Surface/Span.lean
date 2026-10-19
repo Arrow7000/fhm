@@ -98,6 +98,7 @@ inductive ReferenceKind
   | type
   | typeVar
   | ctor
+  | typeHole
   deriving Repr, DecidableEq, BEq
 
 structure NameReference where

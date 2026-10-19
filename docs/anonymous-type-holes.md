@@ -1,4 +1,26 @@
-# Anonymous annotation milestone
+# Anonymous type holes
+
+The completion target is anonymous holes throughout expression annotations in the
+normal parser, editor, and execution pipeline. The proved fragment below is a
+foundation for that feature, not the final supported boundary. Named holes remain
+a separate later feature; Core `Ty` and `TypeOfHM` continue to describe completed
+types and expressions.
+
+Remaining integration work:
+
+- [ ] Make the elaborating judgment and metadata-producing worker the canonical
+  public inference API, with complete-Core inference as an internal backend.
+- [ ] Preserve partial annotation syntax through lowering and shared pattern
+  emission, including copied fallback arms and nested scrutinees.
+- [ ] Extend inference and its soundness, principality, and completeness proofs
+  through matches, explicit signatures, and recursion. Incomplete recursive
+  signatures must not silently grant polymorphic recursive calls.
+- [ ] Parse `_` in expression annotations, run the completed expression, and
+  surface inferred hole types through the existing editor metadata pipeline.
+- [ ] Pass source-level regression cases for those constructs alongside the
+  existing build, CLI/editor, web, boundary, and axiom checks.
+
+## Proved foundation
 
 This branch contains a verified **Core-shaped input elaborator**, not a parser or editor feature yet. `Anonymous.Input` records partial annotation syntax; `Anonymous.inferCore` returns ordinary `Expr` output with completed annotations. `TypeOfHM` and runtime semantics are unchanged.
 

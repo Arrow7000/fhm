@@ -10,6 +10,8 @@ inductive PrimTy
   deriving DecidableEq, Repr
 
 inductive Ty
+  /-- An independently inferred type at this annotation occurrence. -/
+  | hole
   | prim : PrimTy → Ty
   | pair : (fst snd : Ty) → Ty
   | arrow : (from_ to_ : Ty) → Ty
@@ -25,25 +27,27 @@ Strong induction for `Ty` with a useful IH on `customTy`:
 -/
 @[elab_as_elim]
 def Ty.rec_strong.{u} {motive : Ty → Sort u}
+    (hole     : motive .hole)
     (prim     : ∀ p, motive (.prim p))
     (pair     : ∀ a b, motive a → motive b → motive (.pair a b))
     (arrow    : ∀ a b, motive a → motive b → motive (.arrow a b))
     (tvar     : ∀ n, motive (.tvar n))
     (customTy : ∀ nm tys, (∀ t ∈ tys, motive t) → motive (.customTy nm tys)) :
     (ty : Ty) → motive ty
+  | .hole            => hole
   | .prim p          => prim p
   | .pair a b        =>
       pair a b
-        (Ty.rec_strong prim pair arrow tvar customTy a)
-        (Ty.rec_strong prim pair arrow tvar customTy b)
+        (Ty.rec_strong hole prim pair arrow tvar customTy a)
+        (Ty.rec_strong hole prim pair arrow tvar customTy b)
   | .arrow a b       =>
       arrow a b
-        (Ty.rec_strong prim pair arrow tvar customTy a)
-        (Ty.rec_strong prim pair arrow tvar customTy b)
+        (Ty.rec_strong hole prim pair arrow tvar customTy a)
+        (Ty.rec_strong hole prim pair arrow tvar customTy b)
   | .tvar n          => tvar n
   | .customTy nm tys =>
       customTy nm tys
-        (fun t _ht => Ty.rec_strong prim pair arrow tvar customTy t)
+        (fun t _ht => Ty.rec_strong hole prim pair arrow tvar customTy t)
 termination_by ty => sizeOf ty
 decreasing_by
   all_goals simp_wf

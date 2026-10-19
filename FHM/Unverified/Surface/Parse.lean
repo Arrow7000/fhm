@@ -134,6 +134,7 @@ def applyTyArgs (head : Ty) (args : List Ty) : Except String Ty :=
     | .customTy name [] => .ok (.customTy name args)
     | .customTy _ (_ :: _) => .error "type application is already saturated"
     | .prim _ => .error "primitive type cannot take arguments"
+    | .hole => .error "type hole cannot take arguments"
     | .tvar _ => .error "type variable cannot take arguments"
     | .arrow _ _ => .error "function type cannot take arguments"
     | .pair _ _ => .error "pair type cannot take arguments"
@@ -347,6 +348,9 @@ partial def tyAtom : P Ty :=
   withErrorMessage "expected type atom" do
     skipComments
     first (combine := preferErr) [
+      do
+        let _ ← punct .underscore
+        return .hole,
       -- `()` unit
       do
         let _ ← punct .lparen
@@ -420,6 +424,11 @@ def typeWithReferences (p : P Ty) : P (Ty × List ParsedNameSpan) := do
     | .ident name upper => some ({
         name := name
         kind := if upper then .type else .param
+        span := Span.ofTok tok
+        isDef := false } : ParsedNameSpan)
+    | .punct .underscore => some ({
+        name := "_"
+        kind := .param
         span := Span.ofTok tok
         isDef := false } : ParsedNameSpan)
     | _ => none
@@ -1392,7 +1401,7 @@ def parseProgramWithSpans (src : String) :
           kind := match b.kind with
             | .type => .type
             | .ctor => .ctor
-            | _ => .typeVar } : Surface.Span.NameReference)
+            | _ => if b.name == "_" then .typeHole else .typeVar } : Surface.Span.NameReference)
     let defs := bs.filterMap fun b => if b.isDef then some b.toBinderSpan else none
     let defs ← attachDocs defs toks.toList
     pure (p, defs, { sp with references := refs })
@@ -1408,6 +1417,18 @@ def parseProgram (src : String) : Except ParseError Program :=
 #guard (parseTy "Int").isOk
 #guard (parseTy "Int -> Bool").isOk
 #guard (parseTy "(Int, Bool)").isOk
+#guard match parseTy "_" with
+  | .ok .hole => true
+  | _ => false
+#guard match parseTy "Int -> _" with
+  | .ok (.arrow (.prim .int) .hole) => true
+  | _ => false
+#guard match parseTy "List _" with
+  | .ok (.customTy (.mk "List") [.hole]) => true
+  | _ => false
+#guard match applyTyArgs .hole [.prim .int] with
+  | .error _ => true
+  | _ => false
 
 #guard (match parseTy "Int" with
   | .ok (.prim .int) => true | _ => false)
