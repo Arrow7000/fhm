@@ -163,6 +163,27 @@ def programSpanned (p : Surface.Program) (sp : SpannedProgram) (scope : Span) : 
     | _, _ => none
   go p.groups sp.groups
 
+/-- Preserve the parser's authored header for each structural program binder.
+Pattern storage has no authored name token, so its header cannot be recovered
+from value-binder locations or the program-wide expression hull. -/
+def programBindingHeaders (sp : SpannedProgram) :
+    List (List Surface.Binding) → IdentifiedExpr → List (SurfaceBinderSite × Span)
+  | [], _ => []
+  | group :: rest, tree =>
+      if group.isEmpty then programBindingHeaders sp rest tree
+      else
+        let header (b : Surface.Binding) : Option Span :=
+          let name := match b.name with | .mk name => name
+          (sp.bindingHeaders.find? fun entry => entry.1 == name).map (·.2)
+        match group, tree with
+        | [b], .letIn owner _ body =>
+            (header b |>.toList.map fun span => (.letIn owner.id, span)) ++
+              programBindingHeaders sp rest body
+        | _, .letRecIn owner _ body =>
+            (group.mapIdx fun i b => header b |>.map fun span => (.letRec owner.id i, span)).filterMap id ++
+              programBindingHeaders sp rest body
+        | _, _ => []
+
 /-- Program-level SCC wrappers are lowering scaffolding, not authored
     expression-hover targets. Nested authored recursive lets are retained. -/
 def programWrapperIds : List (List Surface.Binding) → IdentifiedExpr → List SourceId

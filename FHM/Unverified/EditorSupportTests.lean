@@ -733,6 +733,20 @@ private def holeIdSrc := "let id = \\(x : _) -> x\n(id 1, id True)\n"
   | some r => !r.diagnostics.isEmpty
   | none => false)
 
+-- Synthetic top-level pattern storage retains its OWN authored header even
+-- after earlier annotations. Every hole has exactly one source-token artifact.
+private def prefixedPatternHoles :=
+  "let first = \\(x : _) -> x\nlet second : _ -> _ = \\x -> 1\n" ++
+  "let (id, n) : (_, _) = (\\(x : _) -> x, 7)\n(id True, n)\n"
+#guard (match hoverReport prefixedPatternHoles with
+  | some r =>
+      let holes := r.symbols.filter fun s => s.kind == "typeHole"
+      r.diagnostics.isEmpty && holes.length == 6 &&
+        ([(1, 19, "a"), (2, 14, "a"), (2, 19, "Int"),
+          (3, 16, "a → a"), (3, 19, "Int"), (3, 31, "a")].all fun (line, col, ty) =>
+          (holes.filter fun s => s.span == ⟨line, col, line, col + 1⟩).map (·.type_) == [ty])
+  | none => false)
+
 -- Pattern underscores remain wildcards, with no inferred-hole symbol.
 #guard holeTypes "let f = \\_ -> 1\nf True\n" == some []
 

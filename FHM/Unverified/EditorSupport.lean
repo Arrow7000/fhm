@@ -478,7 +478,8 @@ def collectHover (src : String) (p : Surface.Program) (binders : List BinderSpan
                 let target ← symbolAtUseSite candidates ref.span.startLine ref.span.startCol ref.name
                 pure { target with span := ref.span, scope := ref.span, isDef := false }
               let holeSymbols :=
-                (FHM.Unverified.HMDisplay.holeDisplays typed displayScopes binders sp.references p.term identified).filterMap
+                (FHM.Unverified.HMDisplay.holeDisplays typed displayScopes binders sp.references
+                  (FHM.Unverified.HMArtifacts.programBindingHeaders sp p.groups identified) p.term identified).filterMap
                   fun hole => if hole.types.isEmpty then none else
                     some (mkSym "_" "typeHole" (String.intercalate " | " hole.types) hole.span hole.span)
               let sugarOps := (collectLitOpSymbols src ctors).filter fun s => s.name == "::"

@@ -116,6 +116,9 @@ structure SpannedProgram where
   body : SpannedExpr
   declSpans : List Span := []
   sourceNames : List String := []
+  /-- Authored headers keyed by the unique expanded binding name, including
+      generated pattern storage. RHS spans cannot recover annotation ownership. -/
+  bindingHeaders : List (String × Span) := []
   references : List NameReference := []
   deriving Repr
 

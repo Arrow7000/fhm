@@ -705,9 +705,11 @@ def lambdaBinder : P (Pattern × Option Ty × List ParsedNameSpan × Span) :=
 /-- One authored binding can expand into storage plus independent projections. -/
 structure ParsedLetBinding where
   column : Nat := 0
+  header : Span := Span.empty
   entries : List (Binding × SpannedExpr) := []
   patternToken? : Option Tok := none
-  deriving Inhabited
+
+instance : Inhabited ParsedLetBinding := ⟨{}⟩
 
 /-- Pattern bindings cannot participate in any syntactic dependency cycle,
     including one cut by an annotation for ordinary inference SCCs. -/
@@ -965,6 +967,7 @@ partial def letBinding (indentCol : Nat) : P (ParsedLetBinding × List ParsedNam
             else (binding, .generated (.match_ sRhs.span (.leaf sRhs.span) [.leaf sRhs.span]))
     let parsed : ParsedLetBinding := {
       column := headTok.startCol
+      header := (Span.ofTok headTok).union (Span.ofTok eqTok)
       entries := entries
       patternToken? := if name?.isSome then none else some headTok }
     pure (parsed, bsHead ++ bsAnn ++ bsRhs)
@@ -1292,8 +1295,12 @@ def program : P (Program × List ParsedNameSpan × SpannedProgram) :=
       -- Source order (pre-SCC) for hover: binder spans were emitted in this order.
       let sourceNames := binds.map fun b =>
         match b.name with | .mk s => s
+      let bindingHeaders := items.toList.flatMap fun
+        | (.inl _, _) => []
+        | (.inr parsed, _) => parsed.entries.map fun (binding, _) =>
+            (match binding.name with | .mk name => name, parsed.header)
       let sp : SpannedProgram := {
-        groups := groupSpans, body := sBody, declSpans, sourceNames
+        groups := groupSpans, body := sBody, declSpans, sourceNames, bindingHeaders
       }
       return (p, bsItems ++ bsBody, sp)
     | none =>

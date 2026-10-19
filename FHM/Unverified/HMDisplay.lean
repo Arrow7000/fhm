@@ -283,50 +283,55 @@ def bindingHoleParts (typed : TypedLowered) (scopes : List Scope) (site : Surfac
     or identify inference variables. -/
 mutual
 partial def holeDisplays (typed : TypedLowered) (scopes : List Scope)
-    (bs : List BinderSpan) (refs : List NameReference) :
+    (bs : List BinderSpan) (refs : List NameReference)
+    (headers : List (SurfaceBinderSite × Span)) :
     Surface.Expr → IdentifiedExpr → List HoleDisplay
   | .lambda _ ann body, .lambda owner sb =>
       let parts := match ann with
         | none => []
         | some annotation => annotationParts annotation ((typed.typesForSource owner.id).filterMap fun (p, t) =>
             match t with | .arrow domain _ => some (p, domain, [], false) | _ => none)
-      headerHoles refs scopes owner.span sb.source.span parts ++ holeDisplays typed scopes bs refs body sb
+      headerHoles refs scopes owner.span sb.source.span parts ++ holeDisplays typed scopes bs refs headers body sb
   | .letIn name tyParams params ann rhs body, .letIn owner sr sb =>
       let locations := locate bs (.letIn owner.id) name .val owner.span sb.source.span sr.source.span
-      let header := match locations with
-        | v :: _ => { owner.span with startLine := v.span.startLine, startCol := v.span.startCol }
-        | [] => owner.span
+      let header := ((headers.find? fun entry => entry.1 == .letIn owner.id).map (·.2)).getD
+        (match locations with
+          | v :: _ => { owner.span with startLine := v.span.startLine, startCol := v.span.startCol }
+          | [] => owner.span)
       headerHoles refs scopes header sr.source.span
         (bindingHoleParts typed scopes (.letIn owner.id) (.letParam owner.id) tyParams params ann) ++
-        holeDisplays typed scopes bs refs rhs sr ++ holeDisplays typed scopes bs refs body sb
+        holeDisplays typed scopes bs refs headers rhs sr ++ holeDisplays typed scopes bs refs headers body sb
   | .letRecIn bindings body, .letRecIn owner rhss sb =>
-      bindingHoleDisplays typed scopes bs refs owner 0 bindings rhss ++ holeDisplays typed scopes bs refs body sb
+      bindingHoleDisplays typed scopes bs refs headers owner 0 bindings rhss ++ holeDisplays typed scopes bs refs headers body sb
   | .pair a b, .pair _ sa sb | .cons a b, .cons _ sa sb | .app a b, .app _ sa sb =>
-      holeDisplays typed scopes bs refs a sa ++ holeDisplays typed scopes bs refs b sb
-  | .list es, .list _ ss => listHoleDisplays typed scopes bs refs es ss
+      holeDisplays typed scopes bs refs headers a sa ++ holeDisplays typed scopes bs refs headers b sb
+  | .list es, .list _ ss => listHoleDisplays typed scopes bs refs headers es ss
   | .ife c t f, .ife _ sc st sf =>
-      holeDisplays typed scopes bs refs c sc ++ holeDisplays typed scopes bs refs t st ++ holeDisplays typed scopes bs refs f sf
+      holeDisplays typed scopes bs refs headers c sc ++ holeDisplays typed scopes bs refs headers t st ++ holeDisplays typed scopes bs refs headers f sf
   | .match_ s arms, .match_ _ ss bodies =>
-      holeDisplays typed scopes bs refs s ss ++ listHoleDisplays typed scopes bs refs (arms.map (·.2)) bodies
+      holeDisplays typed scopes bs refs headers s ss ++ listHoleDisplays typed scopes bs refs headers (arms.map (·.2)) bodies
   | _, _ => []
 
 partial def listHoleDisplays (typed : TypedLowered) (scopes : List Scope)
-    (bs : List BinderSpan) (refs : List NameReference) :
+    (bs : List BinderSpan) (refs : List NameReference)
+    (headers : List (SurfaceBinderSite × Span)) :
     List Surface.Expr → List IdentifiedExpr → List HoleDisplay
-  | e :: es, s :: ss => holeDisplays typed scopes bs refs e s ++ listHoleDisplays typed scopes bs refs es ss
+  | e :: es, s :: ss => holeDisplays typed scopes bs refs headers e s ++ listHoleDisplays typed scopes bs refs headers es ss
   | _, _ => []
 
 partial def bindingHoleDisplays (typed : TypedLowered) (scopes : List Scope)
-    (bs : List BinderSpan) (refs : List NameReference) (owner : SourceNode) :
+    (bs : List BinderSpan) (refs : List NameReference)
+    (headers : List (SurfaceBinderSite × Span)) (owner : SourceNode) :
     Nat → List Surface.Binding → List IdentifiedExpr → List HoleDisplay
   | i, b :: bindings, r :: rhss =>
       let locations := bindingLocations bs owner i b r owner.span
-      let header := match locations with
-        | v :: _ => { owner.span with startLine := v.span.startLine, startCol := v.span.startCol }
-        | [] => owner.span
+      let header := ((headers.find? fun entry => entry.1 == .letRec owner.id i).map (·.2)).getD
+        (match locations with
+          | v :: _ => { owner.span with startLine := v.span.startLine, startCol := v.span.startCol }
+          | [] => owner.span)
       headerHoles refs scopes header r.source.span
         (bindingHoleParts typed scopes (.letRec owner.id i) (.letRecParam owner.id i) b.tyParams b.params b.ann) ++
-        holeDisplays typed scopes bs refs b.rhs r ++ bindingHoleDisplays typed scopes bs refs owner (i + 1) bindings rhss
+        holeDisplays typed scopes bs refs headers b.rhs r ++ bindingHoleDisplays typed scopes bs refs headers owner (i + 1) bindings rhss
   | _, _, _ => []
 end
 

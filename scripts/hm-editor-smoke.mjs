@@ -566,6 +566,39 @@ test("pattern-let hole owners and Unicode token spans survive production lowerin
   run(unicode, "('😀', True)");
 });
 
+test("prefixed top-level pattern holes keep unique authored header locations", () => {
+  const source = "let first = \\(x : _) -> x\nlet second : _ -> _ = \\x -> 1\n" +
+    "let (id, n) : (_, _) = (\\(x : _) -> x, 7)\n(id True, n)\n";
+  const payload = diagnose(source);
+  hover(payload, source, 0, "_", "a");
+  hover(payload, source, 1, "_", "a", 0);
+  hover(payload, source, 1, "_", "Int", 1);
+  hover(payload, source, 2, "_", "a → a", 0);
+  hover(payload, source, 2, "_", "Int", 1);
+  hover(payload, source, 2, "_", "a", 2);
+  const holes = payload.symbols.filter(s => s.kind === "typeHole");
+  assert.deepEqual(holes.map(s => [s.startLine, s.startCol, s.endLine, s.endCol]).sort((a, b) => a[0] - b[0] || a[1] - b[1]),
+    [[1, 19, 1, 20], [2, 14, 2, 15], [2, 19, 2, 20],
+     [3, 16, 3, 17], [3, 19, 3, 20], [3, 31, 3, 32]]);
+  run(source, "(True, 7)");
+});
+
+test("pattern headers survive forward-reference SCC reordering", () => {
+  const source = "let result = id True\nlet first = \\(x : _) -> x\n" +
+    "let (id, n) : (_, _) = (\\(x : _) -> x, 7)\n(result, n)\n";
+  const payload = diagnose(source);
+  hover(payload, source, 1, "_", "a");
+  hover(payload, source, 2, "_", "a → a", 0);
+  hover(payload, source, 2, "_", "Int", 1);
+  hover(payload, source, 2, "_", "a", 2);
+  assert.equal(payload.symbols.filter(s => s.kind === "typeHole").length, 4);
+  const { ranged, tokens } = normalizePayload(payload);
+  const definition = resolveDefinition(ranged, 0, 13, source.split("\n")[0], tokens);
+  assert.equal(definition?.startLine0, 2);
+  assert.equal(definition?.startCol0, 5);
+  run(source, "(True, 7)");
+});
+
 test("actual pattern compilation preserves holes in copied fallback arms", () => {
   const source = "let f = \\p -> match p with | (True, True) -> 1 | _ -> let id = \\(x : _) -> x in id 2\n" +
     "(f (True, False), f (False, True))\n";
