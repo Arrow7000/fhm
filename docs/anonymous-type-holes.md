@@ -153,7 +153,11 @@ the full proof stack above. Final verification passed:
 
 - `lake build`: 745 jobs, including the recursive proof examples.
 - `lake build FHMEditorTests fhm`: 1,663 jobs.
-- `node scripts/hm-editor-smoke.mjs`: 64/64 CLI/editor semantic checks.
+- `node scripts/hm-editor-smoke.mjs`: 66/66 CLI/editor semantic checks.
+- `node editors/vscode/test/anonymous-holes-integration.cjs`: eight provider
+  scenarios passed using the real CLI backend and a simulated VS Code host API;
+  this checks the extension's providers, not an LSP protocol or a live editor UI.
+  The existing provider lifecycle test also passed.
 - `npm --prefix editors/web test`: 31/31 tests.
 - `scripts/check-unverified-boundary.sh`: passed; `Core.lean` and
   `RuntimeTyping.lean` are unchanged by this feature.
