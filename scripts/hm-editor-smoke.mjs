@@ -664,5 +664,22 @@ test("complete recursive signatures permit polymorphic calls while partial signa
   assert.equal(badRec.payload.stage, "typecheck");
 });
 
+// The outer `a` is deliberately absent from both its partial signature type
+// and the term environment at the inner signature. It still belongs to the
+// provisional forall roots and must not be captured by the inner `b`.
+test("a nested signature cannot capture an outer provisional forall root", () => {
+  const source = "let f : {a} _ = \\x -> let id : {b} b -> b = \\(y : a) -> y " +
+    "in if True then x else f x\nf 1\n";
+  const rejected = cli(["run", "--json"], source);
+  assert.equal(rejected.status, 1);
+  assert.equal(rejected.payload.stage, "typecheck");
+});
+
+test("an unrelated nested signature preserves a vacuous outer provisional forall", () => {
+  const source = "let f : {a} _ = \\x -> let id : {b} b -> b = \\y -> y " +
+    "in if True then x else f x\nf 1\n";
+  run(source, "1");
+});
+
 console.log(`${tests - failures}/${tests} HM CLI/editor semantic smoke checks passed.`);
 process.exitCode = failures ? 1 : 0;
