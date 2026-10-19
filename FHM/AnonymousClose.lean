@@ -228,6 +228,39 @@ def scopedBindings (depth : Nat) : List (Option PolyTy) → List Expr → Bool
       body.scopedAnnotations (depth + RecAnn.params ann) && scopedBindings depth anns rest
 end
 
+/-- Substitution changes annotations only, so it preserves runtime shape. -/
+theorem Expr.erase_substTyFvars (expr : Expr) (subst : Subst) :
+    (expr.substTyFvars subst).erase = expr.erase := by
+  induction expr using Expr.rec_strong with
+  | primLit => rw [Expr.substTyFvars_eq_self_of_tyFreeVars_nil subst rfl]
+  | primBinOp => rw [Expr.substTyFvars_eq_self_of_tyFreeVars_nil subst rfl]
+  | var => rw [Expr.substTyFvars_var]
+  | ctor => rw [Expr.substTyFvars_eq_self_of_tyFreeVars_nil subst rfl]
+  | lambda ann body ih => simp only [Expr.substTyFvars_lambda, Expr.erase, ih]
+  | app f x ihf ihx => simp only [Expr.substTyFvars_app, Expr.erase, ihf, ihx]
+  | letIn ann rhs body ihr ihb => simp only [Expr.substTyFvars_letIn, Expr.erase, ihr, ihb]
+  | match_ scrut branches ihs ihbs =>
+      simp only [Expr.substTyFvars_match, Expr.erase, ihs, List.map_map]
+      congr 1
+      exact List.map_congr_left (fun pair hp => congrArg (Prod.mk pair.1) (ihbs pair.1 pair.2 hp))
+  | letRec anns bindings body ihbs ihb =>
+      simp only [Expr.substTyFvars_letRec, Expr.erase, ihb, List.map_map]
+      congr 1
+      exact List.map_congr_left (fun binding hb => ihbs binding hb)
+
+/-- For a scoped RHS, closing its eligible variables affects no runtime code.
+The proof reuses reopening and substitution erasure rather than introducing a
+second structural closing proof. -/
+theorem Expr.erase_closeTyVars {expr : Expr} {names : List Nat}
+    (hbound : expr.TyBvarBounded 0) (hnames : names.Nodup) :
+    (expr.closeTyVars names).erase = expr.erase := by
+  obtain ⟨fresh, hfresh⟩ := exists_fresh_names names names.length
+  have hrename := Expr.open_closeTyVars_rename hnames hfresh.1
+    (fun name hn hf => hfresh.2.2 name hf hn) hbound
+  have herase := congrArg Expr.erase hrename
+  rw [Expr.erase_openTyVars, Expr.erase_substTyFvars] at herase
+  exact herase
+
 mutual
 theorem Expr.scopedAnnotations_sound (expr : Expr) (depth : Nat)
     (h : expr.scopedAnnotations depth = true) : expr.TyBvarBounded depth := by

@@ -28,6 +28,18 @@ inductive Template.Fits : Template → Ty → Prop
   | arrow : Fits a ta → Fits b tb → Fits (.arrow a b) (.arrow ta tb)
   | custom : List.Forall₂ Fits args tys → Fits (.custom name args) (.customTy name tys)
 
+mutual
+def Template.rigidVars : Template → List Nat
+  | .fixed ty => ty.freeVars
+  | .hole => []
+  | .arrow a b => a.rigidVars ++ b.rigidVars
+  | .custom _ args => rigidVarsList args
+def rigidVarsList : List Template → List Nat
+  | [] => []
+  | template :: rest => template.rigidVars ++ rigidVarsList rest
+end
+
+
 /-- Complete signatures and partial signatures have different checking modes.
 The quantified partial form is recorded separately pending its scoped rule. -/
 inductive LetAnn where
@@ -191,6 +203,33 @@ def LetAnn.FitsMono : LetAnn → Ty → Prop
   | .template t, ty => t.Fits ty
   | _, _ => False
 
+/-- Structural annotation completion. This is distinct from input admissibility
+(`Typing` below): it records fixed syntax, individual hole fillings, and the
+type abstraction/specialization performed when an ordinary let is generalized.
+Protected fixed variables cannot be substituted or captured by new binders.
+Scope correctness of the resulting Core is supplied by output typing. -/
+inductive Completes (K : List Nat) : Input → Expr → Prop
+  | complete : input.toCore = some core →
+      (∀ v ∈ core.tyFreeVars, v ∈ K) → Completes K input core
+  | lambda :
+      (∀ template, ann = some template → template.Fits param) →
+      (∀ template, ann = some template → ∀ v ∈ template.rigidVars, v ∈ K) →
+      Completes K body completed →
+      Completes K (.lambda ann body) (.lambda (ann.map fun _ => param) completed)
+  | app : Completes K f fOut → Completes K x xOut →
+      Completes K (.app f x) (.app fOut xOut)
+  | specialise :
+      Completes K input output → (∀ pair ∈ subst, pair.1 ∉ K) →
+      Completes K input (output.substTyFvars subst)
+  | letIn {subst : Subst} :
+      ann.FitsMono ty →
+      (∀ template, ann = .template template → ∀ v ∈ template.rigidVars, v ∈ K) →
+      Completes K rhs rhsOut → Completes K body bodyOut →
+      (∀ name ∈ names, name ∉ K) → (∀ pair ∈ subst, pair.1 ∉ K) →
+      Completes K (.letIn ann rhs body)
+        (.letIn (some (subst.onPolyTy ⟨names.length, Ty.closeOver names ty⟩))
+          ((rhsOut.closeTyVars names).substTyFvars subst) bodyOut)
+
 /-- Independent input typing for the first fragment. The let rule generalises
 the RHS cofinally, and partial annotations constrain that very monotype. There
 is no recursive rule: in particular, a partial annotation cannot acquire
@@ -280,6 +319,35 @@ theorem allocateList_fits (templates : List Template) (frontier : Nat) :
   | nil => exact .nil
   | cons template rest =>
       exact .cons (template.allocate_fits frontier) (allocateList_fits rest (template.allocate frontier).1)
+end
+
+mutual
+theorem Template.Fits.onSubst {K : List Nat} {template : Template} {ty : Ty}
+    (h : template.Fits ty) (hfixed : ∀ v ∈ template.rigidVars, v ∈ K)
+    {subst : Subst} (hsubst : ∀ pair ∈ subst, pair.1 ∉ K) :
+    template.Fits (subst.onTy ty) := by
+  cases h with
+  | fixed =>
+      have heq : subst.onTy ty = ty := Ty.substFvars_eq_self_of_no_key
+        (fun pair hp hv => hsubst pair hp (hfixed pair.1 hv))
+      rw [heq]
+      exact .fixed
+  | hole => exact .hole
+  | @arrow a ta b tb ha hb =>
+      simpa only [Subst.onTy_arrow] using Template.Fits.arrow (ha.onSubst (fun v hv => hfixed v (List.mem_append_left _ hv)) hsubst)
+        (hb.onSubst (fun v hv => hfixed v (List.mem_append_right _ hv)) hsubst)
+  | custom hall =>
+      simpa only [Subst.onTy_customTy] using Template.Fits.custom (fitsList_onSubst hall hfixed hsubst)
+theorem fitsList_onSubst {K : List Nat} {templates : List Template} {types : List Ty}
+    (h : List.Forall₂ Template.Fits templates types)
+    (hfixed : ∀ v ∈ rigidVarsList templates, v ∈ K)
+    {subst : Subst} (hsubst : ∀ pair ∈ subst, pair.1 ∉ K) :
+    List.Forall₂ Template.Fits templates (types.map subst.onTy) := by
+  cases h with
+  | nil => exact .nil
+  | cons head rest =>
+      exact .cons (head.onSubst (fun v hv => hfixed v (List.mem_append_left _ hv)) hsubst)
+        (fitsList_onSubst rest (fun v hv => hfixed v (List.mem_append_right _ hv)) hsubst)
 end
 
 end Anonymous

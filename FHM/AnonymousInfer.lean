@@ -8,17 +8,6 @@ partial annotations; it does not implement another branch or SCC inferer.
 
 namespace Anonymous
 
-mutual
-def Template.rigidVars : Template → List Nat
-  | .fixed ty => ty.freeVars
-  | .hole => []
-  | .arrow a b => a.rigidVars ++ b.rigidVars
-  | .custom _ args => rigidVarsList args
-def rigidVarsList : List Template → List Nat
-  | [] => []
-  | template :: rest => template.rigidVars ++ rigidVarsList rest
-end
-
 inductive Seed (K : List Nat) (frontier : Nat) : Option Template → Ty → Nat → Prop
   | absent : Seed K frontier none (.fvar frontier) (frontier + 1)
   | annotated :
@@ -28,6 +17,9 @@ inductive Seed (K : List Nat) (frontier : Nat) : Option Template → Ty → Nat 
 
 inductive LetCheck (K : List Nat) (frontier : Nat) (ty : Ty) : LetAnn → Nat → Subst → Prop
   | absent : LetCheck K frontier ty .absent frontier []
+  /-- A whole-signature `_` imposes no constraint on the RHS monotype. This
+  eliminates an immediately solved, otherwise unused fresh metavariable. -/
+  | hole : LetCheck K frontier ty (.template .hole) frontier []
   | template :
       template.allocate frontier = (next, expected) → expected.IsLC →
       (∀ v ∈ template.rigidVars, v ∈ K) →
@@ -81,17 +73,55 @@ theorem Seed.lc (h : Seed K frontier ann param initial) : param.IsLC := by
   | absent => exact .fvar
   | annotated _ hlc _ => exact hlc
 
+theorem Seed.fits (h : Seed K frontier ann param initial) :
+    ∀ template, ann = some template → template.Fits param := by
+  cases h with
+  | absent => intro _ heq; cases heq
+  | @annotated next param sourceTemplate heq _ _ =>
+      intro t ht
+      have hfit := Template.allocate_fits sourceTemplate frontier
+      have hequal := Option.some.inj ht
+      subst t
+      rwa [heq] at hfit
+
+theorem Seed.rigid (h : Seed K frontier ann param initial) :
+    ∀ template, ann = some template → ∀ v ∈ template.rigidVars, v ∈ K := by
+  cases h with
+  | absent => intro _ heq; cases heq
+  | annotated _ _ hrigid => intro _ heq; cases heq; exact hrigid
+
 theorem LetCheck.dom_avoids (h : LetCheck K frontier ty ann next subst) :
     ∀ pair ∈ subst, pair.1 ∉ K := by
   cases h with
   | absent => simp
+  | hole => simp
   | template _ _ _ huni => exact huni.dom_avoids
 
 theorem LetCheck.lc (h : LetCheck K frontier ty ann next subst) (hlc : ty.IsLC) :
     ∀ pair ∈ subst, pair.2.IsLC := by
   cases h with
   | absent => simp
+  | hole => simp
   | template _ he _ huni => exact huni.unifies.lc hlc he
+
+theorem LetCheck.fits (h : LetCheck K frontier ty ann next subst) :
+    ann.FitsMono (subst.onTy ty) := by
+  cases h with
+  | absent => trivial
+  | hole => exact .hole
+  | @template next expected subst t heq _ hrigid huni =>
+      have hfit := Template.allocate_fits t frontier
+      rw [heq] at hfit
+      change t.Fits (subst.onTy ty)
+      rw [huni.unifies.unifies]
+      exact hfit.onSubst hrigid huni.dom_avoids
+
+theorem LetCheck.rigid (h : LetCheck K frontier ty ann next subst) :
+    ∀ template, ann = .template template → ∀ v ∈ template.rigidVars, v ∈ K := by
+  cases h with
+  | absent => intro _ heq; cases heq
+  | hole => intro _ heq; cases heq; simp [Template.rigidVars]
+  | template _ _ hrigid _ => intro _ heq; cases heq; exact hrigid
 
 theorem Infer.dom_avoids (h : Infer K frontier ctx input next subst output ty) :
     ∀ pair ∈ subst, pair.1 ∉ K := by
@@ -227,6 +257,42 @@ theorem Infer.sourceSound (h : Infer K frontier ctx input next subst output ty) 
         (fun _ heq => Option.some.inj heq) ?_ rfl bodyTyped
       simpa only [letOutput, genScheme, ← Subst.onCtx_append] using rhsFinal
 
+/-- Elaboration changes type annotations and their binders, preserving the
+erased expression exactly. -/
+theorem Infer.erase (h : Infer K frontier ctx input next subst output ty) :
+    output.erase = input.erase := by
+  induction h with
+  | backend hemb _ _ _ _ => exact Input.toCore_erase _ hemb
+  | lambda _ _ ih => simpa only [lambdaOutput, Expr.erase, Input.erase] using congrArg (Expr.lambda none) ih
+  | app _ _ _ ihf ihx =>
+      simp only [Expr.erase, Expr.erase_substTyFvars, Input.erase, ihf, ihx]
+  | letIn _ _ hscope _ ihr ihb =>
+      simp only [letOutput, Expr.erase, Expr.erase_substTyFvars,
+        Expr.erase_closeTyVars hscope genVars_nodup, Input.erase, ihr, ihb]
+
+theorem Infer.sound (h : Infer K frontier ctx input next subst output ty) (hctx : CtxWF ctx) :
+    RuntimeTyping.RunWT (subst.onCtx ctx) input.erase ty := by
+  rw [← h.erase]
+  exact (h.sourceSound hctx).erase_preserves_typing
+
+/-- Fixed annotation syntax is protected throughout local filling, substitution,
+and the synthesis of enclosing scheme binders. -/
+theorem Infer.completes (h : Infer K frontier ctx input next subst output ty) :
+    Completes K input output := by
+  induction h with
+  | backend hemb _ _ _ hrigid => exact .complete hemb hrigid
+  | lambda hs hb ih =>
+      refine .lambda ?_ hs.rigid ih
+      intro template heq
+      exact (hs.fits template heq).onSubst (hs.rigid template heq) hb.dom_avoids
+  | app hf ha hu ihf iha =>
+      exact .app (.specialise ihf (fun pair hp =>
+        (List.mem_append.mp hp).elim (ha.dom_avoids pair) (hu.dom_avoids pair)))
+        (.specialise iha hu.dom_avoids)
+  | letIn hr hc _ hb ihr ihb =>
+      exact .letIn hc.fits hc.rigid (.specialise ihr hc.dom_avoids) ihb
+        (fun _ hn => genVars_not_mem_rigid hn) hb.dom_avoids
+
 private def seed (K : List Nat) (frontier : Nat) (ann : Option Template) :
     Option { result : Nat × Ty // Seed K frontier ann result.2 result.1 } :=
   match ann with
@@ -244,6 +310,7 @@ private def checkLet (K : List Nat) (frontier : Nat) (ann : LetAnn) (ty : Ty) :
     Option { result : Nat × Subst // LetCheck K frontier ty ann result.1 result.2 } :=
   match ann with
   | .absent => some ⟨(frontier, []), .absent⟩
+  | .template .hole => some ⟨(frontier, []), .hole⟩
   | .template template =>
       let result := template.allocate frontier
       if hlc : result.2.bvarsBelow 0 = true then

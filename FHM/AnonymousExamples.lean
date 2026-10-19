@@ -21,7 +21,8 @@ def polymorphicId : Input :=
 /-- Both occurrences of `_` are independently flexible. -/
 def independentHoles : Input :=
   .letIn (.template (.arrow .hole .hole))
-    (.lambda none (.primLit (.int 1))) (.var 0)
+    (.lambda none (.primLit (.int 1)))
+    (pair (.app (.var 0) (.ctor ⟨"True"⟩)) (.app (.var 0) (.primLit (.int 1))))
 
 def structuredId : Input :=
   .letIn (.template (.arrow .hole .hole)) (.lambda none (.var 0))
