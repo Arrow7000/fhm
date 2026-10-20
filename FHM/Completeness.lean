@@ -4147,17 +4147,6 @@ theorem recRenameNames_map_images {G Xs names labels images : List Nat}
     omega
   simp only [Function.comp_def,List.getElem?_map,List.getElem?_eq_getElem hi,Option.map_some,Option.getD_some]
 
- theorem recRenameNames_prefixRepresentatives {A C G Xs names : List Nat}
-    (hXs : Xs.length = G.length) (hsub : ∀ v ∈ names,v ∈ G)
-    (hclasses : ∀ v ∈ recRenameNames G Xs names,v ∈ C) :
-    recRenameNames G (recRenameNames C.dedup (prefixRepresentatives A C) Xs) names =
-      (recRenameNames G Xs names).map (prefixRepresentative A C) := by
-  rw [recRenameNames_map_images hXs hsub]
-  apply List.map_congr_left
-  intro v hv
-  simp only [prefixRepresentatives,List.getElem?_map,
-    List.getElem?_idxOf (List.mem_dedup.mpr (hclasses v hv)),Option.map_some,Option.getD_some]
-
  theorem OpenRecAnns.selected_prefix_collection
     (h : OpenRecAnns members 0 frontier anns next openings)
     {declPrefixes : List (List Nat)} {G Xs : List Nat}
@@ -4207,62 +4196,6 @@ theorem recRenameNames_map_images {G Xs names labels images : List Nat}
     · rw [if_neg hm] at heq
       subst names
       cases hc
-
- theorem OpenRecAnns.prefixRepresentatives_fixed_of_images
-    (h : OpenRecAnns members 0 frontier anns next openings)
-    {declPrefixes : List (List Nat)} {G Xs : List Nat} {U : Subst}
-    (hlen : declPrefixes.length = anns.length) (hXs : Xs.length = G.length)
-    (hprefix : ∀ (i : Nat) (ann : BindingAnn) (names : List Nat),anns[i]? = some ann →
-      declPrefixes[i]? = some names → names.length = ann.recPrefixCount ∧ ∀ v ∈ names,v ∈ G)
-    (himages :
-      let targets := declPrefixes.mapIdx (fun i names => if i ∈ members then recRenameNames G Xs names else [])
-      let A := openings.flatMap RecOpening.written
-      let C := targets.flatten
-      let Ys := recRenameNames C.dedup (prefixRepresentatives A C) Xs
-      ∀ (i : Nat) (opening : RecOpening) (names : List Nat),i ∈ members →
-        openings[i]? = some opening → declPrefixes[i]? = some names →
-        opening.written.map (fun v => U.onTy (.fvar v)) = (recRenameNames G Ys names).map Ty.fvar) :
-    let targets := declPrefixes.mapIdx (fun i names => if i ∈ members then recRenameNames G Xs names else [])
-    let A := openings.flatMap RecOpening.written
-    let C := targets.flatten
-    ∀ r ∈ prefixRepresentatives A C,U.onTy (.fvar r) = .fvar r := by
-  dsimp only at himages ⊢
-  let targets := declPrefixes.mapIdx (fun i names => if i ∈ members then recRenameNames G Xs names else [])
-  let A := openings.flatMap RecOpening.written
-  let C := targets.flatten
-  have hAC : A.length = C.length := (h.selected_prefix_collection hlen hXs hprefix).1
-  have hglobal : A.map (fun v => U.onTy (.fvar v)) = C.map (fun v => Ty.fvar (prefixRepresentative A C v)) := by
-    apply h.written_images (f := prefixRepresentative A C) (names := targets)
-      (by simp only [targets,List.length_mapIdx,hlen])
-    · intro j ann names ha hn hj
-      change (declPrefixes.mapIdx _)[j]? = some names at hn
-      rw [List.getElem?_mapIdx] at hn
-      obtain ⟨writtenNames,hp,heq⟩ := Option.map_eq_some_iff.mp hn
-      have hm : j ∉ members := by simpa only [Nat.zero_add] using hj
-      simpa only [if_neg hm] using heq.symm
-    · intro j opening names ho hn hj
-      have hm : j ∈ members := by simpa only [Nat.zero_add] using hj
-      have hTarget := hn
-      change (declPrefixes.mapIdx _)[j]? = some names at hn
-      rw [List.getElem?_mapIdx] at hn
-      obtain ⟨writtenNames,hp,heq⟩ := Option.map_eq_some_iff.mp hn
-      rw [if_pos hm] at heq
-      subst names
-      have hjA : j < anns.length := by
-        have := (List.getElem?_eq_some_iff.mp hp).1
-        omega
-      have hsub := (hprefix j _ writtenNames (List.getElem?_eq_getElem hjA) hp).2
-      have hNorm := recRenameNames_prefixRepresentatives (A := A) (C := C) hXs hsub (by
-        intro v hv
-        exact List.mem_flatten.mpr ⟨_,List.mem_of_getElem? hTarget,hv⟩)
-      rw [himages j opening writtenNames hm ho hp,hNorm,List.map_map]
-      rfl
-  apply prefixRepresentatives_fixed hAC
-  intro i hi
-  have hEq := congrArg (fun ts : List Ty => ts[i]?) hglobal
-  have hiA : i < A.length := by omega
-  simpa only [List.getElem?_map,List.getElem?_eq_getElem hiA,List.getElem?_eq_getElem hi,
-    Option.map_some,Option.some.injEq] using hEq
 
 theorem recStageCtx_change_opening {B : Subst} {specs : List RecSpec}
     {ctx : Ctx} {prefixes : List (List Nat)} {done G Xs Ys : List Nat}
