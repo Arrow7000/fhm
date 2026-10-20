@@ -1428,12 +1428,6 @@ def coreEmissionOps : EmissionOps Expr :=
     match_ := Expr.match_
     shiftFrom := Expr.shiftFrom }
 
-/-- The variable currently holding an occurrence. The emitter invariant ensures
-that the occurrence is present in `env`. -/
-def resolveOccWith {Term : Type} (ops : EmissionOps Term)
-    (env : List Occ) (occ : Occ) : Term :=
-  ops.var (env.idxOf occ)
-
 def resolveOcc (env : List Occ) (occ : Occ) : Expr :=
   .var (env.idxOf occ)
 

@@ -559,12 +559,6 @@ theorem genVars_nodup {rigid : List Nat} {env : Env} {τ : Ty} : (genVars rigid 
 def genGroupVars (rigid : List Nat) (env : Env) (τs : List Ty) : List Nat :=
   (Ty.freeVarsList τs).filter (fun x => !env.freeVars.contains x && !rigid.contains x)
 
-/-- Per-binding generalization of a recursive group: each `τⱼ` is generalized over
-    the shared pool `genGroupVars rigid env τs` via `PolyTy.genGroup` (the body
-    scheme `∀ (G ∩ ftv τⱼ). τⱼ`). Mirrors the declarative `Ms = τs.map (genGroup G)`. -/
-def genGroupSchemes (rigid : List Nat) (env : Env) (τs : List Ty) : List PolyTy :=
-  τs.map (PolyTy.genGroup (genGroupVars rigid env τs))
-
 /-- The rigid (non-generalisable) variables of a fused recursion node: the free
     type variables of the stored per-binding scheme annotations TOGETHER with those
     of the binding terms' annotations. The declared schemes sit in the group's
@@ -893,10 +887,6 @@ def RecSpec.monoTy? : RecSpec → Option Ty
   | .mono τ => some τ
   | .poly _ => none
 
-/-- The solved monotypes of a group's specs, in order — the pool `genGroupVars`
-    ranges over (annotated members contribute nothing). -/
-def RecSpecs.monoTys (specs : List RecSpec) : List Ty := specs.filterMap RecSpec.monoTy?
-
 /-- Monotypes belonging to one residual component, selected in the component's
 original recursive-group coordinates. -/
 def RecSpecs.monoTysAt (specs : List RecSpec) (members : List Nat) : List Ty :=
@@ -1143,16 +1133,6 @@ theorem Ty.bvarsBelow_iff {n : Nat} (t : Ty) :
 /-- Decidability of scheme well-formedness, via `Ty.bvarsBelow`. -/
 theorem PolyTy.wf_iff_bvarsBelow {M : PolyTy} :
     Ty.bvarsBelow M.paramCount M.body = true ↔ M.WF := Ty.bvarsBelow_iff M.body
-
-/-- Executable local-closedness test for the solver's input specs. -/
-def RecSpec.isLCB : RecSpec → Bool
-  | .mono τ => Ty.bvarsBelow 0 τ
-  | .poly σ => Ty.bvarsBelow σ.paramCount σ.body
-
-theorem RecSpec.isLCB_iff (s : RecSpec) : s.isLCB = true ↔ s.LC := by
-  cases s with
-  | mono τ => exact Ty.bvarsBelow_iff τ
-  | poly σ => exact PolyTy.wf_iff_bvarsBelow
 
 /-- A type has no free vars iff every var fails to be free in it. -/
 theorem Ty.noFreeVars_of_forall_not_mem {t : Ty} (h : ∀ z, z ∉ t.freeVars) :
@@ -2166,33 +2146,6 @@ theorem Ty.BelowFvars.of_freeVars_lt {Φ : Nat} {τ : Ty}
     refine .customTy fun t ht => ih t ht (fun v hv => h v ?_)
     simp only [Ty.freeVars]
     exact TyList.mem_freeVars_of_mem ht hv
-
-/-- Executable frontier check for a recursion specification. -/
-def RecSpec.belowFvarsB (Φ : Nat) (s : RecSpec) : Bool :=
-  s.freeVars.all (fun x => decide (x < Φ))
-
-theorem RecSpec.belowFvarsB_iff {Φ : Nat} (s : RecSpec) :
-    s.belowFvarsB Φ = true ↔ s.BelowFvars Φ := by
-  unfold RecSpec.belowFvarsB
-  constructor
-  · intro h
-    cases s with
-    | mono τ =>
-        apply Ty.BelowFvars.of_freeVars_lt
-        intro x hx
-        exact of_decide_eq_true (List.all_eq_true.mp h x hx)
-    | poly σ =>
-        apply Ty.BelowFvars.of_freeVars_lt
-        intro x hx
-        exact of_decide_eq_true (List.all_eq_true.mp h x hx)
-  · intro h
-    apply List.all_eq_true.mpr
-    intro x hx
-    apply decide_eq_true
-    cases s with
-    | mono τ => exact h.mem_lt x hx
-    | poly σ => exact h.mem_lt x hx
-
 
 /-- Opening with below-`Φ` args preserves below-`Φ`-ness. -/
 theorem Ty.openWith_belowFvars {Φ : Nat} {Vs : List Ty} {X : Ty}

@@ -78,10 +78,6 @@ inductive Ty
   | customTy : TyName → List Ty → Ty
   deriving Repr
 
-/-- Bare HM list (no length demand): user `List t` or Infer-filled list shape. -/
-def bareListTy (α : Ty) : Ty :=
-  .customTy listTyName [α]
-
 structure PolyTy where
   paramCount : Nat
   /-- May reference params by `.bvar`s in range of `paramCount`  -/

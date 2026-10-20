@@ -108,20 +108,10 @@ def primTyOf (name : String) : Option PrimTy :=
   | "Unit" => some .unit
   | _ => none
 
-theorem primTyOf_Int : primTyOf "Int" = some .int := rfl
-theorem primTyOf_Bool : primTyOf "Bool" = some .bool := rfl
-theorem primTyOf_Char : primTyOf "Char" = some .char := rfl
-theorem primTyOf_Unit : primTyOf "Unit" = some .unit := rfl
-theorem primTyOf_Nat : primTyOf "Nat" = none := rfl
-theorem primTyOf_Maybe : primTyOf "Maybe" = none := rfl
-
 def tyOfUpperName (name : String) : Ty :=
   match primTyOf name with
   | some p => .prim p
   | none => .customTy (.mk name) []
-
-theorem tyOfUpperName_Int : tyOfUpperName "Int" = .prim .int := rfl
-theorem tyOfUpperName_Maybe : tyOfUpperName "Maybe" = .customTy (.mk "Maybe") [] := rfl
 
 /-! ## Apply type arguments (juxtaposition) -/
 
@@ -138,9 +128,6 @@ def applyTyArgs (head : Ty) (args : List Ty) : Except String Ty :=
     | .tvar _ => .error "type variable cannot take arguments"
     | .arrow _ _ => .error "function type cannot take arguments"
     | .pair _ _ => .error "pair type cannot take arguments"
-
-theorem applyTyArgs_empty (t : Ty) : applyTyArgs t [] = .ok t := by
-  simp [applyTyArgs]
 
 #guard (match applyTyArgs (.customTy (.mk "Maybe") []) [.prim .int] with
   | .ok (.customTy (.mk "Maybe") [.prim .int]) => true | _ => false)
@@ -175,22 +162,10 @@ def anyIdent : P String :=
     | .ident raw _ => some raw
     | _ => none
 
-def intLitTok : P Int :=
-  tokenMap fun t =>
-    match t.token with
-    | .intLit n => some n
-    | _ => none
-
 def intLitTokFull : P (Tok × Int) :=
   tokenMap fun t =>
     match t.token with
     | .intLit n => some (t, n)
-    | _ => none
-
-def boolLitTok : P Bool :=
-  tokenMap fun t =>
-    match t.token with
-    | .boolLit b => some b
     | _ => none
 
 def boolLitTokFull : P (Tok × Bool) :=
@@ -199,28 +174,10 @@ def boolLitTokFull : P (Tok × Bool) :=
     | .boolLit b => some (t, b)
     | _ => none
 
-def charLitTok : P Char :=
-  tokenMap fun t =>
-    match t.token with
-    | .charLit c => some c
-    | _ => none
-
 def charLitTokFull : P (Tok × Char) :=
   tokenMap fun t =>
     match t.token with
     | .charLit c => some (t, c)
-    | _ => none
-
-def stringLitTok : P String :=
-  tokenMap fun t =>
-    match t.token with
-    | .stringLit s => some s
-    | _ => none
-
-def stringLitTokFull : P (Tok × String) :=
-  tokenMap fun t =>
-    match t.token with
-    | .stringLit s => some (t, s)
     | _ => none
 
 def binOpTok : P BinOpToken :=
@@ -277,23 +234,10 @@ structure ParsedNameSpan extends BinderSpan where
   isDef : Bool := true
   deriving Repr, BEq
 
-abbrev PB (α : Type) := P (α × List ParsedNameSpan)
 abbrev PE := P (Expr × List ParsedNameSpan × SpannedExpr)
 
 def mkBinder (kind : BinderKind) (tok : Tok) (name : String) : ParsedNameSpan :=
   { name, kind, span := Span.ofTok tok }
-
-/-- Note: return types use `P (α × _)` (not `PB α`) so do-notation binds `P`, not a phantom `PB` monad. -/
-def pbPure (a : α) : P (α × List ParsedNameSpan) :=
-  pure (a, [])
-
-def liftP (p : P α) : P (α × List ParsedNameSpan) := do
-  let a ← p
-  pure (a, [])
-
-def pbMap (f : α → β) (m : P (α × List ParsedNameSpan)) : P (β × List ParsedNameSpan) := do
-  let (a, bs) ← m
-  pure (f a, bs)
 
 /-- Flatten binder lists from an array of Writer results. -/
 def concatBinders {α} (xs : Array (α × List ParsedNameSpan)) : List ParsedNameSpan :=
@@ -506,20 +450,6 @@ def applyBinOpSpanned (opTok : Tok) (op : BinOpToken)
       let opS : SpannedExpr := .leaf (Span.ofTok opTok)
       let spanInner := Span.union opS.span sa.span
       (e, .app spanAll (.app spanInner opS sa) sb)
-
-/-- Simple λ/let binder: name or `_`. No type annotation (avoids `->` ambiguity).
-    Also returns the binder token span (for λ hulls). -/
-def simpleBinder : P (Pattern × List ParsedNameSpan × Span) :=
-  withErrorMessage "expected binder" do
-    skipComments
-    first [
-      do
-        let tok ← punct .underscore
-        return (.wildcard, [], Span.ofTok tok),
-      do
-        let (tok, name) ← lowerIdentTok
-        return (.name (.mk name), [mkBinder .param tok name], Span.ofTok tok)
-    ]
 
 /-- Optional `{ tyParam+ }` after a binding name (nonempty if `{` present). -/
 def tyParamBinders : P (List ValName × List ParsedNameSpan) :=
@@ -1477,10 +1407,6 @@ def parseProgram (src : String) : Except ParseError Program :=
   | .ok (.arrow (.prim .int) (.prim .bool)) => true | _ => false)
 #guard (match parseTy "-- c\nInt" with
   | .ok (.prim .int) => true | _ => false)
-
-/-- `true` iff `parseTy src` is `.ok expected` (compare via `repr`; `Ty` has no `DecidableEq`). -/
-def parseTyEq (src : String) (expected : Ty) : Bool :=
-  reprStr (parseTy src) == reprStr (Except.ok (ε := ParseError) expected)
 
 -- Bounds syntax is retired rather than reinterpreted as a nominal `BL` type.
 #guard !(parseTy "BL").isOk
