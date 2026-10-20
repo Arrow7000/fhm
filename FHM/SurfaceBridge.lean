@@ -653,36 +653,6 @@ theorem LowersDataDeclsIn.toWF {sdecls : List Surface.DataDecl} {decls : List Da
       exact hwf c hc ty hty
   }
 
-/-- Prelude + user decls form a well-formed combined group.
-    Declarative-side companion for whole-program lowering witnesses; executable
-    lowering obtains the same fact from `elabDecls_sound`.
-    Needs `Ty.WellKinded` weakening along kind-env extension + name disjointness. -/
-theorem LowersDataDeclsIn.toCombinedWF
-    {sdecls : List Surface.DataDecl} {userCore : List DataDecl}
-    (hP : DataDecls.WF preludeDecls)
-    (hU : LowersDataDeclsIn preludeKindEnv sdecls userCore)
-    (hTy : (preludeDecls.map (·.name) ++ sdecls.map (·.name)).Nodup)
-    (hCtor :
-      ((preludeDecls.flatMap (fun d => d.ctors.map Prod.fst)) ++
-        (sdecls.flatMap (fun d => d.ctors.map Prod.fst))).Nodup) :
-    DataDecls.WF (preludeDecls ++ userCore) := by
-  have hnames := LowersDataDeclsIn.map_names_eq hU.lowers
-  have hctors := LowersDataDeclsIn.flatMap_ctorNames_eq hU.lowers
-  have hkeUser := LowersDataDeclsIn.kindEnv_eq hU.lowers
-  have hcombinedKe :
-      DataDecls.kindEnv (preludeDecls ++ userCore) = declKindEnv preludeKindEnv sdecls := by
-    rw [DataDecls.kindEnv_append, declKindEnv, preludeKindEnv, hkeUser]
-  exact {
-    tyNamesNodup := by simpa [List.map_append, hnames] using hTy
-    ctorNamesNodup := by simpa [List.flatMap_append, hctors] using hCtor
-    fields := fun d hd c hc ty hty => by
-      rcases List.mem_append.mp hd with hdPre | hdUser
-      · exact Ty.WellKinded.weaken (hP.fields d hdPre c hc ty hty)
-      · obtain ⟨sd, _, hdecl⟩ := Forall₂_mem_right hU.lowers hdUser
-        have hwf := LowersDataDecl.fieldsWF hdecl
-        exact (hcombinedKe ▸ hwf) c hc ty hty
-  }
-
 /-- Closed-group soundness (abbrev API). -/
 theorem lowerDataDecls_sound {sdecls : List Surface.DataDecl} {decls : List DataDecl} :
     lowerDataDecls sdecls = some decls → LowersDataDecls sdecls decls :=
@@ -706,11 +676,6 @@ theorem LowersDataDecls.toWF {sdecls : List Surface.DataDecl} {decls : List Data
 theorem lowerDataDecls_WF {sdecls : List Surface.DataDecl} {decls : List DataDecl} :
     lowerDataDecls sdecls = some decls → DataDecls.WF decls :=
   fun h => LowersDataDecls.toWF (lowerDataDecls_sound h)
-
-/-- Corollary: successful closed-group lowering elaborates into a `CtorEnv`. -/
-theorem lowerDataDecls_elab {sdecls : List Surface.DataDecl} {decls : List DataDecl} :
-    lowerDataDecls sdecls = some decls → (elabDecls decls).isSome :=
-  fun h => elabDecls_complete (lowerDataDecls_WF h)
 
 -- Adversarial `#guard`s for decl lowering.
 private def sMaybe : Surface.DataDecl :=
@@ -3008,15 +2973,6 @@ def paramsToArrows (params : List (ValName × Option Surface.Ty)) (ret : Surface
     | (_, none) :: _ => none
     | (_, some τ) :: rest => (go rest).map (fun acc => Surface.Ty.arrow τ acc)
   go params
-
-/-- Synthesize `{tyParams} τ₁ → ⋯ → τₙ → ret` when every value param is annotated. -/
-def synthScheme (tyParams : List ValName)
-    (params : List (ValName × Option Surface.Ty)) (ret : Surface.Ty) :
-    Option Surface.PolyTy :=
-  (paramsToArrows params ret).map fun body =>
-    { foralls := tyParams.eraseDups, body }
-
-
 
 /-- Term-var scope for lowering a surface RHS before wrapping params as nested
     lambdas: the innermost parameter is index 0. -/
