@@ -1551,10 +1551,14 @@ def signedBodyHole : InferInput :=
 #guard (inferCore [] 0 ctx signedRhsHole).isSome
 #guard (inferCore [] 0 ctx signedBodyHole).isSome
 #guard match inferCore [] 0 ctx quantifiedExtras with
-  | some ⟨(_, _, .letIn (some ⟨2, .arrow (.bvar 0) (.arrow (.bvar 1) (.bvar 0))⟩) _ _, _), _⟩ => true
+  | some result => match result.val.completedExpr with
+    | .letIn (some ⟨2, .arrow (.bvar 0) (.arrow (.bvar 1) (.bvar 0))⟩) _ _ => true
+    | _ => false
   | _ => false
 #guard match inferCore [] 0 ctx vacuousWritten with
-  | some ⟨(_, _, .letIn (some scheme) _ _, _), _⟩ => scheme.paramCount == 1
+  | some result => match result.val.completedExpr with
+    | .letIn (some scheme) _ _ => scheme.paramCount == 1
+    | _ => false
   | _ => false
 
 def partialRecursion : InferInput :=
@@ -1574,16 +1578,19 @@ def partialRecursionCodomainRejected : InferInput :=
 #guard !(inferCore [] 0 ctx fixedDomainRejected).isSome
 #guard (inferCore [] 0 ctx quantifiedId).isSome
 #guard match inferCore [] 0 ctx partialRecursion with
-  | some ⟨(_, _, .letRec [some ⟨1, .arrow (.bvar 0) (.prim .int)⟩]
-      [.lambda none (.primLit (.int 0))] (.var 0), .arrow (.fvar _) (.prim .int)), _⟩ => true
+  | some result => match result.val.completedExpr, result.val.ty with
+    | .letRec [some ⟨1, .arrow (.bvar 0) (.prim .int)⟩]
+        [.lambda none (.primLit (.int 0))] (.var 0), .arrow (.fvar _) (.prim .int) => true
+    | _, _ => false
   | _ => false
 #guard !(inferCore [] 0 ctx partialRecursionCodomainRejected).isSome
 
 /- The id canary really introduces a scheme binder and closes the lambda
 annotation underneath that same binder. -/
 #guard match inferCore [] 0 ctx polymorphicId with
-  | some ⟨(_, _, .letIn (some scheme) (.lambda (some (.bvar 0)) _) _, _), _⟩ =>
-      scheme.paramCount == 1
+  | some result => match result.val.completedExpr with
+    | .letIn (some scheme) (.lambda (some (.bvar 0)) _) _ => scheme.paramCount == 1
+    | _ => false
   | _ => false
 
 private def idHole : InferInput := .lambda (some .hole) (.var 0)
@@ -1591,9 +1598,10 @@ private def idHole : InferInput := .lambda (some .hole) (.var 0)
 -- Independent local allocation: two syntactic visits, unrelated types.
 def distinctCopies : InferInput := pair idHole idHole
 #guard match inferCore [] 0 ctx distinctCopies with
-  | some ⟨(_, _, _, .customTy ⟨"Pair"⟩
-      [.arrow (.fvar a) (.fvar a'), .arrow (.fvar b) (.fvar b')]), _⟩ =>
+  | some result => match result.val.ty with
+    | .customTy ⟨"Pair"⟩ [.arrow (.fvar a) (.fvar a'), .arrow (.fvar b) (.fvar b')] =>
       a == a' && b == b' && a != b
+    | _ => false
   | _ => false
 
 -- Independent local uses: same InferInput value copied, each used at a different type.
@@ -1671,8 +1679,9 @@ private def violatesRigidLet : InferInput :=
 #guard (inferCore [7] 8 ctx rigidLet).isSome
 #guard !(inferCore [7] 8 ctx violatesRigidLet).isSome
 #guard match inferCore [7] 8 ctx rigidLet with
-  | some ⟨(_, _, .letIn (some scheme) _ _, .arrow (.fvar 7) (.fvar 7)), _⟩ =>
-      scheme.paramCount == 0
+  | some result => match result.val.completedExpr, result.val.ty with
+    | .letIn (some scheme) _ _, .arrow (.fvar 7) (.fvar 7) => scheme.paramCount == 0
+    | _, _ => false
   | _ => false
 
 private def polyrec : InferInput :=
@@ -1696,7 +1705,9 @@ def completeForallWithPartialRhs : InferInput :=
 def unusedHole : InferInput :=
   .letIn (.template .hole) (.ctor ⟨"Nil"⟩) (.primLit (.int 1))
 #guard match inferCore [] 0 ctx unusedHole with
-  | some ⟨(_, _, .letIn (some ⟨1, .customTy ⟨"List"⟩ [.bvar 0]⟩) _ _, .prim .int), _⟩ => true
+  | some result => match result.val.completedExpr, result.val.ty with
+    | .letIn (some ⟨1, .customTy ⟨"List"⟩ [.bvar 0]⟩) _ _, .prim .int => true
+    | _, _ => false
   | _ => false
 
 -- Public artifacts and completed output come from the same run. Synthetic
