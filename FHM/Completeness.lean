@@ -3040,7 +3040,6 @@ theorem Infer.sourcePrincipal_letSignature {rhs body : InferInput} {ann : Bindin
     (hscope : SourceScope K F (.letIn ann rhs body))
     (hprefix : written = freshVars frontier ann.paramCount)
     (havoid : ∀ name ∈ written, name ∉ K ++ softVars F)
-    (hraw : ∀ v ∈ rhs.rigidVars, v ∈ K ++ softVars F)
     (hr : Infer (K ++ written) F (frontier + ann.paramCount) ctx (rhs.openTyVars written) first s1 rhsOut rhsTy)
     (hc : SignatureCheck K (substSoft s1 F) written first rhsTy (ann.substTyFvars s1) checked sCheck)
     (hescape : ∀ name ∈ written, name ∉ (sCheck.onCtx (s1.onCtx ctx)).env.freeVars ++ softVars (substSoft (s1 ++ sCheck) F))
@@ -3051,7 +3050,7 @@ theorem Infer.sourcePrincipal_letSignature {rhs body : InferInput} {ann : Bindin
           (sCheck.onCtx (s1.onCtx ctx)).env }
       (body.substTyFvars (s1 ++ sCheck)) next s2 bodyOut bodyTy)
     (ihr : Infer.SourcePrincipal hr) (ihb : Infer.SourcePrincipal hb) :
-    Infer.SourcePrincipal (.letSignature hscope hprefix havoid hraw hr hc hescape hb) := by
+    Infer.SourcePrincipal (.letSignature hscope hprefix havoid hr hc hescape hb) := by
   intro hwf hbelow hK hF ambient target P hS hP hfix hfreeze ht
   subst written
   have hmode : ann.isSignature = true := by
@@ -4920,7 +4919,7 @@ theorem Infer.signed_check_factor
     .primLitUnit
   have ihb : Infer.SourcePrincipal hb :=
     Infer.sourcePrincipal_primLitUnit
-  have hprincipal := Infer.sourcePrincipal_letSignature hscope rfl havoid hraw hi hcheck hescape hb ih ihb
+  have hprincipal := Infer.sourcePrincipal_letSignature hscope rfl havoid hi hcheck hescape hb ih ihb
   obtain ⟨L, htypes⟩ := hcandidate
   have ht : InputTyping P (R.onCtx ctx)
       ((InferInput.letIn (.complete scheme) rhs (.primLit .unit)).substTyFvars R) (.prim .unit) := by
@@ -7097,8 +7096,8 @@ theorem Infer.sourcePrincipal (h : Infer K F frontier ctx input next subst outpu
   | .lambda hs seed hb => exact Infer.sourcePrincipal_lambda hs seed hb hb.sourcePrincipal
   | .app hs hf ha hu => exact Infer.sourcePrincipal_app hs hf ha hu hf.sourcePrincipal ha.sourcePrincipal
   | .letIn hs hr hc hb => exact Infer.sourcePrincipal_letIn hs hr hc hb hr.sourcePrincipal hb.sourcePrincipal
-  | .letSignature hs hp ha hs' hr hc he hb =>
-    exact Infer.sourcePrincipal_letSignature hs hp ha hs' hr hc he hb hr.sourcePrincipal hb.sourcePrincipal
+  | .letSignature hs hp ha hr hc he hb =>
+    exact Infer.sourcePrincipal_letSignature hs hp ha hr hc he hb hr.sourcePrincipal hb.sourcePrincipal
   | .match_ hscope hs hne hb =>
     exact Infer.sourcePrincipal_match hscope hs hne hb hs.sourcePrincipal
       (fun body hbody {_ _ _ _ _ _ _ _} hi => hi.sourcePrincipal)
@@ -7842,12 +7841,10 @@ theorem inferWithTypesCore_sourceComplete_signature
       (fun k hk => Nat.lt_of_lt_of_le (hK k hk) hle) (substSoft_below hprefixB hle hF)
       hV hVK (fun q hq => Nat.lt_of_lt_of_le (hQ q hq) hle)
       (fun q hq => hVQ q (List.mem_append_left _ hq)) hbodyV)
-  have hraw : rhs.rigidVars.all (fun v => decide (v ∈ K ++ softVars F)) = true :=
-    List.all_eq_true.mpr (fun v hv => decide_eq_true (hRhsRaw v hv))
   rw [inferWithTypesCore, dif_pos (rigid_all hK), dif_pos (ctx_all hbelow),
     dif_pos (soft_all hF), dif_pos (source_all hscope)]
   simp only [written] at hrResult hcResult hbResult hescape
-  simp only [hmode, ↓reduceIte, hraw, dite_true, hrResult, hcResult,
+  simp only [hmode, ↓reduceIte, hrResult, hcResult,
       dif_pos hescape, hbResult, Option.isSome_some]
 
 private theorem producer_branch_rigid_mem {bs : List (MatchPattern × InferInput)} {b : MatchPattern × InferInput}

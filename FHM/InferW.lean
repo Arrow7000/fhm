@@ -171,7 +171,6 @@ inductive Infer : List Nat → List Ty → Nat → Ctx → InferInput → Nat �
       SourceScope K F (.letIn ann rhs body) →
       written = freshVars frontier ann.paramCount →
       (∀ name ∈ written, name ∉ K ++ softVars F) →
-      (∀ v ∈ rhs.rigidVars, v ∈ K ++ softVars F) →
       Infer (K ++ written) F (frontier + ann.paramCount) ctx (rhs.openTyVars written)
         first s1 rhsOut rhsTy →
       SignatureCheck K (substSoft s1 F) written first rhsTy (ann.substTyFvars s1) checked sCheck →
@@ -514,7 +513,7 @@ theorem Infer.sourceScope (h : Infer K F frontier ctx input next subst output ty
   | lambda hs _ _ => exact hs
   | app hs _ _ _ => exact hs
   | letIn hs _ _ _ => exact hs
-  | letSignature hs _ _ _ _ _ _ _ => exact hs
+  | letSignature hs _ _ _ _ _ _ => exact hs
   | match_ hs _ _ _ => exact hs
   | letRec hs _ _ _ _ _ _ _ => exact hs.1
 
@@ -531,7 +530,7 @@ theorem Infer.dom_avoids (h : Infer K F frontier ctx input next subst output ty)
   | .lambda _ _ hb => exact hb.dom_avoids
   | .app _ hf ha hu => exact avoids_append (avoids_append hf.dom_avoids ha.dom_avoids) hu.dom_avoids
   | .letIn _ hr hc hb => exact avoids_append (avoids_append hr.dom_avoids hc.dom_avoids) hb.dom_avoids
-  | .letSignature _ _ _ _ hr hc _ hb =>
+  | .letSignature _ _ _ hr hc _ hb =>
     exact avoids_append (avoids_append
       (fun p hp hk => hr.dom_avoids p hp (List.mem_append_left _ hk))
       (fun p hp hk => hc.dom_avoids p hp (List.mem_append_left _ hk))) hb.dom_avoids
@@ -738,7 +737,7 @@ theorem Infer.lc (h : Infer K F frontier ctx input next subst output ty) :
       · exact (List.mem_append.mp hp).elim (hs1 pair) (hcheck pair)
       · exact hs2 pair hp
 
-  | .letSignature _ hprefix _ _ hr hc _ hb =>
+  | .letSignature _ hprefix _ hr hc _ hb =>
     intro hctx
     have hlen : _ := congrArg List.length hprefix
     simp only [freshVars_length] at hlen
@@ -1084,8 +1083,7 @@ def inferWithTypesCore (K : List Nat) (frontier : Nat) (ctx : Ctx) (input : Infe
           | .letIn ann rhs body =>
             if ann.isSignature then
               let written := freshVars frontier ann.paramCount
-              if hraw : rhs.rigidVars.all (fun v => decide (v ∈ K ++ softVars F)) = true then
-                match inferWithTypesCore (K ++ written) (frontier + ann.paramCount) ctx (rhs.openTyVars written) F with
+              match inferWithTypesCore (K ++ written) (frontier + ann.paramCount) ctx (rhs.openTyVars written) F with
                 | none => none
                 | some ⟨rhsResult, hr⟩ =>
                   match checkSignature K (substSoft rhsResult.subst F) written rhsResult.frontier
@@ -1134,9 +1132,8 @@ def inferWithTypesCore (K : List Nat) (frontier : Nat) (ctx : Ctx) (input : Infe
                               · exact of_decide_eq_true (List.all_eq_true.mp hF name hk)
                             have hge := freshVars_ge name hn
                             omega)
-                            (fun v hv => of_decide_eq_true (List.all_eq_true.mp hraw v hv)) hr hc hescape hb⟩
+                            hr hc hescape hb⟩
                     else none
-              else none
             else
                   match inferWithTypesCore K frontier ctx rhs F with
                   | none => none
@@ -1794,7 +1791,7 @@ theorem Infer.frontier_le (h : Infer K F frontier ctx input next subst output ty
   | .lambda _ hs hb => exact hs.frontier_le.trans hb.frontier_le
   | .app _ hf ha _ => have := hf.frontier_le; have := ha.frontier_le; omega
   | .letIn _ hr hc hb => exact hr.frontier_le.trans (hc.frontier_le.trans hb.frontier_le)
-  | .letSignature _ _ _ _ hr hc _ hb =>
+  | .letSignature _ _ _ hr hc _ hb =>
       have := hr.frontier_le
       have := hc.frontier_le
       have := hb.frontier_le
@@ -2081,7 +2078,7 @@ theorem Infer.belowFvars (h : Infer K F frontier ctx input next subst output ty)
     · exact hbSubst p hp
 
   | @Infer.letSignature K F ann rhs body written frontier ctx first s1 rhsOut rhsTy checked sCheck
-      next s2 bodyOut bodyTy _ hprefix _ _ hr hc _ hb =>
+      next s2 bodyOut bodyTy _ hprefix _ hr hc _ hb =>
     intro hctx hK hF
     have hrLe := hr.frontier_le
     have hcLe := hc.frontier_le
@@ -3184,7 +3181,7 @@ mutual
       (by simpa only [InferInput.erase_substTyFvars] using hbrefs) (InferInput.avoid_subst hA.1 hwe.2)
     have hAll := Subst.sourceAvoid_append_local hA ⟨hbS, hbD⟩
     exact ⟨hAll.1, hbTy, hAll.2⟩
-  | .letSignature _ heq _ _ hr hc _ hb =>
+  | .letSignature _ heq _ hr hc _ hb =>
     intro w hw hrefs hwe
     expose_names
     subst written
@@ -7201,7 +7198,7 @@ theorem Infer.sourceSound (h : Infer K F frontier ctx input next subst output ty
       simpa only [letOutput, genScheme, ← Subst.onCtx_append] using rhsFinal
 
   | @Infer.letSignature K F ann rhs body written frontier ctx first s1 rhsOut rhsTy checked sCheck next s2 bodyOut bodyTy
-      hraw hprefix havoid _ hr hc hescape hb =>
+      hraw hprefix havoid hr hc hescape hb =>
     intro hctx
     have hlen : written.length = ann.paramCount := by simpa only [freshVars_length] using congrArg List.length hprefix
     have hnd : written.Nodup := hprefix ▸ freshVars_nodup
@@ -7611,7 +7608,7 @@ theorem Infer.erase (h : Infer K F frontier ctx input next subst output ty) :
   | .letIn _ hr _ hb =>
       simp only [letOutput, Expr.erase, Expr.erase_substTyFvars,
         Expr.erase_closeTyVars, InferInput.erase, hr.erase, hb.erase, InferInput.erase_substTyFvars]
-  | .letSignature _ _ _ _ hr _ _ hb =>
+  | .letSignature _ _ _ hr _ _ hb =>
       simp only [letOutput, Expr.erase, Expr.erase_substTyFvars,
         Expr.erase_closeTyVars, InferInput.erase, hr.erase, hb.erase, InferInput.erase_openTyVars, InferInput.erase_substTyFvars]
   | .match_ _ hs _ hb =>
@@ -7818,7 +7815,7 @@ theorem Infer.inputSound_source (h : Infer K F frontier ctx input next subst out
       simpa only [← Subst.onCtx_append, List.append_assoc] using hgeneral fresh hfresh
 
   | @Infer.letSignature K F ann rhs body written frontier ctx first s1 rhsOut rhsTy checked sCheck next s2 bodyOut bodyTy
-      hscope hprefix havoid hraw hr hc hescape hb =>
+      hscope hprefix havoid hr hc hescape hb =>
     intro hctx
     have hlen : written.length = ann.paramCount := by simpa only [freshVars_length] using congrArg List.length hprefix
     have hnd : written.Nodup := hprefix ▸ freshVars_nodup
@@ -8322,7 +8319,7 @@ theorem Infer.completes_source (h : Infer K F frontier ctx input next subst outp
         exact hcomplete fresh ⟨hf.length, hf.nodup, fun v hv hm => hf.avoid v hv (List.mem_append_right _ hm)⟩
 
   | @Infer.letSignature K F ann rhs body written frontier ctx first s1 rhsOut rhsTy checked sCheck next s2 bodyOut bodyTy
-      hscope hprefix havoid hraw hr hc hescape hb =>
+      hscope hprefix havoid hr hc hescape hb =>
     intro hctx
     have hlen : written.length = ann.paramCount := by simpa only [freshVars_length] using congrArg List.length hprefix
     have hnd : written.Nodup := hprefix ▸ freshVars_nodup
