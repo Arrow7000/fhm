@@ -6154,9 +6154,6 @@ def RecState.exports (state : RecState) : List (Option PolyTy) :=
 def RecState.outputs (state : RecState) : List (Option Expr) :=
   state.memberStates.map RecMemberState.output
 
-def RecState.facts (state : RecState) : List RecFacts :=
-  state.memberStates.map RecMemberState.facts
-
 @[simp] theorem RecState.getElem?_specs (state : RecState) (i : Nat) :
     state.specs[i]? = state.memberStates[i]?.map RecMemberState.spec := by
   simp [RecState.specs]
@@ -6172,10 +6169,6 @@ def RecState.facts (state : RecState) : List RecFacts :=
 @[simp] theorem RecState.getElem?_outputs (state : RecState) (i : Nat) :
     state.outputs[i]? = state.memberStates[i]?.map RecMemberState.output := by
   simp [RecState.outputs]
-
-@[simp] theorem RecState.getElem?_facts (state : RecState) (i : Nat) :
-    state.facts[i]? = state.memberStates[i]?.map RecMemberState.facts := by
-  simp [RecState.facts]
 
 def RecState.init (frontier : Nat) (anns : List BindingAnn) : RecState :=
   { memberStates := RecMemberState.initAll frontier anns
@@ -6227,15 +6220,6 @@ def RecState.onSubst (S : Subst) (state : RecState) : RecState :=
       cases ann <;> simp [RecMemberState.initAll, RecMemberState.init,
         BindingAnn.recModeAnn, ih]
 
-@[simp] theorem RecMemberState.initAll_facts (frontier : Nat) (anns : List BindingAnn) :
-    (RecMemberState.initAll frontier anns).map RecMemberState.facts =
-      anns.map (fun _ => RecFacts.empty) := by
-  induction anns generalizing frontier with
-  | nil => rfl
-  | cons ann anns ih =>
-      cases ann <;> simp [RecMemberState.initAll, RecMemberState.init,
-        BindingAnn.recModeAnn, ih]
-
 @[simp] theorem RecState.specs_length (state : RecState) :
     state.specs.length = state.memberStates.length := by
   simp [RecState.specs]
@@ -6251,10 +6235,6 @@ def RecState.onSubst (S : Subst) (state : RecState) : RecState :=
 @[simp] theorem RecState.outputs_length (state : RecState) :
     state.outputs.length = state.memberStates.length := by
   simp [RecState.outputs]
-
-@[simp] theorem RecState.facts_length (state : RecState) :
-    state.facts.length = state.memberStates.length := by
-  simp [RecState.facts]
 
 @[simp] theorem RecState.init_specs (frontier : Nat) (anns : List BindingAnn) :
     (RecState.init frontier anns).specs =
@@ -6272,10 +6252,6 @@ def RecState.onSubst (S : Subst) (state : RecState) : RecState :=
 @[simp] theorem RecState.init_outputs (frontier : Nat) (anns : List BindingAnn) :
     (RecState.init frontier anns).outputs = anns.map (fun _ => none) := by
   simp [RecState.init, RecState.outputs]
-
-@[simp] theorem RecState.init_facts (frontier : Nat) (anns : List BindingAnn) :
-    (RecState.init frontier anns).facts = anns.map (fun _ => RecFacts.empty) := by
-  simp [RecState.init, RecState.facts]
 
 @[simp] theorem RecState.specs_onSubst (state : RecState) (S : Subst) :
     (state.onSubst S).specs = state.specs.map (RecSpec.onSubstSource S) := by
@@ -6295,11 +6271,6 @@ def RecState.onSubst (S : Subst) (state : RecState) : RecState :=
 @[simp] theorem RecState.outputs_onSubst (state : RecState) (S : Subst) :
     (state.onSubst S).outputs = state.outputs.map (Option.map (Expr.substTyFvars S)) := by
   simp [RecState.onSubst, RecState.outputs, RecMemberState.onSubst, List.map_map,
-    Function.comp_def]
-
-@[simp] theorem RecState.facts_onSubst (state : RecState) (S : Subst) :
-    (state.onSubst S).facts = state.facts.map (RecFacts.onSubst S) := by
-  simp [RecState.onSubst, RecState.facts, RecMemberState.onSubst, List.map_map,
     Function.comp_def]
 
 def RecSpec.monoEntry : RecSpec → PolyTy
@@ -6480,17 +6451,6 @@ def RecState.setSigned (state : RecState) (member : Nat) (names : List Nat)
   | none => rfl
   | some member => simp only [Option.map_some]; split <;> rfl
 
-@[simp] theorem RecState.facts_installOpenings (state : RecState) (members : List Nat)
-    (openings : List RecOpening) :
-    (state.installOpenings members openings).facts = state.facts := by
-  apply List.ext_getElem?
-  intro i
-  simp only [RecState.facts, RecState.installOpenings, List.getElem?_map,
-    List.getElem?_mapIdx]
-  cases h : state.memberStates[i]? with
-  | none => rfl
-  | some member => simp only [Option.map_some]; split <;> rfl
-
 @[simp] theorem RecState.specs_setSigned (state : RecState) (member : Nat)
     (names : List Nat) (output : Expr) (facts : RecFacts) :
     (state.setSigned member names output facts).specs = state.specs := by
@@ -6654,26 +6614,6 @@ def finalRecBinderSchemes (anns : List BindingAnn) (state : RecState) : Inferred
  theorem RecState.entries_length (state : RecState)
     (_hlen : state.exports.length = state.specs.length) : state.entries.length = state.specs.length := by
   simp only [RecState.entries, RecState.specs, List.length_map]
-
-@[simp] theorem RecState.init_lengths (base : Nat) (anns : List BindingAnn) :
-    (RecState.init base anns).specs.length = anns.length ∧
-    (RecState.init base anns).slots.length = anns.length ∧
-    (RecState.init base anns).exports.length = anns.length ∧
-    (RecState.init base anns).outputs.length = anns.length ∧
-    (RecState.init base anns).facts.length = anns.length := by
-  have hl : (RecState.init base anns).memberStates.length = anns.length :=
-    RecMemberState.initAll_length base anns
-  exact ⟨(RecState.specs_length _).trans hl, (RecState.slots_length _).trans hl,
-    (RecState.exports_length _).trans hl, (RecState.outputs_length _).trans hl,
-    (RecState.facts_length _).trans hl⟩
-
- theorem RecState.onSubst_lengths (state : RecState) (S : Subst) :
-    (state.onSubst S).specs.length = state.specs.length ∧
-    (state.onSubst S).slots.length = state.slots.length ∧
-    (state.onSubst S).exports.length = state.exports.length ∧
-    (state.onSubst S).outputs.length = state.outputs.length ∧
-    (state.onSubst S).facts.length = state.facts.length := by
-  simp
 
  theorem RecState.init_entries (base : Nat) (anns : List BindingAnn) :
     (RecState.init base anns).entries =
@@ -7030,11 +6970,6 @@ are compared through their exported schemes; exact seed equations are retained
 only for members that have not yet been solved. -/
 structure RecState.Frame (base : Nat) (K : List Nat) (F : List Ty)
     (ctx : Ctx) (anns : List BindingAnn) (done : List Nat) (state : RecState) : Prop where
-  specs_length : state.specs.length = anns.length
-  slots_length : state.slots.length = anns.length
-  exports_length : state.exports.length = anns.length
-  outputs_length : state.outputs.length = anns.length
-  facts_length : state.facts.length = anns.length
   modes : state.specs.map RecSpec.ann = anns.map BindingAnn.recModeAnn
   poly : ∀ (i : Nat) (scheme : PolyTy), state.specs[i]? = some (RecSpec.poly scheme) →
     state.exports[i]? = some (some scheme)
@@ -7058,6 +6993,32 @@ structure RecState.Frame (base : Nat) (K : List Nat) (F : List Ty)
   pending_soft : ∀ (i : Nat) (ty : Ty), state.specs[i]? = some (RecSpec.mono ty) → i ∉ done →
     base + i ∉ TyList.freeVars F
 
+ theorem RecState.Frame.memberStates_length {state : RecState} {base : Nat} {K : List Nat}
+    {F : List Ty} {ctx : Ctx} {anns : List BindingAnn} {done : List Nat}
+    (h : state.Frame base K F ctx anns done) : state.memberStates.length = anns.length := by
+  have hm := congrArg List.length h.modes
+  simpa only [List.length_map, RecState.specs_length] using hm
+
+ theorem RecState.Frame.specs_length {state : RecState} {base : Nat} {K : List Nat}
+    {F : List Ty} {ctx : Ctx} {anns : List BindingAnn} {done : List Nat}
+    (h : state.Frame base K F ctx anns done) : state.specs.length = anns.length :=
+  (RecState.specs_length state).trans h.memberStates_length
+
+ theorem RecState.Frame.slots_length {state : RecState} {base : Nat} {K : List Nat}
+    {F : List Ty} {ctx : Ctx} {anns : List BindingAnn} {done : List Nat}
+    (h : state.Frame base K F ctx anns done) : state.slots.length = anns.length :=
+  (RecState.slots_length state).trans h.memberStates_length
+
+ theorem RecState.Frame.exports_length {state : RecState} {base : Nat} {K : List Nat}
+    {F : List Ty} {ctx : Ctx} {anns : List BindingAnn} {done : List Nat}
+    (h : state.Frame base K F ctx anns done) : state.exports.length = anns.length :=
+  (RecState.exports_length state).trans h.memberStates_length
+
+ theorem RecState.Frame.outputs_length {state : RecState} {base : Nat} {K : List Nat}
+    {F : List Ty} {ctx : Ctx} {anns : List BindingAnn} {done : List Nat}
+    (h : state.Frame base K F ctx anns done) : state.outputs.length = anns.length :=
+  (RecState.outputs_length state).trans h.memberStates_length
+
  theorem RecState.Frame.entries_length {state : RecState} {base : Nat} {K : List Nat}
     {F : List Ty} {ctx : Ctx} {anns : List BindingAnn} {done : List Nat}
     (h : state.Frame base K F ctx anns done) :
@@ -7069,8 +7030,7 @@ structure RecState.Frame (base : Nat) (K : List Nat) (F : List Ty)
     (hanns : ∀ v ∈ anns.flatMap BindingAnn.rigidVars, v < base)
     (hK : ∀ v ∈ K, v < base) (hF : ∀ v ∈ TyList.freeVars F, v < base) :
     (RecState.init base anns).Frame base K F ctx anns [] := by
-  obtain ⟨h1, h2, h3, h4, h5⟩ := RecState.init_lengths base anns
-  refine ⟨h1, h2, h3, h4, h5, ?_, ?_, ?_, ?_, by simp [RecState.init],
+  refine ⟨?_, ?_, ?_, ?_, by simp [RecState.init],
     by simp [RecState.init], by simp [RecState.init], by simp [RecState.init],
     by simp [RecState.init], by simp [RecState.init], hK, ?_⟩
   · simpa only [RecState.init_specs] using
@@ -7164,13 +7124,7 @@ structure RecState.Frame (base : Nat) (K : List Nat) (F : List Ty)
     {openings : List RecOpening} (h : state.Frame base K F ctx anns done)
     (hnot : ∀ i ∈ members, i ∉ done) :
     (state.installOpenings members openings).Frame base K F ctx anns done := by
-  refine ⟨by simpa only [RecState.specs_installOpenings] using h.specs_length,
-    by simpa only [RecState.slots_length, RecState.installOpenings,
-      List.length_mapIdx] using h.slots_length,
-    by simpa only [RecState.exports_installOpenings] using h.exports_length,
-    by simpa only [RecState.outputs_installOpenings] using h.outputs_length,
-    by simpa only [RecState.facts_installOpenings] using h.facts_length,
-    by simpa only [RecState.specs_installOpenings] using h.modes, ?_, ?_,
+  refine ⟨by simpa only [RecState.specs_installOpenings] using h.modes, ?_, ?_,
     by simpa only [RecState.specs_installOpenings] using h.pending,
     by simpa only [RecState.pool_installOpenings] using h.pool_nodup,
     by simpa only [RecState.pool_installOpenings] using h.pool_ctx,
