@@ -3027,15 +3027,6 @@ theorem Infer.sourcePrincipal_match
     (hagU v hv).trans (hag2 v (by omega))
   exact ⟨R2, hR2, htarget, hR2P, Subst.AgreesBelow.trans_append hle hag1 hs1B hag2'⟩
 
-private theorem principal_branch_size_lt {branch : MatchPattern × InferInput}
-    (h : branch ∈ branches) : branch.2.size < sizeBranches branches := by
-  induction branches with
-  | nil => cases h
-  | cons head rest ih =>
-    rcases List.mem_cons.mp h with rfl | h
-    · simp only [sizeBranches]; omega
-    · have := ih h; simp only [sizeBranches]; omega
-
 theorem Infer.sourcePrincipal_letSignature {rhs body : InferInput} {ann : BindingAnn}
     (hscope : SourceScope K F (.letIn ann rhs body))
     (hprefix : written = freshVars frontier ann.paramCount)
@@ -10411,15 +10402,6 @@ theorem InferWithTypesCoreSourceComplete.complete
     (fun v hv => by simpa only [softVars,TyList.freeVars,List.append_nil] using hraw v hv)
     hwf hbelow hK (by simp) hS hfix hK hfix
   rwa [hsource]
-
-private theorem producer_branch_size_lt {branch : MatchPattern × InferInput}
-    (h : branch ∈ branches) : branch.2.size < sizeBranches branches := by
-  induction branches with
-  | nil => cases h
-  | cons head rest ih =>
-    rcases List.mem_cons.mp h with rfl | h
-    · simp only [sizeBranches]; omega
-    · have := ih h; simp only [sizeBranches]; omega
 
 set_option maxHeartbeats 2000000 in
 private theorem inferWithTypesCore_sourceComplete_of_singleton
