@@ -84,7 +84,7 @@ let copy {item} (items : List item) : List _ =
   | [] -> []
   | first :: rest -> first :: copy rest
 -- A partial signature constrains the whole monomorphic recursive component.
-let evenSteps {item} (n : Int) (value : item) : _ =
+let evenSteps {item} (n : Int) (value : item) =
   if n < 1 then value else oddSteps (n - 1) value
 let oddSteps n value =
   if n < 1 then value else evenSteps (n - 1) value
