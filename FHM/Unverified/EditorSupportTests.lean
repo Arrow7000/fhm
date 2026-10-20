@@ -952,7 +952,7 @@ private def recCompleteNestedSpecialized :=
   "in if True then id x else f x\n(f 1, f True)\n"
 
 -- A complete subtree can still mention an outer provisional variable. Its
--- successful toCore conversion must not force an ineligible backend dispatch.
+-- successful `toCore` conversion must not force an ineligible compatibility path.
 #guard lowersWith recCompleteLambda fun
   | .letRec [.partialForall 1 _] [rhs@(.lambda (some (.fixed (.bvar 0))) _)] _ =>
       rhs.toCore.isSome && (rhs.openTyVars [1000]).rigidVars.contains 1000

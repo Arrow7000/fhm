@@ -101,7 +101,8 @@ def completeLambdaAnn : Option TyTemplate → Option (Option Ty)
 
 mutual
 /-- A decidable conservative embedding, preserving complete/partial modes.
-Only a whole subtree successfully embedded here may use the old Core backend. -/
+Only a whole subtree successfully embedded here exposes the complete-Core
+compatibility view. -/
 def InferInput.toCore : InferInput → Option Expr
   | .primLit p => some (.primLit p)
   | .primBinOp op => some (.primBinOp op)
