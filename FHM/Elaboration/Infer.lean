@@ -82,9 +82,38 @@ with the Core inferer. -/
 theorem _root_.Infer.sourceSound (h : Infer K F frontier ctx input next subst output ty) :
     CtxWF ctx → TypeOfHM (subst.onCtx ctx) output ty := by
   match h with
-  | .backend _ h hbelow hK hrigid _ =>
+  | .primLitUnit => intro _; simpa only [Subst.onCtx_nil] using (TypeOfHM.primLitUnit (ctx := _))
+  | .primLitInt => intro _; simpa only [Subst.onCtx_nil] using (TypeOfHM.primLitInt (ctx := _))
+  | .primLitNat => intro _; simpa only [Subst.onCtx_nil] using (TypeOfHM.primLitNat (ctx := _))
+  | .primLitChar => intro _; simpa only [Subst.onCtx_nil] using (TypeOfHM.primLitChar (ctx := _))
+  | .primBinOpIntAdd => intro _; simpa only [Subst.onCtx_nil] using (TypeOfHM.primBinOpIntAdd (ctx := _))
+  | .primBinOpIntSub => intro _; simpa only [Subst.onCtx_nil] using (TypeOfHM.primBinOpIntSub (ctx := _))
+  | .primBinOpIntLt hT ht hF hf =>
+      intro _
+      simpa only [Subst.onCtx_nil] using (TypeOfHM.primBinOpIntLt
+        (Ctor.IsBoolCtor.typeOfHM hT ht) (Ctor.IsBoolCtor.typeOfHM hF hf))
+  | .primBinOpCharLt hT ht hF hf =>
+      intro _
+      simpa only [Subst.onCtx_nil] using (TypeOfHM.primBinOpCharLt
+        (Ctor.IsBoolCtor.typeOfHM hT ht) (Ctor.IsBoolCtor.typeOfHM hF hf))
+  | .var (scheme := scheme) (frontier := frontier) hlook =>
       intro hctx
-      exact h.sourceSound hctx hbelow hK hrigid
+      simp only [Subst.onCtx_nil]
+      refine TypeOfHM.var (polyTy := scheme)
+        (instArgs := (freshVars frontier scheme.paramCount).map Ty.fvar) hlook ?_ ?_
+      · intro ty ht
+        obtain ⟨_, _, rfl⟩ := List.mem_map.mp ht
+        exact .fvar
+      · exact InstantiatesBy.openVars (hctx _ (List.mem_of_getElem? hlook)) (by simp)
+  | .ctor (ctor := ctor) (frontier := frontier) hlook =>
+      intro _
+      simp only [Subst.onCtx_nil]
+      refine TypeOfHM.ctor (ctor := ctor)
+        (tyArgs := (freshVars frontier ctor.paramCount).map Ty.fvar) hlook ?_ ?_
+      · intro ty ht
+        obtain ⟨_, _, rfl⟩ := List.mem_map.mp ht
+        exact .fvar
+      · exact InstantiatesBy.openVars (Ctor.toTy_wf ctor) (by simp [Ctor.toTy])
   | @Infer.lambda K F ann body frontier param initial ctx next subst completed bodyTy _ hs hb =>
       intro hctx
       have hbodyCtx : CtxWF { ctx with env := PolyTy.mkTrivial param :: ctx.env } := by
@@ -549,7 +578,7 @@ mutual
 theorem _root_.Infer.erase (h : Infer K F frontier ctx input next subst output ty) :
     output.erase = input.erase := by
   match h with
-  | .backend hemb _ _ _ _ _ => exact Input.toCore_erase _ hemb
+  | .primLitUnit | .primLitInt | .primLitNat | .primLitChar | .primBinOpIntAdd | .primBinOpIntSub | .primBinOpIntLt _ _ _ _ | .primBinOpCharLt _ _ _ _ | .var _ | .ctor _ => simp only [Expr.erase, Input.erase]
   | .lambda _ _ hb =>
       simpa only [lambdaOutput, Expr.erase, Input.erase] using
         congrArg (Expr.lambda none) hb.erase
@@ -622,13 +651,36 @@ This connects input admissibility and completed-output typing at the same type. 
 theorem _root_.Infer.inputSound_source (h : Infer K F frontier ctx input next subst output ty) :
     CtxWF ctx → Typing (K ++ softVars (substSoft subst F)) (subst.onCtx ctx) (input.substTyFvars subst) ty := by
   match h with
-  | .backend hemb h hbelow hK hrigid _ =>
+  | leaf@(.primLitUnit) =>
       intro hctx
-      have hinput := input.substTyFvars_eq_self_of_fixes (fun v hv =>
-        Subst.fixes_of_dom_avoids h.dom_avoids v (hrigid v ((Input.toCore_rigidVars _ hemb v).mp hv)))
-      rw [hinput]
-      exact .complete hemb (fun v hv => List.mem_append_left _ (hrigid v hv))
-        (h.sourceSound hctx hbelow hK hrigid)
+      exact .complete rfl (by simp [Expr.tyFreeVars]) (leaf.sourceSound hctx)
+  | leaf@(.primLitInt) =>
+      intro hctx
+      exact .complete rfl (by simp [Expr.tyFreeVars]) (leaf.sourceSound hctx)
+  | leaf@(.primLitNat) =>
+      intro hctx
+      exact .complete rfl (by simp [Expr.tyFreeVars]) (leaf.sourceSound hctx)
+  | leaf@(.primLitChar) =>
+      intro hctx
+      exact .complete rfl (by simp [Expr.tyFreeVars]) (leaf.sourceSound hctx)
+  | leaf@(.primBinOpIntAdd) =>
+      intro hctx
+      exact .complete rfl (by simp [Expr.tyFreeVars]) (leaf.sourceSound hctx)
+  | leaf@(.primBinOpIntSub) =>
+      intro hctx
+      exact .complete rfl (by simp [Expr.tyFreeVars]) (leaf.sourceSound hctx)
+  | leaf@(.primBinOpIntLt _ _ _ _) =>
+      intro hctx
+      exact .complete rfl (by simp [Expr.tyFreeVars]) (leaf.sourceSound hctx)
+  | leaf@(.primBinOpCharLt _ _ _ _) =>
+      intro hctx
+      exact .complete rfl (by simp [Expr.tyFreeVars]) (leaf.sourceSound hctx)
+  | leaf@(.var _) =>
+      intro hctx
+      exact .complete rfl (by simp [Expr.tyFreeVars]) (leaf.sourceSound hctx)
+  | leaf@(.ctor _) =>
+      intro hctx
+      exact .complete rfl (by simp [Expr.tyFreeVars]) (leaf.sourceSound hctx)
   | @Infer.lambda K F ann body frontier param initial ctx next subst completed bodyTy _ hs hb =>
       intro hctx
       have hbodyCtx : CtxWF { ctx with env := PolyTy.mkTrivial param :: ctx.env } := by
@@ -1134,13 +1186,9 @@ input typing. Completed let binders are compared by cofinite openings. -/
 theorem _root_.Infer.completes_source (h : Infer K F frontier ctx input next subst output ty) :
     CtxWF ctx → Completes (K ++ softVars (substSoft subst F)) (input.substTyFvars subst) output := by
   match h with
-  | .backend hemb h hbelow hK hrigid _ =>
-      intro hctx
-      have hinput := input.substTyFvars_eq_self_of_fixes (fun v hv =>
-        Subst.fixes_of_dom_avoids h.dom_avoids v (hrigid v ((Input.toCore_rigidVars _ hemb v).mp hv)))
-      rw [hinput]
-      exact .complete hemb (fun v hv => List.mem_append_left _ (hrigid v hv))
-        
+  | .primLitUnit | .primLitInt | .primLitNat | .primLitChar | .primBinOpIntAdd | .primBinOpIntSub | .primBinOpIntLt _ _ _ _ | .primBinOpCharLt _ _ _ _ | .var _ | .ctor _ =>
+      intro _
+      exact .complete rfl (by simp [Expr.tyFreeVars])
   | @Infer.lambda K F ann body frontier param initial ctx next subst completed bodyTy _ hs hb =>
       intro hctx
       have hbodyCtx : CtxWF { ctx with env := PolyTy.mkTrivial param :: ctx.env } := by

@@ -67,22 +67,6 @@ private theorem ctxBelow_of_all {ctx : Ctx} {frontier : Nat}
   intro v hv
   exact of_decide_eq_true (List.all_eq_true.mp h v (Env.mem_freeVars_iff.mpr ⟨scheme, hscheme, hv⟩))
 
-/-- Completed syntax mentioning a live soft slot is inferred structurally;
-it must not be sent to the backend, whose annotations are all rigid. -/
-def backendInput (K : List Nat) (F : List Ty) (input : Input) :
-    Option { core : Expr // input.toCore = some core ∧
-      (∀ v ∈ core.tyFreeVars, v ∈ K) ∧ (∀ v ∈ core.tyFreeVars, v ∉ softVars F) } :=
-  match _h : input.toCore with
-  | none => none
-  | some core =>
-      if hs : core.tyFreeVars.all (fun v => decide (v ∈ K)) = true then
-        if hd : core.tyFreeVars.all (fun v => decide (v ∉ softVars F)) = true then
-          some ⟨core, rfl,
-            fun v hv => of_decide_eq_true (List.all_eq_true.mp hs v hv),
-            fun v hv => of_decide_eq_true (List.all_eq_true.mp hd v hv)⟩
-        else none
-      else none
-
 structure RecComponentResult where
   frontier : Nat
   subst : Subst
@@ -95,8 +79,7 @@ structure RecRunResult where
   state : RecState
 
 mutual
-/-- One dispatch path: completed subtrees use the existing verified worker;
-partial spines elaborate while inferring. Recursive partial signatures remain
+/-- One metadata-producing inference path for all input syntax. Recursive partial signatures remain
 monomorphic until their component is solved and its ordered prefix is validated. -/
 def _root_.inferWithTypesCore (K : List Nat) (frontier : Nat) (ctx : Ctx) (input : Input) (F : List Ty := []) :
     Option { result : Nat × Subst × Expr × Ty × InferredNodeTypes × InferredBinderSchemes //
@@ -107,158 +90,199 @@ def _root_.inferWithTypesCore (K : List Nat) (frontier : Nat) (ctx : Ctx) (input
         if hsource : input.rigidVars.all (fun v => decide (v ∈ K ++ softVars F)) = true then
           have hrawScope : SourceScope K F input := fun v hv =>
             of_decide_eq_true (List.all_eq_true.mp hsource v hv)
-          match hemb : backendInput K F input with
-          | some ⟨core, hc, hscope, hdisjoint⟩ =>
-              match CoreBackend.inferWithTypesCore K frontier ctx core with
+          match input with
+          | .primLit .unit => some ⟨(frontier, [], .primLit .unit, .prim .unit, .root (.prim .unit), []), .primLitUnit⟩
+          | .primLit (.int n) => some ⟨(frontier, [], .primLit (.int n), .prim .int, .root (.prim .int), []), .primLitInt⟩
+          | .primLit (.nat n) => some ⟨(frontier, [], .primLit (.nat n), .prim .nat, .root (.prim .nat), []), .primLitNat⟩
+          | .primLit (.char c) => some ⟨(frontier, [], .primLit (.char c), .prim .char, .root (.prim .char), []), .primLitChar⟩
+          | .primBinOp .intAdd =>
+              let ty := .arrow (.prim .int) (.arrow (.prim .int) (.prim .int))
+              some ⟨(frontier, [], .primBinOp .intAdd, ty, .root ty, []), .primBinOpIntAdd⟩
+          | .primBinOp .intSub =>
+              let ty := .arrow (.prim .int) (.arrow (.prim .int) (.prim .int))
+              some ⟨(frontier, [], .primBinOp .intSub, ty, .root ty, []), .primBinOpIntSub⟩
+          | .primBinOp .intLt =>
+              match hT : LookupList.get? ctx.ctors ⟨"True"⟩ with
               | none => none
-              | some ⟨(next, subst, ty, nodeTypes, schemes), h⟩ =>
-                  some ⟨(next, subst, core, ty, nodeTypes, schemes), .backend hc h (ctxBelow_of_all hctx)
-                    (fun v hv => of_decide_eq_true (List.all_eq_true.mp hK v hv)) hscope hdisjoint⟩
-          | none =>
-              match input with
-              | .lambda ann body =>
-                  match seed (K ++ softVars F) frontier ann with
+              | some tc =>
+                match hF : LookupList.get? ctx.ctors ⟨"False"⟩ with
+                | none => none
+                | some fc =>
+                  if htc : tc.isBoolCtor = true then
+                    if hfc : fc.isBoolCtor = true then
+                      let ty := .arrow (.prim .int) (.arrow (.prim .int) (.customTy ⟨"Bool"⟩ []))
+                      some ⟨(frontier, [], .primBinOp .intLt, ty, .root ty, []),
+                            .primBinOpIntLt hT (Ctor.isBoolCtor_iff.mp htc) hF (Ctor.isBoolCtor_iff.mp hfc)⟩
+                    else none
+                  else none
+          | .primBinOp .charLt =>
+              match hT : LookupList.get? ctx.ctors ⟨"True"⟩ with
+              | none => none
+              | some tc =>
+                match hF : LookupList.get? ctx.ctors ⟨"False"⟩ with
+                | none => none
+                | some fc =>
+                  if htc : tc.isBoolCtor = true then
+                    if hfc : fc.isBoolCtor = true then
+                      let ty := .arrow (.prim .char) (.arrow (.prim .char) (.customTy ⟨"Bool"⟩ []))
+                      some ⟨(frontier, [], .primBinOp .charLt, ty, .root ty, []),
+                            .primBinOpCharLt hT (Ctor.isBoolCtor_iff.mp htc) hF (Ctor.isBoolCtor_iff.mp hfc)⟩
+                    else none
+                  else none
+          | .var index =>
+              match hlook : ctx.env[index]? with
+              | none => none
+              | some scheme =>
+                  let ty := scheme.openVars (freshVars frontier scheme.paramCount)
+                  some ⟨(frontier + scheme.paramCount, [], .var index, ty, .root ty, []), .var hlook⟩
+          | .ctor name =>
+              match hlook : LookupList.get? ctx.ctors name with
+              | none => none
+              | some ctor =>
+                  let ty := ctor.toTy.openVars (freshVars frontier ctor.paramCount)
+                  some ⟨(frontier + ctor.paramCount, [], .ctor name, ty, .root ty, []), .ctor hlook⟩
+          | .lambda ann body =>
+              match seed (K ++ softVars F) frontier ann with
+              | none => none
+              | some ⟨(initial, param), hs⟩ =>
+                  match inferWithTypesCore K initial { ctx with env := PolyTy.mkTrivial param :: ctx.env } body F with
                   | none => none
-                  | some ⟨(initial, param), hs⟩ =>
-                      match inferWithTypesCore K initial { ctx with env := PolyTy.mkTrivial param :: ctx.env } body F with
-                      | none => none
-                      | some ⟨(next, subst, completed, bodyTy, bodyTypes, bodySchemes), hb⟩ =>
-                          let ty := .arrow (subst.onTy param) bodyTy
-                          some ⟨(next, subst, lambdaOutput ann param subst completed, ty,
-                            .root ty ++ bodyTypes.below .lambdaBody, bodySchemes.below .lambdaBody), .lambda hrawScope hs hb⟩
-              | .app f arg =>
-                  match inferWithTypesCore K frontier ctx f F with
+                  | some ⟨(next, subst, completed, bodyTy, bodyTypes, bodySchemes), hb⟩ =>
+                      let ty := .arrow (subst.onTy param) bodyTy
+                      some ⟨(next, subst, lambdaOutput ann param subst completed, ty,
+                        .root ty ++ bodyTypes.below .lambdaBody, bodySchemes.below .lambdaBody), .lambda hrawScope hs hb⟩
+          | .app f arg =>
+              match inferWithTypesCore K frontier ctx f F with
+              | none => none
+              | some ⟨(first, s1, fOut, fTy, fTypes, fSchemes), hf⟩ =>
+                  match inferWithTypesCore K first (s1.onCtx ctx) (arg.substTyFvars s1) (substSoft s1 F) with
                   | none => none
-                  | some ⟨(first, s1, fOut, fTy, fTypes, fSchemes), hf⟩ =>
-                      match inferWithTypesCore K first (s1.onCtx ctx) (arg.substTyFvars s1) (substSoft s1 F) with
+                  | some ⟨(second, s2, argOut, argTy, argTypes, argSchemes), ha⟩ =>
+                      match unifyCoreK K (s2.onTy fTy) (.arrow argTy (.fvar second)) with
                       | none => none
-                      | some ⟨(second, s2, argOut, argTy, argTypes, argSchemes), ha⟩ =>
-                          match unifyCoreK K (s2.onTy fTy) (.arrow argTy (.fvar second)) with
-                          | none => none
-                          | some ⟨s3, hu, hd⟩ =>
-                              let ty := s3.onTy (.fvar second)
-                              some ⟨(second + 1, s1 ++ s2 ++ s3,
-                                .app (fOut.substTyFvars (s2 ++ s3)) (argOut.substTyFvars s3), ty,
-                                .root ty ++ (fTypes.onSubst (s2 ++ s3)).below .appFun ++
-                                  (argTypes.onSubst s3).below .appArg,
-                                (fSchemes.onSubst (s2 ++ s3)).below .appFun ++
-                                  (argSchemes.onSubst s3).below .appArg), .app hrawScope hf ha ⟨hu, hd⟩⟩
-              | .letIn ann rhs body =>
-                if ann.isSignature then
-                  let written := freshVars frontier ann.paramCount
-                  if hraw : rhs.rigidVars.all (fun v => decide (v ∈ K ++ softVars F)) = true then
-                    match inferWithTypesCore (K ++ written) (frontier + ann.paramCount) ctx (rhs.openTyVars written) F with
-                    | none => none
-                    | some ⟨(first, s1, rhsOut, rhsTy, rhsTypes, rhsSchemes), hr⟩ =>
-                      match checkSignature K (substSoft s1 F) written first (ann.substTyFvars s1) rhsTy with
+                      | some ⟨s3, hu, hd⟩ =>
+                          let ty := s3.onTy (.fvar second)
+                          some ⟨(second + 1, s1 ++ s2 ++ s3,
+                            .app (fOut.substTyFvars (s2 ++ s3)) (argOut.substTyFvars s3), ty,
+                            .root ty ++ (fTypes.onSubst (s2 ++ s3)).below .appFun ++
+                              (argTypes.onSubst s3).below .appArg,
+                            (fSchemes.onSubst (s2 ++ s3)).below .appFun ++
+                              (argSchemes.onSubst s3).below .appArg), .app hrawScope hf ha ⟨hu, hd⟩⟩
+          | .letIn ann rhs body =>
+            if ann.isSignature then
+              let written := freshVars frontier ann.paramCount
+              if hraw : rhs.rigidVars.all (fun v => decide (v ∈ K ++ softVars F)) = true then
+                match inferWithTypesCore (K ++ written) (frontier + ann.paramCount) ctx (rhs.openTyVars written) F with
+                | none => none
+                | some ⟨(first, s1, rhsOut, rhsTy, rhsTypes, rhsSchemes), hr⟩ =>
+                  match checkSignature K (substSoft s1 F) written first (ann.substTyFvars s1) rhsTy with
+                  | none => none
+                  | some ⟨(checked, sCheck), hc⟩ =>
+                    let checkedCtx := sCheck.onCtx (s1.onCtx ctx)
+                    let checkedTy := sCheck.onTy rhsTy
+                    let checkedOut := rhsOut.substTyFvars sCheck
+                    let scheme := signatureScheme (ann.substTyFvars (s1 ++ sCheck)) (K ++ softVars (substSoft (s1 ++ sCheck) F)) written checkedCtx checkedTy
+                    let names := signatureNames (ann.substTyFvars (s1 ++ sCheck)) (K ++ softVars (substSoft (s1 ++ sCheck) F)) written checkedCtx checkedTy
+                    if hescape : ∀ name ∈ written, name ∉ checkedCtx.env.freeVars ++ softVars (substSoft (s1 ++ sCheck) F) then
+                      match inferWithTypesCore K checked { checkedCtx with env := scheme :: checkedCtx.env } (body.substTyFvars (s1 ++ sCheck)) (substSoft (s1 ++ sCheck) F) with
+                      | none => none
+                      | some ⟨(next, s2, bodyOut, bodyTy, bodyTypes, bodySchemes), hb⟩ =>
+                        let rhsFinalTypes := (((rhsTypes.onSubst sCheck).closeTyVars written).onSubst s2)
+                          |>.underTyBinders ann.paramCount |>.below .letRhs
+                        let rhsFinalSchemes := (((rhsSchemes.onSubst sCheck).closeTyVars written).onSubst s2)
+                          |>.underTyBinders ann.paramCount |>.below .letRhs
+                        let inferred : InferredBinderSchemes := match ann with
+                          | .partialForall _ _ => [{ site := .letIn [], scheme := s2.onPolyTy scheme, tyDepth := 0 }]
+                          | _ => []
+                        some ⟨(next, s1 ++ sCheck ++ s2, letOutput scheme names checkedOut bodyOut s2, bodyTy,
+                          .root bodyTy ++ rhsFinalTypes ++ bodyTypes.below .letBody,
+                          inferred ++ rhsFinalSchemes ++ bodySchemes.below .letBody),
+                          .letSignature hrawScope rfl (fun name hn hk => by
+                            have hlt : name < frontier := by
+                              rcases List.mem_append.mp hk with hk | hk
+                              · exact of_decide_eq_true (List.all_eq_true.mp hK name hk)
+                              · exact of_decide_eq_true (List.all_eq_true.mp hF name hk)
+                            have hge := freshVars_ge name hn
+                            omega)
+                            (fun v hv => of_decide_eq_true (List.all_eq_true.mp hraw v hv)) hr hc hescape hb⟩
+                    else none
+              else none
+            else
+                  match inferWithTypesCore K frontier ctx rhs F with
+                  | none => none
+                  | some ⟨(first, s1, rhsOut, rhsTy, rhsTypes, rhsSchemes), hr⟩ =>
+                      match checkLet K (substSoft s1 F) first (ann.substTyFvars s1) rhsTy with
                       | none => none
                       | some ⟨(checked, sCheck), hc⟩ =>
-                        let checkedCtx := sCheck.onCtx (s1.onCtx ctx)
-                        let checkedTy := sCheck.onTy rhsTy
-                        let checkedOut := rhsOut.substTyFvars sCheck
-                        let scheme := signatureScheme (ann.substTyFvars (s1 ++ sCheck)) (K ++ softVars (substSoft (s1 ++ sCheck) F)) written checkedCtx checkedTy
-                        let names := signatureNames (ann.substTyFvars (s1 ++ sCheck)) (K ++ softVars (substSoft (s1 ++ sCheck) F)) written checkedCtx checkedTy
-                        if hescape : ∀ name ∈ written, name ∉ checkedCtx.env.freeVars ++ softVars (substSoft (s1 ++ sCheck) F) then
+                          let checkedCtx := sCheck.onCtx (s1.onCtx ctx)
+                          let checkedTy := sCheck.onTy rhsTy
+                          let checkedOut := rhsOut.substTyFvars sCheck
+                          let scheme := genScheme (K ++ softVars (substSoft (s1 ++ sCheck) F)) checkedCtx.env checkedTy
+                          let names := genVars (K ++ softVars (substSoft (s1 ++ sCheck) F)) checkedCtx.env checkedTy
                           match inferWithTypesCore K checked { checkedCtx with env := scheme :: checkedCtx.env } (body.substTyFvars (s1 ++ sCheck)) (substSoft (s1 ++ sCheck) F) with
                           | none => none
                           | some ⟨(next, s2, bodyOut, bodyTy, bodyTypes, bodySchemes), hb⟩ =>
-                            let rhsFinalTypes := (((rhsTypes.onSubst sCheck).closeTyVars written).onSubst s2)
-                              |>.underTyBinders ann.paramCount |>.below .letRhs
-                            let rhsFinalSchemes := (((rhsSchemes.onSubst sCheck).closeTyVars written).onSubst s2)
-                              |>.underTyBinders ann.paramCount |>.below .letRhs
-                            let inferred : InferredBinderSchemes := match ann with
-                              | .partialForall _ _ => [{ site := .letIn [], scheme := s2.onPolyTy scheme, tyDepth := 0 }]
-                              | _ => []
-                            some ⟨(next, s1 ++ sCheck ++ s2, letOutput scheme names checkedOut bodyOut s2, bodyTy,
-                              .root bodyTy ++ rhsFinalTypes ++ bodyTypes.below .letBody,
-                              inferred ++ rhsFinalSchemes ++ bodySchemes.below .letBody),
-                              .letSignature hrawScope rfl (fun name hn hk => by
-                                have hlt : name < frontier := by
-                                  rcases List.mem_append.mp hk with hk | hk
-                                  · exact of_decide_eq_true (List.all_eq_true.mp hK name hk)
-                                  · exact of_decide_eq_true (List.all_eq_true.mp hF name hk)
-                                have hge := freshVars_ge name hn
-                                omega)
-                                (fun v hv => of_decide_eq_true (List.all_eq_true.mp hraw v hv)) hr hc hescape hb⟩
-                        else none
-                  else none
-                else
-                      match inferWithTypesCore K frontier ctx rhs F with
-                      | none => none
-                      | some ⟨(first, s1, rhsOut, rhsTy, rhsTypes, rhsSchemes), hr⟩ =>
-                          match checkLet K (substSoft s1 F) first (ann.substTyFvars s1) rhsTy with
-                          | none => none
-                          | some ⟨(checked, sCheck), hc⟩ =>
-                              let checkedCtx := sCheck.onCtx (s1.onCtx ctx)
-                              let checkedTy := sCheck.onTy rhsTy
-                              let checkedOut := rhsOut.substTyFvars sCheck
-                              let scheme := genScheme (K ++ softVars (substSoft (s1 ++ sCheck) F)) checkedCtx.env checkedTy
-                              let names := genVars (K ++ softVars (substSoft (s1 ++ sCheck) F)) checkedCtx.env checkedTy
-                              match inferWithTypesCore K checked { checkedCtx with env := scheme :: checkedCtx.env } (body.substTyFvars (s1 ++ sCheck)) (substSoft (s1 ++ sCheck) F) with
-                              | none => none
-                              | some ⟨(next, s2, bodyOut, bodyTy, bodyTypes, bodySchemes), hb⟩ =>
-                                  let binder : InferredBinderScheme :=
-                                    { site := .letIn [], scheme := s2.onPolyTy scheme, tyDepth := 0 }
-                                  some ⟨(next, s1 ++ sCheck ++ s2,
-                                    letOutput scheme names checkedOut bodyOut s2, bodyTy,
-                                    .root bodyTy ++ (rhsTypes.onSubst (sCheck ++ s2)).below .letRhs ++
-                                      bodyTypes.below .letBody,
-                                    binder :: (rhsSchemes.onSubst (sCheck ++ s2)).below .letRhs ++
-                                      bodySchemes.below .letBody), .letIn hrawScope hr hc hb⟩
-              | .match_ scrut branches =>
-                  match inferWithTypesCore K frontier ctx scrut F with
+                              let binder : InferredBinderScheme :=
+                                { site := .letIn [], scheme := s2.onPolyTy scheme, tyDepth := 0 }
+                              some ⟨(next, s1 ++ sCheck ++ s2,
+                                letOutput scheme names checkedOut bodyOut s2, bodyTy,
+                                .root bodyTy ++ (rhsTypes.onSubst (sCheck ++ s2)).below .letRhs ++
+                                  bodyTypes.below .letBody,
+                                binder :: (rhsSchemes.onSubst (sCheck ++ s2)).below .letRhs ++
+                                  bodySchemes.below .letBody), .letIn hrawScope hr hc hb⟩
+          | .match_ scrut branches =>
+              match inferWithTypesCore K frontier ctx scrut F with
+              | none => none
+              | some ⟨(first, s1, scrutOut, scrutTy, scrutTypes, scrutSchemes), hs⟩ =>
+                match hh : branches.head? with
+                | none => none
+                | some _ =>
+                  match inferBranchesWithTypesCore K (first + 1) (s1.onCtx ctx)
+                      scrutTy (.fvar first) 0 (substInputBranches s1 branches) (substSoft s1 F) with
                   | none => none
-                  | some ⟨(first, s1, scrutOut, scrutTy, scrutTypes, scrutSchemes), hs⟩ =>
-                    match hh : branches.head? with
+                  | some ⟨(next, s2, branchOut, branchTypes, branchSchemes), hb⟩ =>
+                    let ty := s2.onTy (.fvar first)
+                    some ⟨(next, s1 ++ s2, .match_ (scrutOut.substTyFvars s2) branchOut, ty,
+                      .root ty ++ (scrutTypes.onSubst s2).below .matchScrut ++ branchTypes,
+                      (scrutSchemes.onSubst s2).below .matchScrut ++ branchSchemes),
+                      .match_ hrawScope hs (by intro heq; rw [heq] at hh; simp at hh) hb⟩
+          | .letRec anns bindings body =>
+              if hwf : anns.all (fun ann => match ann with
+                  | .complete scheme => scheme.body.bvarsBelow scheme.paramCount
+                  | _ => true) = true then
+                if hg : RecGroups.validResidualGroupsB (anns.map LetAnn.recModeAnn) (bindings.map Input.erase)
+                    (RecGroup.inferenceSccs (anns.map LetAnn.recModeAnn) (bindings.map Input.erase)) = true then
+                  match inferRecStrataWithTypesCore K F (frontier + bindings.length) ctx anns bindings
+                      (RecState.init frontier anns)
+                      (RecGroup.inferenceSccs (anns.map LetAnn.recModeAnn) (bindings.map Input.erase)) with
+                  | none => none
+                  | some ⟨strata, hs⟩ =>
+                    match inferRecSignedWithTypesCore K (substSoft strata.subst F) 0 strata.frontier
+                        (strata.subst.onCtx ctx) (anns.map (LetAnn.substTyFvars strata.subst))
+                        (bindings.map (Input.substTyFvars strata.subst)) strata.state with
                     | none => none
-                    | some _ =>
-                      match inferBranchesWithTypesCore K (first + 1) (s1.onCtx ctx)
-                          scrutTy (.fvar first) 0 (substInputBranches s1 branches) (substSoft s1 F) with
-                      | none => none
-                      | some ⟨(next, s2, branchOut, branchTypes, branchSchemes), hb⟩ =>
-                        let ty := s2.onTy (.fvar first)
-                        some ⟨(next, s1 ++ s2, .match_ (scrutOut.substTyFvars s2) branchOut, ty,
-                          .root ty ++ (scrutTypes.onSubst s2).below .matchScrut ++ branchTypes,
-                          (scrutSchemes.onSubst s2).below .matchScrut ++ branchSchemes),
-                          .match_ hrawScope hs (by intro heq; rw [heq] at hh; simp at hh) hb⟩
-              | .letRec anns bindings body =>
-                  if hwf : anns.all (fun ann => match ann with
-                      | .complete scheme => scheme.body.bvarsBelow scheme.paramCount
-                      | _ => true) = true then
-                    if hg : RecGroups.validResidualGroupsB (anns.map LetAnn.recModeAnn) (bindings.map Input.erase)
-                        (RecGroup.inferenceSccs (anns.map LetAnn.recModeAnn) (bindings.map Input.erase)) = true then
-                      match inferRecStrataWithTypesCore K F (frontier + bindings.length) ctx anns bindings
-                          (RecState.init frontier anns)
-                          (RecGroup.inferenceSccs (anns.map LetAnn.recModeAnn) (bindings.map Input.erase)) with
-                      | none => none
-                      | some ⟨strata, hs⟩ =>
-                        match inferRecSignedWithTypesCore K (substSoft strata.subst F) 0 strata.frontier
-                            (strata.subst.onCtx ctx) (anns.map (LetAnn.substTyFvars strata.subst))
-                            (bindings.map (Input.substTyFvars strata.subst)) strata.state with
+                    | some ⟨signed, hp⟩ =>
+                      match collectRecValues signed.state.exports, collectRecValues signed.state.outputs with
+                      | some ⟨schemes, hschemes⟩, some ⟨outputs, houtputs⟩ =>
+                        let solved := strata.subst ++ signed.subst
+                        match inferWithTypesCore K signed.frontier (signed.state.rhsCtx (solved.onCtx ctx))
+                            (body.substTyFvars solved) (substSoft solved F) with
                         | none => none
-                        | some ⟨signed, hp⟩ =>
-                          match collectRecValues signed.state.exports, collectRecValues signed.state.outputs with
-                          | some ⟨schemes, hschemes⟩, some ⟨outputs, houtputs⟩ =>
-                            let solved := strata.subst ++ signed.subst
-                            match inferWithTypesCore K signed.frontier (signed.state.rhsCtx (solved.onCtx ctx))
-                                (body.substTyFvars solved) (substSoft solved F) with
-                            | none => none
-                            | some ⟨(next, s3, bodyOut, bodyTy, bodyTypes, bodySchemes), hb⟩ =>
-                              let final := signed.state.onSubst s3
-                              let finalSchemes := schemes.map s3.onPolyTy
-                              some ⟨(next, strata.subst ++ signed.subst ++ s3,
-                                .letRec (finalSchemes.map some) (outputs.map (Expr.substTyFvars s3)) bodyOut,
-                                bodyTy, .root bodyTy ++ finalRecNodeTypes anns final ++ bodyTypes.below .letRecBody,
-                                inferredRecSchemes anns finalSchemes ++ finalRecBinderSchemes anns final ++
-                                  bodySchemes.below .letRecBody),
-                                .letRec ⟨hrawScope, ctxBelow_of_all hctx,
-                                  (fun v hv => of_decide_eq_true (List.all_eq_true.mp hK v hv)),
-                                  (fun v hv => of_decide_eq_true (List.all_eq_true.mp hF v hv))⟩ (fun scheme hmem => PolyTy.wf_iff_bvarsBelow.mp (List.all_eq_true.mp hwf (.complete scheme) hmem))
-                                  ⟨RecGroups.validResidualGroupsB_sound hg, rfl⟩ hs hp hschemes houtputs hb⟩
-                          | _, _ => none
-                    else none
-                  else none
-              | _ => none
+                        | some ⟨(next, s3, bodyOut, bodyTy, bodyTypes, bodySchemes), hb⟩ =>
+                          let final := signed.state.onSubst s3
+                          let finalSchemes := schemes.map s3.onPolyTy
+                          some ⟨(next, strata.subst ++ signed.subst ++ s3,
+                            .letRec (finalSchemes.map some) (outputs.map (Expr.substTyFvars s3)) bodyOut,
+                            bodyTy, .root bodyTy ++ finalRecNodeTypes anns final ++ bodyTypes.below .letRecBody,
+                            inferredRecSchemes anns finalSchemes ++ finalRecBinderSchemes anns final ++
+                              bodySchemes.below .letRecBody),
+                            .letRec ⟨hrawScope, ctxBelow_of_all hctx,
+                              (fun v hv => of_decide_eq_true (List.all_eq_true.mp hK v hv)),
+                              (fun v hv => of_decide_eq_true (List.all_eq_true.mp hF v hv))⟩ (fun scheme hmem => PolyTy.wf_iff_bvarsBelow.mp (List.all_eq_true.mp hwf (.complete scheme) hmem))
+                              ⟨RecGroups.validResidualGroupsB_sound hg, rfl⟩ hs hp hschemes houtputs hb⟩
+                      | _, _ => none
+                else none
+              else none
         else none
       else none
     else none

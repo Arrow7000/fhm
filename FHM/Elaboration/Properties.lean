@@ -290,7 +290,8 @@ theorem SignatureCheck.scheme_belowFvars (h : SignatureCheck K F written frontie
 mutual
 theorem _root_.Infer.frontier_le (h : Infer K F frontier ctx input next subst output ty) : frontier ≤ next := by
   match h with
-  | .backend _ hi _ _ _ _ => exact hi.frontier_le
+  | .primLitUnit | .primLitInt | .primLitNat | .primLitChar | .primBinOpIntAdd | .primBinOpIntSub | .primBinOpIntLt _ _ _ _ | .primBinOpCharLt _ _ _ _ => exact Nat.le_refl _
+  | .var _ | .ctor _ => exact Nat.le_add_right _ _
   | .lambda _ hs hb => exact hs.frontier_le.trans hb.frontier_le
   | .app _ hf ha _ => have := hf.frontier_le; have := ha.frontier_le; omega
   | .letIn _ hr hc hb => exact hr.frontier_le.trans (hc.frontier_le.trans hb.frontier_le)
@@ -503,9 +504,24 @@ theorem _root_.Infer.belowFvars (h : Infer K F frontier ctx input next subst out
       (∀ t ∈ F, Ty.BelowFvars frontier t) →
       Ty.BelowFvars next ty ∧ ∀ p ∈ subst, Ty.BelowFvars next p.2 := by
   match h with
-  | .backend _ h _ _ hr _ =>
-    intro hctx hK _
-    exact CoreBackend.Infer.belowFvars h hctx (fun v hv => hK v (hr v hv))
+  | .primLitUnit => intro _ _ _; exact ⟨.prim, by simp⟩
+  | .primLitInt => intro _ _ _; exact ⟨.prim, by simp⟩
+  | .primLitNat => intro _ _ _; exact ⟨.prim, by simp⟩
+  | .primLitChar => intro _ _ _; exact ⟨.prim, by simp⟩
+  | .primBinOpIntAdd => intro _ _ _; exact ⟨.arrow .prim (.arrow .prim .prim), by simp⟩
+  | .primBinOpIntSub => intro _ _ _; exact ⟨.arrow .prim (.arrow .prim .prim), by simp⟩
+  | .primBinOpIntLt _ _ _ _ => intro _ _ _; exact ⟨.arrow .prim (.arrow .prim (.customTy (by simp))), by simp⟩
+  | .primBinOpCharLt _ _ _ _ => intro _ _ _; exact ⟨.arrow .prim (.arrow .prim (.customTy (by simp))), by simp⟩
+  | .var hlook =>
+      intro hctx _ _
+      refine ⟨?_, by simp⟩
+      exact Ty.openVars_belowFvars ((hctx _ (List.mem_of_getElem? hlook)).mono (by omega))
+        (fun x hx => by have := freshVars_lt x hx; omega)
+  | .ctor hlook =>
+      intro _ _ _
+      refine ⟨?_, by simp⟩
+      exact Ty.openVars_belowFvars (Ty.BelowFvars.of_noFreeVars (Ctor.toTy_body_noFreeVars _))
+        (fun x hx => by have := freshVars_lt x hx; omega)
   | .lambda _ hs hb =>
     intro hctx hK hF
     have hle := hs.frontier_le
@@ -1593,13 +1609,25 @@ mutual
     w ∉ input.rigidVars →
     (∀ p ∈ subst, w ∉ p.2.freeVars) ∧ w ∉ ty.freeVars ∧ w ∉ subst.map Prod.fst := by
   match h with
-  | .backend hemb hi _ _ _ _ =>
-    intro w hw hrefs hwe
-    apply hi.sourceLocality hw
-    · apply (Expr.ForallOuter.erase_iff _).mp
-      rwa [Input.toCore_erase _ hemb]
-    · intro hm
-      exact hwe ((Input.toCore_rigidVars _ hemb w).mpr hm)
+  | .primLitUnit | .primLitInt | .primLitNat | .primLitChar
+  | .primBinOpIntAdd | .primBinOpIntSub | .primBinOpIntLt _ _ _ _
+  | .primBinOpCharLt _ _ _ _ =>
+    intro w _ _ _; simp [Ty.freeVars, TyList.freeVars]
+  | .var hlook =>
+    intro w hw hrefs _
+    refine ⟨by simp, ?_, by simp⟩
+    intro hc
+    rcases Ty.freeVars_openVars_subset w hc with h | h
+    · simp only [Input.erase, Expr.ForallOuter, Expr.rec_strong, Nat.zero_le, Nat.sub_zero] at hrefs
+      exact hrefs (by trivial) _ hlook h
+    · have := freshVars_ge w h; omega
+  | .ctor hlook =>
+    intro w hw _ _
+    refine ⟨by simp, ?_, by simp⟩
+    intro hc
+    rcases Ty.freeVars_openVars_subset w hc with h | h
+    · exact (Ctor.toTy_body_noFreeVars _).not_mem_freeVars w h
+    · have := freshVars_ge w h; omega
   | .lambda _ hs hb =>
     intro w hw hrefs hwe
     simp only [Input.erase, Expr.ForallOuter, Expr.rec_strong, Nat.zero_add] at hrefs

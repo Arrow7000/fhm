@@ -1,8 +1,8 @@
 import FHM.Elaboration.RecState
 
 /-! Canonical inference elaborates partial annotations while returning completed
-Core. Whole completed subtrees reuse the verified backend once; partial lambda,
-application, let, and match spines share the same recursive inference judgment.
+Core. Every input form follows the same recursive inference judgment, including
+literals, complete annotations, and partial annotations.
 -/
 
 namespace Elaboration
@@ -106,13 +106,28 @@ mutual
 /-- Canonical inference carries frozen K and the current images F of live
 provisional forall slots. Sequential calls transform both F and source syntax. -/
 inductive _root_.Infer : List Nat → List Ty → Nat → Ctx → Input → Nat → Subst → Expr → Ty → Prop
-  | backend :
-      input.toCore = some core →
-      CoreBackend.Infer K frontier ctx core next subst ty →
-      CtxBelow frontier ctx → (∀ k ∈ K, k < frontier) →
-      (∀ v ∈ core.tyFreeVars, v ∈ K) →
-      (∀ v ∈ core.tyFreeVars, v ∉ softVars F) →
-      Infer K F frontier ctx input next subst core ty
+  | primLitUnit : Infer K F frontier ctx (.primLit .unit) frontier [] (.primLit .unit) (.prim .unit)
+  | primLitInt : Infer K F frontier ctx (.primLit (.int n)) frontier [] (.primLit (.int n)) (.prim .int)
+  | primLitNat : Infer K F frontier ctx (.primLit (.nat n)) frontier [] (.primLit (.nat n)) (.prim .nat)
+  | primLitChar : Infer K F frontier ctx (.primLit (.char c)) frontier [] (.primLit (.char c)) (.prim .char)
+  | primBinOpIntAdd : Infer K F frontier ctx (.primBinOp .intAdd) frontier [] (.primBinOp .intAdd) (.arrow (.prim .int) (.arrow (.prim .int) (.prim .int)))
+  | primBinOpIntSub : Infer K F frontier ctx (.primBinOp .intSub) frontier [] (.primBinOp .intSub) (.arrow (.prim .int) (.arrow (.prim .int) (.prim .int)))
+  | primBinOpIntLt :
+      LookupList.get? ctx.ctors ⟨"True"⟩ = some trueC → trueC.IsBoolCtor →
+      LookupList.get? ctx.ctors ⟨"False"⟩ = some falseC → falseC.IsBoolCtor →
+      Infer K F frontier ctx (.primBinOp .intLt) frontier [] (.primBinOp .intLt)
+        (.arrow (.prim .int) (.arrow (.prim .int) (.customTy ⟨"Bool"⟩ [])))
+  | primBinOpCharLt :
+      LookupList.get? ctx.ctors ⟨"True"⟩ = some trueC → trueC.IsBoolCtor →
+      LookupList.get? ctx.ctors ⟨"False"⟩ = some falseC → falseC.IsBoolCtor →
+      Infer K F frontier ctx (.primBinOp .charLt) frontier [] (.primBinOp .charLt)
+        (.arrow (.prim .char) (.arrow (.prim .char) (.customTy ⟨"Bool"⟩ [])))
+  | var : ctx.env[index]? = some scheme →
+      Infer K F frontier ctx (.var index) (frontier + scheme.paramCount) [] (.var index)
+        (scheme.openVars (freshVars frontier scheme.paramCount))
+  | ctor : LookupList.get? ctx.ctors name = some ctor →
+      Infer K F frontier ctx (.ctor name) (frontier + ctor.paramCount) [] (.ctor name)
+        (ctor.toTy.openVars (freshVars frontier ctor.paramCount))
   | lambda :
       SourceScope K F (.lambda ann body) →
       Seed (K ++ softVars F) frontier ann param initial →
@@ -469,9 +484,8 @@ theorem SignatureCheck.scheme_eq_close (h : SignatureCheck K F written frontier 
 theorem _root_.Infer.sourceScope (h : Infer K F frontier ctx input next subst output ty) :
     SourceScope K F input := by
   cases h with
-  | backend hemb _ _ _ hscope _ =>
-    intro v hv
-    exact List.mem_append_left _ (hscope v ((Input.toCore_rigidVars _ hemb v).mp hv))
+  | primLitUnit | primLitInt | primLitNat | primLitChar | primBinOpIntAdd | primBinOpIntSub | primBinOpIntLt _ _ _ _ | primBinOpCharLt _ _ _ _ | var _ | ctor _ =>
+      simp [SourceScope, Input.rigidVars]
   | lambda hs _ _ => exact hs
   | app hs _ _ _ => exact hs
   | letIn hs _ _ _ => exact hs
@@ -488,7 +502,7 @@ mutual
 theorem _root_.Infer.dom_avoids (h : Infer K F frontier ctx input next subst output ty) :
     ∀ pair ∈ subst, pair.1 ∉ K := by
   match h with
-  | .backend _ hi _ _ _ _ => exact hi.dom_avoids
+  | .primLitUnit | .primLitInt | .primLitNat | .primLitChar | .primBinOpIntAdd | .primBinOpIntSub | .primBinOpIntLt _ _ _ _ | .primBinOpCharLt _ _ _ _ | .var _ | .ctor _ => simp
   | .lambda _ _ hb => exact hb.dom_avoids
   | .app _ hf ha hu => exact avoids_append (avoids_append hf.dom_avoids ha.dom_avoids) hu.dom_avoids
   | .letIn _ hr hc hb => exact avoids_append (avoids_append hr.dom_avoids hc.dom_avoids) hb.dom_avoids
@@ -696,7 +710,20 @@ mutual
 theorem _root_.Infer.lc (h : Infer K F frontier ctx input next subst output ty) :
     CtxWF ctx → ty.IsLC ∧ ∀ pair ∈ subst, pair.2.IsLC := by
   match h with
-  | .backend _ h _ _ _ _ => exact h.lc
+  | .primLitUnit => intro _; exact ⟨.prim, by simp⟩
+  | .primLitInt => intro _; exact ⟨.prim, by simp⟩
+  | .primLitNat => intro _; exact ⟨.prim, by simp⟩
+  | .primLitChar => intro _; exact ⟨.prim, by simp⟩
+  | .primBinOpIntAdd => intro _; exact ⟨.arrow .prim (.arrow .prim .prim), by simp⟩
+  | .primBinOpIntSub => intro _; exact ⟨.arrow .prim (.arrow .prim .prim), by simp⟩
+  | .primBinOpIntLt _ _ _ _ => intro _; exact ⟨.arrow .prim (.arrow .prim (.customTy (by simp))), by simp⟩
+  | .primBinOpCharLt _ _ _ _ => intro _; exact ⟨.arrow .prim (.arrow .prim (.customTy (by simp))), by simp⟩
+  | .var hlook =>
+      intro hctx
+      exact ⟨PolyTy.openVars_isLC (hctx _ (List.mem_of_getElem? hlook)) (by simp), by simp⟩
+  | .ctor hlook =>
+      intro _
+      exact ⟨PolyTy.openVars_isLC (Ctor.toTy_wf _) (by simp [Ctor.toTy]), by simp⟩
   | @Infer.lambda K F ann body frontier param initial ctx next subst completed bodyTy _ hs hb =>
       intro hctx
       have hbodyCtx : CtxWF { ctx with env := PolyTy.mkTrivial param :: ctx.env } := by
