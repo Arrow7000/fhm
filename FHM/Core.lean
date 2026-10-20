@@ -1787,26 +1787,6 @@ when we see a value in a particular type position.
 Note the asymmetry vs. simpler languages: a value of arrow type can be either
 a `lambda` *or* a partial ctor application (since constructors are curried). -/
 
-/-- Instantiation preserves the `wrapArrows ... (customTy ...)` shape: if you
-    instantiate a type of that shape, you get back a type of the same shape with
-    the same `customTy` name and the same number of arrow wrappers. -/
-private lemma InstantiatesBy.wrapArrows_customTy_form
-    {name : TyName} {args tys : List Ty} {τ : Ty}
-    (h : InstantiatesBy env (Ty.wrapArrows (.customTy name args) tys) τ) :
-    ∃ instArgs instTys, τ = Ty.wrapArrows (.customTy name instArgs) instTys := by
-  induction tys generalizing τ with
-  | nil =>
-    cases h with
-    | customTy _ => exact ⟨_, [], rfl⟩
-  | cons _ rest ih =>
-    cases h with
-    | arrow _ h_rest =>
-      expose_names
-      obtain ⟨instArgs, instRest, h_eq⟩ := ih h_rest
-      refine ⟨instArgs, instFst :: instRest, ?_⟩
-      simp [Ty.wrapArrows, h_eq]
-
-
 /-! ## Progress -/
 
 namespace SmallStep
@@ -2925,40 +2905,6 @@ theorem RecGroups.validResidualGroupsB_sound
     have htarget' := hsource' target htarget
     simp only [hrhs, href, if_true, decide_eq_true_eq] at htarget'
     exact htarget'
-
-theorem RecGroups.validResidualGroupsB_complete
-    {anns : List (Option PolyTy)} {bindings : List Expr} {groups : List (List Nat)}
-    (hvalid : RecGroups.ValidResidualGroups anns bindings groups) :
-    RecGroups.validResidualGroupsB anns bindings groups = true := by
-  simp only [RecGroups.validResidualGroupsB, Bool.and_eq_true,
-    decide_eq_true_eq, List.all_eq_true]
-  refine ⟨⟨⟨⟨⟨hvalid.length, ?_⟩, hvalid.flatten_nodup⟩, ?_⟩, ?_⟩, ?_⟩
-  · intro component hcomponent
-    simpa using hvalid.nonempty component hcomponent
-  · intro member hmember
-    exact hvalid.bounded member hmember
-  · intro member hmember
-    apply beq_iff_eq.mpr
-    apply Bool.eq_iff_iff.mpr
-    simpa only [decide_eq_true_eq, RecGroups.unsignedAtB_eq_true_iff] using
-      hvalid.covers_unsigned member (List.mem_range.mp hmember)
-  · simp only [RecGroups.dependenciesFirstB, List.all_eq_true]
-    intro stage hstage dependencyStage hdependencyStage
-    have hstageLt := List.mem_range.mp hstage
-    have hdependencyStageLt := List.mem_range.mp hdependencyStage
-    simp only [List.getElem?_eq_getElem hstageLt,
-      List.getElem?_eq_getElem hdependencyStageLt]
-    intro source hsource target htarget
-    cases hrhs : bindings[source]? with
-    | none => simp
-    | some rhs =>
-        by_cases href : target ∈ rhs.recGroupRefs bindings.length 0
-        · simp only [href, if_true, decide_eq_true_eq]
-          exact hvalid.dependencies_first
-            (List.getElem?_eq_getElem hstageLt)
-            (List.getElem?_eq_getElem hdependencyStageLt)
-            hsource htarget hrhs href
-        · simp [href]
 
 /-- Well-formed derivation data for a recursion group: the (rule-internal)
     `specs` match the STORED annotations `anns` one-to-one, there is one spec per
@@ -6318,28 +6264,6 @@ theorem InstantiatesBy.eq_openWith {tyArgs : List Ty} {ty τ : Ty} {n : Nat}
 theorem Expr.size_pos (e : Expr) : 0 < e.size := by
   cases e <;> simp [Expr.size]
 
-private theorem Expr.size_le_of_mem_branches {p : MatchPattern} {b : Expr}
-    {brs : List (MatchPattern × Expr)} (h : (p, b) ∈ brs) :
-    b.size ≤ Expr.sizeBranches brs := by
-  induction brs with
-  | nil => exact absurd h List.not_mem_nil
-  | cons hd tl ih =>
-    obtain ⟨p', b'⟩ := hd
-    simp only [Expr.sizeBranches]
-    rcases List.mem_cons.mp h with heq | hmem
-    · rw [Prod.mk.injEq] at heq; obtain ⟨_, rfl⟩ := heq; omega
-    · have := ih hmem; omega
-
-private theorem Expr.size_le_of_mem_recGroup {e : Expr} {bs : List Expr} (h : e ∈ bs) :
-    e.size ≤ Expr.sizeRecGroup bs := by
-  induction bs with
-  | nil => exact absurd h List.not_mem_nil
-  | cons hd tl ih =>
-    simp only [Expr.sizeRecGroup]
-    rcases List.mem_cons.mp h with heq | hmem
-    · subst heq; omega
-    · have := ih hmem; omega
-
 /-! ## Preservation
 
 Subject reduction: a well-typed term that takes a step stays well-typed at the
@@ -6563,34 +6487,12 @@ private theorem List.mem_zip_self_map {α β : Type _} {g : α → β} {l : List
     | inl heq => subst heq; rfl
     | inr h' => exact ih h'
 
-/-- If `r` has the same length as `l` and `r` is pointwise `f` of `l` (over the
-    zip), then `r = l.map f`. -/
-private theorem List.map_eq_of_zip {α β : Type _} {f : α → β} :
-    ∀ {l : List α} {r : List β}, l.length = r.length →
-      (∀ p ∈ l.zip r, p.2 = f p.1) → r = l.map f := by
-  intro l
-  induction l with
-  | nil => intro r hlen _; cases r with | nil => rfl | cons => simp at hlen
-  | cons a as ih =>
-    intro r hlen hz
-    cases r with
-    | nil => simp at hlen
-    | cons b bs =>
-      have hhd : b = f a := hz (a, b) (by simp [List.zip_cons_cons])
-      have htl : bs = as.map f :=
-        ih (by simpa using hlen)
-          (fun p hp => hz p (by simp only [List.zip_cons_cons, List.mem_cons]; exact .inr hp))
-      rw [List.map_cons, hhd, htl]
-
 /-- `genGroup` at the empty pool is the trivial scheme: there is nothing to
     generalise. -/
 private theorem PolyTy.genGroup_nil {t : Ty} : PolyTy.genGroup [] t = PolyTy.mkTrivial t := by
   have hgf : Ty.genFilter [] t = [] := rfl
   have hcl : Ty.closeOver [] t = t := Ty.closeOver_eq_self_of_fresh (by simp)
   simp only [PolyTy.genGroup, hgf, List.length_nil, hcl, PolyTy.mkTrivial]
-
-/-- Renaming the empty pool is the identity. -/
-private theorem Ty.renameG_nil {τ : Ty} : Ty.renameG [] [] τ = τ := rfl
 
 /-- **renameG factors through `genFilter`.** Renaming all of `G` to a fresh,
     `τ`-avoiding pool `W` equals renaming only the relevant slice

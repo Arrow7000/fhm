@@ -2819,15 +2819,6 @@ private theorem Expr.mem_recGroup_tyFreeVars {bindings : List Expr} {y : Nat} :
   | cons hd tl ih =>
     simp only [Expr.tyFreeVars.RecGroup.tyFreeVars, List.flatMap_cons, List.mem_append, ih]
 
-private theorem Expr.length_le_sizeRecGroup (bindings : List Expr) :
-    bindings.length ≤ Expr.sizeRecGroup bindings := by
-  induction bindings with
-  | nil => simp [Expr.sizeRecGroup]
-  | cons e rest ih =>
-    simp only [List.length_cons, Expr.sizeRecGroup]
-    have := Expr.size_pos e
-    omega
-
 /-- A substitution whose keys avoid an env's free vars fixes that env. -/
 theorem Subst.onEnv_eq_self_of_fresh {S : Subst} {env : Env}
     (h : ∀ p ∈ S, p.1 ∉ env.freeVars) : S.onEnv env = env := by
@@ -2847,10 +2838,6 @@ private theorem genGroupVars_spec {rigid : List Nat} {env : Env} {τs : List Ty}
     g ∈ Ty.freeVarsList τs ∧ g ∉ env.freeVars ∧ g ∉ rigid := by
   simp only [genGroupVars, List.mem_filter, Bool.and_eq_true] at h
   exact ⟨h.1, by simpa using h.2.1, by simpa using h.2.2⟩
-
-/-- Applying the renaming substitution `G ↦ Xs` is `Ty.renameG`. -/
-private theorem Subst.onTy_zip_fvar_eq_renameG (G Xs : List Nat) (t : Ty) :
-    Subst.onTy (G.zip (Xs.map (Ty.fvar ·))) t = Ty.renameG G Xs t := rfl
 
 /-- Iterated `genGroup`/substitution commutation: a substitution whose domain and
     range both avoid the gen-var pool `G` commutes with `genGroup G`. -/
@@ -3215,23 +3202,6 @@ private theorem UnifyRel.sourceAvoid {t u : Ty} {S : Subst} {w : Nat}
     have hm := h.dom_mem p hp
     rw [heq] at hm
     exact hm.elim ht hu
-
-private theorem Subst.sourceAvoid_append {S T : Subst} {w : Nat}
-    (hS : (∀ p ∈ S, w ∉ p.2.freeVars) ∧ w ∉ S.map Prod.fst)
-    (hT : (∀ p ∈ T, w ∉ p.2.freeVars) ∧ w ∉ T.map Prod.fst) :
-    (∀ p ∈ S ++ T, w ∉ p.2.freeVars) ∧ w ∉ (S ++ T).map Prod.fst := by
-  exact ⟨fun p hp => (List.mem_append.mp hp).elim (hS.1 p) (hT.1 p),
-    by simpa only [List.map_append, List.mem_append, not_or] using And.intro hS.2 hT.2⟩
-
-private theorem Expr.sourceLocality_size_mem {e : Expr} {es : List Expr} (h : e ∈ es) :
-    e.size ≤ Expr.sizeRecGroup es := by
-  induction es with
-  | nil => simp at h
-  | cons a es ih =>
-    simp only [Expr.sizeRecGroup]
-    rcases List.mem_cons.mp h with rfl | h
-    · omega
-    · have := ih h; omega
 
 theorem RecGroupRefs.mem_branches {n depth i : Nat} {pat : MatchPattern} {body : Expr}
     {branches : List (MatchPattern × Expr)} (hb : (pat,body) ∈ branches)
@@ -4506,11 +4476,6 @@ theorem GeneralisesTo_inst_ann {ctx : Ctx} {ann : Option PolyTy} {e : Expr}
   exact hsub
 
 /-! ### Direct source-soundness support -/
-
-private theorem Ctor.IsBoolCtor.typeOfHM_direct {ctx : Ctx} {name : CtorName} {c : Ctor}
-    (hlook : LookupList.get? ctx.ctors name = some c) (hb : c.IsBoolCtor) :
-    TypeOfHM ctx (.ctor name) (.customTy ⟨"Bool"⟩ []) :=
-  Ctor.IsBoolCtor.typeOfHM hlook hb
 
 /-- Append form of fixed-term substitution transport for source subjects. -/
 theorem TypeOfHM.onSubst_fixed_append {ctx : Ctx} {e : Expr} {τ : Ty}
@@ -8459,27 +8424,6 @@ private theorem RecGroups.ValidResidualGroups.stage_unique
     rw [(List.getElem?_eq_some_iff.mp hright).2,
       (List.getElem?_eq_some_iff.mp hleft).2] at hdisjoint
     exact (List.disjoint_left.mp hdisjoint hmemRight hmemLeft).elim
-
-private theorem RecGroups.ValidResidualGroups.not_mem_take_of_mem
-    {anns : List (Option PolyTy)} {bindings : List Expr}
-    {groups : List (List Nat)}
-    (h : RecGroups.ValidResidualGroups anns bindings groups)
-    {stage member : Nat} {component : List Nat}
-    (hcomponent : groups[stage]? = some component) (hmember : member ∈ component) :
-    member ∉ (groups.take stage).flatten := by
-  intro hprefix
-  obtain ⟨prior, hpriorIn, hmemberPrior⟩ := List.mem_flatten.mp hprefix
-  obtain ⟨priorStage, hpriorStage⟩ := List.mem_iff_getElem?.mp hpriorIn
-  have hpriorLt : priorStage < stage := by
-    have := (List.getElem?_eq_some_iff.mp hpriorStage).1
-    simp only [List.length_take] at this
-    have hstageBound := (List.getElem?_eq_some_iff.mp hcomponent).1
-    omega
-  have hpriorOriginal : groups[priorStage]? = some prior := by
-    rw [List.getElem?_take, if_pos hpriorLt] at hpriorStage
-    exact hpriorStage
-  have heq := h.stage_unique hpriorOriginal hcomponent hmemberPrior hmember
-  omega
 
 private theorem RecGroups.ValidResidualGroups.stage_of_unsigned
     {anns : List (Option PolyTy)} {bindings : List Expr}

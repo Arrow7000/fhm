@@ -356,33 +356,6 @@ private theorem PolyTy.genGroup_generalizes_renameG_runtime {G Xs : List Nat}
           (gs := relevant) hopenedLC)
     simpa [PolyTy.genGroup, relevant, witnesses, hroundtrip] using hopen
 
-/-- Final recursive schemes pointwise generalise the monomorphic RHS entries
-at a suitably fresh shared opening. -/
-private theorem bodySchemes_generalize_rhsEntries_runtime
-    {specs : List RecSpec} {G Xs : List Nat}
-    (hG : G.Nodup) (hXsLen : Xs.length = G.length)
-    (hXsNodup : Xs.Nodup)
-    (hmonoLC : ∀ ty, RecSpec.mono ty ∈ specs → ty.IsLC)
-    (hGXs : ∀ g ∈ G, g ∉ Xs)
-    (hXsMono : ∀ ty, RecSpec.mono ty ∈ specs →
-      ∀ x ∈ Xs, x ∉ ty.freeVars) :
-    List.Forall₂ PolyTy.Generalizes
-      (specs.map (RecSpec.bodyScheme G))
-      (specs.map (RecSpec.rhsEntry G Xs)) := by
-  induction specs with
-  | nil => exact .nil
-  | cons spec rest ih =>
-      apply List.Forall₂.cons
-      · cases spec with
-        | mono ty =>
-            exact PolyTy.genGroup_generalizes_renameG_runtime
-              (hmonoLC ty List.mem_cons_self) hG hXsLen hXsNodup hGXs
-              (hXsMono ty List.mem_cons_self)
-        | poly scheme => exact PolyTy.Generalizes.refl scheme
-      · exact ih
-          (fun ty hty => hmonoLC ty (List.mem_cons_of_mem _ hty))
-          (fun ty hty => hXsMono ty (List.mem_cons_of_mem _ hty))
-
 /-- Every intermediate residual environment can be widened to the final
 schemes. Completed members already have their final scheme; pending members
 use the same fresh-opening generalization as the original mixed rule. -/

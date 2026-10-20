@@ -3871,11 +3871,6 @@ private theorem substInputBindings_eq_map_source (S : Subst) (bindings : List In
   | nil => rfl
   | cons rhs rest ih => simp only [substInputBindings, List.map_cons, ih]
 
-private theorem recRenameNames_getD_source (G W : List Nat) (prefixes : List (List Nat)) (i : Nat) :
-    (prefixes.map (recRenameNames G W))[i]?.getD [] = recRenameNames G W (prefixes[i]?.getD []) := by
-  rw [List.getElem?_map]
-  cases prefixes[i]? <;> rfl
-
 theorem BindingAnn.RecFits.onSubst_source {ann : BindingAnn} {names : List Nat} {ty : Ty}
     (h : ann.RecFits names ty) (S : Subst) (hlc : ∀ p ∈ S, p.2.IsLC)
     (hfix : ∀ name ∈ names, S.onTy (.fvar name) = .fvar name) :
