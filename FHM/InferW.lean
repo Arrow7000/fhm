@@ -5382,8 +5382,7 @@ private theorem RecState.Frame.poly_of_complete {state : RecState} {i : Nat} {sc
             _ = state.memberStates.length := by
               simp only [st, RecState.onSubst, RecState.installOpenings,
                 List.length_map, List.length_mapIdx]
-            _ = state.slots.length := (RecState.slots_length state).symm
-            _ = anns.length := hframe.slots_length]
+            _ = anns.length := hframe.memberStates_length]
         obtain ⟨ty, ht⟩ := hmono i hi
         simpa only [hframe.specs_length] using (List.getElem?_eq_some_iff.mp ht).1
       obtain ⟨ns, hns, hh⟩ := hresolve.lookup i _ (List.getElem?_eq_getElem hil)
@@ -6318,8 +6317,8 @@ theorem openRecSources_lookup {i : Nat} {rhs : InferInput} {opening : RecOpening
       simp only [hprefix,Option.getD_some]
       obtain ⟨a,b,opening,hop,hopen⟩ := OpenRecAnns.selected_lookup ho (by simpa using hi) ha
       have hislot : i < state.slots.length := by
-        rw [hframe.slots_length,←hframe.specs_length]
-        exact (List.getElem?_eq_some_iff.mp ht0').1
+        simpa only [RecState.slots_length, RecState.specs_length] using
+          (List.getElem?_eq_some_iff.mp ht0').1
       have hslots : st.slots[i]? = some (opening.written.map (fun v => (pre ++ current).onTy (.fvar v))) := by
         simpa only [st, hop, Option.getD_some, List.map_map, Function.comp_def] using
           (installed_subst_slot_value (S := pre ++ current) (openings := openings) hi hislot)
@@ -6744,8 +6743,8 @@ private theorem fidelity_fvar_map_inj {a b : List Nat}
       simp only [hn,Option.getD_some]
       obtain ⟨a,b,opening,hop,hopen⟩ := ho.selected_lookup (by simpa using hi) ha0
       have hislot : i < state.slots.length := by
-        rw [hframe.slots_length,←hframe.specs_length]
-        exact (List.getElem?_eq_some_iff.mp ht0').1
+        simpa only [RecState.slots_length, RecState.specs_length] using
+          (List.getElem?_eq_some_iff.mp ht0').1
       have hslots : st.slots[i]? = some (opening.written.map (fun v => (pre ++ current).onTy (.fvar v))) := by
         simpa only [st, hop, Option.getD_some, List.map_map, Function.comp_def] using
           (installed_subst_slot_value (S := pre ++ current) (openings := openings) hi hislot)
@@ -8542,7 +8541,7 @@ theorem Infer.completes_source (h : Infer K F frontier ctx input next subst outp
       (fun _ hi => hi.completes_source) (fun _ hi => hi.sourceSound)
       (Subst.onCtx_wf hS1 hctxWF) hLC1
       (fun k hk => by have := hK k hk; have := hstrata.frontier_le; omega)
-      (by simp) (by simp) hframe1.outputs_length
+      (by simp) (by simp) ((RecState.outputs_length state1).trans hframe1.memberStates_length)
       (fun j scheme ha => by simpa only [Nat.zero_add] using hframe1.complete_export ha) hfid1
     simp only [← substSoft_append, List.map_map, Function.comp_def,
       ← BindingAnn.substTyFvars_append, ← InferInput.substTyFvars_append] at hfid2
@@ -8569,11 +8568,13 @@ theorem Infer.completes_source (h : Infer K F frontier ctx input next subst outp
     have hschemeLen : schemes.length = anns.length := by
       have hh := congrArg List.length hexports
       simp only [List.length_map] at hh
-      exact hh.symm.trans (by simpa only [List.length_map] using hframe2.exports_length)
+      exact hh.symm.trans (by simpa only [List.length_map] using
+        (RecState.exports_length state2).trans hframe2.memberStates_length)
     have houtputLen : outputs.length = schemes.length := by
       have hh := congrArg List.length houtputs
       simp only [List.length_map] at hh
-      exact hh.symm.trans (by simpa only [List.length_map, hschemeLen] using hframe2.outputs_length)
+      exact hh.symm.trans (by simpa only [List.length_map, hschemeLen] using
+        (RecState.outputs_length state2).trans hframe2.memberStates_length)
     have hfixAll : ∀ k ∈ K, (s1 ++ s2 ++ s3).onTy (.fvar k) = .fvar k :=
       Subst.fixes_of_dom_avoids (fun p hp => (List.mem_append.mp hp).elim
         (fun hp => (List.mem_append.mp hp).elim (hstrata.dom_avoids p) (hsigned.dom_avoids p)) (hbody.dom_avoids p))

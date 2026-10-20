@@ -4467,8 +4467,7 @@ theorem RecResidual.fixedCtx_avoids
     obtain ⟨i,he⟩ := List.mem_iff_getElem?.mp hEntry
     have hi : i < state.specs.length := by
       have hb := (List.getElem?_eq_some_iff.mp he).1
-      rw [hframe.exports_length,← hframe.specs_length] at hb
-      exact hb
+      simpa only [RecState.exports_length, RecState.specs_length] using hb
     have hs := List.getElem?_eq_getElem hi
     cases hSpec : state.specs[i] with
     | mono ty =>
@@ -9253,7 +9252,8 @@ theorem RecState.Frame.exports_present
     (hDone : ∀ i ty,state.specs[i]? = some (.mono ty) → i ∈ done) :
     ∀ (i : Nat),i < state.exports.length → ∃ scheme,state.exports[i]? = some (some scheme) := by
   intro i hi
-  have hs : i < state.specs.length := by rw [h.specs_length,←h.exports_length];exact hi
+  have hs : i < state.specs.length := by
+    simpa only [RecState.exports_length, RecState.specs_length] using hi
   have hSpec := List.getElem?_eq_getElem hs
   cases heq : state.specs[i] with
   | mono ty =>
@@ -9281,7 +9281,7 @@ theorem InferRecSigned.collectors_of_strata
     exact hframe.mono_at_unsigned ((hvalid.covers_unsigned i (hvalid.bounded i hi)).mp hi)
   obtain ⟨_,hUnsigned⟩ := hs.outputs_present hSelected
   have hb : 0 + (anns.map (BindingAnn.substTyFvars S1)).length ≤ state1.outputs.length := by
-    rw [hframe1.outputs_length]
+    rw [RecState.outputs_length, hframe1.memberStates_length]
     omega
   obtain ⟨hKeep,hComplete⟩ := hp.outputs_present hb
   have hv2 := recValid_subst (recValid_subst hvalid S1) S2
@@ -9289,7 +9289,7 @@ theorem InferRecSigned.collectors_of_strata
   refine ⟨collectRecValues_complete (hframe2.exports_present hDone),collectRecValues_complete ?_⟩
   intro i hi
   have hiAnn : i < anns.length := by
-    simpa only [hframe2.outputs_length,List.length_map] using hi
+    simpa only [RecState.outputs_length, hframe2.memberStates_length, List.length_map] using hi
   have hAnn := List.getElem?_eq_getElem hiAnn
   cases heq : anns[i] with
   | complete scheme =>

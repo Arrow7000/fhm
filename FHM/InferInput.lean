@@ -7020,27 +7020,6 @@ structure RecState.Frame (base : Nat) (K : List Nat) (F : List Ty)
     (h : state.Frame base K F ctx anns done) : state.specs.length = anns.length :=
   (RecState.specs_length state).trans h.memberStates_length
 
- theorem RecState.Frame.slots_length {state : RecState} {base : Nat} {K : List Nat}
-    {F : List Ty} {ctx : Ctx} {anns : List BindingAnn} {done : List Nat}
-    (h : state.Frame base K F ctx anns done) : state.slots.length = anns.length :=
-  (RecState.slots_length state).trans h.memberStates_length
-
- theorem RecState.Frame.exports_length {state : RecState} {base : Nat} {K : List Nat}
-    {F : List Ty} {ctx : Ctx} {anns : List BindingAnn} {done : List Nat}
-    (h : state.Frame base K F ctx anns done) : state.exports.length = anns.length :=
-  (RecState.exports_length state).trans h.memberStates_length
-
- theorem RecState.Frame.outputs_length {state : RecState} {base : Nat} {K : List Nat}
-    {F : List Ty} {ctx : Ctx} {anns : List BindingAnn} {done : List Nat}
-    (h : state.Frame base K F ctx anns done) : state.outputs.length = anns.length :=
-  (RecState.outputs_length state).trans h.memberStates_length
-
- theorem RecState.Frame.entries_length {state : RecState} {base : Nat} {K : List Nat}
-    {F : List Ty} {ctx : Ctx} {anns : List BindingAnn} {done : List Nat}
-    (h : state.Frame base K F ctx anns done) :
-    state.entries.length = anns.length := by
-  rw [state.entries_length, h.specs_length]
-
  theorem RecState.Frame.init {base : Nat} {K : List Nat} {F : List Ty} {ctx : Ctx}
     {anns : List BindingAnn} (hctx : CtxBelow base ctx)
     (hanns : ∀ v ∈ anns.flatMap BindingAnn.rigidVars, v < base)
