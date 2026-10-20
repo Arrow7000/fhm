@@ -589,53 +589,6 @@ termination_by (sizeBindings bindings, 0)
 decreasing_by all_goals (simp only [sizeBindings, InferInput.size_openTyVars, sizeBindings_map_substTyFvars]; omega)
 end
 
- theorem InferRecComponent.lengths
-    (h : InferRecComponent K F members index frontier ctx bindings specs next S artifacts) :
-    artifacts.length = bindings.length ∧ specs.length = bindings.length := by
-  match h with
-  | .nil => exact ⟨rfl,rfl⟩
-  | .skipMono _ hr | .skipPoly hr =>
-      simpa only [List.length_cons, Nat.add_right_cancel_iff] using hr.lengths
-  | .consSelected _ _ _ hr =>
-      simpa only [List.length_cons, List.length_map, Nat.add_right_cancel_iff] using hr.lengths
-
- termination_by structural h
-
- theorem InferRecComponent.output_inv
-    (h : InferRecComponent K F members index frontier ctx bindings specs next S artifacts) :
-    ∀ j output, recComponentOutputAt artifacts j = some output →
-      index + j ∈ members ∧ ∃ ty, specs[j]? = some (.mono ty) := by
-  match h with
-  | .nil => intro j output hget; simp at hget
-  | .skipMono hskip hr =>
-      intro j output hget
-      cases j with
-      | zero => cases hget
-      | succ j =>
-        obtain ⟨hmem, target, htarget⟩ := hr.output_inv j output hget
-        exact ⟨by simpa only [Nat.add_assoc, Nat.add_comm 1 j] using hmem, target, htarget⟩
-  | .skipPoly hr =>
-      intro j output hget
-      cases j with
-      | zero => cases hget
-      | succ j =>
-        obtain ⟨hmem, target, htarget⟩ := hr.output_inv j output hget
-        exact ⟨by simpa only [Nat.add_assoc, Nat.add_comm 1 j] using hmem, target, htarget⟩
-  | .consSelected hsel hi hu hr =>
-      intro j output hget
-      cases j with
-      | zero => exact ⟨by simpa using hsel, _, rfl⟩
-      | succ j =>
-        obtain ⟨hmem, target, htarget⟩ := hr.output_inv j output hget
-        rw [List.getElem?_map] at htarget
-        obtain ⟨old, hold, heq⟩ := Option.map_eq_some_iff.mp htarget
-        cases old with
-        | poly scheme => cases heq
-        | mono ty =>
-            exact ⟨by simpa only [Nat.add_assoc, Nat.add_comm 1 j] using hmem, ty, hold⟩
-
- termination_by structural h
-
  theorem InferRecComponent.lc_of_infer
     (h : InferRecComponent K F members index frontier ctx bindings specs next S artifacts)
     (hInfer : ∀ {κ F' Ψ c e Ψ' T output ty}, e.size ≤ sizeBindings bindings →
