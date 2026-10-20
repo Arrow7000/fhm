@@ -142,7 +142,10 @@ inductive Infer : List Nat → List Ty → Nat → Ctx → InferInput → Nat �
   | app :
       SourceScope K F (.app f arg) →
       Infer K F frontier ctx f first s1 fOut fTy →
-      Infer K (substSoft s1 F) first (s1.onCtx ctx) (arg.substTyFvars s1) second s2 argOut argTy →
+      (let argSoft := substSoft s1 F
+       let argCtx := s1.onCtx ctx
+       let argInput := arg.substTyFvars s1
+       Infer K argSoft first argCtx argInput second s2 argOut argTy) →
       RigidUnify K (s2.onTy fTy) (.arrow argTy (.fvar second)) s3 →
       Infer K F frontier ctx (.app f arg) (second + 1) (s1 ++ s2 ++ s3)
         (.app (fOut.substTyFvars (s2 ++ s3)) (argOut.substTyFvars s3)) (s3.onTy (.fvar second))
@@ -150,18 +153,20 @@ inductive Infer : List Nat → List Ty → Nat → Ctx → InferInput → Nat �
       SourceScope K F (.letIn ann rhs body) →
       Infer K F frontier ctx rhs first s1 rhsOut rhsTy →
       LetCheck K (substSoft s1 F) first rhsTy (ann.substTyFvars s1) checked sCheck →
-      Infer K (substSoft (s1 ++ sCheck) F) checked
-        { (sCheck.onCtx (s1.onCtx ctx)) with
-          env := genScheme (K ++ softVars (substSoft (s1 ++ sCheck) F))
-            (sCheck.onCtx (s1.onCtx ctx)).env (sCheck.onTy rhsTy) ::
-            (sCheck.onCtx (s1.onCtx ctx)).env }
-        (body.substTyFvars (s1 ++ sCheck)) next s2 bodyOut bodyTy →
+      (let checkedSubst := s1 ++ sCheck
+       let checkedSoft := substSoft checkedSubst F
+       let checkedCtx := sCheck.onCtx (s1.onCtx ctx)
+       let generalized := genScheme (K ++ softVars checkedSoft) checkedCtx.env (sCheck.onTy rhsTy)
+       Infer K checkedSoft checked { checkedCtx with env := generalized :: checkedCtx.env }
+         (body.substTyFvars checkedSubst) next s2 bodyOut bodyTy) →
       Infer K F frontier ctx (.letIn ann rhs body) next (s1 ++ sCheck ++ s2)
-        (letOutput (genScheme (K ++ softVars (substSoft (s1 ++ sCheck) F))
-            (sCheck.onCtx (s1.onCtx ctx)).env (sCheck.onTy rhsTy))
-          (genVars (K ++ softVars (substSoft (s1 ++ sCheck) F))
-            (sCheck.onCtx (s1.onCtx ctx)).env (sCheck.onTy rhsTy))
-          (rhsOut.substTyFvars sCheck) bodyOut s2) bodyTy
+        (let checkedSubst := s1 ++ sCheck
+         let checkedSoft := substSoft checkedSubst F
+         let checkedCtx := sCheck.onCtx (s1.onCtx ctx)
+         let generalized := genScheme (K ++ softVars checkedSoft) checkedCtx.env (sCheck.onTy rhsTy)
+         let generalizedNames := genVars (K ++ softVars checkedSoft) checkedCtx.env (sCheck.onTy rhsTy)
+         letOutput generalized generalizedNames (rhsOut.substTyFvars sCheck) bodyOut s2)
+        bodyTy
   | letSignature :
       SourceScope K F (.letIn ann rhs body) →
       written = freshVars frontier ann.paramCount →
@@ -170,29 +175,38 @@ inductive Infer : List Nat → List Ty → Nat → Ctx → InferInput → Nat �
       Infer (K ++ written) F (frontier + ann.paramCount) ctx (rhs.openTyVars written)
         first s1 rhsOut rhsTy →
       SignatureCheck K (substSoft s1 F) written first rhsTy (ann.substTyFvars s1) checked sCheck →
-      (∀ name ∈ written, name ∉ (sCheck.onCtx (s1.onCtx ctx)).env.freeVars ++
-        softVars (substSoft (s1 ++ sCheck) F)) →
-      Infer K (substSoft (s1 ++ sCheck) F) checked
-        { (sCheck.onCtx (s1.onCtx ctx)) with
-          env := signatureScheme (ann.substTyFvars (s1 ++ sCheck))
-            (K ++ softVars (substSoft (s1 ++ sCheck) F)) written
-            (sCheck.onCtx (s1.onCtx ctx)) (sCheck.onTy rhsTy) ::
-            (sCheck.onCtx (s1.onCtx ctx)).env }
-        (body.substTyFvars (s1 ++ sCheck)) next s2 bodyOut bodyTy →
+      (let checkedSubst := s1 ++ sCheck
+       let checkedSoft := substSoft checkedSubst F
+       let checkedCtx := sCheck.onCtx (s1.onCtx ctx)
+       ∀ name ∈ written, name ∉ checkedCtx.env.freeVars ++ softVars checkedSoft) →
+      (let checkedSubst := s1 ++ sCheck
+       let checkedSoft := substSoft checkedSubst F
+       let checkedCtx := sCheck.onCtx (s1.onCtx ctx)
+       let checkedAnn := ann.substTyFvars checkedSubst
+       let bodyScheme := signatureScheme checkedAnn (K ++ softVars checkedSoft) written
+         checkedCtx (sCheck.onTy rhsTy)
+       Infer K checkedSoft checked { checkedCtx with env := bodyScheme :: checkedCtx.env }
+         (body.substTyFvars checkedSubst) next s2 bodyOut bodyTy) →
       Infer K F frontier ctx (.letIn ann rhs body) next (s1 ++ sCheck ++ s2)
-        (letOutput (signatureScheme (ann.substTyFvars (s1 ++ sCheck))
-            (K ++ softVars (substSoft (s1 ++ sCheck) F)) written
-            (sCheck.onCtx (s1.onCtx ctx)) (sCheck.onTy rhsTy))
-          (signatureNames (ann.substTyFvars (s1 ++ sCheck))
-            (K ++ softVars (substSoft (s1 ++ sCheck) F)) written
-            (sCheck.onCtx (s1.onCtx ctx)) (sCheck.onTy rhsTy))
-          (rhsOut.substTyFvars sCheck) bodyOut s2) bodyTy
+        (let checkedSubst := s1 ++ sCheck
+         let checkedSoft := substSoft checkedSubst F
+         let checkedCtx := sCheck.onCtx (s1.onCtx ctx)
+         let checkedAnn := ann.substTyFvars checkedSubst
+         let bodyScheme := signatureScheme checkedAnn (K ++ softVars checkedSoft) written
+           checkedCtx (sCheck.onTy rhsTy)
+         let bodyNames := signatureNames checkedAnn (K ++ softVars checkedSoft) written
+           checkedCtx (sCheck.onTy rhsTy)
+         letOutput bodyScheme bodyNames (rhsOut.substTyFvars sCheck) bodyOut s2)
+        bodyTy
   | match_ :
       SourceScope K F (.match_ scrut branches) →
       Infer K F frontier ctx scrut first s1 scrutOut scrutTy →
       branches ≠ [] →
-      InferBranches K (substSoft s1 F) (first + 1) (s1.onCtx ctx) scrutTy (.fvar first)
-        (substInputBranches s1 branches) next s2 branchesOut →
+      (let branchSoft := substSoft s1 F
+       let branchCtx := s1.onCtx ctx
+       let branchInputs := substInputBranches s1 branches
+       InferBranches K branchSoft (first + 1) branchCtx scrutTy (.fvar first)
+         branchInputs next s2 branchesOut) →
       Infer K F frontier ctx (.match_ scrut branches) next (s1 ++ s2)
         (.match_ (scrutOut.substTyFvars s2) branchesOut) (s2.onTy (.fvar first))
 
@@ -200,16 +214,23 @@ inductive Infer : List Nat → List Ty → Nat → Ctx → InferInput → Nat �
       (SourceScope K F (.letRec anns bindings body) ∧ CtxBelow frontier ctx ∧
         (∀ v ∈ K, v < frontier) ∧ (∀ v ∈ softVars F, v < frontier)) →
       (∀ scheme, .complete scheme ∈ anns → scheme.WF) →
-      (RecGroups.ValidResidualGroups (anns.map BindingAnn.recModeAnn) (bindings.map InferInput.erase) groups ∧
-        groups = RecGroup.inferenceSccs (anns.map BindingAnn.recModeAnn) (bindings.map InferInput.erase)) →
-      InferRecStrata K F (frontier + bindings.length) ctx anns bindings (RecState.init frontier anns)
-        groups first s1 state1 →
-      InferRecSigned K (substSoft s1 F) 0 first (s1.onCtx ctx)
-        (anns.map (BindingAnn.substTyFvars s1)) (bindings.map (InferInput.substTyFvars s1)) state1
-        second s2 state2 →
+      (let modes := anns.map BindingAnn.recModeAnn
+       let erasedBindings := bindings.map InferInput.erase
+       RecGroups.ValidResidualGroups modes erasedBindings groups ∧
+         groups = RecGroup.inferenceSccs modes erasedBindings) →
+      (let seededFrontier := frontier + bindings.length
+       let initialState := RecState.init frontier anns
+       InferRecStrata K F seededFrontier ctx anns bindings initialState groups first s1 state1) →
+      (let signedSoft := substSoft s1 F
+       let signedCtx := s1.onCtx ctx
+       let signedAnns := anns.map (BindingAnn.substTyFvars s1)
+       let signedBindings := bindings.map (InferInput.substTyFvars s1)
+       InferRecSigned K signedSoft 0 first signedCtx signedAnns signedBindings state1
+         second s2 state2) →
       state2.exports = schemes.map some → state2.outputs = outputs.map some →
-      Infer K (substSoft (s1 ++ s2) F) second (state2.rhsCtx ((s1 ++ s2).onCtx ctx))
-        (body.substTyFvars (s1 ++ s2)) next s3 bodyOut bodyTy →
+      (let recSubst := s1 ++ s2
+       Infer K (substSoft recSubst F) second (state2.rhsCtx (recSubst.onCtx ctx))
+         (body.substTyFvars recSubst) next s3 bodyOut bodyTy) →
       Infer K F frontier ctx (.letRec anns bindings body) next (s1 ++ s2 ++ s3)
         (.letRec ((schemes.map s3.onPolyTy).map some) (outputs.map (Expr.substTyFvars s3)) bodyOut) bodyTy
 
