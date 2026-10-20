@@ -2723,55 +2723,6 @@ def RecSpec.bodyScheme (G : List Nat) : RecSpec → PolyTy
   | .mono τ => PolyTy.genGroup G τ
   | .poly σ => σ
 
-/-- Legacy pointwise relation for the former monomorphic annotation ceiling.
-    The mixed recursive typing rule does not use this relation. -/
-def RecSpecs.CeilingRel (G : List Nat) (ann : Option PolyTy) (spec : RecSpec) : Prop :=
-  match ann, spec with
-    | some σ, .mono τ =>
-        PolyTy.Generalizes (PolyTy.genGroup G τ) σ
-    | some _, .poly _ => False
-    | none, _ => True
-
-/-- Legacy ceiling certificate. At an annotated position the solved member
-    must be monomorphic, and its scheme generalised over the shared pool must be
-    at least as general as the annotation.
-    Unannotated positions impose no ceiling. -/
-def RecSpecs.ceilingOK (G : List Nat) (anns : List (Option PolyTy))
-    (specs : List RecSpec) : Prop :=
-  List.Forall₂ (RecSpecs.CeilingRel G) anns specs
-
-/-- An all-unannotated recursion group has no ceiling obligations. -/
-theorem RecSpecs.ceilingOK_allNone (G : List Nat) (τs : List Ty) :
-    RecSpecs.ceilingOK G (List.replicate τs.length none) (τs.map RecSpec.mono) := by
-  unfold RecSpecs.ceilingOK
-  induction τs with
-  | nil => exact .nil
-  | cons τ τs ih => exact .cons trivial ih
-
-/-- Length-aligned annotations erased to `none` also have a vacuous ceiling. -/
-theorem RecSpecs.ceilingOK_mapNone {α : Type} (G : List Nat) (xs : List α)
-    (τs : List Ty) (hlen : xs.length = τs.length) :
-    RecSpecs.ceilingOK G (xs.map (fun _ => none)) (τs.map RecSpec.mono) := by
-  rw [List.map_const', hlen]
-  exact RecSpecs.ceilingOK_allNone G τs
-
-/-- Recover the positional ceiling fact for a member of the aligned zip. -/
-theorem RecSpecs.ceilingOK.of_mem_zip {G : List Nat} {anns : List (Option PolyTy)}
-    {specs : List RecSpec} (h : RecSpecs.ceilingOK G anns specs)
-    {ann : Option PolyTy} {spec : RecSpec} (hp : (ann, spec) ∈ anns.zip specs) :
-    RecSpecs.CeilingRel G ann spec := by
-  unfold RecSpecs.ceilingOK at h
-  induction h with
-  | nil => simp at hp
-  | cons hhd htl ih =>
-      simp only [List.zip_cons_cons, List.mem_cons] at hp
-      rcases hp with hpair | hp
-      · injection hpair with ha hs
-        subst ha
-        subst hs
-        exact hhd
-      · exact ih hp
-
 /-- The free type variables a spec's MONOTYPE contributes (schemes are
     pool-independent and handled pointwise, so they contribute nothing here).
     Used by `typ_subst`'s pool-freshening to dodge the shared monotypes. -/
@@ -2785,14 +2736,6 @@ def RecSpec.monoFreeVars : RecSpec → List Nat
 def RecSpec.substFreshened (Z : Nat) (U : Ty) (G W : List Nat) : RecSpec → RecSpec
   | .mono τ => .mono (Ty.substFvar Z U (Ty.renameG G W τ))
   | .poly σ => .poly (PolyTy.substFvar Z U σ)
-
-/-- Pin a spec's monotype at the pool opening `G ↦ Xs` (schemes are untouched).
-    Re-deriving the group with `specs.map (openAt G Xs)` at the empty pool makes the body env
-    coincide with the RHS env, so the rule's own cofinite premises supply the
-    re-wrapped member's typing directly. -/
-def RecSpec.openAt (G Xs : List Nat) : RecSpec → RecSpec
-  | .mono τ => .mono (Ty.renameG G Xs τ)
-  | .poly σ => .poly σ
 
 theorem RecSpec.ann_eq_none {s : RecSpec} (h : s.ann = none) : ∃ τ, s = .mono τ := by
   cases s with
@@ -3051,37 +2994,6 @@ structure RecSpecs.WF (anns : List (Option PolyTy)) (bindings : List Expr)
   nodup   : G.Nodup
   mono_lc : ∀ τ, RecSpec.mono τ ∈ specs → τ.IsLC
   poly_wf : ∀ σ, RecSpec.poly σ ∈ specs → σ.WF
-
-/-- Legacy cofinite premise for the former all-monomorphic recursion rule.
-    There is one
-    monotype per member (the rule's `τs`, aligned with `specs` by its
-    `hlen`/`hlink`/`hlc` premises), and at every sufficiently-fresh shared pool
-    opening `G ↦ Xs` (the SAME `Xs` for the whole group — what keeps mutual
-    monotype-sharing linked) each member's RHS types at its opened monotype
-    `Ty.renameG G Xs τᵢ`, in the **all-mono-rendered** group context: EVERY
-    member — annotated or not — sits at `mkTrivial (renameG G Xs τᵢ)`
-    (`RecSpecs.rhsCtx` over `τs.map RecSpec.mono`). An annotated member is
-    therefore NOT available at its declared scheme while the group's RHSs are
-    checked, exactly as in the algorithm. The annotation's role is confined to
-    the BODY context (`RecSpecs.bodyCtx`). The separate `RecSpecs.ceilingOK`
-    premise checks that each solved monotype supports its declared annotation.
-    Cofinite (à la
-    `letIn`, NOT existential) ⇒ sound under weakening. -/
-def RecSpecs.MonoTypedInit (TypeOf : Ctx → Expr → Ty → Prop) (ctx : Ctx)
-    (bindings : List Expr) (τs : List Ty) (G L : List Nat) : Prop :=
-  ∀ Xs, FreshNames L G.length Xs →
-    ∀ p ∈ bindings.zip τs,
-      TypeOf (RecSpecs.rhsCtx ctx (τs.map RecSpec.mono) G Xs) p.1 (Ty.renameG G Xs p.2)
-
-/-- Legacy one-shot cofinite checking for ordinary HM members of a mixed
-recursive group. Every `.mono τ` member shares the same pool opening `G ↦ Xs`;
-annotated siblings are already present at their complete schemes in `rhsCtx`.
-The production `letRec` rule instead uses `StratifiedMonoTyped`. -/
-def RecSpecs.MonoTyped (TypeOf : Ctx → Expr → Ty → Prop) (ctx : Ctx)
-    (bindings : List Expr) (specs : List RecSpec) (G L : List Nat) : Prop :=
-  ∀ Xs, FreshNames L G.length Xs →
-    ∀ pair ∈ bindings.zip specs, ∀ τ, pair.2 = .mono τ →
-      TypeOf (RecSpecs.rhsCtx ctx specs G Xs) pair.1 (Ty.renameG G Xs τ)
 
 /-- Cofinite typing of ordinary HM members one residual dependency SCC at a
 time. Earlier components are generalized in `stageCtx`; the current component

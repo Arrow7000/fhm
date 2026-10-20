@@ -27,6 +27,13 @@ namespace AnnotatedPolyRecHybrid
 
 open AnnotatedPolyRecErasure
 
+/-- Historical helper used to re-open the monomorphic members of this spike.
+It lives here, rather than in production `Core`, because no production rule
+uses the simultaneous mixed-recursion construction anymore. -/
+private def RecSpec.openAt (G Xs : List Nat) : RecSpec → RecSpec
+  | .mono τ => .mono (Ty.renameG G Xs τ)
+  | .poly σ => .poly σ
+
 /-- The proof-only recursive environment at one shared opening of the
 unannotated members' generalisation pool. -/
 def rhsEnv (env : Env) (specs : List RecSpec) (G Xs : List Nat) : Env :=
