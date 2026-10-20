@@ -1115,7 +1115,7 @@ theorem InferInput.substTyFvars_zip_openTyVars (input : InferInput) {Ys Xs : Lis
 
 /-- Sequential free substitution commutes with offset opening when its ranges
 are locally closed and its domain avoids the opening names. -/
-theorem _root_.Ty.substFvars_openVarsFrom {subst : List (Nat × Ty)} {Xs : List Nat}
+theorem Ty.substFvars_openVarsFrom {subst : List (Nat × Ty)} {Xs : List Nat}
     (hlc : ∀ pair ∈ subst, pair.2.IsLC) (hfresh : ∀ pair ∈ subst, pair.1 ∉ Xs)
     (ty : Ty) (d : Nat) :
     (ty.openVarsFrom d Xs).substFvars subst = (ty.substFvars subst).openVarsFrom d Xs := by
@@ -1687,7 +1687,7 @@ def recScheme (written pool : List Nat) (ty : Ty) : PolyTy :=
 
 /-- Complete signatures retain their exact scheme; monotypes use the member's
 own ordered written prefix and the shared pool. -/
-def _root_.RecSpec.completedScheme (written pool : List Nat) : RecSpec → PolyTy
+def RecSpec.completedScheme (written pool : List Nat) : RecSpec → PolyTy
   | .mono ty => recScheme written pool ty
   | .poly scheme => scheme
 
@@ -1761,13 +1761,13 @@ theorem recScheme_freeVars_outer {written pool outer : List Nat} {ty : Ty}
       (mem_recNames_of_mem_pool hpool hty) hv)
   · exact houter
 
-@[simp] theorem _root_.RecSpec.completedScheme_mono (written pool : List Nat) (ty : Ty) :
+@[simp] theorem RecSpec.completedScheme_mono (written pool : List Nat) (ty : Ty) :
     RecSpec.completedScheme written pool (.mono ty) = recScheme written pool ty := rfl
 
-@[simp] theorem _root_.RecSpec.completedScheme_poly (written pool : List Nat) (scheme : PolyTy) :
+@[simp] theorem RecSpec.completedScheme_poly (written pool : List Nat) (scheme : PolyTy) :
     RecSpec.completedScheme written pool (.poly scheme) = scheme := rfl
 
-theorem _root_.RecSpec.completedScheme_wf {written pool : List Nat} {spec : RecSpec}
+theorem RecSpec.completedScheme_wf {written pool : List Nat} {spec : RecSpec}
     (h : spec.LC) : (spec.completedScheme written pool).WF := by
   cases spec with
   | mono ty => exact recScheme_wf h
@@ -1775,7 +1775,7 @@ theorem _root_.RecSpec.completedScheme_wf {written pool : List Nat} {spec : RecS
 
 /-- Generic source transformation also updates free outer variables of complete
 contracts. Their quantified binder count and bound variables stay unchanged. -/
-def _root_.RecSpec.onSubstSource (S : Subst) : RecSpec → RecSpec
+def RecSpec.onSubstSource (S : Subst) : RecSpec → RecSpec
   | .mono ty => .mono (S.onTy ty)
   | .poly scheme => .poly (S.onPolyTy scheme)
 
@@ -2390,16 +2390,16 @@ theorem RecSpecs.WF.subst_fresh_pool {S : Subst} {G W : List Nat}
       exact Subst.onPolyTy_wf hS (h.poly_wf original ho)
 
 
-theorem _root_.RecSpec.lc_onSubstSource {S : Subst} (hS : ∀ p ∈ S, p.2.IsLC)
+theorem RecSpec.lc_onSubstSource {S : Subst} (hS : ∀ p ∈ S, p.2.IsLC)
     {spec : RecSpec} (hs : spec.LC) : (spec.onSubstSource S).LC := by
   cases spec with
   | mono ty => exact Subst.onTy_lc hS hs
   | poly scheme => exact Subst.onPolyTy_wf hS hs
 
-@[simp] theorem _root_.RecSpec.onSubstSource_nil (spec : RecSpec) : spec.onSubstSource [] = spec := by
+@[simp] theorem RecSpec.onSubstSource_nil (spec : RecSpec) : spec.onSubstSource [] = spec := by
   cases spec <;> simp [RecSpec.onSubstSource, Subst.onPolyTy, Subst.onTy, Ty.substFvars]
 
- theorem _root_.RecSpec.onSubstSource_append (spec : RecSpec) (first second : Subst) :
+ theorem RecSpec.onSubstSource_append (spec : RecSpec) (first second : Subst) :
     spec.onSubstSource (first ++ second) = (spec.onSubstSource first).onSubstSource second := by
   cases spec <;> simp only [RecSpec.onSubstSource, Subst.onTy_append, Subst.onPolyTy_append]
 
@@ -3678,7 +3678,7 @@ theorem BindingAnn.FitsMono.onSubst {K : List Nat} {ann : BindingAnn} {ty : Ty}
 
 /-- Constructor branch witnesses transport with LC substitutions; constructor
 field declarations themselves are closed and therefore unchanged. -/
-theorem _root_.BranchCtorSpec.onSubst {ctors : CtorEnv} {name : CtorName} {count : Nat}
+theorem BranchCtorSpec.onSubst {ctors : CtorEnv} {name : CtorName} {count : Nat}
     {scrutTy : Ty} {ctor : Ctor} {args fields : List Ty}
     (h : BranchCtorSpec ctors name count scrutTy ctor args fields)
     (subst : Subst) (hlc : ∀ pair ∈ subst, pair.2.IsLC) :
@@ -6119,7 +6119,7 @@ def RecState.onSubst (S : Subst) (state : RecState) : RecState :=
     facts := state.facts.map (RecFacts.onSubst S)
     pool := state.pool }
 
-def _root_.RecSpec.monoEntry : RecSpec → PolyTy
+def RecSpec.monoEntry : RecSpec → PolyTy
   | .mono ty => PolyTy.mkTrivial ty
   | .poly scheme => scheme
 

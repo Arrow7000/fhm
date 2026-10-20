@@ -956,7 +956,7 @@ theorem signed_candidate_dodge (S : Subst) (hS : ∀ p ∈ S, p.2.IsLC)
 
 /-- Internal source-transforming residual theorem. The local freeze premise
 concerns authored frozen leaves only; unrelated K/context variables may vary. -/
-def _root_.Infer.SourcePrincipal (_h : Infer K F frontier ctx input next subst output ty) : Prop :=
+def Infer.SourcePrincipal (_h : Infer K F frontier ctx input next subst output ty) : Prop :=
   CtxWF ctx → CtxBelow frontier ctx → (∀ k ∈ K, k < frontier) →
   (∀ soft ∈ F, Ty.BelowFvars frontier soft) →
   ∀ (ambient : Subst) (target : Ty) (P : List Nat),
@@ -972,7 +972,7 @@ def _root_.Infer.SourcePrincipal (_h : Infer K F frontier ctx input next subst o
 /-- Residual principality retains an independently quantified protected set.
 `InputTyping P` scopes authored fixed types in precisely that protected set. It does
 not claim most-general fillings for every unused annotation hole. -/
-def _root_.Infer.Principal (_h : Infer K F frontier ctx input next subst output ty) : Prop :=
+def Infer.Principal (_h : Infer K F frontier ctx input next subst output ty) : Prop :=
   CtxWF ctx → CtxBelow frontier ctx → (∀ k ∈ K, k < frontier) →
   (∀ soft ∈ F, Ty.BelowFvars frontier soft) →
   ∀ (ambient : Subst) (target : Ty) (P : List Nat),
@@ -984,7 +984,7 @@ def _root_.Infer.Principal (_h : Infer K F frontier ctx input next subst output 
       (∀ p ∈ P, residual.onTy (.fvar p) = .fvar p) ∧
       Subst.AgreesBelow frontier ambient (subst ++ residual)
 
-theorem _root_.Infer.SourcePrincipal.principal {h : Infer K F frontier ctx input next subst output ty}
+theorem Infer.SourcePrincipal.principal {h : Infer K F frontier ctx input next subst output ty}
     (ih : Infer.SourcePrincipal h) : Infer.Principal h := by
   intro hwf hctx hK hF ambient target P hS hP hfix ht
   have heq := input.substTyFvars_eq_self_of_fixes (fun v hv => hfix v (ht.rigidVars v hv))
@@ -1032,7 +1032,7 @@ theorem SourceScope.residual_freeze {K : List Nat} {F : List Ty} {input : InferI
   rw [Subst.onTy_append, hfixed, hfreeze original horiginal horiginalK horiginalNotF] at hag
   exact hag.symm
 
- theorem _root_.InferRecComponent.sourcePrincipal_of_infer
+ theorem InferRecComponent.sourcePrincipal_of_infer
     (h : InferRecComponent K F members index frontier ctx bindings specs next S outputs facts)
     (hInfer : ∀ {κ F' Ψ c e Ψ' T output ty}, e.size ≤ sizeBindings bindings →
       (hi : Infer κ F' Ψ c e Ψ' T output ty) → Infer.SourcePrincipal hi)
@@ -1387,7 +1387,7 @@ def prefixRepresentatives (actual candidate : List Nat) : List Nat :=
           exact htail j opening' names' target'
             (by simpa [Nat.add_assoc,Nat.add_comm,Nat.add_left_comm] using hm') ho hn ht
 
-theorem _root_.Infer.sourcePrincipal_primLitUnit :
+theorem Infer.sourcePrincipal_primLitUnit :
     Infer.SourcePrincipal (K := K) (F := F) (frontier := frontier) (ctx := ctx)
       (input := (.primLit .unit)) (.primLitUnit) := by
   intro _ _ _ _ ambient target P hAmbient _ hFix _ ht
@@ -1396,7 +1396,7 @@ theorem _root_.Infer.sourcePrincipal_primLitUnit :
   refine ⟨ambient, hAmbient, ?_, hFix, fun _ _ => rfl⟩
   simp only [Subst.onTy_prim]
 
-theorem _root_.Infer.sourcePrincipal_primLitInt :
+theorem Infer.sourcePrincipal_primLitInt :
     Infer.SourcePrincipal (K := K) (F := F) (frontier := frontier) (ctx := ctx)
       (input := (.primLit (.int value))) (.primLitInt) := by
   intro _ _ _ _ ambient target P hAmbient _ hFix _ ht
@@ -1405,7 +1405,7 @@ theorem _root_.Infer.sourcePrincipal_primLitInt :
   refine ⟨ambient, hAmbient, ?_, hFix, fun _ _ => rfl⟩
   simp only [Subst.onTy_prim]
 
-theorem _root_.Infer.sourcePrincipal_primLitNat :
+theorem Infer.sourcePrincipal_primLitNat :
     Infer.SourcePrincipal (K := K) (F := F) (frontier := frontier) (ctx := ctx)
       (input := (.primLit (.nat value))) (.primLitNat) := by
   intro _ _ _ _ ambient target P hAmbient _ hFix _ ht
@@ -1414,7 +1414,7 @@ theorem _root_.Infer.sourcePrincipal_primLitNat :
   refine ⟨ambient, hAmbient, ?_, hFix, fun _ _ => rfl⟩
   simp only [Subst.onTy_prim]
 
-theorem _root_.Infer.sourcePrincipal_primLitChar :
+theorem Infer.sourcePrincipal_primLitChar :
     Infer.SourcePrincipal (K := K) (F := F) (frontier := frontier) (ctx := ctx)
       (input := (.primLit (.char value))) (.primLitChar) := by
   intro _ _ _ _ ambient target P hAmbient _ hFix _ ht
@@ -1423,7 +1423,7 @@ theorem _root_.Infer.sourcePrincipal_primLitChar :
   refine ⟨ambient, hAmbient, ?_, hFix, fun _ _ => rfl⟩
   simp only [Subst.onTy_prim]
 
-theorem _root_.Infer.sourcePrincipal_primBinOpIntAdd :
+theorem Infer.sourcePrincipal_primBinOpIntAdd :
     Infer.SourcePrincipal (K := K) (F := F) (frontier := frontier) (ctx := ctx)
       (input := (.primBinOp .intAdd)) (.primBinOpIntAdd) := by
   intro _ _ _ _ ambient target P hAmbient _ hFix _ ht
@@ -1432,7 +1432,7 @@ theorem _root_.Infer.sourcePrincipal_primBinOpIntAdd :
   refine ⟨ambient, hAmbient, ?_, hFix, fun _ _ => rfl⟩
   simp only [Subst.onTy_prim, Subst.onTy_arrow]
 
-theorem _root_.Infer.sourcePrincipal_primBinOpIntSub :
+theorem Infer.sourcePrincipal_primBinOpIntSub :
     Infer.SourcePrincipal (K := K) (F := F) (frontier := frontier) (ctx := ctx)
       (input := (.primBinOp .intSub)) (.primBinOpIntSub) := by
   intro _ _ _ _ ambient target P hAmbient _ hFix _ ht
@@ -1441,7 +1441,7 @@ theorem _root_.Infer.sourcePrincipal_primBinOpIntSub :
   refine ⟨ambient, hAmbient, ?_, hFix, fun _ _ => rfl⟩
   simp only [Subst.onTy_prim, Subst.onTy_arrow]
 
-theorem _root_.Infer.sourcePrincipal_primBinOpIntLt
+theorem Infer.sourcePrincipal_primBinOpIntLt
     (hTrue : LookupList.get? ctx.ctors ⟨"True"⟩ = some trueC) (hTrueBool : trueC.IsBoolCtor)
     (hFalse : LookupList.get? ctx.ctors ⟨"False"⟩ = some falseC) (hFalseBool : falseC.IsBoolCtor) :
     Infer.SourcePrincipal (K := K) (F := F) (frontier := frontier) (ctx := ctx)
@@ -1452,7 +1452,7 @@ theorem _root_.Infer.sourcePrincipal_primBinOpIntLt
   refine ⟨ambient, hAmbient, ?_, hFix, fun _ _ => rfl⟩
   simp only [Subst.onTy_prim, Subst.onTy_arrow, Subst.onTy_customTy, List.map_nil]
 
-theorem _root_.Infer.sourcePrincipal_primBinOpCharLt
+theorem Infer.sourcePrincipal_primBinOpCharLt
     (hTrue : LookupList.get? ctx.ctors ⟨"True"⟩ = some trueC) (hTrueBool : trueC.IsBoolCtor)
     (hFalse : LookupList.get? ctx.ctors ⟨"False"⟩ = some falseC) (hFalseBool : falseC.IsBoolCtor) :
     Infer.SourcePrincipal (K := K) (F := F) (frontier := frontier) (ctx := ctx)
@@ -1463,7 +1463,7 @@ theorem _root_.Infer.sourcePrincipal_primBinOpCharLt
   refine ⟨ambient, hAmbient, ?_, hFix, fun _ _ => rfl⟩
   simp only [Subst.onTy_prim, Subst.onTy_arrow, Subst.onTy_customTy, List.map_nil]
 
-theorem _root_.Infer.sourcePrincipal_var {ctx : Ctx}
+theorem Infer.sourcePrincipal_var {ctx : Ctx}
     (hlook : ctx.env[index]? = some scheme) :
     Infer.SourcePrincipal (K := K) (F := F) (frontier := frontier) (.var hlook) := by
   intro hwf hbelow _ _ ambient target P hAmbient hP hFix _ ht
@@ -1478,7 +1478,7 @@ theorem _root_.Infer.sourcePrincipal_var {ctx : Ctx}
       (hbelow scheme (List.mem_of_getElem? hlook)).mem_lt hArgs
     exact ⟨R, hR, hType, hRP, fun v hv => (hAgree v hv).symm⟩
 
-theorem _root_.Infer.sourcePrincipal_ctor {ctx : Ctx}
+theorem Infer.sourcePrincipal_ctor {ctx : Ctx} {ctor : Ctor}
     (hlook : LookupList.get? ctx.ctors name = some ctor) :
     Infer.SourcePrincipal (K := K) (F := F) (frontier := frontier) (.ctor hlook) := by
   intro _ _ _ _ ambient target P hAmbient hP hFix _ ht
@@ -1495,7 +1495,7 @@ theorem _root_.Infer.sourcePrincipal_ctor {ctx : Ctx}
       (fun v hv => False.elim ((Ctor.toTy_body_noFreeVars ctor).not_mem_freeVars v hv)) hArgs
     exact ⟨R, hR, hType, hRP, fun v hv => (hAgree v hv).symm⟩
 
-theorem _root_.Infer.sourcePrincipal_lambda {ctx : Ctx}
+theorem Infer.sourcePrincipal_lambda {ctx : Ctx}
     (hscope : SourceScope K F (.lambda ann body))
     (hs : Seed (K ++ softVars F) frontier ann param initial)
     (hb : Infer K F initial { ctx with env := PolyTy.mkTrivial param :: ctx.env }
@@ -1544,7 +1544,7 @@ theorem _root_.Infer.sourcePrincipal_lambda {ctx : Ctx}
   rw [Subst.onTy_append, hUparam] at hp
   exact hp
 
-theorem _root_.Infer.sourcePrincipal_app
+theorem Infer.sourcePrincipal_app
     (hscope : SourceScope K F (.app f arg))
     (hf : Infer K F frontier ctx f first s1 fOut fTy)
     (ha : Infer K (substSoft s1 F) first (s1.onCtx ctx) (arg.substTyFvars s1) second s2 argOut argTy)
@@ -1775,7 +1775,7 @@ theorem SignatureCheck.scheme_generalizes
   exact closeScheme_generalizes (Subst.onTy_lc (h.lc hlen hlc) hlc)
     hV hM hXnodup hXlen hXM htarget hXctx hXK (h.cover hlen hlc hsource)
 
-theorem _root_.Infer.source_signature_frame_aligned {rhs body : InferInput} {ann : BindingAnn}
+theorem Infer.source_signature_frame_aligned {rhs body : InferInput} {ann : BindingAnn}
     (hscope : SourceScope K F (.letIn ann rhs body))
     (hr : Infer (K ++ Ys) F (frontier + ann.paramCount) ctx (rhs.openTyVars Ys) first s1 rhsOut rhsTy)
     (hc : SignatureCheck K (substSoft s1 F) Ys first rhsTy (ann.substTyFvars s1) checked sCheck)
@@ -2151,7 +2151,7 @@ theorem InputTyping.align_partial_prefix_with_fits {P : List Nat} {ctx : Ctx} {r
 
 /-- Shared signed continuation frame for an internally dodged candidate. The
 cofinite template and RHS premises use one aligned opening and one extra block. -/
-theorem _root_.Infer.source_signature_frame {rhs body : InferInput} {ann : BindingAnn}
+theorem Infer.source_signature_frame {rhs body : InferInput} {ann : BindingAnn}
     (hscope : SourceScope K F (.letIn ann rhs body))
     (hr : Infer (K ++ Ys) F (frontier + ann.paramCount) ctx (rhs.openTyVars Ys) first s1 rhsOut rhsTy)
     (hc : SignatureCheck K (substSoft s1 F) Ys first rhsTy (ann.substTyFvars s1) checked sCheck)
@@ -2362,7 +2362,7 @@ theorem InputTyping.signature_dodge_source
 
 /-- Reconcile a checked ordinary RHS with a declarative let scheme, then
 transport its continuation. Shared by both completeness directions. -/
-theorem _root_.Infer.source_let_frame
+theorem Infer.source_let_frame
     (hscope : SourceScope K F (.letIn ann rhs body))
     (hr : Infer K F frontier ctx rhs first s1 rhsOut rhsTy)
     (hc : LetCheck K (substSoft s1 F) first rhsTy (ann.substTyFvars s1) checked sCheck)
@@ -2495,7 +2495,7 @@ theorem _root_.Infer.source_let_frame
     · exact hcheckedB scheme hs
   exact ⟨V, hV, hVP, hagPrefix, hbodyD, hbodyWF, hbodyB, hprefixB⟩
 
-theorem _root_.Infer.sourcePrincipal_letIn
+theorem Infer.sourcePrincipal_letIn
     (hscope : SourceScope K F (.letIn ann rhs body))
     (hr : Infer K F frontier ctx rhs first s1 rhsOut rhsTy)
     (hc : LetCheck K (substSoft s1 F) first rhsTy (ann.substTyFvars s1) checked sCheck)
@@ -2524,7 +2524,7 @@ theorem _root_.Infer.sourcePrincipal_letIn
 
 /-- Residual factorization for a nonempty branch thread. The independent
 protected set scopes authored annotations; both common type images are explicit. -/
-def _root_.InferBranches.SourcePrincipal
+def InferBranches.SourcePrincipal
     (_h : InferBranches K F frontier ctx scrutTy resultTy branches next subst completed)
     (_hne : branches ≠ []) : Prop :=
   CtxWF ctx → CtxBelow frontier ctx → (∀ k ∈ K, k < frontier) →
@@ -2629,7 +2629,7 @@ theorem BranchTyping.factor_named
       rwa [← hbodyCtxEq] at hbE
     exact ⟨R₀, hR₀, hR₀K, hAgreeBelow₀, hbE'⟩
 
-theorem _root_.InferBranches.nil_det
+theorem InferBranches.nil_det
     (h : InferBranches κ F Φ ctx st rt [] Φ' S out) : Φ' = Φ ∧ S = [] := by
   cases h
   exact ⟨rfl, rfl⟩
@@ -2672,7 +2672,7 @@ private theorem branch_freeze_frame {κ : List Nat} {F : List Ty} {bs : List (Ma
       v ∈ κ → v ∉ softVars (substSoft solved F) → residual.onTy (.fvar v) = .fvar v := by
   exact SourceScope.residual_freeze (input := .match_ (.var 0) bs) hscope hbelow hprefix hfreeze hag
 set_option maxRecDepth 4096 in
-theorem _root_.InferBranches.sourcePrincipal_of_body
+theorem InferBranches.sourcePrincipal_of_body
     (h : InferBranches κ F Φ ctx scrutTy ρ brs Φ' S out) (hne : brs ≠ [])
     (bodyIH : ∀ body : InferInput, body.size < sizeBranches brs →
       ∀ {κ F' f c n s o t} (hb : Infer κ F' f c body n s o t), Infer.SourcePrincipal hb) :
@@ -3012,7 +3012,7 @@ termination_by sizeBranches brs
 decreasing_by all_goals (subst_vars; simp only [sizeBranches_substInputBranches, sizeBranches]; omega)
 
 
-theorem _root_.Infer.sourcePrincipal_match
+theorem Infer.sourcePrincipal_match
     (hscope : SourceScope K F (.match_ scrut branches))
     (hs : Infer K F frontier ctx scrut first s1 scrutOut scrutTy)
     (hne : branches ≠ [])
@@ -3087,7 +3087,7 @@ private theorem principal_branch_size_lt {branch : MatchPattern × InferInput}
     · simp only [sizeBranches]; omega
     · have := ih h; simp only [sizeBranches]; omega
 
-theorem _root_.Infer.sourcePrincipal_letSignature {rhs body : InferInput} {ann : BindingAnn}
+theorem Infer.sourcePrincipal_letSignature {rhs body : InferInput} {ann : BindingAnn}
     (hscope : SourceScope K F (.letIn ann rhs body))
     (hprefix : written = freshVars frontier ann.paramCount)
     (havoid : ∀ name ∈ written, name ∉ K ++ softVars F)
@@ -3898,7 +3898,7 @@ theorem RecResidual.dodge
       (fun pair hp hx => hBDom pair hp (List.mem_append_right _ hx)) hBP hCtxRound hMonoRound hPolyRound
 
 /-- Restoring a moved candidate acts after the algorithm's solved substitution. -/
-theorem _root_.Subst.AgreesBelow.restore_after {N : Nat} {ambient moved solved residual back : Subst}
+theorem Subst.AgreesBelow.restore_after {N : Nat} {ambient moved solved residual back : Subst}
     (h : Subst.AgreesBelow N moved (solved ++ residual))
     (hBack : ∀ v,v < N → back.onTy (moved.onTy (.fvar v)) = ambient.onTy (.fvar v)) :
     Subst.AgreesBelow N ambient (solved ++ (residual ++ back)) := by
@@ -4697,7 +4697,7 @@ theorem RecResidual.restore_prefixRepresentatives
     exact hXR x hx ((List.mem_singleton.mp hv) ▸ hr)
 
 /-- Restore agreement on every old variable, using its actual ambient image. -/
-theorem _root_.Subst.AgreesBelow.restore_prefixRepresentatives
+theorem Subst.AgreesBelow.restore_prefixRepresentatives
     {N : Nat} {R solved residual : Subst} {C reps : List Nat}
     (h : Subst.AgreesBelow N (R ++ C.dedup.zip (reps.map Ty.fvar)) (solved ++ residual))
     (hRepLen : reps.length = C.dedup.length) (hReps : reps.Nodup)
@@ -4754,7 +4754,7 @@ theorem FinishRecComponent.export_fresh_of_agrees
     rw [Subst.onTy_append] at hh
     exact hXsF x hx (mem_softVars_substSoft.mpr ⟨original,horiginal,hh ▸ hxOriginal⟩)
 
- theorem _root_.InferRecComponent.sourcePrincipal_after_shapes
+ theorem InferRecComponent.sourcePrincipal_after_shapes
     {specs : List RecSpec} {bindings : List InferInput}
     (hshape : CheckRecShapes K shapes pre)
     (hcomponent : InferRecComponent K (substSoft pre F) members index frontier (pre.onCtx ctx)
@@ -4896,7 +4896,7 @@ theorem RecResidual.weaken_from_body
   rw [hctx]
   exact ht'
 
-theorem _root_.Infer.signed_check_factor
+theorem Infer.signed_check_factor
     {K P : List Nat} {F : List Ty} {frontier first : Nat} {ctx : Ctx}
     {rhs : InferInput} {scheme : PolyTy} {s1 s2 R : Subst} {output : Expr} {ty : Ty}
     (hwf : scheme.WF)
@@ -4997,7 +4997,7 @@ private theorem signed_ann_freeze {ann : BindingAnn} {K : List Nat} {F : List Ty
   simpa only [InferInput.substTyFvars, InferInput.rigidVars, List.append_nil] using
     hs.residual_freeze hb hsolved hf hag
 
- theorem _root_.InferRecSigned.sourcePrincipal_residual
+ theorem InferRecSigned.sourcePrincipal_residual
     (h : InferRecSigned K F index frontier ctx anns bindings state next S final)
     (hInfer : ∀ {κ F' Ψ c e Ψ' T output ty}, e.size ≤ sizeBindings bindings →
       (hi : Infer κ F' Ψ c e Ψ' T output ty) → Infer.SourcePrincipal hi)
@@ -5518,7 +5518,7 @@ theorem RecResidual.close_opened_component
     hfreezeOpened hcandidate hexports hdisjoint hdeclLC hG hprefix hXsLen hXsND hGXs hXsTypes
     hXsCtx hXsK hXsF
 
-private theorem _root_.InferRecStrata.sourcePrincipal_residual_of_step
+private theorem InferRecStrata.sourcePrincipal_residual_of_step
     {P G Xs : List Nat} {declCtx : Ctx} {declAnns : List BindingAnn}
     {declBindings : List InferInput} {declSpecs : List RecSpec}
     {declPrefixes : List (List Nat)} {cutoff base : Nat}
@@ -5858,7 +5858,7 @@ theorem InputTyping.rec_inv_high (floor : Nat) (h : InputTyping K ctx (.letRec a
     exact hb
 
 set_option maxHeartbeats 2000000 in
-theorem _root_.Infer.sourcePrincipal_letRec_of_unsigned
+theorem Infer.sourcePrincipal_letRec_of_unsigned
     {K : List Nat} {F : List Ty} {frontier first second next : Nat} {ctx : Ctx}
     {anns : List BindingAnn} {bindings : List InferInput} {body : InferInput}
     {s1 s2 s3 : Subst} {state1 state2 : RecState} {groups : List (List Nat)}
@@ -7106,7 +7106,7 @@ theorem RecResidual.successful_step
     prepared.typesFresh prepared.ctxFresh prepared.rigidFresh prepared.softFresh
   exact prepared.restore (pre ++ current) exported T hag hresT
 
-theorem _root_.Infer.sourcePrincipal (h : Infer K F frontier ctx input next subst output ty) :
+theorem Infer.sourcePrincipal (h : Infer K F frontier ctx input next subst output ty) :
     Infer.SourcePrincipal h := by
   match h with
   | .primLitUnit => exact Infer.sourcePrincipal_primLitUnit
@@ -7146,7 +7146,7 @@ decreasing_by
   all_goals (simp only [InferInput.size, InferInput.size_openTyVars, InferInput.size_substTyFvars]; omega)
 
 /-- The public residual contract retains independent P and its protection. -/
-theorem _root_.Infer.principal (h : Infer K F frontier ctx input next subst output ty) :
+theorem Infer.principal (h : Infer K F frontier ctx input next subst output ty) :
     Infer.Principal h := h.sourcePrincipal.principal
 
 end
@@ -7255,7 +7255,7 @@ theorem checkSignature_complete_source {K written : List Nat} {F : List Ty}
 
 /-- Internal producer contract for scoped soft-source visits. The bounded
 protected candidate set is independent of K; public completeness uses P=K. -/
-def _root_.InferWithTypesCoreSourceComplete (input : InferInput) : Prop :=
+def InferWithTypesCoreSourceComplete (input : InferInput) : Prop :=
   ∀ (K : List Nat) (F : List Ty) (frontier : Nat) (ctx : Ctx)
     (ambient : Subst) (target : Ty) (P : List Nat),
     SourceScope K F input → CtxWF ctx → CtxBelow frontier ctx →
@@ -7400,7 +7400,7 @@ def _root_.InferWithTypesCoreSourceComplete (input : InferInput) : Prop :=
 /-- Producer completeness for the concrete worker, under an arbitrary LC
 specialization fixing the inference's rigid variables. Successful results
 already carry output typing and residual principality. -/
-def _root_.InferWithTypesCoreComplete (input : InferInput) : Prop :=
+def InferWithTypesCoreComplete (input : InferInput) : Prop :=
   ∀ (K : List Nat) (frontier : Nat) (ctx : Ctx) (ambient : Subst) (target : Ty),
     CtxWF ctx → CtxBelow frontier ctx → (∀ k ∈ K, k < frontier) →
     (∀ pair ∈ ambient, pair.2.IsLC) →
@@ -7426,14 +7426,14 @@ private theorem source_all (hs : SourceScope K F input) :
     input.rigidVars.all (fun v => decide (v ∈ K ++ softVars F)) = true :=
   List.all_eq_true.mpr (fun v hv => decide_eq_true (hs v hv))
 
-theorem _root_.inferWithTypesCore_sourceComplete_primLit (lit : PrimLitExpr) :
+theorem inferWithTypesCore_sourceComplete_primLit (lit : PrimLitExpr) :
     InferWithTypesCoreSourceComplete (.primLit lit) := by
   intro K F frontier ctx ambient target P hscope _ hbelow hK hF _ _ _ _ _
   cases lit <;>
     simp only [inferWithTypesCore, dif_pos (rigid_all hK), dif_pos (ctx_all hbelow),
       dif_pos (soft_all hF), dif_pos (source_all hscope), Option.isSome_some]
 
-theorem _root_.inferWithTypesCore_sourceComplete_primBinOp (op : PrimBinOp) :
+theorem inferWithTypesCore_sourceComplete_primBinOp (op : PrimBinOp) :
     InferWithTypesCoreSourceComplete (.primBinOp op) := by
   intro K F frontier ctx ambient target P hscope _ hbelow hK hF _ _ _ _ ht
   have hc := (ht.toCore (core := .primBinOp op) rfl).1
@@ -7458,7 +7458,7 @@ theorem _root_.inferWithTypesCore_sourceComplete_primBinOp (op : PrimBinOp) :
         simp only [Ctor.isBoolCtor_iff.mpr hTrueBool, Ctor.isBoolCtor_iff.mpr hFalseBool,
           dite_true, Option.isSome_some]
 
-theorem _root_.inferWithTypesCore_sourceComplete_var (index : Nat) :
+theorem inferWithTypesCore_sourceComplete_var (index : Nat) :
     InferWithTypesCoreSourceComplete (.var index) := by
   intro K F frontier ctx ambient target P hscope _ hbelow hK hF _ _ _ _ ht
   have hc := (ht.toCore (core := .var index) rfl).1
@@ -7473,7 +7473,7 @@ theorem _root_.inferWithTypesCore_sourceComplete_var (index : Nat) :
       · rename_i heq; simp only [hlook] at heq; cases heq
       · rfl
 
-theorem _root_.inferWithTypesCore_sourceComplete_ctor (name : CtorName) :
+theorem inferWithTypesCore_sourceComplete_ctor (name : CtorName) :
     InferWithTypesCoreSourceComplete (.ctor name) := by
   intro K F frontier ctx ambient target P hscope _ hbelow hK hF _ _ _ _ ht
   have hc := (ht.toCore (core := .ctor name) rfl).1
@@ -7486,7 +7486,7 @@ theorem _root_.inferWithTypesCore_sourceComplete_ctor (name : CtorName) :
     · rename_i heq; simp only [hlook] at heq; cases heq
     · rfl
 
-theorem _root_.inferWithTypesCore_sourceComplete_lambda
+theorem inferWithTypesCore_sourceComplete_lambda
     (ih : ∀ e : InferInput, e.size ≤ body.size → InferWithTypesCoreSourceComplete e)
     {K : List Nat} {F : List Ty} {frontier : Nat} {ctx : Ctx} {ambient : Subst} {target : Ty} {P : List Nat}
     (hscope : SourceScope K F (.lambda ann body)) (hwf : CtxWF ctx) (hbelow : CtxBelow frontier ctx)
@@ -7544,7 +7544,7 @@ theorem _root_.inferWithTypesCore_sourceComplete_lambda
   simp only [hseedResult, hbodyResult, Option.isSome_some]
 
 
-theorem _root_.inferWithTypesCore_sourceComplete_app
+theorem inferWithTypesCore_sourceComplete_app
     (ihf : ∀ e : InferInput, e.size ≤ f.size → InferWithTypesCoreSourceComplete e)
     (iha : ∀ e : InferInput, e.size ≤ arg.size → InferWithTypesCoreSourceComplete e)
     (pf : ∀ e : InferInput, e.size ≤ f.size →
@@ -7629,7 +7629,7 @@ theorem _root_.inferWithTypesCore_sourceComplete_app
     dif_pos (soft_all hF), dif_pos (source_all hscope)]
   simp only [hfResult, haResult, huResult, Option.isSome_some]
 
-theorem _root_.inferWithTypesCore_sourceComplete_letIn
+theorem inferWithTypesCore_sourceComplete_letIn
     (ihr : ∀ e : InferInput, e.size ≤ rhs.size → InferWithTypesCoreSourceComplete e)
     (ihb : ∀ e : InferInput, e.size ≤ body.size → InferWithTypesCoreSourceComplete e)
     (prhs : ∀ e : InferInput, e.size ≤ rhs.size →
@@ -7711,7 +7711,7 @@ theorem _root_.inferWithTypesCore_sourceComplete_letIn
     dif_pos (soft_all hF), dif_pos (source_all hscope)]
   simp only [hmode, Bool.false_eq_true, ↓reduceIte, hrResult, hcResult, hbResult, Option.isSome_some]
 
-theorem _root_.inferWithTypesCore_sourceComplete_signature
+theorem inferWithTypesCore_sourceComplete_signature
     {ann : BindingAnn} {rhs body : InferInput}
     (ihr : ∀ e : InferInput, e.size ≤ rhs.size → InferWithTypesCoreSourceComplete e)
     (ihb : ∀ e : InferInput, e.size ≤ body.size → InferWithTypesCoreSourceComplete e)
@@ -7903,7 +7903,7 @@ private theorem producer_branch_candidates_frame {bs : List (MatchPattern × Inf
   exact hbr original horiginal
 
 
-def _root_.InferBranchesWithTypesCoreSourceComplete (branches : List (MatchPattern × InferInput)) : Prop :=
+def InferBranchesWithTypesCoreSourceComplete (branches : List (MatchPattern × InferInput)) : Prop :=
   ∀ (K : List Nat) (F : List Ty) (frontier : Nat) (ctx : Ctx) (scrutTy resultTy : Ty)
     (branchIndex : Nat) (ambient : Subst) (P : List Nat),
     (∀ v ∈ rigidBranchVars branches, v ∈ K ++ softVars F) →
@@ -7938,12 +7938,12 @@ private theorem residual_fixes_of_agrees {K : List Nat} {Φ : Nat} {ambient solv
   rw [Subst.onTy_append, hsolved k hk, hfix k hk] at hh
   exact hh.symm
 
-theorem _root_.inferBranchesWithTypesCore_sourceComplete_nil : InferBranchesWithTypesCoreSourceComplete [] := by
+theorem inferBranchesWithTypesCore_sourceComplete_nil : InferBranchesWithTypesCoreSourceComplete [] := by
   unfold InferBranchesWithTypesCoreSourceComplete
   intros
   simp only [inferBranchesWithTypesCore, rigidBranchVars, List.all_nil, dite_true, Option.isSome_some]
 
-theorem _root_.inferBranchesWithTypesCore_sourceComplete_wildcard
+theorem inferBranchesWithTypesCore_sourceComplete_wildcard
     (ihbody : ∀ e : InferInput, e.size ≤ body.size → InferWithTypesCoreSourceComplete e)
     (pbody : ∀ e : InferInput, e.size ≤ body.size →
       ∀ {κ F' Φ c n s o t} (h : Infer κ F' Φ c e n s o t), Infer.SourcePrincipal h)
@@ -8020,7 +8020,7 @@ theorem _root_.inferBranchesWithTypesCore_sourceComplete_wildcard
         (by simpa only [hscruteq, hresulteq] using hbr))
     simp only [inferBranchesWithTypesCore, dif_pos (branch_source_all hscope),
       hbResult, huResult, hrResult, Option.isSome_some]
-theorem _root_.inferBranchesWithTypesCore_sourceComplete_named
+theorem inferBranchesWithTypesCore_sourceComplete_named
     (ihbody : ∀ e : InferInput, e.size ≤ body.size → InferWithTypesCoreSourceComplete e)
     (pbody : ∀ e : InferInput, e.size ≤ body.size →
       ∀ {κ F' Φ c n s o t} (h : Infer κ F' Φ c e n s o t), Infer.SourcePrincipal h)
@@ -8189,7 +8189,7 @@ theorem _root_.inferBranchesWithTypesCore_sourceComplete_named
 
 
 set_option maxRecDepth 4096 in
-theorem _root_.inferBranchesWithTypesCore_sourceComplete_of_body (branches : List (MatchPattern × InferInput))
+theorem inferBranchesWithTypesCore_sourceComplete_of_body (branches : List (MatchPattern × InferInput))
     (bodyIH : ∀ e : InferInput, e.size < sizeBranches branches → InferWithTypesCoreSourceComplete e)
     (principalIH : ∀ e : InferInput, e.size < sizeBranches branches →
       ∀ {κ F' Φ c n s o t} (h : Infer κ F' Φ c e n s o t), Infer.SourcePrincipal h) :
@@ -8215,7 +8215,7 @@ theorem _root_.inferBranchesWithTypesCore_sourceComplete_of_body (branches : Lis
 termination_by sizeBranches branches
 decreasing_by all_goals (subst_vars; simp only [sizeBranches] at *; omega)
 
-theorem _root_.inferWithTypesCore_sourceComplete_match
+theorem inferWithTypesCore_sourceComplete_match
     (ihs : ∀ e : InferInput, e.size ≤ scrut.size → InferWithTypesCoreSourceComplete e)
     (ps : ∀ e : InferInput, e.size ≤ scrut.size →
       ∀ {κ F' Φ c n s o t} (h : Infer κ F' Φ c e n s o t), Infer.SourcePrincipal h)
@@ -9029,7 +9029,7 @@ private theorem inferRecStrataWithTypesCore_complete_of_step
         simpa only [substSoft_append,List.append_assoc] using hXFFinal
 termination_by groups.length
 
-theorem _root_.InferRecComponent.outputs_selected
+theorem InferRecComponent.outputs_selected
     (h : InferRecComponent K F members index frontier ctx bindings specs next S outputs facts) :
     ∀ (j : Nat) (ty : Ty),index+j ∈ members → specs[j]? = some (.mono ty) →
       ∃ output,outputs[j]? = some (some output) := by
@@ -9085,7 +9085,7 @@ theorem FinishRecComponent.outputs_present
     · exact hFill i hi
     · exact ⟨out,by simp only [RecState.exportComponent,List.getElem?_mapIdx,ho,Option.map_some,if_neg hi]⟩
 
-theorem _root_.InferRecStrata.outputs_present
+theorem InferRecStrata.outputs_present
     (h : InferRecStrata K F frontier ctx anns bindings state groups next S final)
     (hlen : state.outputs.length = state.specs.length)
     (hSelected : ∀ i ∈ groups.flatten,∃ ty,state.specs[i]? = some (.mono ty)) :
@@ -9143,7 +9143,7 @@ theorem RecState.output_setSigned {state : RecState} {member i : Nat} {written :
     exact ⟨output.closeTyVars written,by simp only [RecState.setSigned,List.getElem?_set_self hb]⟩
   · exact ⟨old,by simp only [RecState.setSigned,List.getElem?_set_ne (Ne.symm hi),ho]⟩
 
-theorem _root_.InferRecSigned.outputs_present
+theorem InferRecSigned.outputs_present
     (h : InferRecSigned K F index frontier ctx anns bindings state next S final)
     (hbound : index + anns.length ≤ state.outputs.length) :
     (∀ (i : Nat) (output : Expr),state.outputs[i]? = some (some output) → ∃ out,final.outputs[i]? = some (some out)) ∧
@@ -9222,7 +9222,7 @@ theorem RecState.Frame.exports_present
 
 
 
-theorem _root_.InferRecSigned.collectors_of_strata
+theorem InferRecSigned.collectors_of_strata
     (hs : InferRecStrata K F frontier ctx anns bindings state groups first S1 state1)
     (hp : InferRecSigned K (substSoft S1 F) 0 first (S1.onCtx ctx)
       (anns.map (BindingAnn.substTyFvars S1)) (bindings.map (InferInput.substTyFvars S1)) state1 second S2 state2)
@@ -10449,7 +10449,7 @@ private theorem inferWithTypesCore_sourceComplete_of_rec
 
 /-- Public fixed-source completeness is the F=[] specialization of source
 completeness; the source is fixed because its authored variables lie in K. -/
-theorem _root_.InferWithTypesCoreSourceComplete.complete
+theorem InferWithTypesCoreSourceComplete.complete
     {input : InferInput} (hc : InferWithTypesCoreSourceComplete input) : InferWithTypesCoreComplete input := by
   intro K frontier ctx ambient target hwf hbelow hK hS hfix ht
   have hraw : ∀ v ∈ input.rigidVars,v ∈ K := ht.rigidVars
@@ -10561,7 +10561,7 @@ private theorem inferWithTypesCore_sourceComplete_of_singleton
 /-- The sole artifact worker accepts every independently typed anonymous input.
 Recursive visits rechoose only private candidate names after each known opening
 allocation; no future frontier or candidate-type bound is required. -/
-theorem _root_.inferWithTypesCore_sourceComplete (input : InferInput) :
+theorem inferWithTypesCore_sourceComplete (input : InferInput) :
     InferWithTypesCoreSourceComplete input := by
   apply inferWithTypesCore_sourceComplete_of_singleton ?_ input
   intro P declCtx declAnns declBindings declSpecs declGroups declPrefixes G Xs base
@@ -10582,26 +10582,26 @@ theorem _root_.inferWithTypesCore_sourceComplete (input : InferInput) :
   exact ⟨one, hRun, V, hV, hVP, hag, hresFinal⟩
 
 /-- Public complete-source compatibility is a specialization of the same run. -/
-theorem _root_.inferWithTypesCore_complete (input : InferInput) : InferWithTypesCoreComplete input :=
+theorem inferWithTypesCore_complete (input : InferInput) : InferWithTypesCoreComplete input :=
   (inferWithTypesCore_sourceComplete input).complete
 
 
 /-- Completeness of the plain result API follows by projection of the same run. -/
-def _root_.InferCoreComplete (input : InferInput) : Prop :=
+def InferCoreComplete (input : InferInput) : Prop :=
   ∀ (K : List Nat) (frontier : Nat) (ctx : Ctx) (ambient : Subst) (target : Ty),
     CtxWF ctx → CtxBelow frontier ctx → (∀ k ∈ K, k < frontier) →
     (∀ pair ∈ ambient, pair.2.IsLC) →
     (∀ k ∈ K, ambient.onTy (.fvar k) = .fvar k) →
     InputTyping K (ambient.onCtx ctx) input target → (inferCore K frontier ctx input).isSome
 
-theorem _root_.inferCore_complete (input : InferInput) : InferCoreComplete input := by
+theorem inferCore_complete (input : InferInput) : InferCoreComplete input := by
   intro K frontier ctx ambient target hwf hbelow hK hS hfix ht
   rw [inferCore_isSome]
   exact inferWithTypesCore_complete input K frontier ctx ambient target hwf hbelow hK hS hfix ht
 
 /-- Producer completeness also yields the usual relational residual contract;
 it is a corollary of concrete success and principality, not a second worker. -/
-theorem _root_.Infer.complete {input : InferInput} {ctx : Ctx} {K : List Nat}
+theorem Infer.complete {input : InferInput} {ctx : Ctx} {K : List Nat}
     {frontier : Nat} {ambient : Subst} {target : Ty}
     (hwf : CtxWF ctx) (hbelow : CtxBelow frontier ctx) (hK : ∀ k ∈ K, k < frontier)
     (hS : ∀ pair ∈ ambient, pair.2.IsLC)
@@ -10619,7 +10619,7 @@ theorem _root_.Infer.complete {input : InferInput} {ctx : Ctx} {K : List Nat}
 
 /-- Acceptance is exactly independent input typing under some admissible
 specialization of the flexible context. Written rigid variables stay fixed. -/
-theorem _root_.inferCore_accepts_iff {K : List Nat} {frontier : Nat} {ctx : Ctx} {input : InferInput}
+theorem inferCore_accepts_iff {K : List Nat} {frontier : Nat} {ctx : Ctx} {input : InferInput}
     (hwf : CtxWF ctx) (hbelow : CtxBelow frontier ctx) (hK : ∀ k ∈ K, k < frontier) :
     (inferCore K frontier ctx input).isSome ↔
       ∃ (ambient : Subst) (target : Ty), (∀ pair ∈ ambient, pair.2.IsLC) ∧
@@ -10634,7 +10634,7 @@ theorem _root_.inferCore_accepts_iff {K : List Nat} {frontier : Nat} {ctx : Ctx}
 
 /-- For closed terms no context specialization is needed: accepted inputs are
 precisely those admitted by the independent declarative fragment. -/
-theorem _root_.inferCore_empty_accepts_iff {K : List Nat} {frontier : Nat} {ctors : CtorEnv} {input : InferInput}
+theorem inferCore_empty_accepts_iff {K : List Nat} {frontier : Nat} {ctors : CtorEnv} {input : InferInput}
     (hK : ∀ k ∈ K, k < frontier) :
     (inferCore K frontier ⟨[], ctors⟩ input).isSome ↔ ∃ ty, InputTyping K ⟨[], ctors⟩ input ty := by
   constructor
@@ -10646,7 +10646,7 @@ theorem _root_.inferCore_empty_accepts_iff {K : List Nat} {frontier : Nat} {ctor
       (by simp) (by simp) (by simpa only [Subst.onCtx, Subst.onEnv, List.map_nil] using ht)
 
 /-- Public artifact inference is complete for independent input typing. -/
-theorem _root_.inferWithTypes_complete {ctors : CtorEnv} {input : InferInput} {ty : Ty}
+theorem inferWithTypes_complete {ctors : CtorEnv} {input : InferInput} {ty : Ty}
     (ht : InputTyping input.rigidVars ⟨[], ctors⟩ input ty) : (inferWithTypes ctors input).isSome := by
   unfold inferWithTypes
   rw [Option.isSome_map]
@@ -10654,7 +10654,7 @@ theorem _root_.inferWithTypes_complete {ctors : CtorEnv} {input : InferInput} {t
     CtxWF.empty CtxBelow.empty (fun v hv => InferInput.lt_freshFloor hv) (by simp) (by simp)
     (by simpa only [Subst.onCtx_empty] using ht)
 
-theorem _root_.inferWithTypes_accepts_iff {ctors : CtorEnv} {input : InferInput} :
+theorem inferWithTypes_accepts_iff {ctors : CtorEnv} {input : InferInput} :
     (inferWithTypes ctors input).isSome ↔ ∃ ty, InputTyping input.rigidVars ⟨[], ctors⟩ input ty := by
   constructor
   · intro hsome
@@ -10663,7 +10663,7 @@ theorem _root_.inferWithTypes_accepts_iff {ctors : CtorEnv} {input : InferInput}
   · rintro ⟨ty, ht⟩; exact inferWithTypes_complete ht
 
 /-- The public result retains protected-variable residual principality. -/
-theorem _root_.inferWithTypes_principal {ctors : CtorEnv} {input : InferInput} {result : InferenceResult}
+theorem inferWithTypes_principal {ctors : CtorEnv} {input : InferInput} {result : InferenceResult}
     (h : inferWithTypes ctors input = some result) :
     ∀ target, InputTyping input.rigidVars ⟨[], ctors⟩ input target →
       ∃ R : Subst, (∀ pair ∈ R, pair.2.IsLC) ∧ target = R.onTy result.ty ∧
