@@ -958,16 +958,6 @@ def bindSucc (binds : List Surface.Binding) (i : Nat) : List Nat :=
       | some b' => if b'.name ∈ fv then some j else none
       | none => none
 
-/-- Reachability in the index graph (empty path ⇒ `src = dst`). -/
-def canReach (succ : Nat → List Nat) (fuel : Nat) (seen : List Nat)
-    (src dst : Nat) : Bool :=
-  if src = dst then true
-  else match fuel with
-  | 0 => false
-  | fuel + 1 =>
-    if src ∈ seen then false
-    else (succ src).any fun n => canReach succ fuel (src :: seen) n dst
-
 /-- Successor table: `bindSucc binds` precomputed once per index, so repeated
     `Digraph.succ` queries (Kosaraju visits each vertex, `sccBeforeEdges` visits
     each component pair) do O(1) lookups instead of rescanning `bindSucc`. -/
@@ -1189,355 +1179,6 @@ private theorem DepEdge_to_bindSucc {binds : List Surface.Binding} {i : Nat}
   refine ⟨binds[i], binds[k], List.getElem?_eq_getElem hi, List.getElem?_eq_getElem hk, ?_⟩
   simpa [hkname] using hrt
 
-private theorem canReach_sound_go (binds : List Surface.Binding) :
-    ∀ (fuel : Nat) (seen : List Nat) (src dst : Nat)
-      (hsrc : src < binds.length) (hdst : dst < binds.length),
-      (∀ s ∈ seen, s < binds.length) →
-      canReach (bindSucc binds) fuel seen src dst = true →
-      DepReach binds (binds[src]).name (binds[dst]).name := by
-  intro fuel
-  induction fuel with
-  | zero =>
-    intro seen src dst hsrc hdst _hseen h
-    unfold canReach at h
-    by_cases heq : src = dst
-    · subst heq; exact DepReach.refl
-    · simp [heq] at h
-  | succ fuel ih =>
-    intro seen src dst hsrc hdst hseen h
-    unfold canReach at h
-    by_cases heq : src = dst
-    · subst heq; exact DepReach.refl
-    · by_cases hmem : src ∈ seen
-      · simp [heq, hmem] at h
-      · simp [heq, hmem, List.any_eq_true] at h
-        obtain ⟨n, hnmem, hn⟩ := h
-        have hnlt : n < binds.length := bindSucc_lt hnmem
-        have hnreach := ih (src :: seen) n dst hnlt hdst
-          (by
-            intro s hs
-            cases List.mem_cons.mp hs with
-            | inl hseq => cases hseq; exact hsrc
-            | inr hs' => exact hseen s hs')
-          hn
-        obtain ⟨b, b', hb, hj, hedge⟩ := DepEdge_of_bindSucc hnmem
-        have hb' : b = binds[src] := (List.getElem?_eq_some_iff.mp hb).2.symm
-        have hj' : b' = binds[n] := (List.getElem?_eq_some_iff.mp hj).2.symm
-        subst hb' hj'
-        exact DepReach.tail hedge hnreach
-
-theorem canReach_sound {binds : List Surface.Binding} {fuel : Nat} {i j : Nat}
-    (h : canReach (bindSucc binds) fuel [] i j = true)
-    (hi : i < binds.length) (hj : j < binds.length) :
-    DepReach binds (binds[i]).name (binds[j]).name :=
-  canReach_sound_go binds fuel [] i j hi hj (by simp) h
-
-/-- Consecutive `bindSucc` edges along an index list. -/
-private def isBindChain (binds : List Surface.Binding) : List Nat → Prop
-  | [] => True
-  | [_] => True
-  | a :: b :: rest => b ∈ bindSucc binds a ∧ isBindChain binds (b :: rest)
-
-private theorem isBindChain_append {binds : List Surface.Binding}
-    {xs ys : List Nat} (hx : isBindChain binds xs) (hy : isBindChain binds ys)
-    (hbridge : ∀ a b, xs.getLast? = some a → ys.head? = some b → b ∈ bindSucc binds a) :
-    isBindChain binds (xs ++ ys) := by
-  induction xs with
-  | nil => simpa using hy
-  | cons x xs ih =>
-    cases xs with
-    | nil =>
-      cases ys with
-      | nil => trivial
-      | cons y ys =>
-        refine ⟨hbridge x y rfl rfl, hy⟩
-    | cons x' xs =>
-      simp only [List.cons_append, isBindChain] at hx ⊢
-      exact ⟨hx.1, ih hx.2 (by
-        intro a b ha hb
-        exact hbridge a b (by
-          simpa [List.getLast?_cons_cons] using ha) hb)⟩
-
-private theorem isBindChain_take {binds : List Surface.Binding}
-    {vs : List Nat} (n : Nat) (h : isBindChain binds vs) :
-    isBindChain binds (vs.take n) := by
-  induction vs generalizing n with
-  | nil =>
-    simp [isBindChain]
-  | cons a vs ih =>
-    cases n with
-    | zero => simp [isBindChain]
-    | succ n =>
-      cases vs with
-      | nil => simp [isBindChain]
-      | cons b vs =>
-        cases n with
-        | zero => simp [isBindChain]
-        | succ n =>
-          simp only [List.take_succ_cons, isBindChain] at h ⊢
-          exact ⟨h.1, by simpa [List.take_cons] using ih (n + 1) h.2⟩
-
-private theorem isBindChain_drop {binds : List Surface.Binding}
-    {vs : List Nat} (n : Nat) (h : isBindChain binds vs) :
-    isBindChain binds (vs.drop n) := by
-  induction n generalizing vs with
-  | zero => simpa using h
-  | succ n ih =>
-    cases vs with
-    | nil => simp [isBindChain]
-    | cons a vs =>
-      simp only [List.drop_succ_cons]
-      cases vs with
-      | nil => simp [isBindChain]
-      | cons b vs =>
-        exact ih h.2
-
-private theorem isBindChain_succ_getElem {binds : List Surface.Binding}
-    {vs : List Nat} {j : Nat} (h : isBindChain binds vs)
-    (hj : j + 1 < vs.length) :
-    vs[j + 1] ∈ bindSucc binds vs[j] := by
-  induction vs generalizing j with
-  | nil => cases hj
-  | cons a vs ih =>
-    cases vs with
-    | nil =>
-      simp at hj
-    | cons b vs =>
-      cases j with
-      | zero =>
-        exact h.1
-      | succ j =>
-        have : j + 1 < (b :: vs).length := by simp at hj ⊢; omega
-        simpa [List.getElem_cons_succ] using ih h.2 this
-
-private theorem isBindChain_take_append_drop {binds : List Surface.Binding}
-    {vs : List Nat} {i j : Nat}
-    (hij : i < j) (hjlen : j < vs.length)
-    (hget : vs[i]? = vs[j]?) (hchain : isBindChain binds vs) :
-    isBindChain binds (vs.take (i + 1) ++ vs.drop (j + 1)) := by
-  have htake := isBindChain_take (i + 1) hchain
-  have hdrop := isBindChain_drop (j + 1) hchain
-  refine isBindChain_append htake hdrop ?_
-  intro a b ha hb
-  have hi1 : i < vs.length := Nat.lt_trans hij hjlen
-  have htake_last : (vs.take (i + 1)).getLast? = vs[i]? := by
-    rw [List.getLast?_take]
-    simp [List.getElem?_eq_getElem hi1]
-  have ha' : vs[i]? = some a := htake_last ▸ ha
-  cases hdropNil : vs.drop (j + 1) with
-  | nil =>
-    simp [hdropNil] at hb
-  | cons b' rest =>
-    have eqb : b = b' := by
-      have : (b' :: rest).head? = some b := by simpa [hdropNil] using hb
-      simp at this; exact this.symm
-    subst eqb
-    have hj1 : j + 1 < vs.length := by
-      have hlen := congrArg List.length hdropNil
-      simp [List.length_drop] at hlen
-      omega
-    have hb_get : vs[j + 1]? = some b := by
-      rw [← List.head?_drop, hdropNil]; rfl
-    have hedge := isBindChain_succ_getElem hchain hj1
-    have hvi : vs[i] = a := (List.getElem?_eq_some_iff.mp ha').2
-    have hvj : vs[j] = a := by
-      have : vs[j]? = some a := hget ▸ ha'
-      exact (List.getElem?_eq_some_iff.mp this).2
-    have hvj1 : vs[j + 1] = b := (List.getElem?_eq_some_iff.mp hb_get).2
-    rw [← hvj1, ← hvj]
-    exact hedge
-
-private theorem DepReach_exists_chain {binds : List Surface.Binding}
-    (hn : (binds.map (·.name)).Nodup) {i j : Nat}
-    (hi : i < binds.length) (hj : j < binds.length)
-    (h : DepReach binds (binds[i]).name (binds[j]).name) :
-    ∃ vs : List Nat,
-      vs.head? = some i ∧ vs.getLast? = some j ∧
-        isBindChain binds vs ∧ ∀ v ∈ vs, v < binds.length := by
-  suffices ∀ a c, DepReach binds a c →
-      ∀ (i j : Nat) (hi : i < binds.length) (hj : j < binds.length),
-        a = (binds[i]).name → c = (binds[j]).name →
-        ∃ vs : List Nat,
-          vs.head? = some i ∧ vs.getLast? = some j ∧
-            isBindChain binds vs ∧ ∀ v ∈ vs, v < binds.length from
-    this _ _ h i j hi hj rfl rfl
-  intro a c hreach
-  induction hreach with
-  | refl =>
-    intro i j hi hj ha hc
-    have hij : i = j := name_inj_of_nodup hn hi hj (ha.symm.trans hc)
-    subst hij
-    exact ⟨[i], rfl, rfl, trivial, by intro v hv; simp at hv; subst hv; exact hi⟩
-  | @tail a b c hab hbc ih =>
-    intro i j hi hj ha hc
-    have hbmem : b ∈ binds.map (·.name) :=
-      DepReach_start_mem
-        (List.mem_map.mpr ⟨binds[j], List.getElem_mem hj, hc.symm⟩) hbc
-    have hedge : DepEdge binds (binds[i]).name b := by simpa [← ha] using hab
-    obtain ⟨k, hk, hkname, hksucc⟩ := DepEdge_to_bindSucc hn hi hbmem hedge
-    obtain ⟨vs, hvsh, hvsl, hvsc, hvsb⟩ := ih k j hk hj hkname.symm hc
-    refine ⟨i :: vs, by simp, ?_, ?_, ?_⟩
-    · cases vs with
-      | nil => simp at hvsh
-      | cons v vs' => simpa [List.getLast?_cons_cons] using hvsl
-    · cases vs with
-      | nil => simp at hvsh
-      | cons v vs' =>
-        have hv : v = k := by simp at hvsh; exact hvsh
-        subst hv
-        exact ⟨hksucc, hvsc⟩
-    · intro v hv
-      cases List.mem_cons.mp hv with
-      | inl hvi => subst hvi; exact hi
-      | inr hv' => exact hvsb v hv'
-
-private theorem exists_nodup_bindChain (binds : List Surface.Binding) :
-    ∀ (vs : List Nat), isBindChain binds vs → vs ≠ [] →
-      (∀ v ∈ vs, v < binds.length) →
-      ∃ ws : List Nat, isBindChain binds ws ∧ ws.Nodup ∧ ws ≠ [] ∧
-        ws.head? = vs.head? ∧ ws.getLast? = vs.getLast? ∧
-        (∀ v ∈ ws, v < binds.length) := by
-  intro vs
-  induction hlen : vs.length using Nat.strongRecOn generalizing vs with
-  | ind n ih =>
-    intro hchain hne hbound
-    subst hlen
-    by_cases hn : vs.Nodup
-    · exact ⟨vs, hchain, hn, hne, rfl, rfl, hbound⟩
-    · have hrep : ∃ (i j : Nat), i < j ∧ j < vs.length ∧ vs[i]? = vs[j]? := by
-        have := mt (List.nodup_iff_getElem?_ne_getElem? (l := vs)).2 hn
-        push_neg at this
-        exact this
-      obtain ⟨i, j, hij, hjlen, hget⟩ := hrep
-      set ws := vs.take (i + 1) ++ vs.drop (j + 1)
-      have hi1 : i + 1 ≤ vs.length := Nat.succ_le_of_lt (Nat.lt_trans hij hjlen)
-      have hj1 : j + 1 ≤ vs.length := Nat.succ_le_of_lt hjlen
-      have hlen' : ws.length < vs.length := by
-        -- |take (i+1)| + |drop (j+1)| = (i+1) + (len - (j+1)) = len + (i - j) < len
-        have htake_len : (vs.take (i + 1)).length = i + 1 := by
-          simp [List.length_take, Nat.min_eq_left hi1]
-        have hdrop_len : (vs.drop (j + 1)).length = vs.length - (j + 1) := by
-          simp [List.length_drop]
-        simp only [ws, List.length_append, htake_len, hdrop_len]
-        omega
-      have hne' : ws ≠ [] := by
-        have hpos : (vs.take (i + 1)).length = i + 1 := by
-          simp [List.length_take, Nat.min_eq_left hi1]
-        intro hempty
-        have hlen0 : ws.length = 0 := by simp [hempty]
-        simp only [ws, List.length_append, hpos] at hlen0
-        omega
-      have hchain' : isBindChain binds ws :=
-        isBindChain_take_append_drop hij hjlen hget hchain
-      have hbound' : ∀ v ∈ ws, v < binds.length := by
-        intro v hv
-        simp only [ws, List.mem_append] at hv
-        cases hv with
-        | inl ht => exact hbound v (List.mem_of_mem_take ht)
-        | inr hd => exact hbound v (List.mem_of_mem_drop hd)
-      have hhead : ws.head? = vs.head? := by
-        cases vs with
-        | nil => cases hne rfl
-        | cons v vs' => simp [ws]
-      have hlast : ws.getLast? = vs.getLast? := by
-        cases hdrop : vs.drop (j + 1) with
-        | nil =>
-          have hjend : j + 1 = vs.length := by
-            have := congrArg List.length hdrop
-            simp [List.length_drop] at this; omega
-          have hws : ws = vs.take (i + 1) := by simp [ws, hdrop]
-          have hti : (vs.take (i + 1)).getLast? = vs[i]? := by
-            rw [List.getLast?_take]
-            simp [List.getElem?_eq_getElem (Nat.lt_trans hij hjlen)]
-          have hlastj : vs.getLast? = vs[j]? := by
-            have hj' : j = vs.length - 1 := by omega
-            rw [hj', List.getLast?_eq_getElem?]
-          rw [hws, hti, hget, hlastj]
-        | cons x xs =>
-          have hws_last : ws.getLast? = (x :: xs).getLast? := by
-            simp [ws, hdrop, List.getLast?_append]
-            cases hgl : (x :: xs).getLast? with
-            | none => simp at hgl
-            | some v => simp
-          have hdrop_last : (vs.drop (j + 1)).getLast? = vs.getLast? := by
-            have hjlt : ¬(vs.length ≤ j + 1) := by
-              have := congrArg List.length hdrop
-              simp [List.length_drop] at this; omega
-            simp [List.getLast?_drop, hjlt]
-          rw [hws_last, ← hdrop, hdrop_last]
-      obtain ⟨ws', hc', hn', hne'', hh', hl', hb'⟩ :=
-        ih ws.length hlen' ws rfl hchain' hne' hbound'
-      exact ⟨ws', hc', hn', hne'', hh'.trans hhead, hl'.trans hlast, hb'⟩
-
-private theorem canReach_of_nodup_chain {binds : List Surface.Binding}
-    {fuel : Nat} {seen vs : List Nat} {src dst : Nat}
-    (hchain : isBindChain binds vs) (hnodup : vs.Nodup)
-    (hhead : vs.head? = some src) (hlast : vs.getLast? = some dst)
-    (havoid : ∀ v ∈ vs, v ∉ seen)
-    (hfuel : vs.length - 1 ≤ fuel) :
-    canReach (bindSucc binds) fuel seen src dst = true := by
-  induction vs generalizing fuel seen src dst with
-  | nil => simp at hhead
-  | cons a rest ih =>
-    cases rest with
-    | nil =>
-      simp only [List.head?, Option.some.injEq] at hhead
-      simp only [List.getLast?] at hlast
-      subst hhead; cases hlast
-      unfold canReach; simp
-    | cons b rest =>
-      simp only [List.head?, Option.some.injEq] at hhead
-      subst hhead
-      have hlast_tail : (b :: rest).getLast? = some dst := by
-        simpa [List.getLast?_cons_cons] using hlast
-      have hlast_mem : dst ∈ b :: rest := by
-        obtain ⟨ys, hys⟩ := (List.getLast?_eq_some_iff).1 hlast_tail
-        rw [hys]; exact List.mem_append_right _ (by simp)
-      have hsrc_ne : a ≠ dst := by
-        intro heq; subst heq
-        exact (List.nodup_cons.mp hnodup).1 hlast_mem
-      have hnotin : a ∉ seen := havoid a (by simp)
-      cases fuel with
-      | zero =>
-        have : (a :: b :: rest).length - 1 ≤ 0 := hfuel
-        simp at this
-      | succ fuel =>
-        unfold canReach
-        simp [hsrc_ne, hnotin, List.any_eq_true]
-        refine ⟨b, hchain.1, ?_⟩
-        refine ih (fuel := fuel) (seen := a :: seen) (src := b) (dst := dst)
-          hchain.2 (List.nodup_cons.mp hnodup).2 rfl hlast_tail
-          (fun v hv hin => by
-            cases List.mem_cons.mp hin with
-            | inl heq =>
-              subst heq
-              exact (List.nodup_cons.mp hnodup).1 hv
-            | inr hs =>
-              exact havoid v (List.mem_cons_of_mem _ hv) hs)
-          (by have := hfuel; simp at this ⊢; omega)
-
-theorem canReach_complete {binds : List Surface.Binding} {i j : Nat}
-    (hn : (binds.map (·.name)).Nodup)
-    (hi : i < binds.length) (hj : j < binds.length)
-    (h : DepReach binds (binds[i]).name (binds[j]).name) :
-    canReach (bindSucc binds) binds.length [] i j = true := by
-  obtain ⟨vs, hvsh, hvsl, hchain, hbound⟩ := DepReach_exists_chain hn hi hj h
-  have hne : vs ≠ [] := fun he => by subst he; simp at hvsh
-  obtain ⟨ws, hchain', hnodup, _hne', hhead, hlast, hbound'⟩ :=
-    exists_nodup_bindChain binds vs hchain hne hbound
-  have hfuel : ws.length - 1 ≤ binds.length := by
-    have hle : ws.length ≤ binds.length := by
-      have hcard := List.toFinset_card_of_nodup hnodup
-      have hsub : ws.toFinset ⊆ Finset.range binds.length := by
-        intro x hx
-        simp [Finset.mem_range]
-        exact hbound' x (List.mem_toFinset.mp hx)
-      have := Finset.card_le_card hsub
-      simpa [hcard, Finset.card_range] using this
-    omega
-  exact canReach_of_nodup_chain hchain' hnodup
-    (hhead.trans hvsh) (hlast.trans hvsl) (fun _ _ => by simp) hfuel
-
 /-! ##### Binding digraph ↔ DepReach (Kosaraju bridge) -/
 
 /-- `j` is a successor of `i` in `bindDigraph` iff it is in `bindSucc`. -/
@@ -1587,56 +1228,31 @@ theorem DepReach_of_Reach {binds : List Surface.Binding}
     refine DepReach.tail (by simpa [hai', hbj'] using hedge) ?_
     simpa [hbj'] using ih
 
-/-- `canReach` on `bindSucc` ⇒ `Reach` on `bindDigraph` (seen stays in-range). -/
-private theorem Reach_of_canReach_go (binds : List Surface.Binding) :
-    ∀ (fuel : Nat) (seen : List Nat) (src dst : Fin binds.length),
-      (∀ s ∈ seen, s < binds.length) →
-      canReach (bindSucc binds) fuel seen src.val dst.val = true →
-        Reach (bindDigraph binds) src dst := by
-  intro fuel
-  induction fuel with
-  | zero =>
-    intro seen src dst _hseen h
-    unfold canReach at h
-    by_cases heq : src.val = dst.val
-    · have : src = dst := Fin.ext heq
-      subst this
-      exact Reach.refl
-    · simp [heq] at h
-  | succ fuel ih =>
-    intro seen src dst hseen h
-    unfold canReach at h
-    by_cases heq : src.val = dst.val
-    · have : src = dst := Fin.ext heq
-      subst this
-      exact Reach.refl
-    · by_cases hmem : src.val ∈ seen
-      · simp [heq, hmem] at h
-      · simp [heq, hmem, List.any_eq_true] at h
-        obtain ⟨n, hnmem, hn⟩ := h
-        have hnlt : n < binds.length := bindSucc_lt hnmem
-        have hsucc :
-            (⟨n, hnlt⟩ : Fin binds.length) ∈ (bindDigraph binds).succ src :=
-          bindDigraph_succ_of_bindSucc hnlt hnmem
-        refine Reach.tail hsucc (ih (src.val :: seen) ⟨n, hnlt⟩ dst ?_ hn)
-        intro s hs
-        cases List.mem_cons.mp hs with
-        | inl hseq => cases hseq; exact src.isLt
-        | inr hs' => exact hseen s hs'
-
-theorem Reach_of_canReach {binds : List Surface.Binding} {fuel : Nat}
-    {i j : Fin binds.length}
-    (h : canReach (bindSucc binds) fuel [] i.val j.val = true) :
-    Reach (bindDigraph binds) i j :=
-  Reach_of_canReach_go binds fuel [] i j (by simp) h
-
 /-- `DepReach` between in-range indexed names ⇒ `Reach` on `bindDigraph`. -/
 theorem Reach_of_DepReach {binds : List Surface.Binding}
     (hn : (binds.map (·.name)).Nodup)
     {i j : Fin binds.length}
     (h : DepReach binds (binds[i.val]).name (binds[j.val]).name) :
-    Reach (bindDigraph binds) i j :=
-  Reach_of_canReach (canReach_complete hn i.isLt j.isLt h)
+    Reach (bindDigraph binds) i j := by
+  generalize hsource : (binds[i.val]).name = source at h
+  generalize htarget : (binds[j.val]).name = target at h
+  induction h generalizing i j with
+  | refl =>
+    have hij := name_inj_of_nodup hn i.isLt j.isLt (hsource.trans htarget.symm)
+    have : i = j := Fin.ext hij
+    subst j
+    exact Reach.refl
+  | @tail source dependency target hedge hrest ih =>
+    have htargetMem : target ∈ binds.map (·.name) := by
+      exact List.mem_map.mpr
+        ⟨binds[j.val], List.getElem_mem j.isLt, htarget⟩
+    have hdependency := DepReach_start_mem htargetMem hrest
+    have hedge' : DepEdge binds (binds[i.val]).name dependency := by
+      simpa [hsource] using hedge
+    obtain ⟨k, hk, hkname, hsucc⟩ :=
+      DepEdge_to_bindSucc hn i.isLt hdependency hedge'
+    exact Reach.tail (bindDigraph_succ_of_bindSucc hk hsucc)
+      (ih (i := (⟨k, hk⟩ : Fin binds.length)) (j := j) hkname htarget)
 
 theorem Reach_iff_DepReach {binds : List Surface.Binding}
     (hn : (binds.map (·.name)).Nodup)
