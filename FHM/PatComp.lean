@@ -1,5 +1,5 @@
 import FHM.SurfaceLang
-import FHM.CoreBackend.Infer
+import FHM.InferenceSupport
 
 /-! # Verified pattern-match compilation
 

@@ -806,7 +806,7 @@ private def copiedHoleFallback :=
       | none => false
       | some lowered =>
           (sp.references.filter fun r => r.kind == .typeHole).length == 1 &&
-          (lowered.mapExpr Elaboration.Input.erase).provenanceTotal &&
+          (lowered.mapExpr InferInput.erase).provenanceTotal &&
           lowered.sourceTargets.any fun (_, target) => match target with
             | .absent _ => false
             | .present paths => paths.length == 3 && paths.all fun path =>
@@ -909,7 +909,7 @@ private def signedNested :=
 -- Recursive worker targets below deliberately check lowering only until its
 -- proof-backed implementation lands. Runtime expectations live in the smoke
 -- suite as independent positive/negative groups; rejection alone proves little.
-private def lowersWith (src : String) (check : Elaboration.Input → Bool) : Bool :=
+private def lowersWith (src : String) (check : InferInput → Bool) : Bool :=
   match parseProgramWithSpans src with
   | .error _ => false
   | .ok (p, bs, sp) =>
@@ -919,7 +919,7 @@ private def lowersWith (src : String) (check : Elaboration.Input → Bool) : Boo
         SurfaceBridge.Provenance.lowerWithProvenance ctors p.term tree
       match result with
       | none => false
-      | some lowered => (lowered.mapExpr Elaboration.Input.erase).provenanceTotal && check lowered.expr
+      | some lowered => (lowered.mapExpr InferInput.erase).provenanceTotal && check lowered.expr
 
 private def nestedRecCapture :=
   "let f : {a} _ = \\x -> let g : {b} b -> _ = \\(y : a) -> " ++

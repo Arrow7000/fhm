@@ -105,7 +105,7 @@ def extendNames (written : List String) (count : Nat) (reserved : List String :=
 
 /-- Completion preserves the explicit forall prefix, including unused
 binders. Only newly generalized holes receive synthesized display names. -/
-def annotationNames (ann : Elaboration.LetAnn) (written : List String) (sig : PolyTy)
+def annotationNames (ann : BindingAnn) (written : List String) (sig : PolyTy)
     (reserved : List String := []) : List String :=
   match ann with
   | .complete _ => written
@@ -267,7 +267,7 @@ def bindingHoleParts (typed : TypedLowered) (scopes : List Scope) (site : Surfac
   let sigParts := match ann with
     | none => []
     | some sig =>
-        let finalized := Elaboration.finalizeInputAnn tyParams params ann
+        let finalized := finalizeInputAnn tyParams params ann
         let writtenNames := displayNames finalized
         let facts := (completedSchemes typed site).filterMap fun (path, scheme) => do
           -- The written annotation is the result after every head parameter,

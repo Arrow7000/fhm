@@ -43,10 +43,10 @@ def probeCore (K : List Nat) (Φ : Nat) (ctx : Ctx) : Expr → Option Error
       (probeCore K next { ctx with env := PolyTy.mkTrivial T :: ctx.env } body).map
         (Error.below .lambdaBody)
   | .app f arg =>
-      match inferCore K Φ ctx (Elaboration.Input.ofCore f) with
+      match inferCore K Φ ctx (InferInput.ofCore f) with
       | none => (probeCore K Φ ctx f).map (Error.below .appFun)
       | some ⟨(Φ₁, S₁, _, τf), _⟩ =>
-        match inferCore K Φ₁ (S₁.onCtx ctx) (Elaboration.Input.ofCore arg) with
+        match inferCore K Φ₁ (S₁.onCtx ctx) (InferInput.ofCore arg) with
         | none => (probeCore K Φ₁ (S₁.onCtx ctx) arg).map (Error.below .appArg)
         | some ⟨(Φ₂, S₂, _, τa), _⟩ =>
           let fnTy := S₂.onTy τf
@@ -59,7 +59,7 @@ def probeCore (K : List Nat) (Φ : Nat) (ctx : Ctx) : Expr → Option Error
                 else some ⟨[], .incompatibleApplication fnTy τa⟩
             | _ => some ⟨[.appFun], .notFunction fnTy⟩
   | .letIn none rhs body =>
-      match inferCore K Φ ctx (Elaboration.Input.ofCore rhs) with
+      match inferCore K Φ ctx (InferInput.ofCore rhs) with
       | none => (probeCore K Φ ctx rhs).map (Error.below .letRhs)
       | some ⟨(Φ₁, S₁, _, τ₁), _⟩ =>
           let ctx₁ := S₁.onCtx ctx
@@ -70,7 +70,7 @@ def probeCore (K : List Nat) (Φ : Nat) (ctx : Ctx) : Expr → Option Error
       let Ys := freshVars Φ σ.paramCount
       let rigid := K ++ Ys
       let opened := rhs.openTyVars Ys
-      match inferCore rigid (Φ + σ.paramCount) ctx (Elaboration.Input.ofCore opened) with
+      match inferCore rigid (Φ + σ.paramCount) ctx (InferInput.ofCore opened) with
       | none => (probeCore rigid (Φ + σ.paramCount) ctx opened).map (Error.below .letRhs)
       | some ⟨(Φ₁, S₁, _, τ₁), _⟩ =>
         match unifyCoreK rigid τ₁ (σ.openVars Ys) with
@@ -90,12 +90,12 @@ decreasing_by
 /-- Partial annotations follow the canonical worker. Completed subtrees retain
     the existing, more detailed annotation diagnostics. -/
 partial def probe (K : List Nat) (Φ : Nat) (ctx : Ctx)
-    (input : Elaboration.Input) : Option Error :=
+    (input : InferInput) : Option Error :=
   match input.toCore with
   | some core => probeCore K Φ ctx core
   | none => match input with
     | .lambda ann body => do
-        let result ← Elaboration.seed K Φ ann
+        let result ← seed K Φ ann
         (probe K result.val.1 { ctx with env := PolyTy.mkTrivial result.val.2 :: ctx.env } body).map
           (Error.below .lambdaBody)
     | .app f arg =>
@@ -121,7 +121,7 @@ partial def probe (K : List Nat) (Φ : Nat) (ctx : Ctx)
         match inferCore K Φ ctx rhs with
         | none => (probe K Φ ctx rhs).map (Error.below .letRhs)
         | some ⟨(Φ₁, S₁, _, τ₁), _⟩ => do
-            let checked ← Elaboration.checkLet K [] Φ₁ ann τ₁
+            let checked ← checkLet K [] Φ₁ ann τ₁
             let ctx₁ := checked.val.2.onCtx (S₁.onCtx ctx)
             let σ := genScheme K ctx₁.env (checked.val.2.onTy τ₁)
             (probe K checked.val.1 { ctx₁ with env := σ :: ctx₁.env } body).map

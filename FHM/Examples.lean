@@ -10,7 +10,7 @@ the program and the inferred type with the `Pretty` printers. -/
 
 /-- Hand-built Core uses the same elaborating engine as authored Input. -/
 private def checkCore (ctors : CtorEnv) (expr : Expr) : Option PolyTy :=
-  typecheck ctors (Elaboration.Input.ofCore expr)
+  typecheck ctors (InferInput.ofCore expr)
 
 namespace Core.Demo
 
@@ -24,7 +24,7 @@ private def showType (e : Expr) : IO Unit := IO.println s!"({e})  :  {typeStr e}
 /-- Run the small-step evaluator (fuel 100) and pretty-print the resulting value
     (`Expr` has no `DecidableEq`, so we compare the printed form in `#guard`s). -/
 private def evalStr (e : Expr) : String :=
-  match inferWithTypes ((elabDecls preludeDecls).getD []) (Elaboration.Input.ofCore e) with
+  match inferWithTypes ((elabDecls preludeDecls).getD []) (InferInput.ofCore e) with
   | none => "ill-typed"
   | some result =>
     match SmallStep.evaluate 100 result.completedExpr.erase with
@@ -749,7 +749,7 @@ private def evalProgram (p : Surface.Program) : String :=
   match lowerProgram p with
   | none => "lower failed"
   | some (ctors, c) =>
-    match inferWithTypes ctors (Elaboration.Input.ofCore c) with
+    match inferWithTypes ctors (InferInput.ofCore c) with
     | none => "ill-typed"
     | some result => evalStr result.completedExpr.erase
 
@@ -842,11 +842,11 @@ example : SurfaceCovers ((elabDecls preludeDecls).getD []) sPatternLet.term :=
 end SurfacePipelineDemo
 
 
-namespace CanonicalAuditCapstone
+namespace AuditCapstone
 
 /-- Complete Core uses the canonical engine through a syntax adapter. -/
 private def corePrincipalType (ctors : CtorEnv) (expr : Expr) : Option Ty :=
-  principalType ctors (Elaboration.Input.ofCore expr)
+  principalType ctors (InferInput.ofCore expr)
 
 /-! ### A typeable program — all three headlines fire -/
 
@@ -930,8 +930,8 @@ set_option maxRecDepth 100_000 in
 /-- `λx. x` has principal monotype `α → α` (computed, not postulated). -/
 theorem polyId_principalType : corePrincipalType [] polyId = some (.arrow (.fvar 0) (.fvar 0)) := by
   change (inferCore [] 0 ⟨[], []⟩ (.lambda none (.var 0))).map (·.val.2.2.2) = _
-  simp [inferCore, inferWithTypesCore, Elaboration.seed, Elaboration.Input.rigidVars,
-    Elaboration.softVars, TyList.freeVars, Env.freeVars, Ty.freeVars, List.getElem?_cons_zero,
+  simp [inferCore, inferWithTypesCore, seed, InferInput.rigidVars,
+    softVars, TyList.freeVars, Env.freeVars, Ty.freeVars, List.getElem?_cons_zero,
     PolyTy.mkTrivial, PolyTy.openVars, Ty.openVars, freshVars, Subst.onTy, Ty.substFvars]
   rfl
 
@@ -1117,13 +1117,13 @@ theorem idid_principalType : corePrincipalType [] idid = some (.arrow (.fvar 3) 
       have hs : S = [(2,.arrow (.fvar 3) (.fvar 3)),(4,.arrow (.fvar 3) (.fvar 3))] := by
         simpa only [heApp,Option.map_some,Option.some.injEq] using hApp
       subst S
-      simp (config := {maxSteps := 1000000}) [heSig,heApp,idid,principalType,inferCore,inferWithTypesCore,Elaboration.seed,Elaboration.Input.ofCore,
-        Elaboration.Input.rigidVars,Elaboration.Input.freshFloor,tyVarCeil,Elaboration.LetAnn.rigidVars,Elaboration.LetAnn.ofCore,
-        Elaboration.softVars,TyList.freeVars,Env.freeVars,Ty.freeVars,List.getElem?_cons_zero,
+      simp (config := {maxSteps := 1000000}) [heSig,heApp,idid,principalType,inferCore,inferWithTypesCore,seed,InferInput.ofCore,
+        InferInput.rigidVars,InferInput.freshFloor,tyVarCeil,BindingAnn.rigidVars,BindingAnn.ofCore,
+        softVars,TyList.freeVars,Env.freeVars,Ty.freeVars,List.getElem?_cons_zero,
         PolyTy.mkTrivial,PolyTy.openVars,Ty.openVars,freshVars,Subst.onTy,Ty.substFvars,Ty.substFvar,
-        Ty.instantiate,Elaboration.checkSignature,Elaboration.LetAnn.isSignature,Elaboration.LetAnn.paramCount,Elaboration.LetAnn.substTyFvars,
-        Elaboration.Input.openTyVars,Elaboration.Input.openTyVarsFrom,Elaboration.Input.substTyFvars,Subst.onCtx,Subst.onEnv,
-        Elaboration.substSoft,Elaboration.signatureScheme,Elaboration.signatureNames,Ty.bvarsBelow]
+        Ty.instantiate,checkSignature,BindingAnn.isSignature,BindingAnn.paramCount,BindingAnn.substTyFvars,
+        InferInput.openTyVars,InferInput.openTyVarsFrom,InferInput.substTyFvars,Subst.onCtx,Subst.onEnv,
+        substSoft,signatureScheme,signatureNames,Ty.bvarsBelow]
 
 /-- `idid_typeable` at the computed principal variable `3`. Each `var` rule
     supplies the appropriate existential instantiation witness. -/
@@ -1240,11 +1240,11 @@ theorem matchWild_principalType :
     rcases result with ⟨S,hun,havoid⟩
     have hs : S = [(1,.prim .int)] := by simpa only [he,Option.map_some,Option.some.injEq] using huni
     subst S
-    simp (config := {maxSteps := 1000000}) [he, inferCore, inferWithTypesCore, inferBranchesWithTypesCore, Elaboration.seed, Elaboration.Input.rigidVars,
-      Elaboration.softVars, TyList.freeVars, Env.freeVars, Ty.freeVars, List.getElem?_cons_zero,
+    simp (config := {maxSteps := 1000000}) [he, inferCore, inferWithTypesCore, inferBranchesWithTypesCore, seed, InferInput.rigidVars,
+      softVars, TyList.freeVars, Env.freeVars, Ty.freeVars, List.getElem?_cons_zero,
       PolyTy.mkTrivial, PolyTy.openVars, Ty.openVars,
-      Subst.onTy, Ty.substFvars, Subst.onCtx, Subst.onEnv, Elaboration.Input.substTyFvars,
-      Elaboration.substInputBranches, Elaboration.substSoft, Elaboration.rigidBranchVars]
+      Subst.onTy, Ty.substFvars, Subst.onCtx, Subst.onEnv, InferInput.substTyFvars,
+      substInputBranches, substSoft, rigidBranchVars]
     exact ⟨rfl,rfl⟩
 
 /-- All three headlines fire on the all-wildcard match: it typechecks, the produced
@@ -1382,4 +1382,249 @@ theorem mutualRec_headlines_fire :
     intro τ₀ _
     exact ⟨[(2, τ₀)], rfl⟩
 
-end CanonicalAuditCapstone
+end AuditCapstone
+
+/-! ## Examples -/
+
+section
+
+/-! Semantic canaries for anonymous lambda, signature, match, and recursive elaboration.
+These run the elaborator itself; output typing follows from `Infer.sourceSound`.
+-/
+
+namespace InferenceExamples
+
+private def ctors : CtorEnv := (elabDecls preludeDecls).getD []
+private def ctx : Ctx := ⟨[], ctors⟩
+
+private def pair (left right : InferInput) : InferInput :=
+  .app (.app (.ctor ⟨"Pair"⟩) left) right
+
+/-- `let id = \(x : _) -> x in (id 1, id True)`. -/
+def polymorphicId : InferInput :=
+  .letIn .absent (.lambda (some .hole) (.var 0))
+    (pair (.app (.var 0) (.primLit (.int 1))) (.app (.var 0) (.ctor ⟨"True"⟩)))
+
+/-- Both occurrences of `_` are independently flexible. -/
+def independentHoles : InferInput :=
+  .letIn (.template (.arrow .hole .hole))
+    (.lambda none (.primLit (.int 1)))
+    (pair (.app (.var 0) (.ctor ⟨"True"⟩)) (.app (.var 0) (.primLit (.int 1))))
+
+def structuredId : InferInput :=
+  .letIn (.template (.arrow .hole .hole)) (.lambda none (.var 0))
+    (pair (.app (.var 0) (.primLit (.int 1))) (.app (.var 0) (.ctor ⟨"True"⟩)))
+
+/-- Variables reachable through the outer context cannot be generalized. -/
+def outerMonomorphic : InferInput :=
+  .lambda none
+    (.letIn (.template .hole) (.var 0)
+      (pair (.app (.var 0) (.primLit (.int 1))) (.app (.var 0) (.ctor ⟨"True"⟩))))
+
+def occursCheck : InferInput :=
+  .lambda (some .hole) (.app (.var 0) (.var 0))
+
+def fixedDomainAccepted : InferInput :=
+  .letIn (.template (.arrow (.fixed (.prim .int)) .hole)) (.lambda none (.var 0))
+    (.app (.var 0) (.primLit (.int 1)))
+
+def fixedDomainRejected : InferInput :=
+  .letIn (.template (.arrow (.fixed (.prim .int)) .hole)) (.lambda none (.var 0))
+    (.app (.var 0) (.ctor ⟨"True"⟩))
+
+def quantifiedId : InferInput :=
+  .letIn (.partialForall 1 (.arrow (.fixed (.bvar 0)) .hole))
+    (.lambda none (.var 0)) (.var 0)
+
+def quantifiedExtras : InferInput :=
+  .letIn (.partialForall 1 (.arrow (.fixed (.bvar 0)) .hole))
+    (.lambda none (.lambda none (.var 1))) (.var 0)
+
+def vacuousWritten : InferInput :=
+  .letIn (.partialForall 1 .hole) (.primLit (.int 1)) (.var 0)
+
+def quantifiedRigidRejected : InferInput :=
+  .letIn (.partialForall 1 (.arrow .hole (.fixed (.bvar 0))))
+    (.lambda none (.primLit (.int 0))) (.var 0)
+
+def signedRhsHole : InferInput :=
+  .letIn (.complete ⟨1, .arrow (.bvar 0) (.bvar 0)⟩)
+    (.lambda (some .hole) (.var 0))
+    (pair (.app (.var 0) (.primLit (.int 1))) (.app (.var 0) (.ctor ⟨"True"⟩)))
+
+def signedBodyHole : InferInput :=
+  .letIn (.complete ⟨1, .arrow (.bvar 0) (.bvar 0)⟩)
+    (.lambda none (.var 0)) (.lambda (some .hole) (.app (.var 1) (.var 0)))
+
+#guard (inferCore [] 0 ctx quantifiedExtras).isSome
+#guard (inferCore [] 0 ctx vacuousWritten).isSome
+#guard !(inferCore [] 0 ctx quantifiedRigidRejected).isSome
+#guard (inferCore [] 0 ctx signedRhsHole).isSome
+#guard (inferCore [] 0 ctx signedBodyHole).isSome
+#guard match inferCore [] 0 ctx quantifiedExtras with
+  | some ⟨(_, _, .letIn (some ⟨2, .arrow (.bvar 0) (.arrow (.bvar 1) (.bvar 0))⟩) _ _, _), _⟩ => true
+  | _ => false
+#guard match inferCore [] 0 ctx vacuousWritten with
+  | some ⟨(_, _, .letIn (some scheme) _ _, _), _⟩ => scheme.paramCount == 1
+  | _ => false
+
+def partialRecursion : InferInput :=
+  .letRec [.template (.arrow .hole (.fixed (.prim .int)))]
+    [.lambda none (.primLit (.int 0))] (.var 0)
+
+def partialRecursionCodomainRejected : InferInput :=
+  .letRec [.template (.arrow .hole (.fixed (.prim .int)))]
+    [.lambda none (.primLit .unit)] (.var 0)
+
+#guard (inferCore [] 0 ctx polymorphicId).isSome
+#guard (inferCore [] 0 ctx independentHoles).isSome
+#guard (inferCore [] 0 ctx structuredId).isSome
+#guard !(inferCore [] 0 ctx outerMonomorphic).isSome
+#guard !(inferCore [] 0 ctx occursCheck).isSome
+#guard (inferCore [] 0 ctx fixedDomainAccepted).isSome
+#guard !(inferCore [] 0 ctx fixedDomainRejected).isSome
+#guard (inferCore [] 0 ctx quantifiedId).isSome
+#guard match inferCore [] 0 ctx partialRecursion with
+  | some ⟨(_, _, .letRec [some ⟨1, .arrow (.bvar 0) (.prim .int)⟩]
+      [.lambda none (.primLit (.int 0))] (.var 0), .arrow (.fvar _) (.prim .int)), _⟩ => true
+  | _ => false
+#guard !(inferCore [] 0 ctx partialRecursionCodomainRejected).isSome
+
+/- The id canary really introduces a scheme binder and closes the lambda
+annotation underneath that same binder. -/
+#guard match inferCore [] 0 ctx polymorphicId with
+  | some ⟨(_, _, .letIn (some scheme) (.lambda (some (.bvar 0)) _) _, _), _⟩ =>
+      scheme.paramCount == 1
+  | _ => false
+
+private def idHole : InferInput := .lambda (some .hole) (.var 0)
+
+-- Independent local allocation: two syntactic visits, unrelated types.
+def distinctCopies : InferInput := pair idHole idHole
+#guard match inferCore [] 0 ctx distinctCopies with
+  | some ⟨(_, _, _, .customTy ⟨"Pair"⟩
+      [.arrow (.fvar a) (.fvar a'), .arrow (.fvar b) (.fvar b')]), _⟩ =>
+      a == a' && b == b' && a != b
+  | _ => false
+
+-- Independent local uses: same InferInput value copied, each used at a different type.
+def differentlyUsedCopies : InferInput :=
+  pair (.app idHole (.primLit (.int 1))) (.app idHole (.ctor ⟨"True"⟩))
+#guard (inferCore [] 0 ctx differentlyUsedCopies).isSome
+
+-- Reallocating the holes must not reallocate the shared outer monomorphic f.
+def sharedOuterRejected : InferInput :=
+  .lambda none
+    (pair
+      (.app (.lambda (some .hole) (.app (.var 1) (.var 0))) (.primLit (.int 1)))
+      (.app (.lambda (some .hole) (.app (.var 1) (.var 0))) (.ctor ⟨"True"⟩)))
+#guard !(inferCore [] 0 ctx sharedOuterRejected).isSome
+
+private def branches (yes no : InferInput) : List (MatchPattern × InferInput) :=
+  [(.named ⟨"True"⟩ 0, yes), (.named ⟨"False"⟩ 0, no)]
+
+-- Partial scrutinees use the same branch inference and constructor checks.
+def directPartialScrutinee : InferInput :=
+  .match_ (.app idHole (.ctor ⟨"True"⟩))
+    (branches (.primLit (.int 1)) (.primLit (.int 0)))
+#guard (inferCore [] 0 ctx directPartialScrutinee).isSome
+
+-- Anonymous parameters in named and fallback bodies are solved in one thread.
+def partialBranches : InferInput :=
+  .match_ (.ctor ⟨"True"⟩) (branches idHole idHole)
+#guard (inferCore [] 0 ctx partialBranches).isSome
+
+-- Every branch must agree on the result; fresh local holes do not relax it.
+def incompatiblePartialBranches : InferInput :=
+  .match_ (.ctor ⟨"True"⟩)
+    [(.wildcard, .app idHole (.primLit (.int 1))),
+     (.wildcard, .app idHole (.ctor ⟨"True"⟩))]
+#guard !(inferCore [] 0 ctx incompatiblePartialBranches).isSome
+
+-- Equivalent normal lowering shape: the match scrutinee is bound once first.
+def loweredPartialScrutinee : InferInput :=
+  .letIn .absent (.app idHole (.ctor ⟨"True"⟩))
+    (.match_ (.var 0) (branches (.primLit (.int 1)) (.primLit (.int 0))))
+#guard (inferCore [] 0 ctx loweredPartialScrutinee).isSome
+
+-- Nested complete match is an argument to the partial scrutinee expression.
+def nestedScrutinee : InferInput :=
+  .letIn .absent
+    (.app idHole
+      (.letIn .absent (.ctor ⟨"False"⟩)
+        (.match_ (.var 0) (branches (.ctor ⟨"False"⟩) (.ctor ⟨"True"⟩)))))
+    (.match_ (.var 0) (branches (.primLit (.int 1)) (.primLit (.int 0))))
+#guard (inferCore [] 0 ctx nestedScrutinee).isSome
+
+-- Lowering an irrefutable named pattern makes another ordinary let. This
+-- checks the existing lowering/generalization policy, independently of copying.
+def irrefutableCapture : InferInput :=
+  .letIn .absent idHole
+    (.letIn .absent (.var 0)
+      (pair (.app (.var 0) (.primLit (.int 1)))
+        (.app (.var 0) (.ctor ⟨"True"⟩))))
+#guard (inferCore [] 0 ctx irrefutableCapture).isSome
+
+
+private def rigidArrow : TyTemplate := .arrow (.fixed (.fvar 7)) .hole
+private def rigidIdentity : InferInput := .lambda (some rigidArrow) (.var 0)
+private def violatesRigid : InferInput :=
+  .lambda (some rigidArrow) (.app (.var 0) (.primLit (.int 1)))
+private def rigidLet : InferInput :=
+  .letIn (.template rigidArrow) (.lambda none (.var 0)) (.var 0)
+private def violatesRigidLet : InferInput :=
+  .letIn (.template rigidArrow) (.lambda none (.var 0))
+    (.app (.var 0) (.primLit (.int 1)))
+
+#guard (inferCore [7] 8 ctx rigidIdentity).isSome
+#guard !(inferCore [7] 8 ctx violatesRigid).isSome
+#guard !(inferCore [] 8 ctx rigidIdentity).isSome
+#guard (inferCore [7] 8 ctx rigidLet).isSome
+#guard !(inferCore [7] 8 ctx violatesRigidLet).isSome
+#guard match inferCore [7] 8 ctx rigidLet with
+  | some ⟨(_, _, .letIn (some scheme) _ _, .arrow (.fvar 7) (.fvar 7)), _⟩ =>
+      scheme.paramCount == 0
+  | _ => false
+
+private def polyrec : InferInput :=
+  .letRec [.complete ⟨1, .arrow (.bvar 0) (.prim .int)⟩]
+    [.lambda none
+      (.app (.var 1) (.app (.app (.ctor ⟨"Pair"⟩) (.var 0)) (.var 0)))]
+    (.app (.var 0) (.ctor ⟨"True"⟩))
+#guard (inferCore [] 0 ctx polyrec).isSome
+#guard (inferCore [] 0 ctx
+  (.letIn .absent (.lambda (some .hole) (.var 0)) polyrec)).isSome
+#guard !(principalType ctx.ctors (InferInput.ofCore polyrec.erase)).isSome
+
+-- Complete signatures protect their authored skolems while filling RHS holes.
+def completeForallWithPartialRhs : InferInput :=
+  .letIn (.complete ⟨1, .arrow (.bvar 0) (.bvar 0)⟩)
+    (.lambda (some .hole) (.var 0)) (.var 0)
+#guard (inferCore [] 0 ctx completeForallWithPartialRhs).isSome
+
+-- An unused hole still generalizes at its own binding even when it is absent
+-- from the whole-program result type.
+def unusedHole : InferInput :=
+  .letIn (.template .hole) (.ctor ⟨"Nil"⟩) (.primLit (.int 1))
+#guard match inferCore [] 0 ctx unusedHole with
+  | some ⟨(_, _, .letIn (some ⟨1, .customTy ⟨"List"⟩ [.bvar 0]⟩) _ _, .prim .int), _⟩ => true
+  | _ => false
+
+-- Public artifacts and completed output come from the same run. Synthetic
+-- scheme binders do not turn source hover monotypes into dangling bvars.
+#guard match inferWithTypes ctors polymorphicId with
+  | some result => result.binderSchemes.any (fun fact => fact.2.paramCount == 1)
+  | none => false
+#guard match (inferWithTypes ctors polymorphicId).bind (fun result =>
+    result.nodeTypes.find? (fun fact => fact.1 == [.letRhs])) with
+  | some (_, .arrow (.fvar 0) (.fvar 0)) => true
+  | _ => false
+
+#print axioms Infer.sourceSound
+#print axioms Infer.inputSound
+#print axioms Infer.completes
+#print axioms Infer.erase
+
+end InferenceExamples
+
+end

@@ -17,7 +17,7 @@ returns completed Core and editor maps in one worker traversal. Independent inpu
 typing and annotation fidelity describe the authored input; output typing and
 exact erasure connect the returned expression to execution.
 
-Complete Core uses that same engine through `Elaboration.Input.ofCore`.
+Complete Core uses that same engine through `InferInput.ofCore`.
 `SurfaceBridge.inferOfCore_source_sound` retains the original `TypeOfHM` source
 contract, while `coreTypecheck_accepts_iff` and `inferOfCore_principal` retain
 complete-Core acceptance and residual principality. The proof-only `RunWT`
@@ -77,7 +77,7 @@ well-typed and is a value or can step again — "never gets stuck" formalised. -
 
 /-! ### Canonical partial-input elaboration: exact output and source guarantees
 
-Production lowering preserves anonymous holes in `Elaboration.Input` and shared
+Production lowering preserves anonymous holes in `InferInput` and shared
 pattern emission. `inferWithTypes` completes that input once, returning the exact
 Core expression executed after erasure and the maps used by editor joins.
 `Infer.sourceSound` types that completed expression; `Infer.inputSound` independently
@@ -118,17 +118,17 @@ operational code outside the verified boundary. -/
 example (h : Infer K F frontier ctx input next subst output ty) : Infer.Principal h :=
   h.principal
 
-example (input : Elaboration.Input) : InferWithTypesCoreSourceComplete input :=
+example (input : InferInput) : InferWithTypesCoreSourceComplete input :=
   inferWithTypesCore_sourceComplete input
 
-example (input : Elaboration.Input) : InferWithTypesCoreComplete input :=
+example (input : InferInput) : InferWithTypesCoreComplete input :=
   inferWithTypesCore_complete input
 
-example (input : Elaboration.Input) : InferCoreComplete input := inferCore_complete input
+example (input : InferInput) : InferCoreComplete input := inferCore_complete input
 
-example {ctors : CtorEnv} {input : Elaboration.Input} :
+example {ctors : CtorEnv} {input : InferInput} :
     (inferWithTypes ctors input).isSome ↔
-      ∃ ty, Elaboration.Typing input.rigidVars ⟨[], ctors⟩ input ty :=
+      ∃ ty, InputTyping input.rigidVars ⟨[], ctors⟩ input ty :=
   inferWithTypes_accepts_iff
 
 example (result : InferenceResult) : Expr := result.completedExpr
@@ -147,11 +147,11 @@ runtime source with the canonical completed output. -/
 #check @SurfaceBridge.inferOfCore_erase
 #check @SurfaceBridge.coreTypecheck_accepts_iff
 #check @SurfaceBridge.inferOfCore_principal
-#check @CanonicalAuditCapstone.polyId_headlines_fire
-#check @CanonicalAuditCapstone.appFiveFive_rejected
-#check @CanonicalAuditCapstone.idid_headlines_fire
-#check @CanonicalAuditCapstone.matchWild_headlines_fire
-#check @CanonicalAuditCapstone.mutualRec_headlines_fire
+#check @AuditCapstone.polyId_headlines_fire
+#check @AuditCapstone.appFiveFive_rejected
+#check @AuditCapstone.idid_headlines_fire
+#check @AuditCapstone.matchWild_headlines_fire
+#check @AuditCapstone.mutualRec_headlines_fire
 
 /-! ### Pattern-compilation correctness
 
@@ -549,7 +549,7 @@ def elaborateSafe (p : Surface.Program) : Option (Σ ctors : CtorEnv, Safe ctors
   match hlow : lowerProgram p with
   | none => none
   | some (ctors, c) =>
-    match hresult : inferWithTypes ctors (Elaboration.Input.ofCore c) with
+    match hresult : inferWithTypes ctors (InferInput.ofCore c) with
     | none => none
     | some result =>
       match hcov : checkExhaustive ctors p.term with
@@ -747,11 +747,11 @@ signatures. The complete-Core adapters retain the same source guarantees. -/
 #print axioms SurfaceBridge.inferOfCore_erase
 #print axioms SurfaceBridge.coreTypecheck_accepts_iff
 #print axioms SurfaceBridge.inferOfCore_principal
-#print axioms CanonicalAuditCapstone.polyId_headlines_fire
-#print axioms CanonicalAuditCapstone.appFiveFive_rejected
-#print axioms CanonicalAuditCapstone.idid_headlines_fire
-#print axioms CanonicalAuditCapstone.matchWild_headlines_fire
-#print axioms CanonicalAuditCapstone.mutualRec_headlines_fire
+#print axioms AuditCapstone.polyId_headlines_fire
+#print axioms AuditCapstone.appFiveFive_rejected
+#print axioms AuditCapstone.idid_headlines_fire
+#print axioms AuditCapstone.matchWild_headlines_fire
+#print axioms AuditCapstone.mutualRec_headlines_fire
 
 -- Clean: this file's own inversion lemmas.
 #print axioms TypeOfHM_app_inv           -- expect {propext, Quot.sound}

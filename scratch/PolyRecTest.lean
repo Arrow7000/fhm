@@ -57,7 +57,7 @@ def checkPipelineDM (src : String) : Except PipelineError CheckedProgram := do
     | none => throw ⟨.lower,
         "lowering failed (unbound name, bad declaration, or rejected sugar)"⟩
     | some x => pure x
-  let checked <- match inferWithTypes ctors (Elaboration.Input.ofCore core) with
+  let checked <- match inferWithTypes ctors (InferInput.ofCore core) with
     | none => throw ⟨.infer, "typechecking failed"⟩
     | some checked => pure checked
   if !(checkExhaustive ctors program.term) then

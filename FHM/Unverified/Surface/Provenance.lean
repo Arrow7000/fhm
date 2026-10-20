@@ -1,12 +1,11 @@
 import FHM.PatComp.Trace
 import FHM.Surface.Span
 import FHM.SurfaceBridge
-import FHM.Elaboration.Lowering
 import FHM.InferW
 
 /-! # Construction-time Surface → Input provenance
 
-Production lowering preserves partial annotations in `Elaboration.Input` and
+Production lowering preserves partial annotations in `InferInput` and
 carries provenance through `PatComp`'s shared emission trace. Source IDs are
 assigned to the parser's span tree before lowering; the lowerer records both
 directions of the term-path correspondence during construction.
@@ -347,7 +346,7 @@ def Lowered.binderTargetsResolve (r : Lowered) : Bool :=
 def Lowered.provenanceTotal (r : Lowered) : Bool :=
   r.coreOriginsTotal && r.sourceTargetsTotal && r.binderTargetsResolve
 
-abbrev InputLowered := Lowered Elaboration.Input
+abbrev InputLowered := Lowered InferInput
 
 def wrapParamsWithProvenance (ke : KindEnv) (tvs : List ValName) (owner : SourceNode)
     (site : Nat → SurfaceBinderSite) :
@@ -355,7 +354,7 @@ def wrapParamsWithProvenance (ke : KindEnv) (tvs : List ValName) (owner : Source
   | _, [], rhs => some rhs
   | index, (_name, ann) :: rest, rhs => do
       let inner ← wrapParamsWithProvenance ke tvs owner site (index + 1) rest rhs
-      let ann' ← Elaboration.lowerTemplateAnn ke tvs ann
+      let ann' ← lowerTemplateAnn ke tvs ann
       let child := inner.belowPath [.lambdaBody]
       pure {
         expr := .lambda ann' inner.expr
@@ -460,7 +459,7 @@ def traceCaptureTargets (owner : SourceId)
     provenance vocabulary, merging duplicated arms and preserving elimination. -/
 def lowerTracedMatch (source : SourceNode) (scrut : InputLowered)
     (pats : List Surface.Pattern) (arms : List InputLowered)
-    (traced : PatComp.TracedLowering Elaboration.Input) : Option InputLowered := do
+    (traced : PatComp.TracedLowering InferInput) : Option InputLowered := do
   let scrutPart := scrut.belowPath [.letRhs]
   let armParts := clonedArmParts traced.trace arms
   let nodes := source :: scrut.sourceNodes ++ arms.flatMap (fun arm => arm.sourceNodes)
@@ -516,7 +515,7 @@ def lowerIdentifiedExpr (ke : KindEnv) (tvs vs : List ValName) :
       let items' ← lowerIdentifiedList ke tvs vs items sitems
       lowerListWithProvenance source 0 true items'
   | .lambda param paramAnn body, .lambda source sbody => do
-      let ann' ← Elaboration.lowerTemplateAnn ke tvs paramAnn
+      let ann' ← lowerTemplateAnn ke tvs paramAnn
       match param with
       | .name name => do
           let body' ← lowerIdentifiedExpr ke tvs (name :: vs) body sbody
@@ -536,7 +535,7 @@ def lowerIdentifiedExpr (ke : KindEnv) (tvs vs : List ValName) :
             sourceTargets := []
             coreOrigins := [generatedOrigin source [] .patternLambdaScrutinee]
             binderTargets := [] }
-          let traced := Elaboration.lowerInputMatchTrace scrut.expr [param]
+          let traced := lowerInputMatchTrace scrut.expr [param]
             (fun i => [body'.expr].getD i (.ctor cNil))
           let matched ← lowerTracedMatch source scrut [param] [body'] traced
           let inner := { matched with
@@ -550,8 +549,8 @@ def lowerIdentifiedExpr (ke : KindEnv) (tvs vs : List ValName) :
       pure (combineAuthored source (.app fn'.expr arg'.expr)
         [fn'.belowPath [.appFun], arg'.belowPath [.appArg]])
   | .letIn name tyParams params ann rhs body, .letIn source srhs sbody => do
-      let annF := Elaboration.finalizeInputAnn tyParams params ann
-      let ann' ← Elaboration.lowerInputLetAnn ke tvs annF
+      let annF := finalizeInputAnn tyParams params ann
+      let ann' ← lowerInputLetAnn ke tvs annF
       let tvs' := letAnnTyPrefix tyParams annF ++ tvs
       let rhsCore ← lowerIdentifiedExpr ke tvs' (paramTermScope params vs) rhs srhs
       let rhs' ← wrapParamsWithProvenance ke tvs' source
@@ -563,7 +562,7 @@ def lowerIdentifiedExpr (ke : KindEnv) (tvs vs : List ValName) :
   | .letRecIn binds body, .letRecIn source srhss sbody => do
       let recScope := binds.map (fun b => b.name) ++ vs
       let anns' ← binds.mapM fun b =>
-        Elaboration.lowerInputLetAnn ke tvs (Elaboration.finalizeInputAnn b.tyParams b.params b.ann)
+        lowerInputLetAnn ke tvs (finalizeInputAnn b.tyParams b.params b.ann)
       let bindings' ← lowerIdentifiedRecBinds ke tvs recScope source 0 binds srhss
       let body' ← lowerIdentifiedExpr ke tvs recScope body sbody
       let bindingExprs := bindings'.map fun r => r.expr
@@ -583,14 +582,14 @@ def lowerIdentifiedExpr (ke : KindEnv) (tvs vs : List ValName) :
       let else' ← lowerIdentifiedExpr ke tvs vs else_ selse
       let pats : List Surface.Pattern := [.ctor cTrue [], .ctor cFalse []]
       let arms := [then', else']
-      let traced := Elaboration.lowerInputMatchTrace cond'.expr pats
+      let traced := lowerInputMatchTrace cond'.expr pats
         (fun i => (arms.map (fun arm => arm.expr)).getD i (.ctor cNil))
       lowerTracedMatch source cond' pats arms traced
   | .match_ scrut branches, .match_ source sscrut sarms => do
       let scrut' ← lowerIdentifiedExpr ke tvs vs scrut sscrut
       let arms' ← lowerIdentifiedBranches ke tvs vs branches sarms
       let pats := branches.map Prod.fst
-      let traced := Elaboration.lowerInputMatchTrace scrut'.expr pats
+      let traced := lowerInputMatchTrace scrut'.expr pats
         (fun i => (arms'.map (fun arm => arm.expr)).getD i (.ctor cNil))
       lowerTracedMatch source scrut' pats arms' traced
   | _, _ => none
@@ -618,7 +617,7 @@ def lowerIdentifiedRecBinds (ke : KindEnv) (tvs recScope : List ValName)
   | _, [], [] => some []
   | member, b :: rest, srhs :: srest => do
       let tvs' := letAnnTyPrefix b.tyParams
-        (Elaboration.finalizeInputAnn b.tyParams b.params b.ann) ++ tvs
+        (finalizeInputAnn b.tyParams b.params b.ann) ++ tvs
       let rhsCore ← lowerIdentifiedExpr ke tvs' (paramTermScope b.params recScope) b.rhs srhs
       let rhs' ← wrapParamsWithProvenance ke tvs' owner
         (fun i => .letRecParam owner.id member i) 0 b.params rhsCore
@@ -675,7 +674,7 @@ abbrev InferredSurfaceBinderSchemes := List (SurfaceBinderSite × PolyTy)
 abbrev PatternBinderTypeMap := List (SurfaceBinderSite × List (CorePath × Ty))
 
 /-- Input and completed Core share logical term paths; only annotations differ. -/
-def inputAtCorePath : Elaboration.Input → CorePath → Option Elaboration.Input
+def inputAtCorePath : InferInput → CorePath → Option InferInput
   | input, [] => some input
   | .lambda _ body, .lambdaBody :: rest => inputAtCorePath body rest
   | .app fn _, .appFun :: rest => inputAtCorePath fn rest
@@ -697,7 +696,7 @@ structure TypedLowered where
   /-- The declaration environment shared by lowering and HM inference. -/
   ctors : CtorEnv
   /-- Authored annotation modes before completion. -/
-  input : Elaboration.Input
+  input : InferInput
   lowering : Lowered
   inference : InferenceResult
   sourceTypes : SourceTypeMap

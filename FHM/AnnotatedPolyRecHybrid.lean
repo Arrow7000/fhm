@@ -6,7 +6,7 @@ import FHM.AnnotatedPolyRecErasure
 This module is the second formal spike for annotated in-block polymorphism. It is
 retained as a proof artifact, not as the production source rule: it predates the
 later contract-stratified ordering, so its unsigned members remain monomorphic
-while signed RHSs are checked. Production `TypeOfHM`/`CoreBackend.Infer` instead CoreBackend.infer and
+while signed RHSs are checked. Production `TypeOfHM`/`Infer` instead infer and
 generalize the unsigned sub-group before checking signed RHSs under final schemes.
 
 The

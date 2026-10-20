@@ -109,7 +109,7 @@ partial def collect (bs : List BinderSpan) : Surface.Expr → IdentifiedExpr →
         | [] => owner.span
       let heads := (params.mapIdx fun i (n, _) =>
         locate bs (.letParam owner.id i) n .param header srhs.source.span srhs.source.span).flatten
-      let display := ⟨.letIn owner.id, displayNames (Elaboration.finalizeInputAnn tyParams params ann)⟩
+      let display := ⟨.letIn owner.id, displayNames (finalizeInputAnn tyParams params ann)⟩
       ((⟨vals ++ heads, [], [display]⟩ : Locations).append ((collect bs rhs srhs).append (collect bs body sbody))).withExpr owner
   | .letRecIn bindings body, .letRecIn owner rhss sbody =>
       ((collectBindings bs owner 0 bindings rhss sbody.source.span).append (collect bs body sbody)).withExpr owner
@@ -127,7 +127,7 @@ partial def collectBindings (bs : List BinderSpan) (owner : SourceNode) (member 
     List Surface.Binding → List IdentifiedExpr → Span → Locations
   | b :: rest, rhs :: rhss, scope =>
       let own := bindingLocations bs owner member b rhs (owner.span.union scope)
-      let display := ⟨.letRec owner.id member, displayNames (Elaboration.finalizeInputAnn b.tyParams b.params b.ann)⟩
+      let display := ⟨.letRec owner.id member, displayNames (finalizeInputAnn b.tyParams b.params b.ann)⟩
       (⟨own, [], [display]⟩ : Locations).append ((collect bs b.rhs rhs).append
         (collectBindings bs owner (member + 1) rest rhss scope))
   | _, _, _ => {}
@@ -198,7 +198,7 @@ def programWrapperIds : List (List Surface.Binding) → IdentifiedExpr → List 
         | _, _ => []
 
 /-- Read the authored annotation mode through the existing binder-path join. -/
-def bindingAnn (typed : TypedLowered) (site : SurfaceBinderSite) : Option Elaboration.LetAnn := do
+def bindingAnn (typed : TypedLowered) (site : SurfaceBinderSite) : Option BindingAnn := do
   let (_, target) ← typed.lowering.binderTargets.find? (fun p => p.1 == site)
   let sites ← match target with
     | .present sites => some sites
