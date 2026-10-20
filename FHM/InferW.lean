@@ -265,27 +265,27 @@ inductive InferBranches : List Nat → List Ty → Nat → Ctx → Ty → Ty →
 /-- Infer one selected SCC in the original full group coordinates. Sources have
 already been opened at flexible written roots and transformed by shape solving. -/
 inductive InferRecComponent : List Nat → List Ty → List Nat → Nat → Nat → Ctx →
-    List InferInput → List RecSpec → Nat → Subst → List (Option Expr) → List RecFacts → Prop
-  | nil : InferRecComponent K F members index frontier ctx [] [] frontier [] [] []
+    List InferInput → List RecSpec → Nat → Subst → List (Option RecComponentArtifact) → Prop
+  | nil : InferRecComponent K F members index frontier ctx [] [] frontier [] []
   | skipMono :
       index ∉ members →
-      InferRecComponent K F members (index + 1) frontier ctx rest specs next subst outputs facts →
+      InferRecComponent K F members (index + 1) frontier ctx rest specs next subst artifacts →
       InferRecComponent K F members index frontier ctx (rhs :: rest) (.mono ty :: specs)
-        next subst (none :: outputs) (.empty :: facts)
+        next subst (none :: artifacts)
   | skipPoly :
-      InferRecComponent K F members (index + 1) frontier ctx rest specs next subst outputs facts →
+      InferRecComponent K F members (index + 1) frontier ctx rest specs next subst artifacts →
       InferRecComponent K F members index frontier ctx (rhs :: rest) (.poly scheme :: specs)
-        next subst (none :: outputs) (.empty :: facts)
+        next subst (none :: artifacts)
   | consSelected {bodyFacts : RecFacts} :
       index ∈ members →
       Infer K F frontier ctx rhs first s1 output ty →
       RigidUnify K ty (s1.onTy expected) s2 →
       InferRecComponent K (substSoft (s1 ++ s2) F) members (index + 1) first
         (s2.onCtx (s1.onCtx ctx)) (rest.map (InferInput.substTyFvars (s1 ++ s2)))
-        (specs.map (RecSpec.onSubstSource (s1 ++ s2))) next s3 outputs facts →
+        (specs.map (RecSpec.onSubstSource (s1 ++ s2))) next s3 artifacts →
       InferRecComponent K F members index frontier ctx (rhs :: rest) (.mono expected :: specs)
-        next (s1 ++ s2 ++ s3) (some (output.substTyFvars (s2 ++ s3)) :: outputs)
-        (bodyFacts.onSubst (s2 ++ s3) :: facts)
+        next (s1 ++ s2 ++ s3)
+        (some ((RecComponentArtifact.mk output bodyFacts).onSubst (s2 ++ s3)) :: artifacts)
 
 /-- Component scheduling is shared with complete Core. Only completed contracts
 cut dependencies; each partial signature is solved in its monomorphic SCC. -/
@@ -300,10 +300,10 @@ inductive InferRecStrata : List Nat → List Ty → Nat → Ctx → List Binding
         (((state.installOpenings component openings).onSubst pre).rhsCtx (pre.onCtx ctx))
         ((openRecSources openings bindings).map (InferInput.substTyFvars pre))
         ((state.installOpenings component openings).onSubst pre).specs
-        first current outputs facts →
+        first current artifacts →
       FinishRecComponent K (softVars (substSoft (pre ++ current) F)) component
         ((pre ++ current).onCtx ctx) ((state.installOpenings component openings).onSubst (pre ++ current))
-        outputs facts exported →
+        artifacts exported →
       InferRecStrata K (substSoft (pre ++ current) F) first ((pre ++ current).onCtx ctx)
         (anns.map (BindingAnn.substTyFvars (pre ++ current)))
         (bindings.map (InferInput.substTyFvars (pre ++ current))) exported rest next tail final →
@@ -553,7 +553,7 @@ termination_by (sizeBranches branches, 0)
 decreasing_by all_goals (simp only [sizeBranches, InferInput.size_substTyFvars, sizeBranches_substInputBranches]; omega)
 
 theorem InferRecComponent.dom_avoids
-    (h : InferRecComponent K F members index frontier ctx bindings specs next S outputs facts) :
+    (h : InferRecComponent K F members index frontier ctx bindings specs next S artifacts) :
     ∀ pair ∈ S, pair.1 ∉ K := by
   match h with
   | .nil => simp
@@ -590,10 +590,10 @@ decreasing_by all_goals (simp only [sizeBindings, InferInput.size_openTyVars, si
 end
 
  theorem InferRecComponent.lengths
-    (h : InferRecComponent K F members index frontier ctx bindings specs next S outputs facts) :
-    outputs.length = bindings.length ∧ specs.length = bindings.length ∧ facts.length = bindings.length := by
+    (h : InferRecComponent K F members index frontier ctx bindings specs next S artifacts) :
+    artifacts.length = bindings.length ∧ specs.length = bindings.length := by
   match h with
-  | .nil => exact ⟨rfl,rfl,rfl⟩
+  | .nil => exact ⟨rfl,rfl⟩
   | .skipMono _ hr | .skipPoly hr =>
       simpa only [List.length_cons, Nat.add_right_cancel_iff] using hr.lengths
   | .consSelected _ _ _ hr =>
@@ -602,8 +602,8 @@ end
  termination_by structural h
 
  theorem InferRecComponent.output_inv
-    (h : InferRecComponent K F members index frontier ctx bindings specs next S outputs facts) :
-    ∀ j output, outputs[j]? = some (some output) →
+    (h : InferRecComponent K F members index frontier ctx bindings specs next S artifacts) :
+    ∀ j output, recComponentOutputAt artifacts j = some output →
       index + j ∈ members ∧ ∃ ty, specs[j]? = some (.mono ty) := by
   match h with
   | .nil => intro j output hget; simp at hget
@@ -637,7 +637,7 @@ end
  termination_by structural h
 
  theorem InferRecComponent.lc_of_infer
-    (h : InferRecComponent K F members index frontier ctx bindings specs next S outputs facts)
+    (h : InferRecComponent K F members index frontier ctx bindings specs next S artifacts)
     (hInfer : ∀ {κ F' Ψ c e Ψ' T output ty}, e.size ≤ sizeBindings bindings →
       Infer κ F' Ψ c e Ψ' T output ty → CtxWF c → ty.IsLC ∧ ∀ p ∈ T, p.2.IsLC)
     (hctx : CtxWF ctx) (hspec : ∀ spec ∈ specs, spec.LC) : ∀ p ∈ S, p.2.IsLC := by
@@ -956,8 +956,7 @@ structure InferCoreResult extends InferResult where
 structure RecComponentResult where
   frontier : Nat
   subst : Subst
-  outputs : List (Option Expr)
-  facts : List RecFacts
+  artifacts : List (Option RecComponentArtifact)
 
 structure RecRunResult where
   frontier : Nat
@@ -1370,9 +1369,9 @@ decreasing_by
 def inferRecComponentWithTypesCore (K : List Nat) (F : List Ty) (members : List Nat)
     (index frontier : Nat) (ctx : Ctx) (bindings : List InferInput) (specs : List RecSpec) :
     Option { result : RecComponentResult // InferRecComponent K F members index frontier ctx bindings specs
-      result.frontier result.subst result.outputs result.facts } :=
+      result.frontier result.subst result.artifacts } :=
   match bindings, specs with
-  | [], [] => some ⟨⟨frontier, [], [], []⟩, .nil⟩
+  | [], [] => some ⟨⟨frontier, [], []⟩, .nil⟩
   | rhs :: rest, .mono expected :: specs =>
       if hm : index ∈ members then
         match inferWithTypesCore K frontier ctx rhs F with
@@ -1388,20 +1387,20 @@ def inferRecComponentWithTypesCore (K : List Nat) (F : List Ty) (members : List 
             | none => none
             | some ⟨tail, ht⟩ =>
               some ⟨⟨tail.frontier, rhsResult.subst ++ s2 ++ tail.subst,
-                some (rhsResult.completedExpr.substTyFvars (s2 ++ tail.subst)) :: tail.outputs,
-                (RecFacts.mk rhsResult.nodeTypes rhsResult.binderSchemes).onSubst
-                  (s2 ++ tail.subst) :: tail.facts⟩,
+                some ((RecComponentArtifact.mk rhsResult.completedExpr
+                  (RecFacts.mk rhsResult.nodeTypes rhsResult.binderSchemes)).onSubst
+                    (s2 ++ tail.subst)) :: tail.artifacts⟩,
                 .consSelected hm hi ⟨hu, hav⟩ ht⟩
       else
         match inferRecComponentWithTypesCore K F members (index + 1) frontier ctx rest specs with
         | none => none
         | some ⟨tail, ht⟩ =>
-          some ⟨⟨tail.frontier, tail.subst, none :: tail.outputs, .empty :: tail.facts⟩, .skipMono hm ht⟩
+          some ⟨⟨tail.frontier, tail.subst, none :: tail.artifacts⟩, .skipMono hm ht⟩
   | _ :: rest, .poly _ :: specs =>
       match inferRecComponentWithTypesCore K F members (index + 1) frontier ctx rest specs with
       | none => none
       | some ⟨tail, ht⟩ =>
-        some ⟨⟨tail.frontier, tail.subst, none :: tail.outputs, .empty :: tail.facts⟩, .skipPoly ht⟩
+        some ⟨⟨tail.frontier, tail.subst, none :: tail.artifacts⟩, .skipPoly ht⟩
   | _, _ => none
 termination_by (sizeBindings bindings, 0)
 decreasing_by all_goals (simp only [sizeBindings, sizeBindings_map_substTyFvars]; omega)
@@ -1432,7 +1431,7 @@ def inferRecStrataWithTypesCore (K : List Nat) (F : List Ty) (frontier : Nat)
           | some ⟨current, hc⟩ =>
             let solved := pre ++ current.subst
             match finishRecComponent K (softVars (substSoft solved F)) component (solved.onCtx ctx)
-                (installed.onSubst solved) current.outputs current.facts with
+                (installed.onSubst solved) current.artifacts with
             | none => none
             | some ⟨exported, he⟩ =>
               match inferRecStrataWithTypesCore K (substSoft solved F) current.frontier (solved.onCtx ctx)
@@ -1863,7 +1862,7 @@ termination_by (sizeBranches branches, 0)
 decreasing_by all_goals (simp only [sizeBranches, InferInput.size_substTyFvars, sizeBranches_substInputBranches]; omega)
 
 theorem InferRecComponent.frontier_le
-    (h : InferRecComponent K F members index frontier ctx bindings specs next S outputs facts) :
+    (h : InferRecComponent K F members index frontier ctx bindings specs next S artifacts) :
     frontier ≤ next := by
   match h with
   | .nil => exact Nat.le_refl _
@@ -1932,7 +1931,7 @@ private theorem specs_below_subst {specs : List RecSpec}
           hopen opening (List.mem_of_getElem? ho)⟩
 
  theorem InferRecComponent.belowFvars_of_infer
-    (h : InferRecComponent K F members index frontier ctx bindings specs next S outputs facts)
+    (h : InferRecComponent K F members index frontier ctx bindings specs next S artifacts)
     (hInfer : ∀ {κ F' Ψ c e Ψ' T output ty}, e.size ≤ sizeBindings bindings →
       Infer κ F' Ψ c e Ψ' T output ty → CtxBelow Ψ c → (∀ k ∈ κ, k < Ψ) →
       (∀ t ∈ F', Ty.BelowFvars Ψ t) → Ty.BelowFvars Ψ' ty ∧ ∀ p ∈ T, Ty.BelowFvars Ψ' p.2)
@@ -2694,7 +2693,7 @@ private theorem branches_refs_subst {brs : List (MatchPattern × InferInput)} {c
     (hrefs oldpat oldbody hold) hS
 
  theorem InferRecComponent.sourceLocality_of_infer
-    (h : InferRecComponent K F members index frontier ctx bindings specs next S outputs facts)
+    (h : InferRecComponent K F members index frontier ctx bindings specs next S artifacts)
     (hInfer : ∀ {κ F' Ψ c e Ψ' T output ty}, e.size ≤ sizeBindings bindings →
       Infer κ F' Ψ c e Ψ' T output ty →
       ∀ {w}, w < Ψ →
@@ -2871,8 +2870,9 @@ theorem RecState.Avoids.rhsCtx {state : RecState} {e : Expr} {groupSize : Nat} {
     (by simpa only [Nat.zero_add, hlen] using href) h.entries
 
 theorem RecState.Avoids.exportComponent {state : RecState} {members pool : List Nat}
-    {written : List (List Nat)} {outputs : List (Option Expr)} {facts : List RecFacts} (h : state.Avoids w) :
-    (state.exportComponent members written pool outputs facts).Avoids w := by
+    {written : List (List Nat)} {artifacts : List (Option RecComponentArtifact)}
+    (h : state.Avoids w) :
+    (state.exportComponent members written pool artifacts).Avoids w := by
   refine ⟨?_, ?_⟩
   · simpa only [RecState.specs_exportComponent] using h.1
   intro scheme hs
@@ -2895,7 +2895,7 @@ theorem RecState.Avoids.exportComponent {state : RecState} {members pool : List 
         have hmemberExport : member.exported = some scheme := (Option.some.inj hi).trans heq
         exact h.exported (List.mem_map.mpr ⟨member, hmember_mem, hmemberExport⟩)
 
-theorem FinishRecComponent.avoids (h : FinishRecComponent K soft members ctx state outputs facts final)
+theorem FinishRecComponent.avoids (h : FinishRecComponent K soft members ctx state artifacts final)
     (ha : state.Avoids w) : final.Avoids w := by
   cases h
   exact ha.exportComponent
@@ -2978,7 +2978,7 @@ private theorem recShapes_avoid {state : RecState} (ha : state.Avoids w)
           ho opening (List.mem_of_getElem? hopen)⟩
 
 private theorem FinishRecComponent.avoid_lengths
-    (h : FinishRecComponent K soft members ctx state outputs facts final) :
+    (h : FinishRecComponent K soft members ctx state artifacts final) :
     final.specs.length = state.specs.length ∧ final.exports.length = state.exports.length := by
   cases h
   exact ⟨by simp, by simp [RecState.exports_length, RecState.exportComponent]⟩
@@ -3809,12 +3809,12 @@ theorem GeneralisesTo.weaken_annotated {ctx : Ctx} {rhs : Expr} {scheme : PolyTy
 /-- Closing a selected monotype can only increase the available instances.
 The written prefix and pool need no freshness assumptions for this direction. -/
 theorem RecState.exportComponent_entries_generalize {state : RecState}
-    {outputs : List (Option Expr)} {facts : List RecFacts} {pool : List Nat}
+    {artifacts : List (Option RecComponentArtifact)} {pool : List Nat}
     (hlc : ∀ spec ∈ state.specs, spec.LC)
     (hclosed : ∀ i ∈ members, state.exports[i]? = some none)
     (hmono : ∀ i ∈ members, ∃ ty, state.specs[i]? = some (.mono ty)) :
     List.Forall₂ PolyTy.Generalizes
-      (state.exportComponent members written pool outputs facts).entries state.entries := by
+      (state.exportComponent members written pool artifacts).entries state.entries := by
   apply List.forall₂_iff_zip.mpr
   constructor
   · simp [RecState.entries, RecState.exportComponent]
@@ -3916,13 +3916,13 @@ theorem RecState.getElem?_outputs_setSigned_of_ne (state : RecState) (member i :
   cases state.memberStates[i]? <;> simp [hi]
 
 theorem RecState.getElem?_outputs_exportComponent (state : RecState) (members : List Nat)
-    (written : List (List Nat)) (pool : List Nat) (outputs : List (Option Expr))
-    (facts : List RecFacts) (i : Nat) :
-    (state.exportComponent members written pool outputs facts).outputs[i]? =
+    (written : List (List Nat)) (pool : List Nat)
+    (artifacts : List (Option RecComponentArtifact)) (i : Nat) :
+    (state.exportComponent members written pool artifacts).outputs[i]? =
       state.memberStates[i]?.map (fun member =>
         if i ∈ members then do
           let ty ← member.spec.monoTy?
-          let rhs ← (outputs[i]?).join
+          let rhs ← recComponentOutputAt artifacts i
           pure (rhs.closeTyVars (recNames (written[i]?.getD []) pool ty))
         else member.output) := by
   simp only [RecState.outputs, RecState.exportComponent, List.getElem?_map,
@@ -3932,17 +3932,17 @@ theorem RecState.getElem?_outputs_exportComponent (state : RecState) (members : 
   | some member => split <;> rfl
 
 @[simp] theorem RecState.pool_exportComponent (state : RecState) (members : List Nat)
-    (written : List (List Nat)) (pool : List Nat) (outputs : List (Option Expr))
-    (facts : List RecFacts) :
-    (state.exportComponent members written pool outputs facts).pool = pool := rfl
+    (written : List (List Nat)) (pool : List Nat)
+    (artifacts : List (Option RecComponentArtifact)) :
+    (state.exportComponent members written pool artifacts).pool = pool := rfl
 
 @[simp] theorem RecState.pool_onSubst (state : RecState) (S : Subst) :
     (state.onSubst S).pool = state.pool := rfl
 
 @[simp] theorem RecState.prefixes_exportComponent (state : RecState) (members : List Nat)
-    (written : List (List Nat)) (pool : List Nat) (outputs : List (Option Expr))
-    (facts : List RecFacts) :
-    (state.exportComponent members written pool outputs facts).prefixes = state.prefixes := by
+    (written : List (List Nat)) (pool : List Nat)
+    (artifacts : List (Option RecComponentArtifact)) :
+    (state.exportComponent members written pool artifacts).prefixes = state.prefixes := by
   unfold RecState.prefixes
   rw [RecState.specs_exportComponent, RecState.slots_exportComponent]
 
@@ -4150,7 +4150,7 @@ private theorem collect_annotated_avoids {ctx : Ctx} (pairs : List (Expr × Poly
 
 
  theorem RecState.SourceTyped.exportComponent {state : RecState}
-    {outputs : List (Option Expr)} {facts : List RecFacts} {pool : List Nat}
+    {artifacts : List (Option RecComponentArtifact)} {pool : List Nat}
     (h : state.SourceTyped ctx)
     (hlc : ∀ spec ∈ state.specs, spec.LC)
     (hclosed : ∀ i ∈ members, state.exports[i]? = some none)
@@ -4158,12 +4158,12 @@ private theorem collect_annotated_avoids {ctx : Ctx} (pairs : List (Expr × Poly
     (hnd : ∀ i ∈ members, (written[i]?.getD []).Nodup)
     (hsub : ∀ i ∈ members, ∀ v ∈ written[i]?.getD [], v ∈ pool)
     (hpool : pool.Nodup)
-    (hfresh : ∀ v ∈ pool, v ∉ ((state.exportComponent members written pool outputs facts).rhsCtx ctx).env.freeVars)
+    (hfresh : ∀ v ∈ pool, v ∉ ((state.exportComponent members written pool artifacts).rhsCtx ctx).env.freeVars)
     (htyped : ∀ (i : Nat) (ty : Ty) (output : Expr), state.specs[i]? = some (.mono ty) →
-      outputs[i]? = some (some output) → TypeOfHM (state.rhsCtx ctx) output ty) :
-    (state.exportComponent members written pool outputs facts).SourceTyped ctx := by
+      recComponentOutputAt artifacts i = some output → TypeOfHM (state.rhsCtx ctx) output ty) :
+    (state.exportComponent members written pool artifacts).SourceTyped ctx := by
   have hgeneral := RecState.exportComponent_entries_generalize
-    (written := written) (outputs := outputs) (facts := facts) (pool := pool)
+    (written := written) (artifacts := artifacts) (pool := pool)
     hlc hclosed hmono
   intro i scheme output hscheme houtput
   rw [RecState.getElem?_exports_exportComponent] at hscheme
@@ -4180,31 +4180,28 @@ private theorem collect_annotated_avoids {ctx : Ctx} (pairs : List (Expr × Poly
       simp only [hmember, Option.map_some, hi, if_pos, hspecEq,
         RecSpec.completedScheme_mono] at hscheme houtput
       cases Option.some.inj hscheme
-      cases hout : outputs[i]? with
-      | none => simp [hout] at houtput
-      | some value =>
-          cases value with
-          | none => simp [hout] at houtput
-          | some rhs =>
-              simp [hout] at houtput
-              cases houtput
-              have hchecked := htyped i ty rhs hty hout
-              have hweaken : TypeOfHM
-                  ((state.exportComponent members written pool outputs facts).rhsCtx ctx) rhs ty :=
-                TypeOfHM.weaken_schemes hgeneral hchecked
-              have hnames : (recNames (written[i]?.getD []) pool ty).Nodup :=
-                recNames_nodup (hnd i hi) hpool
-              have havoid : ∀ v ∈ recNames (written[i]?.getD []) pool ty,
-                  v ∉ ((state.exportComponent members written pool outputs facts).rhsCtx ctx).env.freeVars := by
-                intro v hv
-                apply hfresh v
-                rcases mem_recNames.mp hv with hv | ⟨hv, _, _⟩
-                · exact hsub i hi v hv
-                · exact hv
-              have htyLC : ty.IsLC := by
-                simpa only [hspecEq] using
-                  (hlc member.spec (List.mem_map.mpr ⟨member, hmember_mem, rfl⟩))
-              exact ⟨recScheme_wf htyLC, _, hweaken.generaliseAnnotated hnames havoid⟩
+      change some (do
+        let rhs ← recComponentOutputAt artifacts i
+        pure (rhs.closeTyVars (recNames (written[i]?.getD []) pool ty))) = some (some output) at houtput
+      obtain ⟨rhs, hrhs, hclose⟩ := Option.bind_eq_some_iff.mp (Option.some.inj houtput)
+      cases Option.some.inj hclose
+      have hchecked := htyped i ty rhs hty hrhs
+      have hweaken : TypeOfHM
+          ((state.exportComponent members written pool artifacts).rhsCtx ctx) rhs ty :=
+        TypeOfHM.weaken_schemes hgeneral hchecked
+      have hnames : (recNames (written[i]?.getD []) pool ty).Nodup :=
+        recNames_nodup (hnd i hi) hpool
+      have havoid : ∀ v ∈ recNames (written[i]?.getD []) pool ty,
+          v ∉ ((state.exportComponent members written pool artifacts).rhsCtx ctx).env.freeVars := by
+        intro v hv
+        apply hfresh v
+        rcases mem_recNames.mp hv with hv | ⟨hv, _, _⟩
+        · exact hsub i hi v hv
+        · exact hv
+      have htyLC : ty.IsLC := by
+        simpa only [hspecEq] using
+          (hlc member.spec (List.mem_map.mpr ⟨member, hmember_mem, rfl⟩))
+      exact ⟨recScheme_wf htyLC, _, hweaken.generaliseAnnotated hnames havoid⟩
     · simp only [hmember, Option.map_some, hi] at hscheme houtput
       have hscheme' := Option.some.inj hscheme
       have houtput' := Option.some.inj houtput
@@ -4230,13 +4227,14 @@ private theorem collect_annotated_avoids {ctx : Ctx} (pairs : List (Expr × Poly
 
 
  theorem InferRecComponent.sourceSound_of_infer
-    (h : InferRecComponent K F members index frontier ctx bindings specs next S outputs facts)
+    (h : InferRecComponent K F members index frontier ctx bindings specs next S artifacts)
     (hInfer : ∀ {κ F' Ψ c e Ψ' T output ty}, e.size ≤ sizeBindings bindings →
       Infer κ F' Ψ c e Ψ' T output ty → CtxWF c → TypeOfHM (T.onCtx c) output ty)
     (hLC : ∀ {κ F' Ψ c e Ψ' T output ty}, e.size ≤ sizeBindings bindings →
       Infer κ F' Ψ c e Ψ' T output ty → CtxWF c → ty.IsLC ∧ ∀ p ∈ T, p.2.IsLC)
     (hctx : CtxWF ctx) (hspec : ∀ spec ∈ specs, spec.LC) :
-    ∀ (j : Nat) (target : Ty) (output : Expr), specs[j]? = some (RecSpec.mono target) → outputs[j]? = some (some output) →
+    ∀ (j : Nat) (target : Ty) (output : Expr), specs[j]? = some (RecSpec.mono target) →
+      recComponentOutputAt artifacts j = some output →
       TypeOfHM (S.onCtx ctx) output (S.onTy target) := by
   match h with
   | .nil => intro j target output ht; simp at ht
@@ -4266,7 +4264,7 @@ private theorem collect_annotated_avoids {ctx : Ctx} (pairs : List (Expr × Poly
       cases j with
       | zero =>
         cases Option.some.inj ht
-        cases Option.some.inj (Option.some.inj ho)
+        cases Option.some.inj ho
         have htyped := TypeOfHM.onSubst (s2 ++ s3)
           (fun p hp => (List.mem_append.mp hp).elim (huS p) (hrLC p))
           (hInfer (by simp only [sizeBindings]; omega) hi hctx)
@@ -4505,7 +4503,7 @@ theorem openRecSources_getElem? {openings : List RecOpening} {bindings : List In
     (hc : InferRecComponent K (substSoft pre (F ++ (openings.flatMap RecOpening.written).map Ty.fvar))
       component 0 opened (((state.installOpenings component openings).onSubst pre).rhsCtx (pre.onCtx ctx))
       ((openRecSources openings bindings).map (InferInput.substTyFvars pre))
-      ((state.installOpenings component openings).onSubst pre).specs first current outputs facts)
+      ((state.installOpenings component openings).onSubst pre).specs first current artifacts)
     (hInfer : ∀ {κ F' Ψ c e Ψ' T output ty}, e.size ≤ sizeBindings bindings →
       Infer κ F' Ψ c e Ψ' T output ty →
       ∀ {w}, w < Ψ →
@@ -4564,7 +4562,7 @@ theorem openRecSources_getElem? {openings : List RecOpening} {bindings : List In
     (hc : InferRecComponent K (substSoft pre (F ++ (openings.flatMap RecOpening.written).map Ty.fvar))
       component 0 opened (((state.installOpenings component openings).onSubst pre).rhsCtx (pre.onCtx ctx))
       ((openRecSources openings bindings).map (InferInput.substTyFvars pre))
-      ((state.installOpenings component openings).onSubst pre).specs first current outputs facts)
+      ((state.installOpenings component openings).onSubst pre).specs first current artifacts)
     (hInfer : ∀ {κ F' Ψ c e Ψ' T output ty}, e.size ≤ sizeBindings bindings →
       Infer κ F' Ψ c e Ψ' T output ty →
       ∀ {w}, w < Ψ →
@@ -4762,7 +4760,7 @@ private theorem ResolveRecSlots.names_avoid_of_slots
         (by simpa [Nat.add_assoc, Nat.add_comm 1 i] using hi) hget) hv
 
  theorem RecState.Frame.exportComponent_onSubst {state : RecState} {S : Subst}
-    {written : List (List Nat)} {outputs : List (Option Expr)} {facts : List RecFacts}
+    {written : List (List Nat)} {artifacts : List (Option RecComponentArtifact)}
     (h : state.Frame base K F ctx anns done) (hlc : state.LC) (hS : ∀ p ∈ S, p.2.IsLC)
     (hpool : ∀ g ∈ state.pool, (∀ p ∈ S, g ∉ p.2.freeVars) ∧ g ∉ S.map Prod.fst)
     (hpending : ∀ i ty, state.specs[i]? = some (.mono ty) → i ∉ done ++ members →
@@ -4776,7 +4774,7 @@ private theorem ResolveRecSlots.names_avoid_of_slots
       ∀ (i : Nat) images, i ∈ members → (state.onSubst S).slots[i]? = some images →
         ∀ t ∈ images, base + member ∉ t.freeVars) :
     ((state.onSubst S).exportComponent members written
-      ((state.onSubst S).componentPool K (softVars (substSoft S F)) members (S.onCtx ctx) written) outputs facts).Frame
+      ((state.onSubst S).componentPool K (softVars (substSoft S F)) members (S.onCtx ctx) written) artifacts).Frame
       base K (substSoft S F) (S.onCtx ctx) (anns.map (BindingAnn.substTyFvars S)) (done ++ members) := by
   let st := state.onSubst S
   let pool := st.componentPool K (softVars (substSoft S F)) members (S.onCtx ctx) written
@@ -4804,7 +4802,7 @@ private theorem ResolveRecSlots.names_avoid_of_slots
         h.poly i original hold, Option.map_some]
   have hp' : RecSpecs.PendingSeeds base (S.onCtx ctx) st.specs (done ++ members) := by
     simpa only [st, RecState.specs_onSubst] using hp
-  change (st.exportComponent members written pool outputs facts).Frame base K (substSoft S F) (S.onCtx ctx)
+  change (st.exportComponent members written pool artifacts).Frame base K (substSoft S F) (S.onCtx ctx)
     (anns.map (BindingAnn.substTyFvars S)) (done ++ members)
   refine {
     modes := ?_
@@ -5031,10 +5029,10 @@ private theorem installed_subst_slot_value {state : RecState} {S : Subst} {i : N
     (hc : InferRecComponent K (substSoft pre (F ++ (openings.flatMap RecOpening.written).map Ty.fvar))
       component 0 opened (((state.installOpenings component openings).onSubst pre).rhsCtx (pre.onCtx ctx))
       ((openRecSources openings bindings).map (InferInput.substTyFvars pre))
-      ((state.installOpenings component openings).onSubst pre).specs first current outputs facts)
+      ((state.installOpenings component openings).onSubst pre).specs first current artifacts)
     (hf : FinishRecComponent K (softVars (substSoft (pre ++ current) F)) component
       ((pre ++ current).onCtx ctx) ((state.installOpenings component openings).onSubst (pre ++ current))
-      outputs facts exported)
+      artifacts exported)
     (hInfer : ∀ {κ F' Ψ c e Ψ' T output ty}, e.size ≤ sizeBindings bindings →
       Infer κ F' Ψ c e Ψ' T output ty →
       ∀ {w}, w < Ψ →
@@ -5113,7 +5111,7 @@ theorem recValid_subst {anns : List BindingAnn} {bindings : List InferInput}
   simpa only [List.map_id, List.map_map, Function.comp_def, InferInput.erase_substTyFvars] using hg
 
 private theorem FinishRecComponent.pool_extends
-    (h : FinishRecComponent K soft members ctx state outputs facts final) (hv : v ∈ state.pool) :
+    (h : FinishRecComponent K soft members ctx state artifacts final) (hv : v ∈ state.pool) :
     v ∈ final.pool := by
   cases h
   exact state.componentPool_old hv
@@ -5333,10 +5331,10 @@ private theorem RecState.Frame.poly_of_complete {state : RecState} {i : Nat} {sc
     (hc : InferRecComponent K (substSoft pre (F ++ (openings.flatMap RecOpening.written).map Ty.fvar))
       component 0 opened (((state.installOpenings component openings).onSubst pre).rhsCtx (pre.onCtx ctx))
       ((openRecSources openings bindings).map (InferInput.substTyFvars pre))
-      ((state.installOpenings component openings).onSubst pre).specs first current outputs facts)
+      ((state.installOpenings component openings).onSubst pre).specs first current artifacts)
     (hf : FinishRecComponent K (softVars (substSoft (pre ++ current) F)) component
       ((pre ++ current).onCtx ctx) ((state.installOpenings component openings).onSubst (pre ++ current))
-      outputs facts exported)
+      artifacts exported)
     (hInfer : ∀ {κ F' Ψ c e Ψ' T output ty}, e.size ≤ sizeBindings bindings →
       Infer κ F' Ψ c e Ψ' T output ty → CtxWF c → TypeOfHM (T.onCtx c) output ty)
     (hframe : state.Frame base K F ctx anns past.flatten)
@@ -5765,7 +5763,7 @@ private theorem trace_prefix_lookup {state : RecState} {i : Nat} {ty : Ty} {name
 
 
  theorem InferRecComponent.inputSound_of_infer
-    (h : InferRecComponent K F members index frontier ctx bindings specs next S outputs facts)
+    (h : InferRecComponent K F members index frontier ctx bindings specs next S artifacts)
     (hInfer : ∀ {κ F' Ψ c e Ψ' T output ty}, e.size ≤ sizeBindings bindings →
       Infer κ F' Ψ c e Ψ' T output ty → CtxWF c →
       InputTyping (κ ++ softVars (substSoft T F')) (T.onCtx c) (e.substTyFvars T) ty)
@@ -6017,7 +6015,7 @@ theorem RecState.Fidelity.installOpenings {state : RecState}
   simpa only [hparam] using hc Xs hXsC
 
  theorem RecState.Fidelity.exportComponent {state : RecState} {members pool : List Nat}
-    {written : List (List Nat)} {outputs : List (Option Expr)} {facts : List RecFacts}
+    {written : List (List Nat)} {artifacts : List (Option RecComponentArtifact)}
     (h : state.Fidelity Q anns bindings) (hlc : state.LC)
     (hpool : pool.Nodup) (havoid : ∀ v ∈ pool, v ∉ Q)
     (hAnn : ∀ ann ∈ anns, ∀ v ∈ ann.rigidVars, v ∈ Q)
@@ -6027,11 +6025,11 @@ theorem RecState.Fidelity.installOpenings {state : RecState}
       (written[i]?.getD []).Nodup ∧ ∀ v ∈ written[i]?.getD [], v ∈ pool)
     (hcheck : ∀ (i : Nat) (ann : BindingAnn) (rhs : InferInput) (ty : Ty) (output : Expr),
       i ∈ members → anns[i]? = some ann → bindings[i]? = some rhs →
-      state.specs[i]? = some (.mono ty) → (outputs[i]?).join = some output →
+      state.specs[i]? = some (.mono ty) → recComponentOutputAt artifacts i = some output →
       ann.RecFits (written[i]?.getD []) ty ∧
       AnnotationCompletion (Q ++ written[i]?.getD []) (rhs.openTyVars (written[i]?.getD [])) output ∧
       output.TyBvarBounded 0) :
-    (state.exportComponent members written pool outputs facts).Fidelity Q anns bindings := by
+    (state.exportComponent members written pool artifacts).Fidelity Q anns bindings := by
   intro i ann rhs scheme output ha hb he ho
   rw [RecState.getElem?_exports_exportComponent] at he
   rw [RecState.getElem?_outputs_exportComponent] at ho
@@ -6049,7 +6047,7 @@ theorem RecState.Fidelity.installOpenings {state : RecState}
         subst scheme
         rw [hspec] at ho
         change some (do
-          let raw ← (outputs[i]?).join
+          let raw ← recComponentOutputAt artifacts i
           pure (raw.closeTyVars (recNames (written[i]?.getD []) pool ty))) = some (some output) at ho
         obtain ⟨raw, hraw, hclose⟩ := Option.bind_eq_some_iff.mp (Option.some.inj ho)
         cases Option.some.inj hclose
@@ -6072,12 +6070,13 @@ theorem RecState.Fidelity.installOpenings {state : RecState}
 
 
  theorem InferRecComponent.completes_of_infer
-    (h : InferRecComponent K F members index frontier ctx bindings specs next S outputs facts)
+    (h : InferRecComponent K F members index frontier ctx bindings specs next S artifacts)
     (hInfer : ∀ {κ F' Ψ c e Ψ' T output ty}, e.size ≤ sizeBindings bindings →
       Infer κ F' Ψ c e Ψ' T output ty → CtxWF c →
       AnnotationCompletion (κ ++ softVars (substSoft T F')) (e.substTyFvars T) output)
     (hctx : CtxWF ctx) (hspec : ∀ spec ∈ specs, spec.LC) :
-    ∀ (j : Nat) (rhs : InferInput) (output : Expr), bindings[j]? = some rhs → outputs[j]? = some (some output) →
+    ∀ (j : Nat) (rhs : InferInput) (output : Expr), bindings[j]? = some rhs →
+      recComponentOutputAt artifacts j = some output →
       AnnotationCompletion (K ++ softVars (substSoft S F)) (rhs.substTyFvars S) output := by
   match h with
   | .nil => intro j rhs output hb; simp at hb
@@ -6103,7 +6102,7 @@ theorem RecState.Fidelity.installOpenings {state : RecState}
     cases j with
     | zero =>
       cases Option.some.inj hb
-      cases Option.some.inj (Option.some.inj ho)
+      cases Option.some.inj ho
       have hrestLC : ∀ p ∈ s2 ++ s3, p.2.IsLC := fun p hp => (List.mem_append.mp hp).elim (huS p) (hrLC p)
       have hrestFix : ∀ k ∈ K, (s2 ++ s3).onTy (.fvar k) = .fvar k :=
         Subst.fixes_of_dom_avoids (fun p hp => (List.mem_append.mp hp).elim (hu.dom_avoids p) (hr.dom_avoids p))
@@ -6122,7 +6121,7 @@ theorem RecState.Fidelity.installOpenings {state : RecState}
 
 private theorem trace_stage_export {state : RecState}
     (hdisj : ∀ i ∈ earlier, i ∉ members) :
-    (state.exportComponent members written pool outputs facts).stageCtx ctx earlier = state.stageCtx ctx earlier := by
+    (state.exportComponent members written pool artifacts).stageCtx ctx earlier = state.stageCtx ctx earlier := by
   unfold RecState.stageCtx RecState.stageEntries
   congr 2
   apply List.ext_getElem?
@@ -6135,7 +6134,7 @@ private theorem trace_stage_export {state : RecState}
     simp only [Option.map_some]
     by_cases hm : i ∈ earlier
     · have hn := hdisj i hm
-      have hh : (state.exportComponent members written pool outputs facts).exports[i]? = state.exports[i]? := by
+      have hh : (state.exportComponent members written pool artifacts).exports[i]? = state.exports[i]? := by
         rw [RecState.getElem?_exports_exportComponent, RecState.getElem?_exports]
         cases state.memberStates[i]? <;> simp [hn]
       simp only [if_pos hm, hh]
@@ -6192,7 +6191,7 @@ private theorem trace_install {state : RecState} {past : List (List Nat)}
 private theorem trace_export {state : RecState} {past : List (List Nat)}
     (h : state.InputTrace Q ctx anns bindings past)
     (hnot : ∀ i ∈ members, i ∉ past.flatten) :
-    (state.exportComponent members written pool outputs facts).InputTrace Q ctx anns bindings past := by
+    (state.exportComponent members written pool artifacts).InputTrace Q ctx anns bindings past := by
   intro stage comp hc i ann rhs ty hi ha hr ht
   have ht0 : state.specs[i]? = some (.mono ty) := by
     simpa only [RecState.specs_exportComponent] using ht
@@ -6222,10 +6221,10 @@ theorem openRecSources_lookup {i : Nat} {rhs : InferInput} {opening : RecOpening
     (hc : InferRecComponent K (substSoft pre (F ++ (openings.flatMap RecOpening.written).map Ty.fvar))
       component 0 opened (((state.installOpenings component openings).onSubst pre).rhsCtx (pre.onCtx ctx))
       ((openRecSources openings bindings).map (InferInput.substTyFvars pre))
-      ((state.installOpenings component openings).onSubst pre).specs first current outputs facts)
+      ((state.installOpenings component openings).onSubst pre).specs first current artifacts)
     (hf : FinishRecComponent K (softVars (substSoft (pre ++ current) F)) component
       ((pre ++ current).onCtx ctx) ((state.installOpenings component openings).onSubst (pre ++ current))
-      outputs facts exported)
+      artifacts exported)
     (hInfer : ∀ {κ F' Ψ c e Ψ' T output ty}, e.size ≤ sizeBindings bindings →
       Infer κ F' Ψ c e Ψ' T output ty →
       ∀ {w}, w < Ψ →
@@ -6272,10 +6271,10 @@ theorem openRecSources_lookup {i : Nat} {rhs : InferInput} {opening : RecOpening
     let st := (state.installOpenings component openings).onSubst (pre ++ current)
     have hOldEx := trace_export (members := component) (written := written)
       (pool := st.componentPool K (softVars (substSoft (pre ++ current) F)) component ((pre ++ current).onCtx ctx) written)
-      (outputs := outputs) (facts := facts) hOld hnot
+      (artifacts := artifacts) hOld hnot
     have hStage : (st.exportComponent component written
         (st.componentPool K (softVars (substSoft (pre ++ current) F)) component ((pre ++ current).onCtx ctx) written)
-        outputs facts).stageCtx ((pre ++ current).onCtx ctx) past.flatten = st.rhsCtx ((pre ++ current).onCtx ctx) := by
+        artifacts).stageCtx ((pre ++ current).onCtx ctx) past.flatten = st.rhsCtx ((pre ++ current).onCtx ctx) := by
       rw [trace_stage_export (fun i hi hm => hnot i hm hi),RecState.stageCtx_onSubst,
         trace_stage_all hins,RecState.rhsCtx_onSubst]
     have hcurrent : ∀ i ann rhs ty, i ∈ component →
@@ -6284,16 +6283,16 @@ theorem openRecSources_lookup {i : Nat} {rhs : InferInput} {opening : RecOpening
         (ann.substTyFvars (pre ++ current)).RecFits
           ((st.exportComponent component written
             (st.componentPool K (softVars (substSoft (pre ++ current) F)) component ((pre ++ current).onCtx ctx) written)
-            outputs facts).prefixes[i]?.getD []) ty ∧
+            artifacts).prefixes[i]?.getD []) ty ∧
         InputTyping ((K ++ softVars (substSoft (pre ++ current) F)) ++
           (st.exportComponent component written
             (st.componentPool K (softVars (substSoft (pre ++ current) F)) component ((pre ++ current).onCtx ctx) written)
-            outputs facts).prefixes[i]?.getD [])
+            artifacts).prefixes[i]?.getD [])
           (st.rhsCtx ((pre ++ current).onCtx ctx))
           ((rhs.substTyFvars (pre ++ current)).openTyVars
             ((st.exportComponent component written
               (st.componentPool K (softVars (substSoft (pre ++ current) F)) component ((pre ++ current).onCtx ctx) written)
-              outputs facts).prefixes[i]?.getD [])) ty := by
+              artifacts).prefixes[i]?.getD [])) ty := by
       intro i ann rhs ty hi ha hr ht
       have ht' : ((state.installOpenings component openings).specs.map
           (RecSpec.onSubstSource (pre ++ current)))[i]? = some (.mono ty) := by
@@ -6303,7 +6302,7 @@ theorem openRecSources_lookup {i : Nat} {rhs : InferInput} {opening : RecOpening
         simpa only [RecState.specs_installOpenings] using ht0
       have htFinal : (st.exportComponent component written
           (st.componentPool K (softVars (substSoft (pre ++ current) F)) component
-            ((pre ++ current).onCtx ctx) written) outputs facts).specs[i]? =
+            ((pre ++ current).onCtx ctx) written) artifacts).specs[i]? =
           some (.mono ((pre ++ current).onTy oldTy)) := by
         simpa only [RecState.specs_exportComponent] using ht
       obtain ⟨ns,hslot,_,_,_,_⟩ :=
@@ -6634,12 +6633,6 @@ private theorem fidelity_fvar_map_inj {a b : List Nat}
       obtain ⟨rfl,ht⟩ := hh
       exact congrArg (x :: ·) (ih ht)
 
-private theorem fidelity_some_join {xs : List (Option Expr)} {i : Nat} {output : Expr}
-    (h : xs[i]?.join = some output) : xs[i]? = some (some output) := by
-  cases hx : xs[i]? with
-  | none => simp [hx] at h
-  | some o => cases o <;> simp_all
-
  theorem recStep_fidelity
     {state : RecState}
     (ho : OpenRecAnns component 0 frontier anns opened openings)
@@ -6647,10 +6640,10 @@ private theorem fidelity_some_join {xs : List (Option Expr)} {i : Nat} {output :
     (hc : InferRecComponent K (substSoft pre (F ++ (openings.flatMap RecOpening.written).map Ty.fvar))
       component 0 opened (((state.installOpenings component openings).onSubst pre).rhsCtx (pre.onCtx ctx))
       ((openRecSources openings bindings).map (InferInput.substTyFvars pre))
-      ((state.installOpenings component openings).onSubst pre).specs first current outputs facts)
+      ((state.installOpenings component openings).onSubst pre).specs first current artifacts)
     (hf : FinishRecComponent K (softVars (substSoft (pre ++ current) F)) component
       ((pre ++ current).onCtx ctx) ((state.installOpenings component openings).onSubst (pre ++ current))
-      outputs facts exported)
+      artifacts exported)
     (hInfer : ∀ {κ F' Ψ c e Ψ' T output ty}, e.size ≤ sizeBindings bindings →
       Infer κ F' Ψ c e Ψ' T output ty →
       ∀ {w}, w < Ψ →
@@ -6720,7 +6713,7 @@ private theorem fidelity_some_join {xs : List (Option Expr)} {i : Nat} {output :
           List.getElem?_map, ht, Option.map_some, RecSpec.onSubstSource]
       have htFinal : (st.exportComponent component written
           (st.componentPool K (softVars (substSoft (pre ++ current) F)) component
-            ((pre ++ current).onCtx ctx) written) outputs facts).specs[i]? =
+            ((pre ++ current).onCtx ctx) written) artifacts).specs[i]? =
           some (.mono ((pre ++ current).onTy ty)) := by
         simpa only [RecState.specs_exportComponent] using htS
       obtain ⟨ns,hslot,hcount,hnd,hsub,_⟩ :=
@@ -6770,7 +6763,7 @@ private theorem fidelity_some_join {xs : List (Option Expr)} {i : Nat} {output :
         simpa only [Subst.onTy_append] using congrArg current.onTy hsolved
       · have hrOpened := openRecSources_lookup (ho.length.trans hlength) hr0 hop
         have hh := hcompComplete i ((rhs0.openTyVars opening.written).substTyFvars pre) output
-          (by simp only [List.getElem?_map,hrOpened,Option.map_some]) (fidelity_some_join hout)
+          (by simp only [List.getElem?_map,hrOpened,Option.map_some]) hout
         have hcomplete : AnnotationCompletion (K ++ softVars (substSoft (pre ++ current) (F ++ (openings.flatMap RecOpening.written).map Ty.fvar)))
             ((rhs0.substTyFvars (pre ++ current)).openTyVars ns) output := by
           simpa only [← substSoft_append,← InferInput.substTyFvars_append,
@@ -6780,7 +6773,7 @@ private theorem fidelity_some_join {xs : List (Option Expr)} {i : Nat} {output :
       · have hh := hcompSound i (pre.onTy oldTy) output
           (by simp only [RecState.specs_onSubst, List.getElem?_map, ht0,
             Option.map_some, RecSpec.onSubstSource])
-          (fidelity_some_join hout)
+          hout
         exact hh.tyBvarBounded
 
  theorem InferRecStrata.fidelity_of_infer
@@ -7508,9 +7501,10 @@ def RecState.Erases (erased : List Expr) (state : RecState) : Prop :=
   simpa only [RecState.Erases, RecState.outputs_installOpenings] using h
 
  theorem RecState.Erases.exportComponent {state : RecState} (h : state.Erases erased)
-    {outputs : List (Option Expr)} {facts : List RecFacts} {pool : List Nat}
-    (hout : ∀ (i : Nat) (output : Expr), outputs[i]? = some (some output) → erased[i]? = some output.erase) :
-    (state.exportComponent members written pool outputs facts).Erases erased := by
+    {artifacts : List (Option RecComponentArtifact)} {pool : List Nat}
+    (hout : ∀ (i : Nat) (output : Expr), recComponentOutputAt artifacts i = some output →
+      erased[i]? = some output.erase) :
+    (state.exportComponent members written pool artifacts).Erases erased := by
   refine ⟨by simpa only [RecState.outputs_length, RecState.exportComponent,
     List.length_mapIdx] using h.1, ?_⟩
   intro i output hget
@@ -7520,18 +7514,18 @@ def RecState.Erases (erased : List Expr) (state : RecState) : Prop :=
   · simp only [if_pos hi] at heq
     obtain ⟨ty, _, hbind⟩ := Option.bind_eq_some_iff.mp heq
     obtain ⟨rhs, hrhs, hclose⟩ := Option.bind_eq_some_iff.mp hbind
-    obtain ⟨inner, hinner, hinnerEq⟩ := Option.bind_eq_some_iff.mp hrhs
-    cases hinnerEq
+    change recComponentOutputAt artifacts i = some rhs at hrhs
     cases Option.some.inj hclose
-    simpa only [Expr.erase_closeTyVars] using hout i rhs hinner
+    simpa only [Expr.erase_closeTyVars] using hout i rhs hrhs
   · simp only [if_neg hi] at heq
     apply h.2 i output
     simp only [RecState.getElem?_outputs, hold, Option.map_some, heq]
 
  theorem FinishRecComponent.erases
-    (h : FinishRecComponent K soft members ctx state outputs facts final)
+    (h : FinishRecComponent K soft members ctx state artifacts final)
     (hstate : state.Erases erased)
-    (hout : ∀ (i : Nat) (output : Expr), outputs[i]? = some (some output) → erased[i]? = some output.erase) :
+    (hout : ∀ (i : Nat) (output : Expr), recComponentOutputAt artifacts i = some output →
+      erased[i]? = some output.erase) :
     final.Erases erased := by
   cases h
   exact hstate.exportComponent hout
@@ -7581,10 +7575,11 @@ def RecState.Erases (erased : List Expr) (state : RecState) : Prop :=
   simp only [List.map_map, Function.comp_def, InferInput.erase_substTyFvars]
 
  theorem InferRecComponent.erase_of_infer
-    (h : InferRecComponent K F members index frontier ctx bindings specs next S outputs facts)
+    (h : InferRecComponent K F members index frontier ctx bindings specs next S artifacts)
     (hInfer : ∀ {κ F' Ψ c e Ψ' T output ty}, e.size ≤ sizeBindings bindings →
       Infer κ F' Ψ c e Ψ' T output ty → output.erase = e.erase) :
-    ∀ (i : Nat) (output : Expr), outputs[i]? = some (some output) → (bindings.map InferInput.erase)[i]? = some output.erase := by
+    ∀ (i : Nat) (output : Expr), recComponentOutputAt artifacts i = some output →
+      (bindings.map InferInput.erase)[i]? = some output.erase := by
   match h with
   | .nil => intro i output hget; simp at hget
   | .skipMono _ hr | .skipPoly hr =>
@@ -7598,8 +7593,9 @@ def RecState.Erases (erased : List Expr) (state : RecState) : Prop :=
       intro i output hget
       cases i with
       | zero =>
-        cases Option.some.inj (Option.some.inj hget)
-        simp only [List.map_cons, List.getElem?_cons_zero, Expr.erase_substTyFvars,
+        cases Option.some.inj hget
+        simp only [List.map_cons, List.getElem?_cons_zero, RecComponentArtifact.onSubst,
+          Expr.erase_substTyFvars,
           hInfer (by simp only [sizeBindings]; omega) hi]
       | succ i =>
         have hh := hr.erase_of_infer

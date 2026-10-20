@@ -6093,6 +6093,22 @@ def RecFacts.empty : RecFacts := ⟨[], []⟩
 def RecFacts.onSubst (S : Subst) (facts : RecFacts) : RecFacts :=
   ⟨facts.nodeTypes.onSubst S, facts.binderSchemes.onSubst S⟩
 
+/-- Output and source-indexed metadata produced for one selected recursive
+component member. Skipped positions are represented by `none` in the enclosing
+artifact list, so metadata cannot exist without its corresponding output. -/
+structure RecComponentArtifact where
+  output : Expr
+  facts : RecFacts
+
+@[simp] def RecComponentArtifact.onSubst (S : Subst)
+    (artifact : RecComponentArtifact) : RecComponentArtifact :=
+  { output := artifact.output.substTyFvars S
+    facts := artifact.facts.onSubst S }
+
+@[simp] def recComponentOutputAt (artifacts : List (Option RecComponentArtifact))
+    (i : Nat) : Option Expr :=
+  (artifacts[i]?).join.map RecComponentArtifact.output
+
 /-- Per-member recursive inference state. Keeping the fields in one record makes
 their common recursive-group coordinate structural rather than a `Frame`
 obligation. `slotImages` records the ordered current images of written slots,
@@ -6337,7 +6353,7 @@ def RecState.shapes (state : RecState) (members : List Nat)
 pool. Metadata remains open until all later component substitutions are known. -/
 def RecState.exportComponent (state : RecState) (members : List Nat)
     (written : List (List Nat)) (pool : List Nat)
-    (outputs : List (Option Expr)) (facts : List RecFacts) : RecState :=
+    (artifacts : List (Option RecComponentArtifact)) : RecState :=
   { state with
     memberStates := state.memberStates.mapIdx (fun i member =>
       if i ∈ members then
@@ -6345,9 +6361,9 @@ def RecState.exportComponent (state : RecState) (members : List Nat)
           exported := some (member.spec.completedScheme (written[i]?.getD []) pool)
           output := do
             let ty ← member.spec.monoTy?
-            let rhs ← (outputs[i]?).join
+            let rhs ← recComponentOutputAt artifacts i
             pure (rhs.closeTyVars (recNames (written[i]?.getD []) pool ty))
-          facts := facts[i]?.getD .empty }
+          facts := ((artifacts[i]?).join.map RecComponentArtifact.facts).getD .empty }
       else member)
     pool := pool }
 
@@ -6386,20 +6402,20 @@ def RecState.componentPool (state : RecState) (K soft members : List Nat)
 /-- The only export check on a partial written prefix is ordinary forall
 validity: bare, distinct within that member, and fresh in the fixed boundary. -/
 inductive FinishRecComponent (K soft members : List Nat) (ctx : Ctx)
-    (state : RecState) (outputs : List (Option Expr)) (facts : List RecFacts) :
+    (state : RecState) (artifacts : List (Option RecComponentArtifact)) :
     RecState → Prop
   | mk {written : List (List Nat)} :
       ResolveRecSlots members ((state.fixedCtx ctx).env.freeVars ++ K ++ soft) 0 state.slots written →
-      FinishRecComponent K soft members ctx state outputs facts
-        (state.exportComponent members written (state.componentPool K soft members ctx written) outputs facts)
+      FinishRecComponent K soft members ctx state artifacts
+        (state.exportComponent members written (state.componentPool K soft members ctx written) artifacts)
 
 def finishRecComponent (K soft members : List Nat) (ctx : Ctx)
-    (state : RecState) (outputs : List (Option Expr)) (facts : List RecFacts) :
-    Option { result : RecState // FinishRecComponent K soft members ctx state outputs facts result } :=
+    (state : RecState) (artifacts : List (Option RecComponentArtifact)) :
+    Option { result : RecState // FinishRecComponent K soft members ctx state artifacts result } :=
   match resolveRecSlots members ((state.fixedCtx ctx).env.freeVars ++ K ++ soft) 0 state.slots with
   | none => none
   | some ⟨written, hw⟩ =>
-      some ⟨state.exportComponent members written (state.componentPool K soft members ctx written) outputs facts, .mk hw⟩
+      some ⟨state.exportComponent members written (state.componentPool K soft members ctx written) artifacts, .mk hw⟩
 
 
 def RecFacts.closeWritten (names : List Nat) (facts : RecFacts) : RecFacts :=
@@ -6485,9 +6501,9 @@ def RecState.setSigned (state : RecState) (member : Nat) (names : List Nat)
   | some old => simp only [Option.map_some]; split <;> rfl
 
 @[simp] theorem RecState.specs_exportComponent (state : RecState) (members : List Nat)
-    (written : List (List Nat)) (pool : List Nat) (outputs : List (Option Expr))
-    (facts : List RecFacts) :
-    (state.exportComponent members written pool outputs facts).specs = state.specs := by
+    (written : List (List Nat)) (pool : List Nat)
+    (artifacts : List (Option RecComponentArtifact)) :
+    (state.exportComponent members written pool artifacts).specs = state.specs := by
   apply List.ext_getElem?
   intro i
   simp only [RecState.specs, RecState.exportComponent, List.getElem?_map,
@@ -6497,9 +6513,9 @@ def RecState.setSigned (state : RecState) (member : Nat) (names : List Nat)
   | some member => simp only [Option.map_some]; split <;> rfl
 
 @[simp] theorem RecState.slots_exportComponent (state : RecState) (members : List Nat)
-    (written : List (List Nat)) (pool : List Nat) (outputs : List (Option Expr))
-    (facts : List RecFacts) :
-    (state.exportComponent members written pool outputs facts).slots = state.slots := by
+    (written : List (List Nat)) (pool : List Nat)
+    (artifacts : List (Option RecComponentArtifact)) :
+    (state.exportComponent members written pool artifacts).slots = state.slots := by
   apply List.ext_getElem?
   intro i
   simp only [RecState.slots, RecState.exportComponent, List.getElem?_map,
@@ -6527,9 +6543,9 @@ theorem RecState.getElem?_slots_installOpenings_of_not_mem (state : RecState)
   cases state.memberStates[i]? <;> simp [hi]
 
 theorem RecState.getElem?_exports_exportComponent (state : RecState) (members : List Nat)
-    (written : List (List Nat)) (pool : List Nat) (outputs : List (Option Expr))
-    (facts : List RecFacts) (i : Nat) :
-    (state.exportComponent members written pool outputs facts).exports[i]? =
+    (written : List (List Nat)) (pool : List Nat)
+    (artifacts : List (Option RecComponentArtifact)) (i : Nat) :
+    (state.exportComponent members written pool artifacts).exports[i]? =
       state.memberStates[i]?.map (fun member =>
         if i ∈ members then
           some (member.spec.completedScheme (written[i]?.getD []) pool)
@@ -6739,8 +6755,8 @@ def RecState.LC (state : RecState) : Prop :=
   · exact hctx scheme hm
 
  theorem RecState.LC.exportComponent {state : RecState} (h : state.LC)
-    {pool : List Nat} {outputs : List (Option Expr)} {facts : List RecFacts} :
-    (state.exportComponent members written pool outputs facts).LC := by
+    {pool : List Nat} {artifacts : List (Option RecComponentArtifact)} :
+    (state.exportComponent members written pool artifacts).LC := by
   refine ⟨?_, ?_⟩
   · simpa only [RecState.specs_exportComponent] using h.1
   intro scheme hm
@@ -6759,7 +6775,7 @@ def RecState.LC (state : RecState) : Prop :=
         have hi' := Option.some.inj hi
         exact h.2 scheme (List.mem_map.mpr ⟨member, hmember, hi'⟩)
 
- theorem FinishRecComponent.lc (h : FinishRecComponent K soft members ctx state outputs facts final)
+ theorem FinishRecComponent.lc (h : FinishRecComponent K soft members ctx state artifacts final)
     (hstate : state.LC) : final.LC := by
   cases h
   exact hstate.exportComponent
@@ -6937,9 +6953,9 @@ private theorem freeVarsList_below {tys : List Ty}
       exact freeVarsList_below (monoTysAt_below h.1) v hf
 
  theorem RecState.Below.exportComponent {state : RecState} (h : state.Below frontier)
-    {pool : List Nat} {outputs : List (Option Expr)} {facts : List RecFacts}
+    {pool : List Nat} {artifacts : List (Option RecComponentArtifact)}
     (hpool : ∀ v ∈ pool, v < frontier) :
-    (state.exportComponent members written pool outputs facts).Below frontier := by
+    (state.exportComponent members written pool artifacts).Below frontier := by
   refine ⟨?_, ?_, ?_, hpool⟩
   · simpa only [RecState.specs_exportComponent] using h.1
   · simpa only [RecState.slots_exportComponent] using h.2.1
@@ -6959,7 +6975,7 @@ private theorem freeVarsList_below {tys : List Ty}
         have hi' := Option.some.inj hi
         exact h.2.2.1 scheme (List.mem_map.mpr ⟨member, hmember, hi'⟩)
 
- theorem FinishRecComponent.below (h : FinishRecComponent K soft members ctx state outputs facts final)
+ theorem FinishRecComponent.below (h : FinishRecComponent K soft members ctx state artifacts final)
     (hstate : state.Below frontier) : final.Below frontier := by
   cases h with
   | mk hslots =>
@@ -7236,7 +7252,7 @@ theorem RecState.componentPool_covers {state : RecState}
 /-- An exported selected monotype has no free variables outside the fixed
 outer/export context, the frozen set, and the live soft-variable boundary. -/
 theorem FinishRecComponent.export_freeVars_boundary
-    (h : FinishRecComponent K soft members ctx state outputs facts final)
+    (h : FinishRecComponent K soft members ctx state artifacts final)
     (hi : i ∈ members) (ht : state.specs[i]? = some (.mono ty))
     (hex : final.exports[i]? = some (some scheme)) :
     ∀ v ∈ scheme.body.freeVars, v ∈ (state.fixedCtx ctx).env.freeVars ∨ v ∈ K ∨ v ∈ soft := by

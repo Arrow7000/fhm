@@ -1033,7 +1033,7 @@ theorem SourceScope.residual_freeze {K : List Nat} {F : List Ty} {input : InferI
   exact hag.symm
 
  theorem InferRecComponent.sourcePrincipal_of_infer
-    (h : InferRecComponent K F members index frontier ctx bindings specs next S outputs facts)
+    (h : InferRecComponent K F members index frontier ctx bindings specs next S artifacts)
     (hInfer : ∀ {κ F' Ψ c e Ψ' T output ty}, e.size ≤ sizeBindings bindings →
       (hi : Infer κ F' Ψ c e Ψ' T output ty) → Infer.SourcePrincipal hi)
     (hctxWF : CtxWF ctx) (hctx : CtxBelow frontier ctx)
@@ -3625,10 +3625,10 @@ theorem RecResidual.change_opening
 
 
 private theorem residual_export_selected {state : RecState} {members pool : List Nat}
-    {written : List (List Nat)} {outputs : List (Option Expr)} {facts : List RecFacts}
+    {written : List (List Nat)} {artifacts : List (Option RecComponentArtifact)}
     {i : Nat} {ty : Ty} (hi : i ∈ members)
     (hs : state.specs[i]? = some (.mono ty)) :
-    (state.exportComponent members written pool outputs facts).exports[i]? =
+    (state.exportComponent members written pool artifacts).exports[i]? =
       some (some (recScheme (written[i]?.getD []) pool ty)) := by
   rw [RecState.getElem?_specs] at hs
   obtain ⟨member, hm, hspec⟩ := Option.map_eq_some_iff.mp hs
@@ -3638,16 +3638,16 @@ private theorem residual_export_selected {state : RecState} {members pool : List
   rfl
 
 private theorem residual_export_untouched {state : RecState} {members pool : List Nat}
-    {written : List (List Nat)} {outputs : List (Option Expr)} {facts : List RecFacts}
+    {written : List (List Nat)} {artifacts : List (Option RecComponentArtifact)}
     {i : Nat} (hi : i ∉ members) :
-    (state.exportComponent members written pool outputs facts).exports[i]? = state.exports[i]? := by
+    (state.exportComponent members written pool artifacts).exports[i]? = state.exports[i]? := by
   rw [RecState.getElem?_exports_exportComponent, RecState.getElem?_exports]
   cases state.memberStates[i]? <;> simp only [Option.map_none, Option.map_some, if_neg hi]
 
 theorem RecResidual.exportComponent
     {P declPool Xs done members pool : List Nat} {declCtx ctx : Ctx} {declSpecs : List RecSpec}
     {declPrefixes written : List (List Nat)} {state : RecState} {R : Subst}
-    {outputs : List (Option Expr)} {facts : List RecFacts}
+    {artifacts : List (Option RecComponentArtifact)}
     (h : RecResidual P declCtx declSpecs declPrefixes declPool Xs ctx state done R)
     (hdisjoint : ∀ i ∈ members, i ∉ done)
     (hgeneralizes : ∀ i algTy declTy, state.specs[i]? = some (.mono algTy) →
@@ -3655,7 +3655,7 @@ theorem RecResidual.exportComponent
       (R.onPolyTy (recScheme (written[i]?.getD []) pool algTy)).Generalizes
         (recScheme (declPrefixes[i]?.getD []) declPool declTy)) :
     RecResidual P declCtx declSpecs declPrefixes declPool Xs ctx
-      (state.exportComponent members written pool outputs facts) (done ++ members) R := by
+      (state.exportComponent members written pool artifacts) (done ++ members) R := by
   refine ⟨h.lc, h.fixes, h.ctx_eq, ?_, ?_, ?_, ?_, ?_⟩
   · simpa only [RecState.specs_exportComponent] using h.length
   · intro i algTy hi
@@ -4741,7 +4741,7 @@ export boundary, without any bound on candidate images or later allocations. -/
 theorem FinishRecComponent.export_fresh_of_agrees
     {S U V : Subst} {Xs K members : List Nat} {F : List Ty}
     {originalFixedCtx currentCtx : Ctx} {state final : RecState}
-    (h : FinishRecComponent K (softVars (substSoft S F)) members currentCtx state outputs facts final)
+    (h : FinishRecComponent K (softVars (substSoft S F)) members currentCtx state artifacts final)
     (hFixed : state.fixedCtx currentCtx = S.onCtx originalFixedCtx)
     (hCtx : CtxBelow N originalFixedCtx) (hK : ∀ k ∈ K,k < N)
     (hF : ∀ t ∈ F,Ty.BelowFvars N t)
@@ -4779,7 +4779,7 @@ theorem FinishRecComponent.export_fresh_of_agrees
     {specs : List RecSpec} {bindings : List InferInput}
     (hshape : CheckRecShapes K shapes pre)
     (hcomponent : InferRecComponent K (substSoft pre F) members index frontier (pre.onCtx ctx)
-      (bindings.map (InferInput.substTyFvars pre)) (specs.map (RecSpec.onSubstSource pre)) next current outputs facts)
+      (bindings.map (InferInput.substTyFvars pre)) (specs.map (RecSpec.onSubstSource pre)) next current artifacts)
     (hInfer : ∀ {κ F' Ψ c e Ψ' T output ty}, e.size ≤ sizeBindings bindings →
       (hi : Infer κ F' Ψ c e Ψ' T output ty) → Infer.SourcePrincipal hi)
     (hctxWF : CtxWF ctx) (hctx : CtxBelow frontier ctx)
@@ -5329,14 +5329,14 @@ theorem RecResidual.close_aligned_component
     {K P G Xs done members : List Nat} {F localF : List Ty} {frontier next : Nat}
     {ctx declCtx : Ctx} {state exported : RecState} {bindings : List InferInput}
     {shapes : List RecShape} {pre current R : Subst}
-    {outputs : List (Option Expr)} {facts : List RecFacts}
+    {artifacts : List (Option RecComponentArtifact)}
     {declSpecs : List RecSpec} {declPrefixes : List (List Nat)}
     (hshape : CheckRecShapes K shapes pre)
     (hcomponent : InferRecComponent K (substSoft pre (F ++ localF)) members 0 frontier
       (pre.onCtx (state.rhsCtx ctx)) (bindings.map (InferInput.substTyFvars pre))
-      (state.specs.map (RecSpec.onSubstSource pre)) next current outputs facts)
+      (state.specs.map (RecSpec.onSubstSource pre)) next current artifacts)
     (hfinish : FinishRecComponent K (softVars (substSoft (pre ++ current) F)) members
-      ((pre ++ current).onCtx ctx) (state.onSubst (pre ++ current)) outputs facts exported)
+      ((pre ++ current).onCtx ctx) (state.onSubst (pre ++ current)) artifacts exported)
     (hInfer : ∀ {κ F' Ψ c e Ψ' T output ty}, e.size ≤ sizeBindings bindings →
       (hi : Infer κ F' Ψ c e Ψ' T output ty) → Infer.SourcePrincipal hi)
     (hres : RecResidual P declCtx declSpecs declPrefixes G Xs ctx state done R)
@@ -5413,7 +5413,7 @@ theorem RecResidual.close_opened_component
     {K P G Xs done members : List Nat} {F : List Ty} {frontier opened next : Nat}
     {ctx declCtx : Ctx} {state exported : RecState} {anns : List BindingAnn} {bindings : List InferInput}
     {openings : List RecOpening} {pre current R : Subst}
-    {outputs : List (Option Expr)} {facts : List RecFacts}
+    {artifacts : List (Option RecComponentArtifact)}
     {declSpecs : List RecSpec} {declPrefixes : List (List Nat)}
     (ho : OpenRecAnns members 0 frontier anns opened openings)
     (hp : CheckRecShapes K ((state.installOpenings members openings).shapes members openings) pre)
@@ -5421,10 +5421,10 @@ theorem RecResidual.close_opened_component
       (substSoft pre (F ++ (openings.flatMap RecOpening.written).map Ty.fvar)) members 0 opened
       (((state.installOpenings members openings).onSubst pre).rhsCtx (pre.onCtx ctx))
       ((openRecSources openings bindings).map (InferInput.substTyFvars pre))
-      ((state.installOpenings members openings).onSubst pre).specs next current outputs facts)
+      ((state.installOpenings members openings).onSubst pre).specs next current artifacts)
     (hf : FinishRecComponent K (softVars (substSoft (pre ++ current) F)) members
       ((pre ++ current).onCtx ctx) ((state.installOpenings members openings).onSubst (pre ++ current))
-      outputs facts exported)
+      artifacts exported)
     (hInfer : ∀ {κ F' Ψ c e Ψ' T output ty}, e.size ≤ sizeBindings bindings →
       (hi : Infer κ F' Ψ c e Ψ' T output ty) → Infer.SourcePrincipal hi)
     (hres : RecResidual P declCtx declSpecs declPrefixes G Xs ctx state done R)
@@ -5559,17 +5559,17 @@ private theorem InferRecStrata.sourcePrincipal_residual_of_step
       {ctx : Ctx} {anns : List BindingAnn} {bindings : List InferInput}
       {state exported : RecState} {past rest : List (List Nat)} {component : List Nat}
       {openings : List RecOpening} {pre current R : Subst}
-      {outputs : List (Option Expr)} {facts : List RecFacts},
+      {artifacts : List (Option RecComponentArtifact)},
       OpenRecAnns component 0 frontier anns opened openings →
       CheckRecShapes K ((state.installOpenings component openings).shapes component openings) pre →
       InferRecComponent K
         (substSoft pre (F ++ (openings.flatMap RecOpening.written).map Ty.fvar)) component 0 opened
         (((state.installOpenings component openings).onSubst pre).rhsCtx (pre.onCtx ctx))
         ((openRecSources openings bindings).map (InferInput.substTyFvars pre))
-        ((state.installOpenings component openings).onSubst pre).specs first current outputs facts →
+        ((state.installOpenings component openings).onSubst pre).specs first current artifacts →
       FinishRecComponent K (softVars (substSoft (pre ++ current) F)) component
         ((pre ++ current).onCtx ctx) ((state.installOpenings component openings).onSubst (pre ++ current))
-        outputs facts exported →
+        artifacts exported →
       (∀ {κ F' Ψ c e Ψ' T output ty}, e.size ≤ sizeBindings bindings →
         (hi : Infer κ F' Ψ c e Ψ' T output ty) → Infer.SourcePrincipal hi) →
       first ≤ cutoff →
@@ -7074,17 +7074,17 @@ theorem RecResidual.successful_step
       {ctx : Ctx} {anns : List BindingAnn} {bindings : List InferInput}
       {state exported : RecState} {past rest : List (List Nat)} {component : List Nat}
       {openings : List RecOpening} {pre current R : Subst}
-      {outputs : List (Option Expr)} {facts : List RecFacts},
+      {artifacts : List (Option RecComponentArtifact)},
       OpenRecAnns component 0 frontier anns opened openings →
       CheckRecShapes K ((state.installOpenings component openings).shapes component openings) pre →
       InferRecComponent K
         (substSoft pre (F ++ (openings.flatMap RecOpening.written).map Ty.fvar)) component 0 opened
         (((state.installOpenings component openings).onSubst pre).rhsCtx (pre.onCtx ctx))
         ((openRecSources openings bindings).map (InferInput.substTyFvars pre))
-        ((state.installOpenings component openings).onSubst pre).specs first current outputs facts →
+        ((state.installOpenings component openings).onSubst pre).specs first current artifacts →
       FinishRecComponent K (softVars (substSoft (pre ++ current) F)) component
         ((pre ++ current).onCtx ctx) ((state.installOpenings component openings).onSubst (pre ++ current))
-        outputs facts exported →
+        artifacts exported →
       (∀ {κ F' Ψ c e Ψ' T output ty}, e.size ≤ sizeBindings bindings →
         (hi : Infer κ F' Ψ c e Ψ' T output ty) → Infer.SourcePrincipal hi) →
       first ≤ cutoff →
@@ -7114,7 +7114,7 @@ theorem RecResidual.successful_step
         RecResidual P declCtx declSpecs declPrefixes G Xs ((pre ++ current).onCtx ctx)
           exported (past.flatten ++ component) U := by
   intro hdeclValid hdeclWF hprefix hGfresh hdeclAnn hdeclRhs hdeclFits hdeclTypes
-    hGhigh hXhigh hXlen hXnd hGX hXmono hXctxP K F frontier opened first ctx anns bindings state exported past rest component openings pre current R outputs facts
+    hGhigh hXhigh hXlen hXnd hGX hXmono hXctxP K F frontier opened first ctx anns bindings state exported past rest component openings pre current R artifacts
     ho hp hc hf hInfer hcutoff hvalid hcanonical hframe hstateLC hstateB hctxWF hctx hbase hK hF hP hres
     hXsK hXsF hannScope hrhsScope hannEq hrhsEq hannFreeze hrhsFreeze
   obtain ⟨prepared⟩ := RecResidual.prepare_component hdeclValid hdeclWF hprefix hGfresh hdeclAnn hdeclRhs
@@ -8440,7 +8440,7 @@ theorem finishRecComponent_complete_of_factor {state : RecState} {R : Subst}
       images.map R.onTy = names.map Ty.fvar ∧ names.Nodup ∧
       ∀ name ∈ names,∀ v ∈ (state.fixedCtx ctx).env.freeVars ++ K ++ soft,
         name ∉ (R.onTy (.fvar v)).freeVars) :
-    (finishRecComponent K soft members ctx state outputs facts).isSome := by
+    (finishRecComponent K soft members ctx state artifacts).isSome := by
   have hslots := resolveRecSlots_complete_of_factor (index := 0) candidateNames hlen
     (by simpa only [Nat.zero_add] using hfactor)
   cases hr : resolveRecSlots members ((state.fixedCtx ctx).env.freeVars ++ K ++ soft) 0 state.slots with
@@ -8856,7 +8856,7 @@ theorem inferRecStrataWithTypesCore_cons_of_singleton
         cases hf : finishRecComponent K (softVars (substSoft (pre ++ current.subst) F)) component
             ((pre ++ current.subst).onCtx ctx)
             ((state.installOpenings component openings).onSubst (pre ++ current.subst))
-            current.outputs current.facts with
+            current.artifacts with
         | none => simp only [inferRecStrataWithTypesCore,ho,hp,hc,hf] at hOne;cases hOne
         | some exported =>
           obtain ⟨exported,hExported⟩ := exported
@@ -9059,9 +9059,9 @@ private theorem inferRecStrataWithTypesCore_complete_of_step
 termination_by groups.length
 
 theorem InferRecComponent.outputs_selected
-    (h : InferRecComponent K F members index frontier ctx bindings specs next S outputs facts) :
+    (h : InferRecComponent K F members index frontier ctx bindings specs next S artifacts) :
     ∀ (j : Nat) (ty : Ty),index+j ∈ members → specs[j]? = some (.mono ty) →
-      ∃ output,outputs[j]? = some (some output) := by
+      ∃ output,recComponentOutputAt artifacts j = some output := by
   match h with
   | .nil => intro j ty _ hs;cases hs
   | .skipMono hn hr =>
@@ -9093,15 +9093,15 @@ theorem RecState.output_onSubst {state : RecState} {S : Subst} {i : Nat} {output
     simp only [RecState.outputs_onSubst, List.getElem?_map, h, Option.map_some]⟩
 
 theorem FinishRecComponent.outputs_present
-    (h : FinishRecComponent K soft members ctx state outputs facts final)
+    (h : FinishRecComponent K soft members ctx state artifacts final)
     (hSelected : ∀ i ∈ members,∃ ty,state.specs[i]? = some (.mono ty) ∧
-      ∃ output,outputs[i]? = some (some output)) :
+      ∃ output,recComponentOutputAt artifacts i = some output) :
     (∀ (i : Nat) (output : Expr),state.outputs[i]? = some (some output) → ∃ out,final.outputs[i]? = some (some out)) ∧
     (∀ i ∈ members,∃ out,final.outputs[i]? = some (some out)) := by
   cases h with
   | @mk written hresolve =>
     have hFill : ∀ i ∈ members,∃ out,
-        (state.exportComponent members written (state.componentPool K soft members ctx written) outputs facts).outputs[i]? = some (some out) := by
+        (state.exportComponent members written (state.componentPool K soft members ctx written) artifacts).outputs[i]? = some (some out) := by
       intro i hi
       obtain ⟨ty,ht,out,ho⟩ := hSelected i hi
       refine ⟨out.closeTyVars (recNames (written[i]?.getD []) (state.componentPool K soft members ctx written) ty),?_⟩
@@ -9109,8 +9109,7 @@ theorem FinishRecComponent.outputs_present
       obtain ⟨member, hm, hspec⟩ := Option.map_eq_some_iff.mp ht
       rw [RecState.getElem?_outputs]
       simp only [RecState.exportComponent, List.getElem?_mapIdx, hm, Option.map_some,
-        if_pos hi, hspec, RecSpec.monoTy?, ho, Option.join_some, bind, pure,
-        Option.bind_some]
+        if_pos hi, hspec, RecSpec.monoTy?, ho, bind, pure, Option.bind_some]
     refine ⟨?_,hFill⟩
     intro i out ho
     by_cases hi : i ∈ members
@@ -9136,7 +9135,7 @@ theorem InferRecStrata.outputs_present
     expose_names
     have hCurrent : ∀ i ∈ component,∃ ty,
         ((state.installOpenings component openings).onSubst (pre ++ current)).specs[i]? = some (.mono ty) ∧
-        ∃ output,outputs[i]? = some (some output) := by
+        ∃ output,recComponentOutputAt artifacts i = some output := by
       intro i hi
       obtain ⟨ty,ht⟩ := hSelected i (by simp only [List.flatten_cons,List.mem_append];exact .inl hi)
       refine ⟨(pre ++ current).onTy ty,?_,?_⟩
@@ -9526,7 +9525,7 @@ theorem inferRecStrataWithTypesCore_aligned_singleton
       have hFinishSome := finishRecComponent_complete_of_factor
         (K := K) (soft := softVars (substSoft solved F)) (members := members)
         (ctx := solved.onCtx ctx) (state := installed.onSubst solved)
-        (outputs := cres.outputs) (facts := cres.facts) (R := V) candidateNames
+        (artifacts := cres.artifacts) (R := V) candidateNames
         (by simp only [candidateNames, List.length_mapIdx, RecState.slots_length,
           RecState.onSubst, installed, RecState.installOpenings, List.length_map])
         (by
@@ -9569,7 +9568,7 @@ theorem inferRecStrataWithTypesCore_aligned_singleton
           · intro name hn v hv
             exact hBoundary name (recRenameNames_mem hXsLen hnamesSub name hn) v hv)
       cases hFinishRun : finishRecComponent K (softVars (substSoft solved F)) members (solved.onCtx ctx)
-          (installed.onSubst solved) cres.outputs cres.facts with
+          (installed.onSubst solved) cres.artifacts with
       | none => simp only [hFinishRun,Option.isSome_none] at hFinishSome; contradiction
       | some result =>
         obtain ⟨exported,hf⟩ := result
