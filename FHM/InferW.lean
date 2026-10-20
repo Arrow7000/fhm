@@ -2987,8 +2987,7 @@ private theorem FinishRecComponent.avoid_lengths
       ha.installOpenings.onSubst hpre.1
     have hentry : (((state.installOpenings component openings).onSubst pre).entries).length = bindings.length := by
       rw [RecState.entries_length]
-      · simpa [RecState.onSubst, RecState.installOpenings] using hlenS
-      · simp [RecState.onSubst, RecState.installOpenings]
+      simpa [RecState.onSubst, RecState.installOpenings] using hlenS
     have hopen : ∀ rhs ∈ openRecSources openings bindings, rhs.erase.ForallOuter
         (fun i => ∀ M, ctx.env[i]? = some M → w ∉ M.body.freeVars) bindings.length ∧ w ∉ rhs.rigidVars :=
       openRecSources_locality (fun opening hm hv => by
@@ -3054,7 +3053,8 @@ private theorem FinishRecComponent.avoid_lengths
       have := freshVars_ge w hm; omega
     have hhead := hrhs rhs List.mem_cons_self
     have hentry : state.entries.length = groupSize := by
-      rw [state.entries_length (hlenE.trans hlenS.symm)]; exact hlenS
+      rw [state.entries_length]
+      exact hlenS
     obtain ⟨hfirstS, hfirstTy, hfirstD⟩ := hInfer
       (by simp only [InferInput.size_openTyVars, sizeBindings]; omega) hi (by omega)
       (by simpa only [InferInput.erase_openTyVars] using ha.rhsCtx hentry hhead.1)
@@ -3270,10 +3270,8 @@ mutual
         exact ⟨by simpa only [InferInput.erase_substTyFvars] using Expr.ForallOuter.lookupAvoid_onSubst (hrhs old ho).1 hsS,
           InferInput.avoid_subst hsS (hrhs old ho).2⟩)
     have hpre := Subst.sourceAvoid_append_local ⟨hsS, hsD⟩ ⟨hpS, hpD⟩
-    have hpl := hp.env_lengths
-    have hentries : state2.entries.length = bindings.length := by
-      rw [state2.entries_length ((hpl.2.trans he1len).trans (hpl.1.trans hs1len).symm)]
-      exact hpl.1.trans hs1len
+    have hentries : state2.entries.length = bindings.length :=
+      state2.entries_length.trans (hp.env_lengths.1.trans hs1len)
     obtain ⟨hbS, hbTy, hbD⟩ := hb.sourceLocality (show w < second from by have := hs.frontier_le; have := hp.frontier_le; omega)
       (by
         have hh := hstate2.rhsCtx hentries (Expr.ForallOuter.lookupAvoid_onSubst hrefs.2 hpre.1)
@@ -4026,10 +4024,10 @@ theorem RecState.getElem?_outputs_exportComponent (state : RecState) (members : 
     simpa only [RecState.rhsCtx_setSigned] using h i sigma rhs hs ho
 
  theorem RecState.entries_eq_of_exports {state : RecState} {schemes : List PolyTy}
-    (hspecs : state.specs.length = state.exports.length)
     (hexports : state.exports = schemes.map some) : state.entries = schemes := by
   have hlen : state.entries.length = schemes.length := by
-    rw [state.entries_length hspecs.symm, hspecs, hexports, List.length_map]
+    rw [state.entries_length, state.specs_length, ← state.exports_length,
+      hexports, List.length_map]
   apply List.ext_getElem?
   intro i
   cases hs : schemes[i]? with
@@ -4065,7 +4063,6 @@ private theorem collect_annotated_avoids {ctx : Ctx} (pairs : List (Expr × Poly
  theorem RecState.SourceTyped.letRec {state : RecState} {schemes : List PolyTy} {outputs : List Expr}
     (h : state.SourceTyped ctx) (hexports : state.exports = schemes.map some)
     (houtputs : state.outputs = outputs.map some)
-    (hspecs : state.specs.length = state.exports.length)
     (hlength : state.outputs.length = state.exports.length)
     (hbody : TypeOfHM (state.rhsCtx ctx) body ty) :
     TypeOfHM ctx (.letRec (schemes.map some) outputs body) ty := by
@@ -4124,9 +4121,9 @@ private theorem collect_annotated_avoids {ctx : Ctx} (pairs : List (Expr × Poly
       (List.mem_iff_getElem?.mpr ⟨i, List.getElem?_zip_eq_some.mpr ⟨ho, horiginal⟩⟩) Ys hYs
     simpa only [GeneralisesTo, Expr.openBoundTyVars, RecSpecs.bodyCtx, List.map_map,
       Function.comp_def, RecSpec.bodyScheme, hid, RecState.rhsCtx,
-      RecState.entries_eq_of_exports hspecs hexports] using hgen
+      RecState.entries_eq_of_exports hexports] using hgen
   · simp only [RecSpecs.bodyCtx, List.map_map, Function.comp_def, RecSpec.bodyScheme, hid,
-      RecState.rhsCtx, RecState.entries_eq_of_exports hspecs hexports]
+      RecState.rhsCtx, RecState.entries_eq_of_exports hexports]
 
 
  theorem RecState.SourceTyped.exportComponent {state : RecState}
@@ -4417,7 +4414,7 @@ private theorem RecState.Frame.pending_lookup_other {state : RecState}
   intro scheme hlook
   by_cases hi : i < state.entries.length
   · rw [RecState.rhsCtx, List.getElem?_append_left hi] at hlook
-    have hispec : i < state.specs.length := by rw [h.specs_length, ← h.entries_length]; exact hi
+    have hispec : i < state.specs.length := state.entries_length ▸ hi
     have hs := List.getElem?_eq_getElem hispec
     exact fun hv => h.pending.other member ty ht hm i _ hs hne
       (h.entry_freeVars_subset hs hlook _ hv)
@@ -7391,8 +7388,6 @@ theorem Infer.sourceSound (h : Infer K F frontier ctx input next subst output ty
       intro output _
       rfl
     have hresult := htypedFinal.letRec hfinalExports hfinalOutputs
-      (by simpa only [RecState.specs_onSubst, RecState.exports_onSubst, List.length_map] using
-        hframe2.specs_length.trans hframe2.exports_length.symm)
       (by simpa only [RecState.outputs_onSubst, RecState.exports_onSubst, List.length_map] using
         hframe2.outputs_length.trans hframe2.exports_length.symm)
       (by simpa only [RecState.rhsCtx_onSubst, Subst.onCtx_append] using hbodyTyped)
