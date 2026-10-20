@@ -6611,8 +6611,8 @@ def finalRecBinderSchemes (anns : List BindingAnn) (state : RecState) : Inferred
   simp only [RecState.fixedCtx, RecState.exports_onSubst, Subst.onCtx, Subst.onEnv,
     List.map_append, List.map_filterMap, List.filterMap_map, Function.comp_def, id_eq]
 
- theorem RecState.entries_length (state : RecState)
-    (_hlen : state.exports.length = state.specs.length) : state.entries.length = state.specs.length := by
+@[simp] theorem RecState.entries_length (state : RecState) :
+    state.entries.length = state.specs.length := by
   simp only [RecState.entries, RecState.specs, List.length_map]
 
  theorem RecState.init_entries (base : Nat) (anns : List BindingAnn) :
@@ -7023,7 +7023,7 @@ structure RecState.Frame (base : Nat) (K : List Nat) (F : List Ty)
     {F : List Ty} {ctx : Ctx} {anns : List BindingAnn} {done : List Nat}
     (h : state.Frame base K F ctx anns done) :
     state.entries.length = anns.length := by
-  rw [state.entries_length (h.exports_length.trans h.specs_length.symm), h.specs_length]
+  rw [state.entries_length, h.specs_length]
 
  theorem RecState.Frame.init {base : Nat} {K : List Nat} {F : List Ty} {ctx : Ctx}
     {anns : List BindingAnn} (hctx : CtxBelow base ctx)
