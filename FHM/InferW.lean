@@ -3810,7 +3810,6 @@ theorem GeneralisesTo.weaken_annotated {ctx : Ctx} {rhs : Expr} {scheme : PolyTy
 The written prefix and pool need no freshness assumptions for this direction. -/
 theorem RecState.exportComponent_entries_generalize {state : RecState}
     {outputs : List (Option Expr)} {facts : List RecFacts} {pool : List Nat}
-    (_hlen : state.exports.length = state.specs.length)
     (hlc : ∀ spec ∈ state.specs, spec.LC)
     (hclosed : ∀ i ∈ members, state.exports[i]? = some none)
     (hmono : ∀ i ∈ members, ∃ ty, state.specs[i]? = some (.mono ty)) :
@@ -4006,7 +4005,6 @@ theorem RecState.getElem?_outputs_exportComponent (state : RecState) (members : 
   simpa only [RecState.rhsCtx_installOpenings] using h i scheme output hs ho
 
  theorem RecState.mem_entries_of_export {state : RecState} {i : Nat} {scheme : PolyTy}
-    (_hlen : state.exports.length = state.specs.length)
     (hs : state.exports[i]? = some (some scheme)) : scheme ∈ state.entries := by
   rw [RecState.getElem?_exports] at hs
   obtain ⟨member, hmember, hexport⟩ := Option.map_eq_some_iff.mp hs
@@ -4017,7 +4015,7 @@ theorem RecState.getElem?_outputs_exportComponent (state : RecState) (members : 
  theorem RecState.SourceTyped.setSigned {state : RecState} {ctx : Ctx}
     {member : Nat} {names : List Nat} {scheme : PolyTy} {output : Expr} {facts : RecFacts}
     (h : state.SourceTyped ctx) (hexport : state.exports[member]? = some (some scheme))
-    (houtput : member < state.outputs.length) (hwf : scheme.WF)
+    (hwf : scheme.WF)
     (hlen : names.length = scheme.paramCount) (hnd : names.Nodup)
     (hctx : ∀ v ∈ names, v ∉ (state.rhsCtx ctx).env.freeVars)
     (hscheme : ∀ v ∈ names, v ∉ scheme.body.freeVars)
@@ -4038,6 +4036,9 @@ theorem RecState.getElem?_outputs_exportComponent (state : RecState) (members : 
   · subst i
     have he : sigma = scheme := Option.some.inj (Option.some.inj (hs.symm.trans hexport))
     subst sigma
+    have houtput : member < state.outputs.length := by
+      have hm := (List.getElem?_eq_some_iff.mp hexport).1
+      simpa only [RecState.exports_length, RecState.outputs_length] using hm
     rw [RecState.getElem?_outputs_setSigned_self state member names output facts houtput] at ho
     cases Option.some.inj (Option.some.inj ho)
     simpa only [RecState.rhsCtx_setSigned] using And.intro hwf ⟨names, hgen⟩
@@ -4084,10 +4085,11 @@ private theorem collect_annotated_avoids {ctx : Ctx} (pairs : List (Expr × Poly
  theorem RecState.SourceTyped.letRec {state : RecState} {schemes : List PolyTy} {outputs : List Expr}
     (h : state.SourceTyped ctx) (hexports : state.exports = schemes.map some)
     (houtputs : state.outputs = outputs.map some)
-    (hlength : state.outputs.length = state.exports.length)
     (hbody : TypeOfHM (state.rhsCtx ctx) body ty) :
     TypeOfHM ctx (.letRec (schemes.map some) outputs body) ty := by
   have hlen : outputs.length = schemes.length := by
+    have hlength : state.outputs.length = state.exports.length :=
+      (RecState.outputs_length state).trans (RecState.exports_length state).symm
     simpa only [hexports, houtputs, List.length_map] using hlength
   have hpairs : ∀ p ∈ outputs.zip schemes, p.2.WF ∧ ∃ L,
       GeneralisesTo TypeOfHM (state.rhsCtx ctx) (some p.2) p.1 p.2 L := by
@@ -4150,8 +4152,6 @@ private theorem collect_annotated_avoids {ctx : Ctx} (pairs : List (Expr × Poly
  theorem RecState.SourceTyped.exportComponent {state : RecState}
     {outputs : List (Option Expr)} {facts : List RecFacts} {pool : List Nat}
     (h : state.SourceTyped ctx)
-    (hexports : state.exports.length = state.outputs.length)
-    (hspecs : state.outputs.length = state.specs.length)
     (hlc : ∀ spec ∈ state.specs, spec.LC)
     (hclosed : ∀ i ∈ members, state.exports[i]? = some none)
     (hmono : ∀ i ∈ members, ∃ ty, state.specs[i]? = some (.mono ty))
@@ -4164,7 +4164,7 @@ private theorem collect_annotated_avoids {ctx : Ctx} (pairs : List (Expr × Poly
     (state.exportComponent members written pool outputs facts).SourceTyped ctx := by
   have hgeneral := RecState.exportComponent_entries_generalize
     (written := written) (outputs := outputs) (facts := facts) (pool := pool)
-    (hexports.trans hspecs) hlc hclosed hmono
+    hlc hclosed hmono
   intro i scheme output hscheme houtput
   rw [RecState.getElem?_exports_exportComponent] at hscheme
   rw [RecState.getElem?_outputs_exportComponent] at houtput
@@ -4288,8 +4288,6 @@ private theorem collect_annotated_avoids {ctx : Ctx} (pairs : List (Expr × Poly
     (hInfer : ∀ {κ F' Ψ c e Ψ' T output ty}, e.size ≤ sizeBindings bindings →
       Infer κ F' Ψ c e Ψ' T output ty → CtxWF c → TypeOfHM (T.onCtx c) output ty)
     (hctx : CtxWF ctx) (hstate : state.LC) (htyped : state.SourceTyped ctx)
-    (hlen : state.exports.length = state.specs.length)
-    (hout : state.outputs.length = state.exports.length)
     (hcontracts : ∀ (j : Nat) (scheme : PolyTy), anns[j]? = some (.complete scheme) →
       state.exports[index + j]? = some (some scheme)) :
     final.SourceTyped (S.onCtx ctx) := by
@@ -4297,7 +4295,7 @@ private theorem collect_annotated_avoids {ctx : Ctx} (pairs : List (Expr × Poly
   | .nil => simpa only [Subst.onCtx_nil] using htyped
   | .skip _ hr =>
     apply hr.sourceSound_of_infer (fun he hi => hInfer (by simp only [sizeBindings]; omega) hi)
-      hctx hstate htyped hlen hout
+      hctx hstate htyped
     intro j scheme hs
     have hh := hcontracts (j + 1) scheme (by simpa only [List.getElem?_cons_succ] using hs)
     simpa only [Nat.add_assoc, Nat.add_comm 1 j] using hh
@@ -4313,9 +4311,7 @@ private theorem collect_annotated_avoids {ctx : Ctx} (pairs : List (Expr × Poly
     simp only [Nat.add_zero] at hex
     have hex' : (state.onSubst (s1 ++ s2)).exports[index]? = some (some ((s1 ++ s2).onPolyTy scheme)) := by
       simp only [RecState.exports_onSubst, List.getElem?_map, hex, Option.map_some]
-    have hlen' : (state.onSubst (s1 ++ s2)).exports.length = (state.onSubst (s1 ++ s2)).specs.length := by
-      simpa only [RecState.exports_onSubst, RecState.specs_onSubst, List.length_map] using hlen
-    have hmember := (state.onSubst (s1 ++ s2)).mem_entries_of_export hlen' hex'
+    have hmember := (state.onSubst (s1 ++ s2)).mem_entries_of_export hex'
     have hrhs := TypeOfHM.onSubst s2 hS2
       (hInfer (by simp only [InferInput.size_openTyVars, sizeBindings]; omega) hi hiCtx)
     have heq := hu.unifies.unifies
@@ -4331,10 +4327,7 @@ private theorem collect_annotated_avoids {ctx : Ctx} (pairs : List (Expr × Poly
         v ∉ ((s1 ++ s2).onPolyTy scheme).body.freeVars := by
       intro v hv hm
       exact hctxFresh v hv (Env.mem_freeVars_iff.mpr ⟨_, List.mem_append_left _ hmember, hm⟩)
-    have houtput : index < (state.onSubst (s1 ++ s2)).outputs.length := by
-      have hi := (List.getElem?_eq_some_iff.mp hex').1
-      simpa only [RecState.exports_onSubst, RecState.outputs_onSubst, List.length_map, hout] using hi
-    have hclosed := hready.setSigned (facts := bodyFacts.onSubst s2) hex' houtput (Subst.onPolyTy_wf hS hwf)
+    have hclosed := hready.setSigned (facts := bodyFacts.onSubst s2) hex' (Subst.onPolyTy_wf hS hwf)
       (by simp [Subst.onPolyTy]) (freshVars_nodup) hctxFresh hschemeFresh
       (by
         rw [RecState.rhsCtx_onSubst]
@@ -4344,11 +4337,6 @@ private theorem collect_annotated_avoids {ctx : Ctx} (pairs : List (Expr × Poly
     have hfinal := hr.sourceSound_of_infer
       (fun he hj => hInfer (by simp only [sizeBindings_map_substTyFvars] at he; simp only [sizeBindings]; omega) hj)
       (Subst.onCtx_wf hS hctx) ((hstate.onSubst hS).setSigned) hclosed
-      (by simpa only [RecState.exports_setSigned, RecState.specs_setSigned,
-          RecState.exports_onSubst, RecState.specs_onSubst, List.length_map] using hlen)
-      (by
-        simp only [RecState.outputs_length, RecState.exports_length,
-          RecState.setSigned, List.length_mapIdx, RecState.onSubst, List.length_map])
       (by
         intro j sigma hs
         obtain ⟨ann, ha, heq⟩ := Option.map_eq_some_iff.mp (by simpa only [List.getElem?_map] using hs)
@@ -5381,8 +5369,6 @@ private theorem RecState.Frame.poly_of_complete {state : RecState} {i : Nat} {sc
         simp only [st, RecState.specs_onSubst, RecState.specs_installOpenings,
           List.getElem?_map, ht, Option.map_some, RecSpec.onSubstSource]⟩
     apply hsourceS.exportComponent
-      ((RecState.exports_length st).trans (RecState.outputs_length st).symm)
-      ((RecState.outputs_length st).trans (RecState.specs_length st).symm)
       (hinitLC.onSubst hSLC).1
     · intro i hi
       obtain ⟨ty, ht⟩ := hmono i hi
@@ -7389,8 +7375,6 @@ theorem Infer.sourceSound (h : Infer K F frontier ctx input next subst output ty
       (fun _ hi => hi.sourceLocality) hframe1 (by simp) hdone1 hBelow1.2.2.2
     have htyped2 := hsigned.sourceSound_of_infer
       (fun he hi => hi.sourceSound) (Subst.onCtx_wf hS1 hctxWF) hLC1 htyped1
-      (hframe1.exports_length.trans hframe1.specs_length.symm)
-      (hframe1.outputs_length.trans hframe1.exports_length.symm)
       (fun j scheme ha => by simpa only [Nat.zero_add] using hframe1.complete_export ha)
     obtain ⟨hS2, hLC2⟩ := hsigned.lc_of_infer (fun _ hi => hi.lc) (Subst.onCtx_wf hS1 hctxWF) hLC1
     have hbodyCtx := hLC2.rhsCtx (Subst.onCtx_wf hS2 (Subst.onCtx_wf hS1 hctxWF))
@@ -7409,8 +7393,6 @@ theorem Infer.sourceSound (h : Infer K F frontier ctx input next subst output ty
       intro output _
       rfl
     have hresult := htypedFinal.letRec hfinalExports hfinalOutputs
-      (by simpa only [RecState.outputs_onSubst, RecState.exports_onSubst, List.length_map] using
-        hframe2.outputs_length.trans hframe2.exports_length.symm)
       (by simpa only [RecState.rhsCtx_onSubst, Subst.onCtx_append] using hbodyTyped)
     simpa only [Subst.onCtx_append] using hresult
   | .match_ _ hs hne hb =>
