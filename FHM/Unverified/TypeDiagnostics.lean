@@ -45,10 +45,12 @@ def probeCore (K : List Nat) (Φ : Nat) (ctx : Ctx) : Expr → Option Error
   | .app f arg =>
       match inferCore K Φ ctx (InferInput.ofCore f) with
       | none => (probeCore K Φ ctx f).map (Error.below .appFun)
-      | some ⟨(Φ₁, S₁, _, τf), _⟩ =>
+      | some result =>
+        let ⟨Φ₁, S₁, _, τf⟩ := result.val
         match inferCore K Φ₁ (S₁.onCtx ctx) (InferInput.ofCore arg) with
         | none => (probeCore K Φ₁ (S₁.onCtx ctx) arg).map (Error.below .appArg)
-        | some ⟨(Φ₂, S₂, _, τa), _⟩ =>
+        | some result =>
+          let ⟨Φ₂, S₂, _, τa⟩ := result.val
           let fnTy := S₂.onTy τf
           if (unifyCoreK K fnTy (.arrow τa (.fvar Φ₂))).isSome then none
           else match fnTy with
@@ -61,7 +63,8 @@ def probeCore (K : List Nat) (Φ : Nat) (ctx : Ctx) : Expr → Option Error
   | .letIn none rhs body =>
       match inferCore K Φ ctx (InferInput.ofCore rhs) with
       | none => (probeCore K Φ ctx rhs).map (Error.below .letRhs)
-      | some ⟨(Φ₁, S₁, _, τ₁), _⟩ =>
+      | some result =>
+          let ⟨Φ₁, S₁, _, τ₁⟩ := result.val
           let ctx₁ := S₁.onCtx ctx
           let σ := genScheme K ctx₁.env τ₁
           (probeCore K Φ₁ { ctx₁ with env := σ :: ctx₁.env } body).map
@@ -72,7 +75,8 @@ def probeCore (K : List Nat) (Φ : Nat) (ctx : Ctx) : Expr → Option Error
       let opened := rhs.openTyVars Ys
       match inferCore rigid (Φ + σ.paramCount) ctx (InferInput.ofCore opened) with
       | none => (probeCore rigid (Φ + σ.paramCount) ctx opened).map (Error.below .letRhs)
-      | some ⟨(Φ₁, S₁, _, τ₁), _⟩ =>
+      | some result =>
+        let ⟨Φ₁, S₁, _, τ₁⟩ := result.val
         match unifyCoreK rigid τ₁ (σ.openVars Ys) with
         | none => none -- Existing annotation diagnostics handle this case.
         | some ⟨Schk, _⟩ =>
@@ -101,10 +105,12 @@ partial def probe (K : List Nat) (Φ : Nat) (ctx : Ctx)
     | .app f arg =>
         match inferCore K Φ ctx f with
         | none => (probe K Φ ctx f).map (Error.below .appFun)
-        | some ⟨(Φ₁, S₁, _, τf), _⟩ =>
+        | some result =>
+          let ⟨Φ₁, S₁, _, τf⟩ := result.val
           match inferCore K Φ₁ (S₁.onCtx ctx) arg with
           | none => (probe K Φ₁ (S₁.onCtx ctx) arg).map (Error.below .appArg)
-          | some ⟨(Φ₂, S₂, _, τa), _⟩ =>
+          | some result =>
+            let ⟨Φ₂, S₂, _, τa⟩ := result.val
             let fnTy := S₂.onTy τf
             if (unifyCoreK K fnTy (.arrow τa (.fvar Φ₂))).isSome then none
             else match fnTy with
@@ -120,7 +126,8 @@ partial def probe (K : List Nat) (Φ : Nat) (ctx : Ctx)
     | .letIn ann rhs body =>
         match inferCore K Φ ctx rhs with
         | none => (probe K Φ ctx rhs).map (Error.below .letRhs)
-        | some ⟨(Φ₁, S₁, _, τ₁), _⟩ => do
+        | some result => do
+            let ⟨Φ₁, S₁, _, τ₁⟩ := result.val
             let checked ← checkLet K [] Φ₁ ann τ₁
             let ctx₁ := checked.val.2.onCtx (S₁.onCtx ctx)
             let σ := genScheme K ctx₁.env (checked.val.2.onTy τ₁)
