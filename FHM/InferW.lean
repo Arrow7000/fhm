@@ -3887,32 +3887,23 @@ def RecState.SourceTyped (ctx : Ctx) (state : RecState) : Prop :=
     (state.setSigned member names output facts).rhsCtx ctx = state.rhsCtx ctx := by
   simp [RecState.rhsCtx]
 
-theorem RecState.getElem?_outputs_setSigned (state : RecState) (member i : Nat)
-    (names : List Nat) (output : Expr) (facts : RecFacts) :
-    (state.setSigned member names output facts).outputs[i]? =
-      state.memberStates[i]?.map (fun old =>
-        if i = member then some (output.closeTyVars names) else old.output) := by
-  simp only [RecState.outputs, RecState.setSigned, List.getElem?_map,
-    List.getElem?_mapIdx]
-  cases state.memberStates[i]? with
-  | none => rfl
-  | some old => split <;> rfl
-
 theorem RecState.getElem?_outputs_setSigned_self (state : RecState) (member : Nat)
     (names : List Nat) (output : Expr) (facts : RecFacts)
     (hmember : member < state.outputs.length) :
     (state.setSigned member names output facts).outputs[member]? =
       some (some (output.closeTyVars names)) := by
-  rw [RecState.getElem?_outputs_setSigned]
   have hi : member < state.memberStates.length := by
     simpa only [RecState.outputs_length] using hmember
+  simp only [RecState.outputs, RecState.setSigned, List.getElem?_map,
+    List.getElem?_mapIdx]
   rw [List.getElem?_eq_getElem hi]
   simp
 
 theorem RecState.getElem?_outputs_setSigned_of_ne (state : RecState) (member i : Nat)
     (names : List Nat) (output : Expr) (facts : RecFacts) (hi : i ≠ member) :
     (state.setSigned member names output facts).outputs[i]? = state.outputs[i]? := by
-  rw [RecState.getElem?_outputs_setSigned, RecState.getElem?_outputs]
+  simp only [RecState.outputs, RecState.setSigned, List.getElem?_map,
+    List.getElem?_mapIdx]
   cases state.memberStates[i]? <;> simp [hi]
 
 theorem RecState.getElem?_outputs_exportComponent (state : RecState) (members : List Nat)
