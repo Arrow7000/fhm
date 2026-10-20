@@ -106,7 +106,7 @@ starting point for reading the proofs.
 | **Complete-Core surface safety:** a well-typed, exhaustive surface program accepted by the Core lowering bridge never gets stuck.                  | `program_type_safe`, `surface_type_safe`                                  |
 | **Canonical elaboration is sound:** successful inference returns typed completed Core and an independently typed partial input, with exact runtime erasure and annotation fidelity. | `Infer.sourceSound`, `Infer.inputSound`, `Infer.erase`, `Infer.completes` |
 | **Canonical inference is complete and principal:** inference accepts exactly independently well-typed partial inputs, and every valid result type factors through the inferred type. | `Infer.principal`, `Infer.complete`, `inferCore_accepts_iff`, `inferWithTypes_accepts_iff` |
-| **Complete-Core inference is complete and principal:** inference succeeds exactly for well-typed Core, and every valid type factors through the inferred one. | `CoreBackend.typecheck_accepts_iff`, `CoreBackend.Infer.principal`, `CoreBackend.Infer.complete` |
+| **Complete Core uses the same inference engine:** `InferInput.ofCore` preserves source typing, acceptance, and residual principality. | `SurfaceBridge.coreTypecheck_accepts_iff`, `SurfaceBridge.inferOfCore_source_sound`, `SurfaceBridge.inferOfCore_principal` |
 | **Pattern compilation is correct:** nested matches compile to decision trees that select the same branch with the same bindings.                   | `PatComp.compile_correct_surface`, `PatComp.lowerMatch_adequate_of_typed` |
 | **Exhaustiveness checking is sound:** if the checker accepts a match, the match is exhaustive.                                                     | `checkExhaustive_sound`                                                   |
 | **Recursive grouping is correct:** dependency analysis splits definitions into exactly their strongly connected components.                        | `sccGroups_sound`, `sccGroups_complete`, `kosaraju_sound`                 |
@@ -116,7 +116,7 @@ starting point for reading the proofs.
 unbounded evaluator used by `fhm run`. These live under
 [`FHM/Unverified/`](./FHM/Unverified/README.md) and are kept out of the
 verified build. Verified Core lowering theorems start at surface syntax;
-the canonical elaborator's theorems start at `Elaboration.Input`. Production
+the canonical elaborator's theorems start at `InferInput`. Production
 provenance lowering and its source/editor joins remain operational code. The
 verified evaluator (`runSafe` in `Headlines.lean`) is fuel-bounded, because the
 language allows non-terminating programs.
@@ -197,7 +197,7 @@ source text
 
 The surface language has names, nested patterns, and syntactic sugar. Core is
 a smaller language with de Bruijn indices and only flat, one-constructor-deep
-matches. `Elaboration.Input` preserves partial annotation syntax until the
+matches. `InferInput` preserves partial annotation syntax until the
 canonical worker returns a completed Core expression. The CLI executes that
 expression's erasure; editor artifacts come from the same inference result.
 The verified inference and compiler theorems are separate from the operational
@@ -207,10 +207,10 @@ The design choices that matter most:
 
 - **Evaluation is type-free.** Annotations are used only for type checking and
   are erased before the program runs. No type information exists at runtime.
-- **Declarative and algorithmic typing are kept separate.** `Elaboration.Typing`
+- **Declarative and algorithmic typing are kept separate.** `InputTyping`
   specifies partial inputs, and `TypeOfHM` specifies completed Core. Canonical
-  `Infer` produces the completed expression and its type; `CoreBackend` supplies
-  complete-Core inference for eligible subtrees.
+  `Infer` produces the completed expression and its type. Complete Core is
+  adapted with `InferInput.ofCore` and uses the same worker.
 - **Type variables use a locally nameless representation** with cofinite
   quantification, following
   [Charguéraud's formalisation of mini-ML](https://github.com/charguer/formalmetacoq).
@@ -223,12 +223,13 @@ The design choices that matter most:
 | Module                                           | Contents                                                                         |
 | ------------------------------------------------ | -------------------------------------------------------------------------------- |
 | [`Core.lean`](./FHM/Core.lean)                   | Types, Core terms, the typing relation `TypeOfHM`, small-step semantics          |
-| [`InferW.lean`](./FHM/InferW.lean)               | Public facade for canonical Input elaboration and soundness                      |
-| [`Completeness.lean`](./FHM/Completeness.lean)   | Public facade for canonical principality and completeness proofs                |
-| [`Elaboration/`](./FHM/Elaboration/)            | Input, lowering, judgments, canonical worker, recursive state, and proofs        |
+| [`InferenceSupport.lean`](./FHM/InferenceSupport.lean) | Shared unification, generalization, scheduling, and Core typing lemmas       |
+| [`InferInput.lean`](./FHM/InferInput.lean)       | `InferInput`, `TyTemplate`, `BindingAnn`, independent typing and annotation completion |
+| [`InferW.lean`](./FHM/InferW.lean)               | The sole inference judgment and worker, bounds, soundness, and fidelity         |
+| [`Completeness.lean`](./FHM/Completeness.lean)   | Principality and executable completeness for that same worker                   |
 | [`RuntimeTyping.lean`](./FHM/RuntimeTyping.lean) | Typing for erased runtime terms, used to prove progress and preservation         |
 | [`SurfaceLang.lean`](./FHM/SurfaceLang.lean)     | Surface syntax tree                                                              |
-| [`SurfaceBridge.lean`](./FHM/SurfaceBridge.lean) | Lowering surface to Core, exhaustiveness checking, end-to-end safety             |
+| [`SurfaceBridge.lean`](./FHM/SurfaceBridge.lean) | Head normalization, annotation-preserving lowering, coverage, and surface safety |
 | [`PatComp.lean`](./FHM/PatComp.lean)             | Pattern-match compiler and its correctness proofs                                |
 | [`Scc/Kosaraju.lean`](./FHM/Scc/Kosaraju.lean)   | Verified strongly connected components                                           |
 | [`Decls.lean`](./FHM/Decls.lean)                 | Data declaration checking                                                        |

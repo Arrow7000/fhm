@@ -36,12 +36,12 @@ annotations use ordinary HM inference. Explicit lambda RHSs remain supported.
 
 ## Architecture
 
-`Elaboration.Input` records annotation syntax before inference. Its templates
+`InferInput` records annotation syntax before inference. Its templates
 contain fixed types, independent anonymous holes, arrows, and datatype
 applications. Let annotations distinguish absent, complete, monomorphic partial,
 and explicitly quantified partial signatures.
 
-The production path expands function heads with `Elaboration.finalizeInputAnn`
+The production path expands function heads with `finalizeInputAnn`
 before existing input lowering. It combines parameter domains with the return
 annotation and supplies holes for omitted types when a forall or return
 annotation needs a full signature. Unannotated heads retain ordinary HM inference.
@@ -56,13 +56,18 @@ slots: these images remain unifiable but cannot generalize in nested bindings.
 Authored free variables are scoped by `K ++ softVars F`. Sequential inference
 transforms both the source annotations and `F` with the substitutions it produces.
 
-`InferW` exports the worker and public API. `inferWithTypes` produces the completed
-Core expression, type, substitution, and editor maps in one inference traversal.
-A complete subtree can delegate to `CoreBackend` only when its authored free
-variables lie in `K` and avoid `softVars F`; successful `toCore` conversion alone
-is insufficient. Other subtrees use structural elaboration. There is no second
-public inference path. The separate files under `Elaboration/` organize this
-judgment and its proofs.
+`InferW.lean` contains the sole inference judgment and executable worker.
+`inferWithTypes` returns completed Core, its type, a substitution, and editor maps
+in one traversal. Completed Core uses the same engine through `InferInput.ofCore`;
+there is no backend delegation or alternate inference relation.
+
+The theory is organized in four top-level modules: `InferenceSupport.lean` for
+shared substitution/unification, generalization, dependency scheduling, and Core
+typing lemmas, `InferInput.lean` for
+`TyTemplate`, `BindingAnn`, `InferInput`, independent `InputTyping`, and
+`AnnotationCompletion`, `InferW.lean` for inference and its soundness/fidelity
+proofs, and `Completeness.lean` for principality and producer completeness.
+Surface normalization and lowering live in `SurfaceBridge.lean`.
 
 An ordinary substitution does not express the entire completion. For example,
 `let id = \(x : _) -> x` needs its hole generalized into a scheme binder and its
@@ -76,11 +81,13 @@ It neither infers types nor assigns global identities to holes. Source spans
 locate hovers and have no role in variable allocation or sharing.
 
 `Headlines.elaborateSafe` is a separate complete-Core safe-lowering demonstration
-using `SurfaceBridge.lowerProgram` and `CoreBackend.typecheck`. It has no production
-caller and rejects holeful Core lowering. The CLI/editor use the `Input` path
-above; the verified Core bridge and its safety proofs remain intact.
+using `SurfaceBridge.lowerProgram` followed by the same canonical inference
+engine through `InferInput.ofCore`. This complete-Core lowering path has no
+production caller and rejects holeful Core lowering. The CLI/editor preserve
+partial annotations directly; the verified Core bridge retains its original
+source-typing and safety contracts.
 
-The production frontend lowers into `Input`, then uses canonical inference.
+The production frontend lowers into `InferInput`, then uses canonical inference.
 Runtime execution receives `completedExpr.erase`. Editor types and schemes come
 from the same inference result; original input annotation modes are retained to
 distinguish authored declarations from synthesized schemes. Hole hovers join
@@ -121,7 +128,7 @@ They do not claim a universal most-general filling for every unused annotation.
 
 ## Completion checklist
 
-- [x] Canonical elaborating judgment and worker, internal complete-Core backend.
+- [x] A single canonical elaborating judgment and worker for partial and complete inputs.
 - [x] Annotation lowering through shared pattern emission, with erasure proofs.
 - [x] Parser spans, completed-expression runtime handoff, basic hole hovers.
 - [x] Match inference and its complete soundness/principality/completeness stack.
@@ -156,7 +163,8 @@ residual groupings, including shared or permuted roots across stages.
 
 ## Regression coverage and completion
 
-`FHM.Elaboration.Examples` exercises expression, match, and signed-let rules.
+`FHM.Examples` exercises Core adapters, partial annotations, matches, signed lets,
+and recursive elaboration.
 `FHM.Unverified.EditorSupportTests` checks source lowering, provenance, and
 inferred artifacts. `scripts/hm-editor-smoke.mjs` exercises the actual canonical
 recursive worker with independent runtime/editor groups, including:
@@ -169,16 +177,16 @@ recursive worker with independent runtime/editor groups, including:
 - nested signature escape and ordinary-let generalization under a vacuous outer
   forall, each paired with a nearby accepted program;
 - complete annotations referring to outer provisional slots, which require
-  structural inference when backend delegation is ineligible;
+  structural inference under mutable provisional annotations;
 - completed annotation depths versus metadata's explicit-only binder depths.
 
 Recursive lowering guards check true recursive input shapes and partial-forall
 counts. Runtime tests pair rejection cases with nearby accepted controls; a
 rejection alone does not establish correctness. Passing these tests complements
-the full proof stack above. Final verification passed:
+the full proof stack above. Fresh validation after inference consolidation passed:
 
-- `lake build`: 745 jobs, including the recursive proof examples.
-- `lake build FHMEditorTests fhm`: 1,663 jobs.
+- `lake build`: 729 jobs, including the recursive proof examples.
+- `lake build FHMEditorTests fhm`: 1,639 jobs.
 - `node scripts/hm-editor-smoke.mjs`: 74/74 CLI/editor semantic checks.
 - `node editors/vscode/test/anonymous-holes-integration.cjs`: 11 provider
   scenarios passed using the real CLI backend and a simulated VS Code host API;
@@ -192,7 +200,8 @@ the full proof stack above. Final verification passed:
 - `npm --prefix editors/web test`: 31/31 tests.
 - `scripts/check-unverified-boundary.sh`: passed; `Core.lean` and
   `RuntimeTyping.lean` are unchanged by this feature.
-- An actual-import audit of 21 public capstones checked their API contracts and
+- An actual-import audit of 32 inference, source/safety, and concrete-example
+  capstones checked their API contracts and
   found only `propext`, `Classical.choice`, and `Quot.sound`, with no residual
   producer callbacks, `sorryAx`, or native-decision axioms. `FHM.Headlines`
   retains the public API and axiom guards in the default build.
