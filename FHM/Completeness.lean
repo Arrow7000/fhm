@@ -1130,9 +1130,6 @@ that label's first occurrence. Labels may themselves collide with actual IDs. -/
 def prefixRepresentative (actual candidate : List Nat) (root : Nat) : Nat :=
   (actual[candidate.idxOf root]?).getD 0
 
-def prefixRepresentativeImages (actual candidate : List Nat) : List Nat :=
-  candidate.map (prefixRepresentative actual candidate)
-
 def prefixRepresentatives (actual candidate : List Nat) : List Nat :=
   candidate.dedup.map (prefixRepresentative actual candidate)
 
@@ -1169,14 +1166,6 @@ def prefixRepresentatives (actual candidate : List Nat) : List Nat :=
     List.getElem?_eq_getElem hdidx,List.getElem_idxOf hdidx] at hh
   exact Option.some.inj hh
 
- theorem prefixRepresentative_first {actual candidate : List Nat}
-    (hlen : actual.length = candidate.length) (hi : i < candidate.length)
-    (hfirst : candidate.idxOf candidate[i] = i) :
-    prefixRepresentative actual candidate candidate[i] = actual[i]'(by omega) := by
-  unfold prefixRepresentative
-  rw [hfirst,List.getElem?_eq_getElem (show i < actual.length by omega)]
-  rfl
-
  theorem prefixRepresentative_fix_image {actual candidate : List Nat} {S : Subst}
     (hlen : actual.length = candidate.length)
     (hassign : ∀ i (hi : i < candidate.length),
@@ -1188,21 +1177,6 @@ def prefixRepresentatives (actual candidate : List Nat) : List Nat :=
   have hactual : actual[candidate.idxOf c]'(by omega) = prefixRepresentative actual candidate c :=
     (Option.some.inj ((List.getElem?_eq_getElem (by omega)).symm.trans (prefixRepresentative_lookup hlen hc)))
   simpa only [hactual,hget] using hassign (candidate.idxOf c) hi
-
-
- theorem prefixRepresentative_below {actual candidate : List Nat}
-    (hlen : actual.length = candidate.length) (hbound : ∀ a ∈ actual, a < frontier)
-    (hc : c ∈ candidate) : prefixRepresentative actual candidate c < frontier :=
-  hbound _ (prefixRepresentative_mem hlen hc)
-
- theorem prefixRepresentative_disjoint {actual candidate P : List Nat}
-    (hlen : actual.length = candidate.length) (hstart : ∀ a ∈ actual, base ≤ a)
-    (hP : ∀ p ∈ P, p < base) (hc : c ∈ candidate) :
-    prefixRepresentative actual candidate c ∉ P := by
-  intro hp
-  have := hstart _ (prefixRepresentative_mem hlen hc)
-  have := hP _ hp
-  omega
 
  theorem prefixRepresentative_prefix_nodup {actual candidate names : List Nat}
     (hlen : actual.length = candidate.length) (hA : actual.Nodup)
@@ -1219,31 +1193,6 @@ def prefixRepresentatives (actual candidate : List Nat) : List Nat :=
     (hlen : actual.length = candidate.length) (hv : v ∈ prefixRepresentatives actual candidate) : v ∈ actual := by
   obtain ⟨root,hroot,rfl⟩ := List.mem_map.mp hv
   exact prefixRepresentative_mem hlen (List.mem_dedup.mp hroot)
-
- theorem prefixRepresentatives_capacity {actual candidate : List Nat}
-    (hlen : actual.length = candidate.length) :
-    (prefixRepresentatives actual candidate).length ≤ actual.length := by
-  rw [prefixRepresentatives,List.length_map,hlen]
-  exact (List.dedup_sublist candidate).length_le
-
- theorem prefixRepresentativeImages_length (actual candidate : List Nat) :
-    (prefixRepresentativeImages actual candidate).length = candidate.length := List.length_map _
-
- theorem prefixRepresentativeImages_lookup {actual candidate : List Nat} {root i : Nat}
-    (hc : candidate[i]? = some root) :
-    (prefixRepresentativeImages actual candidate)[i]? = some (prefixRepresentative actual candidate root) := by
-  simp only [prefixRepresentativeImages,List.getElem?_map,hc,Option.map_some]
-
- theorem prefixRepresentativeImages_fixed {actual candidate : List Nat} {S : Subst}
-    (hlen : actual.length = candidate.length)
-    (hassign : ∀ i (hi : i < candidate.length),
-      S.onTy (.fvar (actual[i]'(by omega))) = .fvar (prefixRepresentative actual candidate candidate[i])) :
-    (prefixRepresentativeImages actual candidate).map (fun v => S.onTy (.fvar v)) =
-      (prefixRepresentativeImages actual candidate).map Ty.fvar := by
-  apply List.map_congr_left
-  intro rep hr
-  obtain ⟨c,hc,rfl⟩ := List.mem_map.mp hr
-  exact prefixRepresentative_fix_image hlen hassign hc
 
  theorem prefixRepresentatives_fixed {actual candidate : List Nat} {S : Subst}
     (hlen : actual.length = candidate.length)
