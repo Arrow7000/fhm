@@ -3176,9 +3176,16 @@ private theorem residual_entries_at {state : RecState} {i : Nat} {spec : RecSpec
     {exported : Option PolyTy} (hs : state.specs[i]? = some spec)
     (he : state.exports[i]? = some exported) :
     state.entries[i]? = some (exported.getD spec.monoEntry) := by
-  have hz : (state.specs.zip state.exports)[i]? = some (spec, exported) :=
-    List.getElem?_zip_eq_some.mpr ⟨hs, he⟩
-  simp only [RecState.entries, List.getElem?_map, hz, Option.map_some]
+  rw [RecState.getElem?_specs] at hs
+  rw [RecState.getElem?_exports] at he
+  rw [RecState.entries, List.getElem?_map]
+  cases hm : state.memberStates[i]? with
+  | none => simp only [hm, Option.map_none, reduceCtorEq] at hs
+  | some member =>
+      simp only [hm, Option.map_some, Option.some.injEq] at hs he ⊢
+      subst spec
+      subst exported
+      rfl
 
 private theorem residual_not_mem_take {anns : List (Option PolyTy)} {bindings : List Expr}
     {groups : List (List Nat)} (h : RecGroups.ValidResidualGroups anns bindings groups)
@@ -3435,12 +3442,13 @@ private theorem RecResidual.onSubst_fields
     RecResidual P declCtx declSpecs declPrefixes declPool Xs (S.onCtx ctx)
       (state.onSubst S) done U := by
   refine ⟨hU, hUfix, hctx.symm.trans h.ctx_eq, ?_, ?_, ?_, ?_, ?_⟩
-  · simpa only [RecState.onSubst, List.length_map] using h.length
+  · simpa only [RecState.specs_onSubst, List.length_map] using h.length
   · intro i algTy hi
+    rw [RecState.specs_onSubst] at hi
     obtain ⟨old, hold, rfl⟩ := RecSpec.mono_getElem?_map_onSubstSource hi
     exact h.mono i old hold
   · intro i algScheme hi
-    change (state.specs.map (RecSpec.onSubstSource S))[i]? = some (.poly algScheme) at hi
+    rw [RecState.specs_onSubst] at hi
     rw [List.getElem?_map] at hi
     obtain ⟨spec, hold, heq⟩ := Option.map_eq_some_iff.mp hi
     cases spec with
@@ -3451,14 +3459,16 @@ private theorem RecResidual.onSubst_fields
       obtain ⟨declScheme, hdecl, heq⟩ := h.poly i scheme hold
       exact ⟨declScheme, hdecl, (hpoly scheme (List.mem_of_getElem? hold)).symm.trans heq⟩
   · intro i algTy declTy hi hd hnot
+    rw [RecState.specs_onSubst] at hi
     obtain ⟨old, hold, rfl⟩ := RecSpec.mono_getElem?_map_onSubstSource hi
     rw [← hmono old (List.mem_of_getElem? hold)]
     exact h.pending i old declTy hold hd hnot
   · intro i algTy declTy hi hd hdone
+    rw [RecState.specs_onSubst] at hi
     obtain ⟨old, hold, rfl⟩ := RecSpec.mono_getElem?_map_onSubstSource hi
     obtain ⟨exported, he, hgen⟩ := h.completed i old declTy hold hd hdone
     refine ⟨S.onPolyTy exported, ?_, ?_⟩
-    · simp only [RecState.onSubst, List.getElem?_map, he, Option.map_some]
+    · simp only [RecState.exports_onSubst, List.getElem?_map, he, Option.map_some]
     · rw [← hexport exported (List.mem_of_getElem? he)]
       exact hgen
 
@@ -3616,20 +3626,23 @@ theorem RecResidual.change_opening
 
 private theorem residual_export_selected {state : RecState} {members pool : List Nat}
     {written : List (List Nat)} {outputs : List (Option Expr)} {facts : List RecFacts}
-    {i : Nat} {ty : Ty} (hbound : i < state.exports.length) (hi : i ∈ members)
+    {i : Nat} {ty : Ty} (hi : i ∈ members)
     (hs : state.specs[i]? = some (.mono ty)) :
     (state.exportComponent members written pool outputs facts).exports[i]? =
       some (some (recScheme (written[i]?.getD []) pool ty)) := by
-  have he := List.getElem?_eq_getElem hbound
-  simp only [RecState.exportComponent, List.getElem?_mapIdx, he, Option.map_some,
-    if_pos hi, hs, bind, pure, Option.bind_some, RecSpec.completedScheme]
+  rw [RecState.getElem?_specs] at hs
+  obtain ⟨member, hm, hspec⟩ := Option.map_eq_some_iff.mp hs
+  rw [RecState.getElem?_exports_exportComponent]
+  simp only [hm, Option.map_some, hi, if_pos]
+  rw [hspec]
+  rfl
 
 private theorem residual_export_untouched {state : RecState} {members pool : List Nat}
     {written : List (List Nat)} {outputs : List (Option Expr)} {facts : List RecFacts}
     {i : Nat} (hi : i ∉ members) :
     (state.exportComponent members written pool outputs facts).exports[i]? = state.exports[i]? := by
-  simp only [RecState.exportComponent, List.getElem?_mapIdx]
-  cases state.exports[i]? <;> simp only [Option.map_none, Option.map_some, if_neg hi]
+  rw [RecState.getElem?_exports_exportComponent, RecState.getElem?_exports]
+  cases state.memberStates[i]? <;> simp only [Option.map_none, Option.map_some, if_neg hi]
 
 theorem RecResidual.exportComponent
     {P declPool Xs done members pool : List Nat} {declCtx ctx : Ctx} {declSpecs : List RecSpec}
@@ -3637,23 +3650,31 @@ theorem RecResidual.exportComponent
     {outputs : List (Option Expr)} {facts : List RecFacts}
     (h : RecResidual P declCtx declSpecs declPrefixes declPool Xs ctx state done R)
     (hdisjoint : ∀ i ∈ members, i ∉ done)
-    (hwrite : ∀ i ty, state.specs[i]? = some (.mono ty) → i ∈ members → i < state.exports.length)
     (hgeneralizes : ∀ i algTy declTy, state.specs[i]? = some (.mono algTy) →
       declSpecs[i]? = some (.mono declTy) → i ∈ members →
       (R.onPolyTy (recScheme (written[i]?.getD []) pool algTy)).Generalizes
         (recScheme (declPrefixes[i]?.getD []) declPool declTy)) :
     RecResidual P declCtx declSpecs declPrefixes declPool Xs ctx
       (state.exportComponent members written pool outputs facts) (done ++ members) R := by
-  refine ⟨h.lc, h.fixes, h.ctx_eq, h.length, h.mono, h.poly, ?_, ?_⟩
+  refine ⟨h.lc, h.fixes, h.ctx_eq, ?_, ?_, ?_, ?_, ?_⟩
+  · simpa only [RecState.specs_exportComponent] using h.length
+  · intro i algTy hi
+    exact h.mono i algTy (by simpa only [RecState.specs_exportComponent] using hi)
+  · intro i algScheme hi
+    exact h.poly i algScheme (by simpa only [RecState.specs_exportComponent] using hi)
   · intro i algTy declTy hi hd hnot
-    exact h.pending i algTy declTy hi hd (fun hc => hnot (List.mem_append_left _ hc))
+    have hi' : state.specs[i]? = some (.mono algTy) := by
+      simpa only [RecState.specs_exportComponent] using hi
+    exact h.pending i algTy declTy hi' hd (fun hc => hnot (List.mem_append_left _ hc))
   · intro i algTy declTy hi hd hdone
+    have hi' : state.specs[i]? = some (.mono algTy) := by
+      simpa only [RecState.specs_exportComponent] using hi
     rcases List.mem_append.mp hdone with hold | hnew
-    · obtain ⟨exported, he, hg⟩ := h.completed i algTy declTy hi hd hold
+    · obtain ⟨exported, he, hg⟩ := h.completed i algTy declTy hi' hd hold
       exact ⟨exported, (residual_export_untouched (fun hm => hdisjoint i hm hold)).trans he, hg⟩
     · exact ⟨recScheme (written[i]?.getD []) pool algTy,
-        residual_export_selected (hwrite i algTy hi hnew) hnew hi,
-        hgeneralizes i algTy declTy hi hd hnew⟩
+        residual_export_selected hnew hi',
+        hgeneralizes i algTy declTy hi' hd hnew⟩
 
  theorem Ty.renameG_onSubst_pool_safe {G Xs : List Nat} {S : Subst} {ty : Ty}
     (hLC : ty.IsLC) (hS : ∀ p ∈ S,p.2.IsLC) (hG : G.Nodup)
@@ -4842,16 +4863,17 @@ theorem RecResidual.completed_entries_generalize
     {P declPool Xs done : List Nat} {declCtx ctx : Ctx} {declSpecs : List RecSpec}
     {declPrefixes : List (List Nat)} {state : RecState} {R : Subst}
     (h : RecResidual P declCtx declSpecs declPrefixes declPool Xs ctx state done R)
-    (hlen : state.exports.length = state.specs.length)
     (hpoly : ∀ (i : Nat) (scheme : PolyTy), state.specs[i]? = some (.poly scheme) → state.exports[i]? = some (some scheme))
     (hdone : ∀ i ty, state.specs[i]? = some (.mono ty) → i ∈ done) :
     List.Forall₂ PolyTy.Generalizes (state.entries.map R.onPolyTy)
       (recCompletedSchemes declSpecs declPrefixes declPool) := by
   apply List.forall₂_of_length_eq_of_get
-  · simp only [List.length_map, recCompletedSchemes, List.length_mapIdx, state.entries_length hlen, h.length]
+  · simp only [List.length_map, recCompletedSchemes, List.length_mapIdx,
+      state.entries_length (state.exports_length.trans state.specs_length.symm), h.length]
   · intro i hnew hold
     have hib : i < state.specs.length := by
-      simpa only [List.length_map, state.entries_length hlen] using hnew
+      simpa only [List.length_map,
+        state.entries_length (state.exports_length.trans state.specs_length.symm)] using hnew
     have hi := List.getElem?_eq_getElem hib
     change (state.entries.map R.onPolyTy)[i].Generalizes
       (recCompletedSchemes declSpecs declPrefixes declPool)[i]
@@ -4878,12 +4900,11 @@ theorem RecResidual.weaken_from_body
     {P declPool Xs done Q : List Nat} {declCtx ctx : Ctx} {declSpecs : List RecSpec}
     {declPrefixes : List (List Nat)} {state : RecState} {R : Subst} {input : InferInput} {ty : Ty}
     (h : RecResidual P declCtx declSpecs declPrefixes declPool Xs ctx state done R)
-    (hlen : state.exports.length = state.specs.length)
     (hpoly : ∀ (i : Nat) (scheme : PolyTy), state.specs[i]? = some (.poly scheme) → state.exports[i]? = some (some scheme))
     (hdone : ∀ i monoTy, state.specs[i]? = some (.mono monoTy) → i ∈ done)
     (ht : InputTyping Q (recBodyCtx declCtx declSpecs declPrefixes declPool) input ty) :
     InputTyping Q (R.onCtx (state.rhsCtx ctx)) input ty := by
-  have hg := h.completed_entries_generalize hlen hpoly hdone
+  have hg := h.completed_entries_generalize hpoly hdone
   have ht' := InputTyping.weaken_schemes hg ht
   have hctx : R.onCtx (state.rhsCtx ctx) =
       ⟨state.entries.map R.onPolyTy ++ declCtx.env, declCtx.ctors⟩ := by
@@ -5008,7 +5029,6 @@ private theorem signed_ann_freeze {ann : BindingAnn} {K : List Nat} {F : List Ty
     (hstateLC : state.LC) (hstateB : state.Below frontier)
     (hK : ∀ k ∈ K, k < frontier) (hF : ∀ t ∈ F, Ty.BelowFvars frontier t)
     (hP : ∀ p ∈ P, p < frontier)
-    (hlen : state.exports.length = state.specs.length)
     (hpoly : ∀ (i : Nat) (scheme : PolyTy), state.specs[i]? = some (.poly scheme) →
       state.exports[i]? = some (some scheme))
     (hdone : ∀ i ty, state.specs[i]? = some (.mono ty) → i ∈ done)
@@ -5035,7 +5055,7 @@ private theorem signed_ann_freeze {ann : BindingAnn} {K : List Nat} {F : List Ty
       by simpa only [Subst.onCtx_nil] using hres⟩
   | .skip hmode hr =>
     apply hr.sourcePrincipal_residual (fun he hi => hInfer (by simp only [sizeBindings]; omega) hi)
-      hres hctxWF hctx hstateLC hstateB hK hF hP hlen hpoly hdone
+      hres hctxWF hctx hstateLC hstateB hK hF hP hpoly hdone
     · exact fun ann hm => hannScope ann (List.mem_cons_of_mem _ hm)
     · exact fun rhs hm => hrhsScope rhs (List.mem_cons_of_mem _ hm)
     · exact fun ann hm => hannFreeze ann (List.mem_cons_of_mem _ hm)
@@ -5055,7 +5075,7 @@ private theorem signed_ann_freeze {ann : BindingAnn} {K : List Nat} {F : List Ty
     have htypes' : ∃ L, ∀ Ys, FreshNames L scheme.paramCount Ys →
         InputTyping (P ++ Ys) (R.onCtx (state.rhsCtx ctx)) ((rhs.substTyFvars R).openTyVars Ys)
           ((R.onPolyTy scheme).openVars Ys) :=
-      ⟨L, fun Ys hy => hres.weaken_from_body hlen hpoly hdone (htypes Ys hy)⟩
+      ⟨L, fun Ys hy => hres.weaken_from_body hpoly hdone (htypes Ys hy)⟩
     obtain ⟨U, hU, hUP, hag⟩ := Infer.signed_check_factor hwf hheadAnn hraw hi hu
       (by
         have he := hescape
@@ -5088,7 +5108,9 @@ private theorem signed_ann_freeze {ann : BindingAnn} {K : List Nat} {F : List Ty
     have hctxChecked := Subst.onCtx_below hbothB hle hctx
     have hresChecked : RecResidual P declCtx declSpecs declPrefixes declPool Xs
         ((s1 ++ s2).onCtx ctx) checked done U :=
-      residual_congr_types (hres.onSubst_of_agreesBelow hstateB hctx hag hU hUP) rfl rfl
+      residual_congr_types (hres.onSubst_of_agreesBelow hstateB hctx hag hU hUP)
+        (by simp only [checked, RecState.specs_setSigned])
+        (by simp only [checked, RecState.exports_setSigned])
     have hannBelow : ∀ ann ∈ (.complete scheme :: anns_1), ∀ v ∈ ann.rigidVars, v < frontier :=
       fun ann ha v hv => (List.mem_append.mp (hannScope ann ha v hv)).elim (hK v) (softVars_lt hF v)
     have hrhsBelow : ∀ term ∈ (rhs :: bindings_1), ∀ v ∈ term.rigidVars, v < frontier :=
@@ -5106,7 +5128,7 @@ private theorem signed_ann_freeze {ann : BindingAnn} {K : List Nat} {F : List Ty
     have hpolyChecked : ∀ (i : Nat) (scheme : PolyTy), checked.specs[i]? = some (.poly scheme) →
         checked.exports[i]? = some (some scheme) := by
       intro i sigma hs
-      change (state.specs.map (RecSpec.onSubstSource (s1 ++ s2)))[i]? = some (.poly sigma) at hs
+      simp only [checked, RecState.specs_setSigned, RecState.specs_onSubst] at hs
       rw [List.getElem?_map] at hs
       obtain ⟨spec, hold, heq⟩ := Option.map_eq_some_iff.mp hs
       cases spec with
@@ -5114,17 +5136,17 @@ private theorem signed_ann_freeze {ann : BindingAnn} {K : List Nat} {F : List Ty
       | poly old =>
         change RecSpec.poly ((s1 ++ s2).onPolyTy old) = RecSpec.poly sigma at heq
         cases heq
-        simp only [checked, RecState.setSigned, RecState.onSubst, List.getElem?_map,
+        simp only [checked, RecState.exports_setSigned, RecState.exports_onSubst, List.getElem?_map,
           hpoly i old hold, Option.map_some]
     obtain ⟨V, hV, hVP, hagTail, hresFinal⟩ := hr.sourcePrincipal_residual
       (fun he hi => hInfer (by simp only [sizeBindings_map_substTyFvars] at he; simp only [sizeBindings]; omega) hi)
       hresChecked (Subst.onCtx_wf hbothLC hctxWF) hctxChecked hcheckedLC hcheckedB
       (fun k hk => (hK k hk).trans_le hle) (substSoft_below hbothB hle hF)
       (fun p hp => (hP p hp).trans_le hle)
-      (by simpa only [checked, RecState.setSigned, RecState.onSubst, List.length_map] using hlen)
       hpolyChecked
       (by
         intro i ty hs
+        simp only [RecState.specs_setSigned, RecState.specs_onSubst] at hs
         obtain ⟨old, hold, _⟩ := RecSpec.mono_getElem?_map_onSubstSource hs
         exact hdone i old hold)
       (by
@@ -5231,7 +5253,8 @@ theorem RecResidual.init
     have he := congrArg List.length hmodes
     simpa only [List.length_map] using he
   have hInitModes : (RecState.init frontier anns).specs.map RecSpec.ann =
-      anns.map BindingAnn.recModeAnn := RecSpec.map_ann_init frontier _
+      anns.map BindingAnn.recModeAnn := by
+    simpa only [RecState.init_specs] using RecSpec.map_ann_init frontier _
   have modeOf : ∀ (i : Nat) (spec : RecSpec),
       (RecState.init frontier anns).specs[i]? = some spec →
       (anns.map BindingAnn.recModeAnn)[i]? = some spec.ann := by
@@ -5278,7 +5301,7 @@ theorem RecResidual.init
       exact Ty.BelowFvars.of_freeVars_lt (hanns _ ha)
   refine ⟨U, hU, hag, hUP, ?_⟩
   refine ⟨hU, hUP, (Subst.onCtx_congr hag hctx).symm, ?_, ?_, ?_, ?_, ?_⟩
-  · simpa only [RecState.init, RecSpec.init_length, List.length_map] using hlen.symm
+  · simpa only [RecState.init_specs, RecSpec.init_length, List.length_map] using hlen.symm
   · intro i algTy hi
     exact declMono i (modeOf i _ hi)
   · intro i algScheme hi
@@ -5290,7 +5313,7 @@ theorem RecResidual.init
   · intro i algTy declTy hi hd hnot
     have hm := modeOf i _ hi
     have hseed : algTy = .fvar (frontier + i) := by
-      change (RecSpec.init frontier (anns.map BindingAnn.recModeAnn))[i]? = some (.mono algTy) at hi
+      rw [RecState.init_specs] at hi
       rw [RecSpec.init_getElem?, hm] at hi
       cases hi
       rfl
@@ -5330,7 +5353,6 @@ theorem RecResidual.close_aligned_component
     (hcandidate : ∀ (i : Nat) (rhs : InferInput) (ty : Ty), i ∈ members →
       bindings[i]? = some rhs → state.specs[i]? = some (.mono ty) →
       InputTyping P (R.onCtx (state.rhsCtx ctx)) (rhs.substTyFvars R) (R.onTy ty))
-    (hexports : state.exports.length = state.specs.length)
     (hdisjoint : ∀ i ∈ members, i ∉ done)
     (hdeclLC : ∀ ty, .mono ty ∈ declSpecs → ty.IsLC)
     (hG : G.Nodup)
@@ -5355,7 +5377,8 @@ theorem RecResidual.close_aligned_component
   have hag' : Subst.AgreesBelow frontier R ((pre ++ current) ++ V) := by
     simpa only [List.append_assoc] using hag
   have hcurrentLC := hcomponent.lc_of_infer (fun _ hi => hi.lc)
-    (Subst.onCtx_wf hpreLC (hstateLC.rhsCtx hctxWF)) (hstateLC.onSubst hpreLC).1
+    (Subst.onCtx_wf hpreLC (hstateLC.rhsCtx hctxWF))
+    (by simpa only [RecState.specs_onSubst] using (hstateLC.onSubst hpreLC).1)
   have hbothLC : ∀ pair ∈ pre ++ current, pair.2.IsLC :=
     fun pair hp => (List.mem_append.mp hp).elim (hpreLC pair) (hcurrentLC pair)
   have hsolvedStateLC := hstateLC.onSubst hbothLC
@@ -5374,12 +5397,7 @@ theorem RecResidual.close_aligned_component
   refine ⟨V, hV, hVP, hag', ?_⟩
   cases hfinish with
   | @mk written hresolve =>
-    have hwrite : ∀ (i : Nat) (ty : Ty), (state.onSubst (pre ++ current)).specs[i]? = some (.mono ty) →
-        i ∈ members → i < (state.onSubst (pre ++ current)).exports.length := by
-      intro i ty hi _
-      have hib := (List.getElem?_eq_some_iff.mp hi).1
-      simpa only [RecState.onSubst, List.length_map, hexports] using hib
-    apply hpostRes.exportComponent hdisjoint hwrite
+    apply hpostRes.exportComponent hdisjoint
     intro i algTy declTy hi hd hm
     have hAlgLC : algTy.IsLC := hsolvedStateLC.1 _ (List.mem_of_getElem? hi)
     have hDeclLC := hdeclLC declTy (List.mem_of_getElem? hd)
@@ -5387,7 +5405,7 @@ theorem RecResidual.close_aligned_component
     apply recScheme_generalizes_of_renameG hAlgLC hDeclLC hV hG hwND hwG
       hXsLen hXsND hGXs (fun x hx => hXsTypes x hx declTy (List.mem_of_getElem? hd))
       (hpostRes.pending i algTy declTy hi hd (hdisjoint i hm))
-    exact hFreshMono i algTy _ hm hi (residual_export_selected (hwrite i algTy hi hm) hm hi)
+    exact hFreshMono i algTy _ hm hi (residual_export_selected hm hi)
 
 
 set_option maxHeartbeats 2000000 in
@@ -5425,7 +5443,6 @@ theorem RecResidual.close_opened_component
     (hcandidate : ∀ (i : Nat) (rhs : InferInput) (ty : Ty), i ∈ members →
       (openRecSources openings bindings)[i]? = some rhs → state.specs[i]? = some (.mono ty) →
       InputTyping P (R.onCtx (state.rhsCtx ctx)) (rhs.substTyFvars R) (R.onTy ty))
-    (hexports : state.exports.length = state.specs.length)
     (hdisjoint : ∀ i ∈ members, i ∉ done)
     (hdeclLC : ∀ ty, .mono ty ∈ declSpecs → ty.IsLC)
     (hG : G.Nodup)
@@ -5447,7 +5464,9 @@ theorem RecResidual.close_opened_component
   have hinstLC := hstateLC.installOpenings (members := members) (openings := openings)
   have hinstB := hstateB.installOpenings ho
   have hinstRes : RecResidual P declCtx declSpecs declPrefixes G Xs ctx
-      (state.installOpenings members openings) done R := residual_congr_types hres rfl rfl
+      (state.installOpenings members openings) done R := residual_congr_types hres
+        (RecState.specs_installOpenings state members openings)
+        (RecState.exports_installOpenings state members openings)
   have hannBelow : ∀ ann ∈ anns, ∀ v ∈ ann.rigidVars, v < frontier := by
     intro ann ha v hv
     exact (List.mem_append.mp (hanns ann ha v hv)).elim (hK v) (softVars_lt hF v)
@@ -5495,28 +5514,39 @@ theorem RecResidual.close_opened_component
       (ty, some expected) ∈ (state.installOpenings members openings).shapes members openings →
       R.onTy ty = R.onTy expected := by
     intro ty expected hm
-    change (ty, some expected) ∈ state.shapes members openings at hm
+    unfold RecState.shapes at hm
     obtain ⟨i, hi, he⟩ := List.mem_filterMap.mp hm
-    cases hs : state.specs[i]? with
-    | none => simp [hs] at he
-    | some spec =>
-      cases spec with
-      | poly scheme => simp [RecSpec.monoTy?, hs] at he
+    cases hs : state.memberStates[i]? with
+    | none => simp [RecState.installOpenings, hs] at he
+    | some member =>
+      cases hspec : member.spec with
+      | poly scheme => simp [RecState.installOpenings, hs, hi, hspec,
+          RecSpec.monoTy?] at he
       | mono actual =>
         cases hop : openings[i]? with
-        | none => simp [hs, RecSpec.monoTy?, hop] at he
+        | none => simp [RecState.installOpenings, hs, hi, hspec,
+            RecSpec.monoTy?, hop] at he
         | some opening =>
-          simp [hs, RecSpec.monoTy?, hop] at he
+          simp [RecState.installOpenings, hs, hi, hspec,
+            RecSpec.monoTy?, hop] at he
           obtain ⟨rfl, hexpected⟩ := he
-          exact (hsolve i opening actual expected hi hop hs hexpected).symm
+          have hsourceSpec : state.specs[i]? = some (.mono actual) := by
+            simp only [RecState.getElem?_specs, hs, Option.map_some, hspec]
+          exact (hsolve i opening actual expected hi hop hsourceSpec hexpected).symm
   apply RecResidual.close_aligned_component hp
-    (by simpa only [RecState.rhsCtx_onSubst] using hc) hf
+    (by simpa only [localF, RecState.rhsCtx_onSubst, RecState.specs_onSubst] using hc) hf
     (fun he hi => hInfer (by simpa only [sizeBindings_openRecSources] using he) hi)
     hinstRes hinstLC hinstB hctxWF
     (fun M hm => (hctx M hm).mono hle)
     (fun k hk => (hK k hk).trans_le hle) hactiveB hP hpreLC hpreB hsource hsolveShapes
-    hfreezeOpened hcandidate hexports hdisjoint hdeclLC hG hprefix hXsLen hXsND hGXs hXsTypes
-    hXsCtx hXsK hXsF
+    hfreezeOpened (by
+      intro i rhs ty hi hr hs
+      have hs' : state.specs[i]? = some (.mono ty) := by
+        simpa only [RecState.specs_installOpenings] using hs
+      simpa only [RecState.rhsCtx_installOpenings] using hcandidate i rhs ty hi hr hs')
+    hdisjoint hdeclLC hG hprefix hXsLen hXsND hGXs hXsTypes
+    (by simpa only [RecState.fixedCtx, RecState.exports_installOpenings] using hXsCtx)
+    hXsK hXsF
 
 private theorem InferRecStrata.sourcePrincipal_residual_of_step
     {P G Xs : List Nat} {declCtx : Ctx} {declAnns : List BindingAnn}
@@ -6085,7 +6115,6 @@ theorem Infer.sourcePrincipal_letRec_of_unsigned
     hres1 (Subst.onCtx_wf hS1 hctxWF) hctx1 hLC1 hBelow1
     (fun k hk => (hK k hk).trans_le hbase1) hF1
     (fun p hp => (hP p hp).trans_le hbase1)
-    (hframe1.exports_length.trans hframe1.specs_length.symm)
     hframe1.poly hdone1 hannscope1 hrhsscope1 hAnnFreeze1 hRhsFreeze1
     (by
       intro ann ha v hv
@@ -6136,8 +6165,7 @@ theorem Infer.sourcePrincipal_letRec_of_unsigned
     exact (hag0 v hv).trans (hag12 v (by omega))
   have hvalid2 := recValid_subst hvalid1 s2
   have hdone2 := hframe2.all_mono_done hvalid2
-  have hcandidateBody := hres2.weaken_from_body
-    (hframe2.exports_length.trans hframe2.specs_length.symm) hframe2.poly hdone2 hdeclBody
+  have hcandidateBody := hres2.weaken_from_body hframe2.poly hdone2 hdeclBody
   have hctxbody : CtxWF (state2.rhsCtx ((s1 ++ s2).onCtx ctx)) := by
     apply hLC2.rhsCtx
     simpa only [Subst.onCtx_append] using Subst.onCtx_wf hS2 (Subst.onCtx_wf hS1 hctxWF)
@@ -7096,7 +7124,6 @@ theorem RecResidual.successful_step
   obtain ⟨T, hT, hTP, hag, hresT⟩ := prepared.record.close_opened_component ho hp hc hf hInfer
     hstateLC hstateB hctxWF hctx hK hF prepared.below (by simpa only [List.length_map] using hvalid.length)
     hannScope hrhsScope prepared.freeze prepared.solves prepared.typed
-    (hframe.exports_length.trans hframe.specs_length.symm)
     (by
       intro i hi hd
       have hh : (past.flatten ++ (component ++ rest.flatten)).Nodup := by
@@ -8586,7 +8613,6 @@ theorem inferRecSignedWithTypesCore_complete
     (hP : ∀ p ∈ P, p < frontier)
     (hfixK : ∀ k ∈ K, R.onTy (.fvar k) = .fvar k)
     (halign : anns.length = bindings.length)
-    (hlen : state.exports.length = state.specs.length)
     (hpoly : ∀ (i : Nat) (scheme : PolyTy), state.specs[i]? = some (.poly scheme) →
       state.exports[i]? = some (some scheme))
     (hdone : ∀ i ty, state.specs[i]? = some (.mono ty) → i ∈ done)
@@ -8615,7 +8641,7 @@ theorem inferRecSignedWithTypesCore_complete
       have htypes' : ∀ Ys, FreshNames L scheme.paramCount Ys →
           InputTyping (P ++ Ys) (R.onCtx (state.rhsCtx ctx)) ((rhs.substTyFvars R).openTyVars Ys)
             ((R.onPolyTy scheme).openVars Ys) :=
-        fun Ys hy => hres.weaken_from_body hlen hpoly hdone (htypes Ys hy)
+        fun Ys hy => hres.weaken_from_body hpoly hdone (htypes Ys hy)
       obtain ⟨Ns,hNlen,hNnd,hNavoid⟩ := exists_fresh_names L scheme.paramCount
       have hOpenLC := (htypes' Ns ⟨hNlen,hNnd,hNavoid⟩).regular
       have hSchemeRWF : (R.onPolyTy scheme).WF := by
@@ -8645,7 +8671,7 @@ theorem inferRecSignedWithTypesCore_complete
       | none => simp only [inferRecSignedWithTypesCore,PolyTy.wf_iff_bvarsBelow.mpr hSchemeWF,
           hrawBool,dite_true,hiResult,Option.isSome_none] at hOne;contradiction
       | some result =>
-        obtain ⟨⟨first,s1,output,ty,types,schemes⟩,hi⟩ := result
+        obtain ⟨⟨⟨first,s1,output,ty⟩,types,schemes⟩,hi⟩ := result
         cases huResult : unifyCoreK (K ++ freshVars frontier scheme.paramCount) ty
             ((s1.onPolyTy scheme).openVars (freshVars frontier scheme.paramCount)) with
         | none => simp only [inferRecSignedWithTypesCore,PolyTy.wf_iff_bvarsBelow.mpr hSchemeWF,
@@ -8664,7 +8690,7 @@ theorem inferRecSignedWithTypesCore_complete
                   (bodyFacts := RecFacts.mk types schemes) hSchemeWF hraw hi ⟨hu,hdom⟩ hescape InferRecSigned.nil)
             obtain ⟨U,hU,hUP,hag,hresChecked⟩ := hstep.sourcePrincipal_residual
               (fun he hi => hPrincipal (by simp only [sizeBindings] at he ⊢;omega) hi)
-              hres hctxWF hctx hstateLC hstateB hK hF hP hlen hpoly hdone
+              hres hctxWF hctx hstateLC hstateB hK hF hP hpoly hdone
               (fun ann ha => by rcases List.mem_singleton.mp ha with rfl;exact hheadAnn)
               (fun rhs' ha => by rcases List.mem_singleton.mp ha with rfl;exact hraw)
               (fun _ _ v _ hk _ => hfixK v hk) (fun _ _ v _ hk _ => hfixK v hk)
@@ -8704,7 +8730,7 @@ theorem inferRecSignedWithTypesCore_complete
               exact term.substTyFvars_congr (fun v hv => (hag v (hrhsBelow term hm v hv)).symm)
             have hpolyChecked : ∀ (i : Nat) (sigma : PolyTy),checked.specs[i]? = some (.poly sigma) → checked.exports[i]? = some (some sigma) := by
               intro i sigma hs
-              change (state.specs.map (RecSpec.onSubstSource (s1 ++ s2)))[i]? = some (.poly sigma) at hs
+              simp only [checked, RecState.specs_setSigned, RecState.specs_onSubst] at hs
               rw [List.getElem?_map] at hs
               obtain ⟨spec,hold,heq⟩ := Option.map_eq_some_iff.mp hs
               cases spec with
@@ -8712,7 +8738,7 @@ theorem inferRecSignedWithTypesCore_complete
               | poly old =>
                 change RecSpec.poly ((s1 ++ s2).onPolyTy old) = RecSpec.poly sigma at heq
                 cases heq
-                simp only [checked,RecState.setSigned,RecState.onSubst,List.getElem?_map,
+                simp only [checked, RecState.exports_setSigned, RecState.exports_onSubst, List.getElem?_map,
                   hpoly i old hold,Option.map_some]
             have htail := inferRecSignedWithTypesCore_complete (index := index+1)
               (anns := anns.map (BindingAnn.substTyFvars (s1 ++ s2)))
@@ -8723,9 +8749,12 @@ theorem inferRecSignedWithTypesCore_complete
               hcheckedLC hcheckedB (fun k hk => (hK k hk).trans_le hle) (substSoft_below hbothB hle hF)
               (fun p hp => (hP p hp).trans_le hle) hUfixK
               (by simpa only [List.length_map] using Nat.succ.inj halign)
-              (by simpa only [checked,RecState.setSigned,RecState.onSubst,List.length_map] using hlen)
               hpolyChecked
-              (by intro i tau hs;obtain ⟨old,hold,_⟩ := RecSpec.mono_getElem?_map_onSubstSource hs;exact hdone i old hold)
+              (by
+                intro i tau hs
+                simp only [checked, RecState.specs_setSigned, RecState.specs_onSubst] at hs
+                obtain ⟨old,hold,_⟩ := RecSpec.mono_getElem?_map_onSubstSource hs
+                exact hdone i old hold)
               (by intro ann hm v hv
                   obtain ⟨old,ho,rfl⟩ := List.mem_map.mp hm
                   obtain ⟨original,horiginal,himage⟩ := BindingAnn.rigidVars_substTyFvars hv
@@ -8780,7 +8809,7 @@ theorem inferRecSignedWithTypesCore_complete
       have htail := inferRecSignedWithTypesCore_complete (index := index+1)
         (fun e he => hProducer e (by simp only [sizeBindings];omega))
         (fun he hi => hPrincipal (by simp only [sizeBindings];omega) hi)
-        hres hctxWF hctx hstateLC hstateB hK hF hP hfixK (Nat.succ.inj halign) hlen hpoly hdone
+        hres hctxWF hctx hstateLC hstateB hK hF hP hfixK (Nat.succ.inj halign) hpoly hdone
         (fun ann hm => hannScope ann (List.mem_cons_of_mem _ hm))
         (fun rhs hm => hrhsScope rhs (List.mem_cons_of_mem _ hm))
         (fun ann hm => hcandAnn ann (List.mem_cons_of_mem _ hm))
@@ -9060,11 +9089,11 @@ termination_by structural h
 theorem RecState.output_onSubst {state : RecState} {S : Subst} {i : Nat} {output : Expr}
     (h : state.outputs[i]? = some (some output)) :
     ∃ out,(state.onSubst S).outputs[i]? = some (some out) := by
-  exact ⟨output.substTyFvars S,by simp only [RecState.onSubst,List.getElem?_map,h,Option.map_some]⟩
+  exact ⟨output.substTyFvars S, by
+    simp only [RecState.outputs_onSubst, List.getElem?_map, h, Option.map_some]⟩
 
 theorem FinishRecComponent.outputs_present
     (h : FinishRecComponent K soft members ctx state outputs facts final)
-    (hlen : state.outputs.length = state.specs.length)
     (hSelected : ∀ i ∈ members,∃ ty,state.specs[i]? = some (.mono ty) ∧
       ∃ output,outputs[i]? = some (some output)) :
     (∀ (i : Nat) (output : Expr),state.outputs[i]? = some (some output) → ∃ out,final.outputs[i]? = some (some out)) ∧
@@ -9075,19 +9104,29 @@ theorem FinishRecComponent.outputs_present
         (state.exportComponent members written (state.componentPool K soft members ctx written) outputs facts).outputs[i]? = some (some out) := by
       intro i hi
       obtain ⟨ty,ht,out,ho⟩ := hSelected i hi
-      have hib : i < state.outputs.length := by rw [hlen];exact (List.getElem?_eq_some_iff.mp ht).1
       refine ⟨out.closeTyVars (recNames (written[i]?.getD []) (state.componentPool K soft members ctx written) ty),?_⟩
-      simp only [RecState.exportComponent,List.getElem?_mapIdx,List.getElem?_eq_getElem hib,
-        Option.map_some,if_pos hi,ht,bind,pure,Option.bind_some,RecSpec.monoTy?,ho,Option.join_some]
+      rw [RecState.getElem?_specs] at ht
+      obtain ⟨member, hm, hspec⟩ := Option.map_eq_some_iff.mp ht
+      rw [RecState.getElem?_outputs]
+      simp only [RecState.exportComponent, List.getElem?_mapIdx, hm, Option.map_some,
+        if_pos hi, hspec, RecSpec.monoTy?, ho, Option.join_some, bind, pure,
+        Option.bind_some]
     refine ⟨?_,hFill⟩
     intro i out ho
     by_cases hi : i ∈ members
     · exact hFill i hi
-    · exact ⟨out,by simp only [RecState.exportComponent,List.getElem?_mapIdx,ho,Option.map_some,if_neg hi]⟩
+    · refine ⟨out, ?_⟩
+      rw [RecState.getElem?_outputs] at ho ⊢
+      cases hm : state.memberStates[i]? with
+      | none => simp only [hm, Option.map_none, reduceCtorEq] at ho
+      | some member =>
+          simp only [hm, Option.map_some] at ho
+          simp only [RecState.exportComponent, List.getElem?_mapIdx, hm, Option.map_some,
+            if_neg hi]
+          exact ho
 
 theorem InferRecStrata.outputs_present
     (h : InferRecStrata K F frontier ctx anns bindings state groups next S final)
-    (hlen : state.outputs.length = state.specs.length)
     (hSelected : ∀ i ∈ groups.flatten,∃ ty,state.specs[i]? = some (.mono ty)) :
     (∀ (i : Nat) (output : Expr),state.outputs[i]? = some (some output) → ∃ out,final.outputs[i]? = some (some out)) ∧
     (∀ i ∈ groups.flatten,∃ out,final.outputs[i]? = some (some out)) := by
@@ -9101,28 +9140,26 @@ theorem InferRecStrata.outputs_present
       intro i hi
       obtain ⟨ty,ht⟩ := hSelected i (by simp only [List.flatten_cons,List.mem_append];exact .inl hi)
       refine ⟨(pre ++ current).onTy ty,?_,?_⟩
-      · simp only [RecState.onSubst,RecState.installOpenings,List.getElem?_map,ht,Option.map_some,RecSpec.onSubstSource]
+      · simp only [RecState.specs_onSubst, RecState.specs_installOpenings,
+          List.getElem?_map, ht, Option.map_some, RecSpec.onSubstSource]
       · apply hc.outputs_selected i (pre.onTy ty) (by simpa only [Nat.zero_add] using hi)
-        simp only [RecState.onSubst,RecState.installOpenings,List.getElem?_map,ht,Option.map_some,RecSpec.onSubstSource]
-    have hLenCurrent : ((state.installOpenings component openings).onSubst (pre ++ current)).outputs.length =
-        ((state.installOpenings component openings).onSubst (pre ++ current)).specs.length := by
-      simpa only [RecState.onSubst,RecState.installOpenings,List.length_map] using hlen
-    obtain ⟨hKeep,hFill⟩ := hf.outputs_present hLenCurrent hCurrent
-    have hLenExported : exported.outputs.length = exported.specs.length := by
-      cases hf
-      simpa only [RecState.exportComponent,List.length_mapIdx] using hLenCurrent
+        simp only [RecState.specs_onSubst, RecState.specs_installOpenings,
+          List.getElem?_map, ht, Option.map_some, RecSpec.onSubstSource]
+    obtain ⟨hKeep,hFill⟩ := hf.outputs_present hCurrent
     have hSelectedRest : ∀ i ∈ rest.flatten,∃ ty,exported.specs[i]? = some (.mono ty) := by
       intro i hi
       obtain ⟨ty,ht⟩ := hSelected i (by simp only [List.flatten_cons,List.mem_append];exact .inr hi)
       refine ⟨(pre ++ current).onTy ty,?_⟩
       cases hf
-      simp only [RecState.exportComponent,RecState.onSubst,RecState.installOpenings,List.getElem?_map,
-        ht,Option.map_some,RecSpec.onSubstSource]
-    obtain ⟨hTailKeep,hTailFill⟩ := hr.outputs_present hLenExported hSelectedRest
+      simp only [RecState.specs_exportComponent, RecState.specs_onSubst,
+        RecState.specs_installOpenings, List.getElem?_map, ht, Option.map_some,
+        RecSpec.onSubstSource]
+    obtain ⟨hTailKeep,hTailFill⟩ := hr.outputs_present hSelectedRest
     constructor
     · intro i output hout
       obtain ⟨moved,hmoved⟩ := RecState.output_onSubst (S := pre ++ current) hout
-      obtain ⟨out,ho⟩ := hKeep i moved (by simpa only [RecState.installOpenings,RecState.onSubst] using hmoved)
+      obtain ⟨out,ho⟩ := hKeep i moved (by
+        simpa only [RecState.outputs_onSubst, RecState.outputs_installOpenings] using hmoved)
       exact hTailKeep i out ho
     · intro i hi
       rcases (by simpa only [List.flatten_cons,List.mem_append] using hi : i ∈ component ∨ i ∈ rest.flatten) with hm | hm
@@ -9139,9 +9176,12 @@ theorem RecState.output_setSigned {state : RecState} {member i : Nat} {written :
     ∃ out,(state.setSigned member written output facts).outputs[i]? = some (some out) := by
   by_cases hi : i = member
   · subst i
-    have hb := (List.getElem?_eq_some_iff.mp ho).1
-    exact ⟨output.closeTyVars written,by simp only [RecState.setSigned,List.getElem?_set_self hb]⟩
-  · exact ⟨old,by simp only [RecState.setSigned,List.getElem?_set_ne (Ne.symm hi),ho]⟩
+    refine ⟨output.closeTyVars written, ?_⟩
+    apply RecState.getElem?_outputs_setSigned_self
+    exact (List.getElem?_eq_some_iff.mp ho).1
+  · exact ⟨old, by
+      rw [RecState.getElem?_outputs_setSigned_of_ne state member i written output facts hi]
+      exact ho⟩
 
 theorem InferRecSigned.outputs_present
     (h : InferRecSigned K F index frontier ctx anns bindings state next S final)
@@ -9165,7 +9205,8 @@ theorem InferRecSigned.outputs_present
     let checked := (state.onSubst (s1 ++ s2)).setSigned index (freshVars frontier scheme.paramCount)
       (output.substTyFvars s2) (bodyFacts.onSubst s2)
     have hb : index + 1 + (anns_1.map (BindingAnn.substTyFvars (s1 ++ s2))).length ≤ checked.outputs.length := by
-      simpa only [checked,RecState.setSigned,RecState.onSubst,List.length_set,List.length_map,List.length_cons,
+      simpa only [checked, RecState.outputs_length, RecState.setSigned, RecState.onSubst,
+        List.length_mapIdx, List.length_map, List.length_cons,
         Nat.add_assoc,Nat.add_comm 1 anns_1.length] using hbound
     obtain ⟨hKeep,hFill⟩ := hr.outputs_present hb
     constructor
@@ -9179,11 +9220,14 @@ theorem InferRecSigned.outputs_present
       | zero =>
         cases ha
         have hib : index < (state.onSubst (s1 ++ s2)).outputs.length := by
-          simp only [RecState.onSubst,List.length_map,List.length_cons] at hbound ⊢
+          simp only [RecState.outputs_length, RecState.onSubst, List.length_map,
+            List.length_cons] at hbound ⊢
           omega
         have hout : checked.outputs[index]? = some (some ((output.substTyFvars s2).closeTyVars
             (freshVars frontier scheme.paramCount))) := by
-          simp only [checked,RecState.setSigned,List.getElem?_set_self hib]
+          simpa only [checked] using RecState.getElem?_outputs_setSigned_self
+            (state.onSubst (s1 ++ s2)) index (freshVars frontier scheme.paramCount)
+              (output.substTyFvars s2) (bodyFacts.onSubst s2) hib
         simpa only [Nat.add_zero] using hKeep index _ hout
       | succ j =>
         have hnew : (anns_1.map (BindingAnn.substTyFvars (s1 ++ s2)))[j]? = some (.complete ((s1 ++ s2).onPolyTy sigma)) := by
@@ -9236,8 +9280,7 @@ theorem InferRecSigned.collectors_of_strata
   have hSelected : ∀ i ∈ groups.flatten,∃ ty,state.specs[i]? = some (.mono ty) := by
     intro i hi
     exact hframe.mono_at_unsigned ((hvalid.covers_unsigned i (hvalid.bounded i hi)).mp hi)
-  obtain ⟨_,hUnsigned⟩ := hs.outputs_present
-    (hframe.outputs_length.trans hframe.specs_length.symm) hSelected
+  obtain ⟨_,hUnsigned⟩ := hs.outputs_present hSelected
   have hb : 0 + (anns.map (BindingAnn.substTyFvars S1)).length ≤ state1.outputs.length := by
     rw [hframe1.outputs_length]
     omega
@@ -9281,7 +9324,6 @@ theorem inferRecStrataWithTypesCore_aligned_singleton
     (hK : ∀ k ∈ K, k < frontier) (hF : ∀ t ∈ F, Ty.BelowFvars frontier t)
     (hP : ∀ p ∈ P, p < opened) (hUK : ∀ k ∈ K, U.onTy (.fvar k) = .fvar k)
     (hlen : anns.length = bindings.length) (hspecLen : state.specs.length = bindings.length)
-    (hslotLen : state.slots.length = anns.length) (hexports : state.exports.length = state.specs.length)
     (hselected : ∀ i ∈ members, ∃ ty, state.specs[i]? = some (.mono ty))
     (hanns : ∀ ann ∈ anns, ∀ v ∈ ann.rigidVars, v ∈ K ++ softVars F)
     (hrhs : ∀ rhs ∈ bindings, SourceScope K F rhs)
@@ -9314,6 +9356,9 @@ theorem inferRecStrataWithTypesCore_aligned_singleton
   let installed := state.installOpenings members openings
   let raws := openRecSources openings bindings
   let active := F ++ (openings.flatMap RecOpening.written).map Ty.fvar
+  have hslotLen : state.slots.length = anns.length :=
+    (RecState.slots_length state).trans ((RecState.specs_length state).symm.trans
+      (hspecLen.trans hlen.symm))
   have hle := ho.frontier_le
   have hiLC : installed.LC := hstateLC.installOpenings
   have hiB : installed.Below opened := hstateB.installOpenings ho
@@ -9346,20 +9391,25 @@ theorem inferRecStrataWithTypesCore_aligned_singleton
   have hsolveShapes : ∀ ty expected, (ty,some expected) ∈ installed.shapes members openings →
       U.onTy ty = U.onTy expected := by
     intro ty expected hm
-    change (ty,some expected) ∈ state.shapes members openings at hm
+    unfold RecState.shapes at hm
     obtain ⟨i,hi,he⟩ := List.mem_filterMap.mp hm
-    cases hs : state.specs[i]? with
-    | none => simp [hs] at he
-    | some spec =>
-      cases spec with
-      | poly scheme => simp [hs,RecSpec.monoTy?] at he
+    cases hs : state.memberStates[i]? with
+    | none => simp [installed, RecState.installOpenings, hs] at he
+    | some member =>
+      cases hspec : member.spec with
+      | poly scheme => simp [installed, RecState.installOpenings, hs, hi, hspec,
+          RecSpec.monoTy?] at he
       | mono actual =>
         cases hop : openings[i]? with
-        | none => simp [hs,RecSpec.monoTy?,hop] at he
+        | none => simp [installed, RecState.installOpenings, hs, hi, hspec,
+            RecSpec.monoTy?, hop] at he
         | some opening =>
-          simp [hs,RecSpec.monoTy?,hop] at he
+          simp [installed, RecState.installOpenings, hs, hi, hspec,
+            RecSpec.monoTy?, hop] at he
           obtain ⟨rfl,hex⟩ := he
-          exact (hsolve i opening actual expected hi hop hs hex).symm
+          have hsourceSpec : state.specs[i]? = some (.mono actual) := by
+            simp only [RecState.getElem?_specs, hs, Option.map_some, hspec]
+          exact (hsolve i opening actual expected hi hop hsourceSpec hex).symm
   have hShapeLC := RecState.shapes_lc (members := members) hiLC ho.expected_lc
   have hShapeB := RecState.shapes_below (members := members) hiB (ho.expected_below hannB)
   have hShapeSome := checkRecShapes_complete hShapeLC hres.lc hsolveShapes hUK
@@ -9377,6 +9427,7 @@ theorem inferRecStrataWithTypesCore_aligned_singleton
       rw [hpreK k hk,hUK k hk] at hh
       exact hh.symm
     have hCtxFactor : Z.onCtx (pre.onCtx (installed.rhsCtx ctx)) = U.onCtx (state.rhsCtx ctx) := by
+      simp only [installed, RecState.rhsCtx_installOpenings]
       apply congrArg₂ Ctx.mk
       · simp only [Subst.onCtx,Subst.onEnv,List.map_map]
         apply List.map_congr_left
@@ -9400,9 +9451,9 @@ theorem inferRecStrataWithTypesCore_aligned_singleton
       (bindings := raws.map (InferInput.substTyFvars pre)) (specs := (installed.onSubst pre).specs)
       (fun e he => hProducer e (by simpa only [sizeBindings_map_substTyFvars,raws,sizeBindings_openRecSources] using he))
       (fun he hi => hPrincipal (by simpa only [sizeBindings_map_substTyFvars,raws,sizeBindings_openRecSources] using he) hi)
-      (by
-        simp only [List.length_map,RecState.onSubst,installed,RecState.installOpenings]
-        exact (rawLength openings bindings).trans hspecLen.symm)
+      (by simpa only [raws, List.length_map, RecState.specs_length, RecState.onSubst,
+          installed, RecState.installOpenings, List.length_mapIdx] using
+        (rawLength openings bindings).trans hspecLen.symm)
       ((hiLC.onSubst hpreLC).rhsCtx (Subst.onCtx_wf hpreLC hctxWF))
       ((hiB.onSubst hpreB (Nat.le_refl _)).rhsCtx (Subst.onCtx_below hpreB hle hctx))
       (fun k hk => (hK k hk).trans_le hle) (substSoft_below hpreB (Nat.le_refl _) hactiveB)
@@ -9415,8 +9466,11 @@ theorem inferRecStrataWithTypesCore_aligned_singleton
       (by
         intro j rhs target hj hr ht
         obtain ⟨raw,hr0,rfl⟩ := Option.map_eq_some_iff.mp (by simpa only [List.getElem?_map] using hr)
+        simp only [RecState.specs_onSubst] at ht
         obtain ⟨old,ht0,rfl⟩ := RecSpec.mono_getElem?_map_onSubstSource ht
-        have htyped := hcandidate j raw old (by simpa only [Nat.zero_add] using hj) hr0 ht0
+        have htState : state.specs[j]? = some (.mono old) := by
+          simpa only [installed, RecState.specs_installOpenings] using ht0
+        have htyped := hcandidate j raw old (by simpa only [Nat.zero_add] using hj) hr0 htState
         rw [RecState.rhsCtx_onSubst,hCtxFactor,hRawFactor,← hfactor old]
         exact htyped)
     cases hCompRun : inferRecComponentWithTypesCore K (substSoft pre active) members 0 opened
@@ -9426,13 +9480,18 @@ theorem inferRecStrataWithTypesCore_aligned_singleton
     | some result =>
       obtain ⟨cres,hc⟩ := result
       obtain ⟨V,hV,hVP,hag⟩ := InferRecComponent.sourcePrincipal_after_shapes hp
-        (by simpa only [RecState.rhsCtx_onSubst] using hc)
+        (by simpa only [RecState.rhsCtx_onSubst, RecState.specs_onSubst] using hc)
         (fun he hi => hPrincipal (by simpa only [raws,sizeBindings_openRecSources] using he) hi)
         (hiLC.rhsCtx hctxWF) (hiB.rhsCtx (fun M hm => (hctx M hm).mono hle))
         (fun k hk => (hK k hk).trans_le hle) hactiveB hiLC.1 hiB.1 hsource hpreLC hpreB
         U P hres.lc hP hres.fixes hsolveShapes
         (by intro j rhs hj hr v hv hk hn; exact hUK v hk)
-        (by simpa only [Nat.zero_add] using hcandidate)
+        (by
+          intro j rhs target hj hr ht
+          have ht' : state.specs[j]? = some (.mono target) := by
+            simpa only [installed, RecState.specs_installOpenings] using ht
+          simpa only [installed, RecState.rhsCtx_installOpenings, Nat.zero_add] using
+            hcandidate j rhs target (by simpa only [Nat.zero_add] using hj) hr ht')
       let solved := pre ++ cres.subst
       have hag' : Subst.AgreesBelow opened U (solved ++ V) := by
         simpa only [solved,List.append_assoc] using hag
@@ -9442,7 +9501,8 @@ theorem inferRecStrataWithTypesCore_aligned_singleton
       have hCtxEq : V.onCtx ((installed.onSubst solved).fixedCtx (solved.onCtx ctx)) =
           U.onCtx (state.fixedCtx ctx) := by
         rw [RecState.fixedCtx_onSubst,← Subst.onCtx_append]
-        exact (Subst.onCtx_congr hag' ((hiB.fixedCtx (fun M hm => (hctx M hm).mono hle)))).symm
+        simpa only [installed, RecState.fixedCtx, RecState.exports_installOpenings] using
+          (Subst.onCtx_congr hag' ((hiB.fixedCtx (fun M hm => (hctx M hm).mono hle)))).symm
       have hBoundary : ∀ x ∈ Xs, ∀ v ∈ ((installed.onSubst solved).fixedCtx (solved.onCtx ctx)).env.freeVars ++
           K ++ softVars (substSoft solved F), x ∉ (V.onTy (.fvar v)).freeVars := by
         intro x hx v hv himage
@@ -9467,11 +9527,13 @@ theorem inferRecStrataWithTypesCore_aligned_singleton
         (K := K) (soft := softVars (substSoft solved F)) (members := members)
         (ctx := solved.onCtx ctx) (state := installed.onSubst solved)
         (outputs := cres.outputs) (facts := cres.facts) (R := V) candidateNames
-        (by simp only [candidateNames,RecState.onSubst,installed,RecState.installOpenings,List.length_mapIdx,List.length_map])
+        (by simp only [candidateNames, List.length_mapIdx, RecState.slots_length,
+          RecState.onSubst, installed, RecState.installOpenings, List.length_map])
         (by
           intro i images names hi hs hn
           have hib : i < state.slots.length := by
-            simpa only [RecState.onSubst,installed,RecState.installOpenings,List.length_map,List.length_mapIdx] using
+            simpa only [RecState.slots_length, RecState.onSubst, installed,
+              RecState.installOpenings, List.length_map, List.length_mapIdx] using
               (List.getElem?_eq_some_iff.mp hs).1
           have hslot := List.getElem?_eq_getElem hib
           simp only [candidateNames,List.getElem?_mapIdx,hslot,Option.map_some,Option.some.injEq] at hn
@@ -9479,9 +9541,13 @@ theorem inferRecStrataWithTypesCore_aligned_singleton
           have hiopen : i < openings.length := by rw [ho.length,← hslotLen];exact hib
           let opening := openings[i]
           have hop : openings[i]? = some opening := List.getElem?_eq_getElem hiopen
+          obtain ⟨sourceTy, hsourceTy⟩ := hselected i hi
+          rw [RecState.getElem?_specs] at hsourceTy
+          obtain ⟨member, hm, _⟩ := Option.map_eq_some_iff.mp hsourceTy
           have he : images = (opening.written.map Ty.fvar).map solved.onTy := by
-            simp only [RecState.onSubst,installed,RecState.installOpenings,List.getElem?_map,
-              List.getElem?_mapIdx,hslot,Option.map_some,if_pos hi,hop,Option.getD_some] at hs
+            simp only [RecState.slots_onSubst, List.getElem?_map, installed,
+              RecState.getElem?_slots_installOpenings, hm, Option.map_some, if_pos hi,
+              hop, Option.getD_some] at hs
             exact (Option.some.inj hs).symm
           have hnamesSub : ∀ v ∈ declPrefixes[i]?.getD [], v ∈ G := by
             obtain ⟨ty,ht⟩ := hselected i hi
@@ -9509,7 +9575,7 @@ theorem inferRecStrataWithTypesCore_aligned_singleton
         obtain ⟨exported,hf⟩ := result
         obtain ⟨T,hT,hTP,hagT,hTRes⟩ := hres.close_opened_component ho hp hc hf hPrincipal
           hstateLC hstateB hctxWF hctx hK hF hP hlen hanns hrhs
-          (fun i rhs hi hr v hv hk hn => hUK v hk) hsolve hcandidate hexports hdisjoint
+          (fun i rhs hi hr v hv hk hn => hUK v hk) hsolve hcandidate hdisjoint
           hdeclLC hG hprefix hXsLen hXsND hGXs hXsTypes hXsCtx hXsK hXsF
         let one : {r : RecRunResult // InferRecStrata K F frontier ctx anns bindings state [members]
             r.frontier r.subst r.state} :=
@@ -9609,8 +9675,7 @@ theorem inferRecStrataWithTypesCore_fresh_local_singleton
   obtain ⟨one,hRun,V,hV,hVP,hag,hrecord⟩ := inferRecStrataWithTypesCore_aligned_singleton
     ho hOpenRun hProducer hPrincipal prepared.record hstateLC hstateB hctxWF hctx hK hF
     prepared.below (prepared.preservesRigid hFixK) hlen
-    (hframe.specs_length.trans hlen) hframe.slots_length
-    (hframe.exports_length.trans hframe.specs_length.symm) hselected hannScope hrhsScope
+    (hframe.specs_length.trans hlen) hselected hannScope hrhsScope
     prepared.solves prepared.written prepared.typed hdisjoint
     prepared.monoLC prepared.poolND prepared.prefixData prepared.length prepared.nodup prepared.disjoint
     prepared.typesFresh prepared.ctxFresh prepared.rigidFresh prepared.softFresh
@@ -10303,7 +10368,7 @@ private theorem inferWithTypesCore_sourceComplete_rec_of_unsigned
       hres1 (Subst.onCtx_wf hS1 hctxWF) hctx1 hLC1 hBelow1
       (fun k hk => (hK k hk).trans_le hbase1) hF1 (fun p hp => (hP p hp).trans_le hbase1) hR1K
       (by simpa only [List.length_map] using hlen)
-      (hframe1.exports_length.trans hframe1.specs_length.symm) hframe1.poly hdone1
+      hframe1.poly hdone1
       hannscope1 hrhsscope1 hcandAnn1 hcandRhs1 hSignedCandidate)
   obtain ⟨hframe2,_⟩ := hsigned.frame_of_infer
     (fun _ hi => hi.sourceLocality) hframe1 (by simp) hdone1 hBelow1.2.2.2
@@ -10312,7 +10377,7 @@ private theorem inferWithTypesCore_sourceComplete_rec_of_unsigned
     (fun he hi => hInfer (by simpa only [sizeBindings_map_substTyFvars] using he) hi)
     hres1 (Subst.onCtx_wf hS1 hctxWF) hctx1 hLC1 hBelow1
     (fun k hk => (hK k hk).trans_le hbase1) hF1 (fun p hp => (hP p hp).trans_le hbase1)
-    (hframe1.exports_length.trans hframe1.specs_length.symm) hframe1.poly hdone1 hannscope1 hrhsscope1
+    hframe1.poly hdone1 hannscope1 hrhsscope1
     (fun _ _ v _ hk _ => hR1K v hk) (fun _ _ v _ hk _ => hR1K v hk)
     hcandAnn1 hcandRhs1 hSignedCandidate
   have hle2 := hsigned.frontier_le
@@ -10331,8 +10396,7 @@ private theorem inferWithTypesCore_sourceComplete_rec_of_unsigned
     exact (hag0 v hv).trans (hag12 v (by omega))
   have hvalid2 := recValid_subst hvalid1 s2
   have hdone2 := hframe2.all_mono_done hvalid2
-  have hcandidateBody := hres2.weaken_from_body
-    (hframe2.exports_length.trans hframe2.specs_length.symm) hframe2.poly hdone2 hdeclBody
+  have hcandidateBody := hres2.weaken_from_body hframe2.poly hdone2 hdeclBody
   have hctxbody : CtxWF (state2.rhsCtx ((s1 ++ s2).onCtx ctx)) := by
     apply hLC2.rhsCtx
     simpa only [Subst.onCtx_append] using Subst.onCtx_wf hS2 (Subst.onCtx_wf hS1 hctxWF)
