@@ -1,5 +1,5 @@
 import FHM.Unverified.Surface.Parse
-import FHM.SurfaceBridge
+import FHM.SurfaceBridge.CompleteCore
 import FHM.InferW
 import FHM.Pretty
 

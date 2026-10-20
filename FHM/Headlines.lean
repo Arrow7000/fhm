@@ -3,75 +3,24 @@ import FHM.InferW
 import FHM.Completeness
 import FHM.Pretty
 
-/-! # `Headlines` — the human-readable capabilities surface
+/-! # `Headlines` — canonical verified capabilities
 
-This module is a **façade**: it proves almost no new mathematics. Its job is to
-let a newcomer read ONE file and come away knowing exactly what this language's
-type system guarantees, what those guarantees *mean* in plain terms, and
-precisely how far the machine-checking currently reaches.
+This compact façade presents the production surface-to-`InferInput` lowering
+pipeline, canonical inference guarantees, pattern compilation and coverage,
+Core inversion/canonical-forms lemmas, and the proof-carrying erased-term runner.
 
-**Status.** Canonical inference has checked soundness, principality, and
-completeness for partial inputs, including recursive partial signatures. It
-returns completed Core and editor maps in one worker traversal. Independent input
-typing and annotation fidelity describe the authored input; output typing and
-exact erasure connect the returned expression to execution.
+The historical surface-to-complete-Core lowering, structural `SurfaceWTExpr`
+witnesses, and its `elaborateSafe` demonstration remain available from the
+opt-in `FHM.Headlines.CompleteCore` module.
 
-Complete Core uses that same engine through `InferInput.ofCore`.
-`SurfaceBridge.inferOfCore_source_sound` retains the original `TypeOfHM` source
-contract, while `coreTypecheck_accepts_iff` and `inferOfCore_principal` retain
-complete-Core acceptance and residual principality. The proof-only `RunWT`
-judgment provides substitution, canonical forms, progress, preservation, and
-one- and many-step type safety for erased execution.
-
-So: do not read this file as "everything below is proved". Read section 6's
-`#print axioms` output, which is the actual, unfakeable status report.
-
-Every name below already exists in the core, elaboration, or surface bridge
-modules; this file re-exports (via doc-comments + `#check`, which
-double as a compiler-checked "this name still exists with this shape" guard),
-adds a handful of small inversion lemmas, witnesses that the type system's
-`SurfaceWTExpr` relation is genuinely inhabited (not vacuously true), and wires
-up a *composable, proof-carrying* complete-Core safety demonstration
-(`elaborateSafe` / `runSafe`). This demonstration uses verified Core lowering;
-it is not the CLI/editor's anonymous-hole elaboration entry point.
-
-This module is part of the default verified build and can also be checked alone
-with `lake env lean FHM/Headlines.lean`.
-
-## The six sections
-
-1. Doc-narrated headline re-exports (type safety, inference soundness and
-   successful-inference principality,
-   pattern-compilation correctness, decidable coverage, DataDecl bridge).
-2. Universal properties: inversion / canonical-forms lemmas.
-3. Witnesses: the relations above are genuinely inhabited, not vacuous.
-4. The complete-Core safe-lowering demonstration (`elaborateSafe` / `runSafe`).
-5. Demos.
-6. A living axiom-budget guard (`#print axioms`). -/
+This module is part of the default verified build. -/
 
 open SurfaceBridge SmallStep PatComp
 
 namespace Headlines
 
+/-! ## Core runtime type safety -/
 
-/-! ## 1. Doc-narrated headline re-exports
-
-No new proofs in this section—just naming the repository's headline theorems,
-with a one-line plain-English gloss, plus a `#check` of each so THIS FILE FAILS
-TO COMPILE if any of these names ever disappear or change shape. -/
-
-/-! ### Type safety
-
-**"A well-typed, exhaustive program never gets stuck."** Two headlines say this
-at two levels: `surface_type_safe` at the level of a bare surface *expression*
-(given that its lowered Core term typechecks and its matches cover their scrutinee's
-constructors), and `program_type_safe` at the level of a whole `Surface.Program`
-(decls + binding groups + body). `TypeOfHM.type_safety_star` is the iterated
-progress+preservation engine both headlines are built on: every term reachable
-by any number of `Step`s from a well-typed, exhaustive (erased) term is itself
-well-typed and is a value or can step again — "never gets stuck" formalised. -/
-#check @surface_type_safe
-#check @program_type_safe
 #check @TypeOfHM.type_safety_star
 
 /-! ### Surface lowering into canonical inference input
@@ -168,18 +117,6 @@ example (result : InferenceResult) : Expr := result.completedExpr
 example (result : InferenceResult) : NodeTypeMap := result.nodeTypes
 example (result : InferenceResult) : BinderSchemeMap := result.binderSchemes
 
-/-! ### Complete Core uses the canonical engine
-
-`Input.ofCore` adapts an already completed source without introducing a second
-inference relation or executable. Source conservation preserves its original
-`TypeOfHM` contract, acceptance is equivalent to declarative typing, and every
-candidate type factors through the returned type. Exact erasure identifies the
-runtime source with the canonical completed output. -/
-#check @SurfaceBridge.coreTypecheck_isSome_iff
-#check @SurfaceBridge.inferOfCore_source_sound
-#check @SurfaceBridge.inferOfCore_erase
-#check @SurfaceBridge.coreTypecheck_accepts_iff
-#check @SurfaceBridge.inferOfCore_principal
 
 /-! ### Pattern-compilation correctness
 
@@ -219,7 +156,7 @@ built by hand. -/
 #check @elabDecls_complete
 
 
-/-! ## 2. Universal properties: inversion / canonical-forms lemmas
+/-! ## Universal properties: inversion / canonical-forms lemmas
 
 A typing relation earns its keep partly through its INVERSIONS: given a typed
 term of a known shape, what must be true of its subterms? These read as the
@@ -267,23 +204,6 @@ theorem TypeOfHM_letIn_inv {ctx : Ctx} {ann : Option PolyTy} {boundExpr body : E
   cases h with
   | letIn hwf hpins hgen heq hbody => exact ⟨_, _, hwf, hpins, hgen, heq ▸ hbody⟩
 
-/-- The `of_lowers` overlap, kept as a documented example: a match-free
-    `.pair` surface term has TWO derivation paths through `SurfaceWTExpr` — the
-    dedicated `pair` rule, or the generic `of_lowers` catch-all (since `.pair`
-    has no `match`, it's `SurfaceExprNoMatch`). Both agree on the resulting
-    type. The relation intentionally permits this harmless overlap for
-    match-free expressions. -/
-theorem SurfaceWTExpr_pair_inv {ctors : CtorEnv} {ke : KindEnv} {tvs vs : List ValName}
-    {Γ : Env} {a b : Surface.Expr} {τ : Ty}
-    (h : SurfaceWTExpr ctors ke tvs vs Γ (.pair a b) τ) :
-    (∃ τa τb, SurfaceWTExpr ctors ke tvs vs Γ a τa ∧ SurfaceWTExpr ctors ke tvs vs Γ b τb ∧
-        TypeOfHM ⟨Γ, ctors⟩ (.ctor cPair) (.arrow τa (.arrow τb τ)))
-    ∨ (SurfaceExprNoMatch (.pair a b) ∧
-        ∃ c, CoreLowersExpr ctors ke tvs vs (.pair a b) c ∧ TypeOfHM ⟨Γ, ctors⟩ c τ) := by
-  cases h with
-  | pair ha hb hc => exact Or.inl ⟨_, _, ha, hb, hc⟩
-  | of_lowers hnm hL hT => exact Or.inr ⟨hnm, _, hL, hT⟩
-
 /-! ### Canonical forms (re-exported)
 
 The dual of inversion at the VALUE level: a well-typed *value* of a known type
@@ -298,250 +218,7 @@ instantiated arguments. -/
 #check @TypeOfHM.ctor_chain_inversion
 
 
-/-! ## 3. Witnesses
-
-Axiom-cleanliness cannot catch a *vacuous* relation — a typing rule with
-unsatisfiable premises would still let every proof by induction over it go
-through, silently. Witnesses close that gap: they exhibit CONCRETE terms
-that actually inhabit the relations above, so the rules used to build them
-are provably not dead code. -/
-
-/-- The simplest possible witness: an integer literal is well-typed at `int`. -/
-example (ctors : CtorEnv) : SurfaceWT ctors (.primLit (.int 0)) :=
-  ⟨.prim .int, .of_lowers .primLit .primLitInt .primLitInt⟩
-
-/-- The identity function `λx. x`, typed structurally (monomorphically) at
-    `int → int`. -/
-example (ctors : CtorEnv) :
-    SurfaceWTExpr ctors (kindEnvOfCtors ctors) [] [] []
-      (.lambda (.name ⟨"x"⟩) none (.var ⟨"x"⟩)) (.arrow (.prim .int) (.prim .int)) := by
-  apply SurfaceWTExpr.lambda_name
-  · exact ContainsBvarsUpTo.prim
-  · trivial
-  · exact .of_lowers .var (.var (by rfl))
-      (TypeOfHM.var (polyTy := PolyTy.mkTrivial (.prim .int)) (instArgs := []) rfl (by simp) .prim)
-
-/-! ### The annotated polymorphic let (`letInAnn`)
-
-`letInAnn` is the composer-authored, cofinite-premise constructor with the
-fiddliest hypothesis in the whole relation: `∀ Xs, FreshNames L σ.paramCount
-Xs → …`. This witness — `let (id : ∀a. a→a) = λx. x in id` used at `int→int`
-— proves the constructor is genuinely inhabitable at a REAL polymorphic
-scheme (not just the `paramCount = 0` degenerate case): specialise the
-cofinite premise at a single fresh skolem `X`, observe `σ.openVars [X]` is
-literally `fvar X → fvar X` by computation, and reuse the identity-lambda
-shape above at `paramTy := .fvar X`. The body then instantiates the scheme's
-bound variable at `int` via `InstantiatesBy.bvar`. -/
-example (ctors : CtorEnv) :
-    SurfaceWTExpr ctors (kindEnvOfCtors ctors) [] [] []
-      (.letIn (.mk "id") [] []
-        (some ⟨[.mk "a"], .arrow (.tvar (.mk "a")) (.tvar (.mk "a"))⟩)
-        (.lambda (.name (.mk "x")) none (.var (.mk "x")))
-        (.var (.mk "id")))
-      (.arrow (.prim .int) (.prim .int)) := by
-  set σ : PolyTy := ⟨1, .arrow (.bvar 0) (.bvar 0)⟩
-  have hlowσ : lowerPoly (kindEnvOfCtors ctors)
-      ⟨[.mk "a"], .arrow (.tvar (.mk "a")) (.tvar (.mk "a"))⟩ = some σ := by
-    simp only [lowerPoly, σ]
-    have h : ([.mk "a"] : List ValName).eraseDups = [.mk "a"] := rfl
-    simp [h, lowerTy, tvarIndex]
-  refine SurfaceWTExpr.letInAnn (tvs := []) (vs := []) (Γ := []) (ΓRhs := [])
-    (name := .mk "id") (tyParams := []) (params := [])
-    (σs := ⟨[.mk "a"], .arrow (.tvar (.mk "a")) (.tvar (.mk "a"))⟩)
-    (σ := σ) (rhs := _) (body := _) (τ := _) (L := []) (paramTys := [])
-    (τretOf := fun Xs => σ.openVars Xs) ?htvs ?hσeq ?hσwf ?hLL ?hrhs ?hτbinds ?hbody
-  · rfl
-  · exact lowerPolyAnn_finalizeAnn_nil hlowσ
-  · exact .arrow (.bvar (by decide)) (.bvar (by decide))
-  · exact LowerLetParams.nil
-  · intro Xs hfresh
-    have hlen : Xs.length = 1 := by simpa [σ] using hfresh.length
-    obtain ⟨X, hXeq⟩ := List.length_eq_one_iff.mp hlen
-    subst hXeq
-    have hed : ([.mk "a"] : List ValName).eraseDups = [.mk "a"] := rfl
-    have hscope : letRhsTyScope [] []
-        (some ⟨[.mk "a"], .arrow (.tvar (.mk "a")) (.tvar (.mk "a"))⟩) [] = [.mk "a"] := by
-      simp [letRhsTyScope, letAnnTyPrefix, finalizeAnn, mergeTyParams, mergeTyParamNames, hed]
-    simp only [hscope, letRhsTermScope, paramTermScope, List.map_nil, List.reverse_nil,
-      List.nil_append]
-    apply SurfaceWTExpr.lambda_name (paramTy := .fvar X) (bodyTy := .fvar X)
-    · exact ContainsBvarsUpTo.fvar
-    · trivial
-    · exact .of_lowers .var (.var (by rfl))
-        (TypeOfHM.var (polyTy := PolyTy.mkTrivial (.fvar X)) (instArgs := []) rfl (by simp) .fvar)
-  · intro Xs _; rfl
-  · exact .of_lowers .var (.var (by rfl))
-      (TypeOfHM.var (polyTy := σ) (instArgs := [Ty.prim .int]) rfl
-        (by
-          intro t ht
-          simp only [List.mem_singleton] at ht
-          subst ht
-          exact ContainsBvarsUpTo.prim)
-        (InstantiatesBy.arrow (InstantiatesBy.bvar rfl) (InstantiatesBy.bvar rfl)))
-
-/-! ### Annotated polymorphic `letRecIn`
-
-The structural constructor exposes the same contract boundary as Core: unsigned
-members are monomorphic within the residual component currently being checked,
-completed dependency components may already be generalized, and signed members are
-checked under the final scheme environment. The closed monomorphic contract below
-uses a single residual component, keeping the cofinite openings computationally
-small while exercising `letRecInAnn`. -/
-
-/-! ### Packing B — annotated mono + head binders
-
-Surface-ish:
-```
-let f (x : Int) : Int = x in f
-```
-AST: nonempty `params`, return-type `ann`, open body (not `λ` in the RHS).
-`finalizeAnn` synthesises the full binding scheme `Int → Int` (paramCount 0);
-raw RHS is typed at the return type under the head binder; wrap supplies the
-Core λ. -/
-private theorem packingB_finalize :
-    finalizeAnn [] [(.mk "x", some (.prim .int))] (some ⟨[], .prim .int⟩) =
-      some ⟨[], .arrow (.prim .int) (.prim .int)⟩ := by
-  simp [finalizeAnn, paramsToArrows, paramsToArrows.go, mergeTyParamNames]
-
-private theorem packingB_lowerPoly (ctors : CtorEnv) :
-    lowerPolyAnn (kindEnvOfCtors ctors)
-      (finalizeAnn [] [(.mk "x", some (.prim .int))] (some ⟨[], .prim .int⟩)) =
-      some (some ⟨0, .arrow (.prim .int) (.prim .int)⟩) := by
-  rw [packingB_finalize]
-  simp [lowerPolyAnn, lowerPoly, lowerTy]
-
-example (ctors : CtorEnv) :
-    SurfaceWTExpr ctors (kindEnvOfCtors ctors) [] [] []
-      (.letIn (.mk "f") [] [(.mk "x", some (.prim .int))]
-        (some ⟨[], .prim .int⟩)
-        (.var (.mk "x"))
-        (.var (.mk "f")))
-      (.arrow (.prim .int) (.prim .int)) := by
-  set σ : PolyTy := ⟨0, .arrow (.prim .int) (.prim .int)⟩
-  set paramTys : List Ty := [.prim .int]
-  set τret : Ty := .prim .int
-  refine SurfaceWTExpr.letInAnn (tvs := []) (vs := []) (Γ := [])
-    (ΓRhs := [PolyTy.mkTrivial (.prim .int)])
-    (name := .mk "f") (tyParams := [])
-    (params := [(.mk "x", some (.prim .int))])
-    (σs := ⟨[], .prim .int⟩) (σ := σ)
-    (rhs := _) (body := _) (τ := _) (L := [])
-    (paramTys := paramTys) (τretOf := fun _ => τret)
-    ?htvs ?hσeq ?hσwf ?hLL ?hrhs ?hτbinds ?hbody
-  · rfl
-  · simpa [σ] using packingB_lowerPoly ctors
-  · -- `PolyTy.WF σ` = `ContainsBvarsUpTo 0 (Int → Int)`
-    exact .arrow ContainsBvarsUpTo.prim ContainsBvarsUpTo.prim
-  · refine LowerLetParams.cons rfl (by simp [lowerTy]) ContainsBvarsUpTo.prim LowerLetParams.nil
-  · intro Xs hfresh
-    have hXs : Xs = [] := List.eq_nil_of_length_eq_zero (by simpa [σ] using hfresh.length)
-    subst hXs
-    exact .of_lowers .var (.var (by rfl))
-      (TypeOfHM.var (polyTy := PolyTy.mkTrivial (.prim .int)) (instArgs := []) rfl
-        (by simp) .prim)
-  · intro Xs hfresh
-    have hXs : Xs = [] := List.eq_nil_of_length_eq_zero (by simpa [σ] using hfresh.length)
-    subst hXs
-    simp [paramTys, τret, σ, coreParamsToArrows, PolyTy.openVars]
-  · exact .of_lowers .var (.var (by rfl))
-      (TypeOfHM.var (polyTy := σ) (instArgs := []) rfl (by simp)
-        (InstantiatesBy.arrow InstantiatesBy.prim InstantiatesBy.prim))
-
-/-! ### Packing B — annotated mono letrec + head binders
-
-Same packing as a singleton rec group (`RecSpec.poly` with `paramCount = 0`,
-because Core stores annotated schemes via `RecSpec.poly`, not `mono`):
-```
-let f (x : Int) : Int = x in f
-```
--/
-example (ctors : CtorEnv) :
-    SurfaceWTExpr ctors (kindEnvOfCtors ctors) [] [] []
-      (.letRecIn
-        [{ name := .mk "f",
-           params := [(.mk "x", some (.prim .int))],
-           ann := some ⟨[], .prim .int⟩,
-           rhs := .var (.mk "x") }]
-        (.var (.mk "f")))
-      (.arrow (.prim .int) (.prim .int)) := by
-  set σ : PolyTy := ⟨0, .arrow (.prim .int) (.prim .int)⟩
-  set binds : List Surface.Binding :=
-    [{ name := .mk "f",
-       params := [(.mk "x", some (.prim .int))],
-       ann := some ⟨[], .prim .int⟩,
-       rhs := .var (.mk "x") }]
-  refine SurfaceWTExpr.letRecInAnn (tvs := []) (vs := []) (Γ := [])
-    (binds := binds) (anns' := [some σ]) (specs := [RecSpec.poly σ])
-    (G := []) (L := []) (paramTysList := fun _ _ => [[Ty.prim .int]])
-    (ΓRhsList := fun _ _ => [[PolyTy.mkTrivial (.prim .int), σ]])
-    (τretsList := fun _ _ => [Ty.prim .int])
-    (body := _) (τ := _)
-    ?htvs ?hann ?hlen ?hparamLen ?hΓRhsLen ?hretsLen ?hanns_eq ?hnodup
-    ?hmono_lc ?hpoly_wf ?hLLMono ?hLLPoly ?hτbindsMono ?hτbindsPoly
-    ?hmono ?hpoly ?hbody
-  · rfl
-  · -- lowerAnnList of finalizeAnn return-type sugar
-    have h1 := packingB_lowerPoly ctors
-    simp [binds, lowerAnnList, h1, σ]
-  · rfl
-  · intro Xs Ys; rfl
-  · intro Xs Ys; rfl
-  · intro Xs Ys; rfl
-  · rfl  -- RecSpec.ann (poly σ) = some σ
-  · exact List.nodup_nil
-  · intro τm h; simp [σ] at h
-  · intro σ' h
-    simp only [List.mem_singleton, σ] at h
-    injection h with h; subst h
-    exact .arrow ContainsBvarsUpTo.prim ContainsBvarsUpTo.prim
-  · intro Xs _ i hi τm hspec
-    have hi0 : i = 0 := by
-      simp only [binds, List.length_cons, List.length_nil] at hi; omega
-    subst hi0
-    simp [σ] at hspec
-  · intro i hi σ' hspec Ys hYs
-    have hi0 : i = 0 := by
-      simp only [binds, List.length_cons, List.length_nil] at hi; omega
-    subst hi0
-    have hσ' : σ' = σ := by symm; simpa using hspec
-    subst hσ'
-    refine LowerLetParams.cons rfl (by simp [lowerTy]) ContainsBvarsUpTo.prim LowerLetParams.nil
-  · intro Xs hfresh i hi τm hspec
-    have hi0 : i = 0 := by
-      simp only [binds, List.length_cons, List.length_nil] at hi; omega
-    subst hi0
-    simp [σ] at hspec
-  · intro i hi σ' hspec Ys hYs
-    have hi0 : i = 0 := by
-      simp only [binds, List.length_cons, List.length_nil] at hi; omega
-    subst hi0
-    have hσ' : σ' = σ := by symm; simpa using hspec
-    subst hσ'
-    have hYs0 : Ys = [] := List.eq_nil_of_length_eq_zero (by simpa [σ] using hYs.length)
-    subst hYs0
-    simp [σ, coreParamsToArrows, PolyTy.openVars]
-  · intro Xs hfresh i hi τm hspec
-    have hi0 : i = 0 := by
-      simp only [binds, List.length_cons, List.length_nil] at hi; omega
-    subst hi0
-    simp [σ] at hspec
-  · intro i hi σ' hspec Ys hYs
-    have hi0 : i = 0 := by
-      simp only [binds, List.length_cons, List.length_nil] at hi; omega
-    subst hi0
-    have hσ' : σ' = σ := by symm; simpa using hspec
-    subst hσ'
-    have hYs0 : Ys = [] := List.eq_nil_of_length_eq_zero (by simpa [σ] using hYs.length)
-    subst hYs0
-    exact .of_lowers .var (.var (by rfl))
-      (TypeOfHM.var (polyTy := PolyTy.mkTrivial (.prim .int)) (instArgs := []) rfl
-        (by simp) .prim)
-  · exact .of_lowers .var (.var (by rfl))
-      (TypeOfHM.var (polyTy := σ) (instArgs := []) rfl (by simp)
-        (InstantiatesBy.arrow InstantiatesBy.prim InstantiatesBy.prim))
-
-
-/-! ## 4. The composable safe pipeline
+/-! ## The composable safe pipeline
 
 `type_safety` needs TWO independent conjuncts to hold of the runtime term: it
 must be well-typed, AND all its matches must be exhaustive. These are checked
@@ -563,32 +240,6 @@ def WellTyped (ctors : CtorEnv) (e : Expr) : Prop :=
     applies). Anything holding a `Safe ctors` can invoke `type_safety` on it. -/
 abbrev Safe (ctors : CtorEnv) :=
   { e : Expr // e.erase = e ∧ WellTyped ctors e ∧ AllMatchesExhaustive ctors e }
-
-/-- Complete-Core safe-lowering demonstration, separate from production Input
-    elaboration. `lowerCoreProgram` rejects holeful types; the CLI/editor instead use
-    provenance lowering and canonical `inferWithTypes`.
-    Run a surface program through both checks (typechecking, via
-    canonical `inferWithTypes`, and exhaustiveness, via `checkExhaustive`); `some ⟨ctors, ⟨e,
-    _⟩⟩` hands back a term that is well-typed AND exhaustive **by
-    construction** — the proof is built once here from `program_type_safe` +
-    `checkExhaustive_sound` and travels with the term from then on. `none`
-    means the program was rejected by lowering, typechecking, or coverage. -/
-def elaborateSafe (p : Surface.Program) : Option (Σ ctors : CtorEnv, Safe ctors) :=
-  match hlow : lowerCoreProgram p with
-  | none => none
-  | some (ctors, c) =>
-    match hresult : inferWithTypes ctors (InferInput.ofCore c) with
-    | none => none
-    | some result =>
-      match hcov : checkExhaustive ctors p.term with
-      | false => none
-      | true =>
-        some ⟨ctors, ⟨result.completedExpr.erase, by
-          obtain ⟨τ, hty, hexh, _⟩ := program_type_safe hlow
-            (coreTypecheck_of_infer hresult) (checkExhaustive_sound p.term hcov)
-          have he := inferOfCore_erase hresult
-          exact ⟨Expr.erase_idem _, ⟨τ, by simpa only [he] using hty⟩,
-            by simpa only [he] using hexh⟩⟩⟩
 
 /-- A finished run: an actual value, still carrying its `WellTyped` passport.
     (`IsValue` here is what `runSafe_never_stuck` used to have to prove
@@ -670,72 +321,12 @@ def runSafe (ctors : CtorEnv) (fuel : Nat) (t : Safe ctors) : Value ctors ⊕ Ru
             cases hsc
 
 
-/-! ## 5. Demos
 
-Two small end-to-end runs through `elaborateSafe`/`runSafe`: one that's
-accepted (a polymorphic `id`, applied at `int`), and one that's correctly
-REJECTED for missing a match arm — `elaborateSafe` returning `none` there is
-the pipeline doing its job, not a bug. -/
+/-! ## Living axiom-budget guard
 
-/-- `let (id : ∀a. a→a) = λx. x in id 41`  — accepted, runs to `41`. -/
-private def sHeadlineAnnId : Surface.Program :=
-  ⟨[], [],
-   .letIn (.mk "id") [] []
-     (some ⟨[.mk "a"], .arrow (.tvar (.mk "a")) (.tvar (.mk "a"))⟩)
-     (.lambda (.name (.mk "x")) none (.var (.mk "x")))
-     (.app (.var (.mk "id")) (.primLit (.int 41)))⟩
-
-/-- `match Just 5 with Just x => x`  — missing the `Nothing` arm, so coverage
-    fails and `elaborateSafe` must reject it. -/
-private def sHeadlineNonExhaustive : Surface.Program :=
-  ⟨[⟨.mk "Maybe", [.mk "a"],
-      [(.mk "Just", [.tvar (.mk "a")]), (.mk "Nothing", [])]⟩],
-   [],
-   .match_ (.app (.ctor ⟨"Just"⟩) (.primLit (.int 5)))
-     [(.ctor ⟨"Just"⟩ [.name ⟨"x"⟩], .var ⟨"x"⟩)]⟩
-
-/-- Run a program through the full safe pipeline and print the result: a
-    finished value, a still-safe-but-unfinished term (fuel ran out — genuinely
-    resumable via `Running.toSafe`), or a rejection from `elaborateSafe`
-    itself (ill-typed or non-exhaustive). -/
-private def runSafeStr (p : Surface.Program) (fuel : Nat := 100) : String :=
-  match elaborateSafe p with
-  | none => "elaborateSafe: rejected"
-  | some ⟨ctors, t⟩ =>
-    match runSafe ctors fuel t with
-    | .inl v => toString v.val
-    | .inr r => "still running: " ++ toString r.val
-
-#eval! runSafeStr sHeadlineAnnId
-#guard runSafeStr sHeadlineAnnId = "41"
-
--- The same program, starved of fuel: `elaborateSafe` still accepts it (it IS
--- safe), but `runSafe` can't finish in zero steps, so it lands in `.inr`
--- instead of `.inl` — the resumable, "genuinely more to do" outcome.
-#eval! runSafeStr sHeadlineAnnId 0
-
-#eval! runSafeStr sHeadlineNonExhaustive
-#guard (elaborateSafe sHeadlineNonExhaustive).isSome = false
-
-
-/-! ## 6. Living axiom-budget guard
-
-The unfakeable status report. A `native_decide` would show up as
-`Lean.ofReduceBool` or similar; an unfinished proof shows up as `sorryAx`.
-Nothing here is aspirational — the expectations below record what this actually
-prints TODAY, so a regression (or a repair) changes the file.
-
-The clean baseline is `{propext, Classical.choice, Quot.sound}`, the three
-standard classical axioms mathlib itself depends on. Not every theorem needs
-all three; a strict subset (e.g. `[propext, Quot.sound]`) is just as clean.
-
-The source-to-runtime erasure bridge and the `RunWT`/`Step` metatheory live
-proved and axiom-clean in `FHM.RuntimeTyping` and `FHM.InferW`, so `runSafe` and
-`elaborateSafe` do not inherit any `sorryAx` from their operational bridge.
-
-Canonical output/input soundness, fidelity, erasure, principality, and
-relational/executable completeness are checked below, including recursive partial
-signatures. The complete-Core adapters retain the same source guarantees. -/
+Canonical lowering, inference, erasure, principality, completeness, Core
+inversions, and the erased-term runner are checked here. Complete-Core adapter
+guards live in `FHM.Headlines.CompleteCore`. -/
 
 -- Closed and clean: source-to-runtime bridge and erased-term dynamics.
 #print axioms TypeOfHM.erase_preserves_typing -- expect {propext, Classical.choice, Quot.sound}
@@ -770,13 +361,6 @@ signatures. The complete-Core adapters retain the same source guarantees. -/
 #print axioms inferWithTypes_accepts_iff
 #print axioms inferWithTypes_principal
 
--- Complete-Core source conservation, acceptance, and principality of the same run.
-#print axioms SurfaceBridge.coreTypecheck_isSome_iff
-#print axioms SurfaceBridge.inferOfCore_source_sound
-#print axioms SurfaceBridge.inferOfCore_erase
-#print axioms SurfaceBridge.coreTypecheck_accepts_iff
-#print axioms SurfaceBridge.inferOfCore_principal
-
 -- Clean: this file's own inversion lemmas.
 #print axioms TypeOfHM_app_inv           -- expect {propext, Quot.sound}
 #print axioms TypeOfHM_lambda_inv        -- expect {propext, Quot.sound}
@@ -786,7 +370,6 @@ signatures. The complete-Core adapters retain the same source guarantees. -/
 -- Closed: operational bridge (erased-dynamics lemmas proved in FHM.InferW).
 #print axioms runSafe                    -- expect {propext, Classical.choice, Quot.sound}
 #print axioms runSafe_running_reduces    -- expect {propext, Classical.choice, Quot.sound}
--- Inherited from the canonical completed-output and source-conservation bridges.
-#print axioms elaborateSafe              -- expect {propext, Classical.choice, Quot.sound}
+
 
 end Headlines

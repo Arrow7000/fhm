@@ -96,9 +96,10 @@ FHM's recursion rules with GHC, OCaml, F#, Elm and Standard ML.
 ## What is proved
 
 All of the following are machine-checked, with no `sorry` and only Lean's
-standard axioms. [`FHM/Headlines.lean`](./FHM/Headlines.lean) gathers the main
-theorems in one place, each with a plain-English explanation, and is the best
-starting point for reading the proofs.
+standard axioms. [`FHM/Headlines.lean`](./FHM/Headlines.lean) gathers the
+canonical production theorems. The opt-in
+[`FHM/Headlines/CompleteCore.lean`](./FHM/Headlines/CompleteCore.lean) preserves
+the earlier complete-Core surface-safety façade and demonstration.
 
 | Claim                                                                                                                                              | Main theorems                                                             |
 | -------------------------------------------------------------------------------------------------------------------------------------------------- | ------------------------------------------------------------------------- |
@@ -131,7 +132,7 @@ is in [`lean-toolchain`](./lean-toolchain).
 ```bash
 lake exe cache get   # download prebuilt Mathlib (avoids compiling it locally)
 lake build           # check the production verified library
-lake build FHMExamples FHMHistorical  # check opt-in examples and proof artifacts
+lake build FHMCompatibility FHMExamples FHMHistorical  # opt-in compatibility, examples, artifacts
 lake build fhm       # build the fhm executable
 ```
 
@@ -207,10 +208,10 @@ The structural lowering proof covers the term produced by production provenance
 lowering. It does not verify the parser, source-span metadata, editor joins, or
 the unbounded CLI evaluator.
 
-`SurfaceBridge` uses one structural lowering pipeline with target and annotation
-policies. Its public specialization preserves partial annotations in
-`InferInput`; the complete-Core specialization retains the earlier source
-typing and safety contracts.
+`SurfaceBridge` contains the shared structural traversal and its production
+specialization, which preserves partial annotations in `InferInput`.
+`FHM.SurfaceBridge.CompleteCore` is an explicit opt-in compatibility module for
+the older complete-Core specialization and its source-typing and safety theory.
 
 The design choices that matter most:
 
@@ -238,11 +239,13 @@ The design choices that matter most:
 | [`Completeness.lean`](./FHM/Completeness.lean)   | Principality and executable completeness for that same worker                   |
 | [`RuntimeTyping.lean`](./FHM/RuntimeTyping.lean) | Typing for erased runtime terms, used to prove progress and preservation         |
 | [`SurfaceLang.lean`](./FHM/SurfaceLang.lean)     | Surface syntax tree                                                              |
-| [`SurfaceBridge.lean`](./FHM/SurfaceBridge.lean) | Head normalization, annotation-preserving lowering, coverage, and surface safety |
+| [`SurfaceBridge.lean`](./FHM/SurfaceBridge.lean) | Head normalization, annotation-preserving `InferInput` lowering, SCCs, and coverage |
+| [`SurfaceBridge/CompleteCore.lean`](./FHM/SurfaceBridge/CompleteCore.lean) | Opt-in complete-Core lowering, structural surface typing, and safety theory |
 | [`PatComp.lean`](./FHM/PatComp.lean)             | Pattern-match compiler and its correctness proofs                                |
 | [`Scc/Kosaraju.lean`](./FHM/Scc/Kosaraju.lean)   | Verified strongly connected components                                           |
 | [`Decls.lean`](./FHM/Decls.lean)                 | Data declaration checking                                                        |
-| [`Headlines.lean`](./FHM/Headlines.lean)         | Main theorems and a complete-Core `elaborateSafe`/`runSafe` safety demo |
+| [`Headlines.lean`](./FHM/Headlines.lean)         | Canonical production theorems and the proof-carrying erased-term runner |
+| [`Headlines/CompleteCore.lean`](./FHM/Headlines/CompleteCore.lean) | Opt-in structural witnesses and complete-Core `elaborateSafe` demo |
 | [`Examples.lean`](./FHM/Examples.lean)           | Worked examples of programs that typecheck and programs that are rejected        |
 | [`Unverified/`](./FHM/Unverified/README.md)      | Lexer, parser, CLI, editor support, unbounded evaluator                          |
 

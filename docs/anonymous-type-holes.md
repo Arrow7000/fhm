@@ -45,9 +45,9 @@ The production path expands function heads with `finalizeInputAnn`
 before existing input lowering. It combines parameter domains with the return
 annotation and supplies holes for omitted types when a forall or return
 annotation needs a full signature. Unannotated heads retain ordinary HM inference.
-The legacy `SurfaceBridge.finalizeAnn` and complete-Core lowering bridge remain
-for the conservative proof/demo path; their partial-head restrictions do not
-specify the production frontend's head policy.
+The legacy `SurfaceBridge.finalizeAnn` helper and the complete-Core lowering and
+proof/demo path live explicitly in `FHM.SurfaceBridge.CompleteCore`. Their
+partial-head restrictions do not specify the production frontend's head policy.
 
 The canonical judgment is
 `Infer K F frontier ctx input next subst completedExpr ty`. `K` contains frozen
@@ -67,7 +67,8 @@ typing lemmas, `InferInput.lean` for
 `TyTemplate`, `BindingAnn`, `InferInput`, independent `InputTyping`, and
 `AnnotationCompletion`, `InferW.lean` for inference and its soundness/fidelity
 proofs, and `Completeness.lean` for principality and producer completeness.
-Surface normalization and lowering live in `SurfaceBridge.lean`.
+Canonical surface normalization and lowering live in `SurfaceBridge.lean`;
+the old complete-Core lowering theory lives in `SurfaceBridge/CompleteCore.lean`.
 
 An ordinary substitution does not express the entire completion. For example,
 `let id = \(x : _) -> x` needs its hole generalized into a scheme binder and its
@@ -87,11 +88,11 @@ completeness connect this relation to `lower` and `lowerProgram`.
 `Headlines.lower_and_infer_sound` composes lowering with independent input
 typing, annotation fidelity, completed-Core typing, and exact runtime erasure.
 
-`Headlines.elaborateSafe` retains the complete-Core compatibility demonstration
-using `SurfaceBridge.lowerCoreProgram` followed by the same inference engine
-through `InferInput.ofCore`. The compatibility path rejects holeful Core
-lowering and retains its original source-typing and safety contracts; the
-production path preserves partial annotations directly.
+The opt-in `FHM.Headlines.CompleteCore` module retains
+`Headlines.elaborateSafe`, using `SurfaceBridge.lowerCoreProgram` followed by the
+same inference engine through `InferInput.ofCore`. The compatibility path
+rejects holeful Core lowering and retains its original source-typing and safety
+contracts; the production path preserves partial annotations directly.
 
 Successful production provenance lowering is proved to produce the same term
 as canonical surface-to-input lowering. This equality concerns the input term,

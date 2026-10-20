@@ -31,6 +31,12 @@ name = "FHMExamples"
 roots = ["FHM.Examples"]
 
 [[lean_lib]]
+name = "FHMCompatibility"
+# Historical complete-Core lowering, surface typing, and safety façade.
+# The production/default path uses `FHM.SurfaceBridge` and `FHM.Headlines`.
+roots = ["FHM.SurfaceBridge.CompleteCore", "FHM.Headlines.CompleteCore"]
+
+[[lean_lib]]
 name = "FHMHistorical"
 # Preserved prototype proofs; build with `lake build FHMHistorical`.
 roots = ["FHM.AnnotatedPolyRecErasure", "FHM.AnnotatedPolyRecHybrid"]

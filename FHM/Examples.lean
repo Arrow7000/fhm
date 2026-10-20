@@ -1,5 +1,5 @@
 import FHM.Pretty
-import FHM.SurfaceBridge
+import FHM.SurfaceBridge.CompleteCore
 import FHM.InferW
 
 /-! # End-to-end demos
