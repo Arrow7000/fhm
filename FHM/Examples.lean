@@ -1,6 +1,7 @@
 import FHM.Pretty
 import FHM.SurfaceBridge.CompleteCore
 import FHM.InferW
+import FHM.RuntimeTyping.PolyRecCanary
 
 /-! # End-to-end demos
 
