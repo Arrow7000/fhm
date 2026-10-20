@@ -918,6 +918,18 @@ private theorem ctxBelow_of_all {ctx : Ctx} {frontier : Nat}
   intro v hv
   exact of_decide_eq_true (List.all_eq_true.mp h v (Env.mem_freeVars_iff.mpr ⟨scheme, hscheme, hv⟩))
 
+/-- The semantic output shared by the certificate and public inference APIs. -/
+structure InferResult where
+  frontier : Nat
+  subst : Subst
+  completedExpr : Expr
+  ty : Ty
+
+/-- The internal inference result, including source-indexed metadata. -/
+structure InferCoreResult extends InferResult where
+  nodeTypes : InferredNodeTypes
+  binderSchemes : InferredBinderSchemes
+
 structure RecComponentResult where
   frontier : Nat
   subst : Subst
@@ -933,8 +945,8 @@ mutual
 /-- One metadata-producing inference path for all input syntax. Recursive partial signatures remain
 monomorphic until their component is solved and its ordered prefix is validated. -/
 def inferWithTypesCore (K : List Nat) (frontier : Nat) (ctx : Ctx) (input : InferInput) (F : List Ty := []) :
-    Option { result : Nat × Subst × Expr × Ty × InferredNodeTypes × InferredBinderSchemes //
-      Infer K F frontier ctx input result.1 result.2.1 result.2.2.1 result.2.2.2.1 } :=
+    Option { result : InferCoreResult //
+      Infer K F frontier ctx input result.frontier result.subst result.completedExpr result.ty } :=
   if hK : K.all (fun v => decide (v < frontier)) = true then
     if hctx : ctx.env.freeVars.all (fun v => decide (v < frontier)) = true then
       if hF : (softVars F).all (fun v => decide (v < frontier)) = true then
@@ -942,16 +954,52 @@ def inferWithTypesCore (K : List Nat) (frontier : Nat) (ctx : Ctx) (input : Infe
           have hrawScope : SourceScope K F input := fun v hv =>
             of_decide_eq_true (List.all_eq_true.mp hsource v hv)
           match input with
-          | .primLit .unit => some ⟨(frontier, [], .primLit .unit, .prim .unit, .root (.prim .unit), []), .primLitUnit⟩
-          | .primLit (.int n) => some ⟨(frontier, [], .primLit (.int n), .prim .int, .root (.prim .int), []), .primLitInt⟩
-          | .primLit (.nat n) => some ⟨(frontier, [], .primLit (.nat n), .prim .nat, .root (.prim .nat), []), .primLitNat⟩
-          | .primLit (.char c) => some ⟨(frontier, [], .primLit (.char c), .prim .char, .root (.prim .char), []), .primLitChar⟩
+          | .primLit .unit => some ⟨{
+              frontier := frontier
+              subst := []
+              completedExpr := .primLit .unit
+              ty := .prim .unit
+              nodeTypes := .root (.prim .unit)
+              binderSchemes := [] }, .primLitUnit⟩
+          | .primLit (.int n) => some ⟨{
+              frontier := frontier
+              subst := []
+              completedExpr := .primLit (.int n)
+              ty := .prim .int
+              nodeTypes := .root (.prim .int)
+              binderSchemes := [] }, .primLitInt⟩
+          | .primLit (.nat n) => some ⟨{
+              frontier := frontier
+              subst := []
+              completedExpr := .primLit (.nat n)
+              ty := .prim .nat
+              nodeTypes := .root (.prim .nat)
+              binderSchemes := [] }, .primLitNat⟩
+          | .primLit (.char c) => some ⟨{
+              frontier := frontier
+              subst := []
+              completedExpr := .primLit (.char c)
+              ty := .prim .char
+              nodeTypes := .root (.prim .char)
+              binderSchemes := [] }, .primLitChar⟩
           | .primBinOp .intAdd =>
               let ty := .arrow (.prim .int) (.arrow (.prim .int) (.prim .int))
-              some ⟨(frontier, [], .primBinOp .intAdd, ty, .root ty, []), .primBinOpIntAdd⟩
+              some ⟨{
+                frontier := frontier
+                subst := []
+                completedExpr := .primBinOp .intAdd
+                ty := ty
+                nodeTypes := .root ty
+                binderSchemes := [] }, .primBinOpIntAdd⟩
           | .primBinOp .intSub =>
               let ty := .arrow (.prim .int) (.arrow (.prim .int) (.prim .int))
-              some ⟨(frontier, [], .primBinOp .intSub, ty, .root ty, []), .primBinOpIntSub⟩
+              some ⟨{
+                frontier := frontier
+                subst := []
+                completedExpr := .primBinOp .intSub
+                ty := ty
+                nodeTypes := .root ty
+                binderSchemes := [] }, .primBinOpIntSub⟩
           | .primBinOp .intLt =>
               match hT : LookupList.get? ctx.ctors ⟨"True"⟩ with
               | none => none
@@ -962,7 +1010,13 @@ def inferWithTypesCore (K : List Nat) (frontier : Nat) (ctx : Ctx) (input : Infe
                   if htc : tc.isBoolCtor = true then
                     if hfc : fc.isBoolCtor = true then
                       let ty := .arrow (.prim .int) (.arrow (.prim .int) (.customTy ⟨"Bool"⟩ []))
-                      some ⟨(frontier, [], .primBinOp .intLt, ty, .root ty, []),
+                      some ⟨{
+                            frontier := frontier
+                            subst := []
+                            completedExpr := .primBinOp .intLt
+                            ty := ty
+                            nodeTypes := .root ty
+                            binderSchemes := [] },
                             .primBinOpIntLt hT (Ctor.isBoolCtor_iff.mp htc) hF (Ctor.isBoolCtor_iff.mp hfc)⟩
                     else none
                   else none
@@ -976,7 +1030,13 @@ def inferWithTypesCore (K : List Nat) (frontier : Nat) (ctx : Ctx) (input : Infe
                   if htc : tc.isBoolCtor = true then
                     if hfc : fc.isBoolCtor = true then
                       let ty := .arrow (.prim .char) (.arrow (.prim .char) (.customTy ⟨"Bool"⟩ []))
-                      some ⟨(frontier, [], .primBinOp .charLt, ty, .root ty, []),
+                      some ⟨{
+                            frontier := frontier
+                            subst := []
+                            completedExpr := .primBinOp .charLt
+                            ty := ty
+                            nodeTypes := .root ty
+                            binderSchemes := [] },
                             .primBinOpCharLt hT (Ctor.isBoolCtor_iff.mp htc) hF (Ctor.isBoolCtor_iff.mp hfc)⟩
                     else none
                   else none
@@ -985,69 +1045,113 @@ def inferWithTypesCore (K : List Nat) (frontier : Nat) (ctx : Ctx) (input : Infe
               | none => none
               | some scheme =>
                   let ty := scheme.openVars (freshVars frontier scheme.paramCount)
-                  some ⟨(frontier + scheme.paramCount, [], .var index, ty, .root ty, []), .var hlook⟩
+                  some ⟨{
+                    frontier := frontier + scheme.paramCount
+                    subst := []
+                    completedExpr := .var index
+                    ty := ty
+                    nodeTypes := .root ty
+                    binderSchemes := [] }, .var hlook⟩
           | .ctor name =>
               match hlook : LookupList.get? ctx.ctors name with
               | none => none
               | some ctor =>
                   let ty := ctor.toTy.openVars (freshVars frontier ctor.paramCount)
-                  some ⟨(frontier + ctor.paramCount, [], .ctor name, ty, .root ty, []), .ctor hlook⟩
+                  some ⟨{
+                    frontier := frontier + ctor.paramCount
+                    subst := []
+                    completedExpr := .ctor name
+                    ty := ty
+                    nodeTypes := .root ty
+                    binderSchemes := [] }, .ctor hlook⟩
           | .lambda ann body =>
               match seed (K ++ softVars F) frontier ann with
               | none => none
               | some ⟨(initial, param), hs⟩ =>
                   match inferWithTypesCore K initial { ctx with env := PolyTy.mkTrivial param :: ctx.env } body F with
                   | none => none
-                  | some ⟨(next, subst, completed, bodyTy, bodyTypes, bodySchemes), hb⟩ =>
-                      let ty := .arrow (subst.onTy param) bodyTy
-                      some ⟨(next, subst, lambdaOutput ann param subst completed, ty,
-                        .root ty ++ bodyTypes.below .lambdaBody, bodySchemes.below .lambdaBody), .lambda hrawScope hs hb⟩
+                  | some ⟨bodyResult, hb⟩ =>
+                      let ty := .arrow (bodyResult.subst.onTy param) bodyResult.ty
+                      some ⟨{
+                        frontier := bodyResult.frontier
+                        subst := bodyResult.subst
+                        completedExpr := lambdaOutput ann param bodyResult.subst bodyResult.completedExpr
+                        ty := ty
+                        nodeTypes := .root ty ++ bodyResult.nodeTypes.below .lambdaBody
+                        binderSchemes := bodyResult.binderSchemes.below .lambdaBody }, .lambda hrawScope hs hb⟩
           | .app f arg =>
               match inferWithTypesCore K frontier ctx f F with
               | none => none
-              | some ⟨(first, s1, fOut, fTy, fTypes, fSchemes), hf⟩ =>
-                  match inferWithTypesCore K first (s1.onCtx ctx) (arg.substTyFvars s1) (substSoft s1 F) with
+              | some ⟨fResult, hf⟩ =>
+                  match inferWithTypesCore K fResult.frontier (fResult.subst.onCtx ctx)
+                      (arg.substTyFvars fResult.subst) (substSoft fResult.subst F) with
                   | none => none
-                  | some ⟨(second, s2, argOut, argTy, argTypes, argSchemes), ha⟩ =>
-                      match unifyCoreK K (s2.onTy fTy) (.arrow argTy (.fvar second)) with
+                  | some ⟨argResult, ha⟩ =>
+                      match unifyCoreK K (argResult.subst.onTy fResult.ty)
+                          (.arrow argResult.ty (.fvar argResult.frontier)) with
                       | none => none
                       | some ⟨s3, hu, hd⟩ =>
-                          let ty := s3.onTy (.fvar second)
-                          some ⟨(second + 1, s1 ++ s2 ++ s3,
-                            .app (fOut.substTyFvars (s2 ++ s3)) (argOut.substTyFvars s3), ty,
-                            .root ty ++ (fTypes.onSubst (s2 ++ s3)).below .appFun ++
-                              (argTypes.onSubst s3).below .appArg,
-                            (fSchemes.onSubst (s2 ++ s3)).below .appFun ++
-                              (argSchemes.onSubst s3).below .appArg), .app hrawScope hf ha ⟨hu, hd⟩⟩
+                          let ty := s3.onTy (.fvar argResult.frontier)
+                          some ⟨{
+                            frontier := argResult.frontier + 1
+                            subst := fResult.subst ++ argResult.subst ++ s3
+                            completedExpr := .app
+                              (fResult.completedExpr.substTyFvars (argResult.subst ++ s3))
+                              (argResult.completedExpr.substTyFvars s3)
+                            ty := ty
+                            nodeTypes := .root ty ++
+                              (fResult.nodeTypes.onSubst (argResult.subst ++ s3)).below .appFun ++
+                              (argResult.nodeTypes.onSubst s3).below .appArg
+                            binderSchemes :=
+                              (fResult.binderSchemes.onSubst (argResult.subst ++ s3)).below .appFun ++
+                              (argResult.binderSchemes.onSubst s3).below .appArg },
+                            .app hrawScope hf ha ⟨hu, hd⟩⟩
           | .letIn ann rhs body =>
             if ann.isSignature then
               let written := freshVars frontier ann.paramCount
               if hraw : rhs.rigidVars.all (fun v => decide (v ∈ K ++ softVars F)) = true then
                 match inferWithTypesCore (K ++ written) (frontier + ann.paramCount) ctx (rhs.openTyVars written) F with
                 | none => none
-                | some ⟨(first, s1, rhsOut, rhsTy, rhsTypes, rhsSchemes), hr⟩ =>
-                  match checkSignature K (substSoft s1 F) written first (ann.substTyFvars s1) rhsTy with
+                | some ⟨rhsResult, hr⟩ =>
+                  match checkSignature K (substSoft rhsResult.subst F) written rhsResult.frontier
+                      (ann.substTyFvars rhsResult.subst) rhsResult.ty with
                   | none => none
                   | some ⟨(checked, sCheck), hc⟩ =>
-                    let checkedCtx := sCheck.onCtx (s1.onCtx ctx)
-                    let checkedTy := sCheck.onTy rhsTy
-                    let checkedOut := rhsOut.substTyFvars sCheck
-                    let scheme := signatureScheme (ann.substTyFvars (s1 ++ sCheck)) (K ++ softVars (substSoft (s1 ++ sCheck) F)) written checkedCtx checkedTy
-                    let names := signatureNames (ann.substTyFvars (s1 ++ sCheck)) (K ++ softVars (substSoft (s1 ++ sCheck) F)) written checkedCtx checkedTy
-                    if hescape : ∀ name ∈ written, name ∉ checkedCtx.env.freeVars ++ softVars (substSoft (s1 ++ sCheck) F) then
-                      match inferWithTypesCore K checked { checkedCtx with env := scheme :: checkedCtx.env } (body.substTyFvars (s1 ++ sCheck)) (substSoft (s1 ++ sCheck) F) with
+                    let checkedCtx := sCheck.onCtx (rhsResult.subst.onCtx ctx)
+                    let checkedTy := sCheck.onTy rhsResult.ty
+                    let checkedOut := rhsResult.completedExpr.substTyFvars sCheck
+                    let scheme := signatureScheme (ann.substTyFvars (rhsResult.subst ++ sCheck))
+                      (K ++ softVars (substSoft (rhsResult.subst ++ sCheck) F)) written checkedCtx checkedTy
+                    let names := signatureNames (ann.substTyFvars (rhsResult.subst ++ sCheck))
+                      (K ++ softVars (substSoft (rhsResult.subst ++ sCheck) F)) written checkedCtx checkedTy
+                    if hescape : ∀ name ∈ written, name ∉ checkedCtx.env.freeVars ++
+                        softVars (substSoft (rhsResult.subst ++ sCheck) F) then
+                      match inferWithTypesCore K checked { checkedCtx with env := scheme :: checkedCtx.env }
+                          (body.substTyFvars (rhsResult.subst ++ sCheck))
+                          (substSoft (rhsResult.subst ++ sCheck) F) with
                       | none => none
-                      | some ⟨(next, s2, bodyOut, bodyTy, bodyTypes, bodySchemes), hb⟩ =>
-                        let rhsFinalTypes := (((rhsTypes.onSubst sCheck).closeTyVars written).onSubst s2)
+                      | some ⟨bodyResult, hb⟩ =>
+                        let rhsFinalTypes := (((rhsResult.nodeTypes.onSubst sCheck).closeTyVars written)
+                            |>.onSubst bodyResult.subst)
                           |>.underTyBinders ann.paramCount |>.below .letRhs
-                        let rhsFinalSchemes := (((rhsSchemes.onSubst sCheck).closeTyVars written).onSubst s2)
+                        let rhsFinalSchemes := (((rhsResult.binderSchemes.onSubst sCheck).closeTyVars written)
+                            |>.onSubst bodyResult.subst)
                           |>.underTyBinders ann.paramCount |>.below .letRhs
                         let inferred : InferredBinderSchemes := match ann with
-                          | .partialForall _ _ => [{ site := .letIn [], scheme := s2.onPolyTy scheme, tyDepth := 0 }]
+                          | .partialForall _ _ => [{
+                              site := .letIn []
+                              scheme := bodyResult.subst.onPolyTy scheme
+                              tyDepth := 0 }]
                           | _ => []
-                        some ⟨(next, s1 ++ sCheck ++ s2, letOutput scheme names checkedOut bodyOut s2, bodyTy,
-                          .root bodyTy ++ rhsFinalTypes ++ bodyTypes.below .letBody,
-                          inferred ++ rhsFinalSchemes ++ bodySchemes.below .letBody),
+                        some ⟨{
+                          frontier := bodyResult.frontier
+                          subst := rhsResult.subst ++ sCheck ++ bodyResult.subst
+                          completedExpr := letOutput scheme names checkedOut bodyResult.completedExpr bodyResult.subst
+                          ty := bodyResult.ty
+                          nodeTypes := .root bodyResult.ty ++ rhsFinalTypes ++
+                            bodyResult.nodeTypes.below .letBody
+                          binderSchemes := inferred ++ rhsFinalSchemes ++
+                            bodyResult.binderSchemes.below .letBody },
                           .letSignature hrawScope rfl (fun name hn hk => by
                             have hlt : name < frontier := by
                               rcases List.mem_append.mp hk with hk | hk
@@ -1061,41 +1165,59 @@ def inferWithTypesCore (K : List Nat) (frontier : Nat) (ctx : Ctx) (input : Infe
             else
                   match inferWithTypesCore K frontier ctx rhs F with
                   | none => none
-                  | some ⟨(first, s1, rhsOut, rhsTy, rhsTypes, rhsSchemes), hr⟩ =>
-                      match checkLet K (substSoft s1 F) first (ann.substTyFvars s1) rhsTy with
+                  | some ⟨rhsResult, hr⟩ =>
+                      match checkLet K (substSoft rhsResult.subst F) rhsResult.frontier
+                          (ann.substTyFvars rhsResult.subst) rhsResult.ty with
                       | none => none
                       | some ⟨(checked, sCheck), hc⟩ =>
-                          let checkedCtx := sCheck.onCtx (s1.onCtx ctx)
-                          let checkedTy := sCheck.onTy rhsTy
-                          let checkedOut := rhsOut.substTyFvars sCheck
-                          let scheme := genScheme (K ++ softVars (substSoft (s1 ++ sCheck) F)) checkedCtx.env checkedTy
-                          let names := genVars (K ++ softVars (substSoft (s1 ++ sCheck) F)) checkedCtx.env checkedTy
-                          match inferWithTypesCore K checked { checkedCtx with env := scheme :: checkedCtx.env } (body.substTyFvars (s1 ++ sCheck)) (substSoft (s1 ++ sCheck) F) with
+                          let checkedCtx := sCheck.onCtx (rhsResult.subst.onCtx ctx)
+                          let checkedTy := sCheck.onTy rhsResult.ty
+                          let checkedOut := rhsResult.completedExpr.substTyFvars sCheck
+                          let scheme := genScheme (K ++ softVars (substSoft (rhsResult.subst ++ sCheck) F))
+                            checkedCtx.env checkedTy
+                          let names := genVars (K ++ softVars (substSoft (rhsResult.subst ++ sCheck) F))
+                            checkedCtx.env checkedTy
+                          match inferWithTypesCore K checked { checkedCtx with env := scheme :: checkedCtx.env }
+                              (body.substTyFvars (rhsResult.subst ++ sCheck))
+                              (substSoft (rhsResult.subst ++ sCheck) F) with
                           | none => none
-                          | some ⟨(next, s2, bodyOut, bodyTy, bodyTypes, bodySchemes), hb⟩ =>
+                          | some ⟨bodyResult, hb⟩ =>
                               let binder : InferredBinderScheme :=
-                                { site := .letIn [], scheme := s2.onPolyTy scheme, tyDepth := 0 }
-                              some ⟨(next, s1 ++ sCheck ++ s2,
-                                letOutput scheme names checkedOut bodyOut s2, bodyTy,
-                                .root bodyTy ++ (rhsTypes.onSubst (sCheck ++ s2)).below .letRhs ++
-                                  bodyTypes.below .letBody,
-                                binder :: (rhsSchemes.onSubst (sCheck ++ s2)).below .letRhs ++
-                                  bodySchemes.below .letBody), .letIn hrawScope hr hc hb⟩
+                                { site := .letIn [], scheme := bodyResult.subst.onPolyTy scheme, tyDepth := 0 }
+                              some ⟨{
+                                frontier := bodyResult.frontier
+                                subst := rhsResult.subst ++ sCheck ++ bodyResult.subst
+                                completedExpr := letOutput scheme names checkedOut bodyResult.completedExpr
+                                  bodyResult.subst
+                                ty := bodyResult.ty
+                                nodeTypes := .root bodyResult.ty ++
+                                  (rhsResult.nodeTypes.onSubst (sCheck ++ bodyResult.subst)).below .letRhs ++
+                                  bodyResult.nodeTypes.below .letBody
+                                binderSchemes := binder ::
+                                  (rhsResult.binderSchemes.onSubst (sCheck ++ bodyResult.subst)).below .letRhs ++
+                                  bodyResult.binderSchemes.below .letBody }, .letIn hrawScope hr hc hb⟩
           | .match_ scrut branches =>
               match inferWithTypesCore K frontier ctx scrut F with
               | none => none
-              | some ⟨(first, s1, scrutOut, scrutTy, scrutTypes, scrutSchemes), hs⟩ =>
+              | some ⟨scrutResult, hs⟩ =>
                 match hh : branches.head? with
                 | none => none
                 | some _ =>
-                  match inferBranchesWithTypesCore K (first + 1) (s1.onCtx ctx)
-                      scrutTy (.fvar first) 0 (substInputBranches s1 branches) (substSoft s1 F) with
+                  match inferBranchesWithTypesCore K (scrutResult.frontier + 1)
+                      (scrutResult.subst.onCtx ctx) scrutResult.ty (.fvar scrutResult.frontier) 0
+                      (substInputBranches scrutResult.subst branches) (substSoft scrutResult.subst F) with
                   | none => none
                   | some ⟨(next, s2, branchOut, branchTypes, branchSchemes), hb⟩ =>
-                    let ty := s2.onTy (.fvar first)
-                    some ⟨(next, s1 ++ s2, .match_ (scrutOut.substTyFvars s2) branchOut, ty,
-                      .root ty ++ (scrutTypes.onSubst s2).below .matchScrut ++ branchTypes,
-                      (scrutSchemes.onSubst s2).below .matchScrut ++ branchSchemes),
+                    let ty := s2.onTy (.fvar scrutResult.frontier)
+                    some ⟨{
+                      frontier := next
+                      subst := scrutResult.subst ++ s2
+                      completedExpr := .match_ (scrutResult.completedExpr.substTyFvars s2) branchOut
+                      ty := ty
+                      nodeTypes := .root ty ++ (scrutResult.nodeTypes.onSubst s2).below .matchScrut ++
+                        branchTypes
+                      binderSchemes := (scrutResult.binderSchemes.onSubst s2).below .matchScrut ++
+                        branchSchemes },
                       .match_ hrawScope hs (by intro heq; rw [heq] at hh; simp at hh) hb⟩
           | .letRec anns bindings body =>
               if hwf : anns.all (fun ann => match ann with
@@ -1119,14 +1241,20 @@ def inferWithTypesCore (K : List Nat) (frontier : Nat) (ctx : Ctx) (input : Infe
                         match inferWithTypesCore K signed.frontier (signed.state.rhsCtx (solved.onCtx ctx))
                             (body.substTyFvars solved) (substSoft solved F) with
                         | none => none
-                        | some ⟨(next, s3, bodyOut, bodyTy, bodyTypes, bodySchemes), hb⟩ =>
-                          let final := signed.state.onSubst s3
-                          let finalSchemes := schemes.map s3.onPolyTy
-                          some ⟨(next, strata.subst ++ signed.subst ++ s3,
-                            .letRec (finalSchemes.map some) (outputs.map (Expr.substTyFvars s3)) bodyOut,
-                            bodyTy, .root bodyTy ++ finalRecNodeTypes anns final ++ bodyTypes.below .letRecBody,
-                            inferredRecSchemes anns finalSchemes ++ finalRecBinderSchemes anns final ++
-                              bodySchemes.below .letRecBody),
+                        | some ⟨bodyResult, hb⟩ =>
+                          let final := signed.state.onSubst bodyResult.subst
+                          let finalSchemes := schemes.map bodyResult.subst.onPolyTy
+                          some ⟨{
+                            frontier := bodyResult.frontier
+                            subst := strata.subst ++ signed.subst ++ bodyResult.subst
+                            completedExpr := .letRec (finalSchemes.map some)
+                              (outputs.map (Expr.substTyFvars bodyResult.subst)) bodyResult.completedExpr
+                            ty := bodyResult.ty
+                            nodeTypes := .root bodyResult.ty ++ finalRecNodeTypes anns final ++
+                              bodyResult.nodeTypes.below .letRecBody
+                            binderSchemes := inferredRecSchemes anns finalSchemes ++
+                              finalRecBinderSchemes anns final ++
+                              bodyResult.binderSchemes.below .letRecBody },
                             .letRec ⟨hrawScope, ctxBelow_of_all hctx,
                               (fun v hv => of_decide_eq_true (List.all_eq_true.mp hK v hv)),
                               (fun v hv => of_decide_eq_true (List.all_eq_true.mp hF v hv))⟩ (fun scheme hmem => PolyTy.wf_iff_bvarsBelow.mp (List.all_eq_true.mp hwf (.complete scheme) hmem))
@@ -1153,20 +1281,25 @@ def inferBranchesWithTypesCore (K : List Nat) (Φ : Nat) (ctx : Ctx) (scrutTy : 
     | (.wildcard, body) :: rest =>
         match inferWithTypesCore K Φ ctx body F with
         | none => none
-        | some ⟨(Φ₁, S₁, bodyOut, τb, bodyTypes, bodySchemes), hbody⟩ =>
-          match unifyCoreK K τb (S₁.onTy ρ) with
+        | some ⟨bodyResult, hbody⟩ =>
+          match unifyCoreK K bodyResult.ty (bodyResult.subst.onTy ρ) with
           | none => none
           | some ⟨S₂, huni, hav₂⟩ =>
-            match inferBranchesWithTypesCore K Φ₁ (S₂.onCtx (S₁.onCtx ctx))
-                (S₂.onTy (S₁.onTy scrutTy)) (S₂.onTy (S₁.onTy ρ)) (branchIndex + 1) (substInputBranches (S₁ ++ S₂) rest) (substSoft (S₁ ++ S₂) F) with
+            match inferBranchesWithTypesCore K bodyResult.frontier
+                (S₂.onCtx (bodyResult.subst.onCtx ctx))
+                (S₂.onTy (bodyResult.subst.onTy scrutTy))
+                (S₂.onTy (bodyResult.subst.onTy ρ)) (branchIndex + 1)
+                (substInputBranches (bodyResult.subst ++ S₂) rest)
+                (substSoft (bodyResult.subst ++ S₂) F) with
             | none => none
             | some ⟨(Φ₂, S₃, restOut, restTypes, restSchemes), hrest⟩ =>
-              let schemes := (bodySchemes.onSubst (S₂ ++ S₃)).below
+              let schemes := (bodyResult.binderSchemes.onSubst (S₂ ++ S₃)).below
                 (.matchBranch branchIndex) ++ restSchemes
-              let nodeTypes := (bodyTypes.onSubst (S₂ ++ S₃)).below
+              let nodeTypes := (bodyResult.nodeTypes.onSubst (S₂ ++ S₃)).below
                 (.matchBranch branchIndex) ++ restTypes
-              some ⟨(Φ₂, S₁ ++ S₂ ++ S₃,
-                  (.wildcard, bodyOut.substTyFvars (S₂ ++ S₃)) :: restOut, nodeTypes, schemes),
+              some ⟨(Φ₂, bodyResult.subst ++ S₂ ++ S₃,
+                  (.wildcard, bodyResult.completedExpr.substTyFvars (S₂ ++ S₃)) :: restOut,
+                  nodeTypes, schemes),
                   .consWild hrawScope hbody ⟨huni, hav₂⟩ hrest⟩
     | (.named c n, body) :: rest =>
         match hget : LookupList.get? ctx.ctors c with
@@ -1184,21 +1317,25 @@ def inferBranchesWithTypesCore (K : List Nat) (Φ : Nat) (ctx : Ctx) (scrutTy : 
                       ++ (S₀.onCtx ctx).env }
                   (body.substTyFvars S₀) (substSoft S₀ F) with
               | none => none
-              | some ⟨(Φ₁, S₁, bodyOut, τb, bodyTypes, bodySchemes), hbody⟩ =>
-                match unifyCoreK K τb (S₁.onTy (S₀.onTy ρ)) with
+              | some ⟨bodyResult, hbody⟩ =>
+                match unifyCoreK K bodyResult.ty (bodyResult.subst.onTy (S₀.onTy ρ)) with
                 | none => none
                 | some ⟨S₂, huni, hav₂⟩ =>
-                  match inferBranchesWithTypesCore K Φ₁ (S₂.onCtx (S₁.onCtx (S₀.onCtx ctx)))
-                      (S₂.onTy (S₁.onTy (S₀.onTy scrutTy))) (S₂.onTy (S₁.onTy (S₀.onTy ρ)))
-                      (branchIndex + 1) (substInputBranches (S₀ ++ S₁ ++ S₂) rest) (substSoft (S₀ ++ S₁ ++ S₂) F) with
+                  match inferBranchesWithTypesCore K bodyResult.frontier
+                      (S₂.onCtx (bodyResult.subst.onCtx (S₀.onCtx ctx)))
+                      (S₂.onTy (bodyResult.subst.onTy (S₀.onTy scrutTy)))
+                      (S₂.onTy (bodyResult.subst.onTy (S₀.onTy ρ)))
+                      (branchIndex + 1) (substInputBranches (S₀ ++ bodyResult.subst ++ S₂) rest)
+                      (substSoft (S₀ ++ bodyResult.subst ++ S₂) F) with
                   | none => none
                   | some ⟨(Φ₂, S₃, restOut, restTypes, restSchemes), hrest⟩ =>
-                    let schemes := (bodySchemes.onSubst (S₂ ++ S₃)).below
+                    let schemes := (bodyResult.binderSchemes.onSubst (S₂ ++ S₃)).below
                       (.matchBranch branchIndex) ++ restSchemes
-                    let nodeTypes := (bodyTypes.onSubst (S₂ ++ S₃)).below
+                    let nodeTypes := (bodyResult.nodeTypes.onSubst (S₂ ++ S₃)).below
                       (.matchBranch branchIndex) ++ restTypes
-                    some ⟨(Φ₂, S₀ ++ S₁ ++ S₂ ++ S₃,
-                        (.named c n, bodyOut.substTyFvars (S₂ ++ S₃)) :: restOut, nodeTypes, schemes),
+                    some ⟨(Φ₂, S₀ ++ bodyResult.subst ++ S₂ ++ S₃,
+                        (.named c n, bodyResult.completedExpr.substTyFvars (S₂ ++ S₃)) :: restOut,
+                        nodeTypes, schemes),
                         .cons hrawScope hget hcont ⟨huni0, hav0⟩ hbody ⟨huni, hav₂⟩ hrest⟩
           else none
   else none
@@ -1217,18 +1354,20 @@ def inferRecComponentWithTypesCore (K : List Nat) (F : List Ty) (members : List 
       if hm : index ∈ members then
         match inferWithTypesCore K frontier ctx rhs F with
         | none => none
-        | some ⟨(first, s1, output, ty, types, schemes), hi⟩ =>
-          match unifyCoreK K ty (s1.onTy expected) with
+        | some ⟨rhsResult, hi⟩ =>
+          match unifyCoreK K rhsResult.ty (rhsResult.subst.onTy expected) with
           | none => none
           | some ⟨s2, hu, hav⟩ =>
-            match inferRecComponentWithTypesCore K (substSoft (s1 ++ s2) F) members (index + 1) first
-                (s2.onCtx (s1.onCtx ctx)) (rest.map (InferInput.substTyFvars (s1 ++ s2)))
-                (specs.map (RecSpec.onSubstSource (s1 ++ s2))) with
+            match inferRecComponentWithTypesCore K (substSoft (rhsResult.subst ++ s2) F) members
+                (index + 1) rhsResult.frontier (s2.onCtx (rhsResult.subst.onCtx ctx))
+                (rest.map (InferInput.substTyFvars (rhsResult.subst ++ s2)))
+                (specs.map (RecSpec.onSubstSource (rhsResult.subst ++ s2))) with
             | none => none
             | some ⟨tail, ht⟩ =>
-              some ⟨⟨tail.frontier, s1 ++ s2 ++ tail.subst,
-                some (output.substTyFvars (s2 ++ tail.subst)) :: tail.outputs,
-                (RecFacts.mk types schemes).onSubst (s2 ++ tail.subst) :: tail.facts⟩,
+              some ⟨⟨tail.frontier, rhsResult.subst ++ s2 ++ tail.subst,
+                some (rhsResult.completedExpr.substTyFvars (s2 ++ tail.subst)) :: tail.outputs,
+                (RecFacts.mk rhsResult.nodeTypes rhsResult.binderSchemes).onSubst
+                  (s2 ++ tail.subst) :: tail.facts⟩,
                 .consSelected hm hi ⟨hu, hav⟩ ht⟩
       else
         match inferRecComponentWithTypesCore K F members (index + 1) frontier ctx rest specs with
@@ -1301,21 +1440,23 @@ def inferRecSignedWithTypesCore (K : List Nat) (F : List Ty) (index frontier : N
           match inferWithTypesCore (K ++ written) (frontier + scheme.paramCount)
               (state.rhsCtx ctx) (rhs.openTyVars written) F with
           | none => none
-          | some ⟨(first, s1, output, ty, types, schemes), hi⟩ =>
-            match unifyCoreK (K ++ written) ty ((s1.onPolyTy scheme).openVars written) with
+          | some ⟨rhsResult, hi⟩ =>
+            match unifyCoreK (K ++ written) rhsResult.ty
+                ((rhsResult.subst.onPolyTy scheme).openVars written) with
             | none => none
             | some ⟨s2, hu, hav⟩ =>
-              let solved := s1 ++ s2
+              let solved := rhsResult.subst ++ s2
               let checked := state.onSubst solved
               if he : ∀ y ∈ written,
                   y ∉ (checked.rhsCtx (solved.onCtx ctx)).env.freeVars ++ softVars (substSoft solved F) then
-                match inferRecSignedWithTypesCore K (substSoft solved F) (index + 1) first (solved.onCtx ctx)
+                match inferRecSignedWithTypesCore K (substSoft solved F) (index + 1)
+                    rhsResult.frontier (solved.onCtx ctx)
                     (anns.map (BindingAnn.substTyFvars solved)) (rest.map (InferInput.substTyFvars solved))
-                    (checked.setSigned index written (output.substTyFvars s2)
-                      ((RecFacts.mk types schemes).onSubst s2)) with
+                    (checked.setSigned index written (rhsResult.completedExpr.substTyFvars s2)
+                      ((RecFacts.mk rhsResult.nodeTypes rhsResult.binderSchemes).onSubst s2)) with
                 | none => none
                 | some ⟨tail, ht⟩ =>
-                  some ⟨⟨tail.frontier, s1 ++ s2 ++ tail.subst, tail.state⟩,
+                  some ⟨⟨tail.frontier, rhsResult.subst ++ s2 ++ tail.subst, tail.state⟩,
                     .cons (PolyTy.wf_iff_bvarsBelow.mp hwf)
                       (fun v hv => of_decide_eq_true (List.all_eq_true.mp hraw v hv)) hi ⟨hu, hav⟩ he ht⟩
               else none
@@ -1333,25 +1474,21 @@ end
 
 /-- The plain certificate API projects the one metadata-producing run. -/
 def inferCore (K : List Nat) (frontier : Nat) (ctx : Ctx) (input : InferInput) :
-    Option { result : Nat × Subst × Expr × Ty //
-      Infer K [] frontier ctx input result.1 result.2.1 result.2.2.1 result.2.2.2 } :=
+    Option { result : InferResult //
+      Infer K [] frontier ctx input result.frontier result.subst result.completedExpr result.ty } :=
   match inferWithTypesCore K frontier ctx input with
   | none => none
-  | some ⟨(next, subst, output, ty, _, _), h⟩ => some ⟨(next, subst, output, ty), h⟩
+  | some ⟨result, h⟩ => some ⟨result.toInferResult, h⟩
 
 @[simp] theorem inferCore_isSome (K : List Nat) (frontier : Nat) (ctx : Ctx) (input : InferInput) :
     (inferCore K frontier ctx input).isSome = (inferWithTypesCore K frontier ctx input).isSome := by
   unfold inferCore
   cases inferWithTypesCore K frontier ctx input with
   | none => rfl
-  | some result => rcases result with ⟨⟨next, subst, output, ty, nodes, schemes⟩, h⟩; rfl
+  | some result => rfl
 
 /-- Public artifacts and completed ordinary Core come from the same inference. -/
-structure InferenceResult where
-  frontier : Nat
-  subst : Subst
-  completedExpr : Expr
-  ty : Ty
+structure InferenceResult extends InferResult where
   nodeTypes : NodeTypeMap
   binderSchemes : BinderSchemeMap
 
@@ -1362,15 +1499,13 @@ theorem InferInput.lt_freshFloor {input : InferInput} {v : Nat} (h : v ∈ input
 
 def inferWithTypes (ctors : CtorEnv) (input : InferInput) : Option InferenceResult :=
   (inferWithTypesCore input.rigidVars input.freshFloor ⟨[], ctors⟩ input).map fun result =>
-    { frontier := result.val.1
-      subst := result.val.2.1
-      completedExpr := result.val.2.2.1
-      ty := result.val.2.2.2.1
-      nodeTypes := result.val.2.2.2.2.1.toMap
-      binderSchemes := result.val.2.2.2.2.2.toMap }
+    {
+      toInferResult := result.val.toInferResult
+      nodeTypes := result.val.nodeTypes.toMap
+      binderSchemes := result.val.binderSchemes.toMap }
 
 def principalType (ctors : CtorEnv) (input : InferInput) : Option Ty :=
-  (inferCore input.rigidVars input.freshFloor ⟨[], ctors⟩ input).map (·.val.2.2.2)
+  (inferCore input.rigidVars input.freshFloor ⟨[], ctors⟩ input).map (·.val.ty)
 
 def typecheck (ctors : CtorEnv) (input : InferInput) : Option PolyTy :=
   (principalType ctors input).map (genScheme [] [])
@@ -1384,7 +1519,7 @@ theorem inferWithTypes_infer {ctors : CtorEnv} {input : InferInput} {result : In
   cases hcore : inferWithTypesCore input.rigidVars input.freshFloor ⟨[], ctors⟩ input with
   | none => simp only [hcore, Option.map_none, reduceCtorEq] at h
   | some r =>
-    rcases r with ⟨⟨next, subst, output, ty, nodes, schemes⟩, hi⟩
+    rcases r with ⟨coreResult, hi⟩
     simp only [hcore, Option.map_some, Option.some.injEq] at h
     subst result
     exact hi

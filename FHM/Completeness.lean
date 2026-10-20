@@ -7303,7 +7303,7 @@ def InferWithTypesCoreSourceComplete (input : InferInput) : Prop :=
   | rhs::rest,.mono expected::specs =>
     by_cases hm : index ∈ members
     · have hTyping := hcandidate 0 rhs expected (by simpa using hm) rfl rfl
-      obtain ⟨⟨⟨first,s1,output,ty,types,schemes⟩,hi⟩,hresult⟩ := Option.isSome_iff_exists.mp
+      obtain ⟨⟨⟨⟨first,s1,output,ty⟩,types,schemes⟩,hi⟩,hresult⟩ := Option.isSome_iff_exists.mp
         (hProducer rhs (by simp only [sizeBindings];omega) K F frontier ctx ambient (ambient.onTy expected) P
           (hscope rhs List.mem_cons_self) hctxWF hctx hK hF hambient hfixK hP hfixP hTyping)
       obtain ⟨R1,hR1,hty,hR1P,hag1⟩ := hPrincipal (by simp only [sizeBindings];omega) hi
@@ -7537,7 +7537,7 @@ theorem inferWithTypesCore_sourceComplete_lambda
   have hbody := ih body (Nat.le_refl _) K F initial _ U resultD P hbodyScope hbodywf hbodybelow
     (fun k hk => Nat.lt_of_lt_of_le (hK k hk) hle) (fun t ht => (hF t ht).mono hle)
     hU hUfix (fun p hp => Nat.lt_of_lt_of_le (hP p hp) hle) hUP (by rwa [hctxeq, hsourceeq])
-  obtain ⟨⟨⟨next, subst, completed, bodyTy, bodyTypes, bodySchemes⟩, hb⟩, hbodyResult⟩ :=
+  obtain ⟨⟨⟨⟨next, subst, completed, bodyTy⟩, bodyTypes, bodySchemes⟩, hb⟩, hbodyResult⟩ :=
     Option.isSome_iff_exists.mp hbody
   rw [inferWithTypesCore, dif_pos (rigid_all hK), dif_pos (ctx_all hbelow),
     dif_pos (soft_all hF), dif_pos (source_all hscope)]
@@ -7562,7 +7562,7 @@ theorem inferWithTypesCore_sourceComplete_app
   obtain ⟨paramD, hfD, haD⟩ := ht.app_inv
   have hfScope : SourceScope K F f := fun v hv => hscope v (List.mem_append_left _ hv)
   have haScope : SourceScope K F arg := fun v hv => hscope v (List.mem_append_right _ hv)
-  obtain ⟨⟨⟨first, s1, fOut, fTy, fTypes, fSchemes⟩, hf⟩, hfResult⟩ := Option.isSome_iff_exists.mp
+  obtain ⟨⟨⟨⟨first, s1, fOut, fTy⟩, fTypes, fSchemes⟩, hf⟩, hfResult⟩ := Option.isSome_iff_exists.mp
     (ihf f (Nat.le_refl _) K F frontier ctx ambient (.arrow paramD target) P hfScope
       hwf hbelow hK hF hS hfix hP hfixP hfD)
   obtain ⟨Rf, hRf, hfTy, hRfP, hagf⟩ := pf f (Nat.le_refl _) hf hwf hbelow hK hF ambient
@@ -7593,7 +7593,7 @@ theorem inferWithTypesCore_sourceComplete_app
   have hargScope := haScope.subst s1 hs1K
   have hargSize : (arg.substTyFvars s1).size ≤ arg.size := by
     simpa only [InferInput.size_substTyFvars] using Nat.le_refl arg.size
-  obtain ⟨⟨⟨second, s2, argOut, argTy, argTypes, argSchemes⟩, ha⟩, haResult⟩ := Option.isSome_iff_exists.mp
+  obtain ⟨⟨⟨⟨second, s2, argOut, argTy⟩, argTypes, argSchemes⟩, ha⟩, haResult⟩ := Option.isSome_iff_exists.mp
     (iha (arg.substTyFvars s1) hargSize K (substSoft s1 F) first (s1.onCtx ctx) Rf paramD P
       hargScope (Subst.onCtx_wf hs1LC hwf) hctx1 hK1 hF1 hRf hRfK hP1 hRfP hargD)
   obtain ⟨Ra, hRa, haTy, hRaP, haga⟩ := pa (arg.substTyFvars s1) hargSize ha
@@ -7653,7 +7653,7 @@ theorem inferWithTypesCore_sourceComplete_letIn
     fun v hv => hscope v (List.mem_append_left _ (List.mem_append_left _ hv))
   have hannBelow : ∀ v ∈ ann.rigidVars, v < frontier := fun v hv =>
     (List.mem_append.mp (hannScope v hv)).elim (hK v) (softVars_lt hF v)
-  obtain ⟨⟨⟨first, s1, rhsOut, rhsTy, rhsTypes, rhsSchemes⟩, hr⟩, hrResult⟩ := Option.isSome_iff_exists.mp
+  obtain ⟨⟨⟨⟨first, s1, rhsOut, rhsTy⟩, rhsTypes, rhsSchemes⟩, hr⟩, hrResult⟩ := Option.isSome_iff_exists.mp
     (ihr rhs (Nat.le_refl _) K F frontier ctx ambient (M.openVars Xs) P
       hrhsScope hwf hbelow hK hF hS hfix hP hfixP (hrD Xs hXs))
   have phr := prhs rhs (Nat.le_refl _) hr
@@ -7702,7 +7702,7 @@ theorem inferWithTypesCore_sourceComplete_letIn
   have hpostScope := hscope.subst (s1 ++ sCheck) hprefixK
   have hbodyScope : SourceScope K (substSoft (s1 ++ sCheck) F) (body.substTyFvars (s1 ++ sCheck)) :=
     fun v hv => hpostScope v (List.mem_append_right _ hv)
-  obtain ⟨⟨⟨next, s2, bodyOut, bodyTy, bodyTypes, bodySchemes⟩, hb⟩, hbResult⟩ :=
+  obtain ⟨⟨⟨⟨next, s2, bodyOut, bodyTy⟩, bodyTypes, bodySchemes⟩, hb⟩, hbResult⟩ :=
     Option.isSome_iff_exists.mp (ihb (body.substTyFvars (s1 ++ sCheck)) (by
       simpa only [InferInput.size_substTyFvars] using Nat.le_refl body.size)
       K (substSoft (s1 ++ sCheck) F) checked _ V target P hbodyScope hbodyWF hbodyB
@@ -7779,7 +7779,7 @@ theorem inferWithTypesCore_sourceComplete_signature
   have hAligned' : InputTyping (Q ++ written) (moved.onCtx ctx)
       ((rhs.openTyVars written).substTyFvars moved) (M.openVars (written ++ extras)) := by
     rwa [InferInput.substTyFvars_openTyVars_of_fixes rhs hMoved (fun w hw => hMovedFix w (List.mem_append_right _ hw))]
-  obtain ⟨⟨⟨first, s1, rhsOut, rhsTy, rhsTypes, rhsSchemes⟩, hr⟩, hrResult⟩ :=
+  obtain ⟨⟨⟨⟨first, s1, rhsOut, rhsTy⟩, rhsTypes, rhsSchemes⟩, hr⟩, hrResult⟩ :=
     Option.isSome_iff_exists.mp (ihr (rhs.openTyVars written) (by simp)
       (K ++ written) F (frontier + ann.paramCount) ctx moved (M.openVars (written ++ extras))
       (Q ++ written) hRhsOpen hwf hCtxOpen hKOpen hFOpen hMoved hMovedK hQOpen hMovedFix hAligned')
@@ -7861,7 +7861,7 @@ theorem inferWithTypesCore_sourceComplete_signature
     exact heq.symm
   have hbodyScope := (show SourceScope K F body from fun v hv => hscope v (List.mem_append_right _ hv)).subst
     (s1 ++ sCheck) hPrefixFix
-  obtain ⟨⟨⟨next, s2, bodyOut, bodyTy, bodyTypes, bodySchemes⟩, hb⟩, hbResult⟩ :=
+  obtain ⟨⟨⟨⟨next, s2, bodyOut, bodyTy⟩, bodyTypes, bodySchemes⟩, hb⟩, hbResult⟩ :=
     Option.isSome_iff_exists.mp (ihb (body.substTyFvars (s1 ++ sCheck)) (by simp) K
       (substSoft (s1 ++ sCheck) F) checked _ V _ Q hbodyScope hbodyWF hbodyB
       (fun k hk => Nat.lt_of_lt_of_le (hK k hk) hle) (substSoft_below hprefixB hle hF)
@@ -7960,7 +7960,7 @@ theorem inferBranchesWithTypesCore_sourceComplete_wildcard
   have hbodyD := htyping (.wildcard, body) List.mem_cons_self
   cases hbodyD with
   | wildcard hbodyD =>
-    obtain ⟨⟨⟨first, s1, bodyOut, bodyTy, bodyTypes, bodySchemes⟩, hb⟩, hbResult⟩ :=
+    obtain ⟨⟨⟨⟨first, s1, bodyOut, bodyTy⟩, bodyTypes, bodySchemes⟩, hb⟩, hbResult⟩ :=
       Option.isSome_iff_exists.mp
         (ihbody body (Nat.le_refl _) K F frontier ctx ambient (ambient.onTy resultTy) P
           hbodyScope hwf hbelow hK hF hS hfix hP hfixP hbodyD)
@@ -8105,7 +8105,7 @@ theorem inferBranchesWithTypesCore_sourceComplete_named
     have hbodyScope0 := hbodyScope.subst s0 hs0K
     have hbodySize : (body.substTyFvars s0).size ≤ body.size := by
       simpa only [InferInput.size_substTyFvars] using Nat.le_refl body.size
-    obtain ⟨⟨⟨first, s1, bodyOut, bodyTy, bodyTypes, bodySchemes⟩, hb⟩, hbResult⟩ :=
+    obtain ⟨⟨⟨⟨first, s1, bodyOut, bodyTy⟩, bodyTypes, bodySchemes⟩, hb⟩, hbResult⟩ :=
       Option.isSome_iff_exists.mp (ihbody (body.substTyFvars s0) hbodySize K (substSoft s0 F) _ _ V
         (ambient.onTy resultTy) P hbodyScope0 hbodyWF hbodyB hK0 hF0 hV hVK hP0 hVP hbD)
     obtain ⟨R, hR, hbodyTy, hRP, hag1⟩ := pbody (body.substTyFvars s0) hbodySize hb
@@ -8235,7 +8235,7 @@ theorem inferWithTypesCore_sourceComplete_match
     fun v hv => hscope v (List.mem_append_right _ hv)
   have hbranchBelow : ∀ v ∈ rigidBranchVars branches, v < frontier := fun v hv =>
     (List.mem_append.mp (hbranchScope v hv)).elim (hK v) (softVars_lt hF v)
-  obtain ⟨⟨⟨first, s1, scrutOut, scrutTy, scrutTypes, scrutSchemes⟩, hs⟩, hsResult⟩ :=
+  obtain ⟨⟨⟨⟨first, s1, scrutOut, scrutTy⟩, scrutTypes, scrutSchemes⟩, hs⟩, hsResult⟩ :=
     Option.isSome_iff_exists.mp (ihs scrut (Nat.le_refl _) K F frontier ctx ambient scrutD P
       hscrutScope hwf hbelow hK hF hS hfix hP hfixP hsD)
   obtain ⟨R1, hR1, hscrut, hR1P, hag1⟩ := ps scrut (Nat.le_refl _) hs
@@ -8495,7 +8495,7 @@ theorem inferRecSignedWithTypesCore_complete_one
   have hAligned' : InputTyping (Q ++ written) (moved.onCtx ctx)
       ((rhs.openTyVars written).substTyFvars moved) (M.openVars (written ++ extras)) := by
     rwa [InferInput.substTyFvars_openTyVars_of_fixes rhs hMoved (fun w hw => hMovedFix w (List.mem_append_right _ hw))]
-  obtain ⟨⟨⟨first, s1, rhsOut, rhsTy, rhsTypes, rhsSchemes⟩, hr⟩, hrResult⟩ :=
+  obtain ⟨⟨⟨⟨first, s1, rhsOut, rhsTy⟩, rhsTypes, rhsSchemes⟩, hr⟩, hrResult⟩ :=
     Option.isSome_iff_exists.mp (hProducer (rhs.openTyVars written) (by simp)
       (K ++ written) F (frontier + ann.paramCount) ctx moved (M.openVars (written ++ extras))
       (Q ++ written) hRhsOpen hctxWF hCtxOpen hKOpen hFOpen hMoved hMovedK hQOpen hMovedFix hAligned')
@@ -10358,7 +10358,7 @@ private theorem inferWithTypesCore_sourceComplete_rec_of_unsigned
     simpa only [substSoft_append] using substSoft_below hB2 hle2 hF1
   have hBodyScope : SourceScope K (substSoft (s1 ++ s2) F) (body.substTyFvars (s1 ++ s2)) :=
     (show SourceScope K F body from fun v hv => hscope v (List.mem_append_right _ hv)).subst _ hSolvedFixK
-  obtain ⟨⟨⟨next,s3,bodyOut,bodyTy,bodyTypes,bodySchemes⟩,hbody⟩,hBodyResult⟩ :=
+  obtain ⟨⟨⟨⟨next,s3,bodyOut,bodyTy⟩,bodyTypes,bodySchemes⟩,hbody⟩,hBodyResult⟩ :=
     Option.isSome_iff_exists.mp (hBodyProducer (body.substTyFvars (s1 ++ s2)) (by simp)
       K (substSoft (s1 ++ s2) F) second (state2.rhsCtx ((s1 ++ s2).onCtx ctx)) R2 target P
       hBodyScope hctxbody hctxbodyB (fun k hk => (hK k hk).trans_le hbase2) hFbody
