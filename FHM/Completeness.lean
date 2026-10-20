@@ -3259,7 +3259,7 @@ theorem RecResidual.componentMonoTyped
   let newEntries := state.entries.map R.onPolyTy
   have hlenEntries : oldEntries.length = newEntries.length := by
     simp only [oldEntries, newEntries, List.length_mapIdx, List.length_map]
-    rw [hframe.entries_length, ← hframe.specs_length, h.length]
+    rw [state.entries_length, h.length]
   have htypedDecl' : InputTyping (P ++ Xs) ⟨oldEntries ++ declCtx.env, declCtx.ctors⟩
       (rawRhs.openTyVars (recRenameNames declPool Xs (declPrefixes[member]?.getD [])))
       (Ty.renameG declPool Xs declTy) := htypedDecl
@@ -4869,11 +4869,11 @@ theorem RecResidual.completed_entries_generalize
       (recCompletedSchemes declSpecs declPrefixes declPool) := by
   apply List.forall₂_of_length_eq_of_get
   · simp only [List.length_map, recCompletedSchemes, List.length_mapIdx,
-      state.entries_length (state.exports_length.trans state.specs_length.symm), h.length]
+      state.entries_length, h.length]
   · intro i hnew hold
     have hib : i < state.specs.length := by
       simpa only [List.length_map,
-        state.entries_length (state.exports_length.trans state.specs_length.symm)] using hnew
+        state.entries_length] using hnew
     have hi := List.getElem?_eq_getElem hib
     change (state.entries.map R.onPolyTy)[i].Generalizes
       (recCompletedSchemes declSpecs declPrefixes declPool)[i]
