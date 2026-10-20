@@ -646,18 +646,20 @@ end
     ∀ shape ∈ state.shapes members openings, RecShape.LC shape := by
   intro shape hm
   obtain ⟨i, _, heq⟩ := List.mem_filterMap.mp hm
-  cases hs : state.specs[i]? with
-  | none => simp [hs] at heq
-  | some spec =>
-    cases spec with
-    | poly σ => simp [hs, RecSpec.monoTy?] at heq
+  cases hmember : state.memberStates[i]? with
+  | none => simp [hmember] at heq
+  | some member =>
+    have hmember_mem : member ∈ state.memberStates := List.mem_of_getElem? hmember
+    cases hs : member.spec with
+    | poly σ => simp [hmember, hs, RecSpec.monoTy?] at heq
     | mono ty =>
       cases ho : openings[i]? with
-      | none => simp [hs, RecSpec.monoTy?, ho] at heq
+      | none => simp [hmember, hs, RecSpec.monoTy?, ho] at heq
       | some opening =>
-        simp [hs, RecSpec.monoTy?, ho] at heq
-        subst shape
-        exact ⟨hstate.1 _ (List.mem_of_getElem? hs), hopen opening (List.mem_of_getElem? ho)⟩
+        simp [hmember, hs, RecSpec.monoTy?, ho] at heq
+        cases heq
+        exact ⟨hstate.1 _ (List.mem_map.mpr ⟨member, hmember_mem, hs⟩),
+          hopen opening (List.mem_of_getElem? ho)⟩
 
  theorem InferRecStrata.lc_of_infer
     (h : InferRecStrata K F frontier ctx anns bindings state groups next S final)
@@ -1893,18 +1895,20 @@ private theorem specs_below_subst {specs : List RecSpec}
     ∀ shape ∈ state.shapes members openings, RecShape.BelowFvars frontier shape := by
   intro shape hm
   obtain ⟨i, _, heq⟩ := List.mem_filterMap.mp hm
-  cases hs : state.specs[i]? with
-  | none => simp [hs] at heq
-  | some spec =>
-    cases spec with
-    | poly σ => simp [hs, RecSpec.monoTy?] at heq
+  cases hmember : state.memberStates[i]? with
+  | none => simp [hmember] at heq
+  | some member =>
+    have hmember_mem : member ∈ state.memberStates := List.mem_of_getElem? hmember
+    cases hs : member.spec with
+    | poly σ => simp [hmember, hs, RecSpec.monoTy?] at heq
     | mono ty =>
       cases ho : openings[i]? with
-      | none => simp [hs, RecSpec.monoTy?, ho] at heq
+      | none => simp [hmember, hs, RecSpec.monoTy?, ho] at heq
       | some opening =>
-        simp [hs, RecSpec.monoTy?, ho] at heq
-        subst shape
-        exact ⟨hstate.1 _ (List.mem_of_getElem? hs), hopen opening (List.mem_of_getElem? ho)⟩
+        simp [hmember, hs, RecSpec.monoTy?, ho] at heq
+        cases heq
+        exact ⟨hstate.1 _ (List.mem_map.mpr ⟨member, hmember_mem, hs⟩),
+          hopen opening (List.mem_of_getElem? ho)⟩
 
  theorem InferRecComponent.belowFvars_of_infer
     (h : InferRecComponent K F members index frontier ctx bindings specs next S outputs facts)
@@ -2765,6 +2769,17 @@ theorem RecState.Avoids.exported {state : RecState} (h : state.Avoids w)
     (hs : some scheme ∈ state.exports) : w ∉ scheme.body.freeVars :=
   h.2 scheme (List.mem_filterMap.mpr ⟨some scheme, hs, rfl⟩)
 
+private theorem RecSpec.monoEntry_avoids {spec : RecSpec}
+    (h : w ∉ spec.freeVars) : w ∉ spec.monoEntry.body.freeVars := by
+  cases spec <;> exact h
+
+private theorem RecSpec.completedScheme_avoids {spec : RecSpec}
+    (h : w ∉ spec.freeVars) :
+    w ∉ (spec.completedScheme written pool).body.freeVars := by
+  cases spec with
+  | mono ty => exact fun hv => h (Ty.freeVars_closeOver_subset hv)
+  | poly scheme => exact h
+
 theorem RecState.Avoids.init {anns : List BindingAnn} (hw : w < base)
     (hanns : ∀ ann ∈ anns, w ∉ ann.rigidVars) : (RecState.init base anns).Avoids w := by
   have hmode : ∀ scheme, some scheme ∈ anns.map BindingAnn.recModeAnn → w ∉ scheme.body.freeVars := by
@@ -2775,6 +2790,7 @@ theorem RecState.Avoids.init {anns : List BindingAnn} (hw : w < base)
     | complete original =>
       cases heq
       exact hanns _ ha
+  rw [RecState.Avoids, RecState.init_specs, RecState.init_exports]
   constructor
   · intro spec hs
     rcases RecSpec.mem_init hs with ⟨m, hlo, _, rfl⟩ | ⟨scheme, hsigma, rfl⟩
@@ -2787,6 +2803,7 @@ theorem RecState.Avoids.init {anns : List BindingAnn} (hw : w < base)
 
 theorem RecState.Avoids.onSubst {state : RecState} (h : state.Avoids w)
     (hS : ∀ p ∈ S, w ∉ p.2.freeVars) : (state.onSubst S).Avoids w := by
+  rw [RecState.Avoids, RecState.specs_onSubst, RecState.exports_onSubst]
   constructor
   · intro spec hs
     obtain ⟨old, ho, rfl⟩ := List.mem_map.mp hs
@@ -2801,26 +2818,29 @@ theorem RecState.Avoids.onSubst {state : RecState} (h : state.Avoids w)
     exact Subst.notMemOnTy hS (h.exported (hsigma ▸ horiginal))
 
 theorem RecState.Avoids.installOpenings {state : RecState} (h : state.Avoids w) :
-    (state.installOpenings members openings).Avoids w := h
+    (state.installOpenings members openings).Avoids w := by
+  simpa only [RecState.Avoids, RecState.specs_installOpenings,
+    RecState.exports_installOpenings] using h
 
 theorem RecState.Avoids.setSigned {state : RecState} {member : Nat} {names : List Nat}
     {output : Expr} {facts : RecFacts} (h : state.Avoids w) :
-    (state.setSigned member names output facts).Avoids w := h
+    (state.setSigned member names output facts).Avoids w := by
+  simpa only [RecState.Avoids, RecState.specs_setSigned,
+    RecState.exports_setSigned] using h
 
 theorem RecState.Avoids.entries {state : RecState} (h : state.Avoids w) :
     ∀ scheme ∈ state.entries, w ∉ scheme.body.freeVars := by
   intro scheme hs
-  obtain ⟨⟨spec, exported⟩, hp, heq⟩ := List.mem_map.mp hs
-  have hmem := List.of_mem_zip hp
-  cases exported with
+  obtain ⟨member, hmember, rfl⟩ := List.mem_map.mp hs
+  have hspec : member.spec ∈ state.specs :=
+    List.mem_map.mpr ⟨member, hmember, rfl⟩
+  cases he : member.exported with
   | none =>
-    subst scheme
-    cases spec with
-    | mono ty => exact h.1 _ hmem.1
-    | poly sigma => exact h.1 _ hmem.1
+    simp only [Option.getD_none]
+    exact RecSpec.monoEntry_avoids (h.1 member.spec hspec)
   | some sigma =>
-    cases heq
-    exact h.exported hmem.2
+    simp only [Option.getD_some]
+    exact h.exported (List.mem_map.mpr ⟨member, hmember, he⟩)
 
 theorem RecState.Avoids.rhsCtx {state : RecState} {e : Expr} {groupSize : Nat} {ctx : Ctx} (h : state.Avoids w)
     (hlen : state.entries.length = groupSize)
@@ -2832,21 +2852,27 @@ theorem RecState.Avoids.rhsCtx {state : RecState} {e : Expr} {groupSize : Nat} {
 theorem RecState.Avoids.exportComponent {state : RecState} {members pool : List Nat}
     {written : List (List Nat)} {outputs : List (Option Expr)} {facts : List RecFacts} (h : state.Avoids w) :
     (state.exportComponent members written pool outputs facts).Avoids w := by
-  refine ⟨h.1, ?_⟩
+  refine ⟨?_, ?_⟩
+  · simpa only [RecState.specs_exportComponent] using h.1
   intro scheme hs
-  obtain ⟨old, ho, heq⟩ := List.mem_filterMap.mp hs
-  obtain ⟨i, hi, heq'⟩ := List.mem_mapIdx.mp ho
-  subst old
-  split at heq
-  · cases hlookup : state.specs[i]? with
-    | none => simp [hlookup] at heq
-    | some spec =>
-      simp only [hlookup, bind, pure, Option.bind_some] at heq
-      cases heq
-      cases spec with
-      | mono ty => exact fun hv => h.1 _ (List.mem_of_getElem? hlookup) (Ty.freeVars_closeOver_subset hv)
-      | poly sigma => exact h.1 _ (List.mem_of_getElem? hlookup)
-  · exact h.exported (heq ▸ List.getElem_mem hi)
+  obtain ⟨old, hold, heq⟩ := List.mem_filterMap.mp hs
+  obtain ⟨i, hi⟩ := List.mem_iff_getElem?.mp hold
+  rw [RecState.getElem?_exports_exportComponent] at hi
+  cases hmember : state.memberStates[i]? with
+  | none => simp [hmember] at hi
+  | some member =>
+      have hmember_mem : member ∈ state.memberStates := List.mem_of_getElem? hmember
+      have hspec : member.spec ∈ state.specs :=
+        List.mem_map.mpr ⟨member, hmember_mem, rfl⟩
+      by_cases hselected : i ∈ members
+      · simp only [hmember, Option.map_some, hselected, if_pos] at hi
+        have hcompleted : some (member.spec.completedScheme (written[i]?.getD []) pool) =
+            some scheme := (Option.some.inj hi).trans heq
+        cases Option.some.inj hcompleted
+        exact RecSpec.completedScheme_avoids (h.1 member.spec hspec)
+      · simp only [hmember, Option.map_some, hselected] at hi
+        have hmemberExport : member.exported = some scheme := (Option.some.inj hi).trans heq
+        exact h.exported (List.mem_map.mpr ⟨member, hmember_mem, hmemberExport⟩)
 
 theorem FinishRecComponent.avoids (h : FinishRecComponent K soft members ctx state outputs facts final)
     (ha : state.Avoids w) : final.Avoids w := by
@@ -2915,24 +2941,26 @@ private theorem recShapes_avoid {state : RecState} (ha : state.Avoids w)
       ∀ ty, shape.2 = some ty → w ∉ ty.freeVars := by
   intro shape hs
   obtain ⟨i, _, heq⟩ := List.mem_filterMap.mp hs
-  cases hspec : state.specs[i]? with
-  | none => simp [hspec] at heq
-  | some spec =>
-    cases spec with
-    | poly scheme => simp [hspec, RecSpec.monoTy?] at heq
+  cases hmember : state.memberStates[i]? with
+  | none => simp [hmember] at heq
+  | some member =>
+    have hmember_mem : member ∈ state.memberStates := List.mem_of_getElem? hmember
+    cases hspec : member.spec with
+    | poly scheme => simp [hmember, hspec, RecSpec.monoTy?] at heq
     | mono ty =>
       cases hopen : openings[i]? with
-      | none => simp [hspec, RecSpec.monoTy?, hopen] at heq
+      | none => simp [hmember, hspec, RecSpec.monoTy?, hopen] at heq
       | some opening =>
-        simp [hspec, RecSpec.monoTy?, hopen] at heq
-        subst shape
-        exact ⟨ha.1 _ (List.mem_of_getElem? hspec), ho opening (List.mem_of_getElem? hopen)⟩
+        simp [hmember, hspec, RecSpec.monoTy?, hopen] at heq
+        cases heq
+        exact ⟨ha.1 _ (List.mem_map.mpr ⟨member, hmember_mem, hspec⟩),
+          ho opening (List.mem_of_getElem? hopen)⟩
 
 private theorem FinishRecComponent.avoid_lengths
     (h : FinishRecComponent K soft members ctx state outputs facts final) :
     final.specs.length = state.specs.length ∧ final.exports.length = state.exports.length := by
   cases h
-  exact ⟨rfl, List.length_mapIdx⟩
+  exact ⟨by simp, by simp [RecState.exports_length, RecState.exportComponent]⟩
 
 
  theorem InferRecStrata.sourceLocality_of_infer
@@ -3225,13 +3253,14 @@ mutual
     have hlen : anns.length = bindings.length := by simpa only [List.length_map] using hv.length
     obtain ⟨hsS, hsD, hstate1⟩ := hs.sourceLocality_of_infer (fun _ hi => hi.sourceLocality)
       (by omega) (RecState.Avoids.init hw hanns)
-      (by simpa only [RecState.init, RecSpec.init_length, List.length_map] using hlen)
-      (by simpa only [RecState.init, List.length_map] using hlen) hanns hrhs
+      (by simpa only [RecState.init_specs, RecSpec.init_length, List.length_map] using hlen)
+      (by simpa only [RecState.init_exports, List.length_map] using hlen) hanns hrhs
     have hsl := hs.env_lengths
     have hs1len : state1.specs.length = bindings.length := by
-      simpa only [RecState.init, RecSpec.init_length, List.length_map] using hsl.1.trans (by simpa [RecState.init, RecSpec.init_length] using hlen)
+      exact hsl.1.trans (by
+        simpa only [RecState.init_specs, RecSpec.init_length, List.length_map] using hlen)
     have he1len : state1.exports.length = bindings.length := by
-      simpa only [RecState.init, List.length_map] using hsl.2.trans (by simpa [RecState.init] using hlen)
+      exact hsl.2.trans (by simpa only [RecState.init_exports, List.length_map] using hlen)
     obtain ⟨hpS, hpD, hstate2⟩ := hp.sourceLocality_of_infer (fun _ hi => hi.sourceLocality)
       (by have := hs.frontier_le; omega) hstate1 bindings.length hs1len he1len
       (by intro ann ha; obtain ⟨old, ho, rfl⟩ := List.mem_map.mp ha; exact BindingAnn.avoid_subst hsS (hanns old ho))
@@ -3407,29 +3436,29 @@ private theorem soft_avoids_subst {F : List Ty} {S : Subst} {v : Nat}
     fun p hp g hg hgp => (hpool g hgp).1 p hp hg
   have hfix : ∀ g ∈ state.pool, S.onTy (.fvar g) = .fvar g := Subst.fixes_of_dom_avoids hdom
   refine ⟨?_, ?_, ?_, ?_, ?_, ?_, ?_, ?_, ?_, h.pool_nodup, ?_, h.pool_rigid, ?_, ?_, ?_, h.rigid_below, ?_⟩
-  · simpa only [RecState.onSubst, List.length_map] using h.specs_length
-  · simpa only [RecState.onSubst, List.length_map] using h.slots_length
-  · simpa only [RecState.onSubst, List.length_map] using h.exports_length
-  · simpa only [RecState.onSubst, List.length_map] using h.outputs_length
-  · simpa only [RecState.onSubst, List.length_map] using h.facts_length
+  · simpa only [RecState.specs_onSubst, List.length_map] using h.specs_length
+  · simpa only [RecState.slots_onSubst, List.length_map] using h.slots_length
+  · simpa only [RecState.exports_onSubst, List.length_map] using h.exports_length
+  · simpa only [RecState.outputs_onSubst, List.length_map] using h.outputs_length
+  · simpa only [RecState.facts_onSubst, List.length_map] using h.facts_length
   · have hm : ((state.onSubst S).specs).map RecSpec.ann =
         (state.specs.map RecSpec.ann).map (Option.map S.onPolyTy) := by
-      simp only [RecState.onSubst, List.map_map]
+      simp only [RecState.specs_onSubst, List.map_map]
       apply List.map_congr_left
       intro spec _
       cases spec <;> rfl
     rw [hm, h.modes]
     simp only [List.map_map, Function.comp_def, BindingAnn.recModeAnn_subst_source]
   · intro i scheme hget
-    rw [RecState.onSubst, List.getElem?_map] at hget
+    rw [RecState.specs_onSubst, List.getElem?_map] at hget
     obtain ⟨old, hold, heq⟩ := Option.map_eq_some_iff.mp hget
     cases old with
     | mono ty => cases heq
     | poly σ =>
       cases RecSpec.poly.inj heq
-      simp only [RecState.onSubst, List.getElem?_map, h.poly i σ hold, Option.map_some]
+      simp only [RecState.exports_onSubst, List.getElem?_map, h.poly i σ hold, Option.map_some]
   · intro i ty hget
-    rw [RecState.onSubst, List.getElem?_map] at hget
+    rw [RecState.specs_onSubst, List.getElem?_map] at hget
     obtain ⟨old, hold, heq⟩ := Option.map_eq_some_iff.mp hget
     cases old with
     | poly scheme => cases heq
@@ -3439,7 +3468,7 @@ private theorem soft_avoids_subst {F : List Ty} {S : Subst} {v : Nat}
       · obtain ⟨written, hslots, hcount, hnd, hsub, hexport⟩ := if_pos hi ▸ h.mono i original hold
         rw [if_pos hi]
         refine ⟨written, ?_, ?_, hnd, hsub, ?_⟩
-        · simp only [RecState.onSubst, List.getElem?_map, hslots, Option.map_some, List.map_map]
+        · simp only [RecState.slots_onSubst, List.getElem?_map, hslots, Option.map_some, List.map_map]
           congr 1
           apply List.map_congr_left
           intro name hn
@@ -3448,12 +3477,14 @@ private theorem soft_avoids_subst {F : List Ty} {S : Subst} {v : Nat}
           | none => simpa only [List.getElem?_map, ha, Option.map_none] using hcount
           | some ann => simpa only [List.getElem?_map, ha, Option.map_some, Option.getD_some,
               BindingAnn.recPrefixCount_subst_source] using hcount
-        · simp only [RecState.onSubst, List.getElem?_map, hexport, Option.map_some]
-          rw [recScheme_subst_pool_avoid hdom hran hsub]
+        · simp only [RecState.exports_onSubst, List.getElem?_map, hexport, Option.map_some]
+          exact congrArg (fun scheme => some (some scheme))
+            (recScheme_subst_pool_avoid hdom hran hsub).symm
       · rw [if_neg hi]
         have he := if_neg hi ▸ h.mono i original hold
-        simp only [RecState.onSubst, List.getElem?_map, he, Option.map_some, Option.map_none]
-  · exact h.pending.onSubst_source (fun _ hm => hm) hpending
+        simp only [RecState.exports_onSubst, List.getElem?_map, he, Option.map_some, Option.map_none]
+  · simpa only [RecState.specs_onSubst] using
+      h.pending.onSubst_source (fun _ hm => hm) hpending
   · intro g hg hm
     obtain ⟨scheme, hs, hv⟩ := Env.mem_freeVars_iff.mp hm
     obtain ⟨old, ho, rfl⟩ := List.mem_map.mp hs
@@ -3462,7 +3493,7 @@ private theorem soft_avoids_subst {F : List Ty} {S : Subst} {v : Nat}
   · intro g hg
     exact soft_avoids_subst (h.pool_soft g hg) (hpool g hg).1
   · intro scheme ⟨i, hget⟩ g hg
-    rw [RecState.onSubst, List.getElem?_map] at hget
+    rw [RecState.specs_onSubst, List.getElem?_map] at hget
     obtain ⟨old, hold, heq⟩ := Option.map_eq_some_iff.mp hget
     cases old with
     | mono ty => cases heq
@@ -3470,10 +3501,14 @@ private theorem soft_avoids_subst {F : List Ty} {S : Subst} {v : Nat}
       cases RecSpec.poly.inj heq
       exact Subst.notMemOnTy (hpool g hg).1 (h.pool_poly σ ⟨i, hold⟩ g hg)
   · intro i ty hget hi
-    obtain ⟨old, hold, _⟩ := RecSpec.mono_getElem?_map_onSubstSource hget
+    have hget' : (state.specs.map (RecSpec.onSubstSource S))[i]? = some (.mono ty) := by
+      simpa only [RecState.specs_onSubst] using hget
+    obtain ⟨old, hold, _⟩ := RecSpec.mono_getElem?_map_onSubstSource hget'
     exact h.pool_pending i old hold hi
   · intro i ty hget hi
-    obtain ⟨old, hold, _⟩ := RecSpec.mono_getElem?_map_onSubstSource hget
+    have hget' : (state.specs.map (RecSpec.onSubstSource S))[i]? = some (.mono ty) := by
+      simpa only [RecState.specs_onSubst] using hget
+    obtain ⟨old, hold, _⟩ := RecSpec.mono_getElem?_map_onSubstSource hget'
     exact soft_avoids_subst (h.pending_soft i old hold hi) (hpending i old hold hi).1
 
 
@@ -3749,7 +3784,7 @@ theorem GeneralisesTo.weaken_annotated {ctx : Ctx} {rhs : Expr} {scheme : PolyTy
 The written prefix and pool need no freshness assumptions for this direction. -/
 theorem RecState.exportComponent_entries_generalize {state : RecState}
     {outputs : List (Option Expr)} {facts : List RecFacts} {pool : List Nat}
-    (hlen : state.exports.length = state.specs.length)
+    (_hlen : state.exports.length = state.specs.length)
     (hlc : ∀ spec ∈ state.specs, spec.LC)
     (hclosed : ∀ i ∈ members, state.exports[i]? = some none)
     (hmono : ∀ i ∈ members, ∃ ty, state.specs[i]? = some (.mono ty)) :
@@ -3757,47 +3792,33 @@ theorem RecState.exportComponent_entries_generalize {state : RecState}
       (state.exportComponent members written pool outputs facts).entries state.entries := by
   apply List.forall₂_iff_zip.mpr
   constructor
-  · rw [RecState.entries_length _ (by simpa only [RecState.exportComponent, List.length_mapIdx] using hlen),
-      RecState.entries_length _ hlen]
-    rfl
+  · simp [RecState.entries, RecState.exportComponent]
   · intro newer older hpair
     obtain ⟨i, hget⟩ := List.mem_iff_getElem?.mp hpair
     obtain ⟨hnew, hold⟩ := List.getElem?_zip_eq_some.mp hget
     rw [RecState.entries, List.getElem?_map] at hold
-    obtain ⟨⟨spec, exported⟩, hzip, heqOld⟩ := Option.map_eq_some_iff.mp hold
-    obtain ⟨hspec, hexport⟩ := List.getElem?_zip_eq_some.mp hzip
+    obtain ⟨member, hmember, heqOld⟩ := Option.map_eq_some_iff.mp hold
+    have hmember_mem : member ∈ state.memberStates := List.mem_of_getElem? hmember
+    have hspec : state.specs[i]? = some member.spec := by
+      simp only [RecState.getElem?_specs, hmember, Option.map_some]
+    have hexport : state.exports[i]? = some member.exported := by
+      simp only [RecState.getElem?_exports, hmember, Option.map_some]
+    rw [RecState.entries, RecState.exportComponent, List.getElem?_map,
+      List.getElem?_mapIdx, hmember, Option.map_some] at hnew
     by_cases hi : i ∈ members
     · obtain ⟨ty, hty⟩ := hmono i hi
-      have hspecEq : spec = .mono ty := Option.some.inj (hspec.symm.trans hty)
-      subst spec
-      have he : exported = none := Option.some.inj (hexport.symm.trans (hclosed i hi))
-      subst exported
-      have hnewExport : (state.exportComponent members written pool outputs facts).exports[i]? =
-          some (some (recScheme (written[i]?.getD []) pool ty)) := by
-        simp only [RecState.exportComponent, List.getElem?_mapIdx, hclosed i hi, Option.map_some,
-          if_pos hi, hty]
-        rfl
-      have hnewEntry : (state.exportComponent members written pool outputs facts).entries[i]? =
-          some (recScheme (written[i]?.getD []) pool ty) := by
-        have hz : ((state.exportComponent members written pool outputs facts).specs.zip
-            (state.exportComponent members written pool outputs facts).exports)[i]? =
-            some (.mono ty, some (recScheme (written[i]?.getD []) pool ty)) :=
-          List.getElem?_zip_eq_some.mpr ⟨hspec, hnewExport⟩
-        rw [RecState.entries, List.getElem?_map, hz]
-        rfl
-      have heqNew : newer = recScheme (written[i]?.getD []) pool ty := Option.some.inj (hnew.symm.trans hnewEntry)
-      change PolyTy.mkTrivial ty = older at heqOld
+      have hspecEq : member.spec = .mono ty := Option.some.inj (hspec.symm.trans hty)
+      have he : member.exported = none := Option.some.inj (hexport.symm.trans (hclosed i hi))
+      simp only [hi, if_pos, hspecEq, RecSpec.completedScheme_mono] at hnew
+      have heqNew : newer = recScheme (written[i]?.getD []) pool ty := Option.some.inj hnew.symm
+      simp only [he, Option.getD_none, hspecEq, RecSpec.monoEntry] at heqOld
       rw [heqNew, ← heqOld]
-      exact recScheme_generalizes_mono (hlc _ (List.mem_of_getElem? hspec))
-    · have hnewExport : (state.exportComponent members written pool outputs facts).exports[i]? = some exported := by
-        simp only [RecState.exportComponent, List.getElem?_mapIdx, hexport, Option.map_some, if_neg hi]
-      have hnewEntry : (state.exportComponent members written pool outputs facts).entries[i]? = some older := by
-        have hz : ((state.exportComponent members written pool outputs facts).specs.zip
-            (state.exportComponent members written pool outputs facts).exports)[i]? = some (spec, exported) :=
-          List.getElem?_zip_eq_some.mpr ⟨hspec, hnewExport⟩
-        rw [RecState.entries, List.getElem?_map, hz]
-        exact congrArg some heqOld
-      have heqNew : newer = older := Option.some.inj (hnew.symm.trans hnewEntry)
+      have htyLC : ty.IsLC := by
+        simpa only [hspecEq] using
+          (hlc member.spec (List.mem_map.mpr ⟨member, hmember_mem, rfl⟩))
+      exact recScheme_generalizes_mono htyLC
+    · simp only [hi, if_neg] at hnew
+      have heqNew : newer = older := Option.some.inj (hnew.symm.trans (congrArg some heqOld))
       rw [heqNew]
       exact PolyTy.Generalizes.refl older
 
@@ -3809,16 +3830,137 @@ def RecState.SourceTyped (ctx : Ctx) (state : RecState) : Prop :=
     state.exports[i]? = some (some scheme) → state.outputs[i]? = some (some output) →
     scheme.WF ∧ ∃ L, GeneralisesTo TypeOfHM (state.rhsCtx ctx) (some scheme) output scheme L
 
+@[simp] theorem RecState.entries_setSigned (state : RecState) (member : Nat)
+    (names : List Nat) (output : Expr) (facts : RecFacts) :
+    (state.setSigned member names output facts).entries = state.entries := by
+  apply List.ext_getElem?
+  intro i
+  simp only [RecState.entries, RecState.setSigned, List.getElem?_map,
+    List.getElem?_mapIdx]
+  cases state.memberStates[i]? with
+  | none => rfl
+  | some old => split <;> rfl
+
+@[simp] theorem RecState.entries_installOpenings (state : RecState) (members : List Nat)
+    (openings : List RecOpening) :
+    (state.installOpenings members openings).entries = state.entries := by
+  apply List.ext_getElem?
+  intro i
+  simp only [RecState.entries, RecState.installOpenings, List.getElem?_map,
+    List.getElem?_mapIdx]
+  cases state.memberStates[i]? with
+  | none => rfl
+  | some old => split <;> rfl
+
+@[simp] theorem RecState.rhsCtx_installOpenings (state : RecState) (members : List Nat)
+    (openings : List RecOpening) (ctx : Ctx) :
+    (state.installOpenings members openings).rhsCtx ctx = state.rhsCtx ctx := by
+  simp [RecState.rhsCtx]
+
+@[simp] theorem RecState.rhsCtx_setSigned (state : RecState) (member : Nat)
+    (names : List Nat) (output : Expr) (facts : RecFacts) (ctx : Ctx) :
+    (state.setSigned member names output facts).rhsCtx ctx = state.rhsCtx ctx := by
+  simp [RecState.rhsCtx]
+
+theorem RecState.getElem?_outputs_setSigned (state : RecState) (member i : Nat)
+    (names : List Nat) (output : Expr) (facts : RecFacts) :
+    (state.setSigned member names output facts).outputs[i]? =
+      state.memberStates[i]?.map (fun old =>
+        if i = member then some (output.closeTyVars names) else old.output) := by
+  simp only [RecState.outputs, RecState.setSigned, List.getElem?_map,
+    List.getElem?_mapIdx]
+  cases state.memberStates[i]? with
+  | none => rfl
+  | some old => split <;> rfl
+
+theorem RecState.getElem?_outputs_setSigned_self (state : RecState) (member : Nat)
+    (names : List Nat) (output : Expr) (facts : RecFacts)
+    (hmember : member < state.outputs.length) :
+    (state.setSigned member names output facts).outputs[member]? =
+      some (some (output.closeTyVars names)) := by
+  rw [RecState.getElem?_outputs_setSigned]
+  have hi : member < state.memberStates.length := by
+    simpa only [RecState.outputs_length] using hmember
+  rw [List.getElem?_eq_getElem hi]
+  simp
+
+theorem RecState.getElem?_outputs_setSigned_of_ne (state : RecState) (member i : Nat)
+    (names : List Nat) (output : Expr) (facts : RecFacts) (hi : i ≠ member) :
+    (state.setSigned member names output facts).outputs[i]? = state.outputs[i]? := by
+  rw [RecState.getElem?_outputs_setSigned, RecState.getElem?_outputs]
+  cases state.memberStates[i]? <;> simp [hi]
+
+theorem RecState.getElem?_outputs_exportComponent (state : RecState) (members : List Nat)
+    (written : List (List Nat)) (pool : List Nat) (outputs : List (Option Expr))
+    (facts : List RecFacts) (i : Nat) :
+    (state.exportComponent members written pool outputs facts).outputs[i]? =
+      state.memberStates[i]?.map (fun member =>
+        if i ∈ members then do
+          let ty ← member.spec.monoTy?
+          let rhs ← (outputs[i]?).join
+          pure (rhs.closeTyVars (recNames (written[i]?.getD []) pool ty))
+        else member.output) := by
+  simp only [RecState.outputs, RecState.exportComponent, List.getElem?_map,
+    List.getElem?_mapIdx]
+  cases state.memberStates[i]? with
+  | none => rfl
+  | some member => split <;> rfl
+
+@[simp] theorem RecState.pool_exportComponent (state : RecState) (members : List Nat)
+    (written : List (List Nat)) (pool : List Nat) (outputs : List (Option Expr))
+    (facts : List RecFacts) :
+    (state.exportComponent members written pool outputs facts).pool = pool := rfl
+
+@[simp] theorem RecState.pool_onSubst (state : RecState) (S : Subst) :
+    (state.onSubst S).pool = state.pool := rfl
+
+@[simp] theorem RecState.prefixes_exportComponent (state : RecState) (members : List Nat)
+    (written : List (List Nat)) (pool : List Nat) (outputs : List (Option Expr))
+    (facts : List RecFacts) :
+    (state.exportComponent members written pool outputs facts).prefixes = state.prefixes := by
+  unfold RecState.prefixes
+  rw [RecState.specs_exportComponent, RecState.slots_exportComponent]
+
+@[simp] theorem RecState.prefixes_installOpenings_of_disjoint (state : RecState)
+    {members done : List Nat} {openings : List RecOpening}
+    (hnot : ∀ i ∈ members, i ∉ done) :
+    ∀ i ∈ done, (state.installOpenings members openings).prefixes[i]? = state.prefixes[i]? := by
+  intro i hi
+  unfold RecState.prefixes
+  rw [RecState.specs_installOpenings]
+  simp only [List.getElem?_mapIdx]
+  cases hs : state.specs[i]? with
+  | none => rfl
+  | some spec =>
+    simp only [Option.map_some]
+    cases spec with
+    | poly scheme => rfl
+    | mono ty =>
+      rw [RecState.getElem?_slots_installOpenings_of_not_mem state openings
+        (fun hm => hnot i hm hi)]
+
+@[simp] theorem RecState.stageEntries_installOpenings (state : RecState)
+    (members : List Nat) (openings : List RecOpening) (earlier : List Nat) :
+    (state.installOpenings members openings).stageEntries earlier = state.stageEntries earlier := by
+  unfold RecState.stageEntries
+  rw [RecState.specs_installOpenings, RecState.exports_installOpenings]
+
+@[simp] theorem RecState.stageCtx_installOpenings (state : RecState) (members : List Nat)
+    (openings : List RecOpening) (ctx : Ctx) (earlier : List Nat) :
+    (state.installOpenings members openings).stageCtx ctx earlier = state.stageCtx ctx earlier := by
+  simp [RecState.stageCtx]
+
  theorem RecState.SourceTyped.init : (RecState.init base anns).SourceTyped ctx := by
   intro i scheme output _ ho
-  simp only [RecState.init, List.getElem?_map] at ho
-  cases h : anns[i]? <;> simp [h] at ho
+  rw [RecState.init_outputs, List.getElem?_map] at ho
+  cases anns[i]? <;> simp_all
 
  theorem RecState.SourceTyped.onSubst {state : RecState} {ctx : Ctx}
     (h : state.SourceTyped ctx) (S : Subst) (hlc : ∀ p ∈ S, p.2.IsLC) :
     (state.onSubst S).SourceTyped (S.onCtx ctx) := by
   intro i scheme output hs ho
-  simp only [RecState.onSubst, List.getElem?_map] at hs ho
+  rw [RecState.exports_onSubst, List.getElem?_map] at hs
+  rw [RecState.outputs_onSubst, List.getElem?_map] at ho
   obtain ⟨oldScheme, hscheme, heqScheme⟩ := Option.map_eq_some_iff.mp hs
   obtain ⟨sigma, hsigma, heq⟩ := Option.map_eq_some_iff.mp heqScheme
   cases heq
@@ -3829,15 +3971,22 @@ def RecState.SourceTyped (ctx : Ctx) (state : RecState) : Prop :=
   refine ⟨Subst.onPolyTy_wf hlc hwf, ?_⟩
   simpa only [RecState.rhsCtx_onSubst] using hgen.onSubst_annotated hwf S hlc
 
+ theorem RecState.SourceTyped.installOpenings {state : RecState} {ctx : Ctx}
+    (h : state.SourceTyped ctx) :
+    (state.installOpenings members openings).SourceTyped ctx := by
+  intro i scheme output hs ho
+  rw [RecState.exports_installOpenings] at hs
+  rw [RecState.outputs_installOpenings] at ho
+  simpa only [RecState.rhsCtx_installOpenings] using h i scheme output hs ho
+
  theorem RecState.mem_entries_of_export {state : RecState} {i : Nat} {scheme : PolyTy}
-    (hlen : state.exports.length = state.specs.length)
+    (_hlen : state.exports.length = state.specs.length)
     (hs : state.exports[i]? = some (some scheme)) : scheme ∈ state.entries := by
-  have hi : i < state.specs.length := by rw [← hlen]; exact (List.getElem?_eq_some_iff.mp hs).1
-  have hz : (state.specs.zip state.exports)[i]? = some (state.specs[i]'hi, some scheme) :=
-    List.getElem?_zip_eq_some.mpr ⟨List.getElem?_eq_getElem hi, hs⟩
+  rw [RecState.getElem?_exports] at hs
+  obtain ⟨member, hmember, hexport⟩ := Option.map_eq_some_iff.mp hs
   apply List.mem_of_getElem? (i := i)
-  rw [RecState.entries, List.getElem?_map, hz]
-  rfl
+  rw [RecState.entries, List.getElem?_map, hmember]
+  simp only [Option.map_some, hexport, Option.getD_some]
 
  theorem RecState.SourceTyped.setSigned {state : RecState} {ctx : Ctx}
     {member : Nat} {names : List Nat} {scheme : PolyTy} {output : Expr} {facts : RecFacts}
@@ -3858,14 +4007,16 @@ def RecState.SourceTyped (ctx : Ctx) (state : RecState) : Prop :=
       exact ⟨hlen, True.intro⟩
   rw [heq] at hgen
   intro i sigma rhs hs ho
+  rw [RecState.exports_setSigned] at hs
   by_cases hi : member = i
   · subst i
     have he : sigma = scheme := Option.some.inj (Option.some.inj (hs.symm.trans hexport))
     subst sigma
-    rw [RecState.setSigned, List.getElem?_set_self houtput] at ho
+    rw [RecState.getElem?_outputs_setSigned_self state member names output facts houtput] at ho
     cases Option.some.inj (Option.some.inj ho)
-    exact ⟨hwf, names, hgen⟩
-  · exact h i sigma rhs hs (by simpa only [RecState.setSigned, List.getElem?_set_ne hi] using ho)
+    simpa only [RecState.rhsCtx_setSigned] using And.intro hwf ⟨names, hgen⟩
+  · rw [RecState.getElem?_outputs_setSigned_of_ne state member i names output facts (Ne.symm hi)] at ho
+    simpa only [RecState.rhsCtx_setSigned] using h i sigma rhs hs ho
 
  theorem RecState.entries_eq_of_exports {state : RecState} {schemes : List PolyTy}
     (hspecs : state.specs.length = state.exports.length)
@@ -3879,16 +4030,12 @@ def RecState.SourceTyped (ctx : Ctx) (state : RecState) : Prop :=
       have hi : schemes.length ≤ i := List.getElem?_eq_none_iff.mp hs
       exact List.getElem?_eq_none_iff.mpr (hlen ▸ hi)
   | some scheme =>
-      have hi : i < state.specs.length := by
-        have := (List.getElem?_eq_some_iff.mp hs).1
-        simpa only [hspecs, hexports, List.length_map] using this
-      have hspec := List.getElem?_eq_getElem hi
       have he : state.exports[i]? = some (some scheme) := by
         rw [hexports, List.getElem?_map, hs]; rfl
-      have hz : (state.specs.zip state.exports)[i]? = some (state.specs[i]'hi, some scheme) :=
-        List.getElem?_zip_eq_some.mpr ⟨hspec, he⟩
-      rw [RecState.entries, List.getElem?_map, hz]
-      rfl
+      rw [RecState.getElem?_exports] at he
+      obtain ⟨member, hmember, hexport⟩ := Option.map_eq_some_iff.mp he
+      rw [RecState.entries, List.getElem?_map, hmember]
+      simp only [Option.map_some, hexport, Option.getD_some]
 
 private theorem collect_annotated_avoids {ctx : Ctx} (pairs : List (Expr × PolyTy))
     (h : ∀ pair ∈ pairs, ∃ L,
@@ -3994,51 +4141,67 @@ private theorem collect_annotated_avoids {ctx : Ctx} (pairs : List (Expr × Poly
     (written := written) (outputs := outputs) (facts := facts) (pool := pool)
     (hexports.trans hspecs) hlc hclosed hmono
   intro i scheme output hscheme houtput
-  rw [RecState.exportComponent, List.getElem?_mapIdx] at hscheme houtput
-  obtain ⟨oldScheme, hOldScheme, hNewScheme⟩ := Option.map_eq_some_iff.mp hscheme
-  obtain ⟨oldOutput, hOldOutput, hNewOutput⟩ := Option.map_eq_some_iff.mp houtput
-  by_cases hi : i ∈ members
-  · obtain ⟨ty, hty⟩ := hmono i hi
-    simp only [if_pos hi] at hNewScheme hNewOutput
-    have heq : recScheme (written[i]?.getD []) pool ty = scheme := by
-      simpa [hty] using hNewScheme
-    subst scheme
-    rw [hty] at hNewOutput
-    obtain ⟨spec, hspec, hbind⟩ := Option.bind_eq_some_iff.mp hNewOutput
-    cases Option.some.inj hspec
-    obtain ⟨target, htarget, hbind⟩ := Option.bind_eq_some_iff.mp hbind
-    cases Option.some.inj htarget
-    obtain ⟨rhs, hrhs, hclose⟩ := Option.bind_eq_some_iff.mp hbind
-    obtain ⟨inner, hinner, hinnerEq⟩ := Option.bind_eq_some_iff.mp hrhs
-    cases hinnerEq
-    cases Option.some.inj hclose
-    have hchecked := htyped i ty rhs hty hinner
-    have hweaken : TypeOfHM ((state.exportComponent members written pool outputs facts).rhsCtx ctx) rhs ty :=
-      TypeOfHM.weaken_schemes hgeneral hchecked
-    have hnames : (recNames (written[i]?.getD []) pool ty).Nodup := recNames_nodup (hnd i hi) hpool
-    have havoid : ∀ v ∈ recNames (written[i]?.getD []) pool ty,
-        v ∉ ((state.exportComponent members written pool outputs facts).rhsCtx ctx).env.freeVars := by
-      intro v hv
-      apply hfresh v
-      rcases mem_recNames.mp hv with hv | ⟨hv, _, _⟩
-      · exact hsub i hi v hv
-      · exact hv
-    exact ⟨recScheme_wf (hlc _ (List.mem_of_getElem? hty)), _, hweaken.generaliseAnnotated hnames havoid⟩
-  · simp only [if_neg hi] at hNewScheme hNewOutput
-    obtain ⟨hwf, L, hgen⟩ := h i scheme output (hNewScheme ▸ hOldScheme) (hNewOutput ▸ hOldOutput)
-    refine ⟨hwf, ?_⟩
-    have houter : List.Forall₂ PolyTy.Generalizes ctx.env ctx.env := by
-      induction ctx.env with
-      | nil => exact .nil
-      | cons scheme rest ih => exact .cons (PolyTy.Generalizes.refl scheme) ih
-    have happend : ∀ {new old : List PolyTy}, List.Forall₂ PolyTy.Generalizes new old →
-        List.Forall₂ PolyTy.Generalizes (new ++ ctx.env) (old ++ ctx.env) := by
-      intro new old hrel
-      induction hrel with
-      | nil => exact houter
-      | cons head tail ih => exact .cons head ih
-    have henv := happend hgeneral
-    exact GeneralisesTo.weaken_annotated (ctx := state.rhsCtx ctx) hwf hgen henv
+  rw [RecState.getElem?_exports_exportComponent] at hscheme
+  rw [RecState.getElem?_outputs_exportComponent] at houtput
+  cases hmember : state.memberStates[i]? with
+  | none => simp [hmember] at hscheme
+  | some member =>
+    have hmember_mem : member ∈ state.memberStates := List.mem_of_getElem? hmember
+    have hspec : state.specs[i]? = some member.spec := by
+      simp only [RecState.getElem?_specs, hmember, Option.map_some]
+    by_cases hi : i ∈ members
+    · obtain ⟨ty, hty⟩ := hmono i hi
+      have hspecEq : member.spec = .mono ty := Option.some.inj (hspec.symm.trans hty)
+      simp only [hmember, Option.map_some, hi, if_pos, hspecEq,
+        RecSpec.completedScheme_mono] at hscheme houtput
+      cases Option.some.inj hscheme
+      cases hout : outputs[i]? with
+      | none => simp [hout] at houtput
+      | some value =>
+          cases value with
+          | none => simp [hout] at houtput
+          | some rhs =>
+              simp [hout] at houtput
+              cases houtput
+              have hchecked := htyped i ty rhs hty hout
+              have hweaken : TypeOfHM
+                  ((state.exportComponent members written pool outputs facts).rhsCtx ctx) rhs ty :=
+                TypeOfHM.weaken_schemes hgeneral hchecked
+              have hnames : (recNames (written[i]?.getD []) pool ty).Nodup :=
+                recNames_nodup (hnd i hi) hpool
+              have havoid : ∀ v ∈ recNames (written[i]?.getD []) pool ty,
+                  v ∉ ((state.exportComponent members written pool outputs facts).rhsCtx ctx).env.freeVars := by
+                intro v hv
+                apply hfresh v
+                rcases mem_recNames.mp hv with hv | ⟨hv, _, _⟩
+                · exact hsub i hi v hv
+                · exact hv
+              have htyLC : ty.IsLC := by
+                simpa only [hspecEq] using
+                  (hlc member.spec (List.mem_map.mpr ⟨member, hmember_mem, rfl⟩))
+              exact ⟨recScheme_wf htyLC, _, hweaken.generaliseAnnotated hnames havoid⟩
+    · simp only [hmember, Option.map_some, hi] at hscheme houtput
+      have hscheme' := Option.some.inj hscheme
+      have houtput' := Option.some.inj houtput
+      simp only [if_false] at hscheme' houtput'
+      have hOldScheme : state.exports[i]? = some (some scheme) := by
+        simp only [RecState.getElem?_exports, hmember, Option.map_some, hscheme']
+      have hOldOutput : state.outputs[i]? = some (some output) := by
+        simp only [RecState.getElem?_outputs, hmember, Option.map_some, houtput']
+      obtain ⟨hwf, L, hgen⟩ := h i scheme output hOldScheme hOldOutput
+      refine ⟨hwf, ?_⟩
+      have houter : List.Forall₂ PolyTy.Generalizes ctx.env ctx.env := by
+        induction ctx.env with
+        | nil => exact .nil
+        | cons scheme rest ih => exact .cons (PolyTy.Generalizes.refl scheme) ih
+      have happend : ∀ {new old : List PolyTy}, List.Forall₂ PolyTy.Generalizes new old →
+          List.Forall₂ PolyTy.Generalizes (new ++ ctx.env) (old ++ ctx.env) := by
+        intro new old hrel
+        induction hrel with
+        | nil => exact houter
+        | cons head tail ih => exact .cons head ih
+      have henv := happend hgeneral
+      exact GeneralisesTo.weaken_annotated (ctx := state.rhsCtx ctx) hwf hgen henv
 
 
  theorem InferRecComponent.sourceSound_of_infer
@@ -4124,9 +4287,9 @@ private theorem collect_annotated_avoids {ctx : Ctx} (pairs : List (Expr × Poly
     have hex := hcontracts 0 scheme rfl
     simp only [Nat.add_zero] at hex
     have hex' : (state.onSubst (s1 ++ s2)).exports[index]? = some (some ((s1 ++ s2).onPolyTy scheme)) := by
-      simp only [RecState.onSubst, List.getElem?_map, hex, Option.map_some]
+      simp only [RecState.exports_onSubst, List.getElem?_map, hex, Option.map_some]
     have hlen' : (state.onSubst (s1 ++ s2)).exports.length = (state.onSubst (s1 ++ s2)).specs.length := by
-      simpa only [RecState.onSubst, List.length_map] using hlen
+      simpa only [RecState.exports_onSubst, RecState.specs_onSubst, List.length_map] using hlen
     have hmember := (state.onSubst (s1 ++ s2)).mem_entries_of_export hlen' hex'
     have hrhs := TypeOfHM.onSubst s2 hS2
       (hInfer (by simp only [InferInput.size_openTyVars, sizeBindings]; omega) hi hiCtx)
@@ -4145,7 +4308,7 @@ private theorem collect_annotated_avoids {ctx : Ctx} (pairs : List (Expr × Poly
       exact hctxFresh v hv (Env.mem_freeVars_iff.mpr ⟨_, List.mem_append_left _ hmember, hm⟩)
     have houtput : index < (state.onSubst (s1 ++ s2)).outputs.length := by
       have hi := (List.getElem?_eq_some_iff.mp hex').1
-      simpa only [RecState.onSubst, List.length_map, hout] using hi
+      simpa only [RecState.exports_onSubst, RecState.outputs_onSubst, List.length_map, hout] using hi
     have hclosed := hready.setSigned (facts := bodyFacts.onSubst s2) hex' houtput (Subst.onPolyTy_wf hS hwf)
       (by simp [Subst.onPolyTy]) (freshVars_nodup) hctxFresh hschemeFresh
       (by
@@ -4156,8 +4319,10 @@ private theorem collect_annotated_avoids {ctx : Ctx} (pairs : List (Expr × Poly
     have hfinal := hr.sourceSound_of_infer
       (fun he hj => hInfer (by simp only [sizeBindings_map_substTyFvars] at he; simp only [sizeBindings]; omega) hj)
       (Subst.onCtx_wf hS hctx) ((hstate.onSubst hS).setSigned) hclosed
-      (by simpa only [RecState.setSigned, RecState.onSubst, List.length_map] using hlen)
-      (by simpa only [RecState.setSigned, RecState.onSubst, List.length_map, List.length_set] using hout)
+      (by simpa only [RecState.exports_setSigned, RecState.specs_setSigned,
+          RecState.exports_onSubst, RecState.specs_onSubst, List.length_map] using hlen)
+      (by simpa only [RecState.outputs_length, RecState.exports_length,
+          RecState.setSigned, List.length_mapIdx, RecState.onSubst, List.length_map] using hout)
       (by
         intro j sigma hs
         obtain ⟨ann, ha, heq⟩ := Option.map_eq_some_iff.mp (by simpa only [List.getElem?_map] using hs)
@@ -4166,8 +4331,8 @@ private theorem collect_annotated_avoids {ctx : Ctx} (pairs : List (Expr × Poly
         | complete original =>
           cases BindingAnn.complete.inj heq
           have hh := hcontracts (j + 1) original (by simpa only [List.getElem?_cons_succ] using ha)
-          simp only [RecState.setSigned, RecState.onSubst, List.getElem?_map, Nat.add_assoc,
-            Nat.add_comm 1 j, hh, Option.map_some, Subst.onPolyTy, Subst.onTy])
+          simp only [RecState.exports_setSigned, RecState.exports_onSubst, List.getElem?_map,
+            Nat.add_assoc, Nat.add_comm 1 j, hh, Option.map_some, Subst.onPolyTy, Subst.onTy])
     simpa only [Subst.onCtx_append] using hfinal
  termination_by structural h
 
@@ -4209,29 +4374,30 @@ private theorem RecState.Frame.entry_freeVars_subset {state : RecState} {spec : 
     (he : state.entries[i]? = some scheme) :
     ∀ v ∈ scheme.body.freeVars, v ∈ spec.freeVars := by
   rw [RecState.entries, List.getElem?_map] at he
-  obtain ⟨⟨old, exported⟩, hz, hentry⟩ := Option.map_eq_some_iff.mp he
-  obtain ⟨hsp, hex⟩ := List.getElem?_zip_eq_some.mp hz
-  dsimp only at hsp hex
-  have hsame := Option.some.inj (hsp.symm.trans hs)
-  change old = spec at hsame
-  subst old
+  obtain ⟨member, hmember, hentry⟩ := Option.map_eq_some_iff.mp he
+  have hsp : state.specs[i]? = some member.spec := by
+    simp only [RecState.getElem?_specs, hmember, Option.map_some]
+  have hex : state.exports[i]? = some member.exported := by
+    simp only [RecState.getElem?_exports, hmember, Option.map_some]
+  have hsame : member.spec = spec := Option.some.inj (hsp.symm.trans hs)
+  rw [hsame] at hentry
   cases spec with
   | poly sigma =>
     have hh := h.poly i sigma hs
     have hh' := Option.some.inj (hex.symm.trans hh)
-    subst exported
+    rw [hh'] at hentry
     cases hentry
     exact fun _ hv => hv
   | mono ty =>
     by_cases hd : i ∈ done
     · obtain ⟨written, _, _, _, _, hx⟩ := if_pos hd ▸ h.mono i ty hs
       have hh := Option.some.inj (hex.symm.trans hx)
-      subst exported
+      rw [hh] at hentry
       cases hentry
       exact fun _ hv => Ty.freeVars_closeOver_subset hv
     · have hx := if_neg hd ▸ h.mono i ty hs
       have hh := Option.some.inj (hex.symm.trans hx)
-      subst exported
+      rw [hh] at hentry
       cases hentry
       exact fun _ hv => hv
 
@@ -4271,18 +4437,36 @@ private theorem recShapes_selected_avoid {state : RecState}
       ∀ ty, shape.2 = some ty → w ∉ ty.freeVars := by
   intro shape hs
   obtain ⟨i, him, heq⟩ := List.mem_filterMap.mp hs
-  cases hspec : state.specs[i]? with
-  | none => simp [hspec] at heq
-  | some spec =>
-    cases spec with
-    | poly scheme => simp [hspec, RecSpec.monoTy?] at heq
+  cases hmember : state.memberStates[i]? with
+  | none => simp [hmember] at heq
+  | some member =>
+    cases hspec : member.spec with
+    | poly scheme => simp [hmember, hspec, RecSpec.monoTy?] at heq
     | mono ty =>
       cases hopen : openings[i]? with
-      | none => simp [hspec, RecSpec.monoTy?, hopen] at heq
+      | none => simp [hmember, hspec, RecSpec.monoTy?, hopen] at heq
       | some opening =>
-        simp [hspec, RecSpec.monoTy?, hopen] at heq
-        subst shape
-        exact ⟨ha i ty him hspec, ho opening (List.mem_of_getElem? hopen)⟩
+        simp [hmember, hspec, RecSpec.monoTy?, hopen] at heq
+        cases heq
+        have hsview : state.specs[i]? = some (.mono ty) := by
+          simp only [RecState.getElem?_specs, hmember, Option.map_some, hspec]
+        exact ⟨ha i ty him hsview, ho opening (List.mem_of_getElem? hopen)⟩
+
+private theorem RecState.shape_mem {state : RecState} {i : Nat} {ty : Ty}
+    {opening : RecOpening} (hi : i ∈ members)
+    (ht : state.specs[i]? = some (.mono ty)) (ho : openings[i]? = some opening) :
+    (ty, opening.expected) ∈ state.shapes members openings := by
+  apply List.mem_filterMap.mpr
+  refine ⟨i, hi, ?_⟩
+  cases hm : state.memberStates[i]? with
+  | none =>
+    rw [RecState.getElem?_specs, hm] at ht
+    simp at ht
+  | some member =>
+    have hs : member.spec = .mono ty := by
+      rw [RecState.getElem?_specs, hm] at ht
+      simpa only [Option.map_some, Option.some.injEq] using ht
+    simp [hm, hs, ho, RecSpec.monoTy?]
 
 theorem openRecSources_getElem? {openings : List RecOpening} {bindings : List InferInput} {i : Nat} {rhs : InferInput}
     (hlen : openings.length = bindings.length)
@@ -4321,7 +4505,11 @@ theorem openRecSources_getElem? {openings : List RecOpening} {bindings : List In
         w ∉ M.body.freeVars) 0 ∧ w ∉ rhs.rigidVars)
     (htarget : ∀ i ty, i ∈ component → state.specs[i]? = some (.mono ty) → w ∉ ty.freeVars) :
     (∀ p ∈ pre ++ current, w ∉ p.2.freeVars) ∧ w ∉ (pre ++ current).map Prod.fst := by
-  have hpre := hp.sourceAvoid (recShapes_selected_avoid htarget (ho.expected_avoid hw hanns))
+  have hpre := hp.sourceAvoid (recShapes_selected_avoid
+    (fun i ty hi hs => htarget i ty hi (by
+      rw [RecState.specs_installOpenings] at hs
+      exact hs))
+    (ho.expected_avoid hw hanns))
   have hn : ∀ opening ∈ openings, w ∉ opening.written := by
     intro opening hm hw'
     have hh := ho.written_range w (List.mem_flatMap.mpr ⟨opening, hm, hw'⟩)
@@ -4342,13 +4530,15 @@ theorem openRecSources_getElem? {openings : List RecOpening} {bindings : List In
       have hctxeq : ((state.installOpenings component openings).onSubst pre).rhsCtx (pre.onCtx ctx) =
           pre.onCtx (state.rhsCtx ctx) := by
         rw [RecState.rhsCtx_onSubst]
-        rfl
+        rw [RecState.rhsCtx_installOpenings]
       rw [hctxeq]
       simpa only [InferInput.erase_substTyFvars, InferInput.erase_openTyVars] using
         Expr.ForallOuter.lookupAvoid_onSubst (S := pre) hhead.1 hpre.1)
     (by
       intro i ty hi hget
-      obtain ⟨old, hold, rfl⟩ := RecSpec.mono_getElem?_map_onSubstSource hget
+      have hget' : (state.specs.map (RecSpec.onSubstSource pre))[i]? = some (.mono ty) := by
+        simpa only [RecState.specs_onSubst, RecState.specs_installOpenings] using hget
+      obtain ⟨old, hold, rfl⟩ := RecSpec.mono_getElem?_map_onSubstSource hget'
       exact Subst.notMemOnTy hpre.1 (htarget i old (by simpa using hi) hold))
   exact ⟨fun p hp => (List.mem_append.mp hp).elim (hpre.1 p) (hcomponent.1 p),
     by simpa only [List.map_append, List.mem_append, not_or] using And.intro hpre.2 hcomponent.2⟩
@@ -4589,48 +4779,71 @@ private theorem ResolveRecSlots.names_avoid_of_slots
     fun v hv hn => st.componentPool_new_avoid hwritten hv hn
   have hpoly : ∀ (i : Nat) (sigma : PolyTy), st.specs[i]? = some (.poly sigma) → st.exports[i]? = some (some sigma) := by
     intro i sigma hs
-    rw [show st.specs = state.specs.map (RecSpec.onSubstSource S) from rfl, List.getElem?_map] at hs
+    rw [show st.specs = state.specs.map (RecSpec.onSubstSource S) from
+      RecState.specs_onSubst state S, List.getElem?_map] at hs
     obtain ⟨old, hold, heq⟩ := Option.map_eq_some_iff.mp hs
     cases old with
     | mono ty => cases heq
     | poly original =>
       cases RecSpec.poly.inj heq
-      simp only [st, RecState.onSubst, List.getElem?_map, h.poly i original hold, Option.map_some]
+      simp only [st, RecState.exports_onSubst, List.getElem?_map,
+        h.poly i original hold, Option.map_some]
+  have hp' : RecSpecs.PendingSeeds base (S.onCtx ctx) st.specs (done ++ members) := by
+    simpa only [st, RecState.specs_onSubst] using hp
   change (st.exportComponent members written pool outputs facts).Frame base K (substSoft S F) (S.onCtx ctx)
     (anns.map (BindingAnn.substTyFvars S)) (done ++ members)
-  refine ⟨?_, ?_, ?_, ?_, ?_, ?_, ?_, ?_, hp, st.componentPool_nodup h.pool_nodup,
+  refine ⟨?_, ?_, ?_, ?_, ?_, ?_, ?_, ?_, (by
+      simpa only [RecState.specs_exportComponent] using hp'), st.componentPool_nodup h.pool_nodup,
     ?_, ?_, ?_, ?_, ?_, h.rigid_below, ?_⟩
-  · simpa only [RecState.exportComponent, st, RecState.onSubst, List.length_map] using h.specs_length
-  · simpa only [RecState.exportComponent, st, RecState.onSubst, List.length_map] using h.slots_length
-  · simpa only [RecState.exportComponent, st, RecState.onSubst, List.length_mapIdx, List.length_map] using h.exports_length
-  · simpa only [RecState.exportComponent, st, RecState.onSubst, List.length_mapIdx, List.length_map] using h.outputs_length
-  · simpa only [RecState.exportComponent, st, RecState.onSubst, List.length_mapIdx, List.length_map] using h.facts_length
+  · simpa only [RecState.specs_length, RecState.exportComponent, st, RecState.onSubst,
+      List.length_mapIdx, List.length_map] using h.specs_length
+  · simpa only [RecState.slots_length, RecState.exportComponent, st, RecState.onSubst,
+      List.length_mapIdx, List.length_map] using h.slots_length
+  · simpa only [RecState.exports_length, RecState.exportComponent, st, RecState.onSubst,
+      List.length_mapIdx, List.length_map] using h.exports_length
+  · simpa only [RecState.outputs_length, RecState.exportComponent, st, RecState.onSubst,
+      List.length_mapIdx, List.length_map] using h.outputs_length
+  · simpa only [RecState.facts_length, RecState.exportComponent, st, RecState.onSubst,
+      List.length_mapIdx, List.length_map] using h.facts_length
   · have hm : st.specs.map RecSpec.ann = (state.specs.map RecSpec.ann).map (Option.map S.onPolyTy) := by
-      simp only [st, RecState.onSubst, List.map_map]
+      simp only [st, RecState.specs_onSubst, List.map_map]
       apply List.map_congr_left
       intro spec _
       cases spec <;> rfl
-    rw [show (st.exportComponent members written pool outputs facts).specs = st.specs from rfl, hm, h.modes]
+    rw [RecState.specs_exportComponent, hm, h.modes]
     simp only [List.map_map, Function.comp_def, BindingAnn.recModeAnn_subst_source]
   · intro i sigma hs
-    change st.specs[i]? = some (.poly sigma) at hs
+    rw [RecState.specs_exportComponent] at hs
     have hex := hpoly i sigma hs
-    simp only [RecState.exportComponent, List.getElem?_mapIdx, hex, Option.map_some]
-    by_cases hi : i ∈ members <;> simp [hi, hs, RecSpec.completedScheme]
+    rw [RecState.getElem?_exports_exportComponent]
+    cases hmember : st.memberStates[i]? with
+    | none =>
+      rw [RecState.getElem?_specs, hmember] at hs
+      simp at hs
+    | some member =>
+      have hspec : member.spec = .poly sigma := by
+        rw [RecState.getElem?_specs, hmember] at hs
+        simpa only [Option.map_some, Option.some.injEq] using hs
+      by_cases hi : i ∈ members
+      · simp [hmember, hi, hspec, RecSpec.completedScheme]
+      · rw [RecState.getElem?_exports, hmember] at hex
+        simpa [hmember, hi] using hex
   · intro i ty hs
-    change st.specs[i]? = some (.mono ty) at hs
-    obtain ⟨original, hold, heqty⟩ := RecSpec.mono_getElem?_map_onSubstSource hs
+    rw [RecState.specs_exportComponent] at hs
+    have hs' : (state.specs.map (RecSpec.onSubstSource S))[i]? = some (.mono ty) := by
+      simpa only [st, RecState.specs_onSubst] using hs
+    obtain ⟨original, hold, heqty⟩ := RecSpec.mono_getElem?_map_onSubstSource hs'
     subst ty
     by_cases hi : i ∈ members
     · have hislot : i < st.slots.length := by
-        simpa only [st, RecState.onSubst, List.length_map, h.slots_length] using
-          (show i < anns.length by simpa only [h.specs_length] using (List.getElem?_eq_some_iff.mp hold).1)
+        simpa only [RecState.slots_length, RecState.specs_length] using
+          (List.getElem?_eq_some_iff.mp hs).1
       have hslotget := List.getElem?_eq_getElem hislot
       obtain ⟨names, hnames, hbare⟩ := hresolve.lookup i _ hslotget
       rw [Nat.zero_add, if_pos hi] at hbare
       rw [if_pos (List.mem_append_right _ hi)]
       refine ⟨names, ?_, ?_, hbare.2.1, ?_, ?_⟩
-      · change st.slots[i]? = some (names.map Ty.fvar)
+      · rw [RecState.slots_exportComponent]
         rw [hbare.1]; exact hslotget
       · have hh := hcounts i _ hi hslotget
         rw [← hbare.1, List.length_map] at hh
@@ -4640,40 +4853,49 @@ private theorem ResolveRecSlots.names_avoid_of_slots
             BindingAnn.recPrefixCount_subst_source] using hh
       · intro v hv
         exact st.componentPool_written (List.mem_flatten.mpr ⟨names, List.mem_of_getElem? hnames, hv⟩)
-      · have hiEx : i < st.exports.length := by
-          simpa only [st, RecState.onSubst, List.length_map, h.exports_length] using
-            (show i < anns.length by simpa only [h.specs_length] using (List.getElem?_eq_some_iff.mp hold).1)
-        simp only [RecState.exportComponent, List.getElem?_mapIdx,
-          List.getElem?_eq_getElem hiEx, Option.map_some, if_pos hi, hs,
-          Option.getD_some, hnames, RecSpec.completedScheme]
-        rfl
+      · rw [RecState.getElem?_exports_exportComponent]
+        cases hmember : st.memberStates[i]? with
+        | none =>
+          rw [RecState.getElem?_specs, hmember] at hs
+          simp at hs
+        | some member =>
+          have hspec : member.spec = .mono (S.onTy original) := by
+            rw [RecState.getElem?_specs, hmember] at hs
+            simpa only [Option.map_some, Option.some.injEq] using hs
+          simp [hmember, hi, hspec, hnames, RecSpec.completedScheme,
+            RecState.pool_exportComponent]
     · have hm := h.mono i original hold
       by_cases hd : i ∈ done
       · obtain ⟨names, hslot, hcount, hnd, hsub, hex⟩ := if_pos hd ▸ hm
         rw [if_pos (List.mem_append_left _ hd)]
         have hnormalized : st.exports[i]? = some (some (recScheme names state.pool (S.onTy original))) := by
-          simp only [st, RecState.onSubst, List.getElem?_map, hex, Option.map_some]
+          simp only [st, RecState.exports_onSubst, List.getElem?_map, hex, Option.map_some]
           rw [recScheme_subst_pool_avoid hdom hran hsub]
         have hstable := st.recScheme_componentPool_eq (members := members)
           (Subst.onTy_lc hS (hlc.1 _ (List.mem_of_getElem? hold))) hsub
           (List.mem_of_getElem? hnormalized) hwritten
         refine ⟨names, ?_, ?_, hnd, fun v hv => st.componentPool_old (hsub v hv), ?_⟩
-        · simp only [RecState.exportComponent, st, RecState.onSubst, List.getElem?_map,
-            hslot, Option.map_some, List.map_map]
+        · simp only [RecState.slots_exportComponent, st, RecState.slots_onSubst,
+            List.getElem?_map, hslot, Option.map_some]
           congr 1
+          rw [List.map_map]
           exact List.map_congr_left (fun v hv => hfix v (hsub v hv))
         · cases ha : anns[i]? with
           | none => simpa only [List.getElem?_map, ha, Option.map_none] using hcount
           | some ann => simpa only [List.getElem?_map, ha, Option.map_some, Option.getD_some,
               BindingAnn.recPrefixCount_subst_source] using hcount
         · have hstable' : recScheme names pool (S.onTy original) = recScheme names state.pool (S.onTy original) := hstable
-          change (st.exportComponent members written pool outputs facts).exports[i]? = some (some (recScheme names pool (S.onTy original)))
+          rw [RecState.pool_exportComponent]
           rw [hstable']
-          simp only [RecState.exportComponent, List.getElem?_mapIdx, hnormalized, Option.map_some, if_neg hi]
+          rw [RecState.getElem?_exports_exportComponent]
+          simpa only [RecState.getElem?_exports, if_neg hi] using hnormalized
       · rw [if_neg (by simpa only [List.mem_append, not_or] using And.intro hd hi)]
         have hex := if_neg hd ▸ hm
-        simp only [RecState.exportComponent, st, RecState.onSubst, List.getElem?_mapIdx,
-          List.getElem?_map, hex, Option.map_some, Option.map_none, if_neg hi]
+        have hex' : st.exports[i]? = some none := by
+          simp only [st, RecState.exports_onSubst, List.getElem?_map, hex,
+            Option.map_some, Option.map_none]
+        rw [RecState.getElem?_exports_exportComponent]
+        simpa only [RecState.getElem?_exports, if_neg hi] using hex'
   · intro v hv hctxv
     by_cases hold : v ∈ state.pool
     · obtain ⟨sigma, hs, hv⟩ := Env.mem_freeVars_iff.mp hctxv
@@ -4696,9 +4918,10 @@ private theorem ResolveRecSlots.names_avoid_of_slots
         (fun hh => h.pool_soft v hold (TyList.mem_freeVars_iff.mpr ⟨old, ho, hh⟩)) hvty
     · exact hnew v hv hold (List.mem_append_right _ hFv)
   · intro sigma ⟨i, hs⟩ v hv hsig
-    change st.specs[i]? = some (.poly sigma) at hs
+    rw [RecState.specs_exportComponent] at hs
     by_cases hold : v ∈ state.pool
-    · rw [show st.specs = state.specs.map (RecSpec.onSubstSource S) from rfl, List.getElem?_map] at hs
+    · rw [show st.specs = state.specs.map (RecSpec.onSubstSource S) from
+        RecState.specs_onSubst state S, List.getElem?_map] at hs
       obtain ⟨old, ho, heq⟩ := Option.map_eq_some_iff.mp hs
       cases old with
       | mono ty => cases heq
@@ -4709,7 +4932,10 @@ private theorem ResolveRecSlots.names_avoid_of_slots
         (Env.mem_freeVars_iff.mpr ⟨sigma, List.mem_append_left _
           (List.mem_filterMap.mpr ⟨some sigma, List.mem_of_getElem? (hpoly i sigma hs), rfl⟩), hsig⟩)))
   · intro member ty hs hm hv
-    obtain ⟨old, ho, _⟩ := RecSpec.mono_getElem?_map_onSubstSource hs
+    rw [RecState.specs_exportComponent] at hs
+    have hs' : (state.specs.map (RecSpec.onSubstSource S))[member]? = some (.mono ty) := by
+      simpa only [st, RecState.specs_onSubst] using hs
+    obtain ⟨old, ho, _⟩ := RecSpec.mono_getElem?_map_onSubstSource hs'
     rcases List.mem_append.mp hv with hv | hv
     · exact h.pool_pending member old ho (fun hd => hm (List.mem_append_left _ hd)) hv
     · rcases List.mem_append.mp (List.mem_dedup.mp (List.mem_filter.mp hv).1) with hv | hv
@@ -4727,10 +4953,16 @@ private theorem ResolveRecSlots.names_avoid_of_slots
           | mono tau0 =>
             simp only [hspec, Option.bind_some, RecSpec.monoTy?, Option.some.injEq] at hlook
             subst tau
-            exact hp.other member ty hs hm j (.mono tau0) hspec
+            have hspec' : (state.specs.map (RecSpec.onSubstSource S))[j]? =
+                some (.mono tau0) := by
+              simpa only [st, RecState.specs_onSubst] using hspec
+            exact hp.other member ty hs' hm j (.mono tau0) hspec'
               (fun heq => hm (List.mem_append_right _ (heq ▸ hj))) hmem
   · intro member ty hs hm hfv
-    obtain ⟨old, ho, _⟩ := RecSpec.mono_getElem?_map_onSubstSource hs
+    rw [RecState.specs_exportComponent] at hs
+    have hs' : (state.specs.map (RecSpec.onSubstSource S))[member]? = some (.mono ty) := by
+      simpa only [st, RecState.specs_onSubst] using hs
+    obtain ⟨old, ho, _⟩ := RecSpec.mono_getElem?_map_onSubstSource hs'
     obtain ⟨t, ht, hf⟩ := TyList.mem_freeVars_iff.mp hfv
     obtain ⟨original, horig, rfl⟩ := List.mem_map.mp ht
     exact Subst.notMemOnTy (hpending member old ho hm).1
@@ -4757,13 +4989,26 @@ private theorem OpenRecAnns.written_count
 private theorem installed_subst_slot {state : RecState} {S : Subst} {i : Nat} {images : List Ty}
     (hi : i ∈ members) (hx : ((state.installOpenings members openings).onSubst S).slots[i]? = some images) :
     images = (((openings[i]?).getD .empty).written.map Ty.fvar).map S.onTy := by
-  have hlt : i < state.slots.length := by
-    simpa only [RecState.onSubst, RecState.installOpenings, List.length_map, List.length_mapIdx] using
-      (List.getElem?_eq_some_iff.mp hx).1
-  have hget := List.getElem?_eq_getElem hlt
-  simp only [RecState.onSubst, RecState.installOpenings, List.getElem?_map, List.getElem?_mapIdx,
-    hget, Option.map_some, if_pos hi] at hx
-  exact (Option.some.inj hx).symm
+  rw [RecState.slots_onSubst, List.getElem?_map] at hx
+  obtain ⟨old, hold, heq⟩ := Option.map_eq_some_iff.mp hx
+  rw [RecState.getElem?_slots_installOpenings] at hold
+  cases hm : state.memberStates[i]? with
+  | none => simp [hm] at hold
+  | some member =>
+    simp only [hm, Option.map_some, if_pos hi, Option.some.injEq] at hold
+    subst old
+    exact heq.symm
+
+private theorem installed_subst_slot_value {state : RecState} {S : Subst} {i : Nat}
+    (hi : i ∈ members) (hlt : i < state.slots.length) :
+    ((state.installOpenings members openings).onSubst S).slots[i]? =
+      some ((((openings[i]?).getD .empty).written.map Ty.fvar).map S.onTy) := by
+  rw [RecState.slots_onSubst, List.getElem?_map,
+    RecState.getElem?_slots_installOpenings]
+  have hm : i < state.memberStates.length := by
+    simpa only [RecState.slots_length] using hlt
+  rw [List.getElem?_eq_getElem hm]
+  simp [hi]
 
  theorem recStep_frame
     {state : RecState}
@@ -4812,21 +5057,23 @@ private theorem installed_subst_slot {state : RecState} {S : Subst} {i : Nat} {i
   refine ⟨?_, havoid⟩
   cases hf with
   | mk hresolve =>
-    apply hins.exportComponent_onSubst hlc.installOpenings hSLC havoid.1 havoid.2 hresolve
+    apply hins.exportComponent_onSubst hlc.installOpenings hSLC havoid.1
+      (by simpa only [RecState.specs_installOpenings] using havoid.2) hresolve
     · intro i images hi hx
       rw [installed_subst_slot hi hx, List.length_map, List.length_map]
       exact ho.written_count i (by simpa using hi)
     · intro member ty ht hm i images hi hx t htmem
+      have ht0 : state.specs[member]? = some (.mono ty) := by
+        simpa only [RecState.specs_installOpenings] using ht
       have hw : base + member < frontier := by
-        have hlt := (List.getElem?_eq_some_iff.mp ht).1
+        have hlt := (List.getElem?_eq_some_iff.mp ht0).1
         have hlen : anns.length = bindings.length := by simpa only [List.length_map] using hvalid.length
-        change member < state.specs.length at hlt
         rw [hframe.specs_length, hlen] at hlt
         omega
       rw [installed_subst_slot hi hx] at htmem
       obtain ⟨old, hold, rfl⟩ := List.mem_map.mp htmem
       obtain ⟨v, hv, rfl⟩ := List.mem_map.mp hold
-      apply Subst.notMemOnTy (havoid.2 member ty ht hm).1
+      apply Subst.notMemOnTy (havoid.2 member ty ht0 hm).1
       simp only [Ty.freeVars, List.mem_singleton]
       intro heq
       subst v
@@ -4936,11 +5183,24 @@ private theorem FinishRecComponent.pool_extends
 theorem RecState.Frame.setSigned {state : RecState} {member : Nat} {names : List Nat}
     {output : Expr} {facts : RecFacts} (h : state.Frame base K F ctx anns done) :
     (state.setSigned member names output facts).Frame base K F ctx anns done := by
-  refine ⟨h.specs_length, h.slots_length, h.exports_length, ?_, ?_, h.modes, h.poly, h.mono,
-    h.pending, h.pool_nodup, h.pool_ctx, h.pool_rigid, h.pool_soft, h.pool_poly,
-    h.pool_pending, h.rigid_below, h.pending_soft⟩
-  · simpa only [RecState.setSigned, List.length_set] using h.outputs_length
-  · simpa only [RecState.setSigned, List.length_set] using h.facts_length
+  refine ⟨(by simpa only [RecState.specs_setSigned] using h.specs_length),
+    (by simpa only [RecState.slots_setSigned] using h.slots_length),
+    (by simpa only [RecState.exports_setSigned] using h.exports_length), ?_, ?_,
+    (by simpa only [RecState.specs_setSigned] using h.modes),
+    (by simpa only [RecState.specs_setSigned, RecState.exports_setSigned] using h.poly),
+    (by simpa only [RecState.specs_setSigned, RecState.slots_setSigned,
+      RecState.exports_setSigned, RecState.pool_setSigned] using h.mono),
+    (by simpa only [RecState.specs_setSigned] using h.pending),
+    (by simpa only [RecState.pool_setSigned] using h.pool_nodup),
+    (by simpa only [RecState.pool_setSigned] using h.pool_ctx),
+    (by simpa only [RecState.pool_setSigned] using h.pool_rigid),
+    (by simpa only [RecState.pool_setSigned] using h.pool_soft),
+    (by simpa only [RecState.specs_setSigned, RecState.pool_setSigned] using h.pool_poly),
+    (by simpa only [RecState.specs_setSigned, RecState.pool_setSigned] using h.pool_pending),
+    h.rigid_below,
+    (by simpa only [RecState.specs_setSigned] using h.pending_soft)⟩
+  · simpa only [RecState.outputs_length, RecState.setSigned, List.length_mapIdx] using h.outputs_length
+  · simpa only [RecState.facts_length, RecState.setSigned, List.length_mapIdx] using h.facts_length
 
 private theorem RecState.Frame.poly_of_complete {state : RecState} {i : Nat} {scheme : PolyTy}
     (h : state.Frame base K F ctx anns done) (ha : anns[i]? = some (.complete scheme)) :
@@ -5034,7 +5294,9 @@ private theorem RecState.Frame.poly_of_complete {state : RecState} {i : Nat} {sc
         ((state.onSubst (s1 ++ s2)).setSigned index (freshVars frontier scheme.paramCount)
           (output.substTyFvars s2) (bodyFacts.onSubst s2)).specs[i]? = some (.mono ty) → i ∈ done := by
       intro i ty hs
-      obtain ⟨old, ho, _⟩ := RecSpec.mono_getElem?_map_onSubstSource hs
+      have hs' : (state.specs.map (RecSpec.onSubstSource (s1 ++ s2)))[i]? = some (.mono ty) := by
+        simpa only [RecState.specs_setSigned, RecState.specs_onSubst] using hs
+      obtain ⟨old, ho, _⟩ := RecSpec.mono_getElem?_map_onSubstSource hs'
       exact hmono i old ho
     obtain ⟨hfinal, htailAvoid⟩ := hr.frame_of_infer
       (fun he hh => hInfer (by
@@ -5083,7 +5345,8 @@ private theorem RecState.Frame.poly_of_complete {state : RecState} {i : Nat} {sc
   have hsound := hc.sourceSound_of_infer
     (fun he hi => hInfer (by simpa only [sizeBindings_map_substTyFvars, sizeBindings_openRecSources] using he) hi)
     (fun _ hi => hi.lc) hpreCtx (hinitLC.onSubst hpreLC).1
-  have hsource : (state.installOpenings component openings).SourceTyped ctx := htyped
+  have hsource : (state.installOpenings component openings).SourceTyped ctx :=
+    htyped.installOpenings
   have hsourceS := hsource.onSubst (pre ++ current) hSLC
   cases hf with
   | mk hresolve =>
@@ -5092,20 +5355,29 @@ private theorem RecState.Frame.poly_of_complete {state : RecState} {i : Nat} {sc
     have hstmono : ∀ i ∈ component, ∃ ty, st.specs[i]? = some (.mono ty) := by
       intro i hi
       obtain ⟨ty, ht⟩ := hmono i hi
-      exact ⟨(pre ++ current).onTy ty, by simp only [st, RecState.onSubst, RecState.installOpenings,
-        List.getElem?_map, ht, Option.map_some, RecSpec.onSubstSource]⟩
+      exact ⟨(pre ++ current).onTy ty, by
+        simp only [st, RecState.specs_onSubst, RecState.specs_installOpenings,
+          List.getElem?_map, ht, Option.map_some, RecSpec.onSubstSource]⟩
     apply hsourceS.exportComponent
-      (by simp only [RecState.onSubst, RecState.installOpenings, List.length_map]; exact hframe.exports_length.trans hframe.outputs_length.symm)
-      (by simp only [RecState.onSubst, RecState.installOpenings, List.length_map]; exact hframe.outputs_length.trans hframe.specs_length.symm)
+      ((RecState.exports_length st).trans (RecState.outputs_length st).symm)
+      ((RecState.outputs_length st).trans (RecState.specs_length st).symm)
       (hinitLC.onSubst hSLC).1
     · intro i hi
       obtain ⟨ty, ht⟩ := hmono i hi
       have hh := if_neg (hnot i hi) ▸ hframe.mono i ty ht
-      simp only [RecState.onSubst, RecState.installOpenings, List.getElem?_map, hh, Option.map_some, Option.map_none]
+      simp only [st, RecState.exports_onSubst, RecState.exports_installOpenings,
+        List.getElem?_map, hh, Option.map_some, Option.map_none]
     · exact hstmono
     · intro i hi
       have hil : i < st.slots.length := by
-        rw [show st.slots.length = anns.length from by simp only [st, RecState.onSubst, RecState.installOpenings, List.length_map, List.length_mapIdx, hframe.slots_length]]
+        rw [show st.slots.length = anns.length from by
+          calc
+            st.slots.length = st.memberStates.length := RecState.slots_length st
+            _ = state.memberStates.length := by
+              simp only [st, RecState.onSubst, RecState.installOpenings,
+                List.length_map, List.length_mapIdx]
+            _ = state.slots.length := (RecState.slots_length state).symm
+            _ = anns.length := hframe.slots_length]
         obtain ⟨ty, ht⟩ := hmono i hi
         simpa only [hframe.specs_length] using (List.getElem?_eq_some_iff.mp ht).1
       obtain ⟨ns, hns, hh⟩ := hresolve.lookup i _ (List.getElem?_eq_getElem hil)
@@ -5120,9 +5392,13 @@ private theorem RecState.Frame.poly_of_complete {state : RecState} {i : Nat} {sc
     · exact heframe.pool_nodup
     · exact heframe.pool_rhsCtx
     · intro i ty output ht hout
-      obtain ⟨old, hold, rfl⟩ := RecSpec.mono_getElem?_map_onSubstSource ht
+      have ht' : ((state.installOpenings component openings).specs.map
+          (RecSpec.onSubstSource (pre ++ current)))[i]? = some (.mono ty) := by
+        simpa only [st, RecState.specs_onSubst] using ht
+      obtain ⟨old, hold, rfl⟩ := RecSpec.mono_getElem?_map_onSubstSource ht'
       have htyPre : ((state.installOpenings component openings).onSubst pre).specs[i]? = some (.mono (pre.onTy old)) := by
-        simp only [RecState.onSubst, List.getElem?_map, hold, Option.map_some, RecSpec.onSubstSource]
+        simp only [RecState.specs_onSubst, List.getElem?_map, hold, Option.map_some,
+          RecSpec.onSubstSource]
       have hh := hsound i (pre.onTy old) output htyPre hout
       rw [RecState.rhsCtx_onSubst] at hh ⊢
       simpa only [Subst.onCtx_append, Subst.onTy_append] using hh
@@ -5449,7 +5725,9 @@ private theorem trace_prefix_lookup {state : RecState} {i : Nat} {ty : Ty} {name
   intro stage component hc i ann rhs ty hi ha hr ht
   obtain ⟨ann0, ha0, rfl⟩ := Option.map_eq_some_iff.mp (by simpa only [List.getElem?_map] using ha)
   obtain ⟨rhs0, hr0, rfl⟩ := Option.map_eq_some_iff.mp (by simpa only [List.getElem?_map] using hr)
-  obtain ⟨ty0, ht0, rfl⟩ := RecSpec.mono_getElem?_map_onSubstSource ht
+  have ht' : (state.specs.map (RecSpec.onSubstSource S))[i]? = some (.mono ty) := by
+    simpa only [RecState.specs_onSubst] using ht
+  obtain ⟨ty0, ht0, rfl⟩ := RecSpec.mono_getElem?_map_onSubstSource ht'
   have hidone : i ∈ past.flatten := List.mem_flatten.mpr ⟨component, List.mem_of_getElem? hc, hi⟩
   obtain ⟨names, hnames, _, _, hsub, _⟩ := if_pos hidone ▸ hframe.mono i ty0 ht0
   have hfix : ∀ v ∈ names, S.onTy (.fvar v) = .fvar v := by
@@ -5459,7 +5737,7 @@ private theorem trace_prefix_lookup {state : RecState} {i : Nat} {ty : Ty} {name
     have heq : pair.1 = v := List.mem_singleton.mp hk
     exact (hpool v (hsub v hv)).2 (List.mem_map.mpr ⟨pair, hp, heq⟩)
   have hnewnames : (state.onSubst S).slots[i]? = some (names.map Ty.fvar) := by
-    simp only [RecState.onSubst, List.getElem?_map, hnames, Option.map_some, List.map_map]
+    simp only [RecState.slots_onSubst, List.getElem?_map, hnames, Option.map_some, List.map_map]
     congr 1
     exact List.map_congr_left (fun v hv => hfix v hv)
   have hprefix := trace_prefix_lookup ht0 hnames
@@ -5604,9 +5882,8 @@ def RecState.Fidelity (Q : List Nat) (anns : List BindingAnn) (bindings : List I
 theorem RecState.Fidelity.init {anns : List BindingAnn} {bindings : List InferInput} :
     (RecState.init base anns).Fidelity Q anns bindings := by
   intro i ann rhs scheme output ha hb he ho
-  simp only [RecState.init, List.getElem?_map] at ho
-  obtain ⟨old, _, heq⟩ := Option.map_eq_some_iff.mp ho
-  cases heq
+  rw [RecState.init_outputs, List.getElem?_map] at ho
+  cases hx : anns[i]? <;> simp [hx] at ho
 
 theorem RecState.Fidelity.onSubst_source {state : RecState} {S : Subst}
     (h : state.Fidelity Q anns bindings) (hS : ∀ p ∈ S, p.2.IsLC)
@@ -5617,7 +5894,8 @@ theorem RecState.Fidelity.onSubst_source {state : RecState} {S : Subst}
   rw [List.getElem?_map] at ha hb
   obtain ⟨oldAnn, hAnn, rfl⟩ := Option.map_eq_some_iff.mp ha
   obtain ⟨oldRhs, hRhs, rfl⟩ := Option.map_eq_some_iff.mp hb
-  rw [RecState.onSubst, List.getElem?_map] at he ho
+  rw [RecState.exports_onSubst, List.getElem?_map] at he
+  rw [RecState.outputs_onSubst, List.getElem?_map] at ho
   obtain ⟨oldExport, hExport, hScheme⟩ := Option.map_eq_some_iff.mp he
   obtain ⟨oldOutput, hOutput, hOut⟩ := Option.map_eq_some_iff.mp ho
   cases oldExport with
@@ -5642,6 +5920,14 @@ theorem RecState.Fidelity.onSubst_source {state : RecState} {S : Subst}
       refine ⟨(hL Xs hfOld).1.onSubst_source S hS hdom, ?_⟩
       simpa only [BindingAnn.paramCount_substTyFvars] using hLc Xs
         ⟨hf.length, hf.nodup, fun v hv hm => hf.avoid v hv (List.mem_append_right _ hm)⟩
+
+theorem RecState.Fidelity.installOpenings {state : RecState}
+    (h : state.Fidelity Q anns bindings) :
+    (state.installOpenings members openings).Fidelity Q anns bindings := by
+  intro i ann rhs scheme output ha hb he ho
+  apply h i ann rhs scheme output ha hb
+  · simpa only [RecState.exports_installOpenings] using he
+  · simpa only [RecState.outputs_installOpenings] using ho
 
  theorem RecState.Fidelity.toCompletes {state : RecState} {schemes : List PolyTy} {outputs : List Expr}
     (h : state.Fidelity Q anns bindings)
@@ -5739,34 +6025,42 @@ theorem RecState.Fidelity.onSubst_source {state : RecState} {S : Subst}
       output.TyBvarBounded 0) :
     (state.exportComponent members written pool outputs facts).Fidelity Q anns bindings := by
   intro i ann rhs scheme output ha hb he ho
-  simp only [RecState.exportComponent, List.getElem?_mapIdx] at he ho
-  obtain ⟨oldExport, hExport, heq⟩ := Option.map_eq_some_iff.mp he
-  obtain ⟨oldOutput, hOutput, hout⟩ := Option.map_eq_some_iff.mp ho
-  by_cases hi : i ∈ members
-  · simp only [if_pos hi] at heq hout
-    cases hspec : state.specs[i]? with
-    | none => simp [hspec] at heq
-    | some spec =>
-      cases spec with
-      | poly sigma => simp [hspec, RecSpec.monoTy?] at hout
+  rw [RecState.getElem?_exports_exportComponent] at he
+  rw [RecState.getElem?_outputs_exportComponent] at ho
+  cases hm : state.memberStates[i]? with
+  | none => simp [hm] at he
+  | some member =>
+    have hs : state.specs[i]? = some member.spec := by
+      simp only [RecState.getElem?_specs, hm, Option.map_some]
+    by_cases hi : i ∈ members
+    · simp only [hm, Option.map_some, if_pos hi] at he ho
+      cases hspec : member.spec with
+      | poly sigma => simp [hspec, RecSpec.monoTy?] at ho
       | mono ty =>
-        rw [hspec] at heq
-        have hscheme : recScheme (written[i]?.getD []) pool ty = scheme := Option.some.inj heq
+        simp only [hspec, RecSpec.completedScheme_mono, Option.some.injEq] at he
         subst scheme
-        rw [hspec] at hout
-        change ((outputs[i]?).join.bind (fun raw => some (raw.closeTyVars (recNames (written[i]?.getD []) pool ty)))) = some output at hout
-        obtain ⟨raw, hraw, hclose⟩ := Option.bind_eq_some_iff.mp hout
+        rw [hspec] at ho
+        change some (do
+          let raw ← (outputs[i]?).join
+          pure (raw.closeTyVars (recNames (written[i]?.getD []) pool ty))) = some (some output) at ho
+        obtain ⟨raw, hraw, hclose⟩ := Option.bind_eq_some_iff.mp (Option.some.inj ho)
         cases Option.some.inj hclose
-        obtain ⟨hfit, hcomplete, hbound⟩ := hcheck i ann rhs ty raw hi ha hb hspec hraw
+        have hsmono : state.specs[i]? = some (.mono ty) := by simpa only [hspec] using hs
+        obtain ⟨hfit, hcomplete, hbound⟩ := hcheck i ann rhs ty raw hi ha hb hsmono hraw
         have hp := hprefix i hi
         have hcount : (written[i]?.getD []).length = ann.recPrefixCount := by
           simpa only [ha, Option.getD_some] using hp.1
         exact hfit.cofinite_fidelity hcount hp.2.1 hp.2.2 hpool
-          (hlc.1 _ (List.mem_of_getElem? hspec)) (hAnn ann (List.mem_of_getElem? ha))
+          (by simpa only [hspec] using
+            (hlc.1 member.spec (List.mem_map.mpr ⟨member, List.mem_of_getElem? hm, rfl⟩)))
+          (hAnn ann (List.mem_of_getElem? ha))
           (hRhs rhs (List.mem_of_getElem? hb)) havoid hcomplete hbound
-  · simp only [if_neg hi] at heq hout
-    subst oldExport oldOutput
-    exact h i ann rhs scheme output ha hb hExport hOutput
+    · simp only [hm, Option.map_some, if_neg hi] at he ho
+      have heOld : state.exports[i]? = some (some scheme) := by
+        simpa only [RecState.getElem?_exports, hm, Option.map_some] using he
+      have hoOld : state.outputs[i]? = some (some output) := by
+        simpa only [RecState.getElem?_outputs, hm, Option.map_some] using ho
+      exact h i ann rhs scheme output ha hb heOld hoOld
 
 
  theorem InferRecComponent.completes_of_infer
@@ -5826,7 +6120,7 @@ private theorem trace_stage_export {state : RecState}
   apply List.ext_getElem?
   intro i
   simp only [List.getElem?_mapIdx]
-  simp only [show (state.exportComponent members written pool outputs facts).specs = state.specs from rfl]
+  simp only [RecState.specs_exportComponent]
   cases hs : state.specs[i]? with
   | none => rfl
   | some spec =>
@@ -5834,9 +6128,8 @@ private theorem trace_stage_export {state : RecState}
     by_cases hm : i ∈ earlier
     · have hn := hdisj i hm
       have hh : (state.exportComponent members written pool outputs facts).exports[i]? = state.exports[i]? := by
-        simp only [RecState.exportComponent, List.getElem?_mapIdx]
-        cases hx : state.exports[i]? <;> simp only [Option.map_none,Option.map_some]
-        simp only [if_neg hn]
+        rw [RecState.getElem?_exports_exportComponent, RecState.getElem?_exports]
+        cases state.memberStates[i]? <;> simp [hn]
       simp only [if_pos hm, hh]
     · simp only [if_neg hm]
 
@@ -5844,29 +6137,33 @@ private theorem trace_stage_all {state : RecState}
     (h : state.Frame base K F ctx anns done) : state.stageCtx ctx done = state.rhsCtx ctx := by
   unfold RecState.stageCtx RecState.rhsCtx
   congr 2
-  apply List.ext_getElem
-  · simp only [RecState.stageEntries, RecState.entries, List.length_mapIdx, List.length_map, List.length_zip]
-    rw [h.exports_length, h.specs_length]
-    omega
-  · intro i hi hj
-    have his : i < state.specs.length := by simpa only [RecState.stageEntries,List.length_mapIdx] using hi
-    have hie : i < state.exports.length := by rw [h.exports_length,←h.specs_length];exact his
-    have hs := List.getElem?_eq_getElem his
-    have he := List.getElem?_eq_getElem hie
-    simp only [RecState.stageEntries,RecState.entries,List.getElem_mapIdx,List.getElem_map,List.getElem_zip]
-    cases hx : state.specs[i]'his with
+  apply List.ext_getElem?
+  intro i
+  simp only [RecState.stageEntries, RecState.entries, List.getElem?_mapIdx,
+    List.getElem?_map, RecState.getElem?_specs]
+  cases hm : state.memberStates[i]? with
+  | none => rfl
+  | some member =>
+    simp only [hm, Option.map_some]
+    cases hs : member.spec with
     | poly M =>
-      have hm := h.poly i M (hx ▸ hs)
-      have heq : state.exports[i]'hie = some M := Option.some.inj (he.symm.trans hm)
-      simp [hm,heq,RecSpec.monoEntry]
+      have hp := h.poly i M (by
+        simp only [RecState.getElem?_specs, hm, Option.map_some, hs])
+      rw [RecState.getElem?_exports, hm] at hp
+      simp only [Option.map_some, Option.some.injEq] at hp
+      simp [hm, hs, hp, RecSpec.monoEntry]
     | mono ty =>
+      have hmono : state.specs[i]? = some (.mono ty) := by
+        simp only [RecState.getElem?_specs, hm, Option.map_some, hs]
       by_cases hd : i ∈ done
-      · obtain ⟨ns, _, _, _, _, hm⟩ := if_pos hd ▸ h.mono i ty (hx ▸ hs)
-        have heq : state.exports[i]'hie = some (recScheme ns state.pool ty) := Option.some.inj (he.symm.trans hm)
-        simp [hd,hm,heq,RecSpec.monoEntry]
-      · have hm := if_neg hd ▸ h.mono i ty (hx ▸ hs)
-        have heq : state.exports[i]'hie = none := Option.some.inj (he.symm.trans hm)
-        simp [hd,heq,RecSpec.monoEntry]
+      · obtain ⟨ns, _, _, _, _, he⟩ := if_pos hd ▸ h.mono i ty hmono
+        rw [RecState.getElem?_exports, hm] at he
+        simp only [Option.map_some, Option.some.injEq] at he
+        simp [hm, hs, hd, he, RecSpec.monoEntry]
+      · have he := if_neg hd ▸ h.mono i ty hmono
+        rw [RecState.getElem?_exports, hm] at he
+        simp only [Option.map_some, Option.some.injEq] at he
+        simp [hm, hs, hd, he, RecSpec.monoEntry]
 
 private theorem trace_install {state : RecState} {past : List (List Nat)}
     (hframe : state.Frame base K F ctx anns past.flatten)
@@ -5875,25 +6172,27 @@ private theorem trace_install {state : RecState} {past : List (List Nat)}
     (state.installOpenings members openings).InputTrace Q ctx anns bindings past := by
   intro stage comp hc i ann rhs ty hi ha hr ht
   have hid : i ∈ past.flatten := List.mem_flatten.mpr ⟨comp,List.mem_of_getElem? hc,hi⟩
-  obtain ⟨ns,hslot,_,_,_,_⟩ := if_pos hid ▸ hframe.mono i ty ht
-  have hold := trace_prefix_lookup (state := state) ht hslot
-  have hslotnew : (state.installOpenings members openings).slots[i]? = some (ns.map Ty.fvar) := by
-    simp only [RecState.installOpenings,List.getElem?_mapIdx,hslot,Option.map_some,
-      if_neg (show i ∉ members from fun hm => hnot i hm hid)]
-  have hnew := trace_prefix_lookup (state := state.installOpenings members openings) ht hslotnew
-  have hh := h stage comp hc i ann rhs ty hi ha hr ht
-  simpa only [hnew,hold,Option.getD_some] using hh
+  have ht0 : state.specs[i]? = some (.mono ty) := by
+    simpa only [RecState.specs_installOpenings] using ht
+  obtain ⟨ns,hslot,_,_,_,_⟩ := if_pos hid ▸ hframe.mono i ty ht0
+  have hold := trace_prefix_lookup (state := state) ht0 hslot
+  have hnew : (state.installOpenings members openings).prefixes[i]? = some ns := by
+    rw [RecState.prefixes_installOpenings_of_disjoint state hnot i hid, hold]
+  have hh := h stage comp hc i ann rhs ty hi ha hr ht0
+  simpa only [hnew, hold, Option.getD_some, RecState.stageCtx_installOpenings] using hh
 
 private theorem trace_export {state : RecState} {past : List (List Nat)}
     (h : state.InputTrace Q ctx anns bindings past)
     (hnot : ∀ i ∈ members, i ∉ past.flatten) :
     (state.exportComponent members written pool outputs facts).InputTrace Q ctx anns bindings past := by
   intro stage comp hc i ann rhs ty hi ha hr ht
-  have hh := h stage comp hc i ann rhs ty hi ha hr ht
+  have ht0 : state.specs[i]? = some (.mono ty) := by
+    simpa only [RecState.specs_exportComponent] using ht
+  have hh := h stage comp hc i ann rhs ty hi ha hr ht0
   rw [trace_stage_export (fun j hj hm => hnot j hm (by
     obtain ⟨group,hgroup,hj⟩ := List.mem_flatten.mp hj
     exact List.mem_flatten.mpr ⟨group,List.mem_of_mem_take hgroup,hj⟩))]
-  exact hh
+  simpa only [RecState.prefixes_exportComponent] using hh
 theorem openRecSources_lookup {i : Nat} {rhs : InferInput} {opening : RecOpening} {openings : List RecOpening} {bindings : List InferInput}
     (hlen : openings.length = bindings.length)
     (hr : bindings[i]? = some rhs) (ho : openings[i]? = some opening) :
@@ -5988,10 +6287,23 @@ theorem openRecSources_lookup {i : Nat} {rhs : InferInput} {opening : RecOpening
               (st.componentPool K (softVars (substSoft (pre ++ current) F)) component ((pre ++ current).onCtx ctx) written)
               outputs facts).prefixes[i]?.getD [])) ty := by
       intro i ann rhs ty hi ha hr ht
-      obtain ⟨oldTy,ht0,rfl⟩ := RecSpec.mono_getElem?_map_onSubstSource ht
-      have ht0' : state.specs[i]? = some (.mono oldTy) := ht0
-      obtain ⟨ns,hslot,_,_,_,_⟩ := if_pos (List.mem_append_right _ hi) ▸ heframe.mono i _ ht
-      have hprefix := trace_prefix_lookup (state := st) ht hslot
+      have ht' : ((state.installOpenings component openings).specs.map
+          (RecSpec.onSubstSource (pre ++ current)))[i]? = some (.mono ty) := by
+        simpa only [st, RecState.specs_onSubst] using ht
+      obtain ⟨oldTy,ht0,rfl⟩ := RecSpec.mono_getElem?_map_onSubstSource ht'
+      have ht0' : state.specs[i]? = some (.mono oldTy) := by
+        simpa only [RecState.specs_installOpenings] using ht0
+      have htFinal : (st.exportComponent component written
+          (st.componentPool K (softVars (substSoft (pre ++ current) F)) component
+            ((pre ++ current).onCtx ctx) written) outputs facts).specs[i]? =
+          some (.mono ((pre ++ current).onTy oldTy)) := by
+        simpa only [RecState.specs_exportComponent] using ht
+      obtain ⟨ns,hslot,_,_,_,_⟩ :=
+        if_pos (List.mem_append_right _ hi) ▸ heframe.mono i _ htFinal
+      have hslot0 : st.slots[i]? = some (ns.map Ty.fvar) := by
+        simpa only [RecState.slots_exportComponent] using hslot
+      have hprefix := trace_prefix_lookup (state := st) ht hslot0
+      rw [RecState.prefixes_exportComponent]
       change (ann.substTyFvars (pre ++ current)).RecFits (st.prefixes[i]?.getD []) ((pre ++ current).onTy oldTy) ∧
         InputTyping ((K ++ softVars (substSoft (pre ++ current) F)) ++ st.prefixes[i]?.getD [])
           (st.rhsCtx ((pre ++ current).onCtx ctx))
@@ -6002,25 +6314,26 @@ theorem openRecSources_lookup {i : Nat} {rhs : InferInput} {opening : RecOpening
         rw [hframe.slots_length,←hframe.specs_length]
         exact (List.getElem?_eq_some_iff.mp ht0').1
       have hslots : st.slots[i]? = some (opening.written.map (fun v => (pre ++ current).onTy (.fvar v))) := by
-        simp only [st,RecState.onSubst,RecState.installOpenings,List.getElem?_map,List.getElem?_mapIdx,
-          List.getElem?_eq_getElem hislot,Option.map_some,if_pos hi,hop,Option.getD_some,List.map_map,Function.comp_def]
+        simpa only [st, hop, Option.getD_some, List.map_map, Function.comp_def] using
+          (installed_subst_slot_value (S := pre ++ current) (openings := openings) hi hislot)
       have himages : opening.written.map (fun v => (pre ++ current).onTy (.fvar v)) = ns.map Ty.fvar :=
-        Option.some.inj (hslots.symm.trans hslot)
+        Option.some.inj (hslots.symm.trans hslot0)
       have hmode : ann.recModeAnn = none := by
         have hh := congrArg (fun xs : List (Option PolyTy) => xs[i]?) hframe.modes
         simpa only [List.getElem?_map,ht0',ha,Option.map_some,RecSpec.ann,Option.some.injEq] using hh.symm
       refine ⟨hopen.recFits_of_images hmode hSLC himages ?_, ?_⟩
       · intro expected hex
         have hshape : (oldTy,some expected) ∈ (state.installOpenings component openings).shapes component openings := by
-          apply List.mem_filterMap.mpr
-          exact ⟨i,hi,by simp [RecState.installOpenings,ht0',RecSpec.monoTy?,hop,hex]⟩
+          simpa only [hex] using
+            (RecState.shape_mem (state := state.installOpenings component openings) hi ht0 hop)
         have hsolved := CheckRecShapes.solves hp hshape
         simpa only [Subst.onTy_append] using congrArg current.onTy hsolved
       · have hrOpened := openRecSources_lookup (ho.length.trans hlength) hr hop
         have hh := hcompInput i ((rhs.openTyVars opening.written).substTyFvars pre) (pre.onTy oldTy)
           (by simpa only [Nat.zero_add] using hi)
           (by simp only [List.getElem?_map,hrOpened,Option.map_some])
-          (by simp only [RecState.onSubst,List.getElem?_map,ht0,Option.map_some,RecSpec.onSubstSource])
+          (by simp only [RecState.specs_onSubst, List.getElem?_map, ht0,
+            Option.map_some, RecSpec.onSubstSource])
         have htyping : InputTyping (K ++ softVars (substSoft (pre ++ current) (F ++ (openings.flatMap RecOpening.written).map Ty.fvar))) (st.rhsCtx ((pre ++ current).onCtx ctx))
             ((rhs.substTyFvars (pre ++ current)).openTyVars ns) ((pre ++ current).onTy oldTy) := by
           dsimp only [st]
@@ -6045,7 +6358,9 @@ theorem openRecSources_lookup {i : Nat} {rhs : InferInput} {opening : RecOpening
       subst comp
       obtain ⟨ann0,ha0,rfl⟩ := Option.map_eq_some_iff.mp (by simpa only [List.getElem?_map] using ha)
       obtain ⟨rhs0,hr0,rfl⟩ := Option.map_eq_some_iff.mp (by simpa only [List.getElem?_map] using hr)
-      have hh := hcurrent i ann0 rhs0 ty hi ha0 hr0 ht
+      have ht0 : st.specs[i]? = some (.mono ty) := by
+        simpa only [RecState.specs_exportComponent] using ht
+      have hh := hcurrent i ann0 rhs0 ty hi ha0 hr0 ht0
       rw [← hStage] at hh
       simpa only [List.take_left] using hh
  theorem InferRecStrata.inputTrace_of_infer
@@ -6168,7 +6483,12 @@ private theorem RecState.CompleteInput.advance_complete {state : RecState}
 
 private theorem RecState.CompleteInput.setSigned {state : RecState} {member : Nat} {names : List Nat}
     {output : Expr} {facts : RecFacts} (h : state.CompleteInput Q ctx anns bindings checked) :
-    (state.setSigned member names output facts).CompleteInput Q ctx anns bindings checked := h
+    (state.setSigned member names output facts).CompleteInput Q ctx anns bindings checked := by
+  obtain ⟨L, hh⟩ := h
+  refine ⟨L, ?_⟩
+  intro i scheme rhs hi ha hr Xs hXs
+  rw [RecState.rhsCtx_setSigned]
+  exact hh i scheme rhs hi ha hr Xs hXs
 
  theorem InferRecSigned.inputSound_of_infer
     (h : InferRecSigned K F index frontier ctx anns bindings state next S final)
@@ -6273,7 +6593,7 @@ private theorem RecState.CompleteInput.setSigned {state : RecState} {member : Na
       ⟨Lhead, fun Xs hXs => by
         have htake : Xs.take ((s1 ++ s2).onPolyTy scheme).paramCount = Xs := by
           rw [← hXs.length, List.take_length]
-        simpa only [BindingAnn.paramCount, htake] using hhead Xs hXs⟩
+        simpa only [BindingAnn.paramCount, htake, RecState.rhsCtx_setSigned] using hhead Xs hXs⟩
     have hnextScope : ∀ ann ∈ fullAnns.map (BindingAnn.substTyFvars (s1 ++ s2)),
         ∀ v ∈ ann.rigidVars, v ∈ K ++ softVars (substSoft (s1 ++ s2) F) := by
       intro ann hm v hv
@@ -6361,7 +6681,8 @@ private theorem fidelity_some_join {xs : List (Option Expr)} {i : Nat} {output :
   have hcompSound := hc.sourceSound_of_infer
     (fun he hi => hSound (by simpa only [sizeBindings_map_substTyFvars,sizeBindings_openRecSources] using he) hi)
     (fun _ hi => hi.lc) hpreCtx (hinitLC.onSubst hpreLC).1
-  have hfidInstall : (state.installOpenings component openings).Fidelity (K ++ softVars F) anns bindings := hFidelity
+  have hfidInstall : (state.installOpenings component openings).Fidelity (K ++ softVars F) anns bindings :=
+    hFidelity.installOpenings
   have hfidS := hfidInstall.onSubst_source hSLC (fun k hk v hv => scope_image hfixK hk hv)
   have hAnnS : ∀ ann ∈ anns.map (BindingAnn.substTyFvars (pre ++ current)),
       ∀ v ∈ ann.rigidVars, v ∈ K ++ softVars (substSoft (pre ++ current) F) := by
@@ -6387,13 +6708,22 @@ private theorem fidelity_some_join {xs : List (Option Expr)} {i : Nat} {output :
         simp only [List.flatten_append,List.flatten_cons,List.mem_append];tauto
       obtain ⟨ty,ht⟩ := hframe.mono_at_unsigned ((hvalid.covers_unsigned i (hvalid.bounded i hm)).mp hm)
       have htS : st.specs[i]? = some (.mono ((pre ++ current).onTy ty)) := by
-        simp only [st,RecState.onSubst,RecState.installOpenings,List.getElem?_map,ht,Option.map_some,RecSpec.onSubstSource]
-      obtain ⟨ns,hslot,hcount,hnd,hsub,_⟩ := if_pos (List.mem_append_right _ hi) ▸ heframe.mono i _ htS
-      obtain ⟨resolved,hr,hh⟩ := hresolve.lookup i (ns.map Ty.fvar) hslot
+        simp only [st, RecState.specs_onSubst, RecState.specs_installOpenings,
+          List.getElem?_map, ht, Option.map_some, RecSpec.onSubstSource]
+      have htFinal : (st.exportComponent component written
+          (st.componentPool K (softVars (substSoft (pre ++ current) F)) component
+            ((pre ++ current).onCtx ctx) written) outputs facts).specs[i]? =
+          some (.mono ((pre ++ current).onTy ty)) := by
+        simpa only [RecState.specs_exportComponent] using htS
+      obtain ⟨ns,hslot,hcount,hnd,hsub,_⟩ :=
+        if_pos (List.mem_append_right _ hi) ▸ heframe.mono i _ htFinal
+      have hslot0 : st.slots[i]? = some (ns.map Ty.fvar) := by
+        simpa only [RecState.slots_exportComponent] using hslot
+      obtain ⟨resolved,hr,hh⟩ := hresolve.lookup i (ns.map Ty.fvar) hslot0
       rw [Nat.zero_add,if_pos hi] at hh
       have heq := fidelity_fvar_map_inj hh.1
       subst resolved
-      exact ⟨ns,hr,hslot,hcount,hnd,hsub⟩
+      exact ⟨ns,hr,hslot0,hcount,hnd,hsub⟩
     apply hfidS.exportComponent (hinitLC.onSubst hSLC) heframe.pool_nodup
       (fun v hv hq => (List.mem_append.mp hq).elim (heframe.pool_rigid v hv) (heframe.pool_soft v hv))
       hAnnS hRhsS
@@ -6403,8 +6733,12 @@ private theorem fidelity_some_join {xs : List (Option Expr)} {i : Nat} {output :
     · intro i ann rhs ty output hi ha hr ht hout
       obtain ⟨ann0,ha0,rfl⟩ := Option.map_eq_some_iff.mp (by simpa only [List.getElem?_map] using ha)
       obtain ⟨rhs0,hr0,rfl⟩ := Option.map_eq_some_iff.mp (by simpa only [List.getElem?_map] using hr)
-      obtain ⟨oldTy,ht0,rfl⟩ := RecSpec.mono_getElem?_map_onSubstSource ht
-      have ht0' : state.specs[i]? = some (.mono oldTy) := ht0
+      have ht' : ((state.installOpenings component openings).specs.map
+          (RecSpec.onSubstSource (pre ++ current)))[i]? = some (.mono ty) := by
+        simpa only [st, RecState.specs_onSubst] using ht
+      obtain ⟨oldTy,ht0,rfl⟩ := RecSpec.mono_getElem?_map_onSubstSource ht'
+      have ht0' : state.specs[i]? = some (.mono oldTy) := by
+        simpa only [RecState.specs_installOpenings] using ht0
       obtain ⟨ns,hn,hslot,_,_,_⟩ := hprefixData i hi
       simp only [hn,Option.getD_some]
       obtain ⟨a,b,opening,hop,hopen⟩ := ho.selected_lookup (by simpa using hi) ha0
@@ -6412,8 +6746,8 @@ private theorem fidelity_some_join {xs : List (Option Expr)} {i : Nat} {output :
         rw [hframe.slots_length,←hframe.specs_length]
         exact (List.getElem?_eq_some_iff.mp ht0').1
       have hslots : st.slots[i]? = some (opening.written.map (fun v => (pre ++ current).onTy (.fvar v))) := by
-        simp only [st,RecState.onSubst,RecState.installOpenings,List.getElem?_map,List.getElem?_mapIdx,
-          List.getElem?_eq_getElem hislot,Option.map_some,if_pos hi,hop,Option.getD_some,List.map_map,Function.comp_def]
+        simpa only [st, hop, Option.getD_some, List.map_map, Function.comp_def] using
+          (installed_subst_slot_value (S := pre ++ current) (openings := openings) hi hislot)
       have himages : opening.written.map (fun v => (pre ++ current).onTy (.fvar v)) = ns.map Ty.fvar :=
         Option.some.inj (hslots.symm.trans hslot)
       have hmode : ann0.recModeAnn = none := by
@@ -6422,8 +6756,8 @@ private theorem fidelity_some_join {xs : List (Option Expr)} {i : Nat} {output :
       refine ⟨hopen.recFits_of_images hmode hSLC himages ?_, ?_, ?_⟩
       · intro expected hex
         have hshape : (oldTy,some expected) ∈ (state.installOpenings component openings).shapes component openings := by
-          apply List.mem_filterMap.mpr
-          exact ⟨i,hi,by simp [RecState.installOpenings,ht0',RecSpec.monoTy?,hop,hex]⟩
+          simpa only [hex] using
+            (RecState.shape_mem (state := state.installOpenings component openings) hi ht0 hop)
         have hsolved := hp.solves hshape
         simpa only [Subst.onTy_append] using congrArg current.onTy hsolved
       · have hrOpened := openRecSources_lookup (ho.length.trans hlength) hr0 hop
@@ -6436,7 +6770,8 @@ private theorem fidelity_some_join {xs : List (Option Expr)} {i : Nat} {output :
         exact hcomplete.scope_restrict ((rhs0.substTyFvars (pre ++ current)).openTyVars_scope
           ((show SourceScope K F rhs0 from hrhs rhs0 (List.mem_of_getElem? hr0)).subst (pre ++ current) hfixK) ns)
       · have hh := hcompSound i (pre.onTy oldTy) output
-          (by simp only [RecState.onSubst,List.getElem?_map,ht0,Option.map_some,RecSpec.onSubstSource])
+          (by simp only [RecState.specs_onSubst, List.getElem?_map, ht0,
+            Option.map_some, RecSpec.onSubstSource])
           (fidelity_some_join hout)
         exact hh.tyBvarBounded
 
@@ -6538,18 +6873,19 @@ private theorem fidelity_some_join {xs : List (Option Expr)} {i : Nat} {output :
     have hs : RecSpec.onSubstSource [] = id := funext RecSpec.onSubstSource_nil
     have ht : Subst.onTy [] = id := funext (fun _ => Subst.onTy_nil)
     have hp : Subst.onPolyTy [] = id := funext (fun _ => Subst.onPolyTy_nil _)
-    simp [RecState.onSubst, hs, ht, hp]
+    simp [RecState.specs_onSubst, RecState.slots_onSubst,
+      RecState.exports_onSubst, hs, ht, hp]
   | .skip _ hr => exact hr.type_fields
   | .cons _ _ _ _ _ hr =>
     obtain ⟨hspec, hslots, hexports, hpool⟩ := hr.type_fields
     refine ⟨?_, ?_, ?_, hpool⟩
     · exact hspec.trans (by
-        simp only [RecState.setSigned, RecState.onSubst, List.map_map]
+        simp only [RecState.specs_onSubst, RecState.specs_setSigned, List.map_map]
         apply List.map_congr_left
         intro spec _
         simp only [Function.comp_apply, RecSpec.onSubstSource_append, List.append_assoc])
     · exact hslots.trans (by
-        simp only [RecState.setSigned, RecState.onSubst, List.map_map]
+        simp only [RecState.slots_onSubst, RecState.slots_setSigned, List.map_map]
         apply List.map_congr_left
         intro names _
         simp only [Function.comp_apply, List.map_map]
@@ -6557,7 +6893,7 @@ private theorem fidelity_some_join {xs : List (Option Expr)} {i : Nat} {output :
         intro ty _
         simp only [Function.comp_apply, Subst.onTy_append, List.append_assoc])
     · exact hexports.trans (by
-        simp only [RecState.setSigned, RecState.onSubst, List.map_map]
+        simp only [RecState.exports_onSubst, RecState.exports_setSigned, List.map_map]
         apply List.map_congr_left
         intro entry _
         cases entry <;> simp only [Function.comp_apply, Option.map_none, Option.map_some,
@@ -6580,15 +6916,14 @@ private theorem RecState.Fidelity.setSigned_complete {state : RecState} {member 
       AnnotationCompletion (Q ++ Xs) (rhs.openTyVars Xs) ((output.closeTyVars names).openTyVars Xs)) :
     (state.setSigned member names output facts).Fidelity Q anns bindings := by
   intro i ann source sigma completed hann hrhs hex hout
-  change state.exports[i]? = some (some sigma) at hex
-  change (state.outputs.set member (some (output.closeTyVars names)))[i]? = some (some completed) at hout
-  rw [List.getElem?_set] at hout
+  rw [RecState.exports_setSigned] at hex
   by_cases hi : member = i
   · subst i
+    rw [RecState.getElem?_outputs_setSigned_self state member names output facts hm] at hout
     cases Option.some.inj (ha.symm.trans hann)
     cases Option.some.inj (hb.symm.trans hrhs)
     cases Option.some.inj (Option.some.inj (he.symm.trans hex))
-    simp only [ite_true, if_pos hm, Option.some.injEq] at hout
+    simp only [Option.some.injEq] at hout
     subst completed
     obtain ⟨L, hh⟩ := hnew
     refine ⟨L, ?_⟩
@@ -6596,7 +6931,7 @@ private theorem RecState.Fidelity.setSigned_complete {state : RecState} {member 
     have htake : Xs.take scheme.paramCount = Xs := by rw [← hXs.length, List.take_length]
     refine ⟨BindingAnn.SignatureFits.complete, ?_⟩
     simpa only [BindingAnn.paramCount, htake] using hh Xs hXs
-  · simp only [if_neg hi] at hout
+  · rw [RecState.getElem?_outputs_setSigned_of_ne state member i names output facts (Ne.symm hi)] at hout
     exact h i ann source sigma completed hann hrhs hex hout
 
  theorem InferRecSigned.completes_of_infer
@@ -6686,8 +7021,8 @@ private theorem RecState.Fidelity.setSigned_complete {state : RecState} {member 
       (by simp only [List.getElem?_map, hBinding, Option.map_some])
       (by
         have hh : state.exports[index]? = some (some scheme) := by simpa only [Nat.add_zero] using hExports 0 scheme rfl
-        simp only [RecState.onSubst, List.getElem?_map, hh, Option.map_some])
-      (by simpa only [RecState.onSubst, List.length_map, hOutLen] using (List.getElem?_eq_some_iff.mp hAnn).1)
+        simp only [RecState.exports_onSubst, List.getElem?_map, hh, Option.map_some])
+      (by simpa only [RecState.outputs_onSubst, List.length_map, hOutLen] using (List.getElem?_eq_some_iff.mp hAnn).1)
       ⟨Lhead, fun Xs hXs => by
         have htake : Xs.take ((s1 ++ s2).onPolyTy scheme).paramCount = Xs := by
           rw [← hXs.length, List.take_length]
@@ -6705,7 +7040,10 @@ private theorem RecState.Fidelity.setSigned_complete {state : RecState} {member 
       (fun k hk => by have := hK k hk; have := hi.frontier_le; omega)
       (by simp only [← List.map_drop, List.drop_add_one_eq_tail_drop, hAnns, List.map_cons, List.tail_cons])
       (by simp only [← List.map_drop, List.drop_add_one_eq_tail_drop, hBindings, List.map_cons, List.tail_cons])
-      (by simpa only [RecState.setSigned, RecState.onSubst, List.length_set, List.length_map] using hOutLen)
+      (by
+        simp only [RecState.outputs_length, RecState.setSigned, RecState.onSubst,
+          List.length_mapIdx, List.length_map]
+        simpa only [RecState.outputs_length] using hOutLen)
       (by
         intro j sigma hj
         obtain ⟨ann, ha, heq⟩ := Option.map_eq_some_iff.mp (by simpa only [List.getElem?_map] using hj)
@@ -6714,7 +7052,7 @@ private theorem RecState.Fidelity.setSigned_complete {state : RecState} {member 
         | complete original =>
           cases BindingAnn.complete.inj heq
           have hh := hExports (j + 1) original ha
-          simp only [RecState.setSigned, RecState.onSubst, List.getElem?_map, Nat.add_assoc,
+          simp only [RecState.exports_setSigned, RecState.exports_onSubst, List.getElem?_map, Nat.add_assoc,
             Nat.add_comm 1 j, hh, Option.map_some]
           rfl) hnew
     simpa only [substSoft_append, List.map_map, Function.comp_def,
@@ -6740,29 +7078,36 @@ private theorem substInputBindings_eq_map_global (S : Subst) (bindings : List In
   have heq : state.entries = recCompletedSchemes state.specs state.prefixes state.pool := by
     apply List.ext_getElem?
     intro i
-    cases hs : state.specs[i]? with
+    cases hm : state.memberStates[i]? with
     | none =>
-      have hi : state.specs.length ≤ i := List.getElem?_eq_none_iff.mp hs
-      simp only [recCompletedSchemes, List.getElem?_mapIdx, hs, Option.map_none]
-      exact List.getElem?_eq_none_iff.mpr (by
-        simp only [RecState.entries, List.length_map, List.length_zip]
-        omega)
-    | some spec =>
-      have he : state.exports[i]? = some (some (spec.completedScheme (state.prefixes[i]?.getD []) state.pool)) := by
-        cases spec with
-        | poly sigma => simpa only [RecSpec.completedScheme_poly] using h.poly i sigma hs
-        | mono ty =>
-          obtain ⟨names, hslots, _, _, _, hex⟩ := if_pos (hdone i ty hs) ▸ h.mono i ty hs
-          have hp : state.prefixes[i]? = some names := by
-            simp only [RecState.prefixes, List.getElem?_mapIdx, hs, Option.map_some, hslots, Option.getD_some]
-            congr 1
-            rw [List.filterMap_map]
-            change names.filterMap some = names
-            simp
-          simpa only [RecSpec.completedScheme_mono, hp, Option.getD_some] using hex
-      have hz : (state.specs.zip state.exports)[i]? = some (spec, some (spec.completedScheme (state.prefixes[i]?.getD []) state.pool)) := List.getElem?_zip_eq_some.mpr ⟨hs, he⟩
-      simp only [RecState.entries, List.getElem?_map, hz, Option.map_some, Option.getD_some,
-        recCompletedSchemes, List.getElem?_mapIdx, hs]
+      simp [RecState.entries, RecState.getElem?_specs, recCompletedSchemes, hm]
+    | some member =>
+      have hs : state.specs[i]? = some member.spec := by
+        simp only [RecState.getElem?_specs, hm, Option.map_some]
+      have hex : state.exports[i]? = some member.exported := by
+        simp only [RecState.getElem?_exports, hm, Option.map_some]
+      cases hspec : member.spec with
+      | poly sigma =>
+        have hspoly : state.specs[i]? = some (.poly sigma) := by simpa only [hspec] using hs
+        have hh := h.poly i sigma hspoly
+        have hex' : member.exported = some sigma := Option.some.inj (hex.symm.trans hh)
+        simp [RecState.entries, recCompletedSchemes, hm, hspoly, hspec, hex',
+          RecSpec.monoEntry, RecSpec.completedScheme]
+      | mono ty =>
+        have hsmono : state.specs[i]? = some (.mono ty) := by simpa only [hspec] using hs
+        obtain ⟨names, hslots, _, _, _, hexported⟩ :=
+          if_pos (hdone i ty hsmono) ▸ h.mono i ty hsmono
+        have hp : state.prefixes[i]? = some names := by
+          simp only [RecState.prefixes, List.getElem?_mapIdx, hsmono, Option.map_some,
+            hslots, Option.getD_some]
+          congr 1
+          rw [List.filterMap_map]
+          change names.filterMap some = names
+          simp
+        have hex' : member.exported = some (recScheme names state.pool ty) :=
+          Option.some.inj (hex.symm.trans hexported)
+        simp [RecState.entries, recCompletedSchemes, hm, hsmono, hspec, hex', hp,
+          RecSpec.monoEntry, RecSpec.completedScheme]
   simp only [RecState.rhsCtx, recBodyCtx, heq]
 
 private theorem forall₂_self_map {α β} {R : α → β → Prop} {f : α → β} :
@@ -7032,14 +7377,20 @@ theorem Infer.sourceSound (h : Infer K F frontier ctx input next subst output ty
     have hbodyTyped := hbody.sourceSound hbodyCtx
     have htypedFinal := htyped2.onSubst s3 hS3
     have hfinalExports : (state2.onSubst s3).exports = (schemes.map s3.onPolyTy).map some := by
-      simp only [RecState.onSubst, hexports, List.map_map]
+      simp only [RecState.exports_onSubst, hexports, List.map_map]
+      apply List.map_congr_left
+      intro scheme _
       rfl
     have hfinalOutputs : (state2.onSubst s3).outputs = (outputs.map (Expr.substTyFvars s3)).map some := by
-      simp only [RecState.onSubst, houtputs, List.map_map]
+      simp only [RecState.outputs_onSubst, houtputs, List.map_map]
+      apply List.map_congr_left
+      intro output _
       rfl
     have hresult := htypedFinal.letRec hfinalExports hfinalOutputs
-      (by simpa only [RecState.onSubst, List.length_map] using hframe2.specs_length.trans hframe2.exports_length.symm)
-      (by simpa only [RecState.onSubst, List.length_map] using hframe2.outputs_length.trans hframe2.exports_length.symm)
+      (by simpa only [RecState.specs_onSubst, RecState.exports_onSubst, List.length_map] using
+        hframe2.specs_length.trans hframe2.exports_length.symm)
+      (by simpa only [RecState.outputs_onSubst, RecState.exports_onSubst, List.length_map] using
+        hframe2.outputs_length.trans hframe2.exports_length.symm)
       (by simpa only [RecState.rhsCtx_onSubst, Subst.onCtx_append] using hbodyTyped)
     simpa only [Subst.onCtx_append] using hresult
   | .match_ _ hs hne hb =>
@@ -7136,40 +7487,44 @@ def RecState.Erases (erased : List Expr) (state : RecState) : Prop :=
  theorem RecState.Erases.init {base : Nat} {anns : List BindingAnn}
     (hlen : anns.length = erased.length) : (RecState.init base anns).Erases erased := by
   constructor
-  · simpa only [RecState.init, List.length_map] using hlen
+  · simpa only [RecState.init_outputs, List.length_map] using hlen
   · intro i output hget
-    simp only [RecState.init, List.getElem?_map] at hget
+    simp only [RecState.init_outputs, List.getElem?_map] at hget
     cases ha : anns[i]? <;> simp [ha] at hget
 
  theorem RecState.Erases.onSubst {state : RecState} (h : state.Erases erased) (S : Subst) :
     (state.onSubst S).Erases erased := by
-  refine ⟨by simpa only [RecState.onSubst, List.length_map] using h.1, ?_⟩
+  refine ⟨by simpa only [RecState.outputs_onSubst, List.length_map] using h.1, ?_⟩
   intro i output hget
-  rw [RecState.onSubst, List.getElem?_map] at hget
+  rw [RecState.outputs_onSubst, List.getElem?_map] at hget
   obtain ⟨old, ho, heq⟩ := Option.map_eq_some_iff.mp hget
   obtain ⟨rhs, hrhs, rfl⟩ := Option.map_eq_some_iff.mp heq
   simpa only [Expr.erase_substTyFvars] using h.2 i rhs (hrhs ▸ ho)
 
  theorem RecState.Erases.installOpenings {state : RecState} (h : state.Erases erased) :
-    (state.installOpenings members openings).Erases erased := h
+    (state.installOpenings members openings).Erases erased := by
+  simpa only [RecState.Erases, RecState.outputs_installOpenings] using h
 
  theorem RecState.Erases.exportComponent {state : RecState} (h : state.Erases erased)
     {outputs : List (Option Expr)} {facts : List RecFacts} {pool : List Nat}
     (hout : ∀ (i : Nat) (output : Expr), outputs[i]? = some (some output) → erased[i]? = some output.erase) :
     (state.exportComponent members written pool outputs facts).Erases erased := by
-  refine ⟨by simpa only [RecState.exportComponent, List.length_mapIdx] using h.1, ?_⟩
+  refine ⟨by simpa only [RecState.outputs_length, RecState.exportComponent,
+    List.length_mapIdx] using h.1, ?_⟩
   intro i output hget
-  rw [RecState.exportComponent, List.getElem?_mapIdx] at hget
+  rw [RecState.getElem?_outputs_exportComponent] at hget
   obtain ⟨old, hold, heq⟩ := Option.map_eq_some_iff.mp hget
-  split at heq
-  · obtain ⟨spec, _, hbind⟩ := Option.bind_eq_some_iff.mp heq
-    obtain ⟨ty, _, hbind⟩ := Option.bind_eq_some_iff.mp hbind
+  by_cases hi : i ∈ members
+  · simp only [if_pos hi] at heq
+    obtain ⟨ty, _, hbind⟩ := Option.bind_eq_some_iff.mp heq
     obtain ⟨rhs, hrhs, hclose⟩ := Option.bind_eq_some_iff.mp hbind
     obtain ⟨inner, hinner, hinnerEq⟩ := Option.bind_eq_some_iff.mp hrhs
     cases hinnerEq
     cases Option.some.inj hclose
     simpa only [Expr.erase_closeTyVars] using hout i rhs hinner
-  · exact h.2 i output (heq ▸ hold)
+  · simp only [if_neg hi] at heq
+    apply h.2 i output
+    simp only [RecState.getElem?_outputs, hold, Option.map_some, heq]
 
  theorem FinishRecComponent.erases
     (h : FinishRecComponent K soft members ctx state outputs facts final)
@@ -7182,17 +7537,19 @@ def RecState.Erases (erased : List Expr) (state : RecState) : Prop :=
  theorem RecState.Erases.setSigned {state : RecState} (h : state.Erases erased)
     {facts : RecFacts} (hout : erased[member]? = some output.erase) :
     (state.setSigned member names output facts).Erases erased := by
-  refine ⟨by simpa only [RecState.setSigned, List.length_set] using h.1, ?_⟩
+  refine ⟨by simpa only [RecState.outputs_length, RecState.setSigned,
+    List.length_mapIdx] using h.1, ?_⟩
   intro i rhs hget
   by_cases hi : member = i
   · subst i
     have hlt : member < state.outputs.length := by
       rw [h.1]
       exact List.getElem?_eq_some_iff.mp hout |>.1
-    rw [RecState.setSigned, List.getElem?_set_self hlt] at hget
+    rw [RecState.getElem?_outputs_setSigned_self state member names output facts hlt] at hget
     cases Option.some.inj (Option.some.inj hget)
     simpa only [Expr.erase_closeTyVars] using hout
-  · exact h.2 i rhs (by simpa only [RecState.setSigned, List.getElem?_set_ne hi] using hget)
+  · rw [RecState.getElem?_outputs_setSigned_of_ne state member i names output facts (Ne.symm hi)] at hget
+    exact h.2 i rhs hget
 
  theorem RecState.Erases.outputs_eq {state : RecState} {outputs : List Expr} (h : state.Erases erased)
     (hout : state.outputs = outputs.map some) : outputs.map Expr.erase = erased := by
@@ -8202,10 +8559,14 @@ theorem Infer.completes_source (h : Infer K F frontier ctx input next subst outp
     simp only [← substSoft_append, List.map_map, Function.comp_def,
       ← BindingAnn.substTyFvars_append, ← InferInput.substTyFvars_append] at hfidFinal
     have hfinalExports : (state2.onSubst s3).exports = (schemes.map s3.onPolyTy).map some := by
-      simp only [RecState.onSubst, hexports, List.map_map]
+      simp only [RecState.exports_onSubst, hexports, List.map_map]
+      apply List.map_congr_left
+      intro scheme _
       rfl
     have hfinalOutputs : (state2.onSubst s3).outputs = (outputs.map (Expr.substTyFvars s3)).map some := by
-      simp only [RecState.onSubst, houtputs, List.map_map]
+      simp only [RecState.outputs_onSubst, houtputs, List.map_map]
+      apply List.map_congr_left
+      intro output _
       rfl
     have hschemeLen : schemes.length = anns.length := by
       have hh := congrArg List.length hexports
