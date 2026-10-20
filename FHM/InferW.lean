@@ -213,11 +213,11 @@ inductive Infer : List Nat → List Ty → Nat → Ctx → InferInput → Nat �
       (SourceScope K F (.letRec anns bindings body) ∧ CtxBelow frontier ctx ∧
         (∀ v ∈ K, v < frontier) ∧ (∀ v ∈ softVars F, v < frontier)) →
       (∀ scheme, .complete scheme ∈ anns → scheme.WF) →
+      anns.length = bindings.length →
       (let modes := anns.map BindingAnn.recModeAnn
        let erasedBindings := bindings.map InferInput.erase
-       RecGroups.ValidResidualGroups modes erasedBindings groups ∧
-         groups = RecGroup.inferenceSccs modes erasedBindings) →
-      (let seededFrontier := frontier + bindings.length
+       let groups := RecGroup.inferenceSccs modes erasedBindings
+       let seededFrontier := frontier + bindings.length
        let initialState := RecState.init frontier anns
        InferRecStrata K F seededFrontier ctx anns bindings initialState groups first s1 state1) →
       (let signedSoft := substSoft s1 F
@@ -1195,43 +1195,42 @@ def inferWithTypesCore (K : List Nat) (frontier : Nat) (ctx : Ctx) (input : Infe
               if hwf : anns.all (fun ann => match ann with
                   | .complete scheme => scheme.body.bvarsBelow scheme.paramCount
                   | _ => true) = true then
-                if hg : RecGroups.validResidualGroupsB (anns.map BindingAnn.recModeAnn) (bindings.map InferInput.erase)
-                    (RecGroup.inferenceSccs (anns.map BindingAnn.recModeAnn) (bindings.map InferInput.erase)) = true then
+                if hlen : anns.length = bindings.length then
                   match inferRecStrataWithTypesCore K F (frontier + bindings.length) ctx anns bindings
                       (RecState.init frontier anns)
                       (RecGroup.inferenceSccs (anns.map BindingAnn.recModeAnn) (bindings.map InferInput.erase)) with
-                  | none => none
-                  | some ⟨strata, hs⟩ =>
-                    match inferRecSignedWithTypesCore K (substSoft strata.subst F) 0 strata.frontier
-                        (strata.subst.onCtx ctx) (anns.map (BindingAnn.substTyFvars strata.subst))
-                        (bindings.map (InferInput.substTyFvars strata.subst)) strata.state with
                     | none => none
-                    | some ⟨signed, hp⟩ =>
-                      match collectRecValues signed.state.exports, collectRecValues signed.state.outputs with
-                      | some ⟨schemes, hschemes⟩, some ⟨outputs, houtputs⟩ =>
-                        let solved := strata.subst ++ signed.subst
-                        match inferWithTypesCore K signed.frontier (signed.state.rhsCtx (solved.onCtx ctx))
-                            (body.substTyFvars solved) (substSoft solved F) with
-                        | none => none
-                        | some ⟨bodyResult, hb⟩ =>
-                          let final := signed.state.onSubst bodyResult.subst
-                          let finalSchemes := schemes.map bodyResult.subst.onPolyTy
-                          some ⟨{
-                            frontier := bodyResult.frontier
-                            subst := strata.subst ++ signed.subst ++ bodyResult.subst
-                            completedExpr := .letRec (finalSchemes.map some)
-                              (outputs.map (Expr.substTyFvars bodyResult.subst)) bodyResult.completedExpr
-                            ty := bodyResult.ty
-                            nodeTypes := .root bodyResult.ty ++ finalRecNodeTypes anns final ++
-                              bodyResult.nodeTypes.below .letRecBody
-                            binderSchemes := inferredRecSchemes anns finalSchemes ++
-                              finalRecBinderSchemes anns final ++
-                              bodyResult.binderSchemes.below .letRecBody },
-                            .letRec ⟨hrawScope, ctxBelow_of_all hctx,
-                              (fun v hv => of_decide_eq_true (List.all_eq_true.mp hK v hv)),
-                              (fun v hv => of_decide_eq_true (List.all_eq_true.mp hF v hv))⟩ (fun scheme hmem => PolyTy.wf_iff_bvarsBelow.mp (List.all_eq_true.mp hwf (.complete scheme) hmem))
-                              ⟨RecGroups.validResidualGroupsB_sound hg, rfl⟩ hs hp hschemes houtputs hb⟩
-                      | _, _ => none
+                    | some ⟨strata, hs⟩ =>
+                      match inferRecSignedWithTypesCore K (substSoft strata.subst F) 0 strata.frontier
+                          (strata.subst.onCtx ctx) (anns.map (BindingAnn.substTyFvars strata.subst))
+                          (bindings.map (InferInput.substTyFvars strata.subst)) strata.state with
+                      | none => none
+                      | some ⟨signed, hp⟩ =>
+                        match collectRecValues signed.state.exports, collectRecValues signed.state.outputs with
+                        | some ⟨schemes, hschemes⟩, some ⟨outputs, houtputs⟩ =>
+                          let solved := strata.subst ++ signed.subst
+                          match inferWithTypesCore K signed.frontier (signed.state.rhsCtx (solved.onCtx ctx))
+                              (body.substTyFvars solved) (substSoft solved F) with
+                          | none => none
+                          | some ⟨bodyResult, hb⟩ =>
+                            let final := signed.state.onSubst bodyResult.subst
+                            let finalSchemes := schemes.map bodyResult.subst.onPolyTy
+                            some ⟨{
+                              frontier := bodyResult.frontier
+                              subst := strata.subst ++ signed.subst ++ bodyResult.subst
+                              completedExpr := .letRec (finalSchemes.map some)
+                                (outputs.map (Expr.substTyFvars bodyResult.subst)) bodyResult.completedExpr
+                              ty := bodyResult.ty
+                              nodeTypes := .root bodyResult.ty ++ finalRecNodeTypes anns final ++
+                                bodyResult.nodeTypes.below .letRecBody
+                              binderSchemes := inferredRecSchemes anns finalSchemes ++
+                                finalRecBinderSchemes anns final ++
+                                bodyResult.binderSchemes.below .letRecBody },
+                              .letRec ⟨hrawScope, ctxBelow_of_all hctx,
+                                (fun v hv => of_decide_eq_true (List.all_eq_true.mp hK v hv)),
+                                (fun v hv => of_decide_eq_true (List.all_eq_true.mp hF v hv))⟩ (fun scheme hmem => PolyTy.wf_iff_bvarsBelow.mp (List.all_eq_true.mp hwf (.complete scheme) hmem))
+                                hlen hs hp hschemes houtputs hb⟩
+                        | _, _ => none
                 else none
               else none
         else none
@@ -2133,16 +2132,14 @@ theorem Infer.belowFvars (h : Infer K F frontier ctx input next subst output ty)
     rcases List.mem_append.mp hp with hp | hp
     · exact (hS1 p hp).mono ((Nat.le_succ _).trans hb.frontier_le)
     · exact hS2 p hp
-  | .letRec hscope _ hvalid hstrata hsigned _ _ hbody =>
+  | .letRec hscope _ hlen hstrata hsigned _ _ hbody =>
     intro hctx hK hF
     expose_names
-    have hvalid := hvalid.1
     have hanns : ∀ ann ∈ anns, ∀ v ∈ ann.rigidVars, v < frontier := by
       intro ann ha v hv
       exact rigid_soft_lt hK hF v (hscope.1 v (by
         simp only [InferInput.rigidVars, List.mem_append]
         exact Or.inl (Or.inl (List.mem_flatMap.mpr ⟨ann, ha, hv⟩))))
-    have hlen : anns.length = bindings.length := by simpa only [List.length_map] using hvalid.length
     have hseed : frontier ≤ frontier + bindings.length := by omega
     obtain ⟨hs1, hstate1⟩ := hstrata.belowFvars_of_infer
       (fun he hi => hi.belowFvars)
@@ -3209,10 +3206,9 @@ mutual
       (by simpa only [InferInput.erase_substTyFvars] using hbrefs) (InferInput.avoid_subst hA.1 hwe.2)
     have hAll := Subst.sourceAvoid_append_local hA ⟨hbS, hbD⟩
     exact ⟨hAll.1, hbTy, hAll.2⟩
-  | .letRec _ _ hv hs hp _ _ hb =>
+  | .letRec _ _ hlen hs hp _ _ hb =>
     intro w hw hrefs hwe
     expose_names
-    have hv := hv.1
     simp only [InferInput.erase, Expr.ForallOuter, Expr.rec_strong, eraseBindings_length, Nat.zero_add] at hrefs
     simp only [InferInput.rigidVars, List.mem_append, not_or] at hwe
     have hanns : ∀ ann ∈ anns, w ∉ ann.rigidVars :=
@@ -3221,7 +3217,6 @@ mutual
         (fun i => ∀ M, ctx.env[i]? = some M → w ∉ M.body.freeVars) bindings.length ∧ w ∉ rhs.rigidVars := by
       intro rhs hr
       exact ⟨hrefs.1 rhs.erase (mem_eraseBindings hr), fun hv => hwe.1.2 (rigidBindingVars_mem hr hv)⟩
-    have hlen : anns.length = bindings.length := by simpa only [List.length_map] using hv.length
     obtain ⟨hsS, hsD, hstate1⟩ := hs.sourceLocality_of_infer (fun _ hi => hi.sourceLocality)
       (by omega) (RecState.Avoids.init hw hanns)
       (by simpa only [RecState.init_specs, RecSpec.init_length, List.length_map] using hlen)
@@ -7262,10 +7257,10 @@ theorem Infer.sourceSound (h : Infer K F frontier ctx input next subst output ty
     refine TypeOfHM.letIn (L := avoid) (Subst.onPolyTy_wf hs2 hscheme)
       (fun _ heq => Option.some.inj heq) ?_ rfl bodyTyped
     simpa only [letOutput, ← Subst.onCtx_append] using rhsFinal
-  | .letRec hscope hann hvalid hstrata hsigned hexports houtputs hbody =>
+  | .letRec hscope hann hlen hstrata hsigned hexports houtputs hbody =>
     intro hctxWF
     expose_names
-    have hvalid := hvalid.1
+    let groups := RecGroup.inferenceSccs (anns.map BindingAnn.recModeAnn) (bindings.map InferInput.erase)
     obtain ⟨hraw, hctx, hK, hFvars⟩ := hscope
     have hF : ∀ t ∈ F, Ty.BelowFvars frontier t := by
       intro t ht
@@ -7281,7 +7276,9 @@ theorem Infer.sourceSound (h : Infer K F frontier ctx input next subst output ty
     have hannbelow : ∀ ann ∈ anns, ∀ v ∈ ann.rigidVars, v < frontier := by
       intro ann ha v hv
       exact (List.mem_append.mp (hannscope ann ha v hv)).elim (hK v) (hFvars v)
-    have hlen : anns.length = bindings.length := by simpa only [List.length_map] using hvalid.length
+    have hvalid := RecGroup.inferenceSccs_valid
+      (anns := anns.map BindingAnn.recModeAnn) (bindings := bindings.map InferInput.erase)
+      (by simpa only [List.length_map] using hlen)
     have hinitFrame := RecState.Frame.init hctx
       (fun v hv => by obtain ⟨ann, ha, hv⟩ := List.mem_flatMap.mp hv; exact hannbelow ann ha v hv) hK hFvars
     have hinitLC := RecState.LC.init (base := frontier) hann
@@ -7613,11 +7610,10 @@ theorem Infer.erase (h : Infer K F frontier ctx input next subst output ty) :
         Expr.erase_closeTyVars, InferInput.erase, hr.erase, hb.erase, InferInput.erase_openTyVars, InferInput.erase_substTyFvars]
   | .match_ _ hs _ hb =>
       simp only [Expr.erase, Expr.erase_substTyFvars, InferInput.erase, hs.erase, hb.erase, eraseBranches_substInputBranches]
-  | .letRec _ _ hv hs hp _ hout hb =>
+  | .letRec _ _ hlen hs hp _ hout hb =>
       expose_names
-      have hv := hv.1
       have hstate1 := hs.erase_of_infer (fun _ hi => hi.erase)
-        (RecState.Erases.init (by simpa only [List.length_map] using hv.length))
+        (RecState.Erases.init (by simpa only [List.length_map] using hlen))
       have hstate2 := hp.erase_of_infer (fun _ hi => hi.erase)
         (by simpa only [erase_map_subst_inputs] using hstate1)
         (by simp only [erase_map_subst_inputs, List.drop_zero])
@@ -7925,10 +7921,10 @@ theorem Infer.inputSound_source (h : Infer K F frontier ctx input next subst out
     intro fresh hfresh
     simpa only [← Subst.onCtx_append, List.append_assoc] using htypesFinal fresh hfresh
 
-  | .letRec hscope hann hvalid hstrata hsigned hexports houtputs hbody =>
+  | .letRec hscope hann hlen hstrata hsigned hexports houtputs hbody =>
     intro hctxWF
     expose_names
-    have hvalid := hvalid.1
+    let groups := RecGroup.inferenceSccs (anns.map BindingAnn.recModeAnn) (bindings.map InferInput.erase)
     obtain ⟨hraw, hctx, hK, hFvars⟩ := hscope
     have hF : ∀ t ∈ F, Ty.BelowFvars frontier t := by
       intro t ht
@@ -7944,7 +7940,9 @@ theorem Infer.inputSound_source (h : Infer K F frontier ctx input next subst out
     have hannbelow : ∀ ann ∈ anns, ∀ v ∈ ann.rigidVars, v < frontier := by
       intro ann ha v hv
       exact (List.mem_append.mp (hannscope ann ha v hv)).elim (hK v) (hFvars v)
-    have hlen : anns.length = bindings.length := by simpa only [List.length_map] using hvalid.length
+    have hvalid := RecGroup.inferenceSccs_valid
+      (anns := anns.map BindingAnn.recModeAnn) (bindings := bindings.map InferInput.erase)
+      (by simpa only [List.length_map] using hlen)
     have hinitFrame := RecState.Frame.init hctx
       (fun v hv => by obtain ⟨ann, ha, hv⟩ := List.mem_flatMap.mp hv; exact hannbelow ann ha v hv) hK hFvars
     have hinitLC := RecState.LC.init (base := frontier) hann
@@ -8433,10 +8431,10 @@ theorem Infer.completes_source (h : Infer K F frontier ctx input next subst outp
       simpa only [List.append_assoc, BindingAnn.paramCount_substTyFvars] using
         hcompleteFinal fresh ⟨hf.length, hf.nodup, fun v hv hm => hf.avoid v hv (List.mem_append_right _ hm)⟩
 
-  | .letRec hscope hann hvalid hstrata hsigned hexports houtputs hbody =>
+  | .letRec hscope hann hlen hstrata hsigned hexports houtputs hbody =>
     intro hctxWF
     expose_names
-    have hvalid := hvalid.1
+    let groups := RecGroup.inferenceSccs (anns.map BindingAnn.recModeAnn) (bindings.map InferInput.erase)
     obtain ⟨hraw, hctx, hK, hFvars⟩ := hscope
     have hF : ∀ t ∈ F, Ty.BelowFvars frontier t := by
       intro t ht
@@ -8452,7 +8450,9 @@ theorem Infer.completes_source (h : Infer K F frontier ctx input next subst outp
     have hannbelow : ∀ ann ∈ anns, ∀ v ∈ ann.rigidVars, v < frontier := by
       intro ann ha v hv
       exact (List.mem_append.mp (hannscope ann ha v hv)).elim (hK v) (hFvars v)
-    have hlen : anns.length = bindings.length := by simpa only [List.length_map] using hvalid.length
+    have hvalid := RecGroup.inferenceSccs_valid
+      (anns := anns.map BindingAnn.recModeAnn) (bindings := bindings.map InferInput.erase)
+      (by simpa only [List.length_map] using hlen)
     have hinitFrame := RecState.Frame.init hctx
       (fun v hv => by obtain ⟨ann, ha, hv⟩ := List.mem_flatMap.mp hv; exact hannbelow ann ha v hv) hK hFvars
     have hinitLC := RecState.LC.init (base := frontier) hann

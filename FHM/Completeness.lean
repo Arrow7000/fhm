@@ -5771,15 +5771,16 @@ set_option maxHeartbeats 2000000 in
 theorem Infer.sourcePrincipal_letRec_of_unsigned
     {K : List Nat} {F : List Ty} {frontier first second next : Nat} {ctx : Ctx}
     {anns : List BindingAnn} {bindings : List InferInput} {body : InferInput}
-    {s1 s2 s3 : Subst} {state1 state2 : RecState} {groups : List (List Nat)}
+    {s1 s2 s3 : Subst} {state1 state2 : RecState}
     {schemes : List PolyTy} {outputs : List Expr} {bodyOut : Expr} {bodyTy : Ty}
     (hscope : SourceScope K F (.letRec anns bindings body) ∧ CtxBelow frontier ctx ∧
       (∀ k ∈ K, k < frontier) ∧ (∀ v ∈ softVars F, v < frontier))
     (hann : ∀ scheme, .complete scheme ∈ anns → scheme.WF)
-    (hvalid : RecGroups.ValidResidualGroups (anns.map BindingAnn.recModeAnn) (bindings.map InferInput.erase) groups ∧
-      groups = RecGroup.inferenceSccs (anns.map BindingAnn.recModeAnn) (bindings.map InferInput.erase))
+    (hlen : anns.length = bindings.length)
     (hstrata : InferRecStrata K F (frontier + bindings.length) ctx anns bindings
-      (RecState.init frontier anns) groups first s1 state1)
+      (RecState.init frontier anns)
+      (RecGroup.inferenceSccs (anns.map BindingAnn.recModeAnn) (bindings.map InferInput.erase))
+      first s1 state1)
     (hsigned : InferRecSigned K (substSoft s1 F) 0 first (s1.onCtx ctx)
       (anns.map (BindingAnn.substTyFvars s1)) (bindings.map (InferInput.substTyFvars s1)) state1 second s2 state2)
     (hexports : state2.exports = schemes.map some) (houtputs : state2.outputs = outputs.map some)
@@ -5833,7 +5834,9 @@ theorem Infer.sourcePrincipal_letRec_of_unsigned
   ∃ V : Subst, (∀ pair ∈ V, pair.2.IsLC) ∧
     (∀ p ∈ P, V.onTy (.fvar p) = .fvar p) ∧
     Subst.AgreesBelow (frontier + bindings.length) R (s1 ++ V) ∧
-    RecResidual P declCtx declSpecs declPrefixes G Xs (s1.onCtx ctx) state1 groups.flatten V ∧
+    RecResidual P declCtx declSpecs declPrefixes G Xs (s1.onCtx ctx) state1
+      (RecGroup.inferenceSccs (anns.map BindingAnn.recModeAnn)
+        (bindings.map InferInput.erase)).flatten V ∧
     (anns.map (BindingAnn.substTyFvars s1)).map (BindingAnn.substTyFvars V) = declAnns ∧
     (bindings.map (InferInput.substTyFvars s1)).map (InferInput.substTyFvars V) = declBindings ∧
     (∀ ann ∈ anns.map (BindingAnn.substTyFvars s1), ∀ v ∈ ann.rigidVars,
@@ -5843,7 +5846,8 @@ theorem Infer.sourcePrincipal_letRec_of_unsigned
     (∀ x ∈ Xs, ∀ k ∈ K, x ∉ (V.onTy (.fvar k)).freeVars) ∧
     (∀ x ∈ Xs, x ∉ softVars (substSoft V (substSoft s1 F))))
  :
-    Infer.SourcePrincipal (.letRec hscope hann hvalid hstrata hsigned hexports houtputs hbody) := by
+    Infer.SourcePrincipal (.letRec hscope hann hlen hstrata hsigned hexports houtputs hbody) := by
+  let groups := RecGroup.inferenceSccs (anns.map BindingAnn.recModeAnn) (bindings.map InferInput.erase)
   intro hctxWF hctx hK hF ambient target P hambient hP hfix hfreeze ht
   have bindingsMap : ∀ (S : Subst) (bs : List InferInput), substInputBindings S bs = bs.map (InferInput.substTyFvars S) := by
     intro S bs
@@ -5881,7 +5885,9 @@ theorem Infer.sourcePrincipal_letRec_of_unsigned
   have hbodybelow : ∀ v ∈ body.rigidVars, v < frontier := by
     intro v hv
     exact (List.mem_append.mp (hraw v (List.mem_append_right _ hv))).elim (hK v) (softVars_lt hF v)
-  have hlen : anns.length = bindings.length := by simpa only [List.length_map] using hvalid.1.length
+  have hvalid := RecGroup.inferenceSccs_valid
+    (anns := anns.map BindingAnn.recModeAnn) (bindings := bindings.map InferInput.erase)
+    (by simpa only [List.length_map] using hlen)
   have hinitFrame := RecState.Frame.init hctx
     (fun v hv => by obtain ⟨ann, ha, hv⟩ := List.mem_flatMap.mp hv; exact hannbelow ann ha v hv) hK (softVars_lt hF)
   have hinitLC := RecState.LC.init (base := frontier) hann
@@ -5893,7 +5899,8 @@ theorem Infer.sourcePrincipal_letRec_of_unsigned
     fun t ht => (hF t ht).mono (by omega)
   have hKSeed : ∀ k ∈ K, k < frontier + bindings.length := fun k hk => by have := hK k hk; omega
   have hPSeed : ∀ p ∈ P, p < frontier + bindings.length := fun p hp => by have := hP p hp; omega
-  have hvalid0 : RecGroups.ValidResidualGroups (anns.map BindingAnn.recModeAnn) (bindings.map InferInput.erase) ([] ++ groups) := hvalid.1
+  have hvalid0 : RecGroups.ValidResidualGroups (anns.map BindingAnn.recModeAnn)
+      (bindings.map InferInput.erase) ([] ++ groups) := hvalid
   obtain ⟨hframe1, _⟩ := hstrata.frame_of_infer
     (fun _ hi => hi.sourceLocality) hvalid0 hinitFrame hinitLC hctxWF hinitBelow hctxSeed hFSeed
     (by omega) hannscope hrhsscope
@@ -5901,7 +5908,7 @@ theorem Infer.sourcePrincipal_letRec_of_unsigned
   obtain ⟨hB1, hBelow1⟩ := hstrata.belowFvars_of_infer (fun _ hi => hi.belowFvars)
     hctxSeed hKSeed hFSeed hinitBelow
     (fun ann ha v hv => Nat.lt_of_lt_of_le (hannbelow ann ha v hv) (by omega))
-  have hvalid1 := recValid_subst hvalid.1 s1
+  have hvalid1 := recValid_subst hvalid s1
   have hdone1 := hframe1.all_mono_done hvalid1
   obtain ⟨hframe2, _⟩ := hsigned.frame_of_infer
     (fun _ hi => hi.sourceLocality) hframe1 (by simp) hdone1 hBelow1.2.2.2
@@ -7034,8 +7041,12 @@ theorem Infer.sourcePrincipal (h : Infer K F frontier ctx input next subst outpu
   | .match_ hscope hs hne hb =>
     exact Infer.sourcePrincipal_match hscope hs hne hb hs.sourcePrincipal
       (fun body hbody {_ _ _ _ _ _ _ _} hi => hi.sourcePrincipal)
-  | .letRec hscope hann hvalid hstrata hsigned hexports houtputs hbody =>
-    apply Infer.sourcePrincipal_letRec_of_unsigned hscope hann hvalid hstrata hsigned hexports houtputs hbody
+  | .letRec hscope hann hlen hstrata hsigned hexports houtputs hbody =>
+    expose_names
+    have hvalid := RecGroup.inferenceSccs_valid
+      (anns := anns.map BindingAnn.recModeAnn) (bindings := bindings.map InferInput.erase)
+      (by simpa only [List.length_map] using hlen)
+    apply Infer.sourcePrincipal_letRec_of_unsigned hscope hann hlen hstrata hsigned hexports houtputs hbody
       (fun he hi => hi.sourcePrincipal) hbody.sourcePrincipal
     intro P declCtx declAnns declBindings declSpecs declGroups declPrefixes G Xs R
       hdeclValid hdeclWF hprefix hGfresh hdeclAnn hdeclRhs hdeclFits hdeclTypes
@@ -7046,7 +7057,7 @@ theorem Infer.sourcePrincipal (h : Infer K F frontier ctx input next subst outpu
       (RecResidual.successful_step hdeclValid hdeclWF hprefix hGfresh hdeclAnn hdeclRhs hdeclFits hdeclTypes
         hGhigh hXhigh hXlen hXnd hGX hXmono hXctxP)
       hstrata (fun he hi => hi.sourcePrincipal) (hsigned.frontier_le.trans hbody.frontier_le)
-      hvalid.1 hvalid.2 hframe hstateLC hstateB hctxWF hctx (by omega) hK hF hP hres
+      hvalid rfl hframe hstateLC hstateB hctxWF hctx (by omega) hK hF hP hres
       hXsK hXsF hannScope hrhsScope hannEq hrhsEq hannFreeze hrhsFreeze
 termination_by input.size
 decreasing_by
@@ -10308,7 +10319,6 @@ private theorem inferWithTypesCore_sourceComplete_rec_of_unsigned
   have hCollectors := InferRecSigned.collectors_of_strata hstrata hsigned hvalid hinitFrame hframe1 hframe2
   obtain ⟨⟨schemes,hSchemes⟩,hCollectSchemes⟩ := Option.isSome_iff_exists.mp hCollectors.1
   obtain ⟨⟨outputs,hOutputs⟩,hCollectOutputs⟩ := Option.isSome_iff_exists.mp hCollectors.2
-  have hValidBool := RecGroups.validResidualGroupsB_complete hvalid
   rw [inferWithTypesCore,dif_pos (rigid_all hK),dif_pos (ctx_all hctx),
     dif_pos (soft_all hF),dif_pos (source_all hscope)]
   simp only [hStrataResult,hSignedResult,hCollectSchemes,hCollectOutputs,hBodyResult]
