@@ -57,17 +57,17 @@ def checkPipelineDM (src : String) : Except PipelineError CheckedProgram := do
     | none => throw ⟨.lower,
         "lowering failed (unbound name, bad declaration, or rejected sugar)"⟩
     | some x => pure x
-  let ty <- match CoreBackend.infer core.freshFloor ⟨[], ctors⟩ core with
+  let checked <- match inferWithTypes ctors (Elaboration.Input.ofCore core) with
     | none => throw ⟨.infer, "typechecking failed"⟩
-    | some (_, _, ty) => pure ty
+    | some checked => pure checked
   if !(checkExhaustive ctors program.term) then
     throw ⟨.exhaustiveness, "match not exhaustive"⟩
-  let erased := core.erase
+  let erased := checked.completedExpr.erase
   let value <- match SmallStep.evaluateUnsafe erased with
     | none => throw ⟨.evaluation,
         "erased term got stuck (or evaluation diverged)"⟩
     | some value => pure value
-  return { ty, value }
+  return { ty := checked.ty, value }
 
 inductive Expected where
   | pass (value : String)

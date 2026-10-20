@@ -43,12 +43,12 @@ def probeCore (K : List Nat) (Φ : Nat) (ctx : Ctx) : Expr → Option Error
       (probeCore K next { ctx with env := PolyTy.mkTrivial T :: ctx.env } body).map
         (Error.below .lambdaBody)
   | .app f arg =>
-      match CoreBackend.inferCore K Φ ctx f with
+      match inferCore K Φ ctx (Elaboration.Input.ofCore f) with
       | none => (probeCore K Φ ctx f).map (Error.below .appFun)
-      | some ⟨(Φ₁, S₁, τf), _⟩ =>
-        match CoreBackend.inferCore K Φ₁ (S₁.onCtx ctx) arg with
+      | some ⟨(Φ₁, S₁, _, τf), _⟩ =>
+        match inferCore K Φ₁ (S₁.onCtx ctx) (Elaboration.Input.ofCore arg) with
         | none => (probeCore K Φ₁ (S₁.onCtx ctx) arg).map (Error.below .appArg)
-        | some ⟨(Φ₂, S₂, τa), _⟩ =>
+        | some ⟨(Φ₂, S₂, _, τa), _⟩ =>
           let fnTy := S₂.onTy τf
           if (unifyCoreK K fnTy (.arrow τa (.fvar Φ₂))).isSome then none
           else match fnTy with
@@ -59,9 +59,9 @@ def probeCore (K : List Nat) (Φ : Nat) (ctx : Ctx) : Expr → Option Error
                 else some ⟨[], .incompatibleApplication fnTy τa⟩
             | _ => some ⟨[.appFun], .notFunction fnTy⟩
   | .letIn none rhs body =>
-      match CoreBackend.inferCore K Φ ctx rhs with
+      match inferCore K Φ ctx (Elaboration.Input.ofCore rhs) with
       | none => (probeCore K Φ ctx rhs).map (Error.below .letRhs)
-      | some ⟨(Φ₁, S₁, τ₁), _⟩ =>
+      | some ⟨(Φ₁, S₁, _, τ₁), _⟩ =>
           let ctx₁ := S₁.onCtx ctx
           let σ := genScheme K ctx₁.env τ₁
           (probeCore K Φ₁ { ctx₁ with env := σ :: ctx₁.env } body).map
@@ -70,9 +70,9 @@ def probeCore (K : List Nat) (Φ : Nat) (ctx : Ctx) : Expr → Option Error
       let Ys := freshVars Φ σ.paramCount
       let rigid := K ++ Ys
       let opened := rhs.openTyVars Ys
-      match CoreBackend.inferCore rigid (Φ + σ.paramCount) ctx opened with
+      match inferCore rigid (Φ + σ.paramCount) ctx (Elaboration.Input.ofCore opened) with
       | none => (probeCore rigid (Φ + σ.paramCount) ctx opened).map (Error.below .letRhs)
-      | some ⟨(Φ₁, S₁, τ₁), _⟩ =>
+      | some ⟨(Φ₁, S₁, _, τ₁), _⟩ =>
         match unifyCoreK rigid τ₁ (σ.openVars Ys) with
         | none => none -- Existing annotation diagnostics handle this case.
         | some ⟨Schk, _⟩ =>

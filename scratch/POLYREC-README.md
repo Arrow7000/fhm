@@ -16,9 +16,10 @@ parse -> lower -> infer -> exhaustiveness -> erase Core annotations -> evaluate
 Successful programs must reach a specific value. Negative programs must get as
 far as lowering and then be rejected specifically by inference; a parse/lower
 error does not count as a successful typing-negative test. Scoped function heads
-are a positive fixture. This legacy driver uses complete-Core lowering and
-`CoreBackend.infer`; the CLI/editor and scratch audit exercise canonical `Input`
-lowering, including partial annotations.
+are a positive fixture. The driver adapts complete Core with `InferInput.ofCore` and uses the same
+canonical inference worker as the CLI/editor. Evaluation receives only the
+returned completed expression after erasure. The CLI/editor also preserve
+partial annotations through their source lowering.
 
 ## Semantic boundary pinned by the matrix
 

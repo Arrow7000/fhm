@@ -207,7 +207,7 @@ private def polyrec : Input :=
 #guard (inferCore [] 0 ctx polyrec).isSome
 #guard (inferCore [] 0 ctx
   (.letIn .absent (.lambda (some .hole) (.var 0)) polyrec)).isSome
-#guard !(CoreBackend.principalType ctx.ctors polyrec.erase).isSome
+#guard !(principalType ctx.ctors (Input.ofCore polyrec.erase)).isSome
 
 -- Complete signatures protect their authored skolems while filling RHS holes.
 def completeForallWithPartialRhs : Input :=

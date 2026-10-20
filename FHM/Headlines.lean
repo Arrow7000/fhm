@@ -2,6 +2,7 @@ import FHM.SurfaceBridge
 import FHM.InferW
 import FHM.Completeness
 import FHM.Pretty
+import FHM.Examples
 
 /-! # `Headlines` — the human-readable capabilities surface
 
@@ -10,23 +11,18 @@ let a newcomer read ONE file and come away knowing exactly what this language's
 type system guarantees, what those guarantees *mean* in plain terms, and
 precisely how far the machine-checking currently reaches.
 
-**Status.** Complete-Core type safety, inference soundness, principality, and
-completeness are closed and axiom-clean. `CoreBackend.Infer.sourceSound` and its branch/two-phase recursive-group
-families type the annotated Core source, while `CoreBackend.Infer.sound` derives typing for the
-erased runtime term. `TypeOfHM` specifies checked source, while proof-only `RunWT`
-provides substitution, canonical forms, progress, preservation, and one- and
-many-step type safety for erased execution.
-Principality factors every declarative type through a successfully inferred
-type by a locally closed residual substitution. Relational and executable
-completeness show that `CoreBackend.principalType` and `CoreBackend.typecheck` succeed exactly when the
-source has a `TypeOfHM` derivation.
+**Status.** Canonical inference has checked soundness, principality, and
+completeness for partial inputs, including recursive partial signatures. It
+returns completed Core and editor maps in one worker traversal. Independent input
+typing and annotation fidelity describe the authored input; output typing and
+exact erasure connect the returned expression to execution.
 
-The production frontend uses canonical `Elaboration.Input` elaboration, which
-returns completed Core and editor maps in one worker traversal. Its full-language
-output typing, independent input typing, exact annotation fidelity, and erasure
-proofs are checked, including recursive groups with partial signatures. Its
-canonical principality and executable completeness theorems also cover those
-groups directly against independent partial-input typing.
+Complete Core uses that same engine through `Elaboration.Input.ofCore`.
+`SurfaceBridge.inferOfCore_source_sound` retains the original `TypeOfHM` source
+contract, while `coreTypecheck_accepts_iff` and `inferOfCore_principal` retain
+complete-Core acceptance and residual principality. The proof-only `RunWT`
+judgment provides substitution, canonical forms, progress, preservation, and
+one- and many-step type safety for erased execution.
 
 So: do not read this file as "everything below is proved". Read section 6's
 `#print axioms` output, which is the actual, unfakeable status report.
@@ -139,31 +135,23 @@ example (result : InferenceResult) : Expr := result.completedExpr
 example (result : InferenceResult) : NodeTypeMap := result.nodeTypes
 example (result : InferenceResult) : BinderSchemeMap := result.binderSchemes
 
-/-! ### Complete-Core backend inference: source typing first, runtime erasure second
+/-! ### Complete Core uses the canonical engine
 
-`CoreBackend.Infer` is the Algorithm-W-style inference relation; `CoreBackend.inferCore` is its
-proof-carrying executable implementation. **Soundness**
-`CoreBackend.Infer.sourceSound` types the annotated source after the inferred substitution;
-`CoreBackend.Infer.sound` then erases annotations and types the runnable `e.erase` under
-proof-only `RunWT` at the same inferred type. There is no second typed output
-language or type-bearing runtime syntax. **Principality** is proved
-directly against the annotated source: every declarative type factors through a
-successful inferred type via an LC residual substitution. Producer completeness
-constructs relational derivations from declarative typings, and executable
-completeness proves that the concrete worker realizes them. -/
-#check @CoreBackend.Infer.sound
-#check @CoreBackend.Infer.sourceSound
-#check @CoreBackend.Infer.principal
-#check @CoreBackend.Infer.complete'
-#check @CoreBackend.principalType_source_sound
-#check @CoreBackend.principalType_principal
-#check @CoreBackend.typecheck_principal
-#check @CoreBackend.Infer.complete
-#check @CoreBackend.inferCore_complete
-#check @CoreBackend.principalType_complete
-#check @CoreBackend.typecheck_complete
-#check @CoreBackend.principalType_accepts_iff
-#check @CoreBackend.typecheck_accepts_iff
+`Input.ofCore` adapts an already completed source without introducing a second
+inference relation or executable. Source conservation preserves its original
+`TypeOfHM` contract, acceptance is equivalent to declarative typing, and every
+candidate type factors through the returned type. Exact erasure identifies the
+runtime source with the canonical completed output. -/
+#check @SurfaceBridge.coreTypecheck_isSome_iff
+#check @SurfaceBridge.inferOfCore_source_sound
+#check @SurfaceBridge.inferOfCore_erase
+#check @SurfaceBridge.coreTypecheck_accepts_iff
+#check @SurfaceBridge.inferOfCore_principal
+#check @CanonicalAuditCapstone.polyId_headlines_fire
+#check @CanonicalAuditCapstone.appFiveFive_rejected
+#check @CanonicalAuditCapstone.idid_headlines_fire
+#check @CanonicalAuditCapstone.matchWild_headlines_fire
+#check @CanonicalAuditCapstone.mutualRec_headlines_fire
 
 /-! ### Pattern-compilation correctness
 
@@ -529,7 +517,7 @@ example (ctors : CtorEnv) :
 
 `type_safety` needs TWO independent conjuncts to hold of the runtime term: it
 must be well-typed, AND all its matches must be exhaustive. These are checked
-by two entirely separate mechanisms (`CoreBackend.typecheck` vs. `checkExhaustive`) over
+by two entirely separate mechanisms (canonical inference vs. `checkExhaustive`) over
 two different representations (the erased Core term `c.erase` vs. the surface
 term). Rather than fuse them into one opaque "is this program okay" boolean,
 we keep them as independent checks and conjoin only the PROOFS at the return
@@ -552,7 +540,7 @@ abbrev Safe (ctors : CtorEnv) :=
     elaboration. `lowerProgram` rejects holeful types; the CLI/editor instead use
     provenance lowering and canonical `inferWithTypes`.
     Run a surface program through both checks (typechecking, via
-    `CoreBackend.typecheck`, and exhaustiveness, via `checkExhaustive`); `some ⟨ctors, ⟨e,
+    canonical `inferWithTypes`, and exhaustiveness, via `checkExhaustive`); `some ⟨ctors, ⟨e,
     _⟩⟩` hands back a term that is well-typed AND exhaustive **by
     construction** — the proof is built once here from `program_type_safe` +
     `checkExhaustive_sound` and travels with the term from then on. `none`
@@ -561,15 +549,18 @@ def elaborateSafe (p : Surface.Program) : Option (Σ ctors : CtorEnv, Safe ctors
   match hlow : lowerProgram p with
   | none => none
   | some (ctors, c) =>
-    match htc : (CoreBackend.typecheck ctors c).isSome with
-    | false => none
-    | true =>
+    match hresult : inferWithTypes ctors (Elaboration.Input.ofCore c) with
+    | none => none
+    | some result =>
       match hcov : checkExhaustive ctors p.term with
       | false => none
       | true =>
-        some ⟨ctors, ⟨c.erase, by
-          obtain ⟨τ, hty, hexh, _⟩ := program_type_safe hlow htc (checkExhaustive_sound p.term hcov)
-          exact ⟨Expr.erase_idem c, ⟨τ, hty⟩, hexh⟩⟩⟩
+        some ⟨ctors, ⟨result.completedExpr.erase, by
+          obtain ⟨τ, hty, hexh, _⟩ := program_type_safe hlow
+            (coreTypecheck_of_infer hresult) (checkExhaustive_sound p.term hcov)
+          have he := inferOfCore_erase hresult
+          exact ⟨Expr.erase_idem _, ⟨τ, by simpa only [he] using hty⟩,
+            by simpa only [he] using hexh⟩⟩⟩
 
 /-- A finished run: an actual value, still carrying its `WellTyped` passport.
     (`IsValue` here is what `runSafe_never_stuck` used to have to prove
@@ -714,10 +705,9 @@ The source-to-runtime erasure bridge and the `RunWT`/`Step` metatheory live
 proved and axiom-clean in `FHM.RuntimeTyping` and `FHM.InferW`, so `runSafe` and
 `elaborateSafe` do not inherit any `sorryAx` from their operational bridge.
 
-Complete-Core inference soundness, principality, and relational/executable
-completeness are closed. Canonical elaboration's output/input soundness, fidelity,
-erasure, principality, and relational/executable completeness are also checked
-below, including recursive partial signatures. -/
+Canonical output/input soundness, fidelity, erasure, principality, and
+relational/executable completeness are checked below, including recursive partial
+signatures. The complete-Core adapters retain the same source guarantees. -/
 
 -- Closed and clean: source-to-runtime bridge and erased-term dynamics.
 #print axioms TypeOfHM.erase_preserves_typing -- expect {propext, Classical.choice, Quot.sound}
@@ -751,27 +741,17 @@ below, including recursive partial signatures. -/
 #print axioms inferWithTypes_accepts_iff
 #print axioms inferWithTypes_principal
 
--- Closed and clean: complete-Core backend source and runtime soundness.
-#print axioms CoreBackend.Infer.sound                -- expect {propext, Classical.choice, Quot.sound}
-#print axioms CoreBackend.Infer.sourceSound          -- expect {propext, Classical.choice, Quot.sound}
-#print axioms CoreBackend.InferBranches.sourceSound  -- expect {propext, Classical.choice, Quot.sound}
-#print axioms CoreBackend.InferRecGroup.sourceSoundMono      -- expect {propext, Classical.choice, Quot.sound}
-#print axioms CoreBackend.InferRecGroupPoly.sourceSoundPoly  -- expect {propext, Classical.choice, Quot.sound}
-
--- Closed and clean: principality of successful inference.
-#print axioms CoreBackend.Infer.principal             -- expect {propext, Classical.choice, Quot.sound}
-#print axioms CoreBackend.Infer.complete'             -- expect {propext, Classical.choice, Quot.sound}
-#print axioms CoreBackend.principalType_source_sound  -- expect {propext, Classical.choice, Quot.sound}
-#print axioms CoreBackend.principalType_principal     -- expect {propext, Classical.choice, Quot.sound}
-#print axioms CoreBackend.typecheck_principal         -- expect {propext, Classical.choice, Quot.sound}
-
--- Closed and clean: relational and executable producer completeness.
-#print axioms CoreBackend.Infer.complete               -- expect {propext, Classical.choice, Quot.sound}
-#print axioms CoreBackend.inferCore_complete            -- expect {propext, Classical.choice, Quot.sound}
-#print axioms CoreBackend.principalType_complete        -- expect {propext, Classical.choice, Quot.sound}
-#print axioms CoreBackend.typecheck_complete            -- expect {propext, Classical.choice, Quot.sound}
-#print axioms CoreBackend.principalType_accepts_iff     -- expect {propext, Classical.choice, Quot.sound}
-#print axioms CoreBackend.typecheck_accepts_iff         -- expect {propext, Classical.choice, Quot.sound}
+-- Complete-Core source conservation, acceptance, and principality of the same run.
+#print axioms SurfaceBridge.coreTypecheck_isSome_iff
+#print axioms SurfaceBridge.inferOfCore_source_sound
+#print axioms SurfaceBridge.inferOfCore_erase
+#print axioms SurfaceBridge.coreTypecheck_accepts_iff
+#print axioms SurfaceBridge.inferOfCore_principal
+#print axioms CanonicalAuditCapstone.polyId_headlines_fire
+#print axioms CanonicalAuditCapstone.appFiveFive_rejected
+#print axioms CanonicalAuditCapstone.idid_headlines_fire
+#print axioms CanonicalAuditCapstone.matchWild_headlines_fire
+#print axioms CanonicalAuditCapstone.mutualRec_headlines_fire
 
 -- Clean: this file's own inversion lemmas.
 #print axioms TypeOfHM_app_inv           -- expect {propext, Quot.sound}
@@ -782,7 +762,7 @@ below, including recursive partial signatures. -/
 -- Closed: operational bridge (erased-dynamics lemmas proved in FHM.InferW).
 #print axioms runSafe                    -- expect {propext, Classical.choice, Quot.sound}
 #print axioms runSafe_running_reduces    -- expect {propext, Classical.choice, Quot.sound}
--- Inherited from FHM.SurfaceBridge via program_type_safe → surface_type_safe → CoreBackend.Infer.sound.
+-- Inherited from the canonical completed-output and source-conservation bridges.
 #print axioms elaborateSafe              -- expect {propext, Classical.choice, Quot.sound}
 
 end Headlines

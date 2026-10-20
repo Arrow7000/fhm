@@ -1,5 +1,6 @@
 import FHM.Decls
 import FHM.PatComp
+import FHM.Completeness
 
 /-! # The surface → Core bridge
 
@@ -10,19 +11,17 @@ and type safety.
 
 ## Design
 
-1. **Spec/impl separation, `CoreBackend.Infer`-style.** `Lowers` is the declarative
+1. **Spec/impl separation.** `Lowers` is the declarative
    relation; `lower` is the executable function. Soundness and completeness
    connect them. `Lowers` pins the same deterministic match tree produced by
    `lowerMatch`; behavioral adequacy is proved separately by
    `PatComp.lowerMatch_adequate_of_typed`.
 
-2. **The payoff is a TWO-hop composition over the executable pipeline.** The
-   runtime object is the lowered term `c = lower s`: `CoreBackend.typecheck`/`Lowers` speak
-   the DECLARATIVE `TypeOfHM`, and the dynamics (`Step`, `progress`,
-   `type_safety`) are stated on the erased residual `c.erase` recovered through
-   `CoreBackend.infer` + `CoreBackend.Infer.sound`. So the headline goes
-   `s → lower → c → CoreBackend.infer → c.erase → type_safety_star`. `CoreBackend.typecheck` alone is
-   insufficient, which is why the pipeline runs through `CoreBackend.infer`.
+2. **The executable pipeline uses canonical inference.** Lowering returns Core
+   `c`; `Elaboration.Input.ofCore c` adapts it to the same engine used by partial
+   inputs. Its completed output is executed only after erasure. Independent
+   input typing conserves `TypeOfHM` for the original complete Core, and exact
+   erasure connects that source to the runtime safety chain.
 
 3. **Exhaustiveness is a separate, mandatory conjunct.** `type_safety` requires
    `AllMatchesExhaustive` on the runtime term, which typechecking never gives.
@@ -33,6 +32,62 @@ open SmallStep
 open PatComp
 
 namespace SurfaceBridge
+
+/-- Complete Core is an input adapter to the canonical inference engine. -/
+def coreTypecheck (ctors : CtorEnv) (core : Expr) : Option PolyTy :=
+  typecheck ctors (Elaboration.Input.ofCore core)
+
+/-- The artifact and scheme APIs project the same canonical worker run. -/
+theorem coreTypecheck_isSome_iff {ctors : CtorEnv} {core : Expr} :
+    (coreTypecheck ctors core).isSome ↔
+      (inferWithTypes ctors (Elaboration.Input.ofCore core)).isSome := by
+  simp only [coreTypecheck, typecheck, principalType, Option.isSome_map, inferCore_isSome,
+    inferWithTypes]
+
+/-- Canonical inference conserves the original complete-Core typing contract. -/
+theorem inferOfCore_source_sound {ctors : CtorEnv} {core : Expr} {result : InferenceResult}
+    (h : inferWithTypes ctors (Elaboration.Input.ofCore core) = some result) :
+    TypeOfHM ⟨[], ctors⟩ core result.ty :=
+  ((inferWithTypes_input_sound h).toCore (Elaboration.Input.toCore_ofCore core)).1
+
+/-- Complete Core acceptance is exactly the existing declarative source relation. -/
+theorem coreTypecheck_accepts_iff {ctors : CtorEnv} {core : Expr} :
+    (coreTypecheck ctors core).isSome ↔ ∃ ty, TypeOfHM ⟨[], ctors⟩ core ty := by
+  constructor
+  · intro hc
+    obtain ⟨result,hr⟩ := Option.isSome_iff_exists.mp (coreTypecheck_isSome_iff.mp hc)
+    exact ⟨result.ty,inferOfCore_source_sound hr⟩
+  · rintro ⟨ty,ht⟩
+    apply coreTypecheck_isSome_iff.mpr
+    apply inferWithTypes_complete
+    exact Elaboration.Typing.complete (Elaboration.Input.toCore_ofCore core)
+      (fun v hv => ((Elaboration.Input.ofCore core).toCore_rigidVars
+        (Elaboration.Input.toCore_ofCore core) v).mpr hv) ht
+
+theorem coreTypecheck_of_infer {ctors : CtorEnv} {core : Expr} {result : InferenceResult}
+    (h : inferWithTypes ctors (Elaboration.Input.ofCore core) = some result) :
+    (coreTypecheck ctors core).isSome :=
+  coreTypecheck_isSome_iff.mpr (Option.isSome_iff_exists.mpr ⟨result,h⟩)
+
+/-- Complete Core candidates factor through the same canonical inferred type. -/
+theorem inferOfCore_principal {ctors : CtorEnv} {core : Expr} {result : InferenceResult}
+    (h : inferWithTypes ctors (Elaboration.Input.ofCore core) = some result)
+    (ht : TypeOfHM ⟨[], ctors⟩ core target) :
+    ∃ R : Subst,(∀ pair ∈ R,pair.2.IsLC) ∧ target = R.onTy result.ty ∧
+      ∀ v ∈ core.tyFreeVars,R.onTy (.fvar v) = .fvar v := by
+  obtain ⟨R,hR,he,hfix⟩ := inferWithTypes_principal h target
+    (Elaboration.Typing.complete (Elaboration.Input.toCore_ofCore core)
+      (fun v hv => ((Elaboration.Input.ofCore core).toCore_rigidVars
+        (Elaboration.Input.toCore_ofCore core) v).mpr hv) ht)
+  exact ⟨R,hR,he,fun v hv => hfix v (((Elaboration.Input.ofCore core).toCore_rigidVars
+    (Elaboration.Input.toCore_ofCore core) v).mpr hv)⟩
+
+/-- Executing completed output preserves the adapter's exact runtime source. -/
+theorem inferOfCore_erase {ctors : CtorEnv} {core : Expr} {result : InferenceResult}
+    (h : inferWithTypes ctors (Elaboration.Input.ofCore core) = some result) :
+    result.completedExpr.erase = core.erase :=
+  (inferWithTypes_erase h).trans
+    ((Elaboration.Input.ofCore core).toCore_erase (Elaboration.Input.toCore_ofCore core)).symm
 
 private def oneResidualGroup (anns : List (Option PolyTy)) : List (List Nat) :=
   let members := (List.range anns.length).filter (RecGroups.unsignedAtB anns)
@@ -854,7 +909,7 @@ private def sForest : Surface.DataDecl :=
 
 The value-level ctors the sugar/pattern layers emit (`True`/`False`/`Pair`/
 `Cons`/`Nil`). `lower` just *emits* these — whether they exist / have the right
-arity is Core's `CoreBackend.typecheck`'s job (Core has the ctor env), unlike *type*-level
+arity is Core's `coreTypecheck`'s job (Core has the ctor env), unlike *type*-level
 kinding which we must do ourselves. -/
 
 def cTrue  : CtorName := .mk "True"
@@ -3396,7 +3451,7 @@ theorem sccGroups_complete {binds : List Surface.Binding}
   have hn := h.namesNodup
   simp [sccGroups, guard, hn]
 
-/-- Build a `Program` from a flat binding list: SCC-CoreBackend.infer groups, keep
+/-- Build a `Program` from a flat binding list: SCC-sort groups, keep
     `desugarGroups` as the sole consumer of `List (List Binding)`.
     Fails (`none`) iff binding names are not unique. -/
 def Program.ofFlat (decls : List Surface.DataDecl)
@@ -4410,7 +4465,7 @@ sugar `pair`/`cons`/`list` desugaring to `Pair`/`Cons`/`Nil`). The bridge lemma
 `match`, patterns must cover the scrutinee's ADT type `T` (every ctor of `T` has
 a testing branch, or a trailing irrefutable catch-all). The type `T` is carried
 in the `SurfaceCovers.match_` witness; the lowering proof instantiates it from
-scrutinee typing after `CoreBackend.typecheck`. -/
+scrutinee typing after `coreTypecheck`. -/
 
 /-- **Surface pattern well-formedness**, defined as `GPatWF` of the *normalised*
     pattern. Defining it via `norm` (rather than as a fresh surface-native
@@ -4603,7 +4658,7 @@ def matchExhaustiveB (ctors : CtorEnv) (T : TyName) (tyArgs : List Ty)
 
 mutual
 
-/-- CoreBackend.Infer only the type constraints contributed by constructor tests. Wildcards
+/-- Infer only the type constraints contributed by constructor tests. Wildcards
     and binders impose none. This proposes a coverage witness; acceptance still
     goes through `matchExhaustiveB` and its soundness theorem. -/
 private def constrainCoveragePat (ctors : CtorEnv) :
@@ -6153,14 +6208,14 @@ inductive SurfaceWTExpr (ctors : CtorEnv) (ke : KindEnv) :
 
       @TODO(ann-open-tvs): premise `tvs = []` is a **metatheory** restriction on this
       *constructor*, not a SurfaceLang authoring ban. The executable pipeline
-      (`lower` / `CoreBackend.typecheck` / `surface_type_safe`) does **not** consult it.
+      (`lower` / `coreTypecheck` / `surface_type_safe`) does **not** consult it.
 
       What it blocks: inhabiting `SurfaceWTExpr` *via this structural rule* when the
       ambient open tyvar index `tvs` is already non-empty — e.g. while typing the RHS
       of an outer binding that extended `tvs` with `{a}`:
 
       ```
-      -- surface (may still lower + Core-CoreBackend.typecheck fine)
+      -- surface (may still lower + Core-coreTypecheck fine)
       let outer {a} : a → a =
         (\\x -> let inner (y : Int) : Int = y in x) in outer
       ```
@@ -6323,14 +6378,14 @@ def SurfaceWT (ctors : CtorEnv) (s : Surface.Expr) : Prop :=
 
 /-- Weak (pre-1a) SurfaceWT, retained for the match-free uniqueness transfer. -/
 def SurfaceWT_weak (ctors : CtorEnv) (s : Surface.Expr) : Prop :=
-  ∃ c, Lowers ctors s c ∧ (CoreBackend.typecheck ctors c).isSome
+  ∃ c, Lowers ctors s c ∧ (coreTypecheck ctors c).isSome
 
-/-- Match-free corollary: `SurfaceWT_weak` + `lower` ⇒ `CoreBackend.typecheck`. -/
+/-- Match-free corollary: `SurfaceWT_weak` + `lower` ⇒ `coreTypecheck`. -/
 theorem typecheck_of_lower_of_SurfaceWT_of_NoMatch {ctors : CtorEnv} {s : Surface.Expr}
     {c : Expr}
     (hnm : SurfaceExprNoMatch s)
     (hwt : SurfaceWT_weak ctors s) (hlow : lower ctors s = some c) :
-    (CoreBackend.typecheck ctors c).isSome := by
+    (coreTypecheck ctors c).isSome := by
   obtain ⟨c₀, hL, htc₀⟩ := hwt
   have heq : c₀ = c := by
     simp only [Lowers, lower] at hL hlow
@@ -11580,13 +11635,12 @@ theorem TypeOfHM_of_lowerExpr_of_SurfaceWTExpr {ctors : CtorEnv} {ke : KindEnv}
             (τscrut := .customTy nBool []) (τres := τ)
             rfl (by simp) (ihc hcL) hpats hbodies' hexh hcons hfields hkind hwk
 
-/-! ## 8. The runtime term: lower, then CoreBackend.infer
+/-! ## 8. The runtime term: canonical completion, then erasure
 
-The Core term that actually executes is the lowered `c = lower s`; `CoreBackend.infer`
-confirms typing (recovering the substitution) and `CoreBackend.Infer.sound` gives the
-residual typing of the erased term. For a closed program the frontier seed is
-`c.freshFloor` and the rigid set is empty. -/
-
+Complete Core lowering is adapted with `Input.ofCore`; canonical inference returns
+its completed output and type. `inferOfCore_source_sound` retains typing of the
+original Core, while `inferOfCore_erase` identifies the exact erased runtime term.
+-/
 
 /-! ## 9. Lowering invariants used by the safety theorem -/
 
@@ -12205,20 +12259,11 @@ theorem lower_tyClosed {ctors : CtorEnv} {s : Surface.Expr} {c : Expr}
   simp only [lower] at h
   exact lowerExpr_tyFreeVars h
 
-/-- **Typechecking ⇒ inference succeeds (recovering the runtime term).**
-    For a type-closed `c`, `CoreBackend.typecheck` and `CoreBackend.infer` run the *same* `CoreBackend.inferCore`
-    call (`CoreBackend.principalType` seeds `c.tyFreeVars = []`, matching `CoreBackend.infer`'s empty
-    rigid set), so a successful `CoreBackend.typecheck` yields the inferred `(Φ', S, τ)`.
-    Mechanical from `CoreBackend.typecheck`/`CoreBackend.principalType`/`CoreBackend.infer` unfolding. -/
+/-- Typechecking exposes the same canonical artifact run used for execution. -/
 theorem infer_of_typecheck {ctors : CtorEnv} {c : Expr}
-    (hclosed : c.tyFreeVars = []) (htc : (CoreBackend.typecheck ctors c).isSome) :
-    ∃ Φ' S τ, CoreBackend.infer c.freshFloor ⟨[], ctors⟩ c = some (Φ', S, τ) := by
-  simp only [CoreBackend.typecheck, CoreBackend.principalType, Option.isSome_map] at htc
-  rw [hclosed] at htc
-  simp only [CoreBackend.infer]
-  rcases hcore : CoreBackend.inferCore [] c.freshFloor ⟨[], ctors⟩ c with _ | ⟨⟨Φ', S, τ⟩, _⟩
-  · simp [hcore] at htc
-  · exact ⟨Φ', S, τ, by simp⟩
+    (_hclosed : c.tyFreeVars = []) (htc : (coreTypecheck ctors c).isSome) :
+    ∃ result, inferWithTypes ctors (Elaboration.Input.ofCore c) = some result :=
+  Option.isSome_iff_exists.mp (coreTypecheck_isSome_iff.mp htc)
 
 /-! ### Exhaustiveness-transfer helpers
 
@@ -12819,10 +12864,10 @@ private def pScopedRigidReject : Surface.Program :=
   | .letRecIn [_] (.var (.mk "loop")) => true
   | _ => false
 #guard match lowerProgram pScopedSingleton with
-  | some (ctors, core) => (CoreBackend.typecheck ctors core).isSome
+  | some (ctors, core) => (coreTypecheck ctors core).isSome
   | none => false
 #guard match lowerProgram pScopedRigidReject with
-  | some (ctors, core) => (CoreBackend.typecheck ctors core).isNone
+  | some (ctors, core) => (coreTypecheck ctors core).isNone
   | none => false
 #guard (Program.ofFlat [] [bA, { name := .mk "a", ann := none, rhs := .primLit (.int 0) }]
   (.primLit (.int 0))).isNone
@@ -12835,7 +12880,7 @@ example : ∀ ctors, SurfaceCovers ctors pMaybeId.term := fun _ =>
 
 A well-typed, exhaustive surface program elaborates to a Core term that is
 type-safe and never gets stuck. Stated over the executable pipeline (`lower`
-succeeds, `CoreBackend.typecheck` succeeds, patterns cover) — the object that actually runs.
+succeeds, `coreTypecheck` succeeds, patterns cover) — the object that actually runs.
 
 The declarative `SurfaceWT` corollary closes the specification/implementation
 loop: structural surface typing plus coverage implies that the concrete `lower`
@@ -12846,39 +12891,17 @@ output typechecks, after which `surface_type_safe` applies. -/
     do not enter `SmallStep.Step`. -/
 theorem surface_type_safe {ctors : CtorEnv} {s : Surface.Expr} {c : Expr}
     (hlow : lower ctors s = some c)
-    (htc : (CoreBackend.typecheck ctors c).isSome)
+    (htc : (coreTypecheck ctors c).isSome)
     (hcov : SurfaceCovers ctors s) :
     ∃ τ, RuntimeTyping.RunWT ⟨[], ctors⟩ (c.erase) τ ∧
       AllMatchesExhaustive ctors (c.erase) ∧
       ∀ e', Relation.ReflTransGen Step (c.erase) e' →
         (IsValue e' ∨ ∃ e'', Step e' e'') := by
-  -- The lowered term is type-closed, so inference's rigid seed is empty.
-  have hclosed : c.tyFreeVars = [] := lower_tyClosed hlow
-  -- `CoreBackend.typecheck` and `CoreBackend.infer` run the same `CoreBackend.inferCore` call, so a successful
-  -- `CoreBackend.typecheck` recovers the inferred `(Φ', S, τ)` from `CoreBackend.infer`.
-  obtain ⟨Φ', S, τ, hinfer⟩ := infer_of_typecheck hclosed htc
-  -- `CoreBackend.infer` is sound: the returned tuple is a genuine `CoreBackend.Infer` derivation.
-  have hInf : CoreBackend.Infer [] c.freshFloor ⟨[], ctors⟩ c Φ' S τ := CoreBackend.infer_sound hinfer
-  -- `K := []`: the closed term has no free type vars, so `CoreBackend.Infer.eliminates`
-  -- shows `S`'s keys avoid `τ`, collapsing `CoreBackend.Infer.sound`'s `S.onTy τ` to `τ`.
-  have helim : (∀ p ∈ S, ∀ x : Ty, p.1 ∉ (S.onTy x).freeVars) ∧ (∀ p ∈ S, p.1 ∉ τ.freeVars) :=
-    CoreBackend.Infer.eliminates hInf CtxBelow.empty
-      (fun y hy => by simp [hclosed] at hy)
-      (fun p hp hc => by simp [hclosed] at hc)
-  have hSτ : S.onTy τ = τ := Ty.substFvars_eq_self_of_no_key (fun p hp => helim.2 p hp)
-  -- Typing: `CoreBackend.Infer.sound` crosses from checked source to proof-only runtime
-  -- typing at `S.onCtx ⟨[], ctors⟩`.
-  have hty : RuntimeTyping.RunWT ⟨[], ctors⟩ (c.erase) τ := by
-    simpa [Subst.onCtx, Subst.onEnv, hSτ] using
-      CoreBackend.Infer.sound hInf CtxWF.empty CtxBelow.empty
-        (by simp) (by simp [hclosed])
-  -- Exhaustiveness: coverage survives `lower` and `erase`.
-  have hexh : AllMatchesExhaustive ctors (c.erase) :=
+  obtain ⟨result, hresult⟩ := infer_of_typecheck (lower_tyClosed hlow) htc
+  have hsource : TypeOfHM ⟨[], ctors⟩ c result.ty := inferOfCore_source_sound hresult
+  have hty : RuntimeTyping.RunWT ⟨[], ctors⟩ c.erase result.ty := hsource.erase_preserves_typing
+  have hexh : AllMatchesExhaustive ctors c.erase :=
     SmallStep.AllMatchesExhaustive.erase (lower_exhaustive hcov hlow)
-  have hsource : TypeOfHM ⟨[], ctors⟩ c τ := by
-    simpa [Subst.onCtx, Subst.onEnv, hSτ] using
-      CoreBackend.Infer.sourceSound hInf CtxWF.empty CtxBelow.empty
-        (by simp) (by simp [hclosed])
   have hexhSource : AllMatchesExhaustive ctors c := lower_exhaustive hcov hlow
   -- Check first, erase second: the source derivation launches the erased
   -- runtime safety chain under `RunWT`.
@@ -12886,13 +12909,13 @@ theorem surface_type_safe {ctors : CtorEnv} {s : Surface.Expr} {c : Expr}
       IsValue e' ∨ ∃ e'', Step e' e'' := by
     intro e' hrtc
     exact (TypeOfHM.erased_type_safety_star hsource hexhSource e' hrtc).2
-  exact ⟨τ, hty, hexh, hsafe⟩
+  exact ⟨result.ty, hty, hexh, hsafe⟩
 
 /-- **Well-typed surface programs don't go wrong** (program-level).
     Composes decl elaboration with `surface_type_safe` on the desugared term. -/
 theorem program_type_safe {p : Surface.Program} {ctors : CtorEnv} {c : Expr}
     (hlow : lowerProgram p = some (ctors, c))
-    (htc : (CoreBackend.typecheck ctors c).isSome)
+    (htc : (coreTypecheck ctors c).isSome)
     (hcov : SurfaceCovers ctors p.term) :
     ∃ τ, RuntimeTyping.RunWT ⟨[], ctors⟩ (c.erase) τ ∧
       AllMatchesExhaustive ctors (c.erase) ∧
