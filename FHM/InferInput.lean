@@ -6093,39 +6093,234 @@ def RecFacts.empty : RecFacts := ⟨[], []⟩
 def RecFacts.onSubst (S : Subst) (facts : RecFacts) : RecFacts :=
   ⟨facts.nodeTypes.onSubst S, facts.binderSchemes.onSubst S⟩
 
-/-- All lists retain original recursive-group coordinates. `slots` records the
-ordered current images of written slots, including unused ones; `exports`
-contains complete contracts and already generalized inferred components. -/
+/-- Per-member recursive inference state. Keeping the fields in one record makes
+their common recursive-group coordinate structural rather than a `Frame`
+obligation. `slotImages` records the ordered current images of written slots,
+including unused ones. -/
+structure RecMemberState where
+  spec : RecSpec
+  slotImages : List Ty
+  exported : Option PolyTy
+  output : Option Expr
+  facts : RecFacts
+
+def RecMemberState.init (frontier : Nat) (ann : BindingAnn) : RecMemberState :=
+  match ann.recModeAnn with
+  | none =>
+      { spec := .mono (.fvar frontier)
+        slotImages := []
+        exported := none
+        output := none
+        facts := .empty }
+  | some scheme =>
+      { spec := .poly scheme
+        slotImages := []
+        exported := some scheme
+        output := none
+        facts := .empty }
+
+/-- Initialize one member per source annotation, advancing the seed coordinate
+at every position (including complete contracts), exactly as `RecSpec.init`
+does. -/
+def RecMemberState.initAll (frontier : Nat) : List BindingAnn → List RecMemberState
+  | [] => []
+  | ann :: anns => RecMemberState.init frontier ann :: RecMemberState.initAll (frontier + 1) anns
+
+def RecMemberState.onSubst (S : Subst) (member : RecMemberState) : RecMemberState :=
+  { spec := member.spec.onSubstSource S
+    slotImages := member.slotImages.map S.onTy
+    exported := member.exported.map S.onPolyTy
+    output := member.output.map (Expr.substTyFvars S)
+    facts := member.facts.onSubst S }
+
+/-- Recursive-group state is one coordinate-preserving member list plus the
+shared generalized-variable pool. -/
 structure RecState where
-  specs : List RecSpec
-  slots : List (List Ty)
-  exports : List (Option PolyTy)
-  outputs : List (Option Expr)
-  facts : List RecFacts
+  memberStates : List RecMemberState
   pool : List Nat
 
+/-! Compatibility views. These retain the established theorem vocabulary while
+the representation and all updates operate on whole members. -/
+
+def RecState.specs (state : RecState) : List RecSpec :=
+  state.memberStates.map RecMemberState.spec
+
+def RecState.slots (state : RecState) : List (List Ty) :=
+  state.memberStates.map RecMemberState.slotImages
+
+def RecState.exports (state : RecState) : List (Option PolyTy) :=
+  state.memberStates.map RecMemberState.exported
+
+def RecState.outputs (state : RecState) : List (Option Expr) :=
+  state.memberStates.map RecMemberState.output
+
+def RecState.facts (state : RecState) : List RecFacts :=
+  state.memberStates.map RecMemberState.facts
+
+@[simp] theorem RecState.getElem?_specs (state : RecState) (i : Nat) :
+    state.specs[i]? = state.memberStates[i]?.map RecMemberState.spec := by
+  simp [RecState.specs]
+
+@[simp] theorem RecState.getElem?_slots (state : RecState) (i : Nat) :
+    state.slots[i]? = state.memberStates[i]?.map RecMemberState.slotImages := by
+  simp [RecState.slots]
+
+@[simp] theorem RecState.getElem?_exports (state : RecState) (i : Nat) :
+    state.exports[i]? = state.memberStates[i]?.map RecMemberState.exported := by
+  simp [RecState.exports]
+
+@[simp] theorem RecState.getElem?_outputs (state : RecState) (i : Nat) :
+    state.outputs[i]? = state.memberStates[i]?.map RecMemberState.output := by
+  simp [RecState.outputs]
+
+@[simp] theorem RecState.getElem?_facts (state : RecState) (i : Nat) :
+    state.facts[i]? = state.memberStates[i]?.map RecMemberState.facts := by
+  simp [RecState.facts]
+
 def RecState.init (frontier : Nat) (anns : List BindingAnn) : RecState :=
-  { specs := RecSpec.init frontier (anns.map BindingAnn.recModeAnn)
-    slots := anns.map (fun _ => [])
-    exports := anns.map BindingAnn.recModeAnn
-    outputs := anns.map (fun _ => none)
-    facts := anns.map (fun _ => .empty)
+  { memberStates := RecMemberState.initAll frontier anns
     pool := [] }
 
 def RecState.onSubst (S : Subst) (state : RecState) : RecState :=
-  { specs := state.specs.map (RecSpec.onSubstSource S)
-    slots := state.slots.map (fun names => names.map S.onTy)
-    exports := state.exports.map (Option.map S.onPolyTy)
-    outputs := state.outputs.map (Option.map (Expr.substTyFvars S))
-    facts := state.facts.map (RecFacts.onSubst S)
+  { memberStates := state.memberStates.map (RecMemberState.onSubst S)
     pool := state.pool }
+
+@[simp] theorem RecMemberState.initAll_length (frontier : Nat) (anns : List BindingAnn) :
+    (RecMemberState.initAll frontier anns).length = anns.length := by
+  induction anns generalizing frontier with
+  | nil => rfl
+  | cons ann anns ih => simp only [RecMemberState.initAll, List.length_cons, ih]
+
+@[simp] theorem RecMemberState.initAll_specs (frontier : Nat) (anns : List BindingAnn) :
+    (RecMemberState.initAll frontier anns).map RecMemberState.spec =
+      RecSpec.init frontier (anns.map BindingAnn.recModeAnn) := by
+  induction anns generalizing frontier with
+  | nil => rfl
+  | cons ann anns ih =>
+      cases ann <;> simp [RecMemberState.initAll, RecMemberState.init,
+        BindingAnn.recModeAnn, RecSpec.init, ih]
+
+@[simp] theorem RecMemberState.initAll_slots (frontier : Nat) (anns : List BindingAnn) :
+    (RecMemberState.initAll frontier anns).map RecMemberState.slotImages =
+      anns.map (fun _ => []) := by
+  induction anns generalizing frontier with
+  | nil => rfl
+  | cons ann anns ih =>
+      cases ann <;> simp [RecMemberState.initAll, RecMemberState.init,
+        BindingAnn.recModeAnn, ih]
+
+@[simp] theorem RecMemberState.initAll_exports (frontier : Nat) (anns : List BindingAnn) :
+    (RecMemberState.initAll frontier anns).map RecMemberState.exported =
+      anns.map BindingAnn.recModeAnn := by
+  induction anns generalizing frontier with
+  | nil => rfl
+  | cons ann anns ih =>
+      cases ann <;> simp [RecMemberState.initAll, RecMemberState.init,
+        BindingAnn.recModeAnn, ih]
+
+@[simp] theorem RecMemberState.initAll_outputs (frontier : Nat) (anns : List BindingAnn) :
+    (RecMemberState.initAll frontier anns).map RecMemberState.output =
+      anns.map (fun _ => none) := by
+  induction anns generalizing frontier with
+  | nil => rfl
+  | cons ann anns ih =>
+      cases ann <;> simp [RecMemberState.initAll, RecMemberState.init,
+        BindingAnn.recModeAnn, ih]
+
+@[simp] theorem RecMemberState.initAll_facts (frontier : Nat) (anns : List BindingAnn) :
+    (RecMemberState.initAll frontier anns).map RecMemberState.facts =
+      anns.map (fun _ => RecFacts.empty) := by
+  induction anns generalizing frontier with
+  | nil => rfl
+  | cons ann anns ih =>
+      cases ann <;> simp [RecMemberState.initAll, RecMemberState.init,
+        BindingAnn.recModeAnn, ih]
+
+@[simp] theorem RecState.specs_length (state : RecState) :
+    state.specs.length = state.memberStates.length := by
+  simp [RecState.specs]
+
+@[simp] theorem RecState.slots_length (state : RecState) :
+    state.slots.length = state.memberStates.length := by
+  simp [RecState.slots]
+
+@[simp] theorem RecState.exports_length (state : RecState) :
+    state.exports.length = state.memberStates.length := by
+  simp [RecState.exports]
+
+@[simp] theorem RecState.outputs_length (state : RecState) :
+    state.outputs.length = state.memberStates.length := by
+  simp [RecState.outputs]
+
+@[simp] theorem RecState.facts_length (state : RecState) :
+    state.facts.length = state.memberStates.length := by
+  simp [RecState.facts]
+
+@[simp] theorem RecState.init_specs (frontier : Nat) (anns : List BindingAnn) :
+    (RecState.init frontier anns).specs =
+      RecSpec.init frontier (anns.map BindingAnn.recModeAnn) := by
+  simp [RecState.init, RecState.specs]
+
+@[simp] theorem RecState.init_slots (frontier : Nat) (anns : List BindingAnn) :
+    (RecState.init frontier anns).slots = anns.map (fun _ => []) := by
+  simp [RecState.init, RecState.slots]
+
+@[simp] theorem RecState.init_exports (frontier : Nat) (anns : List BindingAnn) :
+    (RecState.init frontier anns).exports = anns.map BindingAnn.recModeAnn := by
+  simp [RecState.init, RecState.exports]
+
+@[simp] theorem RecState.init_outputs (frontier : Nat) (anns : List BindingAnn) :
+    (RecState.init frontier anns).outputs = anns.map (fun _ => none) := by
+  simp [RecState.init, RecState.outputs]
+
+@[simp] theorem RecState.init_facts (frontier : Nat) (anns : List BindingAnn) :
+    (RecState.init frontier anns).facts = anns.map (fun _ => RecFacts.empty) := by
+  simp [RecState.init, RecState.facts]
+
+@[simp] theorem RecState.specs_onSubst (state : RecState) (S : Subst) :
+    (state.onSubst S).specs = state.specs.map (RecSpec.onSubstSource S) := by
+  simp [RecState.onSubst, RecState.specs, RecMemberState.onSubst, List.map_map,
+    Function.comp_def]
+
+@[simp] theorem RecState.slots_onSubst (state : RecState) (S : Subst) :
+    (state.onSubst S).slots = state.slots.map (fun images => images.map S.onTy) := by
+  simp [RecState.onSubst, RecState.slots, RecMemberState.onSubst, List.map_map,
+    Function.comp_def]
+
+@[simp] theorem RecState.exports_onSubst (state : RecState) (S : Subst) :
+    (state.onSubst S).exports = state.exports.map (Option.map S.onPolyTy) := by
+  simp [RecState.onSubst, RecState.exports, RecMemberState.onSubst, List.map_map,
+    Function.comp_def]
+
+@[simp] theorem RecState.outputs_onSubst (state : RecState) (S : Subst) :
+    (state.onSubst S).outputs = state.outputs.map (Option.map (Expr.substTyFvars S)) := by
+  simp [RecState.onSubst, RecState.outputs, RecMemberState.onSubst, List.map_map,
+    Function.comp_def]
+
+@[simp] theorem RecState.facts_onSubst (state : RecState) (S : Subst) :
+    (state.onSubst S).facts = state.facts.map (RecFacts.onSubst S) := by
+  simp [RecState.onSubst, RecState.facts, RecMemberState.onSubst, List.map_map,
+    Function.comp_def]
 
 def RecSpec.monoEntry : RecSpec → PolyTy
   | .mono ty => PolyTy.mkTrivial ty
   | .poly scheme => scheme
 
+theorem RecSpec.monoEntry_wf {spec : RecSpec} (h : spec.LC) : spec.monoEntry.WF := by
+  cases spec <;> exact h
+
+theorem RecSpec.monoEntry_below {spec : RecSpec} (h : spec.BelowFvars frontier) :
+    Ty.BelowFvars frontier spec.monoEntry.body := by
+  cases spec <;> exact h
+
+theorem RecSpec.completedScheme_below {spec : RecSpec} (h : spec.BelowFvars frontier) :
+    Ty.BelowFvars frontier (spec.completedScheme written pool).body := by
+  cases spec with
+  | mono ty => exact h.closeOver
+  | poly scheme => exact h
+
 def RecState.entries (state : RecState) : List PolyTy :=
-  state.specs.zip state.exports |>.map (fun (spec, exported) => exported.getD spec.monoEntry)
+  state.memberStates.map (fun member => member.exported.getD member.spec.monoEntry)
 
 def RecState.rhsCtx (state : RecState) (ctx : Ctx) : Ctx :=
   { ctx with env := state.entries ++ ctx.env }
@@ -6137,8 +6332,10 @@ def RecState.fixedCtx (state : RecState) (ctx : Ctx) : Ctx :=
 retain their own ordered traces. -/
 def RecState.installOpenings (state : RecState) (members : List Nat)
     (openings : List RecOpening) : RecState :=
-  { state with slots := state.slots.mapIdx (fun i old =>
-      if i ∈ members then ((openings[i]?).getD .empty).written.map Ty.fvar else old) }
+  { state with memberStates := state.memberStates.mapIdx (fun i member =>
+      if i ∈ members then
+        { member with slotImages := ((openings[i]?).getD .empty).written.map Ty.fvar }
+      else member) }
 
 /-- Open before applying the component's constraints. Provisional slots may
 subsequently become nonvariables, so opening cannot be deferred until after S. -/
@@ -6160,8 +6357,8 @@ def openRecSources : List RecOpening → List InferInput → List InferInput
 def RecState.shapes (state : RecState) (members : List Nat)
     (openings : List RecOpening) : List RecShape :=
   members.filterMap (fun i => do
-    let spec ← state.specs[i]?
-    let ty ← spec.monoTy?
+    let member ← state.memberStates[i]?
+    let ty ← member.spec.monoTy?
     let opening ← openings[i]?
     pure (ty, opening.expected))
 
@@ -6171,19 +6368,16 @@ def RecState.exportComponent (state : RecState) (members : List Nat)
     (written : List (List Nat)) (pool : List Nat)
     (outputs : List (Option Expr)) (facts : List RecFacts) : RecState :=
   { state with
-    exports := state.exports.mapIdx (fun i old =>
-      if i ∈ members then do
-        let spec ← state.specs[i]?
-        pure (spec.completedScheme (written[i]?.getD []) pool)
-      else old)
-    outputs := state.outputs.mapIdx (fun i old =>
-      if i ∈ members then do
-        let spec ← state.specs[i]?
-        let ty ← spec.monoTy?
-        let rhs ← (outputs[i]?).join
-        pure (rhs.closeTyVars (recNames (written[i]?.getD []) pool ty))
-      else old)
-    facts := state.facts.mapIdx (fun i old => if i ∈ members then facts[i]?.getD .empty else old)
+    memberStates := state.memberStates.mapIdx (fun i member =>
+      if i ∈ members then
+        { member with
+          exported := some (member.spec.completedScheme (written[i]?.getD []) pool)
+          output := do
+            let ty ← member.spec.monoTy?
+            let rhs ← (outputs[i]?).join
+            pure (rhs.closeTyVars (recNames (written[i]?.getD []) pool ty))
+          facts := facts[i]?.getD .empty }
+      else member)
     pool := pool }
 
 /-- Validate ordered slot images only for the component being exported. -/
@@ -6246,8 +6440,153 @@ Partial prefixes stay open in the stored metadata until final normalization. -/
 def RecState.setSigned (state : RecState) (member : Nat) (names : List Nat)
     (output : Expr) (facts : RecFacts) : RecState :=
   { state with
-    outputs := state.outputs.set member (some (output.closeTyVars names))
-    facts := state.facts.set member (facts.closeWritten names) }
+    memberStates := state.memberStates.mapIdx (fun i old =>
+      if i = member then
+        { old with
+          output := some (output.closeTyVars names)
+          facts := facts.closeWritten names }
+      else old) }
+
+@[simp] theorem RecState.specs_installOpenings (state : RecState) (members : List Nat)
+    (openings : List RecOpening) :
+    (state.installOpenings members openings).specs = state.specs := by
+  apply List.ext_getElem?
+  intro i
+  simp only [RecState.specs, RecState.installOpenings, List.getElem?_map,
+    List.getElem?_mapIdx]
+  cases h : state.memberStates[i]? with
+  | none => rfl
+  | some member => simp only [Option.map_some]; split <;> rfl
+
+@[simp] theorem RecState.exports_installOpenings (state : RecState) (members : List Nat)
+    (openings : List RecOpening) :
+    (state.installOpenings members openings).exports = state.exports := by
+  apply List.ext_getElem?
+  intro i
+  simp only [RecState.exports, RecState.installOpenings, List.getElem?_map,
+    List.getElem?_mapIdx]
+  cases h : state.memberStates[i]? with
+  | none => rfl
+  | some member => simp only [Option.map_some]; split <;> rfl
+
+@[simp] theorem RecState.outputs_installOpenings (state : RecState) (members : List Nat)
+    (openings : List RecOpening) :
+    (state.installOpenings members openings).outputs = state.outputs := by
+  apply List.ext_getElem?
+  intro i
+  simp only [RecState.outputs, RecState.installOpenings, List.getElem?_map,
+    List.getElem?_mapIdx]
+  cases h : state.memberStates[i]? with
+  | none => rfl
+  | some member => simp only [Option.map_some]; split <;> rfl
+
+@[simp] theorem RecState.facts_installOpenings (state : RecState) (members : List Nat)
+    (openings : List RecOpening) :
+    (state.installOpenings members openings).facts = state.facts := by
+  apply List.ext_getElem?
+  intro i
+  simp only [RecState.facts, RecState.installOpenings, List.getElem?_map,
+    List.getElem?_mapIdx]
+  cases h : state.memberStates[i]? with
+  | none => rfl
+  | some member => simp only [Option.map_some]; split <;> rfl
+
+@[simp] theorem RecState.specs_setSigned (state : RecState) (member : Nat)
+    (names : List Nat) (output : Expr) (facts : RecFacts) :
+    (state.setSigned member names output facts).specs = state.specs := by
+  apply List.ext_getElem?
+  intro i
+  simp only [RecState.specs, RecState.setSigned, List.getElem?_map,
+    List.getElem?_mapIdx]
+  cases h : state.memberStates[i]? with
+  | none => rfl
+  | some old => simp only [Option.map_some]; split <;> rfl
+
+@[simp] theorem RecState.slots_setSigned (state : RecState) (member : Nat)
+    (names : List Nat) (output : Expr) (facts : RecFacts) :
+    (state.setSigned member names output facts).slots = state.slots := by
+  apply List.ext_getElem?
+  intro i
+  simp only [RecState.slots, RecState.setSigned, List.getElem?_map,
+    List.getElem?_mapIdx]
+  cases h : state.memberStates[i]? with
+  | none => rfl
+  | some old => simp only [Option.map_some]; split <;> rfl
+
+@[simp] theorem RecState.exports_setSigned (state : RecState) (member : Nat)
+    (names : List Nat) (output : Expr) (facts : RecFacts) :
+    (state.setSigned member names output facts).exports = state.exports := by
+  apply List.ext_getElem?
+  intro i
+  simp only [RecState.exports, RecState.setSigned, List.getElem?_map,
+    List.getElem?_mapIdx]
+  cases h : state.memberStates[i]? with
+  | none => rfl
+  | some old => simp only [Option.map_some]; split <;> rfl
+
+@[simp] theorem RecState.specs_exportComponent (state : RecState) (members : List Nat)
+    (written : List (List Nat)) (pool : List Nat) (outputs : List (Option Expr))
+    (facts : List RecFacts) :
+    (state.exportComponent members written pool outputs facts).specs = state.specs := by
+  apply List.ext_getElem?
+  intro i
+  simp only [RecState.specs, RecState.exportComponent, List.getElem?_map,
+    List.getElem?_mapIdx]
+  cases h : state.memberStates[i]? with
+  | none => rfl
+  | some member => simp only [Option.map_some]; split <;> rfl
+
+@[simp] theorem RecState.slots_exportComponent (state : RecState) (members : List Nat)
+    (written : List (List Nat)) (pool : List Nat) (outputs : List (Option Expr))
+    (facts : List RecFacts) :
+    (state.exportComponent members written pool outputs facts).slots = state.slots := by
+  apply List.ext_getElem?
+  intro i
+  simp only [RecState.slots, RecState.exportComponent, List.getElem?_map,
+    List.getElem?_mapIdx]
+  cases h : state.memberStates[i]? with
+  | none => rfl
+  | some member => simp only [Option.map_some]; split <;> rfl
+
+theorem RecState.getElem?_slots_installOpenings (state : RecState) (members : List Nat)
+    (openings : List RecOpening) (i : Nat) :
+    (state.installOpenings members openings).slots[i]? =
+      state.memberStates[i]?.map (fun member =>
+        if i ∈ members then ((openings[i]?).getD .empty).written.map Ty.fvar
+        else member.slotImages) := by
+  simp only [RecState.slots, RecState.installOpenings, List.getElem?_map,
+    List.getElem?_mapIdx]
+  cases state.memberStates[i]? with
+  | none => rfl
+  | some member => split <;> rfl
+
+theorem RecState.getElem?_slots_installOpenings_of_not_mem (state : RecState)
+    (openings : List RecOpening) (hi : i ∉ members) :
+    (state.installOpenings members openings).slots[i]? = state.slots[i]? := by
+  rw [RecState.getElem?_slots_installOpenings, RecState.getElem?_slots]
+  cases state.memberStates[i]? <;> simp [hi]
+
+theorem RecState.getElem?_exports_exportComponent (state : RecState) (members : List Nat)
+    (written : List (List Nat)) (pool : List Nat) (outputs : List (Option Expr))
+    (facts : List RecFacts) (i : Nat) :
+    (state.exportComponent members written pool outputs facts).exports[i]? =
+      state.memberStates[i]?.map (fun member =>
+        if i ∈ members then
+          some (member.spec.completedScheme (written[i]?.getD []) pool)
+        else member.exported) := by
+  simp only [RecState.exports, RecState.exportComponent, List.getElem?_map,
+    List.getElem?_mapIdx]
+  cases state.memberStates[i]? with
+  | none => rfl
+  | some member => split <;> rfl
+
+@[simp] theorem RecState.pool_installOpenings (state : RecState) (members : List Nat)
+    (openings : List RecOpening) :
+    (state.installOpenings members openings).pool = state.pool := rfl
+
+@[simp] theorem RecState.pool_setSigned (state : RecState) (member : Nat)
+    (names : List Nat) (output : Expr) (facts : RecFacts) :
+    (state.setSigned member names output facts).pool = state.pool := rfl
 
 
 /-- Extract a completed aligned vector, retaining its exact positional equation. -/
@@ -6280,12 +6619,12 @@ def inferredRecSchemes (anns : List BindingAnn) (schemes : List PolyTy) : Inferr
     | _ => [{ site := .letRec [] i, scheme := scheme, tyDepth := 0 }]) |>.flatten
 
 def finalRecNodeTypes (anns : List BindingAnn) (state : RecState) : InferredNodeTypes :=
-  state.facts.mapIdx (fun i facts =>
-    (finalizeRecFacts (anns[i]?.getD .absent) (state.slots[i]?.getD []) facts).nodeTypes.below (.letRecRhs i)) |>.flatten
+  state.memberStates.mapIdx (fun i member =>
+    (finalizeRecFacts (anns[i]?.getD .absent) member.slotImages member.facts).nodeTypes.below (.letRecRhs i)) |>.flatten
 
 def finalRecBinderSchemes (anns : List BindingAnn) (state : RecState) : InferredBinderSchemes :=
-  state.facts.mapIdx (fun i facts =>
-    (finalizeRecFacts (anns[i]?.getD .absent) (state.slots[i]?.getD []) facts).binderSchemes.below (.letRecRhs i)) |>.flatten
+  state.memberStates.mapIdx (fun i member =>
+    (finalizeRecFacts (anns[i]?.getD .absent) member.slotImages member.facts).binderSchemes.below (.letRecRhs i)) |>.flatten
 
 @[simp] theorem sizeBindings_map_substTyFvars (bindings : List InferInput) (S : Subst) :
     sizeBindings (bindings.map (InferInput.substTyFvars S)) = sizeBindings bindings := by
@@ -6295,11 +6634,10 @@ def finalRecBinderSchemes (anns : List BindingAnn) (state : RecState) : Inferred
 
 @[simp] theorem RecState.entries_onSubst (state : RecState) (S : Subst) :
     (state.onSubst S).entries = S.onEnv state.entries := by
-  simp only [RecState.entries, RecState.onSubst, Subst.onEnv, List.zip_map_left,
-    List.zip_map_right, List.map_map]
+  simp only [RecState.entries, RecState.onSubst, Subst.onEnv, List.map_map]
   apply List.map_congr_left
-  intro pair _
-  rcases pair with ⟨spec, exported⟩
+  intro member _
+  rcases member with ⟨spec, slots, exported, output, facts⟩
   cases exported with
   | none => cases spec <;> rfl
   | some scheme => rfl
@@ -6310,12 +6648,12 @@ def finalRecBinderSchemes (anns : List BindingAnn) (state : RecState) : Inferred
 
 @[simp] theorem RecState.fixedCtx_onSubst (state : RecState) (S : Subst) (ctx : Ctx) :
     (state.onSubst S).fixedCtx (S.onCtx ctx) = S.onCtx (state.fixedCtx ctx) := by
-  simp only [RecState.fixedCtx, RecState.onSubst, Subst.onCtx, Subst.onEnv,
+  simp only [RecState.fixedCtx, RecState.exports_onSubst, Subst.onCtx, Subst.onEnv,
     List.map_append, List.map_filterMap, List.filterMap_map, Function.comp_def, id_eq]
 
  theorem RecState.entries_length (state : RecState)
-    (hlen : state.exports.length = state.specs.length) : state.entries.length = state.specs.length := by
-  simp only [RecState.entries, List.length_map, List.length_zip, hlen, Nat.min_self]
+    (_hlen : state.exports.length = state.specs.length) : state.entries.length = state.specs.length := by
+  simp only [RecState.entries, RecState.specs, List.length_map]
 
 @[simp] theorem RecState.init_lengths (base : Nat) (anns : List BindingAnn) :
     (RecState.init base anns).specs.length = anns.length ∧
@@ -6323,7 +6661,11 @@ def finalRecBinderSchemes (anns : List BindingAnn) (state : RecState) : Inferred
     (RecState.init base anns).exports.length = anns.length ∧
     (RecState.init base anns).outputs.length = anns.length ∧
     (RecState.init base anns).facts.length = anns.length := by
-  simp only [RecState.init, RecSpec.init_length, List.length_map, and_self]
+  have hl : (RecState.init base anns).memberStates.length = anns.length :=
+    RecMemberState.initAll_length base anns
+  exact ⟨(RecState.specs_length _).trans hl, (RecState.slots_length _).trans hl,
+    (RecState.exports_length _).trans hl, (RecState.outputs_length _).trans hl,
+    (RecState.facts_length _).trans hl⟩
 
  theorem RecState.onSubst_lengths (state : RecState) (S : Subst) :
     (state.onSubst S).specs.length = state.specs.length ∧
@@ -6331,22 +6673,32 @@ def finalRecBinderSchemes (anns : List BindingAnn) (state : RecState) : Inferred
     (state.onSubst S).exports.length = state.exports.length ∧
     (state.onSubst S).outputs.length = state.outputs.length ∧
     (state.onSubst S).facts.length = state.facts.length := by
-  simp only [RecState.onSubst, List.length_map, and_self]
-
-private theorem initial_entries (base : Nat) (anns : List (Option PolyTy)) :
-    ((RecSpec.init base anns).zip anns).map (fun (spec, exported) => exported.getD spec.monoEntry) =
-      (RecSpec.init base anns).map RecSpec.monoEntry := by
-  induction anns generalizing base with
-  | nil => rfl
-  | cons ann rest ih =>
-      cases ann with
-      | none => exact congrArg (List.cons (PolyTy.mkTrivial (.fvar base))) (ih (base + 1))
-      | some scheme => exact congrArg (List.cons scheme) (ih (base + 1))
+  simp
 
  theorem RecState.init_entries (base : Nat) (anns : List BindingAnn) :
     (RecState.init base anns).entries =
-      (RecSpec.init base (anns.map BindingAnn.recModeAnn)).map RecSpec.monoEntry :=
-  initial_entries base (anns.map BindingAnn.recModeAnn)
+      (RecSpec.init base (anns.map BindingAnn.recModeAnn)).map RecSpec.monoEntry := by
+  induction anns generalizing base with
+  | nil => rfl
+  | cons ann anns ih =>
+      have htail := ih (base := base + 1)
+      cases ann with
+      | absent =>
+          simpa [RecState.init, RecState.entries, RecMemberState.initAll,
+            RecMemberState.init, BindingAnn.recModeAnn, RecSpec.init,
+            RecSpec.monoEntry] using congrArg (PolyTy.mkTrivial (.fvar base) :: ·) htail
+      | complete scheme =>
+          simpa [RecState.init, RecState.entries, RecMemberState.initAll,
+            RecMemberState.init, BindingAnn.recModeAnn, RecSpec.init,
+            RecSpec.monoEntry] using congrArg (scheme :: ·) htail
+      | template body =>
+          simpa [RecState.init, RecState.entries, RecMemberState.initAll,
+            RecMemberState.init, BindingAnn.recModeAnn, RecSpec.init,
+            RecSpec.monoEntry] using congrArg (PolyTy.mkTrivial (.fvar base) :: ·) htail
+      | partialForall paramCount body =>
+          simpa [RecState.init, RecState.entries, RecMemberState.initAll,
+            RecMemberState.init, BindingAnn.recModeAnn, RecSpec.init,
+            RecSpec.monoEntry] using congrArg (PolyTy.mkTrivial (.fvar base) :: ·) htail
 
  theorem RecState.init_rhsCtx (base : Nat) (anns : List BindingAnn) (ctx : Ctx) :
     (RecState.init base anns).rhsCtx ctx =
@@ -6365,6 +6717,7 @@ private theorem initial_entries (base : Nat) (anns : List (Option PolyTy)) :
     (hctx : CtxBelow base ctx)
     (hanns : ∀ ann ∈ anns, ∀ v ∈ ann.rigidVars, v < base) :
     RecSpecs.PendingSeeds base ctx (RecState.init base anns).specs [] := by
+  rw [RecState.init_specs]
   apply RecSpecs.PendingSeeds.init hctx
   intro scheme hm
   obtain ⟨ann, hann, heq⟩ := List.mem_map.mp hm
@@ -6390,6 +6743,7 @@ def RecState.LC (state : RecState) : Prop :=
         have hs : σ = scheme := Option.some.inj heq
         subst scheme
         exact hanns σ hann
+  rw [RecState.LC, RecState.init_specs, RecState.init_exports]
   constructor
   · intro spec hm
     rcases RecSpec.mem_init hm with ⟨m, _, _, rfl⟩ | ⟨scheme, hs, rfl⟩
@@ -6399,6 +6753,7 @@ def RecState.LC (state : RecState) : Prop :=
 
  theorem RecState.LC.onSubst {state : RecState} (h : state.LC)
     (hS : ∀ p ∈ S, p.2.IsLC) : (state.onSubst S).LC := by
+  rw [RecState.LC, RecState.specs_onSubst, RecState.exports_onSubst]
   constructor
   · intro spec hm
     obtain ⟨old, hold, rfl⟩ := List.mem_map.mp hm
@@ -6411,26 +6766,28 @@ def RecState.LC (state : RecState) : Prop :=
     exact Subst.onPolyTy_wf hS (h.2 original (ho ▸ hold))
 
  theorem RecState.LC.installOpenings {state : RecState} (h : state.LC) :
-    (state.installOpenings members openings).LC := h
+    (state.installOpenings members openings).LC := by
+  simpa only [RecState.LC, RecState.specs_installOpenings,
+    RecState.exports_installOpenings] using h
 
  theorem RecState.LC.setSigned {state : RecState} (h : state.LC) {facts : RecFacts} :
-    (state.setSigned member names output facts).LC := h
+    (state.setSigned member names output facts).LC := by
+  simpa only [RecState.LC, RecState.specs_setSigned, RecState.exports_setSigned] using h
 
  theorem RecState.LC.rhsCtx {state : RecState} (h : state.LC) (hctx : CtxWF ctx) :
     CtxWF (state.rhsCtx ctx) := by
   intro scheme hm
   rcases List.mem_append.mp hm with hm | hm
-  · obtain ⟨⟨spec, exported⟩, hp, heq⟩ := List.mem_map.mp hm
-    have hmem := List.of_mem_zip hp
-    cases exported with
+  · obtain ⟨member, hmember, rfl⟩ := List.mem_map.mp hm
+    have hspec : member.spec ∈ state.specs :=
+      List.mem_map.mpr ⟨member, hmember, rfl⟩
+    cases he : member.exported with
     | none =>
-      subst scheme
-      cases spec with
-      | mono ty => exact h.1 _ hmem.1
-      | poly σ => exact h.1 _ hmem.1
-    | some σ =>
-      cases heq
-      exact h.2 σ hmem.2
+        simp only [Option.getD_none]
+        exact RecSpec.monoEntry_wf (h.1 member.spec hspec)
+    | some sigma =>
+        simp only [Option.getD_some]
+        exact h.2 sigma (List.mem_map.mpr ⟨member, hmember, he⟩)
   · exact hctx scheme hm
 
  theorem RecState.LC.fixedCtx {state : RecState} (h : state.LC) (hctx : CtxWF ctx) :
@@ -6444,17 +6801,23 @@ def RecState.LC (state : RecState) : Prop :=
  theorem RecState.LC.exportComponent {state : RecState} (h : state.LC)
     {pool : List Nat} {outputs : List (Option Expr)} {facts : List RecFacts} :
     (state.exportComponent members written pool outputs facts).LC := by
-  refine ⟨h.1, ?_⟩
+  refine ⟨?_, ?_⟩
+  · simpa only [RecState.specs_exportComponent] using h.1
   intro scheme hm
-  obtain ⟨i, hi, heq⟩ := List.mem_mapIdx.mp hm
-  split at heq
-  · cases hs : state.specs[i]? with
-    | none => simp [hs] at heq
-    | some spec =>
-      simp [hs] at heq
-      subst scheme
-      exact RecSpec.completedScheme_wf (h.1 spec (List.mem_of_getElem? hs))
-  · exact h.2 scheme (heq ▸ List.getElem_mem hi)
+  obtain ⟨i, hi⟩ := List.mem_iff_getElem?.mp hm
+  rw [RecState.getElem?_exports_exportComponent] at hi
+  cases hs : state.memberStates[i]? with
+  | none => simp [hs] at hi
+  | some member =>
+      have hmember : member ∈ state.memberStates := List.mem_of_getElem? hs
+      have hspec : member.spec ∈ state.specs := List.mem_map.mpr ⟨member, hmember, rfl⟩
+      by_cases hselected : i ∈ members
+      · simp only [hs, Option.map_some, hselected, if_pos] at hi
+        cases Option.some.inj hi
+        exact RecSpec.completedScheme_wf (h.1 member.spec hspec)
+      · simp only [hs, Option.map_some, hselected] at hi
+        have hi' := Option.some.inj hi
+        exact h.2 scheme (List.mem_map.mpr ⟨member, hmember, hi'⟩)
 
  theorem FinishRecComponent.lc (h : FinishRecComponent K soft members ctx state outputs facts final)
     (hstate : state.LC) : final.LC := by
@@ -6480,6 +6843,8 @@ def RecState.Below (frontier : Nat) (state : RecState) : Prop :=
       have hs : σ = scheme := Option.some.inj heq
       subst scheme
       exact Ty.BelowFvars.of_freeVars_lt (fun v hv => Nat.lt_of_lt_of_le (hanns _ hann v hv) (by omega))
+  rw [RecState.Below, RecState.init_specs, RecState.init_slots,
+    RecState.init_exports]
   refine ⟨?_, ?_, hmode, by simp [RecState.init]⟩
   · intro spec hm
     rcases RecSpec.mem_init hm with ⟨m, _, hupper, rfl⟩ | ⟨scheme, hs, rfl⟩
@@ -6500,6 +6865,8 @@ def RecState.Below (frontier : Nat) (state : RecState) : Prop :=
  theorem RecState.Below.onSubst {state : RecState} (h : state.Below frontier)
     (hS : ∀ p ∈ S, Ty.BelowFvars next p.2) (hle : frontier ≤ next) :
     (state.onSubst S).Below next := by
+  rw [RecState.Below, RecState.specs_onSubst, RecState.slots_onSubst,
+    RecState.exports_onSubst]
   refine ⟨?_, ?_, ?_, fun name hn => Nat.lt_of_lt_of_le (h.2.2.2 name hn) hle⟩
   · intro spec hm
     obtain ⟨old, hold, rfl⟩ := List.mem_map.mp hm
@@ -6516,21 +6883,24 @@ def RecState.Below (frontier : Nat) (state : RecState) : Prop :=
     exact Subst.onTy_belowFvars hS ((h.2.2.1 original (ho ▸ hold)).mono hle)
 
  theorem RecState.Below.setSigned {state : RecState} (h : state.Below frontier) {facts : RecFacts} :
-    (state.setSigned member names output facts).Below frontier := h
+    (state.setSigned member names output facts).Below frontier := by
+  simpa only [RecState.Below, RecState.specs_setSigned, RecState.slots_setSigned,
+    RecState.exports_setSigned, RecState.pool_setSigned] using h
 
  theorem RecState.Below.rhsCtx {state : RecState} (h : state.Below frontier) (hctx : CtxBelow frontier ctx) :
     CtxBelow frontier (state.rhsCtx ctx) := by
   intro scheme hm
   rcases List.mem_append.mp hm with hm | hm
-  · obtain ⟨⟨spec, exported⟩, hp, heq⟩ := List.mem_map.mp hm
-    have hmem := List.of_mem_zip hp
-    cases exported with
+  · obtain ⟨member, hmember, rfl⟩ := List.mem_map.mp hm
+    have hspec : member.spec ∈ state.specs :=
+      List.mem_map.mpr ⟨member, hmember, rfl⟩
+    cases he : member.exported with
     | none =>
-      subst scheme
-      cases spec with
-      | mono ty => exact h.1 _ hmem.1
-      | poly σ => exact h.1 _ hmem.1
-    | some σ => cases heq; exact h.2.2.1 σ hmem.2
+        simp only [Option.getD_none]
+        exact RecSpec.monoEntry_below (h.1 member.spec hspec)
+    | some sigma =>
+        simp only [Option.getD_some]
+        exact h.2.2.1 sigma (List.mem_map.mpr ⟨member, hmember, he⟩)
   · exact hctx scheme hm
 
  theorem RecState.Below.fixedCtx {state : RecState} (h : state.Below frontier) (hctx : CtxBelow frontier ctx) :
@@ -6545,19 +6915,32 @@ def RecState.Below (frontier : Nat) (state : RecState) : Prop :=
     (hopen : OpenRecAnns members index frontier anns next openings) :
     (state.installOpenings members openings).Below next := by
   have hb := h.mono hopen.frontier_le
-  refine ⟨hb.1, ?_, hb.2.2⟩
-  intro images hm ty ht
-  obtain ⟨i, hi, heq⟩ := List.mem_mapIdx.mp hm
-  split at heq
-  · cases ho : openings[i]? with
-    | none => simp [ho, RecOpening.empty] at heq; subst images; cases ht
-    | some opening =>
-      simp only [ho, Option.getD_some] at heq
-      subst images
-      obtain ⟨name, hn, rfl⟩ := List.mem_map.mp ht
-      exact .fvar ((hopen.written_range name (List.mem_flatMap.mpr
-        ⟨opening, List.mem_of_getElem? ho, hn⟩)).2)
-  · exact hb.2.1 _ (List.getElem_mem hi) ty (heq ▸ ht)
+  refine ⟨?_, ?_, ?_, hb.2.2.2⟩
+  · simpa only [RecState.specs_installOpenings] using hb.1
+  · intro images hm ty ht
+    obtain ⟨i, hi⟩ := List.mem_iff_getElem?.mp hm
+    rw [RecState.getElem?_slots_installOpenings] at hi
+    cases hs : state.memberStates[i]? with
+    | none => simp [hs] at hi
+    | some member =>
+        have hmember : member ∈ state.memberStates := List.mem_of_getElem? hs
+        by_cases hselected : i ∈ members
+        · simp only [hs, Option.map_some, hselected, if_pos] at hi
+          have hi' := Option.some.inj hi
+          subst images
+          cases ho : openings[i]? with
+          | none => simp [ho, RecOpening.empty] at ht
+          | some opening =>
+              simp only [ho, Option.getD_some] at ht
+              obtain ⟨name, hn, rfl⟩ := List.mem_map.mp ht
+              exact .fvar ((hopen.written_range name (List.mem_flatMap.mpr
+                ⟨opening, List.mem_of_getElem? ho, hn⟩)).2)
+        · simp only [hs, Option.map_some, hselected] at hi
+          have hi' := Option.some.inj hi
+          subst images
+          exact hb.2.1 member.slotImages
+            (List.mem_map.mpr ⟨member, hmember, rfl⟩) ty ht
+  · simpa only [RecState.exports_installOpenings] using hb.2.2.1
 
  theorem ResolveRecSlots.names_below
     (h : ResolveRecSlots members forbidden index slots names)
@@ -6617,19 +7000,24 @@ private theorem freeVarsList_below {tys : List Ty}
     {pool : List Nat} {outputs : List (Option Expr)} {facts : List RecFacts}
     (hpool : ∀ v ∈ pool, v < frontier) :
     (state.exportComponent members written pool outputs facts).Below frontier := by
-  refine ⟨h.1, h.2.1, ?_, hpool⟩
+  refine ⟨?_, ?_, ?_, hpool⟩
+  · simpa only [RecState.specs_exportComponent] using h.1
+  · simpa only [RecState.slots_exportComponent] using h.2.1
   intro scheme hm
-  obtain ⟨i, hi, heq⟩ := List.mem_mapIdx.mp hm
-  split at heq
-  · cases hs : state.specs[i]? with
-    | none => simp [hs] at heq
-    | some spec =>
-      simp [hs] at heq
-      subst scheme
-      cases spec with
-      | mono ty => exact (h.1 _ (List.mem_of_getElem? hs)).closeOver
-      | poly σ => exact h.1 _ (List.mem_of_getElem? hs)
-  · exact h.2.2.1 scheme (heq ▸ List.getElem_mem hi)
+  obtain ⟨i, hi⟩ := List.mem_iff_getElem?.mp hm
+  rw [RecState.getElem?_exports_exportComponent] at hi
+  cases hs : state.memberStates[i]? with
+  | none => simp [hs] at hi
+  | some member =>
+      have hmember : member ∈ state.memberStates := List.mem_of_getElem? hs
+      have hspec : member.spec ∈ state.specs := List.mem_map.mpr ⟨member, hmember, rfl⟩
+      by_cases hselected : i ∈ members
+      · simp only [hs, Option.map_some, hselected, if_pos] at hi
+        cases Option.some.inj hi
+        exact RecSpec.completedScheme_below (h.1 member.spec hspec)
+      · simp only [hs, Option.map_some, hselected] at hi
+        have hi' := Option.some.inj hi
+        exact h.2.2.1 scheme (List.mem_map.mpr ⟨member, hmember, hi'⟩)
 
  theorem FinishRecComponent.below (h : FinishRecComponent K soft members ctx state outputs facts final)
     (hstate : state.Below frontier) : final.Below frontier := by
@@ -6685,30 +7073,26 @@ structure RecState.Frame (base : Nat) (K : List Nat) (F : List Ty)
   refine ⟨h1, h2, h3, h4, h5, ?_, ?_, ?_, ?_, by simp [RecState.init],
     by simp [RecState.init], by simp [RecState.init], by simp [RecState.init],
     by simp [RecState.init], by simp [RecState.init], hK, ?_⟩
-  · exact RecSpec.map_ann_init base _
+  · simpa only [RecState.init_specs] using
+      RecSpec.map_ann_init base (anns.map BindingAnn.recModeAnn)
   · intro i scheme hspec
-    have heq := congrArg (fun specs : List RecSpec => (specs.map RecSpec.ann)[i]?)
-      (show (RecState.init base anns).specs = RecSpec.init base (anns.map BindingAnn.recModeAnn) from rfl)
+    rw [RecState.init_specs] at hspec
     have hm := congrArg (fun xs : List (Option PolyTy) => xs[i]?)
       (RecSpec.map_ann_init base (anns.map BindingAnn.recModeAnn))
-    simp only [List.getElem?_map, ← heq, hspec, Option.map_some, RecSpec.ann] at hm
-    simpa only [RecState.init, List.getElem?_map] using hm.symm
+    simp only [List.getElem?_map, hspec, Option.map_some, RecSpec.ann] at hm
+    rw [RecState.init_exports]
+    simpa only [List.getElem?_map] using hm.symm
   · intro i ty hspec
     simp only [List.not_mem_nil, ↓reduceIte]
+    rw [RecState.init_specs] at hspec
     have hm := congrArg (fun xs : List (Option PolyTy) => xs[i]?)
       (RecSpec.map_ann_init base (anns.map BindingAnn.recModeAnn))
-    change (RecState.init base anns).exports[i]? = some none
-    simp only [RecState.init, List.getElem?_map] at hspec ⊢
-    have heq : (RecSpec.init base (anns.map BindingAnn.recModeAnn))[i]? = some (.mono ty) := hspec
-    simpa only [List.getElem?_map, heq, Option.map_some, RecSpec.ann] using hm.symm
-  · apply RecSpecs.PendingSeeds.init hctx
-    intro scheme hm
-    apply Ty.BelowFvars.of_freeVars_lt
-    intro v hv
-    obtain ⟨ann, ha, heq⟩ := List.mem_map.mp hm
-    have hs : scheme.body.freeVars = ann.rigidVars := by
-      cases ann <;> simp_all [BindingAnn.recModeAnn, BindingAnn.rigidVars]
-    exact hanns v (List.mem_flatMap.mpr ⟨ann, ha, hs ▸ hv⟩)
+    simp only [List.getElem?_map, hspec, Option.map_some, RecSpec.ann] at hm
+    rw [RecState.init_exports]
+    simpa only [List.getElem?_map] using hm.symm
+  · apply RecState.pendingSeeds_init hctx
+    intro ann ha v hv
+    exact hanns v (List.mem_flatMap.mpr ⟨ann, ha, hv⟩)
   · intro i ty _ _ hmem
     have := hF (base + i) hmem
     omega
@@ -6721,8 +7105,12 @@ structure RecState.Frame (base : Nat) (K : List Nat) (F : List Ty)
   intro v hv scheme hm
   obtain ⟨i, hi⟩ := List.mem_iff_getElem?.mp hm
   rw [RecState.entries, List.getElem?_map] at hi
-  obtain ⟨⟨spec, exported⟩, hz, heq⟩ := Option.map_eq_some_iff.mp hi
-  obtain ⟨hs, he⟩ := List.getElem?_zip_eq_some.mp hz
+  obtain ⟨member, hz, heq⟩ := Option.map_eq_some_iff.mp hi
+  rcases member with ⟨spec, slotImages, exported, output, facts⟩
+  have hs : state.specs[i]? = some spec := by
+    simp only [RecState.getElem?_specs, hz, Option.map_some]
+  have he : state.exports[i]? = some exported := by
+    simp only [RecState.getElem?_exports, hz, Option.map_some]
   cases spec with
   | poly sigma =>
     have hex := h.poly i sigma hs
@@ -6776,19 +7164,39 @@ structure RecState.Frame (base : Nat) (K : List Nat) (F : List Ty)
     {openings : List RecOpening} (h : state.Frame base K F ctx anns done)
     (hnot : ∀ i ∈ members, i ∉ done) :
     (state.installOpenings members openings).Frame base K F ctx anns done := by
-  refine ⟨h.specs_length, by simpa only [RecState.installOpenings, List.length_mapIdx] using h.slots_length,
-    h.exports_length, h.outputs_length, h.facts_length, h.modes, h.poly, ?_, h.pending,
-    h.pool_nodup, h.pool_ctx, h.pool_rigid, h.pool_soft, h.pool_poly, h.pool_pending,
-    h.rigid_below, h.pending_soft⟩
-  intro i ty hs
-  have hm := h.mono i ty hs
-  by_cases hd : i ∈ done
-  · simp only [hd, ↓reduceIte] at hm ⊢
-    obtain ⟨written, hslot, hcount, hnd, hpool, hex⟩ := hm
-    refine ⟨written, ?_, hcount, hnd, hpool, hex⟩
-    have hi : i ∉ members := fun hc => hnot i hc hd
-    simp only [RecState.installOpenings, List.getElem?_mapIdx, hslot, Option.map_some, if_neg hi]
-  · simpa only [hd, ↓reduceIte] using hm
+  refine ⟨by simpa only [RecState.specs_installOpenings] using h.specs_length,
+    by simpa only [RecState.slots_length, RecState.installOpenings,
+      List.length_mapIdx] using h.slots_length,
+    by simpa only [RecState.exports_installOpenings] using h.exports_length,
+    by simpa only [RecState.outputs_installOpenings] using h.outputs_length,
+    by simpa only [RecState.facts_installOpenings] using h.facts_length,
+    by simpa only [RecState.specs_installOpenings] using h.modes, ?_, ?_,
+    by simpa only [RecState.specs_installOpenings] using h.pending,
+    by simpa only [RecState.pool_installOpenings] using h.pool_nodup,
+    by simpa only [RecState.pool_installOpenings] using h.pool_ctx,
+    by simpa only [RecState.pool_installOpenings] using h.pool_rigid,
+    by simpa only [RecState.pool_installOpenings] using h.pool_soft,
+    by simpa only [RecState.specs_installOpenings, RecState.pool_installOpenings] using h.pool_poly,
+    by simpa only [RecState.specs_installOpenings, RecState.pool_installOpenings] using h.pool_pending,
+    h.rigid_below,
+    by simpa only [RecState.specs_installOpenings] using h.pending_soft⟩
+  · intro i scheme hs
+    rw [RecState.specs_installOpenings] at hs
+    simpa only [RecState.exports_installOpenings] using h.poly i scheme hs
+  · intro i ty hs
+    rw [RecState.specs_installOpenings] at hs
+    have hm := h.mono i ty hs
+    by_cases hd : i ∈ done
+    · simp only [hd, ↓reduceIte] at hm ⊢
+      obtain ⟨written, hslot, hcount, hnd, hpool, hex⟩ := hm
+      refine ⟨written, ?_, hcount, hnd, ?_, ?_⟩
+      · have hi : i ∉ members := fun hc => hnot i hc hd
+        rw [RecState.getElem?_slots_installOpenings_of_not_mem state openings hi]
+        exact hslot
+      · simpa only [RecState.pool_installOpenings] using hpool
+      · simpa only [RecState.pool_installOpenings, RecState.exports_installOpenings] using hex
+    · simp only [hd, ↓reduceIte] at hm ⊢
+      simpa only [RecState.exports_installOpenings] using hm
 
 
 /-- Read completed members' ordered written representatives from the retained
@@ -6811,7 +7219,7 @@ def RecState.stageCtx (state : RecState) (ctx : Ctx) (earlier : List Nat) : Ctx 
     (state.onSubst S).stageEntries earlier = S.onEnv (state.stageEntries earlier) := by
   apply List.ext_getElem?
   intro i
-  simp only [RecState.stageEntries, RecState.onSubst, Subst.onEnv,
+  simp only [RecState.stageEntries, RecState.specs_onSubst, RecState.exports_onSubst, Subst.onEnv,
     List.getElem?_mapIdx, List.getElem?_map, Option.map_map]
   cases hs : state.specs[i]? with
   | none => rfl
@@ -6881,11 +7289,15 @@ theorem FinishRecComponent.export_freeVars_boundary
   cases h with
   | mk hresolve =>
     expose_names
-    rw [RecState.exportComponent,List.getElem?_mapIdx] at hex
-    obtain ⟨old,_,heq⟩ := Option.map_eq_some_iff.mp hex
-    simp only [if_pos hi,ht,RecSpec.completedScheme] at heq
+    have ht0 := ht
+    rw [RecState.getElem?_specs] at ht
+    obtain ⟨member, hmember, hspec⟩ := Option.map_eq_some_iff.mp ht
+    rw [RecState.getElem?_exports_exportComponent] at hex
+    simp only [hmember, Option.map_some, hi, if_pos, hspec,
+      RecSpec.completedScheme] at hex
     have hs : recScheme (written[i]?.getD [])
-        (state.componentPool K soft members ctx written) ty = scheme := Option.some.inj heq
+        (state.componentPool K soft members ctx written) ty = scheme :=
+      Option.some.inj (Option.some.inj hex)
     subst scheme
     intro v hv
     by_cases hctx : v ∈ (state.fixedCtx ctx).env.freeVars
@@ -6895,7 +7307,7 @@ theorem FinishRecComponent.export_freeVars_boundary
     by_cases hsoft : v ∈ soft
     · exact Or.inr (Or.inr hsoft)
     have hfree := Ty.freeVars_closeOver_subset hv
-    have hpool := state.componentPool_covers (written := written) hi ht hfree hctx hK hsoft
+    have hpool := state.componentPool_covers (written := written) hi ht0 hfree hctx hK hsoft
     exact False.elim (Ty.not_mem_closeOver_freeVars (mem_recNames_of_mem_pool hpool hfree) hv)
 
 end
