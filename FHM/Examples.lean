@@ -1018,7 +1018,7 @@ theorem instBy_eq_of_lc {tyArgs : List Ty} :
 set_option maxRecDepth 100_000 in
 /-- `λx. x` has principal monotype `α → α` (computed, not postulated). -/
 theorem polyId_principalType : corePrincipalType [] polyId = some (.arrow (.fvar 0) (.fvar 0)) := by
-  change (inferCore [] 0 ⟨[], []⟩ (.lambda none (.var 0))).map (·.val.2.2.2) = _
+  change (inferCore [] 0 ⟨[], []⟩ (.lambda none (.var 0))).map (·.val.ty) = _
   simp [inferCore, inferWithTypesCore, seed, InferInput.rigidVars,
     softVars, TyList.freeVars, Env.freeVars, Ty.freeVars, List.getElem?_cons_zero,
     PolyTy.mkTrivial, PolyTy.openVars, Ty.openVars, freshVars, Subst.onTy, Ty.substFvars]
@@ -1319,7 +1319,7 @@ set_option maxRecDepth 100_000 in
 theorem matchWild_principalType :
     corePrincipalType [] matchWild = some (.arrow (.fvar 0) (.prim .int)) := by
   change (inferCore [] 0 ⟨[], []⟩ (.lambda none
-    (.match_ (.var 0) [(.wildcard,.primLit (.int 0))]))).map (·.val.2.2.2) = _
+    (.match_ (.var 0) [(.wildcard,.primLit (.int 0))]))).map (·.val.ty) = _
   have huni : (unifyCoreK [] (.prim .int) (.fvar 1)).map Subtype.val = some [(1,.prim .int)] := by
     unfold unifyCoreK
     rfl
