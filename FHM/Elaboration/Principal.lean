@@ -1256,55 +1256,6 @@ def prefixRepresentatives (actual candidate : List Nat) : List Nat :=
   exact prefixRepresentative_fix_image hlen hassign (List.mem_dedup.mp hc)
 
 
-/-- Realize the class assignment on any distinct selected slots in an allocation
-interval. Gaps are permitted; targets may mention any selected slot. -/
- theorem _root_.Subst.override_prefixRepresentatives {S0 : Subst} {actual candidate : List Nat}
-    (hS0 : ∀ p ∈ S0, p.2.IsLC) (base frontier : Nat)
-    (hlen : actual.length = candidate.length) (hnd : actual.Nodup)
-    (hstart : ∀ a ∈ actual, base ≤ a) (hend : ∀ a ∈ actual, a < frontier) :
-    ∃ U : Subst, (∀ p ∈ U, p.2.IsLC) ∧ Subst.AgreesBelow base S0 U ∧
-      (∀ i (hi : i < candidate.length),
-        U.onTy (.fvar (actual[i]'(by omega))) = .fvar (prefixRepresentative actual candidate candidate[i])) ∧
-      (∀ v ∈ prefixRepresentatives actual candidate, U.onTy (.fvar v) = .fvar v) := by
-  let target := fun a => if a ∈ actual then
-    Ty.fvar (prefixRepresentative actual candidate (candidate[actual.idxOf a]?.getD 0))
-    else S0.onTy (.fvar a)
-  let targets := (freshVars base (frontier - base)).map target
-  have htargets : ∀ t ∈ targets, t.IsLC := by
-    intro t ht
-    obtain ⟨a,_,rfl⟩ := List.mem_map.mp ht
-    dsimp only [target]
-    split
-    · exact .fvar
-    · exact Subst.onTy_lc hS0 .fvar
-  obtain ⟨U,hU,hagree,hblock⟩ := Subst.override_block hS0 base targets htargets
-  have hassign : ∀ i (hi : i < candidate.length),
-      U.onTy (.fvar (actual[i]'(by omega))) = .fvar (prefixRepresentative actual candidate candidate[i]) := by
-    intro i hi
-    have hia : i < actual.length := by omega
-    have ha : actual[i] ∈ actual := List.getElem_mem hia
-    have haStart := hstart _ ha
-    have haEnd := hend _ ha
-    have hj : actual[i] - base < frontier - base := by omega
-    have hh := hblock (actual[i] - base) (by simpa only [targets,List.length_map,freshVars_length] using hj)
-    have hidx : actual.idxOf actual[i] = i := hnd.idxOf_getElem i hia
-    simpa only [targets,List.getElem_map,freshVars,List.getElem_range,show base + (actual[i] - base) = actual[i] from by omega,
-      target,if_pos ha,hidx,List.getElem?_eq_getElem hi,Option.getD_some] using hh
-  exact ⟨U,hU,hagree,hassign,prefixRepresentatives_fixed hlen hassign⟩
-
- theorem _root_.Subst.AgreesBelow.fixes_prefixProtection {S0 U : Subst} {actual candidate P : List Nat}
-    (hlen : actual.length = candidate.length) (hagree : Subst.AgreesBelow base S0 U)
-    (hP : ∀ p ∈ P, p < base) (hfix : ∀ p ∈ P, S0.onTy (.fvar p) = .fvar p)
-    (hassign : ∀ i (hi : i < candidate.length),
-      U.onTy (.fvar (actual[i]'(by omega))) = .fvar (prefixRepresentative actual candidate candidate[i])) :
-    ∀ v ∈ P ++ prefixRepresentatives actual candidate, U.onTy (.fvar v) = .fvar v := by
-  intro v hv
-  rcases List.mem_append.mp hv with hp | hr
-  · exact (hagree v (hP v hp)).symm.trans (hfix v hp)
-  · exact prefixRepresentatives_fixed hlen hassign v hr
-
-
-
  theorem OpenRecAnn.factor_source {S0 : Subst} {names : List Nat} {target : Ty}
     (h : OpenRecAnn frontier ann next opening)
     (hS0 : ∀ p ∈ S0,p.2.IsLC) (hraw : ∀ v ∈ ann.rigidVars,v < frontier)
@@ -1437,21 +1388,113 @@ interval. Gaps are permitted; targets may mention any selected slot. -/
           exact htail j opening' names' target'
             (by simpa [Nat.add_assoc,Nat.add_comm,Nat.add_left_comm] using hm') ho hn ht
 
-theorem _root_.Infer.sourcePrincipal_backend {input : Input} {core : Expr}
-    (hemb : input.toCore = some core)
-    (h : CoreBackend.Infer K frontier ctx core next subst ty)
-    (hctx : CtxBelow frontier ctx) (hK : ∀ k ∈ K, k < frontier)
-    (hr : ∀ v ∈ core.tyFreeVars, v ∈ K)
-    (hdisj : ∀ v ∈ core.tyFreeVars, v ∉ softVars F) :
-    Infer.SourcePrincipal (.backend hemb h hctx hK hr hdisj) := by
-  intro hwf hb _ _ ambient target P hlc hP hfix hfreeze ht
-  have heq : input.substTyFvars ambient = input := input.substTyFvars_eq_self_of_fixes (by
-    intro v hv
-    have hcore := (input.toCore_rigidVars hemb v).mp hv
-    exact hfreeze v hv (hr v hcore) (hdisj v hcore))
-  rw [heq] at ht
-  obtain ⟨ht, hscope⟩ := ht.toCore hemb
-  exact h.principal hwf hb ambient target P hlc hP hscope hfix ht
+theorem _root_.Infer.sourcePrincipal_primLitUnit :
+    Infer.SourcePrincipal (K := K) (F := F) (frontier := frontier) (ctx := ctx)
+      (input := (.primLit .unit)) (.primLitUnit) := by
+  intro _ _ _ _ ambient target P hAmbient _ hFix _ ht
+  have hc := (ht.toCore (core := (.primLit .unit)) rfl).1
+  cases hc
+  refine ⟨ambient, hAmbient, ?_, hFix, fun _ _ => rfl⟩
+  simp only [Subst.onTy_prim]
+
+theorem _root_.Infer.sourcePrincipal_primLitInt :
+    Infer.SourcePrincipal (K := K) (F := F) (frontier := frontier) (ctx := ctx)
+      (input := (.primLit (.int value))) (.primLitInt) := by
+  intro _ _ _ _ ambient target P hAmbient _ hFix _ ht
+  have hc := (ht.toCore (core := (.primLit (.int value))) rfl).1
+  cases hc
+  refine ⟨ambient, hAmbient, ?_, hFix, fun _ _ => rfl⟩
+  simp only [Subst.onTy_prim]
+
+theorem _root_.Infer.sourcePrincipal_primLitNat :
+    Infer.SourcePrincipal (K := K) (F := F) (frontier := frontier) (ctx := ctx)
+      (input := (.primLit (.nat value))) (.primLitNat) := by
+  intro _ _ _ _ ambient target P hAmbient _ hFix _ ht
+  have hc := (ht.toCore (core := (.primLit (.nat value))) rfl).1
+  cases hc
+  refine ⟨ambient, hAmbient, ?_, hFix, fun _ _ => rfl⟩
+  simp only [Subst.onTy_prim]
+
+theorem _root_.Infer.sourcePrincipal_primLitChar :
+    Infer.SourcePrincipal (K := K) (F := F) (frontier := frontier) (ctx := ctx)
+      (input := (.primLit (.char value))) (.primLitChar) := by
+  intro _ _ _ _ ambient target P hAmbient _ hFix _ ht
+  have hc := (ht.toCore (core := (.primLit (.char value))) rfl).1
+  cases hc
+  refine ⟨ambient, hAmbient, ?_, hFix, fun _ _ => rfl⟩
+  simp only [Subst.onTy_prim]
+
+theorem _root_.Infer.sourcePrincipal_primBinOpIntAdd :
+    Infer.SourcePrincipal (K := K) (F := F) (frontier := frontier) (ctx := ctx)
+      (input := (.primBinOp .intAdd)) (.primBinOpIntAdd) := by
+  intro _ _ _ _ ambient target P hAmbient _ hFix _ ht
+  have hc := (ht.toCore (core := (.primBinOp .intAdd)) rfl).1
+  cases hc
+  refine ⟨ambient, hAmbient, ?_, hFix, fun _ _ => rfl⟩
+  simp only [Subst.onTy_prim, Subst.onTy_arrow]
+
+theorem _root_.Infer.sourcePrincipal_primBinOpIntSub :
+    Infer.SourcePrincipal (K := K) (F := F) (frontier := frontier) (ctx := ctx)
+      (input := (.primBinOp .intSub)) (.primBinOpIntSub) := by
+  intro _ _ _ _ ambient target P hAmbient _ hFix _ ht
+  have hc := (ht.toCore (core := (.primBinOp .intSub)) rfl).1
+  cases hc
+  refine ⟨ambient, hAmbient, ?_, hFix, fun _ _ => rfl⟩
+  simp only [Subst.onTy_prim, Subst.onTy_arrow]
+
+theorem _root_.Infer.sourcePrincipal_primBinOpIntLt
+    (hTrue : LookupList.get? ctx.ctors ⟨"True"⟩ = some trueC) (hTrueBool : trueC.IsBoolCtor)
+    (hFalse : LookupList.get? ctx.ctors ⟨"False"⟩ = some falseC) (hFalseBool : falseC.IsBoolCtor) :
+    Infer.SourcePrincipal (K := K) (F := F) (frontier := frontier) (ctx := ctx)
+      (input := (.primBinOp .intLt)) (.primBinOpIntLt hTrue hTrueBool hFalse hFalseBool) := by
+  intro _ _ _ _ ambient target P hAmbient _ hFix _ ht
+  have hc := (ht.toCore (core := (.primBinOp .intLt)) rfl).1
+  cases hc
+  refine ⟨ambient, hAmbient, ?_, hFix, fun _ _ => rfl⟩
+  simp only [Subst.onTy_prim, Subst.onTy_arrow, Subst.onTy_customTy, List.map_nil]
+
+theorem _root_.Infer.sourcePrincipal_primBinOpCharLt
+    (hTrue : LookupList.get? ctx.ctors ⟨"True"⟩ = some trueC) (hTrueBool : trueC.IsBoolCtor)
+    (hFalse : LookupList.get? ctx.ctors ⟨"False"⟩ = some falseC) (hFalseBool : falseC.IsBoolCtor) :
+    Infer.SourcePrincipal (K := K) (F := F) (frontier := frontier) (ctx := ctx)
+      (input := (.primBinOp .charLt)) (.primBinOpCharLt hTrue hTrueBool hFalse hFalseBool) := by
+  intro _ _ _ _ ambient target P hAmbient _ hFix _ ht
+  have hc := (ht.toCore (core := (.primBinOp .charLt)) rfl).1
+  cases hc
+  refine ⟨ambient, hAmbient, ?_, hFix, fun _ _ => rfl⟩
+  simp only [Subst.onTy_prim, Subst.onTy_arrow, Subst.onTy_customTy, List.map_nil]
+
+theorem _root_.Infer.sourcePrincipal_var {ctx : Ctx}
+    (hlook : ctx.env[index]? = some scheme) :
+    Infer.SourcePrincipal (K := K) (F := F) (frontier := frontier) (.var hlook) := by
+  intro hwf hbelow _ _ ambient target P hAmbient hP hFix _ ht
+  have hc := (ht.toCore (core := .var index) rfl).1
+  cases hc with
+  | @var _ candidate args _ _ hCandidate hArgs hInst =>
+    have hLookup : (ambient.onCtx ctx).env[index]? = some (ambient.onPolyTy scheme) := by
+      simp only [Subst.onCtx, Subst.onEnv, List.getElem?_map, hlook, Option.map_some]
+    cases Option.some.inj (hCandidate.symm.trans hLookup)
+    obtain ⟨R, hR, hRP, hAgree, hType⟩ := CoreBackend.Infer.exists_var_residual
+      hAmbient hP hFix hInst (hwf scheme (List.mem_of_getElem? hlook))
+      (hbelow scheme (List.mem_of_getElem? hlook)).mem_lt hArgs
+    exact ⟨R, hR, hType, hRP, fun v hv => (hAgree v hv).symm⟩
+
+theorem _root_.Infer.sourcePrincipal_ctor {ctx : Ctx}
+    (hlook : LookupList.get? ctx.ctors name = some ctor) :
+    Infer.SourcePrincipal (K := K) (F := F) (frontier := frontier) (.ctor hlook) := by
+  intro _ _ _ _ ambient target P hAmbient hP hFix _ ht
+  have hc := (ht.toCore (core := .ctor name) rfl).1
+  cases hc with
+  | @ctor _ candidate args _ _ hCandidate hArgs hInst =>
+    change LookupList.get? ctx.ctors name = some candidate at hCandidate
+    cases Option.some.inj (hCandidate.symm.trans hlook)
+    have hClosed : ambient.onTy ctor.toTy.body = ctor.toTy.body :=
+      Ty.substFvars_eq_self_of_no_key (fun p _ hv =>
+        (Ctor.toTy_body_noFreeVars ctor).not_mem_freeVars p.1 hv)
+    obtain ⟨R, hR, hRP, hAgree, hType⟩ := CoreBackend.Infer.exists_var_residual
+      hAmbient hP hFix (by simpa only [hClosed] using hInst) (Ctor.toTy_wf ctor)
+      (fun v hv => False.elim ((Ctor.toTy_body_noFreeVars ctor).not_mem_freeVars v hv)) hArgs
+    exact ⟨R, hR, hType, hRP, fun v hv => (hAgree v hv).symm⟩
 
 theorem _root_.Infer.sourcePrincipal_lambda {ctx : Ctx}
     (hscope : SourceScope K F (.lambda ann body))
@@ -3898,57 +3941,6 @@ theorem _root_.Subst.AgreesBelow.restore_after {N : Nat} {ambient moved solved r
   rw [← heq]
   exact .fvar
 
- theorem Typing.rename_prefixes {P names targets : List Nat}
-    (h : Typing (P ++ names) ctx input ty)
-    (hlen : targets.length = names.length) (hnd : names.Nodup)
-    (hdisj : ∀ n ∈ names, n ∉ targets) (hP : ∀ p ∈ P, p ∉ names) :
-    Typing (P ++ targets) (Subst.onCtx (names.zip (targets.map Ty.fvar)) ctx)
-      (input.substTyFvars (names.zip (targets.map Ty.fvar)))
-      (Subst.onTy (names.zip (targets.map Ty.fvar)) ty) := by
-  apply h.onSubst_source _ zip_fvars_lc
-  intro k hk v hv
-  rcases List.mem_append.mp hk with hk | hk
-  · rw [zip_fvars_fixes (hP k hk)] at hv
-    exact List.mem_append_left _ ((List.mem_singleton.mp hv) ▸ hk)
-  · have hi : names.idxOf k < names.length := List.idxOf_lt_length_iff.mpr hk
-    have ht : names.idxOf k < targets.length := by omega
-    have he := Ty.substFvars_zip_fvar_renameG hlen hnd hdisj
-      (List.getElem?_idxOf hk) (List.getElem?_eq_getElem ht)
-    change v ∈ (Ty.substFvars (names.zip (targets.map Ty.fvar)) (.fvar k)).freeVars at hv
-    rw [he] at hv
-    exact List.mem_append_right _ ((List.mem_singleton.mp hv) ▸ List.getElem_mem ht)
-
- theorem Input.rename_prefixes_roundtrip {input : Input} {names targets : List Nat}
-    (hlen : targets.length = names.length) (hnd : names.Nodup) (htnd : targets.Nodup)
-    (hdisj : ∀ n ∈ names, n ∉ targets) (havoid : ∀ t ∈ targets, t ∉ input.rigidVars) :
-    (input.substTyFvars (names.zip (targets.map Ty.fvar))).substTyFvars
-      (targets.zip (names.map Ty.fvar)) = input := by
-  rw [← input.substTyFvars_append]
-  apply input.substTyFvars_eq_self_of_fixes
-  intro v hv
-  change Subst.onTy (names.zip (targets.map Ty.fvar) ++ targets.zip (names.map Ty.fvar)) (.fvar v) = .fvar v
-  rw [Subst.onTy_append]
-  exact zip_fvars_roundtrip hlen hnd htnd hdisj (by
-    intro t ht hm
-    exact havoid t ht ((List.mem_singleton.mp hm) ▸ hv))
-
- theorem Ctx.rename_prefixes_roundtrip {ctx : Ctx} {names targets : List Nat}
-    (hlen : targets.length = names.length) (hnd : names.Nodup) (htnd : targets.Nodup)
-    (hdisj : ∀ n ∈ names, n ∉ targets) (havoid : ∀ t ∈ targets, t ∉ ctx.env.freeVars) :
-    Subst.onCtx (targets.zip (names.map Ty.fvar)) (Subst.onCtx (names.zip (targets.map Ty.fvar)) ctx) = ctx := by
-  apply congrArg₂ Ctx.mk
-  · change List.map _ (List.map _ ctx.env) = ctx.env
-    rw [List.map_map]
-    have hh : ∀ M ∈ ctx.env,
-        Subst.onPolyTy (targets.zip (names.map Ty.fvar)) (Subst.onPolyTy (names.zip (targets.map Ty.fvar)) M) = M := by
-      intro M hm
-      apply congrArg (PolyTy.mk M.paramCount)
-      exact zip_fvars_roundtrip hlen hnd htnd hdisj (fun t ht hv =>
-        havoid t ht (Env.mem_freeVars_iff.mpr ⟨M, hm, hv⟩))
-    calc
-      _ = ctx.env.map id := List.map_congr_left hh
-      _ = _ := List.map_id _
-  · rfl
  theorem zip_fvars_on_rename {names targets : List Nat}
     (hlen : targets.length = names.length) (hnd : names.Nodup)
     (hdisj : ∀ n ∈ names, n ∉ targets) (v : Nat) :
@@ -4941,11 +4933,7 @@ theorem _root_.Infer.signed_check_factor
     have hlow := freshVars_ge name hn
     have hhigh := (List.mem_append.mp hc).elim (hK name) (softVars_lt hF name)
     omega
-  have hfirst := hi.frontier_le
-  have hle : frontier ≤ first := by omega
-  obtain ⟨htLC, hs1LC⟩ := hi.lc hctxWF
-  have hs2LC := hu.unifies.lc htLC (PolyTy.openVars_isLC (Subst.onPolyTy_wf hs1LC hwf) (by
-    simp only [freshVars_length, Subst.onPolyTy]; omega))
+  have hs1LC := (hi.lc hctxWF).2
   have hs1Fix : ∀ k ∈ K, s1.onTy (.fvar k) = .fvar k :=
     Subst.fixes_of_dom_avoids (fun p hp hk => hi.dom_avoids p hp (List.mem_append_left _ hk))
   have hcheck : SignatureCheck K (substSoft s1 F) (freshVars frontier scheme.paramCount) first ty
@@ -4954,35 +4942,16 @@ theorem _root_.Infer.signed_check_factor
     intro v hv
     obtain ⟨original, ho, hv⟩ := Ty.mem_freeVars_substFvars_image.mp hv
     exact scope_image hs1Fix (hann original ho) hv
-  obtain ⟨htB, hs1B⟩ := hi.belowFvars (fun M hM => (hctx M hM).mono (by omega))
-    (fun k hk => (List.mem_append.mp hk).elim (fun hk => by have := hK k hk; omega)
-      (fun hk => by have := freshVars_lt k hk; simpa only [freshVars_length] using this))
-    (fun t ht => (hF t ht).mono (by omega))
-  have hs2B := hcheck.belowFvars htB (fun k hk => (hK k hk).trans_le hle)
-    (fun y hy => (freshVars_lt y hy).trans_le hfirst) (substSoft_below hs1B (by omega) hF)
-  have hbothB : ∀ p ∈ s1 ++ s2, Ty.BelowFvars first p.2 :=
-    fun p hp => (List.mem_append.mp hp).elim (hs1B p) (hs2B p)
   let bodyCtx : Ctx :=
     { s2.onCtx (s1.onCtx ctx) with
       env := signatureScheme ((LetAnn.complete scheme).substTyFvars (s1 ++ s2))
         (K ++ softVars (substSoft (s1 ++ s2) F)) (freshVars frontier scheme.paramCount)
         (s2.onCtx (s1.onCtx ctx)) (s2.onTy ty) :: (s2.onCtx (s1.onCtx ctx)).env }
-  have hbodyB : CtxBelow first bodyCtx := by
-    intro M hm
-    rcases List.mem_cons.mp hm with rfl | hm
-    · change Ty.BelowFvars first ((s1 ++ s2).onPolyTy scheme).body
-      exact Subst.onTy_belowFvars hbothB
-        ((Ty.BelowFvars.of_freeVars_lt (fun v hv => (List.mem_append.mp (hann v hv)).elim (hK v) (softVars_lt hF v))).mono hle)
-    · have hb : CtxBelow first (s2.onCtx (s1.onCtx ctx)) := by
-        simpa only [Subst.onCtx_append] using Subst.onCtx_below hbothB hle hctx
-      exact hb M hm
-  have hKfirst : ∀ k ∈ K, k < first := fun k hk => (hK k hk).trans_le hle
   let hb : Infer K (substSoft (s1 ++ s2) F) first bodyCtx (.primLit .unit) first []
       (.primLit .unit) (.prim .unit) :=
-    .backend rfl .primLitUnit hbodyB hKfirst (by simp [Expr.tyFreeVars]) (by simp [Expr.tyFreeVars])
+    .primLitUnit
   have ihb : Infer.SourcePrincipal hb :=
-    Infer.sourcePrincipal_backend rfl .primLitUnit hbodyB hKfirst
-      (by simp [Expr.tyFreeVars]) (by simp [Expr.tyFreeVars])
+    Infer.sourcePrincipal_primLitUnit
   have hprincipal := Infer.sourcePrincipal_letSignature hscope rfl havoid hraw hi hcheck hescape hb ih ihb
   obtain ⟨L, htypes⟩ := hcandidate
   have ht : Typing P (R.onCtx ctx)
@@ -7141,7 +7110,16 @@ theorem RecResidual.successful_step
 theorem _root_.Infer.sourcePrincipal (h : Infer K F frontier ctx input next subst output ty) :
     Infer.SourcePrincipal h := by
   match h with
-  | .backend hemb hi hctx hK hr hd => exact Infer.sourcePrincipal_backend hemb hi hctx hK hr hd
+  | .primLitUnit => exact Infer.sourcePrincipal_primLitUnit
+  | .primLitInt => exact Infer.sourcePrincipal_primLitInt
+  | .primLitNat => exact Infer.sourcePrincipal_primLitNat
+  | .primLitChar => exact Infer.sourcePrincipal_primLitChar
+  | .primBinOpIntAdd => exact Infer.sourcePrincipal_primBinOpIntAdd
+  | .primBinOpIntSub => exact Infer.sourcePrincipal_primBinOpIntSub
+  | .primBinOpIntLt hT hbT hF hbF => exact Infer.sourcePrincipal_primBinOpIntLt hT hbT hF hbF
+  | .primBinOpCharLt hT hbT hF hbF => exact Infer.sourcePrincipal_primBinOpCharLt hT hbT hF hbF
+  | .var hlook => exact Infer.sourcePrincipal_var hlook
+  | .ctor hlook => exact Infer.sourcePrincipal_ctor hlook
   | .lambda hs seed hb => exact Infer.sourcePrincipal_lambda hs seed hb hb.sourcePrincipal
   | .app hs hf ha hu => exact Infer.sourcePrincipal_app hs hf ha hu hf.sourcePrincipal ha.sourcePrincipal
   | .letIn hs hr hc hb => exact Infer.sourcePrincipal_letIn hs hr hc hb hr.sourcePrincipal hb.sourcePrincipal

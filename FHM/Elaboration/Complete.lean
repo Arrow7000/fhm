@@ -274,40 +274,69 @@ private theorem source_all (hs : SourceScope K F input) :
     input.rigidVars.all (fun v => decide (v ∈ K ++ softVars F)) = true :=
   List.all_eq_true.mpr (fun v hv => decide_eq_true (hs v hv))
 
-theorem _root_.inferWithTypesCore_sourceComplete_backend {K : List Nat} {F : List Ty}
-    {frontier : Nat} {ctx : Ctx} {input : Input} {core : Expr} {ambient : Subst} {target : Ty} {P : List Nat}
-    {hemb : input.toCore = some core} {hr : ∀ v ∈ core.tyFreeVars, v ∈ K}
-    {hd : ∀ v ∈ core.tyFreeVars, v ∉ softVars F}
-    (hbackend : backendInput K F input = some ⟨core, hemb, hr, hd⟩)
-    (hscope : SourceScope K F input) (hwf : CtxWF ctx) (hbelow : CtxBelow frontier ctx)
-    (hK : ∀ k ∈ K, k < frontier) (hF : ∀ t ∈ F, Ty.BelowFvars frontier t)
-    (hS : ∀ pair ∈ ambient, pair.2.IsLC)
-    (hfix : ∀ k ∈ K, ambient.onTy (.fvar k) = .fvar k)
-    (_hP : ∀ p ∈ P, p < frontier) (_hfixP : ∀ p ∈ P, ambient.onTy (.fvar p) = .fvar p)
-    (ht : Typing P (ambient.onCtx ctx) (input.substTyFvars ambient) target) :
-    (inferWithTypesCore K frontier ctx input F).isSome := by
-  have hsource : input.substTyFvars ambient = input := input.substTyFvars_eq_self_of_fixes
-    (fun v hv => hfix v (hr v ((Input.toCore_rigidVars _ hemb v).mp hv)))
-  rw [hsource] at ht
-  obtain ⟨hcore, _⟩ := ht.toCore hemb
-  obtain ⟨next, subst, ty, R, hi, _⟩ := CoreBackend.Infer.complete core K hwf hbelow hS hK hr hfix hcore
-  have hsome := CoreBackend.inferCore_complete core K hwf hbelow hK hr hi
-  obtain ⟨⟨⟨n, s, t, nodes, schemes⟩, hresult⟩, hworker⟩ := Option.isSome_iff_exists.mp hsome
-  rw [inferWithTypesCore, dif_pos (rigid_all hK), dif_pos (ctx_all hbelow),
-    dif_pos (soft_all hF), dif_pos (source_all hscope)]
-  split
-  · rename_i core' hc hscope' hdisj' heq
-    have hcoreeq : core' = core := congrArg Subtype.val (Option.some.inj (heq.symm.trans hbackend))
-    subst core'
-    simp only [hworker, Option.isSome_some]
-  · rename_i heq
-    simp only [hbackend] at heq
-    cases heq
+theorem _root_.inferWithTypesCore_sourceComplete_primLit (lit : PrimLitExpr) :
+    InferWithTypesCoreSourceComplete (.primLit lit) := by
+  intro K F frontier ctx ambient target P hscope _ hbelow hK hF _ _ _ _ _
+  cases lit <;>
+    simp only [inferWithTypesCore, dif_pos (rigid_all hK), dif_pos (ctx_all hbelow),
+      dif_pos (soft_all hF), dif_pos (source_all hscope), Option.isSome_some]
+
+theorem _root_.inferWithTypesCore_sourceComplete_primBinOp (op : PrimBinOp) :
+    InferWithTypesCoreSourceComplete (.primBinOp op) := by
+  intro K F frontier ctx ambient target P hscope _ hbelow hK hF _ _ _ _ ht
+  have hc := (ht.toCore (core := .primBinOp op) rfl).1
+  cases hc with
+  | primBinOpIntAdd | primBinOpIntSub =>
+    simp only [inferWithTypesCore, dif_pos (rigid_all hK), dif_pos (ctx_all hbelow),
+      dif_pos (soft_all hF), dif_pos (source_all hscope), Option.isSome_some]
+  | primBinOpIntLt hTrue hFalse | primBinOpCharLt hTrue hFalse =>
+    obtain ⟨trueC, hTrueLook, hTrueBool⟩ := Ctor.isBoolCtor_of_typeOfHM hTrue
+    obtain ⟨falseC, hFalseLook, hFalseBool⟩ := Ctor.isBoolCtor_of_typeOfHM hFalse
+    change LookupList.get? ctx.ctors _ = _ at hTrueLook hFalseLook
+    rw [inferWithTypesCore, dif_pos (rigid_all hK), dif_pos (ctx_all hbelow),
+      dif_pos (soft_all hF), dif_pos (source_all hscope)]
+    split
+    · rename_i heq; simp only [hTrueLook] at heq; cases heq
+    · rename_i tc heq
+      cases Option.some.inj (heq.symm.trans hTrueLook)
+      split
+      · rename_i heq; simp only [hFalseLook] at heq; cases heq
+      · rename_i fc heq
+        cases Option.some.inj (heq.symm.trans hFalseLook)
+        simp only [Ctor.isBoolCtor_iff.mpr hTrueBool, Ctor.isBoolCtor_iff.mpr hFalseBool,
+          dite_true, Option.isSome_some]
+
+theorem _root_.inferWithTypesCore_sourceComplete_var (index : Nat) :
+    InferWithTypesCoreSourceComplete (.var index) := by
+  intro K F frontier ctx ambient target P hscope _ hbelow hK hF _ _ _ _ ht
+  have hc := (ht.toCore (core := .var index) rfl).1
+  cases hc with
+  | var hCandidate _ _ =>
+    cases hlook : ctx.env[index]? with
+    | none => simp only [Subst.onCtx, Subst.onEnv, List.getElem?_map, hlook, Option.map_none] at hCandidate; cases hCandidate
+    | some scheme =>
+      simp only [inferWithTypesCore, dif_pos (rigid_all hK), dif_pos (ctx_all hbelow),
+        dif_pos (soft_all hF), dif_pos (source_all hscope)]
+      split
+      · rename_i heq; simp only [hlook] at heq; cases heq
+      · rfl
+
+theorem _root_.inferWithTypesCore_sourceComplete_ctor (name : CtorName) :
+    InferWithTypesCoreSourceComplete (.ctor name) := by
+  intro K F frontier ctx ambient target P hscope _ hbelow hK hF _ _ _ _ ht
+  have hc := (ht.toCore (core := .ctor name) rfl).1
+  cases hc with
+  | ctor hlook _ _ =>
+    change LookupList.get? ctx.ctors name = _ at hlook
+    simp only [inferWithTypesCore, dif_pos (rigid_all hK), dif_pos (ctx_all hbelow),
+      dif_pos (soft_all hF), dif_pos (source_all hscope)]
+    split
+    · rename_i heq; simp only [hlook] at heq; cases heq
+    · rfl
 
 theorem _root_.inferWithTypesCore_sourceComplete_lambda
     (ih : ∀ e : Input, e.size ≤ body.size → InferWithTypesCoreSourceComplete e)
     {K : List Nat} {F : List Ty} {frontier : Nat} {ctx : Ctx} {ambient : Subst} {target : Ty} {P : List Nat}
-    (hbackend : backendInput K F (.lambda ann body) = none)
     (hscope : SourceScope K F (.lambda ann body)) (hwf : CtxWF ctx) (hbelow : CtxBelow frontier ctx)
     (hK : ∀ k ∈ K, k < frontier) (hF : ∀ t ∈ F, Ty.BelowFvars frontier t)
     (hS : ∀ pair ∈ ambient, pair.2.IsLC)
@@ -360,11 +389,7 @@ theorem _root_.inferWithTypesCore_sourceComplete_lambda
     Option.isSome_iff_exists.mp hbody
   rw [inferWithTypesCore, dif_pos (rigid_all hK), dif_pos (ctx_all hbelow),
     dif_pos (soft_all hF), dif_pos (source_all hscope)]
-  split
-  · rename_i backend heq
-    simp only [hbackend] at heq
-    cases heq
-  · simp only [hseedResult, hbodyResult, Option.isSome_some]
+  simp only [hseedResult, hbodyResult, Option.isSome_some]
 
 
 theorem _root_.inferWithTypesCore_sourceComplete_app
@@ -375,7 +400,6 @@ theorem _root_.inferWithTypesCore_sourceComplete_app
     (pa : ∀ e : Input, e.size ≤ arg.size →
       ∀ {κ F' Φ c n s o t} (h : Infer κ F' Φ c e n s o t), Infer.SourcePrincipal h)
     {K : List Nat} {F : List Ty} {frontier : Nat} {ctx : Ctx} {ambient : Subst} {target : Ty} {P : List Nat}
-    (hbackend : backendInput K F (.app f arg) = none)
     (hscope : SourceScope K F (.app f arg)) (hwf : CtxWF ctx) (hbelow : CtxBelow frontier ctx)
     (hK : ∀ k ∈ K, k < frontier) (hF : ∀ t ∈ F, Ty.BelowFvars frontier t)
     (hS : ∀ pair ∈ ambient, pair.2.IsLC)
@@ -451,11 +475,7 @@ theorem _root_.inferWithTypesCore_sourceComplete_app
   rcases hu with ⟨hun, havoid⟩
   rw [inferWithTypesCore, dif_pos (rigid_all hK), dif_pos (ctx_all hbelow),
     dif_pos (soft_all hF), dif_pos (source_all hscope)]
-  split
-  · rename_i backend heq
-    simp only [hbackend] at heq
-    cases heq
-  · simp only [hfResult, haResult, huResult, Option.isSome_some]
+  simp only [hfResult, haResult, huResult, Option.isSome_some]
 
 theorem _root_.inferWithTypesCore_sourceComplete_letIn
     (ihr : ∀ e : Input, e.size ≤ rhs.size → InferWithTypesCoreSourceComplete e)
@@ -463,7 +483,7 @@ theorem _root_.inferWithTypesCore_sourceComplete_letIn
     (prhs : ∀ e : Input, e.size ≤ rhs.size →
       ∀ {κ F' Φ c n s o t} (h : Infer κ F' Φ c e n s o t), Infer.SourcePrincipal h)
     {K : List Nat} {F : List Ty} {frontier : Nat} {ctx : Ctx} {ambient : Subst} {target : Ty} {P : List Nat}
-    (hbackend : backendInput K F (.letIn ann rhs body) = none) (hmode : ann.isSignature = false)
+    (hmode : ann.isSignature = false)
     (hscope : SourceScope K F (.letIn ann rhs body)) (hwf : CtxWF ctx) (hbelow : CtxBelow frontier ctx)
     (hK : ∀ k ∈ K, k < frontier) (hF : ∀ t ∈ F, Ty.BelowFvars frontier t)
     (hS : ∀ pair ∈ ambient, pair.2.IsLC)
@@ -537,18 +557,14 @@ theorem _root_.inferWithTypesCore_sourceComplete_letIn
       hKchecked hFchecked hV hVK hPchecked hVP hbodyD)
   rw [inferWithTypesCore, dif_pos (rigid_all hK), dif_pos (ctx_all hbelow),
     dif_pos (soft_all hF), dif_pos (source_all hscope)]
-  split
-  · rename_i backend heq
-    simp only [hbackend] at heq
-    cases heq
-  · simp only [hmode, Bool.false_eq_true, ↓reduceIte, hrResult, hcResult, hbResult, Option.isSome_some]
+  simp only [hmode, Bool.false_eq_true, ↓reduceIte, hrResult, hcResult, hbResult, Option.isSome_some]
 
 theorem _root_.inferWithTypesCore_sourceComplete_signature
     {ann : LetAnn} {rhs body : Input}
     (ihr : ∀ e : Input, e.size ≤ rhs.size → InferWithTypesCoreSourceComplete e)
     (ihb : ∀ e : Input, e.size ≤ body.size → InferWithTypesCoreSourceComplete e)
     {K : List Nat} {F : List Ty} {frontier : Nat} {ctx : Ctx} {ambient : Subst} {target : Ty} {P : List Nat}
-    (hbackend : backendInput K F (.letIn ann rhs body) = none) (hmode : ann.isSignature = true)
+    (hmode : ann.isSignature = true)
     (hscope : SourceScope K F (.letIn ann rhs body)) (hwf : CtxWF ctx) (hbelow : CtxBelow frontier ctx)
     (hK : ∀ k ∈ K, k < frontier) (hF : ∀ t ∈ F, Ty.BelowFvars frontier t)
     (hS : ∀ pair ∈ ambient, pair.2.IsLC)
@@ -703,10 +719,8 @@ theorem _root_.inferWithTypesCore_sourceComplete_signature
     List.all_eq_true.mpr (fun v hv => decide_eq_true (hRhsRaw v hv))
   rw [inferWithTypesCore, dif_pos (rigid_all hK), dif_pos (ctx_all hbelow),
     dif_pos (soft_all hF), dif_pos (source_all hscope)]
-  split
-  · rename_i core heq; simp only [hbackend] at heq; cases heq
-  · simp only [written] at hrResult hcResult hbResult hescape
-    simp only [hmode, ↓reduceIte, hraw, dite_true, hrResult, hcResult,
+  simp only [written] at hrResult hcResult hbResult hescape
+  simp only [hmode, ↓reduceIte, hraw, dite_true, hrResult, hcResult,
       dif_pos hescape, hbResult, Option.isSome_some]
 
 private theorem branch_rigid_mem {bs : List (MatchPattern × Input)} {b : MatchPattern × Input}
@@ -1056,7 +1070,6 @@ theorem _root_.inferWithTypesCore_sourceComplete_match
     (ihb : ∀ bs : List (MatchPattern × Input), sizeBranches bs ≤ sizeBranches branches →
       InferBranchesWithTypesCoreSourceComplete bs)
     {K : List Nat} {F : List Ty} {frontier : Nat} {ctx : Ctx} {ambient : Subst} {target : Ty} {P : List Nat}
-    (hbackend : backendInput K F (.match_ scrut branches) = none)
     (hscope : SourceScope K F (.match_ scrut branches)) (hwf : CtxWF ctx) (hbelow : CtxBelow frontier ctx)
     (hK : ∀ k ∈ K, k < frontier) (hF : ∀ t ∈ F, Ty.BelowFvars frontier t)
     (hS : ∀ pair ∈ ambient, pair.2.IsLC)
@@ -1119,13 +1132,9 @@ theorem _root_.inferWithTypesCore_sourceComplete_match
       (by simpa only [← hUst, hUtarget] using hbr))
   rw [inferWithTypesCore, dif_pos (rigid_all hK), dif_pos (ctx_all hbelow),
     dif_pos (soft_all hF), dif_pos (source_all hscope)]
-  split
-  · rename_i backend heq
-    simp only [hbackend] at heq
-    cases heq
-  · cases branches with
-    | nil => exact False.elim (hne rfl)
-    | cons b bs => simp only [hsResult, List.head?_cons, hbResult, Option.isSome_some]
+  cases branches with
+  | nil => exact False.elim (hne rfl)
+  | cons b bs => simp only [hsResult, List.head?_cons, hbResult, Option.isSome_some]
 
 theorem openRecAnn_complete_source {S0 : Subst} {names : List Nat} {target : Ty}
     (hS0 : ∀ p ∈ S0,p.2.IsLC) (hraw : ∀ v ∈ ann.rigidVars,v < frontier)
@@ -2944,7 +2953,6 @@ private theorem inferWithTypesCore_sourceComplete_rec_of_unsigned
           (∀ x ∈ Xs,∀ k ∈ K,x ∉ (R1.onTy (.fvar k)).freeVars) ∧
           (∀ x ∈ Xs,x ∉ softVars (substSoft R1 (substSoft strata.val.subst F))))
     {ambient : Subst} {target : Ty} {P : List Nat}
-    (hbackend : backendInput K F (.letRec anns bindings body) = none)
     (hscope : SourceScope K F (.letRec anns bindings body))
     (hctxWF : CtxWF ctx) (hctx : CtxBelow frontier ctx)
     (hK : ∀ k ∈ K,k < frontier) (hF : ∀ t ∈ F,Ty.BelowFvars frontier t)
@@ -3209,21 +3217,17 @@ private theorem inferWithTypesCore_sourceComplete_rec_of_unsigned
   have hValidBool := RecGroups.validResidualGroupsB_complete hvalid
   rw [inferWithTypesCore,dif_pos (rigid_all hK),dif_pos (ctx_all hctx),
     dif_pos (soft_all hF),dif_pos (source_all hscope)]
+  simp only [hStrataResult,hSignedResult,hCollectSchemes,hCollectOutputs,hBodyResult]
   split
-  · rename_i core heq
-    simp only [hbackend] at heq
-    cases heq
-  · simp only [hStrataResult,hSignedResult,hCollectSchemes,hCollectOutputs,hBodyResult]
-    split
-    · rfl
-    · rename_i hBad
-      apply False.elim
-      apply hBad
-      apply List.all_eq_true.mpr
-      intro ann ha
-      cases ann with
-      | absent | template _ | partialForall _ _ => rfl
-      | complete sigma => exact PolyTy.wf_iff_bvarsBelow.mpr (hann sigma ha)
+  · rfl
+  · rename_i hBad
+    apply False.elim
+    apply hBad
+    apply List.all_eq_true.mpr
+    intro ann ha
+    cases ann with
+    | absent | template _ | partialForall _ _ => rfl
+    | complete sigma => exact PolyTy.wf_iff_bvarsBelow.mpr (hann sigma ha)
 
 
 /-- Internal assembly only: recursive execution is supplied by its actual phase
@@ -3237,60 +3241,59 @@ private theorem inferWithTypesCore_sourceComplete_of_rec
   induction hs : input.size using Nat.strong_induction_on generalizing input with
   | h size ih =>
     intro K F frontier ctx ambient target P hscope hwf hbelow hK hF hS hfix hP hfixP ht
-    cases hemb : backendInput K F input with
-    | some core =>
-      rcases core with ⟨core,he,hr,hd⟩
-      exact inferWithTypesCore_sourceComplete_backend (hemb := he) (hr := hr) (hd := hd) hemb hscope hwf hbelow hK hF hS hfix hP hfixP ht
-    | none =>
-      have smaller : ∀ e : Input,e.size < input.size → InferWithTypesCoreSourceComplete e := by
-        intro e he
-        exact ih e.size (by omega) e rfl
-      cases input with
-      | primLit lit =>
-        simp [backendInput,Input.toCore,Expr.tyFreeVars] at hemb
-      | primBinOp op =>
-        simp [backendInput,Input.toCore,Expr.tyFreeVars] at hemb
-      | var i =>
-        simp [backendInput,Input.toCore,Expr.tyFreeVars] at hemb
-      | ctor name =>
-        simp [backendInput,Input.toCore,Expr.tyFreeVars] at hemb
-      | lambda ann body =>
-        exact inferWithTypesCore_sourceComplete_lambda
+    have smaller : ∀ e : Input,e.size < input.size → InferWithTypesCoreSourceComplete e := by
+      intro e he
+      exact ih e.size (by omega) e rfl
+    cases input with
+    | primLit lit =>
+      exact inferWithTypesCore_sourceComplete_primLit lit K F frontier ctx ambient target P
+        hscope hwf hbelow hK hF hS hfix hP hfixP ht
+    | primBinOp op =>
+      exact inferWithTypesCore_sourceComplete_primBinOp op K F frontier ctx ambient target P
+        hscope hwf hbelow hK hF hS hfix hP hfixP ht
+    | var i =>
+      exact inferWithTypesCore_sourceComplete_var i K F frontier ctx ambient target P
+        hscope hwf hbelow hK hF hS hfix hP hfixP ht
+    | ctor name =>
+      exact inferWithTypesCore_sourceComplete_ctor name K F frontier ctx ambient target P
+        hscope hwf hbelow hK hF hS hfix hP hfixP ht
+    | lambda ann body =>
+      exact inferWithTypesCore_sourceComplete_lambda
+        (fun e he => smaller e (by simp only [Input.size];omega))
+        hscope hwf hbelow hK hF hS hfix hP hfixP ht
+    | app f arg =>
+      exact inferWithTypesCore_sourceComplete_app
+        (fun e he => smaller e (by simp only [Input.size];omega))
+        (fun e he => smaller e (by simp only [Input.size];omega))
+        (fun _ _ => Infer.sourcePrincipal) (fun _ _ => Infer.sourcePrincipal)
+        hscope hwf hbelow hK hF hS hfix hP hfixP ht
+    | letIn ann rhs body =>
+      cases hmode : ann.isSignature with
+      | false =>
+        exact inferWithTypesCore_sourceComplete_letIn
           (fun e he => smaller e (by simp only [Input.size];omega))
-          hemb hscope hwf hbelow hK hF hS hfix hP hfixP ht
-      | app f arg =>
-        exact inferWithTypesCore_sourceComplete_app
-          (fun e he => smaller e (by simp only [Input.size];omega))
-          (fun e he => smaller e (by simp only [Input.size];omega))
-          (fun _ _ => Infer.sourcePrincipal) (fun _ _ => Infer.sourcePrincipal)
-          hemb hscope hwf hbelow hK hF hS hfix hP hfixP ht
-      | letIn ann rhs body =>
-        cases hmode : ann.isSignature with
-        | false =>
-          exact inferWithTypesCore_sourceComplete_letIn
-            (fun e he => smaller e (by simp only [Input.size];omega))
-            (fun e he => smaller e (by simp only [Input.size];omega))
-            (fun _ _ => Infer.sourcePrincipal)
-            hemb hmode hscope hwf hbelow hK hF hS hfix hP hfixP ht
-        | true =>
-          exact inferWithTypesCore_sourceComplete_signature
-            (fun e he => smaller e (by simp only [Input.size];omega))
-            (fun e he => smaller e (by simp only [Input.size];omega))
-            hemb hmode hscope hwf hbelow hK hF hS hfix hP hfixP ht
-      | match_ scrut branches =>
-        apply inferWithTypesCore_sourceComplete_match
-          (fun e he => smaller e (by simp only [Input.size];omega))
-          (fun _ _ => Infer.sourcePrincipal) ?_
-          hemb hscope hwf hbelow hK hF hS hfix hP hfixP ht
-        intro bs hbs
-        exact inferBranchesWithTypesCore_sourceComplete_of_body bs
           (fun e he => smaller e (by simp only [Input.size];omega))
           (fun _ _ => Infer.sourcePrincipal)
-      | letRec anns bindings body =>
-        exact hRec anns bindings body
+          hmode hscope hwf hbelow hK hF hS hfix hP hfixP ht
+      | true =>
+        exact inferWithTypesCore_sourceComplete_signature
           (fun e he => smaller e (by simp only [Input.size];omega))
           (fun e he => smaller e (by simp only [Input.size];omega))
-          K F frontier ctx ambient target P hscope hwf hbelow hK hF hS hfix hP hfixP ht
+          hmode hscope hwf hbelow hK hF hS hfix hP hfixP ht
+    | match_ scrut branches =>
+      apply inferWithTypesCore_sourceComplete_match
+        (fun e he => smaller e (by simp only [Input.size];omega))
+        (fun _ _ => Infer.sourcePrincipal) ?_
+        hscope hwf hbelow hK hF hS hfix hP hfixP ht
+      intro bs hbs
+      exact inferBranchesWithTypesCore_sourceComplete_of_body bs
+        (fun e he => smaller e (by simp only [Input.size];omega))
+        (fun _ _ => Infer.sourcePrincipal)
+    | letRec anns bindings body =>
+      exact hRec anns bindings body
+        (fun e he => smaller e (by simp only [Input.size];omega))
+        (fun e he => smaller e (by simp only [Input.size];omega))
+        K F frontier ctx ambient target P hscope hwf hbelow hK hF hS hfix hP hfixP ht
 
 /-- Public fixed-source completeness is the F=[] specialization of source
 completeness; the source is fixed because its authored variables lie in K. -/
@@ -3374,39 +3377,33 @@ private theorem inferWithTypesCore_sourceComplete_of_singleton
     (input : Input) : InferWithTypesCoreSourceComplete input := by
   apply inferWithTypesCore_sourceComplete_of_rec ?_ input
   intro anns bindings body hProducer hBodyProducer K F frontier ctx ambient target P hscope hctxWF hctx hK hF hambient hfixK hP hfixP ht
-  cases hbackend : backendInput K F (.letRec anns bindings body) with
-  | some core =>
-    rcases core with ⟨core,he,hr,hd⟩
-    exact inferWithTypesCore_sourceComplete_backend (hemb := he) (hr := hr) (hd := hd)
-      hbackend hscope hctxWF hctx hK hF hambient hfixK hP hfixP ht
-  | none =>
-    apply inferWithTypesCore_sourceComplete_rec_of_unsigned hProducer
-      (fun _ hi => Infer.sourcePrincipal hi) hBodyProducer ?_
-      hbackend hscope hctxWF hctx hK hF hambient hfixK hP hfixP ht
-    intro P declCtx declAnns declBindings declSpecs declGroups declPrefixes G Xs R
-      hdeclValid hdeclWF hprefix hGfresh hdeclAnn hdeclRhs hdeclFits hdeclTypes
-      hGhigh hXhigh hXlen hXnd hGX hXspec hXctxP
-      hctxWF hctx hstateLC hstateB hframe hK hF hP hres hFixK hXsK hXsF hannScope hrhsScope hannEq hrhsEq
-    have hBindingsLen : bindings.length = declBindings.length := by
-      simpa only [List.length_map] using congrArg List.length hrhsEq
-    have hAnnsLen : anns.length = declAnns.length := by
-      simpa only [List.length_map] using congrArg List.length hannEq
-    have hlen : anns.length = bindings.length := by
-      have hh := hdeclValid.length
-      simp only [List.length_map] at hh
-      omega
+  apply inferWithTypesCore_sourceComplete_rec_of_unsigned hProducer
+    (fun _ hi => Infer.sourcePrincipal hi) hBodyProducer ?_
+    hscope hctxWF hctx hK hF hambient hfixK hP hfixP ht
+  intro P declCtx declAnns declBindings declSpecs declGroups declPrefixes G Xs R
+    hdeclValid hdeclWF hprefix hGfresh hdeclAnn hdeclRhs hdeclFits hdeclTypes
+    hGhigh hXhigh hXlen hXnd hGX hXspec hXctxP
+    hctxWF hctx hstateLC hstateB hframe hK hF hP hres hFixK hXsK hXsF hannScope hrhsScope hannEq hrhsEq
+  have hBindingsLen : bindings.length = declBindings.length := by
+    simpa only [List.length_map] using congrArg List.length hrhsEq
+  have hAnnsLen : anns.length = declAnns.length := by
+    simpa only [List.length_map] using congrArg List.length hannEq
+  have hlen : anns.length = bindings.length := by
+    have hh := hdeclValid.length
+    simp only [List.length_map] at hh
+    omega
 
-    have hvalid : RecGroups.ValidResidualGroups (anns.map LetAnn.recModeAnn) (bindings.map Input.erase)
-        (RecGroup.inferenceSccs (anns.map LetAnn.recModeAnn) (bindings.map Input.erase)) :=
-      RecGroup.inferenceSccs_valid (by simpa only [List.length_map] using hlen)
-    simpa only [List.nil_append] using inferRecStrataWithTypesCore_complete_of_step
-      (past := []) (base := frontier)
-      (hSingleton P declCtx declAnns declBindings declSpecs declGroups declPrefixes G Xs frontier
-      hdeclValid hdeclWF hprefix hGfresh hdeclAnn hdeclRhs hdeclFits hdeclTypes
-      (by simpa only [hBindingsLen] using hGhigh) (by simpa only [hBindingsLen] using hXhigh)
-      hXlen hXnd hGX hXspec hXctxP) hProducer (fun _ hi => Infer.sourcePrincipal hi)
-      hvalid rfl hframe hstateLC hstateB hctxWF hctx (by omega) hK hF hP hres hFixK
-      hXsK hXsF hannScope hrhsScope hannEq hrhsEq
+  have hvalid : RecGroups.ValidResidualGroups (anns.map LetAnn.recModeAnn) (bindings.map Input.erase)
+      (RecGroup.inferenceSccs (anns.map LetAnn.recModeAnn) (bindings.map Input.erase)) :=
+    RecGroup.inferenceSccs_valid (by simpa only [List.length_map] using hlen)
+  simpa only [List.nil_append] using inferRecStrataWithTypesCore_complete_of_step
+    (past := []) (base := frontier)
+    (hSingleton P declCtx declAnns declBindings declSpecs declGroups declPrefixes G Xs frontier
+    hdeclValid hdeclWF hprefix hGfresh hdeclAnn hdeclRhs hdeclFits hdeclTypes
+    (by simpa only [hBindingsLen] using hGhigh) (by simpa only [hBindingsLen] using hXhigh)
+    hXlen hXnd hGX hXspec hXctxP) hProducer (fun _ hi => Infer.sourcePrincipal hi)
+    hvalid rfl hframe hstateLC hstateB hctxWF hctx (by omega) hK hF hP hres hFixK
+    hXsK hXsF hannScope hrhsScope hannEq hrhsEq
 
 
 /-- The sole artifact worker accepts every independently typed anonymous input.
