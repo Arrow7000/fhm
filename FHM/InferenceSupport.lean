@@ -2788,26 +2788,6 @@ theorem Subst.onCtx_branchBindings {S : Subst} {ctorr : Ctor} {ta : List Ty} {ct
 
 /-! ### Helper lemmas for the `letRec` soundness case -/
 
-/-- Reverse of mapping the right component of a `zip`: a member of `l.zip (r.map g)`
-    comes from a member of `l.zip r`. -/
-private theorem List.mem_zip_map_snd {α β γ : Type _} {g : β → γ} :
-    ∀ {l : List α} {r : List β} {p : α × γ},
-      p ∈ l.zip (r.map g) → ∃ a b, (a, b) ∈ l.zip r ∧ p = (a, g b) := by
-  intro l
-  induction l with
-  | nil => intro r p h; simp at h
-  | cons hd tl ih =>
-    intro r p h
-    cases r with
-    | nil => simp at h
-    | cons rhd rtl =>
-      simp only [List.map_cons, List.zip_cons_cons, List.mem_cons] at h
-      cases h with
-      | inl heq => exact ⟨hd, rhd, List.mem_cons_self, heq⟩
-      | inr h' =>
-        obtain ⟨a, b, hmem, heq⟩ := ih h'
-        exact ⟨a, b, List.mem_cons_of_mem _ hmem, heq⟩
-
 /-- An element of `freeVarsList` occurs in some member type's free vars. -/
 private theorem Ty.mem_freeVarsList_exists {τs : List Ty} {g : Nat}
     (h : g ∈ Ty.freeVarsList τs) : ∃ t ∈ τs, g ∈ t.freeVars := by
@@ -2819,17 +2799,6 @@ private theorem Ty.mem_freeVarsList_exists {τs : List Ty} {g : Nat}
     · exact ⟨hd, List.mem_cons_self, h⟩
     · obtain ⟨t, ht, hg⟩ := ih h
       exact ⟨t, List.mem_cons_of_mem _ ht, hg⟩
-
-/-- A free var of a member type is a member of the list's free vars. -/
-private theorem Ty.mem_freeVarsList_of_mem {τs : List Ty} {τ : Ty} {w : Nat}
-    (hτ : τ ∈ τs) (hw : w ∈ τ.freeVars) : w ∈ Ty.freeVarsList τs := by
-  induction τs with
-  | nil => simp at hτ
-  | cons hd tl ih =>
-    simp only [Ty.freeVarsList, List.mem_dedup, List.mem_append]
-    rcases List.mem_cons.mp hτ with rfl | hτ'
-    · exact .inl hw
-    · exact .inr (ih hτ')
 
 /-- The diagonal of `l.zip (l.map g)`: the second component is `g` of the first. -/
 private theorem List.mem_zip_self_map' {α β : Type _} {g : α → β} {l : List α} {p : α × β}
@@ -3657,73 +3626,6 @@ theorem TypeOfHM.env_agreement {ctx : Ctx} {e : Expr} {τ : Ty}
       apply Expr.ForallOuter.prepend_env
       simpa only [List.length_map, Nat.zero_add, hwf.length] using hag.2
 
-/-! Local copies of Core-private auxiliary lemmas needed by the recursive-group
-case of `typ_subst_preservation_uniform`. -/
-
-private theorem Ty.freeVars_subset_freeVarsList {V : Ty} {Vs : List Ty}
-    (h : V ∈ Vs) : ∀ x ∈ V.freeVars, x ∈ Ty.freeVarsList Vs := by
-  induction Vs with
-  | nil => exact absurd h List.not_mem_nil
-  | cons hd tl ih =>
-    intro x hx
-    simp only [Ty.freeVarsList, List.mem_dedup, List.mem_append]
-    cases h with
-    | head _ => exact .inl hx
-    | tail _ h' => exact .inr (ih h' x hx)
-
-private theorem Ty.IsLC.substFvars {s : List (Nat × Ty)} {τ : Ty}
-    (hs : ∀ p ∈ s, p.2.IsLC) (hτ : τ.IsLC) : (Ty.substFvars s τ).IsLC := by
-  induction s generalizing τ with
-  | nil => exact hτ
-  | cons hd tl ih =>
-    obtain ⟨Z, U⟩ := hd
-    simp only [Ty.substFvars]
-    exact ih (fun p hp => hs p (List.mem_cons_of_mem _ hp))
-      (Ty.IsLC.substFvar (hs (Z, U) List.mem_cons_self) hτ)
-
-private theorem Ty.renameG_isLC {G Xs : List Nat} {τ : Ty}
-    (hτ : τ.IsLC) : (Ty.renameG G Xs τ).IsLC := by
-  unfold Ty.renameG
-  refine Ty.IsLC.substFvars ?_ hτ
-  intro p hp
-  obtain ⟨x, _, hx⟩ := List.mem_map.mp (List.of_mem_zip hp).2
-  rw [← hx]; exact .fvar
-
-private theorem List.mem_zip_map {α β γ δ : Type _} {f : α → γ} {g : β → δ} :
-    ∀ {l : List α} {r : List β} {p : γ × δ},
-      p ∈ (l.map f).zip (r.map g) → ∃ a b, (a, b) ∈ l.zip r ∧ p = (f a, g b) := by
-  intro l
-  induction l with
-  | nil => intro r p h; simp at h
-  | cons hd tl ih =>
-    intro r p h
-    cases r with
-    | nil => simp at h
-    | cons rhd rtl =>
-      simp only [List.map_cons, List.zip_cons_cons, List.mem_cons] at h
-      cases h with
-      | inl heq => exact ⟨hd, rhd, List.mem_cons_self, heq⟩
-      | inr h' =>
-        obtain ⟨a, b, hmem, heq⟩ := ih h'
-        exact ⟨a, b, List.mem_cons_of_mem _ hmem, heq⟩
-
-private theorem List.mem_zip_map_right {α β γ : Type _} {g : β → γ}
-    {l : List α} {r : List β} {a : α} {b : β}
-    (h : (a, b) ∈ l.zip r) : (a, g b) ∈ l.zip (r.map g) := by
-  induction l generalizing r with
-  | nil => simp at h
-  | cons hd tl ih =>
-    cases r with
-    | nil => simp at h
-    | cons rhd rtl =>
-      simp only [List.map_cons, List.zip_cons_cons, List.mem_cons] at h ⊢
-      cases h with
-      | inl heq =>
-        rw [Prod.mk.injEq] at heq
-        obtain ⟨rfl, rfl⟩ := heq
-        exact Or.inl rfl
-      | inr h' => exact Or.inr (ih h')
-
 /-- Single-fvar `substTyFvar` is the one-element iterated `substTyFvars` (defeq).
     Lets the `match_` and `letRec` cases use the public
     `Expr.substTyFvars_*` structural lemmas instead of the Core-private single-fvar
@@ -4077,7 +3979,7 @@ theorem TypeOfHM.typ_subst_preservation_uniform {Z : Nat} {U : Ty} (h_U_lc : U.I
         exact hIH
     · -- Signed members are checked under the final body context.
       intro p hp σ' hσ' Ys hYs
-      obtain ⟨a, b, hab, rfl⟩ := List.mem_zip_map hp
+      obtain ⟨a, b, hab, rfl⟩ := List.exists_mem_zip_of_mem_zip_map hp
       cases b with
       | mono τ => exact RecSpec.noConfusion hσ'
       | poly σ =>

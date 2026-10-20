@@ -2328,28 +2328,6 @@ theorem List.mem_zip_map_left {α β γ : Type _} {f : α → γ} :
         obtain ⟨a, b, ha, hmem, heq⟩ := ih h'
         exact ⟨a, b, List.mem_cons_of_mem _ ha, List.mem_cons_of_mem _ hmem, heq⟩
 
-/-- A member of `l.zip (r.map g)` reflects to a member of `l.zip r` (the RIGHT
-    analogue of `mem_zip_map_left`): the fused `letRec` rule's `bindings.zip specs`
-    premise must be reconstructed from a `bindings.zip anns` member, where
-    `anns = specs.map RecSpec.ann`. -/
-private theorem List.mem_zip_map_right_ex {α β γ : Type _} {g : β → γ} :
-    ∀ {l : List α} {r : List β} {p : α × γ},
-      p ∈ l.zip (r.map g) → ∃ a b, (a, b) ∈ l.zip r ∧ p = (a, g b) := by
-  intro l
-  induction l with
-  | nil => intro r p h; simp at h
-  | cons hd tl ih =>
-    intro r p h
-    cases r with
-    | nil => simp at h
-    | cons rhd rtl =>
-      simp only [List.map_cons, List.zip_cons_cons, List.mem_cons] at h
-      cases h with
-      | inl heq => exact ⟨hd, rhd, List.mem_cons_self, heq⟩
-      | inr h' =>
-        obtain ⟨a, b, hmem, heq⟩ := ih h'
-        exact ⟨a, b, List.mem_cons_of_mem _ hmem, heq⟩
-
 /-- Open an enclosing scheme's scoped type variables throughout a (bound) term:
     the term-level analogue of `PolyTy.openVars`. -/
 def Expr.openTyVars (Xs : List Nat) (e : Expr) : Expr := e.openTyVarsAux 0 Xs
@@ -3568,9 +3546,8 @@ theorem Ty.substFvars_customTy {pairs : List (Nat × Ty)} {nm : TyName} {tys : L
     rw [ih, List.map_map]
     rfl
 
-/-- Free vars of a single type are contained in the free vars of any list
-    containing it (`Ty.freeVarsList` flavour, used for the `Vs` freshness). -/
-private theorem Ty.freeVars_subset_freeVarsList {V : Ty} {Vs : List Ty}
+/-- A free variable of a member type occurs in the free variables of the list. -/
+theorem Ty.mem_freeVarsList_of_mem {V : Ty} {Vs : List Ty}
     (h : V ∈ Vs) : ∀ x ∈ V.freeVars, x ∈ Ty.freeVarsList Vs := by
   induction Vs with
   | nil => exact absurd h List.not_mem_nil
@@ -3635,7 +3612,7 @@ theorem Ty.substFvars_zip_fvar_eq {Xs : List Nat} {Vs : List Ty}
         intro p hp hcontra
         have hp1 : p.1 ∈ Xs' := (List.of_mem_zip hp).1
         refine h_fresh p.1 (List.mem_cons_of_mem _ hp1) ?_
-        exact Ty.freeVars_subset_freeVarsList List.mem_cons_self p.1 hcontra
+        exact Ty.mem_freeVarsList_of_mem List.mem_cons_self p.1 hcontra
       | succ k =>
         simp only [List.getElem?_cons_succ] at hx hv
         have h_X0_notin : X0 ∉ Xs' := (List.nodup_cons.mp h_nodup).1
@@ -4780,10 +4757,9 @@ theorem PolyTy.openGroup_map_substFvar {Z : Nat} {U : Ty} (h_U_lc : Ty.IsLC U) :
     refine congrArg₂ List.cons ?_ (ih (fun hc => hZ (List.drop_subset _ _ hc)))
     exact PolyTy.substFvar_openVars h_U_lc (fun hc => hZ (List.take_subset _ _ hc))
 
-/-- A member of `(l.map f).zip (r.map g)` reflects to a member of `l.zip r`:
-    both the bindings and their opened types are transformed in the `letRec`
-    `typ_subst`/`subst` cases. -/
-private theorem List.mem_zip_map {α β γ δ : Type _} {f : α → γ} {g : β → δ} :
+/-- A member of `(l.map f).zip (r.map g)` reflects to a member of `l.zip r`. -/
+theorem List.exists_mem_zip_of_mem_zip_map
+    {α β γ δ : Type _} {f : α → γ} {g : β → δ} :
     ∀ {l : List α} {r : List β} {p : γ × δ},
       p ∈ (l.map f).zip (r.map g) → ∃ a b, (a, b) ∈ l.zip r ∧ p = (f a, g b) := by
   intro l
@@ -4827,25 +4803,6 @@ theorem exists_fresh_names (avoid : List Nat) (n : Nat) :
 
 /-! ### `renameG` composition helpers (for the `letRec` `typ_subst` case). -/
 
-/-- Forward direction: a member of `l.zip r` maps to a member of `l.zip (r.map g)`
-    (the right components are transformed). -/
-private theorem List.mem_zip_map_right {α β γ : Type _} {g : β → γ}
-    {l : List α} {r : List β} {a : α} {b : β}
-    (h : (a, b) ∈ l.zip r) : (a, g b) ∈ l.zip (r.map g) := by
-  induction l generalizing r with
-  | nil => simp at h
-  | cons hd tl ih =>
-    cases r with
-    | nil => simp at h
-    | cons rhd rtl =>
-      simp only [List.map_cons, List.zip_cons_cons, List.mem_cons] at h ⊢
-      cases h with
-      | inl heq =>
-        rw [Prod.mk.injEq] at heq
-        obtain ⟨rfl, rfl⟩ := heq
-        exact Or.inl rfl
-      | inr h' => exact Or.inr (ih h')
-
 /-- The shared opening `renameG G Xs τ` is exactly "close over `G`, then open at
     `Xs`", whenever the side conditions for the round-trip hold. This is the
     `(openVars_closeOver_rename).symm` after unfolding `renameG`. -/
@@ -4856,7 +4813,7 @@ private theorem Ty.renameG_eq_openVars_closeOver {G Xs : List Nat} {τ : Ty}
   exact (Ty.openVars_closeOver_rename hτ hG hlen hdisj).symm
 
 /-- Iterated `substFvar` by LC replacements preserves local-closedness. -/
-private theorem Ty.IsLC.substFvars {s : List (Nat × Ty)} {τ : Ty}
+theorem Ty.IsLC.substFvars {s : List (Nat × Ty)} {τ : Ty}
     (hs : ∀ p ∈ s, p.2.IsLC) (hτ : τ.IsLC) : (Ty.substFvars s τ).IsLC := by
   induction s generalizing τ with
   | nil => exact hτ
@@ -4867,7 +4824,7 @@ private theorem Ty.IsLC.substFvars {s : List (Nat × Ty)} {τ : Ty}
       (Ty.IsLC.substFvar (hs (Z, U) List.mem_cons_self) hτ)
 
 /-- `renameG` (a renaming to fresh `fvar`s) preserves local-closedness. -/
-private theorem Ty.renameG_isLC {G Xs : List Nat} {τ : Ty}
+theorem Ty.renameG_isLC {G Xs : List Nat} {τ : Ty}
     (hτ : τ.IsLC) : (Ty.renameG G Xs τ).IsLC := by
   unfold Ty.renameG
   refine Ty.IsLC.substFvars ?_ hτ
@@ -7376,6 +7333,24 @@ private theorem Expr.shiftFrom_letRec_eq (anns : List (Option PolyTy)) (bs : Lis
           (body.shiftFrom (t + bs.length) n) :=
   rfl
 
+/-- `shiftFrom` distributes structurally over a match and raises the threshold
+    by each pattern's binder count in its branch body. -/
+theorem Expr.shiftFrom_match (scrut : Expr) (brs : List (MatchPattern × Expr))
+    (t n : Nat) :
+    (Expr.match_ scrut brs).shiftFrom t n
+      = Expr.match_ (scrut.shiftFrom t n)
+          (brs.map (fun pb => (pb.1, pb.2.shiftFrom (t + pb.1.bindCount) n))) := by
+  rw [Expr.shiftFrom_match_eq, Expr.shiftFrom_matchBranches]
+
+/-- `shiftFrom` distributes structurally over a recursive group, whose binders
+    raise the threshold uniformly for every RHS and the body. -/
+theorem Expr.shiftFrom_letRec (anns : List (Option PolyTy)) (bs : List Expr)
+    (body : Expr) (t n : Nat) :
+    (Expr.letRec anns bs body).shiftFrom t n
+      = Expr.letRec anns (bs.map (·.shiftFrom (t + bs.length) n))
+          (body.shiftFrom (t + bs.length) n) := by
+  rw [Expr.shiftFrom_letRec_eq, Expr.shiftFrom_letRecBindings]
+
 /-- `shiftFrom` is the identity on an expression all of whose free term-vars are
     below the shift threshold `t`. -/
 theorem Expr.shiftFrom_of_varsBelow (n : Nat) :
@@ -7508,14 +7483,18 @@ private theorem Expr.substN_letRec_eq (anns : List (Option PolyTy)) (bs : List E
           (body.substN (k + bs.length) vs) :=
   rfl
 
-private theorem Expr.substN_match_core (scrut : Expr) (brs : List (MatchPattern × Expr))
+/-- `substN` distributes structurally over a match and raises the substitution
+    depth by each pattern's binder count in its branch body. -/
+theorem Expr.substN_match (scrut : Expr) (brs : List (MatchPattern × Expr))
     (k : Nat) (vs : List Expr) :
     (Expr.match_ scrut brs).substN k vs
       = Expr.match_ (scrut.substN k vs)
           (brs.map (fun pb => (pb.1, pb.2.substN (k + pb.1.bindCount) vs))) := by
   rw [Expr.substN_match_eq, Expr.substN_matchBranches]
 
-private theorem Expr.substN_letRec_core (anns : List (Option PolyTy)) (bs : List Expr)
+/-- `substN` distributes structurally over a recursive group, whose binders
+    raise the substitution depth uniformly for every RHS and the body. -/
+theorem Expr.substN_letRec (anns : List (Option PolyTy)) (bs : List Expr)
     (body : Expr) (k : Nat) (vs : List Expr) :
     (Expr.letRec anns bs body).substN k vs
       = Expr.letRec anns (bs.map (·.substN (k + bs.length) vs))
@@ -7576,17 +7555,17 @@ theorem Expr.substN_of_closed {e : Expr} (h : Expr.varsBelow 0 e = true) (k : Na
     (vs : List Expr) : e.substN k vs = e :=
   Expr.substN_of_varsBelow vs e k (Expr.varsBelow_mono e (Nat.zero_le k) h)
 
-private theorem Expr.substN_var_lt_core {i k : Nat} (h : i < k) (vs : List Expr) :
+theorem Expr.substN_var_lt {i k : Nat} (h : i < k) (vs : List Expr) :
     (Expr.var i).substN k vs = .var i := by
   simp only [Expr.substN, if_pos h]
 
-private theorem Expr.substN_var_hit_core {i k : Nat} {vs : List Expr} (h1 : ¬ i < k)
+theorem Expr.substN_var_hit {i k : Nat} {vs : List Expr} (h1 : ¬ i < k)
     (h2 : i - k < vs.length) :
     (Expr.var i).substN k vs = (vs[i - k]).shiftFrom 0 k := by
   simp only [Expr.substN, if_neg h1]
   rw [dif_pos h2]
 
-private theorem Expr.substN_var_beyond_core {i k : Nat} {vs : List Expr} (h1 : ¬ i < k)
+theorem Expr.substN_var_beyond {i k : Nat} {vs : List Expr} (h1 : ¬ i < k)
     (h2 : ¬ i - k < vs.length) :
     (Expr.var i).substN k vs = .var (i - vs.length) := by
   simp only [Expr.substN, if_neg h1]
@@ -7604,17 +7583,17 @@ theorem Expr.substN_substN_append (e : Expr) (k : Nat) (ws vs : List Expr)
   | ctor nm => rfl
   | var i  =>
     by_cases h1 : i < k
-    · rw [Expr.substN_var_lt_core (by omega : i < k + ws.length),
-        Expr.substN_var_lt_core h1, Expr.substN_var_lt_core h1]
+    · rw [Expr.substN_var_lt (by omega : i < k + ws.length),
+        Expr.substN_var_lt h1, Expr.substN_var_lt h1]
     · by_cases h2 : i - k < ws.length
-      · rw [Expr.substN_var_lt_core (by omega : i < k + ws.length),
-          Expr.substN_var_hit_core h1 h2,
-          Expr.substN_var_hit_core h1 (by simp only [List.length_append]; omega)]
+      · rw [Expr.substN_var_lt (by omega : i < k + ws.length),
+          Expr.substN_var_hit h1 h2,
+          Expr.substN_var_hit h1 (by simp only [List.length_append]; omega)]
         congr 1
         exact (List.getElem_append_left h2).symm
       · by_cases h3 : i - (k + ws.length) < vs.length
-        · rw [Expr.substN_var_hit_core (by omega : ¬ i < k + ws.length) h3,
-            Expr.substN_var_hit_core h1 (by simp only [List.length_append]; omega)]
+        · rw [Expr.substN_var_hit (by omega : ¬ i < k + ws.length) h3,
+            Expr.substN_var_hit h1 (by simp only [List.length_append]; omega)]
           have hv : Expr.varsBelow 0 (vs[i - (k + ws.length)]) = true :=
             hcl _ (List.getElem_mem _)
           have happ : (ws ++ vs)[i - k]'(by simp only [List.length_append]; omega)
@@ -7625,9 +7604,9 @@ theorem Expr.substN_substN_append (e : Expr) (k : Nat) (ws vs : List Expr)
           rw [happ, Expr.shiftFrom_of_closed hv, Expr.shiftFrom_of_closed hv]
           exact Expr.substN_of_varsBelow ws _ k
             (Expr.varsBelow_mono _ (Nat.zero_le k) hv)
-        · rw [Expr.substN_var_beyond_core (by omega : ¬ i < k + ws.length) h3,
-            Expr.substN_var_beyond_core (by omega : ¬ i - vs.length < k) (by omega),
-            Expr.substN_var_beyond_core h1 (by simp only [List.length_append]; omega)]
+        · rw [Expr.substN_var_beyond (by omega : ¬ i < k + ws.length) h3,
+            Expr.substN_var_beyond (by omega : ¬ i - vs.length < k) (by omega),
+            Expr.substN_var_beyond h1 (by simp only [List.length_append]; omega)]
           simp only [List.length_append]
           congr 1
           omega
@@ -7641,7 +7620,7 @@ theorem Expr.substN_substN_append (e : Expr) (k : Nat) (ws vs : List Expr)
     rw [ihrhs k, show k + ws.length + 1 = (k + 1) + ws.length from by omega,
       ihbody (k + 1)]
   | match_ scrut branches ihscrut ihbrs =>
-    rw [Expr.substN_match_core, Expr.substN_match_core, Expr.substN_match_core, ihscrut k,
+    rw [Expr.substN_match, Expr.substN_match, Expr.substN_match, ihscrut k,
       List.map_map]
     congr 1
     apply List.map_congr_left
@@ -7651,7 +7630,7 @@ theorem Expr.substN_substN_append (e : Expr) (k : Nat) (ws vs : List Expr)
     rw [show k + ws.length + pat.bindCount = (k + pat.bindCount) + ws.length from by omega,
       ihbrs pat body hmem (k + pat.bindCount)]
   | letRec anns bindings body ihbindings ihbody =>
-    rw [Expr.substN_letRec_core, Expr.substN_letRec_core, Expr.substN_letRec_core,
+    rw [Expr.substN_letRec, Expr.substN_letRec, Expr.substN_letRec,
       List.map_map, List.length_map]
     congr 1
     · apply List.map_congr_left
