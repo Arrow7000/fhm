@@ -130,7 +130,8 @@ is in [`lean-toolchain`](./lean-toolchain).
 
 ```bash
 lake exe cache get   # download prebuilt Mathlib (avoids compiling it locally)
-lake build           # check all the proofs
+lake build           # check the production verified library
+lake build FHMExamples FHMHistorical  # check opt-in examples and proof artifacts
 lake build fhm       # build the fhm executable
 ```
 

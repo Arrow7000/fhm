@@ -20,11 +20,20 @@ roots = [
   "FHM.SurfaceBridge",
   "FHM.InferW",
   "FHM.Completeness",
-  "FHM.Examples",
   "FHM.Scc.Kosaraju",
   "FHM.Headlines",
   "FHM.RuntimeTyping",
 ]
+
+[[lean_lib]]
+name = "FHMExamples"
+# Executable examples and audit canaries; build with `lake build FHMExamples`.
+roots = ["FHM.Examples"]
+
+[[lean_lib]]
+name = "FHMHistorical"
+# Preserved prototype proofs; build with `lake build FHMHistorical`.
+roots = ["FHM.AnnotatedPolyRecErasure", "FHM.AnnotatedPolyRecHybrid"]
 
 [[lean_lib]]
 name = "FHMUnverified"

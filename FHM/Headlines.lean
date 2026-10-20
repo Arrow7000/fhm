@@ -2,7 +2,6 @@ import FHM.SurfaceBridge
 import FHM.InferW
 import FHM.Completeness
 import FHM.Pretty
-import FHM.Examples
 
 /-! # `Headlines` — the human-readable capabilities surface
 
@@ -181,11 +180,6 @@ runtime source with the canonical completed output. -/
 #check @SurfaceBridge.inferOfCore_erase
 #check @SurfaceBridge.coreTypecheck_accepts_iff
 #check @SurfaceBridge.inferOfCore_principal
-#check @AuditCapstone.polyId_headlines_fire
-#check @AuditCapstone.appFiveFive_rejected
-#check @AuditCapstone.idid_headlines_fire
-#check @AuditCapstone.matchWild_headlines_fire
-#check @AuditCapstone.mutualRec_headlines_fire
 
 /-! ### Pattern-compilation correctness
 
@@ -782,11 +776,6 @@ signatures. The complete-Core adapters retain the same source guarantees. -/
 #print axioms SurfaceBridge.inferOfCore_erase
 #print axioms SurfaceBridge.coreTypecheck_accepts_iff
 #print axioms SurfaceBridge.inferOfCore_principal
-#print axioms AuditCapstone.polyId_headlines_fire
-#print axioms AuditCapstone.appFiveFive_rejected
-#print axioms AuditCapstone.idid_headlines_fire
-#print axioms AuditCapstone.matchWild_headlines_fire
-#print axioms AuditCapstone.mutualRec_headlines_fire
 
 -- Clean: this file's own inversion lemmas.
 #print axioms TypeOfHM_app_inv           -- expect {propext, Quot.sound}

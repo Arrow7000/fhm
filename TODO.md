@@ -352,13 +352,14 @@ decl, or rejected sugar)`.
 
 - [x] `FHM/AnnotatedPolyRecErasure.lean` and `FHM/AnnotatedPolyRecHybrid.lean`
       are prototype proofs from the annotated polymorphic recursion work, still in
-      the tree as historical artifacts. Removed from the default build; either
-      module can still be checked explicitly with `lake build FHM.AnnotatedPolyRecErasure`
-      or `lake build FHM.AnnotatedPolyRecHybrid`.
-- [ ] Recursive grouping currently happens in two places: SCC analysis during
-      lowering, and a second split of the unannotated members during inference.
-      A single SCC pass per scope, ignoring edges into annotated definitions,
-      would give the same results with one algorithm.
+      the tree as historical artifacts. Removed from the default build; both
+      modules can still be checked explicitly with `lake build FHMHistorical`.
+- [ ] Recursive grouping intentionally computes two different partitions: the
+      runtime SCC during lowering and the residual typing SCC during inference.
+      Complete signatures cut type-dependency edges but do not cut runtime
+      recursion, so both partitions must remain. Explore sharing dependency-graph
+      construction or a common graph data model without conflating their edge
+      policies.
 
 ## Ideas
 
