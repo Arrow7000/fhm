@@ -51,16 +51,6 @@ theorem InferInput.inferenceSccs_substTyFvars (anns : List BindingAnn) (bindings
   rw [hb]
   exact RecGroup.inferenceSccs_congr_mask _ (BindingAnn.recModeAnn_isUnsignedAt_subst anns S)
 
-theorem InferInput.inferenceSccs_substInputBindings (anns : List BindingAnn) (bindings : List InferInput) (S : Subst) :
-    RecGroup.inferenceSccs (anns.map BindingAnn.recModeAnn) (bindings.map InferInput.erase) =
-      RecGroup.inferenceSccs ((anns.map (BindingAnn.substTyFvars S)).map BindingAnn.recModeAnn)
-        ((substInputBindings S bindings).map InferInput.erase) := by
-  have hb : substInputBindings S bindings = bindings.map (InferInput.substTyFvars S) := by
-    induction bindings with
-    | nil => rfl
-    | cons rhs rest ih => simp only [substInputBindings, List.map_cons, ih]
-  rw [hb]
-  exact InferInput.inferenceSccs_substTyFvars anns bindings S
 mutual
 theorem TyTemplate.toCore_fits {template : TyTemplate} {ty : Ty}
     (h : template.toCore = some ty) : template.Fits ty := by
