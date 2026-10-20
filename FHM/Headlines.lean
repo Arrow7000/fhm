@@ -65,7 +65,7 @@ TO COMPILE if any of these names ever disappear or change shape. -/
 
 **"A well-typed, exhaustive program never gets stuck."** Two headlines say this
 at two levels: `surface_type_safe` at the level of a bare surface *expression*
-(given that its `lower`ing typechecks and its matches cover their scrutinee's
+(given that its lowered Core term typechecks and its matches cover their scrutinee's
 constructors), and `program_type_safe` at the level of a whole `Surface.Program`
 (decls + binding groups + body). `TypeOfHM.type_safety_star` is the iterated
 progress+preservation engine both headlines are built on: every term reachable
@@ -74,6 +74,40 @@ well-typed and is a value or can step again — "never gets stuck" formalised. -
 #check @surface_type_safe
 #check @program_type_safe
 #check @TypeOfHM.type_safety_star
+
+/-! ### Surface lowering into canonical inference input
+
+The lowering theorem starts with a surface syntax tree. It preserves partial
+annotations in `InferInput`; inference then supplies independent input typing,
+annotation fidelity, completed Core typing, and exact runtime erasure. Parsing
+source text and joining source spans to editor artifacts are separate concerns. -/
+#check @lowerExpr_sound
+#check @lowerExpr_complete
+#check @LowersExpr.unique
+#check @lower_sound
+#check @lower_complete
+#check @lowerProgram_sound
+#check @lowerProgram_complete
+
+-- Guard the public relation's target: it describes partial inference input.
+example (ctors : CtorEnv) (ke : KindEnv) :
+    List ValName → List ValName → Surface.Expr → InferInput → Prop :=
+  LowersExpr ctors ke
+
+/-- The verified surface-to-input and input-to-Core stages compose without a
+second lowering or inference pass. -/
+theorem lower_and_infer_sound {ctors : CtorEnv} {source : Surface.Expr}
+    {input : InferInput} {result : InferenceResult}
+    (hlow : lower ctors source = some input)
+    (hinfer : inferWithTypes ctors input = some result) :
+    Lowers ctors source input ∧
+      InputTyping input.rigidVars ⟨[], ctors⟩ input result.ty ∧
+      AnnotationCompletion input.rigidVars input result.completedExpr ∧
+      TypeOfHM ⟨[], ctors⟩ result.completedExpr result.ty ∧
+      result.completedExpr.erase = input.erase := by
+  exact ⟨lower_sound hlow, inferWithTypes_input_sound hinfer,
+    (inferWithTypes_infer hinfer).completes CtxWF.empty,
+    inferWithTypes_source_sound hinfer, inferWithTypes_erase hinfer⟩
 
 /-! ### Canonical partial-input elaboration: exact output and source guarantees
 
@@ -251,7 +285,7 @@ theorem SurfaceWTExpr_pair_inv {ctors : CtorEnv} {ke : KindEnv} {tvs vs : List V
     (∃ τa τb, SurfaceWTExpr ctors ke tvs vs Γ a τa ∧ SurfaceWTExpr ctors ke tvs vs Γ b τb ∧
         TypeOfHM ⟨Γ, ctors⟩ (.ctor cPair) (.arrow τa (.arrow τb τ)))
     ∨ (SurfaceExprNoMatch (.pair a b) ∧
-        ∃ c, LowersExpr ctors ke tvs vs (.pair a b) c ∧ TypeOfHM ⟨Γ, ctors⟩ c τ) := by
+        ∃ c, CoreLowersExpr ctors ke tvs vs (.pair a b) c ∧ TypeOfHM ⟨Γ, ctors⟩ c τ) := by
   cases h with
   | pair ha hb hc => exact Or.inl ⟨_, _, ha, hb, hc⟩
   | of_lowers hnm hL hT => exact Or.inr ⟨hnm, _, hL, hT⟩
@@ -537,7 +571,7 @@ abbrev Safe (ctors : CtorEnv) :=
   { e : Expr // e.erase = e ∧ WellTyped ctors e ∧ AllMatchesExhaustive ctors e }
 
 /-- Complete-Core safe-lowering demonstration, separate from production Input
-    elaboration. `lowerProgram` rejects holeful types; the CLI/editor instead use
+    elaboration. `lowerCoreProgram` rejects holeful types; the CLI/editor instead use
     provenance lowering and canonical `inferWithTypes`.
     Run a surface program through both checks (typechecking, via
     canonical `inferWithTypes`, and exhaustiveness, via `checkExhaustive`); `some ⟨ctors, ⟨e,
@@ -546,7 +580,7 @@ abbrev Safe (ctors : CtorEnv) :=
     `checkExhaustive_sound` and travels with the term from then on. `none`
     means the program was rejected by lowering, typechecking, or coverage. -/
 def elaborateSafe (p : Surface.Program) : Option (Σ ctors : CtorEnv, Safe ctors) :=
-  match hlow : lowerProgram p with
+  match hlow : lowerCoreProgram p with
   | none => none
   | some (ctors, c) =>
     match hresult : inferWithTypes ctors (InferInput.ofCore c) with
@@ -716,6 +750,7 @@ signatures. The complete-Core adapters retain the same source guarantees. -/
 #print axioms TypeOfHM.type_safety_star       -- expect {propext, Classical.choice, Quot.sound}
 
 -- Checked for all canonical constructors, including partial recursive signatures.
+#print axioms lower_and_infer_sound
 #print axioms Infer.sourceSound
 #print axioms Infer.inputSound_source
 #print axioms Infer.inputSound

@@ -906,9 +906,9 @@ private def signedNested :=
    "let inner : {inner} inner -> _ = \\(w : inner) -> x in (inner y, z) " ++
    "in middle True\nouter 1 False\n") == some ["a → (outer, a)", "b", "(outer, b)", "outer"]
 
--- Recursive worker targets below deliberately check lowering only until its
--- proof-backed implementation lands. Runtime expectations live in the smoke
--- suite as independent positive/negative groups; rejection alone proves little.
+-- These guards inspect recursive input modes before inference. Runtime
+-- expectations live in the smoke suite as independent positive/negative
+-- groups; rejection alone proves little.
 private def lowersWith (src : String) (check : InferInput → Bool) : Bool :=
   match parseProgramWithSpans src with
   | .error _ => false
@@ -982,8 +982,8 @@ private def ordinaryRecProtected :=
   | _ => false
 
 -- These sources exercise distinct member prefixes over shared/permuted roots.
--- Their exact hovers and runtime pairs remain independent smoke targets until
--- recursive artifacts are produced by the canonical worker.
+-- Their exact hovers and runtime pairs are also checked by the CLI/editor
+-- smoke suite; these guards preserve the partial-input shapes before inference.
 #guard lowersWith
   ("let f : {left} left -> _ = \\(x : left) -> if True then x else g x\n" ++
    "let g : {right} right -> _ = \\(y : right) -> f y\n(f 1, g True)\n") fun
@@ -1023,7 +1023,7 @@ private def recPrefixIndependent :=
 
 
 -- A complete member cuts this source cycle into residual g then f. Retain
--- the hole and the written f prefix so complete-backend dispatch cannot mask
+-- the hole and the written f prefix so a complete-only lowering path cannot mask
 -- the cross-strata sharing canary in the CLI/editor smoke suite.
 #guard lowersWith
   ("let h : {z} z -> z = \\x -> f x\n" ++
@@ -1046,3 +1046,39 @@ private def recPrefixIndependent :=
       .absent, .complete h] [_, _, _] _) =>
       h.paramCount == 1 && input.toCore.isNone
   | _ => false
+
+
+-- These guards expose the successful production term projection and its
+-- structural lowering witness; source metadata is not part of this theorem.
+#check @SurfaceBridge.Provenance.lowerWithProvenance_project
+#check @SurfaceBridge.Provenance.lowerWithProvenance_sound
+#print axioms SurfaceBridge.Provenance.lowerWithProvenance_project
+#print axioms SurfaceBridge.Provenance.lowerWithProvenance_sound
+
+-- The parser-fed pure lowerer and the production path exercise the same
+-- canonical input policy. The general provenance projection theorem proves
+-- term equality; these canaries pin meaningful values and authored hovers.
+private def canonicalLoweredValue (src : String) : Option String := do
+  let (program, _, _) ← (parseProgramWithSpans src).toOption
+  let (ctors, input) ← SurfaceBridge.lowerProgram program
+  let result ← inferWithTypes ctors input
+  let value ← SmallStep.evaluate 500 result.completedExpr.erase
+  pure (toString value)
+
+private def headedCompoundHoles :=
+  "let first {item} p : _ = (\\((x,y) : (item,_)) -> x) p\nfirst (7,True)\n"
+
+#guard canonicalLoweredValue holeIdSrc == some "(1, True)"
+#guard canonicalLoweredValue copiedHoleFallback == some "(2, 2)"
+#guard canonicalLoweredValue headedCompoundHoles == some "7"
+#guard canonicalLoweredValue recPrefixIndependent == some "(1, False)"
+#guard holeTypes headedCompoundHoles == some ["item", "a"]
+#guard (match hoverReport headedCompoundHoles with
+  | some report => report.diagnostics.isEmpty &&
+      (report.symbols.any fun symbol => symbol.name == "p" &&
+        symbol.kind == "param" && symbol.type_ == "(item, a)") &&
+      (report.symbols.any fun symbol => symbol.name == "x" &&
+        symbol.kind == "pat" && symbol.type_ == "item") &&
+      (report.symbols.any fun symbol => symbol.name == "y" &&
+        symbol.kind == "pat" && symbol.type_ == "a")
+  | none => false)

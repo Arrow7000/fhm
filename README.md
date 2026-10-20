@@ -104,6 +104,7 @@ starting point for reading the proofs.
 | -------------------------------------------------------------------------------------------------------------------------------------------------- | ------------------------------------------------------------------------- |
 | **Type safety:** a well-typed program never gets stuck. It is either a value or can take another step, and its type is preserved.                  | `TypeOfHM.progress`, `TypeOfHM.preservation`, `TypeOfHM.type_safety_star` |
 | **Complete-Core surface safety:** a well-typed, exhaustive surface program accepted by the Core lowering bridge never gets stuck.                  | `program_type_safe`, `surface_type_safe`                                  |
+| **Surface lowering preserves partial annotations:** the structural lowering relation and executable lowerer agree on canonical `InferInput`, including holes, heads, patterns, and recursive groups. | `lower_sound`/`lower_complete`, `lowerProgram_sound`/`lowerProgram_complete` |
 | **Canonical elaboration is sound:** successful inference returns typed completed Core and an independently typed partial input, with exact runtime erasure and annotation fidelity. | `Infer.sourceSound`, `Infer.inputSound`, `Infer.erase`, `Infer.completes` |
 | **Canonical inference is complete and principal:** inference accepts exactly independently well-typed partial inputs, and every valid result type factors through the inferred type. | `Infer.principal`, `Infer.complete`, `inferCore_accepts_iff`, `inferWithTypes_accepts_iff` |
 | **Complete Core uses the same inference engine:** `InferInput.ofCore` preserves source typing, acceptance, and residual principality. | `SurfaceBridge.coreTypecheck_accepts_iff`, `SurfaceBridge.inferOfCore_source_sound`, `SurfaceBridge.inferOfCore_principal` |
@@ -115,9 +116,10 @@ starting point for reading the proofs.
 **What is not verified:** the lexer, parser, CLI, editor tooling, and the
 unbounded evaluator used by `fhm run`. These live under
 [`FHM/Unverified/`](./FHM/Unverified/README.md) and are kept out of the
-verified build. Verified Core lowering theorems start at surface syntax;
-the canonical elaborator's theorems start at `InferInput`. Production
-provenance lowering and its source/editor joins remain operational code. The
+verified build. Verified lowering starts at the surface syntax tree and returns
+canonical `InferInput`; inference completes that input into typed Core. Successful
+production provenance lowering is proved to return that same input term. Its
+source-span tables and editor joins remain operational code. The
 verified evaluator (`runSafe` in `Headlines.lean`) is fuel-bounded, because the
 language allows non-terminating programs.
 
@@ -200,8 +202,14 @@ a smaller language with de Bruijn indices and only flat, one-constructor-deep
 matches. `InferInput` preserves partial annotation syntax until the
 canonical worker returns a completed Core expression. The CLI executes that
 expression's erasure; editor artifacts come from the same inference result.
-The verified inference and compiler theorems are separate from the operational
-parser, provenance/editor plumbing, and unbounded CLI evaluator.
+The structural lowering proof covers the term produced by production provenance
+lowering. It does not verify the parser, source-span metadata, editor joins, or
+the unbounded CLI evaluator.
+
+`SurfaceBridge` uses one structural lowering pipeline with target and annotation
+policies. Its public specialization preserves partial annotations in
+`InferInput`; the complete-Core specialization retains the earlier source
+typing and safety contracts.
 
 The design choices that matter most:
 

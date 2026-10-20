@@ -725,7 +725,7 @@ end Core.Demo
 
 The Core section above feeds **hand-built Core** into `checkCore` / `evaluate`.
 This section runs the **front-end pipeline**: `Surface.Program` →
-`lowerProgram` (decls + SCC desugar + `lower`) → `Input.ofCore` →
+`lowerCoreProgram` (decls + SCC desugar + `lowerCore`) → `Input.ofCore` →
 canonical inference → completed output erasure → `evaluate`.
 
 Prints use `ToString` on the surface term (same shape as Core demos).
@@ -746,7 +746,7 @@ private def evalStr (e : _root_.Expr) : String :=
 
 /-- Lower, erase, then evaluate a surface program; print surface term ⟹ result. -/
 private def evalProgram (p : Surface.Program) : String :=
-  match lowerProgram p with
+  match lowerCoreProgram p with
   | none => "lower failed"
   | some (ctors, c) =>
     match inferWithTypes ctors (InferInput.ofCore c) with
@@ -760,7 +760,7 @@ private def showEval (p : Surface.Program) : IO Unit :=
 private def sIf : Surface.Program :=
   ⟨[], [], .ife (.primLit (.bool true)) (.primLit (.int 1)) (.primLit (.int 0))⟩
 #eval showEval sIf
-#guard (lowerProgram sIf).isSome = true
+#guard (lowerCoreProgram sIf).isSome = true
 #guard evalProgram sIf = "1"
 
 -- match Just 5 with Just x => x | Nothing => 0  ⟹  5
@@ -772,11 +772,11 @@ private def sMaybeMatch : Surface.Program :=
      [(.ctor ⟨"Just"⟩ [.name ⟨"x"⟩], .var ⟨"x"⟩),
       (.ctor ⟨"Nothing"⟩ [], .primLit (.int 0))]⟩
 #eval showEval sMaybeMatch
-#guard (lowerProgram sMaybeMatch).isSome = true
+#guard (lowerCoreProgram sMaybeMatch).isSome = true
 #guard evalProgram sMaybeMatch = "5"
-#guard (lowerProgram sMaybeMatch).isSome = true
+#guard (lowerCoreProgram sMaybeMatch).isSome = true
 private def sMaybeMatchCtors : CtorEnv :=
-  (lowerProgram sMaybeMatch).map Prod.fst |>.getD []
+  (lowerCoreProgram sMaybeMatch).map Prod.fst |>.getD []
 #guard checkExhaustive sMaybeMatchCtors sMaybeMatch.term = true
 
 -- let id = λx. x in id 7  ⟹  7   (`Program.ofFlat`)
@@ -788,7 +788,7 @@ private def sIdApp : Surface.Program :=
   | some p => p
   | none => ⟨[], [], .primLit (.unit)⟩
 #eval showEval sIdApp
-#guard (lowerProgram sIdApp).isSome = true
+#guard (lowerCoreProgram sIdApp).isSome = true
 #guard evalProgram sIdApp = "7"
 
 -- let id : ∀ a. a → a = λx. x in id 41  ⟹  41
@@ -799,13 +799,13 @@ private def sAnnId : Surface.Program :=
      (.lambda (.name (.mk "x")) none (.var (.mk "x")))
      (.app (.var (.mk "id")) (.primLit (.int 41)))⟩
 #eval showEval sAnnId
-#guard (lowerProgram sAnnId).isSome = true
+#guard (lowerCoreProgram sAnnId).isSome = true
 #guard evalProgram sAnnId = "41"
 
 -- A refutable parameter lowers, but fails coverage.
 private def sPatternLam : Surface.Expr :=
   .lambda (.ctor ⟨"Just"⟩ [.name ⟨"x"⟩]) none (.var (.mk "x"))
-#guard (lower ((elabDecls preludeDecls).getD []) sPatternLam).isSome = true
+#guard (lowerCore ((elabDecls preludeDecls).getD []) sPatternLam).isSome = true
 #guard checkExhaustive ((elabDecls preludeDecls).getD []) sPatternLam = false
 
 
@@ -814,7 +814,7 @@ private def sNestedPatternLam : Surface.Program :=
     (.lambda (.pair (.pair (.name ⟨"a"⟩) (.name ⟨"b"⟩)) (.name ⟨"c"⟩)) none
       (.var ⟨"b"⟩))
     (.pair (.pair (.primLit (.int 1)) (.primLit (.bool true))) (.primLit (.int 3)))⟩
-#guard (lowerProgram sNestedPatternLam).isSome
+#guard (lowerCoreProgram sNestedPatternLam).isSome
 #guard evalProgram sNestedPatternLam = "True"
 #guard checkExhaustive ((elabDecls preludeDecls).getD []) sNestedPatternLam.term
 
@@ -833,13 +833,102 @@ private def sPatternLet : Surface.Program :=
     (.app (.var ⟨"id"⟩) (.var ⟨"n"⟩))
     (.app (.var ⟨"id"⟩) (.primLit (.bool true)))⟩
 #guard evalProgram sPatternLet = "(7, True)"
-#guard (match lowerProgram sPatternLet with
+#guard (match lowerCoreProgram sPatternLet with
   | some (ctors, c) => (checkCore ctors c).isSome
   | none => false)
 example : SurfaceCovers ((elabDecls preludeDecls).getD []) sPatternLet.term :=
   checkExhaustive_sound _ (by native_decide)
 
 end SurfacePipelineDemo
+
+
+/-! ## Surface partial annotations use verified input lowering
+
+These examples begin with surface syntax rather than hand-built `InferInput`.
+The complete-Core compatibility lowering rejects the holes; canonical lowering
+preserves them through head normalization and shared pattern compilation. -/
+namespace InputLoweringDemo
+
+open SurfaceBridge
+
+private def evalProgram (p : Surface.Program) : String :=
+  match lowerProgram p with
+  | none => "lower failed"
+  | some (ctors, input) =>
+      match inferWithTypes ctors input with
+      | none => "ill-typed"
+      | some result =>
+          match SmallStep.evaluate 500 result.completedExpr.erase with
+          | some value => toString value
+          | none => "stuck / out of fuel"
+
+private def holeId : Surface.Program :=
+  ⟨[], [], .letIn ⟨"id"⟩ [] [] none
+    (.lambda (.name ⟨"x"⟩) (some .hole) (.var ⟨"x"⟩))
+    (.pair (.app (.var ⟨"id"⟩) (.primLit (.int 1)))
+      (.app (.var ⟨"id"⟩) (.primLit (.bool true))))⟩
+
+#guard evalProgram holeId = "(1, True)"
+#guard !(lowerCoreProgram holeId).isSome
+
+-- The omitted flag domain is a synthesized hole. The written return hole and
+-- the explicit named prefix remain visible in the canonical annotation mode.
+private def partialHead : Surface.Program :=
+  ⟨[], [], .letIn ⟨"keep"⟩ [⟨"item"⟩]
+    [(⟨"x"⟩, some (.tvar ⟨"item"⟩)), (⟨"flag"⟩, none)]
+    (some ⟨[], .hole⟩) (.var ⟨"x"⟩)
+    (.app (.app (.var ⟨"keep"⟩) (.primLit (.int 7))) (.primLit (.bool true)))⟩
+
+#guard evalProgram partialHead = "7"
+#guard match lowerProgram partialHead with
+  | some (_, .letIn (.partialForall 1 (.arrow (.fixed (.bvar 0)) (.arrow .hole .hole)))
+      (.lambda (some (.fixed (.bvar 0))) (.lambda none _)) _) => true
+  | _ => false
+
+private def copiedFallback : Surface.Program :=
+  ⟨[], [], .letIn ⟨"f"⟩ [] [] none
+    (.lambda (.name ⟨"p"⟩) none
+      (.match_ (.var ⟨"p"⟩)
+        [(.pair (.ctor ⟨"True"⟩ []) (.ctor ⟨"True"⟩ []), .primLit (.int 1)),
+         (.wildcard, .letIn ⟨"id"⟩ [] [(⟨"x"⟩, some .hole)] none (.var ⟨"x"⟩)
+           (.app (.var ⟨"id"⟩) (.primLit (.int 2))))]))
+    (.pair (.app (.var ⟨"f"⟩) (.pair (.primLit (.bool true)) (.primLit (.bool false))))
+      (.app (.var ⟨"f"⟩) (.pair (.primLit (.bool false)) (.primLit (.bool true)))))⟩
+
+#guard evalProgram copiedFallback = "(2, 2)"
+
+-- Lowering preserves a false written promise instead of rejecting syntax or
+-- replacing the fixed type with a hole. Inference then rejects the mismatch.
+private def mismatchedHead : Surface.Program :=
+  ⟨[], [], .letIn ⟨"bad"⟩ [] [(⟨"x"⟩, some (.prim .int))]
+    (some ⟨[], .customTy ⟨"Bool"⟩ []⟩) (.var ⟨"x"⟩) (.var ⟨"bad"⟩)⟩
+
+#guard (lowerProgram mismatchedHead).isSome
+#guard evalProgram mismatchedHead = "ill-typed"
+
+-- Both recursive members carry partial, not complete, explicit signatures.
+-- Their provisional prefixes can share a solved type without losing either
+-- member's written binder; runtime recursion terminates as n decreases.
+private def mutualPartial : Surface.Program :=
+  ⟨[], [], .letRecIn
+    [{ name := ⟨"walk"⟩, tyParams := [⟨"a"⟩],
+       params := [(⟨"n"⟩, some (.prim .int)), (⟨"x"⟩, some (.tvar ⟨"a"⟩))],
+       ann := some ⟨[], .hole⟩,
+       rhs := .ife (.app (.app (.primBinOp .intLt) (.var ⟨"n"⟩)) (.primLit (.int 1)))
+         (.var ⟨"x"⟩)
+         (.app (.app (.var ⟨"bounce"⟩)
+           (.app (.app (.primBinOp .intSub) (.var ⟨"n"⟩)) (.primLit (.int 1))))
+           (.var ⟨"x"⟩)) },
+     { name := ⟨"bounce"⟩, tyParams := [⟨"b"⟩],
+       params := [(⟨"n"⟩, some (.prim .int)), (⟨"x"⟩, some (.tvar ⟨"b"⟩))],
+       ann := some ⟨[], .hole⟩,
+       rhs := .app (.app (.var ⟨"walk"⟩) (.var ⟨"n"⟩)) (.var ⟨"x"⟩) }]
+    (.app (.app (.var ⟨"walk"⟩) (.primLit (.int 2))) (.primLit (.bool true)))⟩
+
+#guard evalProgram mutualPartial = "True"
+#guard !(lowerCoreProgram mutualPartial).isSome
+
+end InputLoweringDemo
 
 
 namespace AuditCapstone

@@ -16,8 +16,8 @@ boundary for mixed recursive groups:
 4. recursion without a complete annotation is still ordinary monomorphic HM
    recursion.
 
-The two contract-stratified positive cases are deliberately red under the older,
-simultaneous mixed-group rule. Run this file after changing that rule with:
+The positive cases distinguish the current contract-stratified rule from the
+older simultaneous mixed-group rule. Run this fixture with:
 
 ```text
 lake env lean --run scratch/ContractStratifiedRecursionTest.lean
@@ -44,12 +44,12 @@ def inferSource (source : String) : Except String Ty := do
   let parsed <- match parseProgram source with
     | .error e => throw s!"parse failure: {e.msg} (line {e.line}, col {e.col})"
     | .ok program => pure program
-  let (ctors, core) <- match lowerProgram parsed with
+  let (ctors, core) <- match lowerCoreProgram parsed with
     | none => throw "lowering failure"
     | some lowered => pure lowered
-  match infer core.freshFloor ⟨[], ctors⟩ core with
+  match inferWithTypes ctors (InferInput.ofCore core) with
   | none => throw "inference rejection"
-  | some (_, _, ty) => pure ty
+  | some result => pure result.ty
 
 def ordinaryMutualIdentity : String :=
   "let f = \\x -> if True then x else g x\n" ++

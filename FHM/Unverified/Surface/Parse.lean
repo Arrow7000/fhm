@@ -1794,13 +1794,24 @@ def parseTyEq (src : String) (expected : Ty) : Bool :=
 -- duplicate top-level names → error
 #guard (match parseProgram "let x = 1\nlet x = 2" with | .error _ => true | _ => false)
 
--- end-to-end: parse → lowerProgram
+-- End-to-end: parse → canonical surface-to-input lowering. The complete
+-- cases retain their previous acceptance expectations.
 #guard (match parseProgram "let x = 1\nx" with
   | .ok p => (SurfaceBridge.lowerProgram p).isSome
   | _ => false)
 
 #guard (match parseProgram "type Maybe a = Just a | Nothing\nlet x = Nothing\nx" with
   | .ok p => (SurfaceBridge.lowerProgram p).isSome
+  | _ => false)
+
+-- A partial headed signature also lowers, keeping its hole and named prefix
+-- in canonical input instead of requiring complete Core annotations.
+#guard (match parseProgram "let id {item} (x : item) : _ = x\nid\n" with
+  | .ok p =>
+      match SurfaceBridge.lowerProgram p with
+      | some (_, input@(.letIn (.partialForall 1 (.arrow (.fixed (.bvar 0)) .hole)) _ _)) =>
+          input.toCore.isNone
+      | _ => false
   | _ => false)
 
 -- A type declaration ends at the next unindented line, so the program's body

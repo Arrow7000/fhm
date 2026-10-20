@@ -53,7 +53,7 @@ def checkPipelineDM (src : String) : Except PipelineError CheckedProgram := do
         throw ⟨.parse, s!"{e.msg} (line {e.line}, col {e.col})"⟩
     | .ok p => pure p
   let program := parsed
-  let (ctors, core) <- match lowerProgram program with
+  let (ctors, core) <- match lowerCoreProgram program with
     | none => throw ⟨.lower,
         "lowering failed (unbound name, bad declaration, or rejected sugar)"⟩
     | some x => pure x

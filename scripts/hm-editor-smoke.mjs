@@ -637,6 +637,19 @@ test("head forall-only, function returns, shadowed scopes and wildcard holes rem
   run("let ignore _ = 1\nignore True\n", "1");
 });
 
+test("headed omissions and compound annotation holes survive canonical input lowering", () => {
+  const source = "let first {item} p : _ = (\\((x,y) : (item,_)) -> x) p\nfirst (7,True)\n";
+  const payload = diagnose(source);
+  hover(payload, source, 0, "_", "item");
+  hover(payload, source, 0, "_", "a", 1);
+  hover(payload, source, 0, "p", "(item, a)");
+  hover(payload, source, 0, "x", "item");
+  hover(payload, source, 0, "y", "a");
+  hover(payload, source, 1, "first", "(Int, Bool) → Int");
+  assert.equal(payload.symbols.filter(symbol => symbol.kind === "typeHole").length, 2);
+  run(source, "7");
+});
+
 test("anonymous lambda holes generalize and expose precise token hovers", () => {
   const source = "let id = \\(x : _) -> x\n(id 1, id True)\n";
   const payload = diagnose(source);

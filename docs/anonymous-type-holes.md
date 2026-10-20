@@ -80,14 +80,22 @@ preserves templates through the shared `PatComp` emitter, including copied arms.
 It neither infers types nor assigns global identities to holes. Source spans
 locate hovers and have no role in variable allocation or sharing.
 
-`Headlines.elaborateSafe` is a separate complete-Core safe-lowering demonstration
-using `SurfaceBridge.lowerProgram` followed by the same canonical inference
-engine through `InferInput.ofCore`. This complete-Core lowering path has no
-production caller and rejects holeful Core lowering. The CLI/editor preserve
-partial annotations directly; the verified Core bridge retains its original
-source-typing and safety contracts.
+The public structural `SurfaceBridge.LowersExpr` relation describes lowering
+surface syntax to canonical `InferInput`. Its executable lowerer preserves
+holes, head annotations, patterns, and recursive groups. Soundness and
+completeness connect this relation to `lower` and `lowerProgram`.
+`Headlines.lower_and_infer_sound` composes lowering with independent input
+typing, annotation fidelity, completed-Core typing, and exact runtime erasure.
 
-The production frontend lowers into `InferInput`, then uses canonical inference.
+`Headlines.elaborateSafe` retains the complete-Core compatibility demonstration
+using `SurfaceBridge.lowerCoreProgram` followed by the same inference engine
+through `InferInput.ofCore`. The compatibility path rejects holeful Core
+lowering and retains its original source-typing and safety contracts; the
+production path preserves partial annotations directly.
+
+Successful production provenance lowering is proved to produce the same term
+as canonical surface-to-input lowering. This equality concerns the input term,
+not source-span ownership tables, lexer/parser correctness, or editor joins.
 Runtime execution receives `completedExpr.erase`. Editor types and schemes come
 from the same inference result; original input annotation modes are retained to
 distinguish authored declarations from synthesized schemes. Hole hovers join
@@ -183,25 +191,28 @@ recursive worker with independent runtime/editor groups, including:
 Recursive lowering guards check true recursive input shapes and partial-forall
 counts. Runtime tests pair rejection cases with nearby accepted controls; a
 rejection alone does not establish correctness. Passing these tests complements
-the full proof stack above. Fresh validation after inference consolidation passed:
+the full proof stack above. Validation after verified surface-to-input lowering passed:
 
 - `lake build`: 729 jobs, including the recursive proof examples.
-- `lake build FHMEditorTests fhm`: 1,639 jobs.
-- `node scripts/hm-editor-smoke.mjs`: 74/74 CLI/editor semantic checks.
+- `lake build FHMEditorTests fhm`: 1,639 jobs. The final combined
+  `lake build FHM fhm FHMEditorTests` passed with 1,642 jobs.
+- `node scripts/hm-editor-smoke.mjs`: 75/75 CLI/editor semantic checks, including
+  a named head prefix, omitted parameter annotation, and compound-pattern holes.
 - `node editors/vscode/test/anonymous-holes-integration.cjs`: 11 provider
   scenarios passed using the real CLI backend and a simulated VS Code host API;
   this checks the extension's providers, not an LSP protocol or a live editor UI.
   The existing provider lifecycle test also passed.
 - `node scripts/scratch-hm-audit.mjs`: 14 files, 11 accepted and three
-  expected type errors; `lake env lean --run scratch/PolyRecTest.lean`: 11/11.
-- The expanded playground ran to its six expected result sections; all 20
-  authored hole tokens had precise, distinct source hovers, alongside checked
-  headed-parameter hovers and the deliberately rejected Int/Bool example.
+  expected type errors; `lake env lean --run scratch/PolyRecTest.lean`: 11/11,
+  and `lake env lean --run scratch/ContractStratifiedRecursionTest.lean`: 5/5.
+- The playground runtime and exact authored-hole, binding-scheme, and
+  parameter/pattern/reference hover checks passed.
 - `npm --prefix editors/web test`: 31/31 tests.
 - `scripts/check-unverified-boundary.sh`: passed; `Core.lean` and
   `RuntimeTyping.lean` are unchanged by this feature.
-- An actual-import audit of 32 inference, source/safety, and concrete-example
-  capstones checked their API contracts and
-  found only `propext`, `Classical.choice`, and `Quot.sound`, with no residual
-  producer callbacks, `sorryAx`, or native-decision axioms. `FHM.Headlines`
-  retains the public API and axiom guards in the default build.
+- An actual-import audit of 31 kernel capstones found only `propext`,
+  `Classical.choice`, and `Quot.sound`, with no residual producer callbacks,
+  `sorryAx`, or native-decision axioms. The new composed lowering/inference
+  theorem and successful-production projection theorems also use only these
+  standard axioms. `FHM.Headlines` and the editor tests retain API and axiom
+  guards for the corresponding verified and production boundaries.
