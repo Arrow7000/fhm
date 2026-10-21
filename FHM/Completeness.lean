@@ -6,86 +6,151 @@ import FHM.InferW
 
 section
 
-theorem RecGroup.inferenceSccs_congr_map
-    (bindings : List CoreRecBinding) (f : CoreRecBinding → CoreRecBinding)
-    (hmask : ∀ i, RecGroup.isUnsignedAt bindings i =
-      RecGroup.isUnsignedAt (bindings.map f) i)
-    (hrefs : ∀ binding ∈ bindings,
-      (f binding).rhs.recGroupRefs bindings.length 0 =
-        binding.rhs.recGroupRefs bindings.length 0) :
-    RecGroup.inferenceSccs bindings = RecGroup.inferenceSccs (bindings.map f) := by
-  have hm : (fun i => RecGroup.isUnsignedAt bindings i) =
-      (fun i => RecGroup.isUnsignedAt (bindings.map f) i) := funext hmask
-  have hs : ∀ i, RecGroup.inferenceSucc bindings i =
-      RecGroup.inferenceSucc (bindings.map f) i := by
-    intro i
-    simp only [RecGroup.inferenceSucc, hmask i, List.getElem?_map]
-    split <;> rename_i hu
-    · cases hb : bindings[i]? with
-      | none => rfl
-      | some binding =>
-        simp only [hb, Option.map_some, List.length_map]
-        rw [hrefs binding (List.mem_of_getElem? hb)]
-        simp only [hm]
-    · rfl
-  have hg : RecGroup.inferenceDigraph bindings =
-      RecGroup.inferenceDigraph (bindings.map f) := by
-    unfold RecGroup.inferenceDigraph
-    apply Scc.Digraph.ext
-    funext i
-    simpa only [List.length_map] using congrArg List.toFinset (hs i)
-  change ((Scc.rankedSccs (RecGroup.inferenceDigraph bindings)).map
-      (fun component => (component.map Fin.val).filter (fun i => RecGroup.isUnsignedAt bindings i))).filter
-      (!·.isEmpty) = _
-  rw [hg]
-  change _ = ((Scc.rankedSccs (RecGroup.inferenceDigraph (bindings.map f))).map
-      (fun component => (component.map Fin.val).filter
-        (fun i => RecGroup.isUnsignedAt (bindings.map f) i))).filter
-      (!·.isEmpty)
-  rw [hm]
+private theorem OpenRecAnn.written_length_recPrefixCount
+    (h : OpenRecAnn frontier ann next opening) :
+    opening.written.length = ann.recPrefixCount := by
+  cases h <;> simp [RecOpening.empty, freshVars_length, BindingAnn.recPrefixCount]
 
-theorem RecGroup.inferenceSccs_congr
+@[simp] theorem substInputBindings_length (S : Subst) (bindings : List InputRecBinding) :
+    (substInputBindings S bindings).length = bindings.length := by
+  rw [substInputBindings_eq_map, List.length_map]
+
+@[simp] theorem eraseBindings_length (bindings : List InputRecBinding) :
+    (eraseBindings bindings).length = bindings.length := by
+  induction bindings with
+  | nil => rfl
+  | cons binding rest ih => simp only [eraseBindings, List.length_cons, ih]
+
+private theorem rigidBindingVars_mem_iff {bindings : List InputRecBinding} :
+    v ∈ rigidBindingVars bindings ↔ ∃ binding ∈ bindings,
+      v ∈ binding.ann.rigidVars ∨ v ∈ binding.rhs.rigidVars := by
+  induction bindings with
+  | nil => simp only [rigidBindingVars, List.not_mem_nil, false_iff, not_exists,
+      not_and, false_implies, implies_true]
+  | cons head rest ih =>
+      simp only [rigidBindingVars, List.mem_append, List.mem_cons, ih]
+      constructor
+      · rintro (h | ⟨binding, hr, hv⟩)
+        · exact ⟨head, .inl rfl, h⟩
+        · exact ⟨binding, .inr hr, hv⟩
+      · rintro ⟨binding, rfl | hr, hv⟩
+        · exact .inl hv
+        · exact .inr ⟨binding, hr, hv⟩
+
+@[simp] private theorem openRecSources_length
+    (openings : List RecOpening) (bindings : List InputRecBinding) :
+    (openRecSources openings bindings).length = bindings.length := by
+  induction bindings generalizing openings with
+  | nil => cases openings <;> rfl
+  | cons binding rest ih =>
+    cases openings with
+    | nil => rfl
+    | cons opening openings =>
+      simp only [openRecSources, List.length_cons, ih]
+
+private theorem unsignedAt_recMode_lookup
+    {bindings : List InputRecBinding} {i : Nat}
+    (h : RecGroups.UnsignedAt (bindings.map InputRecBinding.recMode) i) :
+    (bindings.map (fun binding => binding.ann.recModeAnn))[i]? = some none := by
+  simpa only [RecGroups.UnsignedAt, List.getElem?_map, Option.map_map,
+    Function.comp_def, InputRecBinding.recMode] using h
+
+private def inferenceSccsBy (n : Nat) (mask : Nat → Bool)
+    (succ : Nat → List Nat) : List (List Nat) :=
+  let graph : Scc.Digraph (Fin n) := {
+    succ := fun i => ((succ i.val).filterMap fun j =>
+      if h : j < n then some ⟨j, h⟩ else none).toFinset
+  }
+  ((Scc.rankedSccs graph).map
+    (fun component => (component.map Fin.val).filter mask)).filter (!·.isEmpty)
+
+private theorem inferenceSccs_eq_by (bindings : List CoreRecBinding) :
+    RecGroup.inferenceSccs bindings =
+      inferenceSccsBy bindings.length (RecGroup.isUnsignedAt bindings)
+        (RecGroup.inferenceSucc bindings) := by
+  rfl
+
+private theorem inferenceSccs_congr_aux
     {bindings bindings' : List CoreRecBinding}
     (hlen : bindings.length = bindings'.length)
-    (hmask : ∀ i, RecGroup.isUnsignedAt bindings i =
+    (hmask : ∀ (i : Nat), RecGroup.isUnsignedAt bindings i =
       RecGroup.isUnsignedAt bindings' i)
-    (hrefs : ∀ i,
-      (bindings[i]?).map (fun binding =>
+    (hrefs : ∀ (i : Nat),
+      (bindings[i]?).map (fun (binding : CoreRecBinding) =>
         binding.rhs.recGroupRefs bindings.length 0) =
-      (bindings'[i]?).map (fun binding =>
+      (bindings'[i]?).map (fun (binding : CoreRecBinding) =>
         binding.rhs.recGroupRefs bindings'.length 0)) :
     RecGroup.inferenceSccs bindings = RecGroup.inferenceSccs bindings' := by
-  subst hlen
   have hm : (fun i => RecGroup.isUnsignedAt bindings i) =
       (fun i => RecGroup.isUnsignedAt bindings' i) := funext hmask
   have hs : ∀ i, RecGroup.inferenceSucc bindings i =
       RecGroup.inferenceSucc bindings' i := by
     intro i
-    simp only [RecGroup.inferenceSucc, hmask i]
+    unfold RecGroup.inferenceSucc
+    rw [hmask i]
     split
-    · cases hb : bindings[i]? <;> cases hb' : bindings'[i]?
-      <;> simpa only [hb, hb', Option.map_none, Option.map_some] using hrefs i
+    · cases hb : bindings[i]? with
+      | none =>
+        cases hb' : bindings'[i]? with
+        | none => rfl
+        | some binding' =>
+          have h := hrefs i
+          simp only [hb, hb', Option.map_none, Option.map_some] at h
+          cases h
+      | some binding =>
+        cases hb' : bindings'[i]? with
+        | none =>
+          have h := hrefs i
+          simp only [hb, hb', Option.map_none, Option.map_some] at h
+          cases h
+        | some binding' =>
+          have hr := Option.some.inj (by
+            simpa only [hb, hb', Option.map_some] using hrefs i)
+          simp only [hr, hm]
     · rfl
-  have hg : RecGroup.inferenceDigraph bindings =
-      RecGroup.inferenceDigraph bindings' := by
-    apply Scc.Digraph.ext
-    funext i
-    simpa only using congrArg List.toFinset (hs i)
-  change ((Scc.rankedSccs (RecGroup.inferenceDigraph bindings)).map
-      (fun component => (component.map Fin.val).filter
-        (fun i => RecGroup.isUnsignedAt bindings i))).filter (!·.isEmpty) = _
-  rw [hg]
-  change _ = ((Scc.rankedSccs (RecGroup.inferenceDigraph bindings')).map
-      (fun component => (component.map Fin.val).filter
-        (fun i => RecGroup.isUnsignedAt bindings' i))).filter (!·.isEmpty)
-  rw [hm]
+  rw [inferenceSccs_eq_by, inferenceSccs_eq_by, hlen]
+  have hm' : RecGroup.isUnsignedAt bindings =
+      RecGroup.isUnsignedAt bindings' := funext hmask
+  have hs' : RecGroup.inferenceSucc bindings =
+      RecGroup.inferenceSucc bindings' := funext hs
+  rw [hm', hs']
+
+theorem RecGroup.inferenceSccs_congr_map
+    (bindings : List CoreRecBinding) (f : CoreRecBinding → CoreRecBinding)
+    (hmask : ∀ (i : Nat), RecGroup.isUnsignedAt bindings i =
+      RecGroup.isUnsignedAt (bindings.map f) i)
+    (hrefs : ∀ binding ∈ bindings,
+      (f binding).rhs.recGroupRefs bindings.length 0 =
+        binding.rhs.recGroupRefs bindings.length 0) :
+    RecGroup.inferenceSccs bindings = RecGroup.inferenceSccs (bindings.map f) := by
+  apply inferenceSccs_congr_aux (by simp) hmask
+  intro i
+  simp only [List.getElem?_map]
+  cases hb : bindings[i]? with
+  | none => rfl
+  | some binding =>
+    simp only [Option.map_some, List.length_map]
+    exact congrArg some (hrefs binding (List.mem_of_getElem? hb)).symm
+
+theorem RecGroup.inferenceSccs_congr
+    {bindings bindings' : List CoreRecBinding}
+    (hlen : bindings.length = bindings'.length)
+    (hmask : ∀ (i : Nat), RecGroup.isUnsignedAt bindings i =
+      RecGroup.isUnsignedAt bindings' i)
+    (hrefs : ∀ (i : Nat),
+      (bindings[i]?).map (fun (binding : CoreRecBinding) =>
+        binding.rhs.recGroupRefs bindings.length 0) =
+      (bindings'[i]?).map (fun (binding : CoreRecBinding) =>
+        binding.rhs.recGroupRefs bindings'.length 0)) :
+    RecGroup.inferenceSccs bindings = RecGroup.inferenceSccs bindings' := by
+  exact inferenceSccs_congr_aux hlen hmask hrefs
 
 theorem InputRecBinding.recMode_isUnsignedAt_subst
     (bindings : List InputRecBinding) (S : Subst) (i : Nat) :
     RecGroup.isUnsignedAt (bindings.map InputRecBinding.recMode) i =
       RecGroup.isUnsignedAt ((substInputBindings S bindings).map InputRecBinding.recMode) i := by
-  simp only [RecGroup.isUnsignedAt, List.getElem?_map]
-  rw [substInputBindings_eq_map, List.getElem?_map]
+  rw [substInputBindings_eq_map]
+  simp only [RecGroup.isUnsignedAt, RecGroups.unsignedAtB, List.getElem?_map]
   cases bindings[i]? with
   | none => rfl
   | some binding => rcases binding with ⟨ann, rhs⟩; cases ann <;> rfl
@@ -97,19 +162,23 @@ theorem InferInput.inferenceSccs_substTyFvars
   rw [substInputBindings_eq_map]
   let f : CoreRecBinding → CoreRecBinding := fun binding =>
     { ann := binding.ann.map S.onPolyTy, rhs := binding.rhs }
-  have hmap : (bindings.map (RecBinding.map (BindingAnn.substTyFvars S)
-      (InferInput.substTyFvars S))).map InputRecBinding.recMode =
+  have hmap : (bindings.map (fun binding => {
+      ann := binding.ann.substTyFvars S
+      rhs := binding.rhs.substTyFvars S })).map InputRecBinding.recMode =
       (bindings.map InputRecBinding.recMode).map f := by
     simp only [List.map_map, Function.comp_def, InputRecBinding.recMode,
-      RecBinding.map, BindingAnn.recModeAnn_subst_source,
+      BindingAnn.recModeAnn_subst_source,
       InferInput.erase_substTyFvars, f]
   rw [hmap]
   apply RecGroup.inferenceSccs_congr_map
   · intro i
-    simp only [RecGroup.isUnsignedAt, List.getElem?_map]
-    cases (bindings.map InputRecBinding.recMode)[i]? with
+    simp only [RecGroup.isUnsignedAt, RecGroups.unsignedAtB, List.getElem?_map, f]
+    cases hb : bindings[i]? with
     | none => rfl
-    | some binding => rcases binding with ⟨ann, rhs⟩; cases ann <;> rfl
+    | some binding =>
+      rcases binding with ⟨ann, rhs⟩
+      simp only [hb, Option.map_some]
+      cases ann <;> rfl
   · intro binding _
     rfl
 
@@ -256,8 +325,11 @@ private theorem validResidualGroups_erase_iff {bindings : List CoreRecBinding} :
   · intro h
     refine ⟨h.nonempty, h.flatten_nodup, by simpa using h.bounded, ?_, ?_⟩
     · intro member hm
-      exact h.covers_unsigned member (by
-        simpa only [RecGroups.UnsignedAt, List.getElem?_map, eraseRecRhs] using hm)
+      have hc := h.covers_unsigned member (by simpa only [List.length_map] using hm)
+      simp only [RecGroups.UnsignedAt, List.getElem?_map] at hc ⊢
+      cases hb : bindings[member]? <;> simp only [hb, Option.map_none, Option.map_some,
+        eraseRecRhs] at hc ⊢
+      all_goals exact hc
     · intro stage depStage component depComponent source target binding hc hd hs ht hr href
       apply h.dependencies_first hc hd hs ht
         (by rw [List.getElem?_map, hr]; rfl)
@@ -320,7 +392,7 @@ private theorem completeBindings_data {inputs : List InputRecBinding}
     | absent | complete =>
       cases ha
       refine ⟨by simp only [List.map_cons, eraseRecRhs, InputRecBinding.recMode,
-        heq], ?_⟩
+        BindingAnn.recModeAnn, rhs.toCore_erase hr, heq], ?_⟩
       intro binding hm
       rcases List.mem_cons.mp hm with rfl | hm
       · exact ⟨rfl, rfl⟩
@@ -350,6 +422,7 @@ private theorem recStage_empty_prefixes (ctx : Ctx) (specs : List RecSpec) (pref
 
 private theorem complete_prefixes_empty {bindings : List InputRecBinding} {specs : List RecSpec}
     (hp : RecPrefixesWF bindings specs prefixes G)
+    (hlen : bindings.length = specs.length)
     (hz : ∀ binding ∈ bindings, binding.ann.recPrefixCount = 0) :
     ∀ i : Nat, prefixes[i]?.getD [] = [] := by
   intro i
@@ -359,7 +432,7 @@ private theorem complete_prefixes_empty {bindings : List InputRecBinding} {specs
     have hi : i < bindings.length := by
       have := (List.getElem?_eq_some_iff.mp hn).1
       rw [hp.length] at this
-      exact this
+      rwa [hlen]
     have hh := (hp.member i bindings[i] names (List.getElem?_eq_getElem hi) hn).1
     rw [hz bindings[i] (List.getElem_mem hi)] at hh
     exact List.length_eq_zero_iff.mp hh
@@ -486,9 +559,10 @@ theorem InputTyping.toCore (h : InputTyping K ctx input ty) {core : Expr}
     obtain ⟨coreBindings, hr, coreBody, hb, rfl⟩ := hc
     obtain ⟨hErased, hBindingData⟩ := completeBindings_data hr
     have hpNil := complete_prefixes_empty hp
+      (by simpa only [List.length_map] using hwf.length)
       (fun binding hm => (hBindingData binding hm).2)
     have hCoreAnns : coreBindings.map RecBinding.ann =
-        bindings.map (fun binding => binding.ann.recModeAnn) := by
+        (bindings.map InputRecBinding.recMode).map RecBinding.ann := by
       have := congrArg (List.map RecBinding.ann) hErased
       simpa only [List.map_map, Function.comp_def, eraseRecRhs,
         InputRecBinding.recMode] using this
@@ -772,7 +846,7 @@ theorem InputTyping.rec_inv (h : InputTyping K ctx (.letRec bindings body) resul
       expose_names
       subst hctx
       have hCoreAnns : coreBindings.map RecBinding.ann =
-          bindings.map (fun binding => binding.ann.recModeAnn) := by
+          (bindings.map InputRecBinding.recMode).map RecBinding.ann := by
         have hh := congrArg (List.map RecBinding.ann) hErased
         simpa only [List.map_map, Function.comp_def, eraseRecRhs,
           InputRecBinding.recMode] using hh
@@ -822,7 +896,8 @@ theorem InputTyping.rec_inv (h : InputTyping K ctx (.letRec bindings body) resul
           simp only [Option.getD_some] at hn
           rw [hn]
           rfl
-      have hpData := fun i hi => hp0.get hw0.length (i := i) hi
+      have hpData := fun i hi => hp0.get (by simpa only [List.length_map] using hw0.length)
+        (i := i) hi
       have hcompleted := recCompletedSchemes_subst_fresh_pool (S := []) (by simp) hWlen hw.nodup hWnd hGW hWmono
         (by simp) (by simp) hw.mono_lc hpData
       have mapNil : ∀ xs : List PolyTy, xs.map (Subst.onPolyTy []) = xs := by
@@ -857,11 +932,20 @@ theorem InputTyping.rec_inv (h : InputTyping K ctx (.letRec bindings body) resul
         simp only [List.getElem?_map, hti, hbi, Option.map_some, RecSpec.ann,
           InputRecBinding.recMode, Option.some.injEq] at heq
         have hvalid := (hBindingData binding (List.mem_of_getElem? hbi)).1
-        cases binding.ann with
+        cases ha : binding.ann with
         | absent => rfl
-        | complete scheme => cases heq
-        | template template => cases hvalid
-        | partialForall n template => cases hvalid
+        | complete scheme =>
+          have hh : (none : Option PolyTy) = some scheme := by
+            simpa only [ha, BindingAnn.recModeAnn] using heq
+          cases hh
+        | template template =>
+          have hh : (none : Option (Option PolyTy)) = some none := by
+            simpa only [ha, BindingAnn.toCore, BindingAnn.recModeAnn] using hvalid
+          cases hh
+        | partialForall n template =>
+          have hh : (none : Option (Option PolyTy)) = some none := by
+            simpa only [ha, BindingAnn.toCore, BindingAnn.recModeAnn] using hvalid
+          cases hh
       refine ⟨specs', groups, prefixes', W, L', hErased ▸ validResidualGroups_erase_iff.mpr hg,
         hw', hp', ?_, hRows, ?_, ?_, ?_, ?_⟩
       · intro w hw hm
@@ -1155,7 +1239,10 @@ theorem SourceScope.residual_freeze {K : List Nat} {F : List Ty} {input : InferI
     have htailB : CtxBelow first (s2.onCtx (s1.onCtx ctx)) := by
       simpa only [Subst.onCtx_append] using Subst.onCtx_below hbothB hle hctx
     obtain ⟨R3,hR3,hR3P,hag3⟩ := hr.sourcePrincipal_of_infer
-      (fun he hi => hInfer (by simp only [sizeBindings_map_substTyFvars] at he;simp only [sizeBindings];omega) hi)
+      (fun he hi => hInfer (by
+        simp only [sizeBindings_substInputBindings] at he
+        simp only [sizeBindings]
+        omega) hi)
       htailWF htailB (fun k hk => (hK k hk).trans_le hle) (substSoft_below hbothB hle hF)
       (by intro spec hs;obtain ⟨old,ho,rfl⟩ := List.mem_map.mp hs;exact RecSpec.lc_onSubstSource hbothLC (hspecLC old (List.mem_cons_of_mem _ ho)))
       (by
@@ -1166,19 +1253,22 @@ theorem SourceScope.residual_freeze {K : List Nat} {F : List Ty} {input : InferI
         | poly M => exact Subst.onTy_belowFvars hbothB ((hspecB _ (List.mem_cons_of_mem _ ho)).mono hle))
       (by
         intro binding hs
+        rw [substInputBindings_eq_map] at hs
         obtain ⟨old,ho,rfl⟩ := List.mem_map.mp hs
         exact (hscope old (List.mem_cons_of_mem _ ho)).subst _ hbothFix)
       R2 P hR2 (fun p hp => (hP p hp).trans_le hle) hR2P
       (by
         intro j binding hj hb v hv hk hn
-        obtain ⟨old,ho,rfl⟩ := Option.map_eq_some_iff.mp (by simpa only [List.getElem?_map] using hb)
+        rw [substInputBindings_eq_map, List.getElem?_map] at hb
+        obtain ⟨old,ho,rfl⟩ := Option.map_eq_some_iff.mp hb
         exact (hscope old (List.mem_cons_of_mem _ (List.mem_of_getElem? ho))).residual_freeze
           (hrawBelow old.rhs (hscope old (List.mem_cons_of_mem _ (List.mem_of_getElem? ho)))) hbothFix
           (hfreeze (j+1) old (by simpa [Nat.add_assoc,Nat.add_comm,Nat.add_left_comm] using hj) ho)
           hag12 v hv hk hn)
       (by
         intro j binding target hj hb ht
-        obtain ⟨old,ho,rfl⟩ := Option.map_eq_some_iff.mp (by simpa only [List.getElem?_map] using hb)
+        rw [substInputBindings_eq_map, List.getElem?_map] at hb
+        obtain ⟨old,ho,rfl⟩ := Option.map_eq_some_iff.mp hb
         obtain ⟨oldTarget,hot,rfl⟩ := RecSpec.mono_getElem?_map_onSubstSource ht
         have hsourceEq : (old.rhs.substTyFvars (s1 ++ s2)).substTyFvars R2 =
             old.rhs.substTyFvars ambient := by
@@ -1369,7 +1459,8 @@ def prefixRepresentatives (actual candidate : List Nat) : List Nat :=
         | succ j =>
           exact htail j opening names target
             (by simpa [Nat.add_assoc,Nat.add_comm,Nat.add_left_comm] using hm) ho hn' ht
-  | @cons index frontier binding middle opening rest next openings hm hh hr ih =>
+  | cons hm hh hr ih =>
+    expose_names
     cases targetNames with
     | nil => simp at hNames
     | cons names targetNames =>
@@ -3263,23 +3354,24 @@ theorem RecResidual.componentMonoTyped
       RecGroup.inferenceSccs (declBindings.map InputRecBinding.recMode) := by
     -- The row equality is deliberately split into the two graph observables:
     -- unsignedness and erased de Bruijn references.
-    apply RecGroup.inferenceSccs_congr
-    · simpa only [List.length_map] using
-        hframe.specs_length.symm.trans (h.length.trans hdeclWF.length.symm)
+    have hlen : bindings.length = declBindings.length := by
+      have hdeclLen : declBindings.length = declSpecs.length := by
+        simpa only [List.length_map] using hdeclWF.length
+      exact hframe.specs_length.symm.trans (h.length.trans hdeclLen.symm)
+    apply RecGroup.inferenceSccs_congr (by simpa only [List.length_map] using hlen)
     · exact hmask
     · intro i
       have heq := congrArg (fun xs => xs[i]?) hbindings
-      simp only [List.getElem?_map] at heq ⊢
-      cases hb : bindings[i]? <;> cases hd : declBindings[i]?
-        <;> simp only [hb, hd, Option.map_none, Option.map_some,
-          InputRecBinding.recMode] at heq ⊢
-      cases heq
-      rfl
+      have href := congrArg (Option.map
+        (fun rhs => rhs.recGroupRefs bindings.length 0)) heq
+      simpa only [List.getElem?_map, Option.map_map, Function.comp_def,
+        InputRecBinding.recMode, List.length_map, hlen] using href
   have halgorithm' := halgorithm
   rw [hschedule] at halgorithm'
   have hdone' := hdone
   rw [hschedule] at hdone'
-  have hvalidAlgorithm := RecGroup.inferenceSccs_valid hvalidDecl.length
+  have hvalidAlgorithm := RecGroup.inferenceSccs_valid
+    (bindings := declBindings.map InputRecBinding.recMode)
   obtain ⟨declTy, hdeclTy⟩ := h.mono member algTy halgTy
   obtain ⟨declStage, declComponent, hdeclComponent, hcontained⟩ :=
     hvalidDecl.canonical_component_contained halgorithm'
@@ -3293,10 +3385,10 @@ theorem RecResidual.componentMonoTyped
     simp only [oldEntries, newEntries, List.length_mapIdx, List.length_map]
     rw [state.entries_length, h.length]
   have htypedDecl' : InputTyping (P ++ Xs) ⟨oldEntries ++ declCtx.env, declCtx.ctors⟩
-      (rawRhs.openTyVars (recRenameNames declPool Xs (declPrefixes[member]?.getD [])))
+      (rawBinding.rhs.openTyVars (recRenameNames declPool Xs (declPrefixes[member]?.getD [])))
       (Ty.renameG declPool Xs declTy) := htypedDecl
   have htypedNew : InputTyping (P ++ Xs) ⟨newEntries ++ declCtx.env, declCtx.ctors⟩
-      (rawRhs.openTyVars (recRenameNames declPool Xs (declPrefixes[member]?.getD [])))
+      (rawBinding.rhs.openTyVars (recRenameNames declPool Xs (declPrefixes[member]?.getD [])))
       (Ty.renameG declPool Xs declTy) := by
     apply InputTyping.weaken_recGroupRefs hlenEntries ?_ htypedDecl'
     intro target hold hnew href
@@ -3320,13 +3412,15 @@ theorem RecResidual.componentMonoTyped
     | mono targetTy =>
       have htargetMono : state.specs[target]? = some (.mono targetTy) := by simpa only [hs] using htarget
       obtain ⟨declTargetTy, hdeclTarget⟩ := h.mono target targetTy htargetMono
+      have hdeclLen : declBindings.length = declSpecs.length := by
+        simpa only [List.length_map] using hdeclWF.length
       have href' : target ∈ rawBinding.rhs.erase.recGroupRefs declBindings.length 0 := by
-        simpa only [InferInput.erase_openTyVars, oldEntries, List.length_mapIdx, hdeclWF.length] using href
+        simpa only [InferInput.erase_openTyVars, oldEntries, List.length_mapIdx, hdeclLen] using href
       have hrhs' : (declBindings.map InputRecBinding.recMode)[member]? =
           some rawBinding.recMode := by
         simp only [List.getElem?_map, hrhs, Option.map_some]
       have havailable := hvalidAlgorithm.refs_available hdeclWF.anns_eq
-        halgorithm' hmember hrhs' hdeclTarget href'
+        halgorithm' hmember hrhs' hdeclTarget (by simpa only [List.length_map] using href')
       rcases havailable with htargetDone | htargetCurrent
       · have htargetDone' : target ∈ done := hdone'.symm ▸ htargetDone
         obtain ⟨exported, hexported, hgen⟩ := h.completed target targetTy declTargetTy
@@ -3343,7 +3437,8 @@ theorem RecResidual.componentMonoTyped
         split
         · exact hgen
         · have htLC := hdeclWF.mono_lc declTargetTy (List.mem_of_getElem? hdeclTarget)
-          obtain ⟨_, hsub⟩ := hprefix.get hdeclWF.length
+          obtain ⟨_, hsub⟩ := hprefix.get (by
+            simpa only [List.length_map] using hdeclWF.length)
             (List.getElem?_eq_some_iff.mp hdeclTarget).1
           exact hgen.trans ((recScheme_generalizes_genGroup htLC hdeclWF.nodup hsub).trans
             (genGroup_generalizes_rename_mono htLC))
@@ -3422,13 +3517,14 @@ theorem RecResidual.selected_view
       InputTyping (P ++ ownNames) (R.onCtx (state.rhsCtx ctx))
         ((binding.rhs.substTyFvars R).openTyVars ownNames) (R.onTy algTy) := by
   have hdeclBinding : declBindings[member]? =
-      some (binding.map (BindingAnn.substTyFvars R) (InferInput.substTyFvars R)) := by
+      some (binding.bimap (BindingAnn.substTyFvars R) (InferInput.substTyFvars R)) := by
     rw [← hbindingsEq, substInputBindings_eq_map, List.getElem?_map,
       hbinding, Option.map_some]
+    rfl
   have hbindings : bindings.map (fun binding => binding.rhs.erase) =
       declBindings.map (fun binding => binding.rhs.erase) := by
     rw [← hbindingsEq, substInputBindings_eq_map]
-    simp only [List.map_map, Function.comp_def, RecBinding.map,
+    simp only [List.map_map, Function.comp_def, RecBinding.bimap,
       InferInput.erase_substTyFvars]
   have hmask : ∀ i, RecGroup.isUnsignedAt (bindings.map InputRecBinding.recMode) i =
       RecGroup.isUnsignedAt (declBindings.map InputRecBinding.recMode) i := by
@@ -3453,7 +3549,7 @@ theorem RecResidual.selected_view
       exact (List.getElem?_eq_some_iff.mp hdeclTy).1
     have hNames := List.getElem?_eq_getElem hiNames
     have hFits := hfitsDecl declStage declComponent hdeclComponent member (hcontained member hmember)
-      (binding.map (BindingAnn.substTyFvars R) (InferInput.substTyFvars R)) _ declTy
+      (binding.bimap (BindingAnn.substTyFvars R) (InferInput.substTyFvars R)) _ declTy
       hdeclBinding hNames hdeclTy
     have hPending := h.pending member algTy declTy halgTy hdeclTy (by
       rw [hdone,hschedule]
@@ -3464,9 +3560,10 @@ theorem RecResidual.selected_view
       rw [hprefix.length]
       exact (List.getElem?_eq_some_iff.mp hdeclTy).1
     have hNames := List.getElem?_eq_getElem hiNames
-    simpa only [recRenameNames_length,hNames,Option.getD_some,BindingAnn.recPrefixCount_subst_source] using
+    simpa only [recRenameNames_length,hNames,Option.getD_some,RecBinding.bimap,
+      BindingAnn.recPrefixCount_subst_source] using
       (hprefix.member member
-        (binding.map (BindingAnn.substTyFvars R) (InferInput.substTyFvars R)) _
+        (binding.bimap (BindingAnn.substTyFvars R) (InferInput.substTyFvars R)) _
         hdeclBinding hNames).1
 
 private theorem RecResidual.onSubst_fields
@@ -4184,7 +4281,7 @@ theorem OpenRecAnns.written_alignment
       have hz := hcounts 0 _ ns rfl rfl
       simp only [Nat.add_zero, if_pos hs] at hz
       apply List.Forall₂.cons
-      · exact ho.written_length.trans (by cases ho <;> simpa only [BindingAnn.recPrefixCount] using hz.symm)
+      · exact ho.written_length_recPrefixCount.trans hz.symm
       · apply ih (by simpa only [List.length_cons, Nat.add_right_cancel_iff] using hlen)
         intro j binding ns ha hn
         simpa only [List.getElem?_cons_succ, Nat.add_assoc, Nat.add_comm 1 j] using
@@ -5141,7 +5238,10 @@ private theorem signed_ann_freeze {ann : BindingAnn} {K : List Nat} {F : List Ty
         simp only [checked, RecState.exports_setSigned, RecState.exports_onSubst, List.getElem?_map,
           hpoly i old hold, Option.map_some]
     obtain ⟨V, hV, hVP, hagTail, hresFinal⟩ := hr.sourcePrincipal_residual
-      (fun he hi => hInfer (by simp only [sizeBindings_map_substTyFvars] at he; simp only [sizeBindings]; omega) hi)
+      (fun he hi => hInfer (by
+        simp only [sizeBindings_substInputBindings] at he
+        simp only [sizeBindings]
+        omega) hi)
       hresChecked (Subst.onCtx_wf hbothLC hctxWF) hctxChecked hcheckedLC hcheckedB
       (fun k hk => (hK k hk).trans_le hle) (substSoft_below hbothB hle hF)
       (fun p hp => (hP p hp).trans_le hle)
@@ -5192,11 +5292,13 @@ private theorem signed_ann_freeze {ann : BindingAnn} {K : List Nat} {F : List Ty
         intro j sigma rhs' hb
         rw [substInputBindings_eq_map, List.getElem?_map] at hb
         obtain ⟨oldBinding, hbo, heq⟩ := Option.map_eq_some_iff.mp hb
-        cases oldBinding.ann with
+        rcases oldBinding with ⟨oldAnn, oldRhs⟩
+        simp only [RecBinding.bimap] at heq
+        cases oldAnn with
         | absent | template _ | partialForall _ _ => cases heq
         | complete old =>
           cases heq
-          obtain ⟨L, htypes⟩ := hcandidate (j + 1) old oldBinding.rhs
+          obtain ⟨L, htypes⟩ := hcandidate (j + 1) old oldRhs
             (by simpa only [List.getElem?_cons_succ] using hbo)
           refine ⟨L, ?_⟩
           intro Ys hy
@@ -5204,11 +5306,12 @@ private theorem signed_ann_freeze {ann : BindingAnn} {K : List Nat} {F : List Ty
             apply congrArg (PolyTy.mk old.paramCount)
             change U.onTy ((s1 ++ s2).onTy old.body) = R.onTy old.body
             simpa only [Subst.onTy_append] using (Subst.onTy_congr hag
-              (Ty.BelowFvars.of_freeVars_lt (hannBelow oldBinding
+              (Ty.BelowFvars.of_freeVars_lt (hannBelow ⟨.complete old, oldRhs⟩
                 (List.mem_cons_of_mem _ (List.mem_of_getElem? hbo))))).symm
-          rw [rhsEq oldBinding (List.mem_cons_of_mem _ (List.mem_of_getElem? hbo))]
+          rw [rhsEq ⟨.complete old, oldRhs⟩
+            (List.mem_cons_of_mem _ (List.mem_of_getElem? hbo))]
           change InputTyping (P ++ Ys) (recBodyCtx declCtx declSpecs declPrefixes declPool)
-            ((oldBinding.rhs.substTyFvars R).openTyVars Ys)
+            ((oldRhs.substTyFvars R).openTyVars Ys)
             ((U.onPolyTy ((s1 ++ s2).onPolyTy old)).openVars Ys)
           rw [hσ]
           exact htypes Ys hy)
@@ -5257,13 +5360,14 @@ theorem RecResidual.init
         (Option.map ambient.onPolyTy) := by
     rw [hwf.anns_eq]
     simp only [substInputBindings_eq_map, List.map_map, Function.comp_def,
-      InputRecBinding.recMode, RecBinding.map, BindingAnn.recModeAnn_subst_source]
+      InputRecBinding.recMode, RecBinding.bimap, BindingAnn.recModeAnn_subst_source]
   have hlen : declSpecs.length = bindings.length := by
     have he := congrArg List.length hmodes
     simpa only [List.length_map] using he
   have hInitModes : (RecState.init frontier bindings).specs.map RecSpec.ann =
       bindings.map (fun binding => binding.ann.recModeAnn) := by
-    simpa only [RecState.init_specs] using RecSpec.map_ann_init frontier _
+    simpa only [RecState.init_specs, InputRecBinding.map_recMode_ann] using
+      RecSpec.map_ann_init frontier (bindings.map InputRecBinding.recMode)
   have modeOf : ∀ (i : Nat) (spec : RecSpec),
       (RecState.init frontier bindings).specs[i]? = some spec →
       (bindings.map (fun binding => binding.ann.recModeAnn))[i]? = some spec.ann := by
@@ -5305,11 +5409,12 @@ theorem RecResidual.init
       Ty.BelowFvars frontier scheme.body := by
     intro scheme hm
     obtain ⟨binding, hb, heq⟩ := List.mem_map.mp hm
-    cases binding.ann with
+    rcases binding with ⟨ann, rhs⟩
+    cases ann with
     | absent | template _ | partialForall _ _ => cases heq
     | complete old =>
       cases heq
-      exact Ty.BelowFvars.of_freeVars_lt (hanns binding hb)
+      exact Ty.BelowFvars.of_freeVars_lt (hanns ⟨.complete scheme, rhs⟩ hb)
   refine ⟨U, hU, hag, hUP, ?_⟩
   refine ⟨hU, hUP, (Subst.onCtx_congr hag hctx).symm, ?_, ?_, ?_, ?_, ?_⟩
   · simpa only [RecState.init_specs, RecSpec.init_length, List.length_map] using hlen.symm
@@ -5325,9 +5430,13 @@ theorem RecResidual.init
     have hm := modeOf i _ hi
     have hseed : algTy = .fvar (frontier + i) := by
       rw [RecState.init_specs] at hi
-      rw [RecSpec.init_getElem?, hm] at hi
-      cases hi
-      rfl
+      rw [RecSpec.init_getElem?] at hi
+      obtain ⟨binding, hbinding, heq⟩ := Option.map_eq_some_iff.mp hi
+      rw [← InputRecBinding.map_recMode_ann, List.getElem?_map, hbinding,
+        Option.map_some] at hm
+      have hann : binding.ann = none := Option.some.inj hm
+      simp only [hann] at heq
+      exact (RecSpec.mono.inj heq).symm
     rw [hseed]
     have hib := (List.getElem?_eq_some_iff.mp hd).1
     have hh := hblock i (by simpa only [List.length_map] using hib)
@@ -5670,7 +5779,9 @@ private theorem InferRecStrata.sourcePrincipal_residual_of_step
       hframe hstateLC hstateB hctxWF hctx hbase hK hF hP hres hXsK hXsF
       hannScope hrhsScope hbindingsEq hannFreeze hrhsFreeze
     obtain ⟨hstepFrame, _, _⟩ := recStep_frame ho hp hc hf
-      (fun _ hi => hi.sourceLocality) hvalid hframe hstateLC hctxWF hstateB hbase hannScope hrhsScope
+      (fun _ hi => hi.sourceLocality) hvalid hframe hstateLC hctxWF hstateB hbase
+      (fun binding hb v hv => (List.mem_append.mp hv).elim
+        (hannScope binding hb v) (hrhsScope binding hb v))
     have hstep : InferRecStrata K F frontier ctx bindings state [component]
         first (pre ++ current ++ []) exported := .cons ho hp hc hf .nil
     have hstep' : InferRecStrata K F frontier ctx bindings state [component]
@@ -5700,13 +5811,16 @@ private theorem InferRecStrata.sourcePrincipal_residual_of_step
           cases hb : bindings[i]? with
           | none => rfl
           | some binding =>
-            simp only [hb, Option.map_some, RecBinding.map]
-            apply congrArg₂ RecBinding.mk
-            · rw [← BindingAnn.substTyFvars_append]
+            simp only [hb, Option.map_some, RecBinding.bimap]
+            apply congrArg some
+            apply RecBinding.ext
+            · change BindingAnn.substTyFvars (pre ++ current ++ U) binding.ann =
+                BindingAnn.substTyFvars R binding.ann
               exact binding.ann.substTyFvars_congr
                 (fun v hv => (hag v (hannBelow binding
                   (List.mem_of_getElem? hb) v hv)).symm)
-            · rw [← InferInput.substTyFvars_append]
+            · change InferInput.substTyFvars (pre ++ current ++ U) binding.rhs =
+                InferInput.substTyFvars R binding.rhs
               exact binding.rhs.substTyFvars_congr
                 (fun v hv => (hag v (hrhsBelow binding
                   (List.mem_of_getElem? hb) v hv)).symm)
@@ -5738,10 +5852,10 @@ private theorem InferRecStrata.sourcePrincipal_residual_of_step
     obtain ⟨V, hV, hVP, hagTail, hresFinal, hBindingsFinal, hAFinal,
       hRFinal, hXKFinal, hXFFinal⟩ :=
       InferRecStrata.sourcePrincipal_residual_of_step hStep hr
-        (fun he hi => hInfer (by simpa only [sizeBindings_map_substTyFvars] using he) hi)
+        (fun he hi => hInfer (by simpa only [sizeBindings_substInputBindings] using he) hi)
         hcutoff htailValid htailCanonical htailFrame hstepLC hstepB
         (Subst.onCtx_wf hbothLC hctxWF) (Subst.onCtx_below hbothB hle hctx)
-        (by simp only [List.length_map]; omega)
+        (by simpa only [substInputBindings_length] using hbase.trans hle)
         (fun k hk => (hK k hk).trans_le hle) (substSoft_below hbothB hle hF)
         (fun p hp => (hP p hp).trans_le hle) htailRes
         (by intro x hx k hk; rw [hUonK k hk]; exact hXsK x hx k hk)
@@ -5834,7 +5948,7 @@ theorem InputTyping.rec_inv_high (floor : Nat)
     simpa only [bindingsNil] using RecSpecs.WF.subst_fresh_pool (S := []) hw (by simp) hWnd
   have hp' : RecPrefixesWF bindings specs' prefixes' W := by
     simpa only [bindingsNil] using hp.subst_fresh_pool (S := []) hWlen hWnd
-  have hpData := fun i hi => hp.get hw.length (i := i) hi
+  have hpData := fun i hi => hp.get (by simpa only [List.length_map] using hw.length) (i := i) hi
   have hcompleted := recCompletedSchemes_subst_fresh_pool (S := []) (by simp) hWlen hw.nodup hWnd hGW hWmono
     (by simp) (by simp) hw.mono_lc hpData
   have mapNil : ∀ xs : List PolyTy, xs.map (Subst.onPolyTy []) = xs := by
@@ -6041,7 +6155,8 @@ theorem Infer.sourcePrincipal_letRec_of_unsigned
       ([] ++ groups) := hvalid
   obtain ⟨hframe1, _⟩ := hstrata.frame_of_infer
     (fun _ hi => hi.sourceLocality) hvalid0 hinitFrame hinitLC hctxWF hinitBelow hctxSeed hFSeed
-    (by omega) hannscope hrhsscope
+    (by omega) (fun binding hb v hv => (List.mem_append.mp hv).elim
+      (hannscope binding hb v) (hrhsscope binding hb v))
   obtain ⟨hS1, hLC1⟩ := hstrata.lc_of_infer (fun _ hi => hi.lc) hctxWF hinitLC
   obtain ⟨hB1, hBelow1⟩ := hstrata.belowFvars_of_infer (fun _ hi => hi.belowFvars)
     hctxSeed hKSeed hFSeed hinitBelow
@@ -6136,14 +6251,14 @@ theorem Infer.sourcePrincipal_letRec_of_unsigned
     obtain ⟨old, ho, rfl⟩ := List.mem_map.mp hb
     exact (hrhsscope old ho).subst s1 hfix1
   obtain ⟨R2, hR2, hR2P, hag2, hres2⟩ := hsigned.sourcePrincipal_residual
-    (fun he hi => hInfer (by simpa only [sizeBindings_map_substTyFvars] using he) hi)
+    (fun he hi => hInfer (by simpa only [sizeBindings_substInputBindings] using he) hi)
     hres1 (Subst.onCtx_wf hS1 hctxWF) hctx1 hLC1 hBelow1
     (fun k hk => (hK k hk).trans_le hbase1) hF1
     (fun p hp => (hP p hp).trans_le hbase1)
     hframe1.poly hdone1 hannscope1 hrhsscope1 hAnnFreeze1 hRhsFreeze1
     (by
       intro binding hb v hv
-      apply hdeclRows (binding.map (BindingAnn.substTyFvars R1)
+      apply hdeclRows (binding.bimap (BindingAnn.substTyFvars R1)
         (InferInput.substTyFvars R1))
       · rw [← hBindingsEq1]
         rw [substInputBindings_eq_map]
@@ -6151,7 +6266,7 @@ theorem Infer.sourcePrincipal_letRec_of_unsigned
       · exact List.mem_append_left _ hv)
     (by
       intro binding hb v hv
-      apply hdeclRows (binding.map (BindingAnn.substTyFvars R1)
+      apply hdeclRows (binding.bimap (BindingAnn.substTyFvars R1)
         (InferInput.substTyFvars R1))
       · rw [← hBindingsEq1]
         rw [substInputBindings_eq_map]
@@ -6176,11 +6291,15 @@ theorem Infer.sourcePrincipal_letRec_of_unsigned
       refine ⟨L, ?_⟩
       intro Ys hY
       have hb' := congrArg (fun bs : List InputRecBinding => bs[j]?) hBindingsEq1
-      simp only [substInputBindings_eq_map, List.getElem?_map, hb, Option.map_some] at hb'
+      have hbLeft : (substInputBindings R1 (substInputBindings s1 bindings))[j]? = some
+          ({ ann := .complete (R1.onPolyTy scheme),
+             rhs := rhs.substTyFvars R1 } : InputRecBinding) := by
+        rw [substInputBindings_eq_map, List.getElem?_map, hb, Option.map_some]
+        rfl
       have hd := hdeclPoly j
         ({ ann := .complete (R1.onPolyTy scheme),
            rhs := rhs.substTyFvars R1 } : InputRecBinding)
-        declScheme hb'.symm hds Ys
+        declScheme (hb'.symm.trans hbLeft) hds Ys
       rw [← he] at hd
       exact hd hY)
   obtain ⟨hB2, hBelow2⟩ := hsigned.belowFvars_of_infer (fun _ hi => hi.belowFvars)
@@ -6577,7 +6696,8 @@ theorem RecResidual.prepare_component
   have hopen := ho.frontier_le
   have hopenCut : opened ≤ cutoff := hcutoff
   have hfrontCut : frontier ≤ cutoff := hopen.trans hopenCut
-  have hBindingLen : declBindings.length = declSpecs.length := hdeclWF.length
+  have hBindingLen : declBindings.length = declSpecs.length := by
+    simpa only [List.length_map] using hdeclWF.length
   have hBindingLen0 : bindings.length = declBindings.length := by
     have h := congrArg List.length hbindingsEq
     simpa only [substInputBindings_length] using h
@@ -6632,10 +6752,11 @@ theorem RecResidual.prepare_component
       ns.length = binding.ann.recPrefixCount ∧ ∀ v ∈ ns, v ∈ G := by
     intro i binding ns hb hn
     have hcb : declBindings[i]? = some
-        (binding.map (BindingAnn.substTyFvars R) (InferInput.substTyFvars R)) := by
+        (binding.bimap (BindingAnn.substTyFvars R) (InferInput.substTyFvars R)) := by
       rw [← hbindingsEq, substInputBindings_eq_map, List.getElem?_map, hb, Option.map_some]
+      rfl
     obtain ⟨hc, _, hs⟩ := hprefix.member i _ ns hcb hn
-    exact ⟨by simpa only [RecBinding.map, BindingAnn.recPrefixCount_subst_source] using hc, hs⟩
+    exact ⟨by simpa only [RecBinding.bimap, BindingAnn.recPrefixCount_subst_source] using hc, hs⟩
   have hcollection := ho.selected_prefix_collection hprefLen hXlen hprefixCount
   change (openings.flatMap RecOpening.written).length = names.flatten.length ∧
     ∀ c ∈ names.flatten, c ∈ Xs at hcollection
@@ -6745,7 +6866,7 @@ theorem RecResidual.prepare_component
   have hMovedAnn : ∀ binding ∈ bindings,
       binding.ann.substTyFvars moved = binding.ann.substTyFvars R := by
     intro binding hb
-    have hcb : binding.map (BindingAnn.substTyFvars R) (InferInput.substTyFvars R) ∈
+    have hcb : binding.bimap (BindingAnn.substTyFvars R) (InferInput.substTyFvars R) ∈
         declBindings := by
       rw [← hbindingsEq, substInputBindings_eq_map]
       exact List.mem_map.mpr ⟨binding, hb, rfl⟩
@@ -6774,7 +6895,8 @@ theorem RecResidual.prepare_component
     have hm : i ∈ (past ++ component :: rest).flatten := by
       simp only [List.flatten_append, List.flatten_cons, List.mem_append]
       tauto
-    exact hframe.mono_at_unsigned ((hvalid.covers_unsigned i (hvalid.bounded i hm)).mp hm)
+    exact hframe.mono_at_unsigned (unsignedAt_recMode_lookup
+      ((hvalid.covers_unsigned i (hvalid.bounded i hm)).mp hm))
   let targets := state.specs.map (fun spec => moved.onTy spec.monoEntry.body)
   have hTargetsLen : targets.length = bindings.length := by
     simp only [targets, List.length_map, hframe.specs_length]
@@ -6814,9 +6936,10 @@ theorem RecResidual.prepare_component
         ∀ v ∈ candidate.rhs.rigidVars, v ∈ P := by
     intro i raw hi hr
     have he : declBindings[i]? = some
-        (raw.map (BindingAnn.substTyFvars R) (InferInput.substTyFvars R)) := by
+        (raw.bimap (BindingAnn.substTyFvars R) (InferInput.substTyFvars R)) := by
       rw [← hbindingsEq, substInputBindings_eq_map, List.getElem?_map, hr, Option.map_some]
-    refine ⟨raw.map (BindingAnn.substTyFvars R) (InferInput.substTyFvars R), he, ?_, ?_⟩
+      rfl
+    refine ⟨raw.bimap (BindingAnn.substTyFvars R) (InferInput.substTyFvars R), he, ?_, ?_⟩
     · exact hMovedSource raw.rhs _ (hRawRhs raw (List.mem_of_getElem? hr)) rfl
         (fun v hv => hdeclRows _ (List.mem_of_getElem? he) v (List.mem_append_right _ hv))
     · intro v hv
@@ -6828,6 +6951,7 @@ theorem RecResidual.prepare_component
     intro i raw candidate ty ns hi hr hc ht hn
     have he : raw.rhs.substTyFvars R = candidate.rhs := by
       have hh := congrArg (fun bs : List InputRecBinding => bs[i]?) hbindingsEq
+      change (substInputBindings R bindings)[i]? = declBindings[i]? at hh
       rw [substInputBindings_eq_map, List.getElem?_map, hr, Option.map_some, hc] at hh
       exact congrArg RecBinding.rhs (Option.some.inj hh)
     have hns := hGetNames i ns hi hn
@@ -6845,14 +6969,14 @@ theorem RecResidual.prepare_component
     exact htrans
   have hXpoly : ∀ scheme, .poly scheme ∈ declSpecs → ∀ x ∈ Xs, x ∉ scheme.body.freeVars := by
     intro scheme hs x hx hv
-    have hm : some scheme ∈ declBindings.map InputRecBinding.recMode := by
-      rw [← hdeclWF.anns_eq]
+    have hm : some scheme ∈ declBindings.map (fun binding => binding.ann.recModeAnn) := by
+      rw [← InputRecBinding.map_recMode_ann, ← hdeclWF.anns_eq]
       exact List.mem_map.mpr ⟨.poly scheme, hs, rfl⟩
     obtain ⟨binding, hb, he⟩ := List.mem_map.mp hm
     cases ha : binding.ann with
-    | absent | template _ | partialForall _ _ => simp [InputRecBinding.recMode, ha] at he
+    | absent | template _ | partialForall _ _ => simp [BindingAnn.recModeAnn, ha] at he
     | complete sigma =>
-      simp only [InputRecBinding.recMode, ha, Option.some.injEq] at he
+      simp only [ha, BindingAnn.recModeAnn, Option.some.injEq] at he
       subst sigma
       exact hXP x hx (hdeclRows binding hb x (List.mem_append_left _ (by simpa [ha] using hv)))
   have hXspec : ∀ x ∈ Xs, ∀ spec ∈ declSpecs, x ∉ spec.freeVars := by
@@ -7358,19 +7482,19 @@ def InferWithTypesCoreSourceComplete (input : InferInput) : Prop :=
     (hctxWF : CtxWF ctx) (hctx : CtxBelow frontier ctx)
     (hK : ∀ k ∈ K,k < frontier) (hF : ∀ t ∈ F,Ty.BelowFvars frontier t)
     (hspecLC : ∀ spec ∈ specs,spec.LC) (hspecB : ∀ spec ∈ specs,spec.BelowFvars frontier)
-    (hscope : ∀ rhs ∈ bindings,SourceScope K F rhs)
+    (hscope : ∀ binding ∈ bindings,SourceScope K F binding.rhs)
     (ambient : Subst) (P : List Nat) (hambient : ∀ p ∈ ambient,p.2.IsLC)
     (hfixK : ∀ k ∈ K,ambient.onTy (.fvar k) = .fvar k)
     (hP : ∀ p ∈ P,p < frontier) (hfixP : ∀ p ∈ P,ambient.onTy (.fvar p) = .fvar p)
-    (hcandidate : ∀ (j : Nat) (rhs : InferInput) (target : Ty),index + j ∈ members →
-      bindings[j]? = some rhs → specs[j]? = some (.mono target) →
-      InputTyping P (ambient.onCtx ctx) (rhs.substTyFvars ambient) (ambient.onTy target)) :
+    (hcandidate : ∀ (j : Nat) (binding : InputRecBinding) (target : Ty),index + j ∈ members →
+      bindings[j]? = some binding → specs[j]? = some (.mono target) →
+      InputTyping P (ambient.onCtx ctx) (binding.rhs.substTyFvars ambient) (ambient.onTy target)) :
     (inferRecComponentWithTypesCore K F members index frontier ctx bindings specs).isSome := by
   match bindings,specs with
   | [],[] => simp only [inferRecComponentWithTypesCore,Option.isSome_some]
   | [],_::_ => simp at hlen
   | _::_,[] => simp at hlen
-  | rhs::rest,.poly scheme::specs =>
+  | binding::rest,.poly scheme::specs =>
     have ht := inferRecComponentWithTypesCore_complete
         (bindings := rest) (specs := specs) (K := K) (F := F)
         (index := index+1) (frontier := frontier) (ctx := ctx)
@@ -7379,17 +7503,19 @@ def InferWithTypesCoreSourceComplete (input : InferInput) : Prop :=
       (Nat.succ.inj hlen) hctxWF hctx hK hF
       (fun spec hm => hspecLC spec (List.mem_cons_of_mem _ hm))
       (fun spec hm => hspecB spec (List.mem_cons_of_mem _ hm))
-      (fun rhs hm => hscope rhs (List.mem_cons_of_mem _ hm)) ambient P hambient hfixK hP hfixP
-      (fun j rhs target hm hb ht => hcandidate (j+1) rhs target (by simpa [Nat.add_assoc,Nat.add_comm,Nat.add_left_comm] using hm) hb ht)
+      (fun binding hm => hscope binding (List.mem_cons_of_mem _ hm)) ambient P hambient hfixK hP hfixP
+      (fun j binding target hm hb ht => hcandidate (j+1) binding target
+        (by simpa [Nat.add_assoc,Nat.add_comm,Nat.add_left_comm] using hm) hb ht)
     cases hr : inferRecComponentWithTypesCore K F members (index+1) frontier ctx rest specs with
     | none => simp only [hr,Option.isSome_none] at ht;contradiction
     | some result => simp only [inferRecComponentWithTypesCore,hr,Option.isSome_some]
-  | rhs::rest,.mono expected::specs =>
+  | binding::rest,.mono expected::specs =>
     by_cases hm : index ∈ members
-    · have hTyping := hcandidate 0 rhs expected (by simpa using hm) rfl rfl
+    · have hTyping := hcandidate 0 binding expected (by simpa using hm) rfl rfl
       obtain ⟨⟨⟨⟨first,s1,output,ty⟩,types,schemes⟩,hi⟩,hresult⟩ := Option.isSome_iff_exists.mp
-        (hProducer rhs (by simp only [sizeBindings];omega) K F frontier ctx ambient (ambient.onTy expected) P
-          (hscope rhs List.mem_cons_self) hctxWF hctx hK hF hambient hfixK hP hfixP hTyping)
+        (hProducer binding.rhs (by simp only [sizeBindings];omega) K F frontier ctx ambient
+          (ambient.onTy expected) P (hscope binding List.mem_cons_self)
+          hctxWF hctx hK hF hambient hfixK hP hfixP hTyping)
       obtain ⟨R1,hR1,hty,hR1P,hag1⟩ := hPrincipal (by simp only [sizeBindings];omega) hi
         hctxWF hctx hK hF ambient (ambient.onTy expected) P hambient hP hfixP
         (fun v _ hk _ => hfixK v hk) hTyping
@@ -7426,17 +7552,20 @@ def InferWithTypesCoreSourceComplete (input : InferInput) : Prop :=
           Subst.fixes_of_dom_avoids (fun p hp => (List.mem_append.mp hp).elim (hi.dom_avoids p) (havoid p))
         have hctxEq : R2.onCtx (s2.onCtx (s1.onCtx ctx)) = ambient.onCtx ctx := by
           simpa only [Subst.onCtx_append] using (Subst.onCtx_congr hag12 hctx).symm
-        have hrawBelow : ∀ rhs ∈ rest,∀ v ∈ rhs.rigidVars,v < frontier := by
-          intro rhs hh v hv
-          exact (List.mem_append.mp (hscope rhs (List.mem_cons_of_mem _ hh) v hv)).elim (hK v) (softVars_lt hF v)
+        have hrawBelow : ∀ binding ∈ rest,∀ v ∈ binding.rhs.rigidVars,v < frontier := by
+          intro binding hh v hv
+          exact (List.mem_append.mp (hscope binding (List.mem_cons_of_mem _ hh) v hv)).elim
+            (hK v) (softVars_lt hF v)
         have ht := inferRecComponentWithTypesCore_complete
-          (bindings := rest.map (InferInput.substTyFvars (s1 ++ s2)))
+          (bindings := substInputBindings (s1 ++ s2) rest)
           (specs := specs.map (RecSpec.onSubstSource (s1 ++ s2)))
           (K := K) (F := substSoft (s1 ++ s2) F) (index := index+1) (frontier := first)
           (ctx := s2.onCtx (s1.onCtx ctx))
-          (fun e he => hProducer e (by simp only [sizeBindings_map_substTyFvars] at he;simp only [sizeBindings];omega))
-          (fun he hi => hPrincipal (by simp only [sizeBindings_map_substTyFvars] at he;simp only [sizeBindings];omega) hi)
-          (by simpa only [List.length_map] using Nat.succ.inj hlen)
+          (fun e he => hProducer e (by simp only [sizeBindings_substInputBindings] at he;simp only [sizeBindings];omega))
+          (fun he hi => hPrincipal (by simp only [sizeBindings_substInputBindings] at he;simp only [sizeBindings];omega) hi)
+          (by
+            simpa only [substInputBindings_length, List.length_map] using
+              Nat.succ.inj hlen)
           (Subst.onCtx_wf hs2LC (Subst.onCtx_wf hs1LC hctxWF))
           (by simpa only [Subst.onCtx_append] using Subst.onCtx_below hbothB hle hctx)
           (fun k hk => (hK k hk).trans_le hle) (substSoft_below hbothB hle hF)
@@ -7447,21 +7576,29 @@ def InferWithTypesCoreSourceComplete (input : InferInput) : Prop :=
             cases old with
             | mono t => exact Subst.onTy_belowFvars hbothB ((hspecB _ (List.mem_cons_of_mem _ ho)).mono hle)
             | poly M => exact Subst.onTy_belowFvars hbothB ((hspecB _ (List.mem_cons_of_mem _ ho)).mono hle))
-          (by intro rhs hs;obtain ⟨old,ho,rfl⟩ := List.mem_map.mp hs;exact (hscope old (List.mem_cons_of_mem _ ho)).subst _ hbothFix)
+          (by
+            intro newBinding hs
+            rw [substInputBindings_eq_map] at hs
+            obtain ⟨old,ho,rfl⟩ := List.mem_map.mp hs
+            exact (hscope old (List.mem_cons_of_mem _ ho)).subst _ hbothFix)
           R2 P hR2 hR2K (fun p hp => (hP p hp).trans_le hle) hR2P
           (by
-            intro j rhs target hj hb ht
-            obtain ⟨old,ho,rfl⟩ := Option.map_eq_some_iff.mp (by simpa only [List.getElem?_map] using hb)
+            intro j newBinding target hj hb ht
+            rw [substInputBindings_eq_map, List.getElem?_map] at hb
+            obtain ⟨old,ho,rfl⟩ := Option.map_eq_some_iff.mp hb
             obtain ⟨oldTarget,hot,rfl⟩ := RecSpec.mono_getElem?_map_onSubstSource ht
-            have hsourceEq : (old.substTyFvars (s1 ++ s2)).substTyFvars R2 = old.substTyFvars ambient := by
+            have hsourceEq : (old.rhs.substTyFvars (s1 ++ s2)).substTyFvars R2 =
+                old.rhs.substTyFvars ambient := by
               rw [←InferInput.substTyFvars_append]
-              exact old.substTyFvars_congr (fun v hv => (hag12 v (hrawBelow old (List.mem_of_getElem? ho) v hv)).symm)
+              exact old.rhs.substTyFvars_congr
+                (fun v hv => (hag12 v (hrawBelow old (List.mem_of_getElem? ho) v hv)).symm)
             have htargetEq : R2.onTy ((s1 ++ s2).onTy oldTarget) = ambient.onTy oldTarget := by
               simpa only [Subst.onTy_append] using (Subst.onTy_congr hag12 (hspecB _ (List.mem_cons_of_mem _ (List.mem_of_getElem? hot)))).symm
             rw [hctxEq,hsourceEq,htargetEq]
-            exact hcandidate (j+1) old oldTarget (by simpa [Nat.add_assoc,Nat.add_comm,Nat.add_left_comm] using hj) ho hot)
+            exact hcandidate (j+1) old oldTarget
+              (by simpa [Nat.add_assoc,Nat.add_comm,Nat.add_left_comm] using hj) ho hot)
         cases htail : inferRecComponentWithTypesCore K (substSoft (s1 ++ s2) F) members (index+1) first
-            (s2.onCtx (s1.onCtx ctx)) (rest.map (InferInput.substTyFvars (s1 ++ s2)))
+            (s2.onCtx (s1.onCtx ctx)) (substInputBindings (s1 ++ s2) rest)
             (specs.map (RecSpec.onSubstSource (s1 ++ s2))) with
         | none => simp only [htail,Option.isSome_none] at ht;contradiction
         | some tail => simp only [inferRecComponentWithTypesCore,dif_pos hm,hresult,huni,htail,Option.isSome_some]
@@ -7473,13 +7610,14 @@ def InferWithTypesCoreSourceComplete (input : InferInput) : Prop :=
         (Nat.succ.inj hlen) hctxWF hctx hK hF
         (fun spec hm => hspecLC spec (List.mem_cons_of_mem _ hm))
         (fun spec hm => hspecB spec (List.mem_cons_of_mem _ hm))
-        (fun rhs hm => hscope rhs (List.mem_cons_of_mem _ hm)) ambient P hambient hfixK hP hfixP
-        (fun j rhs target hm hb ht => hcandidate (j+1) rhs target (by simpa [Nat.add_assoc,Nat.add_comm,Nat.add_left_comm] using hm) hb ht)
+        (fun binding hm => hscope binding (List.mem_cons_of_mem _ hm)) ambient P hambient hfixK hP hfixP
+        (fun j binding target hm hb ht => hcandidate (j+1) binding target
+          (by simpa [Nat.add_assoc,Nat.add_comm,Nat.add_left_comm] using hm) hb ht)
       cases hr : inferRecComponentWithTypesCore K F members (index+1) frontier ctx rest specs with
       | none => simp only [hr,Option.isSome_none] at ht;contradiction
       | some result => simp only [inferRecComponentWithTypesCore,dif_neg hm,hr,Option.isSome_some]
  termination_by sizeBindings bindings
- decreasing_by all_goals simp only [sizeBindings,sizeBindings_map_substTyFvars];omega
+ decreasing_by all_goals simp only [sizeBindings,sizeBindings_substInputBindings];omega
 
 /-- Producer completeness for the concrete worker, under an arbitrary LC
 specialization fixing the inference's rigid variables. Successful results
@@ -8656,7 +8794,8 @@ theorem inferRecSignedWithTypesCore_complete_one
     simpa only [ctx,written,ann,BindingAnn.paramCount,Subst.onCtx_append] using hescape
   simp only [inferRecSignedWithTypesCore,PolyTy.wf_iff_bvarsBelow.mpr hSchemeWF0,dite_true,hraw]
   simp only [ctx,written,ann,BindingAnn.paramCount] at hrResult hUnifyResult
-  simp only [hrResult,hUnifyResult,dif_pos hescape',List.map_nil,inferRecSignedWithTypesCore,Option.isSome_some]
+  simp only [hrResult, hUnifyResult, dif_pos hescape', substInputBindings,
+    inferRecSignedWithTypesCore, Option.isSome_some]
 
 
 
@@ -8690,13 +8829,15 @@ theorem inferRecSignedWithTypesCore_complete
     (inferRecSignedWithTypesCore K F index frontier ctx bindings state).isSome := by
   match bindings with
   | [] => simp only [inferRecSignedWithTypesCore,Option.isSome_some]
-  | head@{ ann, rhs } :: rest =>
+  | ⟨ann, rhs⟩ :: rest =>
     cases ann with
     | complete scheme =>
       have hiCtxWF := hstateLC.rhsCtx hctxWF
       have hiCtxB := hstateB.rhsCtx hctx
-      have hheadAnn := hannScope head List.mem_cons_self
-      have hraw : SourceScope K F rhs := hrhsScope head List.mem_cons_self
+      have hheadAnn := hannScope
+        ({ ann := .complete scheme, rhs := rhs } : InputRecBinding) List.mem_cons_self
+      have hraw : SourceScope K F rhs := hrhsScope
+        ({ ann := .complete scheme, rhs := rhs } : InputRecBinding) List.mem_cons_self
       obtain ⟨L,htypes⟩ := hcandidate 0 scheme rhs rfl
       have htypes' : ∀ Ys, FreshNames L scheme.paramCount Ys →
           InputTyping (P ++ Ys) (R.onCtx (state.rhsCtx ctx)) ((rhs.substTyFvars R).openTyVars Ys)
@@ -8711,7 +8852,8 @@ theorem inferRecSignedWithTypesCore_complete
       have hUnit : InputTyping P (R.onCtx (state.rhsCtx ctx))
           ((InferInput.letIn (.complete scheme) rhs (.primLit .unit)).substTyFvars R) (.prim .unit) := by
         refine InputTyping.letSignature (M := R.onPolyTy scheme) (L := L) hSchemeRWF
-          (hcandAnn head List.mem_cons_self) (hcandRhs head List.mem_cons_self)
+          (hcandAnn ⟨.complete scheme, rhs⟩ List.mem_cons_self)
+          (hcandRhs ⟨.complete scheme, rhs⟩ List.mem_cons_self)
           (fun _ _ => .complete) ?_ (.primLit .primLitUnit)
         intro Ys hy
         have htake : Ys.take scheme.paramCount = Ys := List.take_of_length_le (by have := hy.length;simpa only [Subst.onPolyTy] using this.le)
@@ -8755,10 +8897,20 @@ theorem inferRecSignedWithTypesCore_complete
               (fun binding' hb => by rcases List.mem_singleton.mp hb with rfl;exact hheadAnn)
               (fun binding' hb => by rcases List.mem_singleton.mp hb with rfl;exact hraw)
               (fun _ _ v _ hk _ => hfixK v hk) (fun _ _ v _ hk _ => hfixK v hk)
-              (fun binding' hb => by rcases List.mem_singleton.mp hb with rfl
-                  exact hcandAnn head List.mem_cons_self)
-              (fun binding' hb => by rcases List.mem_singleton.mp hb with rfl
-                  exact hcandRhs head List.mem_cons_self)
+              (by
+                intro binding' hb v hv
+                have heq : binding' =
+                    (⟨.complete scheme, rhs⟩ : InputRecBinding) :=
+                  List.mem_singleton.mp hb
+                subst binding'
+                exact hcandAnn _ List.mem_cons_self v hv)
+              (by
+                intro binding' hb v hv
+                have heq : binding' =
+                    (⟨.complete scheme, rhs⟩ : InputRecBinding) :=
+                  List.mem_singleton.mp hb
+                subst binding'
+                exact hcandRhs _ List.mem_cons_self v hv)
               (by
                 intro j sigma rhs' hb
                 cases j with
@@ -8777,22 +8929,22 @@ theorem inferRecSignedWithTypesCore_complete
               have he := hag k (hK k hk)
               rw [Subst.onTy_append,hbothFix k hk,hfixK k hk] at he
               exact he.symm
-            have hannBelow : ∀ binding ∈ (head :: rest),
+            have hannBelow : ∀ binding ∈ ((⟨.complete scheme, rhs⟩ : InputRecBinding) :: rest),
                 ∀ v ∈ binding.ann.rigidVars,v < frontier :=
               fun binding hb v hv =>
                 (List.mem_append.mp (hannScope binding hb v hv)).elim (hK v) (softVars_lt hF v)
-            have hrhsBelow : ∀ binding ∈ (head :: rest),
+            have hrhsBelow : ∀ binding ∈ ((⟨.complete scheme, rhs⟩ : InputRecBinding) :: rest),
                 ∀ v ∈ binding.rhs.rigidVars,v < frontier :=
               fun binding hb v hv =>
                 (List.mem_append.mp (hrhsScope binding hb v hv)).elim (hK v) (softVars_lt hF v)
-            have annEq : ∀ binding ∈ (head :: rest),
+            have annEq : ∀ binding ∈ ((⟨.complete scheme, rhs⟩ : InputRecBinding) :: rest),
                 (binding.ann.substTyFvars (s1 ++ s2)).substTyFvars U =
                   binding.ann.substTyFvars R := by
               intro binding hb
               rw [← BindingAnn.substTyFvars_append]
               exact binding.ann.substTyFvars_congr
                 (fun v hv => (hag v (hannBelow binding hb v hv)).symm)
-            have rhsEq : ∀ binding ∈ (head :: rest),
+            have rhsEq : ∀ binding ∈ ((⟨.complete scheme, rhs⟩ : InputRecBinding) :: rest),
                 (binding.rhs.substTyFvars (s1 ++ s2)).substTyFvars U =
                   binding.rhs.substTyFvars R := by
               intro binding hb
@@ -9034,7 +9186,9 @@ private theorem inferRecStrataWithTypesCore_complete_of_step
       have hneutral : List.append (pre ++ current) [] = pre ++ current := List.append_nil _
       simp only [hneutral] at hOneEq hag hresStep
       obtain ⟨hstepFrame,_,_⟩ := recStep_frame ho hp hc hf
-        (fun _ hi => hi.sourceLocality) hvalid hframe hstateLC hctxWF hstateB hbase hannScope hrhsScope
+        (fun _ hi => hi.sourceLocality) hvalid hframe hstateLC hctxWF hstateB hbase
+        (fun binding hb v hv => (List.mem_append.mp hv).elim
+          (hannScope binding hb v) (hrhsScope binding hb v))
       have hstep : InferRecStrata K F frontier ctx bindings state [component]
           first (pre ++ current ++ []) exported := .cons ho hp hc hf .nil
       have hstep' : InferRecStrata K F frontier ctx bindings state [component]
@@ -9062,13 +9216,16 @@ private theorem inferRecStrataWithTypesCore_complete_of_step
             cases hb : bindings[i]? with
             | none => rfl
             | some binding =>
-              simp only [hb, Option.map_some, RecBinding.map]
-              apply congrArg₂ RecBinding.mk
-              · rw [← BindingAnn.substTyFvars_append]
+              simp only [hb, Option.map_some, RecBinding.bimap]
+              apply congrArg some
+              apply RecBinding.ext
+              · change BindingAnn.substTyFvars (pre ++ current ++ U) binding.ann =
+                  BindingAnn.substTyFvars R binding.ann
                 exact binding.ann.substTyFvars_congr
                   (fun v hv => (hag v (hannBelow binding
                     (List.mem_of_getElem? hb) v hv)).symm)
-              · rw [← InferInput.substTyFvars_append]
+              · change InferInput.substTyFvars (pre ++ current ++ U) binding.rhs =
+                  InferInput.substTyFvars R binding.rhs
                 exact binding.rhs.substTyFvars_congr
                   (fun v hv => (hag v (hrhsBelow binding
                     (List.mem_of_getElem? hb) v hv)).symm)
@@ -9104,7 +9261,7 @@ private theorem inferRecStrataWithTypesCore_complete_of_step
           (fun he hi => hInfer (by simpa only [sizeBindings_substInputBindings] using he) hi)
           htailValid htailCanonical htailFrame hstepLC hstepB
           (Subst.onCtx_wf hbothLC hctxWF) (Subst.onCtx_below hbothB hle hctx)
-          (by simp only [List.length_map];omega)
+          (by simpa only [substInputBindings_length] using hbase.trans hle)
           (fun k hk => (hK k hk).trans_le hle) (substSoft_below hbothB hle hF)
           (fun p hp => (hP p hp).trans_le hle) htailRes hUfixK
           (by intro x hx k hk;rw [hUonK k hk];exact hXsK x hx k hk)
@@ -9311,7 +9468,7 @@ theorem InferRecSigned.outputs_present
               rhs := rhs.substTyFvars (s1 ++ s2) } := by
           simp only [substInputBindings_eq_map, List.getElem?_map,
             show bindings_1[j]? = some { ann := .complete sigma, rhs := rhs } from hb,
-            Option.map_some, RecBinding.map, BindingAnn.substTyFvars, Subst.onPolyTy,
+            Option.map_some, RecBinding.bimap, BindingAnn.substTyFvars, Subst.onPolyTy,
             Subst.onTy]
         simpa only [Nat.add_assoc,Nat.add_comm 1 j] using
           hFill j ((s1 ++ s2).onPolyTy sigma) (rhs.substTyFvars (s1 ++ s2)) hnew
@@ -9330,7 +9487,12 @@ theorem collectCompletedRecMembers_complete {members : List RecMemberState}
     have ht := ih (fun i hi => h (i + 1) (by simp only [List.length_cons]; omega))
     cases hr : collectCompletedRecMembers rest with
     | none => simp only [hr, Option.isSome_none] at ht; contradiction
-    | some result => simp only [collectCompletedRecMembers, hs, ho, hr, Option.isSome_some]
+    | some result =>
+      rcases member with ⟨spec, slotImages, exported, memberOutput, facts⟩
+      simp only at hs ho
+      subst exported
+      subst memberOutput
+      simp only [collectCompletedRecMembers, hr, Option.isSome_some]
 
 theorem RecState.Frame.exports_present
     {state : RecState} (h : state.Frame base K F ctx bindings done)
@@ -9363,7 +9525,8 @@ theorem InferRecSigned.completed_members_of_strata
     (collectCompletedRecMembers state2.memberStates).isSome := by
   have hSelected : ∀ i ∈ groups.flatten,∃ ty,state.specs[i]? = some (.mono ty) := by
     intro i hi
-    exact hframe.mono_at_unsigned ((hvalid.covers_unsigned i (hvalid.bounded i hi)).mp hi)
+    exact hframe.mono_at_unsigned (unsignedAt_recMode_lookup
+      ((hvalid.covers_unsigned i (hvalid.bounded i hi)).mp hi))
   obtain ⟨_,hUnsigned⟩ := hs.outputs_present hSelected
   have hb : 0 + (substInputBindings S1 bindings).length ≤ state1.outputs.length := by
     rw [RecState.outputs_length, hframe1.memberStates_length]
@@ -9376,24 +9539,31 @@ theorem InferRecSigned.completed_members_of_strata
   have hexport := hframe2.exports_present hDone i (by
     simpa only [RecState.exports_length] using hi)
   obtain ⟨exported, hexport⟩ := hexport
-  refine ⟨exported, ?_, hexport, ?_⟩
   have hiBinding : i < bindings.length := by
     simpa only [hframe2.memberStates_length, substInputBindings_length] using hi
   have hBinding := List.getElem?_eq_getElem hiBinding
-  cases heq : bindings[i].ann with
-  | complete scheme =>
-    have hb : (substInputBindings S1 bindings)[i]? = some
-        { ann := .complete (S1.onPolyTy scheme), rhs := bindings[i].rhs.substTyFvars S1 } := by
-      simp only [substInputBindings_eq_map, List.getElem?_map, hBinding, Option.map_some,
-        RecBinding.map, heq, BindingAnn.substTyFvars, Subst.onPolyTy, Subst.onTy]
-    simpa only [Nat.zero_add] using
-      hComplete i (S1.onPolyTy scheme) (bindings[i].rhs.substTyFvars S1) hb
-  | absent | template _ | partialForall _ _ =>
-    have hu : RecGroups.UnsignedAt (bindings.map InputRecBinding.recMode) i := by
-      simp only [RecGroups.UnsignedAt, List.getElem?_map, hBinding, heq, Option.map_some,
-        InputRecBinding.recMode, BindingAnn.recModeAnn]
-    obtain ⟨out,ho⟩ := hUnsigned i ((hvalid.covers_unsigned i hiBinding).mpr hu)
-    exact hKeep i out ho
+  have hOutput : ∃ output, state2.outputs[i]? = some (some output) := by
+    cases heq : bindings[i].ann with
+    | complete scheme =>
+      have hb : (substInputBindings S1 bindings)[i]? = some
+          { ann := .complete (S1.onPolyTy scheme),
+            rhs := bindings[i].rhs.substTyFvars S1 } := by
+        simp only [substInputBindings_eq_map, List.getElem?_map, hBinding,
+          Option.map_some, heq, BindingAnn.substTyFvars, Subst.onPolyTy,
+          Subst.onTy]
+      simpa only [Nat.zero_add] using
+        hComplete i (S1.onPolyTy scheme) (bindings[i].rhs.substTyFvars S1) hb
+    | absent | template _ | partialForall _ _ =>
+      have hiMode : i < (bindings.map InputRecBinding.recMode).length := by
+        simpa only [List.length_map] using hiBinding
+      have hu : RecGroups.UnsignedAt (bindings.map InputRecBinding.recMode) i := by
+        simp only [RecGroups.UnsignedAt, List.getElem?_map, hBinding, heq,
+          Option.map_some, InputRecBinding.recMode, BindingAnn.recModeAnn]
+      obtain ⟨out, ho⟩ := hUnsigned i
+        ((hvalid.covers_unsigned i hiMode).mpr hu)
+      exact hKeep i out ho
+  obtain ⟨output, houtput⟩ := hOutput
+  exact ⟨exported, output, hexport, houtput⟩
 
 
 set_option maxHeartbeats 3000000 in
@@ -9537,9 +9707,11 @@ theorem inferRecStrataWithTypesCore_aligned_singleton
         simpa only [sizeBindings_substInputBindings,raws,sizeBindings_openRecSources] using he))
       (fun he hi => hPrincipal (by
         simpa only [sizeBindings_substInputBindings,raws,sizeBindings_openRecSources] using he) hi)
-      (by simpa only [raws, substInputBindings_length, RecState.specs_length, RecState.onSubst,
-          installed, RecState.installOpenings, List.length_mapIdx] using
-        ho.length.trans hspecLen.symm)
+      (by
+        rw [substInputBindings_length, openRecSources_length]
+        simpa only [RecState.specs_length, RecState.onSubst, installed,
+          RecState.installOpenings, List.length_map, List.length_mapIdx] using
+          hspecLen.symm.trans (RecState.specs_length state))
       ((hiLC.onSubst hpreLC).rhsCtx (Subst.onCtx_wf hpreLC hctxWF))
       ((hiB.onSubst hpreB (Nat.le_refl _)).rhsCtx (Subst.onCtx_below hpreB hle hctx))
       (fun k hk => (hK k hk).trans_le hle) (substSoft_below hpreB (Nat.le_refl _) hactiveB)
@@ -9755,7 +9927,8 @@ theorem inferRecStrataWithTypesCore_fresh_local_singleton
     have hm : i ∈ (past ++ component :: rest).flatten := by
       simp only [List.flatten_append,List.flatten_cons,List.mem_append]
       tauto
-    exact hframe.mono_at_unsigned ((hvalid.covers_unsigned i (hvalid.bounded i hm)).mp hm)
+    exact hframe.mono_at_unsigned (unsignedAt_recMode_lookup
+      ((hvalid.covers_unsigned i (hvalid.bounded i hm)).mp hm))
   have hdisjoint : ∀ i ∈ component, i ∉ past.flatten := by
     intro i hi hd
     have hnd : (past.flatten ++ (component ++ rest.flatten)).Nodup := by
@@ -9843,7 +10016,8 @@ theorem inferRecStrataWithTypesCore_dynamic_singleton
     K F frontier opened ctx bindings state past rest component openings R ho hOpenRun
     hProducer hPrincipal hvalid hcanonical hframe hstateLC hstateB hctxWF hctx hbase hK hF hP hres hFixK
     hXsK hXsF hannScope hrhsScope hbindingsEq
-  have hBindingLen : declBindings.length = declSpecs.length := hdeclWF.length
+  have hBindingLen : declBindings.length = declSpecs.length := by
+    simpa only [List.length_map] using hdeclWF.length
   have hpData := fun i hi => hprefix.get hBindingLen (i := i) hi
   have hLC : ∀ spec ∈ declSpecs,spec.LC := by
     intro spec hs
@@ -9853,17 +10027,21 @@ theorem inferRecStrataWithTypesCore_dynamic_singleton
   have hPolyScope : ∀ sigma,.poly sigma ∈ declSpecs → ∀ v ∈ sigma.body.freeVars,v ∈ P := by
     intro sigma hs v hv
     obtain ⟨i,hi⟩ := List.mem_iff_getElem?.mp hs
+    have hib : i < declBindings.length := by
+      rw [hBindingLen]
+      exact (List.getElem?_eq_some_iff.mp hi).1
+    have hbinding : declBindings[i]? = some declBindings[i] :=
+      List.getElem?_eq_getElem hib
     have ha := congrArg (fun xs : List (Option PolyTy) => xs[i]?) hdeclWF.anns_eq
-    dsimp only at ha
-    rw [List.getElem?_map,hi,Option.map_some,RecSpec.ann,List.getElem?_map,
-      List.getElem?_map] at ha
-    obtain ⟨binding,hbinding,heq⟩ := Option.map_eq_some_iff.mp ha.symm
-    cases hAnn : binding.ann with
-    | absent | template _ | partialForall _ _ => simp [InputRecBinding.recMode, hAnn] at heq
+    simp only [List.getElem?_map, hi, Option.map_some, RecSpec.ann, hbinding,
+      InputRecBinding.recMode] at ha
+    cases hAnn : declBindings[i].ann with
+    | absent | template _ | partialForall _ _ => simp [hAnn, BindingAnn.recModeAnn] at ha
     | complete sigma' =>
-      simp only [InputRecBinding.recMode, hAnn, Option.some.injEq] at heq
+      simp only [hAnn, BindingAnn.recModeAnn, Option.some.injEq] at ha
+      have heq : sigma' = sigma := ha.symm
       subst sigma'
-      exact hdeclRows binding (List.mem_of_getElem? hbinding) v
+      exact hdeclRows declBindings[i] (List.mem_of_getElem? hbinding) v
         (List.mem_append_left _ (by simpa [hAnn] using hv))
   have hPolyG : ∀ sigma,.poly sigma ∈ declSpecs → ∀ g ∈ G,g ∉ sigma.body.freeVars := by
     intro sigma hs g hg hv
@@ -10112,7 +10290,8 @@ theorem RecResidual.openRecAnns_complete
   intro hdeclValid hdeclWF hprefix hGfresh hdeclRows hdeclFits hdeclTypes
     hXlen hXnd hGX hXmono hXctxP K F frontier ctx bindings state past rest component R
     hvalid hcanonical hframe hstateLC hK hF hres hannScope hrhsScope hbindingsEq
-  have hBindingLen : declBindings.length = declSpecs.length := hdeclWF.length
+  have hBindingLen : declBindings.length = declSpecs.length := by
+    simpa only [List.length_map] using hdeclWF.length
   have hBindingLen0 : bindings.length = declBindings.length := by
     have h := congrArg List.length hbindingsEq
     simpa only [substInputBindings_length] using h
@@ -10162,7 +10341,8 @@ theorem RecResidual.openRecAnns_complete
     have hm : i ∈ (past ++ component :: rest).flatten := by
       simp only [List.flatten_append, List.flatten_cons, List.mem_append]
       tauto
-    exact hframe.mono_at_unsigned ((hvalid.covers_unsigned i (hvalid.bounded i hm)).mp hm)
+    exact hframe.mono_at_unsigned (unsignedAt_recMode_lookup
+      ((hvalid.covers_unsigned i (hvalid.bounded i hm)).mp hm))
   let names := declPrefixes.map (recRenameNames G Xs)
   let targets := state.specs.map (fun spec => R.onTy spec.monoEntry.body)
   apply openRecAnns_complete_source (S0 := R) hres.lc hRawAnn names targets
@@ -10264,19 +10444,29 @@ private theorem inferWithTypesCore_sourceComplete_rec_of_unsigned
       scheme.WF := by
     intro scheme hm
     obtain ⟨binding, hb, heq⟩ := List.mem_map.mp hm
-    have hsub : binding.map (BindingAnn.substTyFvars ambient)
+    have hsub : binding.bimap (BindingAnn.substTyFvars ambient)
         (InferInput.substTyFvars ambient) ∈ substInputBindings ambient bindings := by
       rw [substInputBindings_eq_map]
       exact List.mem_map.mpr ⟨binding, hb, rfl⟩
     have hmode : some (ambient.onPolyTy scheme) ∈
-        (substInputBindings ambient bindings).map InputRecBinding.recMode := by
+        (substInputBindings ambient bindings).map
+          (fun binding => binding.ann.recModeAnn) := by
       apply List.mem_map.mpr
       refine ⟨_, hsub, ?_⟩
+      change (BindingAnn.substTyFvars ambient binding.ann).recModeAnn =
+        some (ambient.onPolyTy scheme)
       rw [heq]
-      simp only [RecBinding.map, InputRecBinding.recMode, BindingAnn.substTyFvars,
-        Subst.onPolyTy, Subst.onTy]
-    rw [← hdeclWF.anns_eq] at hmode
-    obtain ⟨spec, hs, heq⟩ := List.mem_map.mp hmode
+      simp only [BindingAnn.substTyFvars, BindingAnn.recModeAnn, Subst.onPolyTy,
+        Subst.onTy]
+    have hmodeCore : some (ambient.onPolyTy scheme) ∈
+        ((substInputBindings ambient bindings).map InputRecBinding.recMode).map
+          RecBinding.ann := by
+      simpa only [InputRecBinding.map_recMode_ann] using hmode
+    have hmodeSpec : some (ambient.onPolyTy scheme) ∈
+        declSpecs.map RecSpec.ann := by
+      rw [hdeclWF.anns_eq]
+      exact hmodeCore
+    obtain ⟨spec, hs, heq⟩ := List.mem_map.mp hmodeSpec
     have : spec = .poly (ambient.onPolyTy scheme) := RecSpec.ann_eq_some heq
     subst spec
     exact ContainsBvarsUpTo.of_substFvars (hdeclWF.poly_wf _ hs)
@@ -10373,7 +10563,8 @@ private theorem inferWithTypesCore_sourceComplete_rec_of_unsigned
       ([] ++ groups) := hvalid
   obtain ⟨hframe1, _⟩ := hstrata.frame_of_infer
     (fun _ hi => hi.sourceLocality) hvalid0 hinitFrame hinitLC hctxWF hinitBelow hctxSeed hFSeed
-    (by omega) hannscope hrhsscope
+    (by omega) (fun binding hb v hv => (List.mem_append.mp hv).elim
+      (hannscope binding hb v) (hrhsscope binding hb v))
   obtain ⟨hS1, hLC1⟩ := hstrata.lc_of_infer (fun _ hi => hi.lc) hctxWF hinitLC
   obtain ⟨hB1, hBelow1⟩ := hstrata.belowFvars_of_infer (fun _ hi => hi.belowFvars)
     hctxSeed hKSeed hFSeed hinitBelow
@@ -10402,7 +10593,7 @@ private theorem inferWithTypesCore_sourceComplete_rec_of_unsigned
   have hcandAnn1 : ∀ binding ∈ substInputBindings s1 bindings,
       ∀ v ∈ (binding.ann.substTyFvars R1).rigidVars,v ∈ P := by
     intro binding hb v hv
-    apply hdeclRows (binding.map (BindingAnn.substTyFvars R1)
+    apply hdeclRows (binding.bimap (BindingAnn.substTyFvars R1)
       (InferInput.substTyFvars R1))
     · rw [← hBindingsEq1]
       rw [substInputBindings_eq_map]
@@ -10411,7 +10602,7 @@ private theorem inferWithTypesCore_sourceComplete_rec_of_unsigned
   have hcandRhs1 : ∀ binding ∈ substInputBindings s1 bindings,
       ∀ v ∈ (binding.rhs.substTyFvars R1).rigidVars,v ∈ P := by
     intro binding hb v hv
-    apply hdeclRows (binding.map (BindingAnn.substTyFvars R1)
+    apply hdeclRows (binding.bimap (BindingAnn.substTyFvars R1)
       (InferInput.substTyFvars R1))
     · rw [← hBindingsEq1]
       rw [substInputBindings_eq_map]
@@ -10441,11 +10632,15 @@ private theorem inferWithTypesCore_sourceComplete_rec_of_unsigned
     refine ⟨L, ?_⟩
     intro Ys hY
     have hb' := congrArg (fun bs : List InputRecBinding => bs[j]?) hBindingsEq1
-    simp only [substInputBindings_eq_map, List.getElem?_map, hb, Option.map_some] at hb'
+    have hbLeft : (substInputBindings R1 (substInputBindings s1 bindings))[j]? = some
+        ({ ann := .complete (R1.onPolyTy scheme),
+           rhs := rhs.substTyFvars R1 } : InputRecBinding) := by
+      rw [substInputBindings_eq_map, List.getElem?_map, hb, Option.map_some]
+      rfl
     have hd := hdeclPoly j
       ({ ann := .complete (R1.onPolyTy scheme),
          rhs := rhs.substTyFvars R1 } : InputRecBinding)
-      declScheme hb'.symm hds Ys
+      declScheme (hb'.symm.trans hbLeft) hds Ys
     rw [← he] at hd
     exact hd hY
   obtain ⟨⟨⟨second,s2,state2⟩,hsigned⟩,hSignedResult⟩ := Option.isSome_iff_exists.mp
