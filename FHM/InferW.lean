@@ -2986,11 +2986,11 @@ private theorem recShapes_avoid {state : RecState} (ha : state.Avoids w)
         exact ⟨ha.1 _ (List.mem_map.mpr ⟨member, hmember_mem, hspec⟩),
           ho opening (List.mem_of_getElem? hopen)⟩
 
-private theorem FinishRecComponent.avoid_lengths
+private theorem FinishRecComponent.memberStates_length
     (h : FinishRecComponent K soft members ctx state artifacts final) :
-    final.specs.length = state.specs.length ∧ final.exports.length = state.exports.length := by
+    final.memberStates.length = state.memberStates.length := by
   cases h
-  exact ⟨by simp, by simp [RecState.exports_length, RecState.exportComponent]⟩
+  simp [RecState.exportComponent]
 
 
  theorem InferRecStrata.sourceLocality_of_infer
@@ -3002,8 +3002,7 @@ private theorem FinishRecComponent.avoid_lengths
       w ∉ e.rigidVars →
       (∀ p ∈ T, w ∉ p.2.freeVars) ∧ w ∉ ty.freeVars ∧ w ∉ T.map Prod.fst)
     (hw : w < frontier) (ha : state.Avoids w)
-    (hlenS : state.specs.length = bindings.length)
-    (hlenE : state.exports.length = bindings.length)
+    (hlen : state.memberStates.length = bindings.length)
     (hbindings : ∀ binding ∈ bindings, w ∉ binding.ann.rigidVars)
     (hrhs : ∀ binding ∈ bindings, binding.rhs.erase.ForallOuter
       (fun i => ∀ M, ctx.env[i]? = some M → w ∉ M.body.freeVars) bindings.length ∧
@@ -3018,8 +3017,7 @@ private theorem FinishRecComponent.avoid_lengths
     have hapre : ((state.installOpenings component openings).onSubst pre).Avoids w :=
       ha.installOpenings.onSubst hpre.1
     have hentry : (((state.installOpenings component openings).onSubst pre).entries).length = bindings.length := by
-      rw [RecState.entries_length]
-      simpa [RecState.onSubst, RecState.installOpenings] using hlenS
+      simpa [RecState.entries, RecState.onSubst, RecState.installOpenings] using hlen
     have hopen : ∀ binding ∈ openRecSources openings bindings,
         binding.rhs.erase.ForallOuter
           (fun i => ∀ M, ctx.env[i]? = some M → w ∉ M.body.freeVars) bindings.length ∧
@@ -3042,18 +3040,14 @@ private theorem FinishRecComponent.avoid_lengths
     have hboth : ∀ p ∈ pre ++ current, w ∉ p.2.freeVars :=
       fun p hm => (List.mem_append.mp hm).elim (hpre.1 p) (hcomponent.1 p)
     have hafinal := hf.avoids (ha.installOpenings.onSubst hboth)
-    have hlength := hf.avoid_lengths
-    have htailS : exported.specs.length =
+    have htailLength : exported.memberStates.length =
         (substInputBindings (pre ++ current) bindings).length := by
       simpa [substInputBindings_eq_map, RecState.onSubst, RecState.installOpenings] using
-        hlength.1.trans (by simpa [RecState.onSubst, RecState.installOpenings] using hlenS)
-    have htailE : exported.exports.length =
-        (substInputBindings (pre ++ current) bindings).length := by
-      simpa [substInputBindings_eq_map, RecState.onSubst, RecState.installOpenings] using
-        hlength.2.trans (by simpa [RecState.onSubst, RecState.installOpenings] using hlenE)
+        hf.memberStates_length.trans
+          (by simpa [RecState.onSubst, RecState.installOpenings] using hlen)
     obtain ⟨htS, htD, htA⟩ := hr.sourceLocality_of_infer
       (fun he hi => hInfer (by simpa only [sizeBindings_substInputBindings] using he) hi)
-      (Nat.lt_of_lt_of_le hw (ho.frontier_le.trans hc.frontier_le)) hafinal htailS htailE
+      (Nat.lt_of_lt_of_le hw (ho.frontier_le.trans hc.frontier_le)) hafinal htailLength
       (by
         intro binding hm
         rw [substInputBindings_eq_map] at hm
@@ -3080,8 +3074,7 @@ private theorem FinishRecComponent.avoid_lengths
       w ∉ e.rigidVars →
       (∀ p ∈ T, w ∉ p.2.freeVars) ∧ w ∉ ty.freeVars ∧ w ∉ T.map Prod.fst)
     (hw : w < frontier) (ha : state.Avoids w)
-    (groupSize : Nat) (hlenS : state.specs.length = groupSize)
-    (hlenE : state.exports.length = groupSize)
+    (groupSize : Nat) (hlen : state.memberStates.length = groupSize)
     (hbindings : ∀ binding ∈ bindings, w ∉ binding.ann.rigidVars)
     (hrhs : ∀ binding ∈ bindings, binding.rhs.erase.ForallOuter
       (fun i => ∀ M, ctx.env[i]? = some M → w ∉ M.body.freeVars) groupSize ∧
@@ -3091,7 +3084,7 @@ private theorem FinishRecComponent.avoid_lengths
   | .nil => exact ⟨by simp, by simp, ha⟩
   | .skip _ hr =>
     exact hr.sourceLocality_of_infer
-      (fun he hi => hInfer (by simp only [sizeBindings]; omega) hi) hw ha groupSize hlenS hlenE
+      (fun he hi => hInfer (by simp only [sizeBindings]; omega) hi) hw ha groupSize hlen
       (fun binding hm => hbindings binding (List.mem_cons_of_mem _ hm))
       (fun binding hm => hrhs binding (List.mem_cons_of_mem _ hm))
   | .cons _ _ hi hu _ hr =>
@@ -3100,8 +3093,7 @@ private theorem FinishRecComponent.avoid_lengths
       have := freshVars_ge w hm; omega
     have hhead := hrhs { ann := .complete scheme, rhs := rhs } List.mem_cons_self
     have hentry : state.entries.length = groupSize := by
-      rw [state.entries_length]
-      exact hlenS
+      simpa [RecState.entries] using hlen
     obtain ⟨hfirstS, hfirstTy, hfirstD⟩ := hInfer
       (by simp only [InferInput.size_openTyVars, sizeBindings]; omega) hi (by omega)
       (by simpa only [InferInput.erase_openTyVars] using ha.rhsCtx hentry hhead.1)
@@ -3131,8 +3123,7 @@ private theorem FinishRecComponent.avoid_lengths
         simp only [sizeBindings]
         omega) hh)
       (by have := hi.frontier_le; omega) hanext groupSize
-      (by simpa [RecState.setSigned, RecState.onSubst] using hlenS)
-      (by simpa [RecState.setSigned, RecState.onSubst] using hlenE)
+      (by simpa [RecState.setSigned, RecState.onSubst] using hlen)
       (by
         intro binding hm
         rw [substInputBindings_eq_map] at hm
@@ -3163,28 +3154,24 @@ private theorem rigidBindingVars_mem {bindings : List InputRecBinding}
     v ∈ rigidBindingVars bindings :=
   rhs_rigid_mem hr hv
 
- theorem InferRecStrata.env_lengths
+ theorem InferRecStrata.memberStates_length
     (h : InferRecStrata K F frontier ctx bindings state groups next S final) :
-    final.specs.length = state.specs.length ∧ final.exports.length = state.exports.length := by
+    final.memberStates.length = state.memberStates.length := by
   match h with
-  | .nil => exact ⟨rfl, rfl⟩
+  | .nil => rfl
   | .cons _ _ _ hf hr =>
-    have he := hf.avoid_lengths
-    have ht := hr.env_lengths
-    exact ⟨ht.1.trans (he.1.trans (by simp [RecState.onSubst, RecState.installOpenings])),
-      ht.2.trans (he.2.trans (by simp [RecState.onSubst, RecState.installOpenings]))⟩
+    exact hr.memberStates_length.trans
+      (hf.memberStates_length.trans (by simp [RecState.onSubst, RecState.installOpenings]))
  termination_by structural h
 
- theorem InferRecSigned.env_lengths
+ theorem InferRecSigned.memberStates_length
     (h : InferRecSigned K F index frontier ctx bindings state next S final) :
-    final.specs.length = state.specs.length ∧ final.exports.length = state.exports.length := by
+    final.memberStates.length = state.memberStates.length := by
   match h with
-  | .nil => exact ⟨rfl, rfl⟩
-  | .skip _ hr => exact hr.env_lengths
+  | .nil => rfl
+  | .skip _ hr => exact hr.memberStates_length
   | .cons _ _ _ _ _ hr =>
-    have ht := hr.env_lengths
-    exact ⟨ht.1.trans (by simp [RecState.onSubst, RecState.setSigned]),
-      ht.2.trans (by simp [RecState.onSubst, RecState.setSigned])⟩
+    exact hr.memberStates_length.trans (by simp [RecState.onSubst, RecState.setSigned])
  termination_by structural h
 
 mutual
@@ -3303,16 +3290,11 @@ mutual
         fun hv => hwe.1 (rigidBindingVars_mem hb hv)⟩
     obtain ⟨hsS, hsD, hstate1⟩ := hs.sourceLocality_of_infer (fun _ hi => hi.sourceLocality)
       (by omega) (RecState.Avoids.init hw hbindings)
-      (by simp only [RecState.init_specs, RecSpec.init_length, List.length_map])
-      (by simp only [RecState.init_exports, List.length_map]) hbindings hrhs
-    have hsl := hs.env_lengths
-    have hs1len : state1.specs.length = bindings.length := by
-      exact hsl.1.trans (by
-        simp only [RecState.init_specs, RecSpec.init_length, List.length_map])
-    have he1len : state1.exports.length = bindings.length := by
-      exact hsl.2.trans (by simp only [RecState.init_exports, List.length_map])
+      (by simp [RecState.init]) hbindings hrhs
+    have hs1len : state1.memberStates.length = bindings.length :=
+      hs.memberStates_length.trans (by simp [RecState.init])
     obtain ⟨hpS, hpD, hstate2⟩ := hp.sourceLocality_of_infer (fun _ hi => hi.sourceLocality)
-      (by have := hs.frontier_le; omega) hstate1 bindings.length hs1len he1len
+      (by have := hs.frontier_le; omega) hstate1 bindings.length hs1len
       (by
         intro binding hm
         rw [substInputBindings_eq_map] at hm
@@ -3326,8 +3308,11 @@ mutual
             Expr.ForallOuter.lookupAvoid_onSubst (hrhs old ho).1 hsS,
           InferInput.avoid_subst hsS (hrhs old ho).2⟩)
     have hpre := Subst.sourceAvoid_append_local ⟨hsS, hsD⟩ ⟨hpS, hpD⟩
-    have hentries : state2.entries.length = bindings.length :=
-      state2.entries_length.trans (hp.env_lengths.1.trans hs1len)
+    have hentries : state2.entries.length = bindings.length := by
+      calc
+        state2.entries.length = state2.memberStates.length := by simp [RecState.entries]
+        _ = state1.memberStates.length := hp.memberStates_length
+        _ = bindings.length := hs1len
     obtain ⟨hbS, hbTy, hbD⟩ := hb.sourceLocality (show w < second from by have := hs.frontier_le; have := hp.frontier_le; omega)
       (by
         have hh := hstate2.rhsCtx hentries (Expr.ForallOuter.lookupAvoid_onSubst hrefs.2 hpre.1)
