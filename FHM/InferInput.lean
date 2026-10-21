@@ -6164,10 +6164,22 @@ inductive RecMemberAnnInfo where
   | complete
   | partialForall (paramCount : Nat)
 
+def RecMemberAnnInfo.recPrefixCount : RecMemberAnnInfo → Nat
+  | .inferred | .complete => 0
+  | .partialForall paramCount => paramCount
+
 def BindingAnn.recMemberAnnInfo : BindingAnn → RecMemberAnnInfo
   | .absent | .template _ => .inferred
   | .complete _ => .complete
   | .partialForall paramCount _ => .partialForall paramCount
+
+@[simp] theorem BindingAnn.recMemberAnnInfo_recPrefixCount (ann : BindingAnn) :
+    ann.recMemberAnnInfo.recPrefixCount = ann.recPrefixCount := by
+  cases ann <;> rfl
+
+@[simp] theorem BindingAnn.recMemberAnnInfo_substTyFvars (ann : BindingAnn) (S : Subst) :
+    (ann.substTyFvars S).recMemberAnnInfo = ann.recMemberAnnInfo := by
+  cases ann <;> rfl
 
 /-- Per-member recursive inference state. Keeping the fields in one record makes
 their common recursive-group coordinate structural rather than a `Frame`
@@ -6277,6 +6289,12 @@ def RecState.onSubst (S : Subst) (state : RecState) : RecState :=
   { memberStates := state.memberStates.map (RecMemberState.onSubst S)
     pool := state.pool }
 
+/-- The authored recursive-prefix arity retained at one state coordinate.
+`none` means that the coordinate itself is absent; there is no fabricated
+annotation for malformed state. -/
+def RecState.recPrefixCountAt (state : RecState) (i : Nat) : Option Nat :=
+  state.memberStates[i]?.map (fun member => member.annInfo.recPrefixCount)
+
 @[simp] theorem RecMemberState.initAll_length (frontier : Nat) (bindings : List InputRecBinding) :
     (RecMemberState.initAll frontier bindings).length = bindings.length := by
   induction bindings generalizing frontier with
@@ -6296,6 +6314,16 @@ def RecState.onSubst (S : Subst) (state : RecState) : RecState :=
 @[simp] theorem RecMemberState.initAll_slots (frontier : Nat) (bindings : List InputRecBinding) :
     (RecMemberState.initAll frontier bindings).map RecMemberState.slotImages =
       bindings.map (fun _ => []) := by
+  induction bindings generalizing frontier with
+  | nil => rfl
+  | cons binding bindings ih =>
+      rcases binding with ⟨ann, rhs⟩
+      cases ann <;> simp [RecMemberState.initAll, RecMemberState.init,
+        BindingAnn.recModeAnn, ih]
+
+@[simp] theorem RecMemberState.initAll_annInfo (frontier : Nat) (bindings : List InputRecBinding) :
+    (RecMemberState.initAll frontier bindings).map RecMemberState.annInfo =
+      bindings.map (fun binding => binding.ann.recMemberAnnInfo) := by
   induction bindings generalizing frontier with
   | nil => rfl
   | cons binding bindings ih =>
@@ -6376,6 +6404,16 @@ def RecState.onSubst (S : Subst) (state : RecState) : RecState :=
     (state.onSubst S).outputs = state.outputs.map (Option.map (Expr.substTyFvars S)) := by
   simp [RecState.onSubst, RecState.outputs, RecMemberState.onSubst, List.map_map,
     Function.comp_def]
+
+@[simp] theorem RecState.annInfo_onSubst (state : RecState) (S : Subst) :
+    (state.onSubst S).memberStates.map RecMemberState.annInfo =
+      state.memberStates.map RecMemberState.annInfo := by
+  simp [RecState.onSubst, RecMemberState.onSubst, List.map_map, Function.comp_def]
+
+@[simp] theorem RecState.recPrefixCountAt_onSubst (state : RecState) (S : Subst) (i : Nat) :
+    (state.onSubst S).recPrefixCountAt i = state.recPrefixCountAt i := by
+  simp only [RecState.recPrefixCountAt, RecState.onSubst, List.getElem?_map]
+  cases state.memberStates[i]? <;> rfl
 
 def RecSpec.monoEntry : RecSpec → PolyTy
   | .mono ty => PolyTy.mkTrivial ty
@@ -6559,6 +6597,25 @@ def RecState.setSigned (state : RecState) (member : Nat) (names : List Nat)
   | none => rfl
   | some member => simp only [Option.map_some]; split <;> rfl
 
+@[simp] theorem RecState.annInfo_installOpenings (state : RecState) (members : List Nat)
+    (openings : List RecOpening) :
+    (state.installOpenings members openings).memberStates.map RecMemberState.annInfo =
+      state.memberStates.map RecMemberState.annInfo := by
+  apply List.ext_getElem?
+  intro i
+  simp only [RecState.installOpenings, List.getElem?_map, List.getElem?_mapIdx]
+  cases h : state.memberStates[i]? with
+  | none => rfl
+  | some member => simp only [Option.map_some]; split <;> rfl
+
+@[simp] theorem RecState.recPrefixCountAt_installOpenings (state : RecState)
+    (members : List Nat) (openings : List RecOpening) (i : Nat) :
+    (state.installOpenings members openings).recPrefixCountAt i = state.recPrefixCountAt i := by
+  simp only [RecState.recPrefixCountAt, RecState.installOpenings, List.getElem?_mapIdx]
+  cases state.memberStates[i]? with
+  | none => rfl
+  | some member => split <;> rfl
+
 @[simp] theorem RecState.specs_setSigned (state : RecState) (member : Nat)
     (names : List Nat) (output : Expr) (facts : RecFacts) :
     (state.setSigned member names output facts).specs = state.specs := by
@@ -6592,6 +6649,25 @@ def RecState.setSigned (state : RecState) (member : Nat) (names : List Nat)
   | none => rfl
   | some old => simp only [Option.map_some]; split <;> rfl
 
+@[simp] theorem RecState.annInfo_setSigned (state : RecState) (member : Nat)
+    (names : List Nat) (output : Expr) (facts : RecFacts) :
+    (state.setSigned member names output facts).memberStates.map RecMemberState.annInfo =
+      state.memberStates.map RecMemberState.annInfo := by
+  apply List.ext_getElem?
+  intro i
+  simp only [RecState.setSigned, List.getElem?_map, List.getElem?_mapIdx]
+  cases h : state.memberStates[i]? with
+  | none => rfl
+  | some old => simp only [Option.map_some]; split <;> rfl
+
+@[simp] theorem RecState.recPrefixCountAt_setSigned (state : RecState) (member : Nat)
+    (names : List Nat) (output : Expr) (facts : RecFacts) (i : Nat) :
+    (state.setSigned member names output facts).recPrefixCountAt i = state.recPrefixCountAt i := by
+  simp only [RecState.recPrefixCountAt, RecState.setSigned, List.getElem?_mapIdx]
+  cases state.memberStates[i]? with
+  | none => rfl
+  | some old => split <;> rfl
+
 @[simp] theorem RecState.specs_exportComponent (state : RecState) (members : List Nat)
     (written : List (List Nat)) (pool : List Nat)
     (artifacts : List (Option RecComponentArtifact)) :
@@ -6615,6 +6691,28 @@ def RecState.setSigned (state : RecState) (member : Nat) (names : List Nat)
   cases h : state.memberStates[i]? with
   | none => rfl
   | some member => simp only [Option.map_some]; split <;> rfl
+
+@[simp] theorem RecState.annInfo_exportComponent (state : RecState) (members : List Nat)
+    (written : List (List Nat)) (pool : List Nat)
+    (artifacts : List (Option RecComponentArtifact)) :
+    (state.exportComponent members written pool artifacts).memberStates.map RecMemberState.annInfo =
+      state.memberStates.map RecMemberState.annInfo := by
+  apply List.ext_getElem?
+  intro i
+  simp only [RecState.exportComponent, List.getElem?_map, List.getElem?_mapIdx]
+  cases h : state.memberStates[i]? with
+  | none => rfl
+  | some member => simp only [Option.map_some]; split <;> rfl
+
+@[simp] theorem RecState.recPrefixCountAt_exportComponent (state : RecState)
+    (members : List Nat) (written : List (List Nat)) (pool : List Nat)
+    (artifacts : List (Option RecComponentArtifact)) (i : Nat) :
+    (state.exportComponent members written pool artifacts).recPrefixCountAt i =
+      state.recPrefixCountAt i := by
+  simp only [RecState.recPrefixCountAt, RecState.exportComponent, List.getElem?_mapIdx]
+  cases state.memberStates[i]? with
+  | none => rfl
+  | some member => split <;> rfl
 
 theorem RecState.getElem?_slots_installOpenings (state : RecState) (members : List Nat)
     (openings : List RecOpening) (i : Nat) :
@@ -7107,12 +7205,14 @@ structure RecState.Frame (base : Nat) (K : List Nat) (F : List Ty)
     (state : RecState) : Prop where
   modes : state.specs.map RecSpec.ann =
     bindings.map (fun binding => binding.ann.recModeAnn)
+  annInfo : state.memberStates.map RecMemberState.annInfo =
+    bindings.map (fun binding => binding.ann.recMemberAnnInfo)
   poly : ∀ (i : Nat) (scheme : PolyTy), state.specs[i]? = some (RecSpec.poly scheme) →
     state.exports[i]? = some (some scheme)
   mono : ∀ (i : Nat) (ty : Ty), state.specs[i]? = some (RecSpec.mono ty) →
     if i ∈ done then ∃ written,
       state.slots[i]? = some (written.map Ty.fvar) ∧
-      written.length = ((bindings[i]?).map (fun binding : InputRecBinding => binding.ann) |>.getD .absent).recPrefixCount ∧ written.Nodup ∧
+      state.recPrefixCountAt i = some written.length ∧ written.Nodup ∧
       (∀ v ∈ written, v ∈ state.pool) ∧
       state.exports[i]? = some (some (recScheme written state.pool ty))
     else state.exports[i]? = some none
@@ -7136,6 +7236,20 @@ structure RecState.Frame (base : Nat) (K : List Nat) (F : List Ty)
   have hm := congrArg List.length h.modes
   simpa only [List.length_map, RecState.specs_length] using hm
 
+theorem RecState.Frame.recPrefixCountAt {state : RecState} {base : Nat} {K : List Nat}
+    {F : List Ty} {ctx : Ctx} {bindings : List InputRecBinding} {done : List Nat}
+    (h : state.Frame base K F ctx bindings done) {i : Nat} {binding : InputRecBinding}
+    (hb : bindings[i]? = some binding) :
+    state.recPrefixCountAt i = some binding.ann.recPrefixCount := by
+  have ha := congrArg (fun infos : List RecMemberAnnInfo => infos[i]?) h.annInfo
+  simp only [List.getElem?_map, hb, Option.map_some] at ha
+  cases hm : state.memberStates[i]? with
+  | none => simp [hm] at ha
+  | some member =>
+      have hinfo : member.annInfo = binding.ann.recMemberAnnInfo := by
+        simpa [hm] using ha
+      simp [RecState.recPrefixCountAt, hm, hinfo]
+
  theorem RecState.Frame.specs_length {state : RecState} {base : Nat} {K : List Nat}
     {F : List Ty} {ctx : Ctx} {bindings : List InputRecBinding} {done : List Nat}
     (h : state.Frame base K F ctx bindings done) : state.specs.length = bindings.length :=
@@ -7146,7 +7260,7 @@ structure RecState.Frame (base : Nat) (K : List Nat) (F : List Ty)
     (hbindings : ∀ binding ∈ bindings, ∀ v ∈ binding.ann.rigidVars, v < base)
     (hK : ∀ v ∈ K, v < base) (hF : ∀ v ∈ TyList.freeVars F, v < base) :
     (RecState.init base bindings).Frame base K F ctx bindings [] := by
-  refine ⟨?_, ?_, ?_, ?_, by simp [RecState.init],
+  refine ⟨?_, by simp [RecState.init], ?_, ?_, ?_, by simp [RecState.init],
     by simp [RecState.init], by simp [RecState.init], by simp [RecState.init],
     by simp [RecState.init], by simp [RecState.init], hK, ?_⟩
   · simpa only [RecState.init_specs, InputRecBinding.map_recMode_ann] using
@@ -7241,7 +7355,8 @@ structure RecState.Frame (base : Nat) (K : List Nat) (F : List Ty)
     {openings : List RecOpening} (h : state.Frame base K F ctx bindings done)
     (hnot : ∀ i ∈ members, i ∉ done) :
     (state.installOpenings members openings).Frame base K F ctx bindings done := by
-  refine ⟨by simpa only [RecState.specs_installOpenings] using h.modes, ?_, ?_,
+  refine ⟨by simpa only [RecState.specs_installOpenings] using h.modes,
+    by simpa only [RecState.annInfo_installOpenings] using h.annInfo, ?_, ?_,
     by simpa only [RecState.specs_installOpenings] using h.pending,
     by simpa only [RecState.pool_installOpenings] using h.pool_nodup,
     by simpa only [RecState.pool_installOpenings] using h.pool_ctx,
@@ -7260,7 +7375,8 @@ structure RecState.Frame (base : Nat) (K : List Nat) (F : List Ty)
     by_cases hd : i ∈ done
     · simp only [hd, ↓reduceIte] at hm ⊢
       obtain ⟨written, hslot, hcount, hnd, hpool, hex⟩ := hm
-      refine ⟨written, ?_, hcount, hnd, ?_, ?_⟩
+      refine ⟨written, ?_, by simpa only [RecState.recPrefixCountAt_installOpenings] using hcount,
+        hnd, ?_, ?_⟩
       · have hi : i ∉ members := fun hc => hnot i hc hd
         rw [RecState.getElem?_slots_installOpenings_of_not_mem state openings hi]
         exact hslot

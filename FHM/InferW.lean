@@ -3474,6 +3474,7 @@ private theorem soft_avoids_subst {F : List Ty} {S : Subst} {v : Nat}
   have hfix : ∀ g ∈ state.pool, S.onTy (.fvar g) = .fvar g := Subst.fixes_of_dom_avoids hdom
   refine {
     modes := ?_
+    annInfo := ?_
     poly := ?_
     mono := ?_
     pending := ?_
@@ -3494,6 +3495,9 @@ private theorem soft_avoids_subst {F : List Ty} {S : Subst} {v : Nat}
     rw [hm, h.modes]
     simp only [substInputBindings_eq_map, List.map_map, Function.comp_def,
       InputRecBinding.recMode, BindingAnn.recModeAnn_subst_source]
+  · rw [RecState.annInfo_onSubst, h.annInfo]
+    simp only [substInputBindings_eq_map, List.map_map, Function.comp_def,
+      BindingAnn.recMemberAnnInfo_substTyFvars]
   · intro i scheme hget
     rw [RecState.specs_onSubst, List.getElem?_map] at hget
     obtain ⟨old, hold, heq⟩ := Option.map_eq_some_iff.mp hget
@@ -3518,11 +3522,7 @@ private theorem soft_avoids_subst {F : List Ty} {S : Subst} {v : Nat}
           apply List.map_congr_left
           intro name hn
           exact hfix name (hsub name hn)
-        · cases hb : bindings[i]? with
-          | none => simpa only [substInputBindings_eq_map, List.getElem?_map, hb,
-              Option.map_none] using hcount
-          | some binding => simpa only [substInputBindings_eq_map, List.getElem?_map, hb,
-              Option.map_some, Option.getD_some, BindingAnn.recPrefixCount_subst_source] using hcount
+        · simpa only [RecState.recPrefixCountAt_onSubst] using hcount
         · simp only [RecState.exports_onSubst, List.getElem?_map, hexport, Option.map_some]
           exact congrArg (fun scheme => some (some scheme))
             (recScheme_subst_pool_avoid hdom hran hsub).symm
@@ -4804,8 +4804,7 @@ private theorem ResolveRecSlots.names_avoid_of_slots
       (((state.onSubst S).fixedCtx (S.onCtx ctx)).env.freeVars ++ K ++ softVars (substSoft S F))
       0 (state.onSubst S).slots written)
     (hcounts : ∀ (i : Nat) images, i ∈ members → (state.onSubst S).slots[i]? = some images →
-      images.length = ((bindings[i]?).map (fun binding : InputRecBinding => binding.ann)
-        |>.getD BindingAnn.absent).recPrefixCount)
+      (state.onSubst S).recPrefixCountAt i = some images.length)
     (hslots : ∀ member ty, state.specs[member]? = some (.mono ty) → member ∉ done ++ members →
       ∀ (i : Nat) images, i ∈ members → (state.onSubst S).slots[i]? = some images →
         ∀ t ∈ images, base + member ∉ t.freeVars) :
@@ -4842,6 +4841,7 @@ private theorem ResolveRecSlots.names_avoid_of_slots
     (substInputBindings S bindings) (done ++ members)
   refine {
     modes := ?_
+    annInfo := ?_
     poly := ?_
     mono := ?_
     pending := by simpa only [RecState.specs_exportComponent] using hp'
@@ -4861,6 +4861,11 @@ private theorem ResolveRecSlots.names_avoid_of_slots
     rw [RecState.specs_exportComponent, hm, h.modes]
     simp only [substInputBindings_eq_map, List.map_map, Function.comp_def,
       InputRecBinding.recMode, BindingAnn.recModeAnn_subst_source]
+  · rw [RecState.annInfo_exportComponent]
+    change (state.onSubst S).memberStates.map RecMemberState.annInfo = _
+    rw [RecState.annInfo_onSubst, h.annInfo]
+    simp only [substInputBindings_eq_map, List.map_map, Function.comp_def,
+      BindingAnn.recMemberAnnInfo_substTyFvars]
   · intro i sigma hs
     rw [RecState.specs_exportComponent] at hs
     have hex := hpoly i sigma hs
@@ -4896,11 +4901,7 @@ private theorem ResolveRecSlots.names_avoid_of_slots
         rw [hbare.1]; exact hslotget
       · have hh := hcounts i _ hi hslotget
         rw [← hbare.1, List.length_map] at hh
-        cases hb : bindings[i]? with
-        | none => simpa only [substInputBindings_eq_map, List.getElem?_map, hb,
-            Option.map_none] using hh
-        | some binding => simpa only [substInputBindings_eq_map, List.getElem?_map, hb,
-            Option.map_some, Option.getD_some, BindingAnn.recPrefixCount_subst_source] using hh
+        simpa only [RecState.recPrefixCountAt_exportComponent] using hh
       · intro v hv
         exact st.componentPool_written (List.mem_flatten.mpr ⟨names, List.mem_of_getElem? hnames, hv⟩)
       · rw [RecState.getElem?_exports_exportComponent]
@@ -4930,11 +4931,8 @@ private theorem ResolveRecSlots.names_avoid_of_slots
           congr 1
           rw [List.map_map]
           exact List.map_congr_left (fun v hv => hfix v (hsub v hv))
-        · cases hb : bindings[i]? with
-          | none => simpa only [substInputBindings_eq_map, List.getElem?_map, hb,
-              Option.map_none] using hcount
-          | some binding => simpa only [substInputBindings_eq_map, List.getElem?_map, hb,
-              Option.map_some, Option.getD_some, BindingAnn.recPrefixCount_subst_source] using hcount
+        · simpa only [RecState.recPrefixCountAt_exportComponent, st,
+            RecState.recPrefixCountAt_onSubst] using hcount
         · have hstable' : recScheme names pool (S.onTy original) = recScheme names state.pool (S.onTy original) := hstable
           rw [RecState.pool_exportComponent]
           rw [hstable']
@@ -5117,8 +5115,20 @@ private theorem installed_subst_slot_value {state : RecState} {S : Subst} {i : N
     apply hins.exportComponent_onSubst hlc.installOpenings hSLC havoid.1
       (by simpa only [RecState.specs_installOpenings] using havoid.2) hresolve
     · intro i images hi hx
-      rw [installed_subst_slot hi hx, List.length_map, List.length_map]
-      exact ho.written_count i (by simpa using hi)
+      have hindex : i < bindings.length := by
+        rw [← hframe.memberStates_length]
+        have hs : i < ((state.installOpenings component openings).onSubst
+            (pre ++ current)).slots.length := (List.getElem?_eq_some_iff.mp hx).1
+        simpa only [RecState.slots_length, RecState.onSubst, RecState.installOpenings,
+          List.length_mapIdx, List.length_map] using hs
+      let binding := bindings[i]
+      have hb : bindings[i]? = some binding := List.getElem?_eq_getElem hindex
+      have himages : images.length = binding.ann.recPrefixCount := by
+        rw [installed_subst_slot hi hx, List.length_map, List.length_map]
+        simpa only [hb, Option.map_some, Option.getD_some] using
+          ho.written_count i (by simpa using hi)
+      rw [RecState.recPrefixCountAt_onSubst, hins.recPrefixCountAt hb]
+      exact congrArg some himages.symm
     · intro member ty ht hm i images hi hx t htmem
       have ht0 : state.specs[member]? = some (.mono ty) := by
         simpa only [RecState.specs_installOpenings] using ht
@@ -5260,9 +5270,11 @@ theorem RecState.Frame.setSigned {state : RecState} {member : Nat} {names : List
     (state.setSigned member names output facts).Frame base K F ctx bindings done := by
   exact {
     modes := by simpa only [RecState.specs_setSigned] using h.modes
+    annInfo := by simpa only [RecState.annInfo_setSigned] using h.annInfo
     poly := by simpa only [RecState.specs_setSigned, RecState.exports_setSigned] using h.poly
     mono := by simpa only [RecState.specs_setSigned, RecState.slots_setSigned,
-      RecState.exports_setSigned, RecState.pool_setSigned] using h.mono
+      RecState.exports_setSigned, RecState.pool_setSigned,
+      RecState.recPrefixCountAt_setSigned] using h.mono
     pending := by simpa only [RecState.specs_setSigned] using h.pending
     pool_nodup := by simpa only [RecState.pool_setSigned] using h.pool_nodup
     pool_ctx := by simpa only [RecState.pool_setSigned] using h.pool_ctx
@@ -5577,13 +5589,14 @@ private theorem RecState.Frame.poly_of_complete {state : RecState} {i : Nat} {sc
 
 theorem RecState.Frame.prefixes_mono {state : RecState} {i : Nat}
     (h : state.Frame base K F ctx bindings done)
+    {binding : InputRecBinding} (hb : bindings[i]? = some binding)
     (hs : state.specs[i]? = some (.mono ty)) (hd : i ∈ done) :
     ∃ names, state.prefixes[i]? = some names ∧
-      names.length = ((bindings[i]?).map (fun binding : InputRecBinding => binding.ann)
-        |>.getD BindingAnn.absent).recPrefixCount ∧ names.Nodup ∧
+      names.length = binding.ann.recPrefixCount ∧ names.Nodup ∧
       (∀ v ∈ names, v ∈ state.pool) := by
   obtain ⟨names, hslots, hlen, hnd, hsub, _⟩ := if_pos hd ▸ h.mono i ty hs
-  refine ⟨names, ?_, hlen, hnd, hsub⟩
+  have hcount := h.recPrefixCountAt hb
+  refine ⟨names, ?_, Option.some.inj (hlen.symm.trans hcount), hnd, hsub⟩
   rw [RecState.getElem?_prefixes_of_mono state hs, hslots]
   simp [recSlotName, Function.comp_def]
 
@@ -5599,9 +5612,10 @@ theorem RecState.Frame.prefixes_wf {state : RecState} {bindings : List InputRecB
   cases hspec : state.specs[i] with
   | mono ty =>
     have hget : state.specs[i]? = some (.mono ty) := hspec ▸ hs
-    obtain ⟨written, hp, hcount, hnd, hsub⟩ := h.prefixes_mono hget (h.all_mono_done hg _ _ hget)
+    obtain ⟨written, hp, hcount, hnd, hsub⟩ :=
+      h.prefixes_mono hb hget (h.all_mono_done hg _ _ hget)
     cases Option.some.inj (hp.symm.trans hn)
-    exact ⟨by simpa only [hb, Option.getD_some] using hcount, hnd, hsub⟩
+    exact ⟨hcount, hnd, hsub⟩
   | poly scheme =>
     have hget : state.specs[i]? = some (.poly scheme) := hspec ▸ hs
     have hp : state.prefixes[i]? = some [] :=
@@ -6143,9 +6157,8 @@ theorem RecState.Fidelity.installOpenings {state : RecState}
     (hpool : pool.Nodup) (havoid : ∀ v ∈ pool, v ∉ Q)
     (hscope : ∀ binding ∈ bindings,
       ∀ v ∈ binding.ann.rigidVars ++ binding.rhs.rigidVars, v ∈ Q)
-    (hprefix : ∀ i ∈ members,
-      (written[i]?.getD []).length = ((bindings[i]?).map
-        (fun binding : InputRecBinding => binding.ann) |>.getD BindingAnn.absent).recPrefixCount ∧
+    (hprefix : ∀ i ∈ members, ∀ binding, bindings[i]? = some binding →
+      (written[i]?.getD []).length = binding.ann.recPrefixCount ∧
       (written[i]?.getD []).Nodup ∧ ∀ v ∈ written[i]?.getD [], v ∈ pool)
     (hcheck : ∀ (i : Nat) (binding : InputRecBinding) (ty : Ty) (output : Expr),
       i ∈ members → bindings[i]? = some binding →
@@ -6178,10 +6191,8 @@ theorem RecState.Fidelity.installOpenings {state : RecState}
         cases Option.some.inj hclose
         have hsmono : state.specs[i]? = some (.mono ty) := by simpa only [hspec] using hs
         obtain ⟨hfit, hcomplete, hbound⟩ := hcheck i binding ty raw hi hb hsmono hraw
-        have hp := hprefix i hi
-        have hcount : (written[i]?.getD []).length = binding.ann.recPrefixCount := by
-          simpa only [hb, Option.getD_some] using hp.1
-        exact hfit.cofinite_fidelity hcount hp.2.1 hp.2.2 hpool
+        have hp := hprefix i hi binding hb
+        exact hfit.cofinite_fidelity hp.1 hp.2.1 hp.2.2 hpool
           (by simpa only [hspec] using
             (hlc.1 member.spec (List.mem_map.mpr ⟨member, List.mem_of_getElem? hm, rfl⟩)))
           (fun v hv => hscope binding (List.mem_of_getElem? hb) v (List.mem_append_left _ hv))
@@ -6839,9 +6850,9 @@ private theorem fidelity_fvar_map_inj {a b : List Nat}
     let st := (state.installOpenings component openings).onSubst (pre ++ current)
     have hprefixData : ∀ i ∈ component,
         ∃ ns, written[i]? = some ns ∧ st.slots[i]? = some (ns.map Ty.fvar) ∧
-          ns.length = (((substInputBindings (pre ++ current) bindings)[i]?).map
-            (fun binding : InputRecBinding => binding.ann)
-            |>.getD BindingAnn.absent).recPrefixCount ∧
+          (st.exportComponent component written
+            (st.componentPool K (softVars (substSoft (pre ++ current) F)) component
+              ((pre ++ current).onCtx ctx) written) artifacts).recPrefixCountAt i = some ns.length ∧
           ns.Nodup ∧ ∀ v ∈ ns, v ∈ st.componentPool K (softVars (substSoft (pre ++ current) F)) component ((pre ++ current).onCtx ctx) written := by
       intro i hi
       have hm : i ∈ (past ++ component :: rest).flatten := by
@@ -6871,9 +6882,12 @@ private theorem fidelity_fvar_map_inj {a b : List Nat}
     apply hfidS.exportComponent (hinitLC.onSubst hSLC) heframe.pool_nodup
       (fun v hv hq => (List.mem_append.mp hq).elim (heframe.pool_rigid v hv) (heframe.pool_soft v hv))
       hScopeS
-    · intro i hi
+    · intro i hi binding hb
       obtain ⟨ns,hn,_,hcount,hnd,hsub⟩ := hprefixData i hi
-      simpa only [hn,Option.getD_some] using And.intro hcount (And.intro hnd hsub)
+      have hsource := heframe.recPrefixCountAt hb
+      have hlen : ns.length = binding.ann.recPrefixCount :=
+        Option.some.inj (hcount.symm.trans hsource)
+      simpa only [hn, Option.getD_some] using And.intro hlen (And.intro hnd hsub)
     · intro i binding ty output hi hb ht hout
       rw [substInputBindings_eq_map, List.getElem?_map] at hb
       obtain ⟨binding0,hb0,rfl⟩ := Option.map_eq_some_iff.mp hb
