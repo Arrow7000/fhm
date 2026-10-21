@@ -62,6 +62,11 @@ structure InferRequest where
 
 namespace InferRequest
 
+/-- A request for ordinary core inference, with no live provisional slots. -/
+def core (protectedVars : List Nat) (frontier : Nat) (ctx : Ctx)
+    (input : InferInput) : InferRequest :=
+  { protectedVars, soft := [], frontier, ctx, input }
+
 /-- Freshness bounds required by the inference worker independently of source
 scope and semantic well-formedness. -/
 structure Bounds (request : InferRequest) : Prop where
