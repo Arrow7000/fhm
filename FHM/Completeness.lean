@@ -1106,8 +1106,7 @@ def Infer.SourcePrincipal (_h : Infer K F frontier ctx input next subst output t
 `InputTyping P` scopes authored fixed types in precisely that protected set. It does
 not claim most-general fillings for every unused annotation hole. -/
 def Infer.Principal (_h : Infer K F frontier ctx input next subst output ty) : Prop :=
-  CtxWF ctx → CtxBelow frontier ctx → (∀ k ∈ K, k < frontier) →
-  (∀ soft ∈ F, Ty.BelowFvars frontier soft) →
+  (InferRequest.mk K F frontier ctx input).WF →
   ∀ (ambient : Subst) (target : Ty) (P : List Nat),
     (∀ pair ∈ ambient, pair.2.IsLC) → (∀ p ∈ P, p < frontier) →
     (∀ p ∈ P, ambient.onTy (.fvar p) = .fvar p) →
@@ -1119,9 +1118,9 @@ def Infer.Principal (_h : Infer K F frontier ctx input next subst output ty) : P
 
 theorem Infer.SourcePrincipal.principal {h : Infer K F frontier ctx input next subst output ty}
     (ih : Infer.SourcePrincipal h) : Infer.Principal h := by
-  intro hwf hctx hK hF ambient target P hS hP hfix ht
+  intro hreq ambient target P hS hP hfix ht
   have heq := input.substTyFvars_eq_self_of_fixes (fun v hv => hfix v (ht.rigidVars v hv))
-  exact ih hwf hctx hK hF ambient target P hS hP hfix
+  exact ih hreq.ctxWF hreq.ctxBelow hreq.protectedBelow hreq.softBelow ambient target P hS hP hfix
     (fun v hv _ _ => hfix v (ht.rigidVars v hv)) (heq.symm ▸ ht)
 
 theorem Seed.override (h : Seed K frontier ann param initial)
@@ -10956,8 +10955,8 @@ theorem Infer.complete_req {input : InferInput} {ctx : Ctx} {K : List Nat}
       Subst.AgreesBelow frontier ambient (result.subst ++ residual) := by
   obtain ⟨⟨⟨next, subst, output, ty⟩, hi⟩, _⟩ := Option.isSome_iff_exists.mp
     (inferCore_complete_req input K frontier ctx ambient target hreq hS hfix ht)
-  obtain ⟨R, hR, hty, hRK, hag⟩ := hi.principal hreq.ctxWF hreq.ctxBelow
-    hreq.protectedBelow (by simp) ambient target K hS hreq.protectedBelow hfix ht
+  obtain ⟨R, hR, hty, hRK, hag⟩ := hi.principal hreq ambient target K hS
+    hreq.protectedBelow hfix ht
   exact ⟨⟨next, subst, output, ty⟩, R, hi, hR, hty, hRK, hag⟩
 
 /-- Compatibility wrapper for the original premise-by-premise API. -/
@@ -11058,8 +11057,12 @@ theorem inferWithTypes_principal {ctors : CtorEnv} {input : InferInput} {result 
         (∀ v ∈ input.rigidVars, R.onTy (.fvar v) = .fvar v) := by
   intro target ht
   have hi := inferWithTypes_infer h
-  obtain ⟨R, hR, hty, hfix, _⟩ := hi.principal CtxWF.empty CtxBelow.empty
-    (fun v hv => InferInput.lt_freshFloor hv) (by simp) [] target input.rigidVars (by simp)
+  have hreq : (InferRequest.core input.rigidVars input.freshFloor ⟨[], ctors⟩ input).WF :=
+    { ctxBelow := CtxBelow.empty
+      protectedBelow := fun v hv => InferInput.lt_freshFloor hv
+      softBelow := by simp [InferRequest.core]
+      ctxWF := CtxWF.empty }
+  obtain ⟨R, hR, hty, hfix, _⟩ := hi.principal hreq [] target input.rigidVars (by simp)
     (fun v hv => InferInput.lt_freshFloor hv) (by simp)
     (by simpa only [Subst.onCtx_empty] using ht)
   exact ⟨R, hR, hty, hfix⟩
