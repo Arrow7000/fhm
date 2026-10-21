@@ -320,39 +320,41 @@ inductive InferCert : InferRequest → InferResult → Prop
          let generalizedNames := genVars (K ++ softVars checkedSoft) checkedCtx.env
            (checkResult.subst.onTy rhsResult.ty)
          letResult generalized generalizedNames rhsResult checkResult bodyResult)
-  | letSignature :
+  | letSignature {K : List Nat} {F : List Ty} {ann : BindingAnn}
+      {rhs body : InferInput} {written : List Nat} {frontier : Nat} {ctx : Ctx}
+      {rhsResult : InferResult} {checkResult : CheckResult} {bodyResult : InferResult} :
       SourceScope K F (.letIn ann rhs body) →
       written = freshVars frontier ann.paramCount →
       (∀ name ∈ written, name ∉ K ++ softVars F) →
       InferCert ⟨K ++ written, F, frontier + ann.paramCount, ctx, rhs.openTyVars written⟩
-        ⟨first, s1, rhsOut, rhsTy⟩ →
-      SignatureCheck K (substSoft s1 F) written first rhsTy (ann.substTyFvars s1) checked sCheck →
-      (let checkedSubst := s1 ++ sCheck
+        rhsResult →
+      SignatureCheck K (substSoft rhsResult.subst F) written rhsResult.frontier rhsResult.ty
+        (ann.substTyFvars rhsResult.subst) checkResult.frontier checkResult.subst →
+      (let checkedSubst := rhsResult.subst ++ checkResult.subst
        let checkedSoft := substSoft checkedSubst F
-       let checkedCtx := sCheck.onCtx (s1.onCtx ctx)
+       let checkedCtx := checkResult.subst.onCtx (rhsResult.subst.onCtx ctx)
        ∀ name ∈ written, name ∉ checkedCtx.env.freeVars ++ softVars checkedSoft) →
-      (let checkedSubst := s1 ++ sCheck
+      (let checkedSubst := rhsResult.subst ++ checkResult.subst
        let checkedSoft := substSoft checkedSubst F
-       let checkedCtx := sCheck.onCtx (s1.onCtx ctx)
+       let checkedCtx := checkResult.subst.onCtx (rhsResult.subst.onCtx ctx)
        let checkedAnn := ann.substTyFvars checkedSubst
        let bodyScheme := signatureScheme checkedAnn (K ++ softVars checkedSoft) written
-         checkedCtx (sCheck.onTy rhsTy)
+         checkedCtx (checkResult.subst.onTy rhsResult.ty)
        InferCert
-         ⟨K, checkedSoft, checked, { checkedCtx with env := bodyScheme :: checkedCtx.env },
+         ⟨K, checkedSoft, checkResult.frontier,
+           { checkedCtx with env := bodyScheme :: checkedCtx.env },
            body.substTyFvars checkedSubst⟩
-         ⟨next, s2, bodyOut, bodyTy⟩) →
+         bodyResult) →
       InferCert ⟨K, F, frontier, ctx, .letIn ann rhs body⟩
-        ⟨next, s1 ++ sCheck ++ s2,
-          (let checkedSubst := s1 ++ sCheck
-           let checkedSoft := substSoft checkedSubst F
-           let checkedCtx := sCheck.onCtx (s1.onCtx ctx)
-           let checkedAnn := ann.substTyFvars checkedSubst
-           let bodyScheme := signatureScheme checkedAnn (K ++ softVars checkedSoft) written
-             checkedCtx (sCheck.onTy rhsTy)
-           let bodyNames := signatureNames checkedAnn (K ++ softVars checkedSoft) written
-             checkedCtx (sCheck.onTy rhsTy)
-           letOutput bodyScheme bodyNames (rhsOut.substTyFvars sCheck) bodyOut s2),
-          bodyTy⟩
+        (let checkedSubst := rhsResult.subst ++ checkResult.subst
+         let checkedSoft := substSoft checkedSubst F
+         let checkedCtx := checkResult.subst.onCtx (rhsResult.subst.onCtx ctx)
+         let checkedAnn := ann.substTyFvars checkedSubst
+         let bodyScheme := signatureScheme checkedAnn (K ++ softVars checkedSoft) written
+           checkedCtx (checkResult.subst.onTy rhsResult.ty)
+         let bodyNames := signatureNames checkedAnn (K ++ softVars checkedSoft) written
+           checkedCtx (checkResult.subst.onTy rhsResult.ty)
+         letResult bodyScheme bodyNames rhsResult checkResult bodyResult)
   | match_ :
       SourceScope K F (.match_ scrut branches) →
       InferCert ⟨K, F, frontier, ctx, scrut⟩ ⟨first, s1, scrutOut, scrutTy⟩ →
@@ -1324,15 +1326,21 @@ def inferWithTypesCore (K : List Nat) (frontier : Nat) (ctx : Ctx) (input : Infe
                           nodeTypes := .root bodyResult.ty ++ rhsFinalTypes ++
                             bodyResult.nodeTypes.below .letBody
                           binderSchemes := inferred ++ rhsFinalSchemes ++
-                            bodyResult.binderSchemes.below .letBody },
-                          .letSignature hrawScope rfl (fun name hn hk => by
-                            have hlt : name < frontier := by
-                              rcases List.mem_append.mp hk with hk | hk
-                              · exact of_decide_eq_true (List.all_eq_true.mp hK name hk)
-                              · exact of_decide_eq_true (List.all_eq_true.mp hF name hk)
-                            have hge := freshVars_ge name hn
-                            omega)
-                            hr hc hescape hb⟩
+                            bodyResult.binderSchemes.below .letBody }, by
+                          simpa only [letResult] using
+                            (InferCert.letSignature
+                              (written := written)
+                              (rhsResult := rhsResult.toInferResult)
+                              (checkResult := ⟨checked, sCheck⟩)
+                              (bodyResult := bodyResult.toInferResult)
+                              hrawScope rfl (fun name hn hk => by
+                                have hlt : name < frontier := by
+                                  rcases List.mem_append.mp hk with hk | hk
+                                  · exact of_decide_eq_true (List.all_eq_true.mp hK name hk)
+                                  · exact of_decide_eq_true (List.all_eq_true.mp hF name hk)
+                                have hge := freshVars_ge name hn
+                                omega)
+                              hr hc hescape hb)⟩
                     else none
             else
                   match inferWithTypesCore K frontier ctx rhs F with
@@ -2357,12 +2365,17 @@ private theorem InferCert.belowFvars_raw (h : Infer K F frontier ctx input next 
       · exact (hcSubst p hp).mono hbLe
     · exact hbSubst p hp
 
-  | @InferCert.letSignature K F ann rhs body written frontier ctx first s1 rhsOut rhsTy checked sCheck
-      next s2 bodyOut bodyTy _ hprefix _ hr hc _ hb =>
+  | @InferCert.letSignature K F ann rhs body written frontier ctx
+      ⟨first, s1, rhsOut, rhsTy⟩ ⟨checked, sCheck⟩ ⟨next, s2, bodyOut, bodyTy⟩
+      _ hprefix _ hr hc _ hb =>
     intro hctx hK hF
-    have hrLe := Infer.frontier_le hr
-    have hcLe := hc.frontier_le
-    have hbLe := Infer.frontier_le hb
+    dsimp only at hr hc hb
+    have hrLe : frontier + ann.paramCount ≤ first := by
+      simpa using Infer.frontier_le hr
+    have hcLe : first ≤ checked := by
+      simpa using hc.frontier_le
+    have hbLe : checked ≤ next := by
+      simpa using Infer.frontier_le hb
     obtain ⟨hrTy, hrSubst⟩ := hr.belowFvars_raw
       (fun M hM => (hctx M hM).mono (by omega)) (by
         intro k hk
@@ -3491,17 +3504,24 @@ mutual
       (by simpa only [InferInput.erase_substTyFvars] using hbrefs) (InferInput.avoid_subst hA.1 hwe.2)
     have hAll := Subst.sourceAvoid_append_local hA ⟨hbS, hbD⟩
     exact ⟨hAll.1, hbTy, hAll.2⟩
-  | .letSignature _ heq _ hr hc _ hb =>
+  | @InferCert.letSignature K F ann rhs body written frontier ctx
+      ⟨first, s1, rhsOut, rhsTy⟩ ⟨checked, sCheck⟩ ⟨next, s2, bodyOut, bodyTy⟩
+      _ heq _ hr hc _ hb =>
     intro w hw hrefs hwe
     expose_names
     subst written
+    dsimp only at hr hc hb
     simp only [InferInput.erase, Expr.ForallOuter, Expr.rec_strong, Nat.zero_add] at hrefs
     simp only [InferInput.rigidVars, List.mem_append, not_or] at hwe
     have hwr : w ∉ freshVars frontier ann.paramCount := fun hm => by have := freshVars_ge w hm; omega
+    have hrLe : frontier + ann.paramCount ≤ first := by
+      simpa using Infer.frontier_le hr
+    have hcLe : first ≤ checked := by
+      simpa using hc.frontier_le
     obtain ⟨hrS, hrTy, hrD⟩ := hr.sourceLocality_raw (by omega)
       (by simpa only [InferInput.erase_openTyVars] using hrefs.1)
       (fun hm => (InferInput.rigidVars_openTyVarsFrom hm).elim hwe.1.2 hwr)
-    have hcA := hc.sourceAvoid (Nat.lt_of_lt_of_le hw (by have := Infer.frontier_le hr; omega)) hrTy
+    have hcA := hc.sourceAvoid (Nat.lt_of_lt_of_le hw (by omega)) hrTy
       (BindingAnn.avoid_subst hrS hwe.1.1) hwr
     have hA := Subst.sourceAvoid_append_local ⟨hrS, hrD⟩ hcA
     have hp : w ∉ (signatureScheme (ann.substTyFvars (s1 ++ sCheck))
@@ -3515,7 +3535,7 @@ mutual
       (Expr.ForallOuter.lookupAvoid_onSubst (Expr.ForallOuter.lookupAvoid_onSubst hrefs.2 hrS) hcA.1)
       (by intro M hM; rcases List.mem_singleton.mp hM with rfl; exact hp)
     obtain ⟨hbS, hbTy, hbD⟩ := hb.sourceLocality_raw
-      (Nat.lt_of_lt_of_le hw (by have := Infer.frontier_le hr; have := hc.frontier_le; omega))
+      (Nat.lt_of_lt_of_le hw (by omega))
       (by simpa only [InferInput.erase_substTyFvars] using hbrefs) (InferInput.avoid_subst hA.1 hwe.2)
     have hAll := Subst.sourceAvoid_append_local hA ⟨hbS, hbD⟩
     exact ⟨hAll.1, hbTy, hAll.2⟩
@@ -7682,7 +7702,8 @@ private theorem InferCert.sourceSound_raw (h : Infer K F frontier ctx input next
         (fun _ heq => Option.some.inj heq) ?_ rfl bodyTyped
       simpa only [letOutput, genScheme, ← Subst.onCtx_append] using rhsFinal
 
-  | @InferCert.letSignature K F ann rhs body written frontier ctx first s1 rhsOut rhsTy checked sCheck next s2 bodyOut bodyTy
+  | @InferCert.letSignature K F ann rhs body written frontier ctx
+      ⟨first, s1, rhsOut, rhsTy⟩ ⟨checked, sCheck⟩ ⟨next, s2, bodyOut, bodyTy⟩
       hraw hprefix havoid hr hc hescape hb =>
     intro hctx
     have hlen : written.length = ann.paramCount := by simpa only [freshVars_length] using congrArg List.length hprefix
@@ -8344,7 +8365,8 @@ private theorem InferCert.inputSound_source_raw (h : Infer K F frontier ctx inpu
       intro fresh hfresh
       simpa only [← Subst.onCtx_append, List.append_assoc] using hgeneral fresh hfresh
 
-  | @InferCert.letSignature K F ann rhs body written frontier ctx first s1 rhsOut rhsTy checked sCheck next s2 bodyOut bodyTy
+  | @InferCert.letSignature K F ann rhs body written frontier ctx
+      ⟨first, s1, rhsOut, rhsTy⟩ ⟨checked, sCheck⟩ ⟨next, s2, bodyOut, bodyTy⟩
       hscope hprefix havoid hr hc hescape hb =>
     intro hctx
     have hlen : written.length = ann.paramCount := by simpa only [freshVars_length] using congrArg List.length hprefix
@@ -8890,7 +8912,8 @@ private theorem InferCert.completes_source_raw (h : Infer K F frontier ctx input
       · intro fresh hf
         exact hcomplete fresh ⟨hf.length, hf.nodup, fun v hv hm => hf.avoid v hv (List.mem_append_right _ hm)⟩
 
-  | @InferCert.letSignature K F ann rhs body written frontier ctx first s1 rhsOut rhsTy checked sCheck next s2 bodyOut bodyTy
+  | @InferCert.letSignature K F ann rhs body written frontier ctx
+      ⟨first, s1, rhsOut, rhsTy⟩ ⟨checked, sCheck⟩ ⟨next, s2, bodyOut, bodyTy⟩
       hscope hprefix havoid hr hc hescape hb =>
     intro hctx
     have hlen : written.length = ann.paramCount := by simpa only [freshVars_length] using congrArg List.length hprefix

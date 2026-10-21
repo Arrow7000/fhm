@@ -3208,7 +3208,12 @@ theorem Infer.sourcePrincipal_letSignature {rhs body : InferInput} {ann : Bindin
           (sCheck.onCtx (s1.onCtx ctx)).env }
       (body.substTyFvars (s1 ++ sCheck)) next s2 bodyOut bodyTy)
     (ihr : Infer.SourcePrincipal hr) (ihb : Infer.SourcePrincipal hb) :
-    Infer.SourcePrincipal (.letSignature hscope hprefix havoid hr hc hescape hb) := by
+    Infer.SourcePrincipal
+      (InferCert.letSignature (written := written)
+        (rhsResult := ⟨first, s1, rhsOut, rhsTy⟩)
+        (checkResult := ⟨checked, sCheck⟩)
+        (bodyResult := ⟨next, s2, bodyOut, bodyTy⟩)
+        hscope hprefix havoid hr hc hescape hb) := by
   intro hwf hbelow hK hF ambient target P hS hP hfix hfreeze ht
   subst written
   have hmode : ann.isSignature = true := by
