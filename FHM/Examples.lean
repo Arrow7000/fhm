@@ -722,8 +722,7 @@ and through ordinary `let`. -/
 --  group, where it is monomorphic. A complete annotation would opt this member
 --  into checked polymorphic recursion.)
 #eval showType (.letRec
-  [{ ann := none, rhs := .lambda none
-    (.letIn none (.app (.var 1) (.primLit (.int 0)))
+  [{ ann := none, rhs := .lambda none (.letIn none (.app (.var 1) (.primLit (.int 0)))
       (.letIn none (.app (.var 2) (.primLit .unit))
         (.var 2))) }]
   (.var 0))
@@ -1416,13 +1415,13 @@ theorem mutualRec_typeable_at (n : Nat) : TypeOfHM ⟨[], []⟩ mutualRec (.fvar
   refine TypeOfHM.letRec (specs := [.mono (.fvar 100), .mono (.fvar 100)])
     (groups := [[0, 1]]) (G := [100]) (L := [])
     (RecGroups.validResidualGroupsB_sound (by decide))
-    ⟨rfl, rfl, by simp, ?_, ?_⟩ ?_ ?_ rfl ?_
+    ⟨rfl, by simp, ?_, ?_⟩ ?_ ?_ rfl ?_
   · intro τ hτ
     simp only [List.mem_cons, List.not_mem_nil, or_false] at hτ
     rcases hτ with h | h <;> (injection h with h'; rw [h']; exact .fvar)
   · intro σ hσ
     simp only [List.mem_cons, List.not_mem_nil, reduceCtorEq, or_self] at hσ
-  · intro stage component hc Xs hfresh member hm rhs τ hrhs hτ
+  · intro stage component hc Xs hfresh member hm binding τ hbinding hτ
     cases stage with
     | succ stage => simp at hc
     | zero =>
@@ -1431,14 +1430,15 @@ theorem mutualRec_typeable_at (n : Nat) : TypeOfHM ⟨[], []⟩ mutualRec (.fvar
       obtain ⟨X, rfl⟩ : ∃ X, Xs = [X] := List.length_eq_one_iff.mp hfresh.length
       simp only [List.mem_cons, List.not_mem_nil, or_false] at hm
       rcases hm with rfl | rfl
-      · simp only [List.getElem?_cons_zero, Option.some.injEq] at hrhs hτ
-        subst rhs
+      · simp only [List.getElem?_cons_zero, Option.some.injEq] at hbinding hτ
+        subst binding
         cases hτ
         show TypeOfHM ⟨[PolyTy.mkTrivial (.fvar X), PolyTy.mkTrivial (.fvar X)], []⟩
           (.var 1) (.fvar X)
         exact TypeOfHM.var (instArgs := []) rfl (by simp) .fvar
-      · simp only [List.getElem?_cons_succ, List.getElem?_cons_zero, Option.some.injEq] at hrhs hτ
-        subst rhs
+      · simp only [List.getElem?_cons_succ, List.getElem?_cons_zero,
+          Option.some.injEq] at hbinding hτ
+        subst binding
         cases hτ
         show TypeOfHM ⟨[PolyTy.mkTrivial (.fvar X), PolyTy.mkTrivial (.fvar X)], []⟩
           (.var 0) (.fvar X)
