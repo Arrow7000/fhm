@@ -27,6 +27,13 @@ inductive ValName
 
 abbrev LookupList (key : Type) (value : Type) := List (key × value)
 
+/-- One recursive binding row. An annotation and its right-hand side share a
+single list coordinate; representations should not store them in parallel
+lists and recover this association with length equalities. -/
+structure RecBinding (Ann Term : Type) where
+  ann : Ann
+  rhs : Term
+
 namespace LookupList
 
 def get? {k v} [DecidableEq k] (l : LookupList k v) (key : k) :=
