@@ -6156,6 +6156,19 @@ structure RecComponentArtifact where
     (i : Nat) : Option Expr :=
   (artifacts[i]?).join.map RecComponentArtifact.output
 
+/-- The authored annotation facts still needed after recursive inference.
+Complete contracts suppress an inferred-binder artifact; partial foralls also
+retain their authored binder count so their open metadata can be closed. -/
+inductive RecMemberAnnInfo where
+  | inferred
+  | complete
+  | partialForall (paramCount : Nat)
+
+def BindingAnn.recMemberAnnInfo : BindingAnn → RecMemberAnnInfo
+  | .absent | .template _ => .inferred
+  | .complete _ => .complete
+  | .partialForall paramCount _ => .partialForall paramCount
+
 /-- Per-member recursive inference state. Keeping the fields in one record makes
 their common recursive-group coordinate structural rather than a `Frame`
 obligation. `slotImages` records the ordered current images of written slots,
@@ -6166,13 +6179,14 @@ structure RecMemberState where
   exported : Option PolyTy
   output : Option Expr
   facts : RecFacts
+  annInfo : RecMemberAnnInfo
 
-/-- The two externally visible products of a completed recursive member.
-Keeping them together prevents finalization from independently collecting two
-lists whose positional agreement is already structural in `RecMemberState`. -/
+/-- The externally visible products and immutable authored-annotation summary
+of a completed recursive member. -/
 structure CompletedRecMember where
   scheme : PolyTy
   output : Expr
+  annInfo : RecMemberAnnInfo
 
 def RecMemberState.init (frontier : Nat) (ann : BindingAnn) : RecMemberState :=
   match ann.recModeAnn with
@@ -6181,13 +6195,15 @@ def RecMemberState.init (frontier : Nat) (ann : BindingAnn) : RecMemberState :=
         slotImages := []
         exported := none
         output := none
-        facts := .empty }
+        facts := .empty
+        annInfo := ann.recMemberAnnInfo }
   | some scheme =>
       { spec := .poly scheme
         slotImages := []
         exported := some scheme
         output := none
-        facts := .empty }
+        facts := .empty
+        annInfo := ann.recMemberAnnInfo }
 
 /-- Initialize one member per source binding, advancing the seed coordinate
 at every position (including complete contracts), exactly as `RecSpec.init`
@@ -6202,7 +6218,8 @@ def RecMemberState.onSubst (S : Subst) (member : RecMemberState) : RecMemberStat
     slotImages := member.slotImages.map S.onTy
     exported := member.exported.map S.onPolyTy
     output := member.output.map (Expr.substTyFvars S)
-    facts := member.facts.onSubst S }
+    facts := member.facts.onSubst S
+    annInfo := member.annInfo }
 
 /-- Recursive-group state is one coordinate-preserving member list plus the
 shared generalized-variable pool. -/
@@ -6231,6 +6248,8 @@ structure CompletedRecMembers (members : List RecMemberState)
     (completed.map CompletedRecMember.scheme).map some
   outputs : members.map RecMemberState.output =
     (completed.map CompletedRecMember.output).map some
+  annInfo : members.map RecMemberState.annInfo =
+    completed.map CompletedRecMember.annInfo
 
 abbrev RecState.Completed (state : RecState) := CompletedRecMembers state.memberStates
 
@@ -6641,15 +6660,16 @@ theorem RecState.getElem?_exports_exportComponent (state : RecState) (members : 
 /-- Collect completed members once, pairing each exported scheme with its RHS. -/
 def collectCompletedRecMembers : (members : List RecMemberState) →
     Option { result : List CompletedRecMember // CompletedRecMembers members result }
-  | [] => some ⟨[], ⟨rfl, rfl⟩⟩
+  | [] => some ⟨[], ⟨rfl, rfl, rfl⟩⟩
   | member :: rest =>
       match he : member.exported, ho : member.output with
       | some scheme, some output =>
           match collectCompletedRecMembers rest with
           | some ⟨completed, hcompleted⟩ =>
-              some ⟨{ scheme, output } :: completed, {
+              some ⟨{ scheme, output, annInfo := member.annInfo } :: completed, {
                 exports := by simp only [List.map_cons, he, hcompleted.exports]
                 outputs := by simp only [List.map_cons, ho, hcompleted.outputs]
+                annInfo := by simp only [List.map_cons, hcompleted.annInfo]
               }⟩
           | none => none
       | _, _ => none
@@ -6670,37 +6690,37 @@ def RecMemberState.prefix (member : RecMemberState) : List Nat :=
 
 /-- Close only authored partial-prefix representatives in editor artifacts.
 Additional generalized variables keep the ordinary inference-variable convention. -/
-def finalizeRecFacts (ann : BindingAnn) (slots : List Ty) (facts : RecFacts) : RecFacts :=
-  match ann with
-  | .partialForall count _ =>
+def finalizeRecFacts (annInfo : RecMemberAnnInfo) (slots : List Ty)
+    (facts : RecFacts) : RecFacts :=
+  match annInfo with
+  | .partialForall count =>
       let written := slots.filterMap recSlotName
       ⟨(facts.nodeTypes.closeTyVars written).underTyBinders count,
         (facts.binderSchemes.closeTyVars written).underTyBinders count⟩
   | _ => facts
 
-def inferredRecSchemes (bindings : List InputRecBinding)
-    (schemes : List PolyTy) : InferredBinderSchemes :=
-  bindings.zip schemes |>.mapIdx (fun i (binding, scheme) => match binding.ann with
-    | .complete _ => []
-    | _ => [{ site := .letRec [] i, scheme := scheme, tyDepth := 0 }]) |>.flatten
+def inferredRecSchemes (completed : List CompletedRecMember) : InferredBinderSchemes :=
+  completed.mapIdx (fun i member => match member.annInfo with
+    | .complete => []
+    | .inferred | .partialForall _ =>
+        [{ site := .letRec [] i, scheme := member.scheme, tyDepth := 0 }]) |>.flatten
 
-def finalRecNodeTypes (bindings : List InputRecBinding) (state : RecState) : InferredNodeTypes :=
+def finalRecNodeTypes (state : RecState) : InferredNodeTypes :=
   state.memberStates.mapIdx (fun i member =>
-    (finalizeRecFacts ((bindings[i]?).map (·.ann) |>.getD .absent)
-      member.slotImages member.facts).nodeTypes.below (.letRecRhs i)) |>.flatten
+    (finalizeRecFacts member.annInfo member.slotImages member.facts).nodeTypes.below
+      (.letRecRhs i)) |>.flatten
 
-def finalRecBinderSchemes (bindings : List InputRecBinding)
-    (state : RecState) : InferredBinderSchemes :=
+def finalRecBinderSchemes (state : RecState) : InferredBinderSchemes :=
   state.memberStates.mapIdx (fun i member =>
-    (finalizeRecFacts ((bindings[i]?).map (·.ann) |>.getD .absent)
-      member.slotImages member.facts).binderSchemes.below (.letRecRhs i)) |>.flatten
+    (finalizeRecFacts member.annInfo member.slotImages member.facts).binderSchemes.below
+      (.letRecRhs i)) |>.flatten
 
 @[simp] theorem RecState.entries_onSubst (state : RecState) (S : Subst) :
     (state.onSubst S).entries = S.onEnv state.entries := by
   simp only [RecState.entries, RecState.onSubst, Subst.onEnv, List.map_map]
   apply List.map_congr_left
   intro member _
-  rcases member with ⟨spec, slots, exported, output, facts⟩
+  rcases member with ⟨spec, slots, exported, output, facts, annInfo⟩
   cases exported with
   | none => cases spec <;> rfl
   | some scheme => rfl
@@ -7163,7 +7183,7 @@ structure RecState.Frame (base : Nat) (K : List Nat) (F : List Ty)
   obtain ⟨i, hi⟩ := List.mem_iff_getElem?.mp hm
   rw [RecState.entries, List.getElem?_map] at hi
   obtain ⟨member, hz, heq⟩ := Option.map_eq_some_iff.mp hi
-  rcases member with ⟨spec, slotImages, exported, output, facts⟩
+  rcases member with ⟨spec, slotImages, exported, output, facts, annInfo⟩
   have hs : state.specs[i]? = some spec := by
     simp only [RecState.getElem?_specs, hz, Option.map_some]
   have he : state.exports[i]? = some exported := by
@@ -7330,10 +7350,10 @@ def RecState.stageCtx (state : RecState) (ctx : Ctx) (earlier : List Nat) : Ctx 
     simp only [Option.map_some]
     by_cases hi : i ∈ earlier
     · simp only [hi, if_pos]
-      rcases member with ⟨spec, slots, exported, output, facts⟩
+      rcases member with ⟨spec, slots, exported, output, facts, annInfo⟩
       cases exported <;> cases spec <;> rfl
     · simp only [hi]
-      rcases member with ⟨spec, slots, exported, output, facts⟩
+      rcases member with ⟨spec, slots, exported, output, facts, annInfo⟩
       cases spec <;> rfl
 
  theorem RecState.stageCtx_onSubst (state : RecState) (S : Subst) (ctx : Ctx) (earlier : List Nat) :

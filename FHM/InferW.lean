@@ -1256,8 +1256,6 @@ def inferWithTypesCore (K : List Nat) (frontier : Nat) (ctx : Ctx) (input : Infe
                         | none => none
                         | some ⟨bodyResult, hb⟩ =>
                           let final := signed.state.onSubst bodyResult.subst
-                          let finalSchemes := completed.map fun member =>
-                            bodyResult.subst.onPolyTy member.scheme
                           some ⟨{
                             frontier := bodyResult.frontier
                             subst := strata.subst ++ signed.subst ++ bodyResult.subst
@@ -1266,10 +1264,10 @@ def inferWithTypesCore (K : List Nat) (frontier : Nat) (ctx : Ctx) (input : Infe
                                 rhs := member.output.substTyFvars bodyResult.subst })
                               bodyResult.completedExpr
                             ty := bodyResult.ty
-                            nodeTypes := .root bodyResult.ty ++ finalRecNodeTypes bindings final ++
+                            nodeTypes := .root bodyResult.ty ++ finalRecNodeTypes final ++
                               bodyResult.nodeTypes.below .letRecBody
-                            binderSchemes := inferredRecSchemes bindings finalSchemes ++
-                              finalRecBinderSchemes bindings final ++
+                            binderSchemes := (inferredRecSchemes completed).onSubst bodyResult.subst ++
+                              finalRecBinderSchemes final ++
                               bodyResult.binderSchemes.below .letRecBody },
                             .letRec ⟨hrawScope, ctxBelow_of_all hctx,
                               (fun v hv => of_decide_eq_true (List.all_eq_true.mp hK v hv)),
@@ -3960,7 +3958,7 @@ theorem RecState.getElem?_outputs_exportComponent (state : RecState) (members : 
     simp only [Option.map_some]
     by_cases hm : i ∈ members
     · simp only [hm, if_pos]
-      rcases member with ⟨spec, slots, exported, output, facts⟩
+      rcases member with ⟨spec, slots, exported, output, facts, annInfo⟩
       cases spec <;> rfl
     · simp [hm]
 
@@ -7534,7 +7532,9 @@ theorem Infer.sourceSound (h : Infer K F frontier ctx input next subst output ty
     have houtputs : state2.outputs =
         (completed.map CompletedRecMember.output).map some := hcompleted.outputs
     let completedFinal : List CompletedRecMember := completed.map fun member =>
-      { scheme := s3.onPolyTy member.scheme, output := member.output.substTyFvars s3 }
+      { member with
+        scheme := s3.onPolyTy member.scheme
+        output := member.output.substTyFvars s3 }
     have hfinalExports : (state2.onSubst s3).exports =
         (completedFinal.map CompletedRecMember.scheme).map some := by
       simp only [RecState.exports_onSubst, hexports, completedFinal, List.map_map,
@@ -8784,12 +8784,17 @@ theorem Infer.completes_source (h : Infer K F frontier ctx input next subst outp
           hbindingscope original ho v (List.mem_append_right _ hv)).subst
             (s1 ++ s2 ++ s3) hfixAll v hv
     let completedFinal : List CompletedRecMember := completed.map fun member =>
-      { scheme := s3.onPolyTy member.scheme, output := member.output.substTyFvars s3 }
+      { member with
+        scheme := s3.onPolyTy member.scheme
+        output := member.output.substTyFvars s3 }
     have hcompletedFinal : (state2.onSubst s3).Completed completedFinal :=
       ⟨by simpa only [RecState.exports, completedFinal, List.map_map, Function.comp_def]
           using hfinalExports,
         by simpa only [RecState.outputs, completedFinal, List.map_map, Function.comp_def]
-          using hfinalOutputs⟩
+          using hfinalOutputs,
+        by simpa only [RecState.onSubst, RecMemberState.onSubst, completedFinal,
+            List.map_map, Function.comp_def]
+          using hcompleted.annInfo⟩
     have hScopeFinal' : ∀ binding ∈
         substInputBindings s3 (substInputBindings s2 (substInputBindings s1 bindings)),
         ∀ v ∈ binding.ann.rigidVars ++ binding.rhs.rigidVars,
