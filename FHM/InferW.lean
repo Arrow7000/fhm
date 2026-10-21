@@ -1540,6 +1540,12 @@ def inferRequestCore (request : InferRequest) :
     Option { result : InferCoreResult // InferCert request result.toInferResult } :=
   inferWithTypesCore request.protectedVars request.frontier request.ctx request.input request.soft
 
+/-- Project a certified request run to its semantic result. -/
+def inferRequest (request : InferRequest) :
+    Option { result : InferResult // InferCert request result } :=
+  (inferRequestCore request).map fun result =>
+    ⟨result.val.toInferResult, result.property⟩
+
 /-- Forget the dependent certificate while retaining the worker's full result. -/
 def InferRequest.run (request : InferRequest) : Option InferCoreResult :=
   (inferRequestCore request).map Subtype.val
@@ -1580,13 +1586,11 @@ theorem InferRequest.run_isSome_iff_exists (request : InferRequest) :
 def inferCore (K : List Nat) (frontier : Nat) (ctx : Ctx) (input : InferInput) :
     Option { result : InferResult //
       Infer K [] frontier ctx input result.frontier result.subst result.completedExpr result.ty } :=
-  match inferWithTypesCore K frontier ctx input with
-  | none => none
-  | some ⟨result, h⟩ => some ⟨result.toInferResult, h⟩
+  inferRequest (InferRequest.core K frontier ctx input)
 
 @[simp] theorem inferCore_isSome (K : List Nat) (frontier : Nat) (ctx : Ctx) (input : InferInput) :
     (inferCore K frontier ctx input).isSome = (inferWithTypesCore K frontier ctx input).isSome := by
-  unfold inferCore
+  unfold inferCore inferRequest inferRequestCore InferRequest.core
   cases inferWithTypesCore K frontier ctx input with
   | none => rfl
   | some result => rfl
@@ -1617,8 +1621,8 @@ def typecheck (ctors : CtorEnv) (input : InferInput) : Option PolyTy :=
 /-- A public artifact result carries the canonical elaboration derivation. -/
 theorem inferWithTypes_infer {ctors : CtorEnv} {input : InferInput} {result : InferenceResult}
     (h : inferWithTypes ctors input = some result) :
-    Infer input.rigidVars [] input.freshFloor ⟨[], ctors⟩ input result.frontier result.subst
-      result.completedExpr result.ty := by
+    InferCert (InferRequest.core input.rigidVars input.freshFloor ⟨[], ctors⟩ input)
+      result.toInferResult := by
   unfold inferWithTypes at h
   cases hcore : inferWithTypesCore input.rigidVars input.freshFloor ⟨[], ctors⟩ input with
   | none => simp only [hcore, Option.map_none, reduceCtorEq] at h
@@ -8977,18 +8981,101 @@ theorem Infer.completes (h : Infer K [] frontier ctx input next subst output ty)
   simpa only [substSoft, List.map_nil, softVars, TyList.freeVars, List.append_nil, hinput] using
     h.completes_source hctx
 
+/-! ## Compact certificate interface -/
+
+namespace InferCert
+
+theorem sourceScope {request : InferRequest} {result : InferResult}
+    (h : InferCert request result) : request.Scoped :=
+  Infer.sourceScope h
+
+theorem dom_avoids {request : InferRequest} {result : InferResult}
+    (h : InferCert request result) :
+    ∀ pair ∈ result.subst, pair.1 ∉ request.protectedVars :=
+  Infer.dom_avoids h
+
+theorem lc {request : InferRequest} {result : InferResult}
+    (h : InferCert request result) (hctx : CtxWF request.ctx) :
+    result.ty.IsLC ∧ ∀ pair ∈ result.subst, pair.2.IsLC :=
+  Infer.lc h hctx
+
+theorem frontier_le {request : InferRequest} {result : InferResult}
+    (h : InferCert request result) : request.frontier ≤ result.frontier :=
+  Infer.frontier_le h
+
+theorem belowFvars {request : InferRequest} {result : InferResult}
+    (h : InferCert request result) (bounds : request.Bounds) :
+    Ty.BelowFvars result.frontier result.ty ∧
+      ∀ pair ∈ result.subst, Ty.BelowFvars result.frontier pair.2 :=
+  Infer.belowFvars h bounds.ctxBelow bounds.protectedBelow bounds.softBelow
+
+theorem sourceLocality {request : InferRequest} {result : InferResult}
+    (h : InferCert request result) {w : Nat} (hw : w < request.frontier)
+    (hrefs : request.input.erase.ForallOuter
+      (fun i => ∀ scheme, request.ctx.env[i]? = some scheme → w ∉ scheme.body.freeVars) 0)
+    (hrigid : w ∉ request.input.rigidVars) :
+    (∀ pair ∈ result.subst, w ∉ pair.2.freeVars) ∧
+      w ∉ result.ty.freeVars ∧ w ∉ result.subst.map Prod.fst :=
+  Infer.sourceLocality h hw hrefs hrigid
+
+theorem sourceSound {request : InferRequest} {result : InferResult}
+    (h : InferCert request result) (hctx : CtxWF request.ctx) :
+    TypeOfHM (result.subst.onCtx request.ctx) result.completedExpr result.ty :=
+  Infer.sourceSound h hctx
+
+theorem erase {request : InferRequest} {result : InferResult}
+    (h : InferCert request result) :
+    result.completedExpr.erase = request.input.erase :=
+  Infer.erase h
+
+theorem sound {request : InferRequest} {result : InferResult}
+    (h : InferCert request result) (hctx : CtxWF request.ctx) :
+    RuntimeTyping.RunWT (result.subst.onCtx request.ctx) request.input.erase result.ty :=
+  Infer.sound h hctx
+
+theorem inputSound_source {request : InferRequest} {result : InferResult}
+    (h : InferCert request result) (hctx : CtxWF request.ctx) :
+    InputTyping
+      (request.protectedVars ++ softVars (substSoft result.subst request.soft))
+      (result.subst.onCtx request.ctx) (request.input.substTyFvars result.subst) result.ty :=
+  Infer.inputSound_source h hctx
+
+theorem completes_source {request : InferRequest} {result : InferResult}
+    (h : InferCert request result) (hctx : CtxWF request.ctx) :
+    AnnotationCompletion
+      (request.protectedVars ++ softVars (substSoft result.subst request.soft))
+      (request.input.substTyFvars result.subst) result.completedExpr :=
+  Infer.completes_source h hctx
+
+/-- Ordinary core inference has no provisional soft slots, so its certificate
+directly types the authored input. -/
+theorem inputSound {K : List Nat} {frontier : Nat} {ctx : Ctx} {input : InferInput}
+    {result : InferResult} (h : InferCert (InferRequest.core K frontier ctx input) result)
+    (hctx : CtxWF ctx) : InputTyping K (result.subst.onCtx ctx) input result.ty :=
+  Infer.inputSound h hctx
+
+/-- Ordinary core inference completes annotations in the authored input itself. -/
+theorem completes {K : List Nat} {frontier : Nat} {ctx : Ctx} {input : InferInput}
+    {result : InferResult} (h : InferCert (InferRequest.core K frontier ctx input) result)
+    (hctx : CtxWF ctx) : AnnotationCompletion K input result.completedExpr :=
+  Infer.completes h hctx
+
+end InferCert
+
 /-- The exact completed Core returned to the runtime is source typed. -/
 theorem inferWithTypes_source_sound {ctors : CtorEnv} {input : InferInput} {result : InferenceResult}
     (h : inferWithTypes ctors input = some result) :
     TypeOfHM ⟨[], ctors⟩ result.completedExpr result.ty := by
-  simpa only [Subst.onCtx_empty] using (inferWithTypes_infer h).sourceSound CtxWF.empty
+  simpa only [InferRequest.core, Subst.onCtx_empty] using
+    InferCert.sourceSound (inferWithTypes_infer h) CtxWF.empty
 
 theorem inferWithTypes_erase {ctors : CtorEnv} {input : InferInput} {result : InferenceResult}
     (h : inferWithTypes ctors input = some result) : result.completedExpr.erase = input.erase :=
-  (inferWithTypes_infer h).erase
+  InferCert.erase (inferWithTypes_infer h)
 
 theorem inferWithTypes_input_sound {ctors : CtorEnv} {input : InferInput} {result : InferenceResult}
     (h : inferWithTypes ctors input = some result) : InputTyping input.rigidVars ⟨[], ctors⟩ input result.ty := by
-  simpa only [Subst.onCtx_empty] using (inferWithTypes_infer h).inputSound CtxWF.empty
+  simpa only [Subst.onCtx_empty] using
+    InferCert.inputSound (inferWithTypes_infer h) CtxWF.empty
 
 end
