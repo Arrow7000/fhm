@@ -192,6 +192,16 @@ def signatureScheme (ann : BindingAnn) (K written : List Nat) (ctx : Ctx) (ty : 
 def lambdaOutput (ann : Option TyTemplate) (param : Ty) (subst : Subst) (body : Expr) : Expr :=
   .lambda (ann.map fun _ => subst.onTy param) body
 
+/-- Assemble the semantic result of sequential function/argument inference and
+the final application unifier. -/
+def appResult (functionResult argumentResult : InferResult) (unifier : Subst) : InferResult :=
+  { frontier := argumentResult.frontier + 1
+    subst := functionResult.subst ++ argumentResult.subst ++ unifier
+    completedExpr := .app
+      (functionResult.completedExpr.substTyFvars (argumentResult.subst ++ unifier))
+      (argumentResult.completedExpr.substTyFvars unifier)
+    ty := unifier.onTy (.fvar argumentResult.frontier) }
+
 def letOutput (scheme : PolyTy) (names : List Nat) (rhs body : Expr) (subst : Subst) : Expr :=
   .letIn (some (subst.onPolyTy scheme)) ((rhs.closeTyVars names).substTyFvars subst) body
 
@@ -238,17 +248,18 @@ inductive InferCert : InferRequest → InferResult → Prop
         ⟨next, subst, completed, bodyTy⟩ →
       InferCert ⟨K, F, frontier, ctx, .lambda ann body⟩
         ⟨next, subst, lambdaOutput ann param subst completed, .arrow (subst.onTy param) bodyTy⟩
-  | app :
+  | app {K : List Nat} {F : List Ty} {f arg : InferInput} {frontier : Nat} {ctx : Ctx}
+      {functionResult argumentResult : InferResult} {unifier : Subst} :
       SourceScope K F (.app f arg) →
-      InferCert ⟨K, F, frontier, ctx, f⟩ ⟨first, s1, fOut, fTy⟩ →
-      (let argSoft := substSoft s1 F
-       let argCtx := s1.onCtx ctx
-       let argInput := arg.substTyFvars s1
-       InferCert ⟨K, argSoft, first, argCtx, argInput⟩ ⟨second, s2, argOut, argTy⟩) →
-      RigidUnify K (s2.onTy fTy) (.arrow argTy (.fvar second)) s3 →
+      InferCert ⟨K, F, frontier, ctx, f⟩ functionResult →
+      InferCert
+        ⟨K, substSoft functionResult.subst F, functionResult.frontier,
+          functionResult.subst.onCtx ctx, arg.substTyFvars functionResult.subst⟩
+        argumentResult →
+      RigidUnify K (argumentResult.subst.onTy functionResult.ty)
+        (.arrow argumentResult.ty (.fvar argumentResult.frontier)) unifier →
       InferCert ⟨K, F, frontier, ctx, .app f arg⟩
-        ⟨second + 1, s1 ++ s2 ++ s3,
-          .app (fOut.substTyFvars (s2 ++ s3)) (argOut.substTyFvars s3), s3.onTy (.fvar second)⟩
+        (appResult functionResult argumentResult unifier)
   | letIn :
       SourceScope K F (.letIn ann rhs body) →
       InferCert ⟨K, F, frontier, ctx, rhs⟩ ⟨first, s1, rhsOut, rhsTy⟩ →
@@ -3390,7 +3401,7 @@ mutual
     obtain ⟨hS, hty, hD⟩ := hb.sourceLocality_raw (Nat.lt_of_lt_of_le hw hs.frontier_le) hbrefs hwe.2
     exact ⟨hS, by simpa only [Ty.freeVars, List.mem_dedup, List.mem_append, not_or]
       using And.intro (Subst.notMemOnTy hS hp) hty, hD⟩
-  | .app _ hf ha hu =>
+  | @InferCert.app _ _ _ _ _ _ _ argumentResult _ _ hf ha hu =>
     intro w hw hrefs hwe
     expose_names
     simp only [InferInput.erase, Expr.ForallOuter, Expr.rec_strong] at hrefs
@@ -3399,7 +3410,7 @@ mutual
     obtain ⟨haS, haTy, haD⟩ := ha.sourceLocality_raw (Nat.lt_of_lt_of_le hw (Infer.frontier_le hf))
       (by simpa only [InferInput.erase_substTyFvars] using Expr.ForallOuter.lookupAvoid_onSubst hrefs.2 hfS)
       (InferInput.avoid_subst hfS hwe.2)
-    have hnew : w ∉ (Ty.fvar second).freeVars := by
+    have hnew : w ∉ (Ty.fvar argumentResult.frontier).freeVars := by
       simp only [Ty.freeVars, List.mem_singleton];
       have := Infer.frontier_le hf; have := Infer.frontier_le ha; omega
     have huA := UnifyRel.sourceAvoid_local hu.unifies (Subst.notMemOnTy haS hfTy)
@@ -7559,18 +7570,19 @@ private theorem InferCert.sourceSound_raw (h : Infer K F frontier ctx input next
         | some template => exact Option.some.inj heq
       · simpa only [lambdaOutput, Subst.onCtx, Subst.onEnv, List.map_cons,
           Subst.onPolyTy, PolyTy.mkTrivial] using hb.sourceSound_raw hbodyCtx
-  | @InferCert.app K F f arg frontier ctx first s1 fOut fTy second s2 argOut argTy s3 _ hf ha hu =>
+  | @InferCert.app K F f arg frontier ctx functionResult argumentResult unifier _ hf ha hu =>
       intro hctx
       have hs1 := (hf.lc hctx).2
       have haCtx := Subst.onCtx_wf hs1 hctx
       have hs2 := (ha.lc haCtx).2
       have hs3 := hu.unifies.lc (Subst.onTy_lc hs2 (hf.lc hctx).1)
         (.arrow (ha.lc haCtx).1 .fvar)
-      have hfTyped := TypeOfHM.onSubst (s2 ++ s3)
+      have hfTyped := TypeOfHM.onSubst (argumentResult.subst ++ unifier)
         (fun pair hp => (List.mem_append.mp hp).elim (hs2 pair) (hs3 pair)) (hf.sourceSound_raw hctx)
-      have haTyped := TypeOfHM.onSubst s3 hs3 (ha.sourceSound_raw haCtx)
-      have heq : (s2 ++ s3).onTy fTy =
-          .arrow (s3.onTy argTy) (s3.onTy (.fvar second)) := by
+      have haTyped := TypeOfHM.onSubst unifier hs3 (ha.sourceSound_raw haCtx)
+      have heq : (argumentResult.subst ++ unifier).onTy functionResult.ty =
+          .arrow (unifier.onTy argumentResult.ty)
+            (unifier.onTy (.fvar argumentResult.frontier)) := by
         simpa only [Unifies, Subst.onTy_append, Subst.onTy_arrow] using hu.unifies.unifies
       rw [heq] at hfTyped
       simp only [Subst.onCtx_append] at hfTyped
@@ -8185,19 +8197,22 @@ private theorem InferCert.inputSound_source_raw (h : Infer K F frontier ctx inpu
           exact scope_image (Subst.fixes_of_dom_avoids hb.dom_avoids) (hs.rigid original rfl old hold) hv
       · simpa only [Subst.onCtx, Subst.onEnv, List.map_cons, Subst.onPolyTy,
           PolyTy.mkTrivial] using hb.inputSound_source_raw hbodyCtx
-  | @InferCert.app K F f arg frontier ctx first s1 fOut fTy second s2 argOut argTy s3 _ hf ha hu =>
+  | @InferCert.app K F f arg frontier ctx functionResult argumentResult unifier _ hf ha hu =>
       intro hctx
       have hs1 := (hf.lc hctx).2
       have haCtx := Subst.onCtx_wf hs1 hctx
       have hs2 := (ha.lc haCtx).2
       have hs3 := hu.unifies.lc (Subst.onTy_lc hs2 (hf.lc hctx).1)
         (.arrow (ha.lc haCtx).1 .fvar)
-      have hfTyped := (hf.inputSound_source_raw hctx).onSubst_soft (s2 ++ s3)
+      have hfTyped := (hf.inputSound_source_raw hctx).onSubst_soft
+        (argumentResult.subst ++ unifier)
         (fun pair hp => (List.mem_append.mp hp).elim (hs2 pair) (hs3 pair))
         (fun pair hp => (List.mem_append.mp hp).elim (ha.dom_avoids pair) (hu.dom_avoids pair))
-      have haTyped := (ha.inputSound_source_raw haCtx).onSubst_soft s3 hs3 hu.dom_avoids
-      have heq : (s2 ++ s3).onTy fTy =
-          .arrow (s3.onTy argTy) (s3.onTy (.fvar second)) := by
+      have haTyped := (ha.inputSound_source_raw haCtx).onSubst_soft
+        unifier hs3 hu.dom_avoids
+      have heq : (argumentResult.subst ++ unifier).onTy functionResult.ty =
+          .arrow (unifier.onTy argumentResult.ty)
+            (unifier.onTy (.fvar argumentResult.frontier)) := by
         simpa only [Unifies, Subst.onTy_append, Subst.onTy_arrow] using hu.unifies.unifies
       rw [heq] at hfTyped
       simp only [Subst.onCtx_append] at hfTyped
@@ -8734,17 +8749,19 @@ private theorem InferCert.completes_source_raw (h : Infer K F frontier ctx input
           exact scope_image (Subst.fixes_of_dom_avoids hb.dom_avoids) (hs.rigid original rfl old hold) hv
       · simpa only [Subst.onCtx, Subst.onEnv, List.map_cons, Subst.onPolyTy,
           PolyTy.mkTrivial] using hb.completes_source_raw hbodyCtx
-  | @InferCert.app K F f arg frontier ctx first s1 fOut fTy second s2 argOut argTy s3 _ hf ha hu =>
+  | @InferCert.app K F f arg frontier ctx _ argumentResult unifier _ hf ha hu =>
       intro hctx
       have hs1 := (hf.lc hctx).2
       have haCtx := Subst.onCtx_wf hs1 hctx
       have hs2 := (ha.lc haCtx).2
       have hs3 := hu.unifies.lc (Subst.onTy_lc hs2 (hf.lc hctx).1)
         (.arrow (ha.lc haCtx).1 .fvar)
-      have hfComp := (hf.completes_source_raw hctx).onSubst_soft (s2 ++ s3)
+      have hfComp := (hf.completes_source_raw hctx).onSubst_soft
+        (argumentResult.subst ++ unifier)
         (fun pair hp => (List.mem_append.mp hp).elim (hs2 pair) (hs3 pair))
         (fun pair hp => (List.mem_append.mp hp).elim (ha.dom_avoids pair) (hu.dom_avoids pair))
-      have haComp := (ha.completes_source_raw haCtx).onSubst_soft s3 hs3 hu.dom_avoids
+      have haComp := (ha.completes_source_raw haCtx).onSubst_soft
+        unifier hs3 hu.dom_avoids
       simp only [← substSoft_append, ← InferInput.substTyFvars_append, List.append_assoc] at hfComp haComp
       simpa only [List.append_assoc] using AnnotationCompletion.app hfComp haComp
   | @InferCert.letIn K F ann rhs body frontier ctx first s1 rhsOut rhsTy checked sCheck next s2 bodyOut bodyTy
