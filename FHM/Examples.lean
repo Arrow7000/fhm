@@ -1518,6 +1518,73 @@ namespace InferenceExamples
 private def ctors : CtorEnv := (elabDecls preludeDecls).getD []
 private def ctx : Ctx := ⟨[], ctors⟩
 
+/-! ### Bundled request/run canaries -/
+
+private def literalRequest : InferRequest :=
+  { protectedVars := [], soft := [], frontier := 0, ctx := ⟨[], []⟩,
+    input := .primLit (.int 7) }
+
+private def literalResult : InferCoreResult :=
+  { frontier := 0
+    subst := []
+    completedExpr := .primLit (.int 7)
+    ty := .prim .int
+    nodeTypes := .root (.prim .int)
+    binderSchemes := [] }
+
+/-- A successful run records the exact executable result and exposes its certificate. -/
+theorem literalRequest_run : InferRun literalRequest literalResult := by
+  simp [InferRun, InferRequest.run, inferRequestCore, literalRequest, literalResult,
+    inferWithTypesCore, InferInput.rigidVars, softVars, TyList.freeVars, Env.freeVars,
+    InferredNodeTypes.root]
+
+theorem literalRequest_cert : InferCert literalRequest literalResult.toInferResult :=
+  literalRequest_run.cert
+
+private def invalidGuardRequest : InferRequest :=
+  { protectedVars := [0], soft := [], frontier := 0, ctx := ⟨[], []⟩,
+    input := .primLit .unit }
+
+private def invalidGuardResult : InferResult :=
+  { frontier := 0, subst := [], completedExpr := .primLit .unit, ty := .prim .unit }
+
+/-- Guard failure is operational: the underlying inference certificate still exists. -/
+theorem invalidGuardRequest_rejected : invalidGuardRequest.run = none := by
+  simp [InferRequest.run, inferRequestCore, invalidGuardRequest, inferWithTypesCore]
+
+theorem invalidGuardRequest_cert : InferCert invalidGuardRequest invalidGuardResult :=
+  .primLitUnit
+
+private def wrongLiteralMetadata : InferCoreResult :=
+  { literalResult with nodeTypes := [] }
+
+/-- `InferRun` is sensitive to metadata even when the semantic projection agrees. -/
+theorem literalRequest_metadata_sensitive :
+    wrongLiteralMetadata.toInferResult = literalResult.toInferResult ∧
+      ¬ InferRun literalRequest wrongLiteralMetadata := by
+  constructor
+  · rfl
+  · intro hwrong
+    have heq := InferRun.result_eq literalRequest_run hwrong
+    have htypes := congrArg InferCoreResult.nodeTypes heq
+    simp [literalResult, wrongLiteralMetadata, InferredNodeTypes.root] at htypes
+
+/-- The relational unifier admits either orientation for two flexible variables. -/
+theorem flexibleFvars_unify_left :
+    RigidUnify [] (.fvar 0) (.fvar 1) [(0, .fvar 1)] :=
+  ⟨UnifyRel.fvarL (by simp) (by simp [Ty.freeVars]), by simp⟩
+
+theorem flexibleFvars_unify_right :
+    RigidUnify [] (.fvar 0) (.fvar 1) [(1, .fvar 0)] :=
+  ⟨UnifyRel.fvarR (by simp) (by simp [Ty.freeVars]), by simp⟩
+
+/-- The executable unifier resolves that freedom by choosing the left variable. -/
+theorem flexibleFvars_executable_orientation :
+    (unifyCoreK [] (.fvar 0) (.fvar 1)).map Subtype.val =
+      some [(0, .fvar 1)] := by
+  unfold unifyCoreK
+  rfl
+
 private def pair (left right : InferInput) : InferInput :=
   .app (.app (.ctor ⟨"Pair"⟩) left) right
 
