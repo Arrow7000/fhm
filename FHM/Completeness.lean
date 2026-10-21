@@ -3137,7 +3137,9 @@ theorem Infer.sourcePrincipal_match
     (ihs : Infer.SourcePrincipal hs)
     (bodyIH : ∀ body : InferInput, body.size < sizeBranches branches →
       ∀ {κ F' f c n s o t} (hi : Infer κ F' f c body n s o t), Infer.SourcePrincipal hi) :
-    Infer.SourcePrincipal (.match_ hscope hs hne hb) := by
+    Infer.SourcePrincipal
+      (InferCert.match_ (scrutineeResult := ⟨first, s1, scrutOut, scrutTy⟩)
+        (branchesResult := ⟨next, s2, branchesOut⟩) hscope hs hne hb) := by
   intro hwf hbelow hK hF ambient target P hS hP hfix hfreeze htyping
   obtain ⟨scrutD, hsD, _, hbD⟩ := htyping.match_inv
   obtain ⟨R1, hR1, hscrut, hR1P, hag1⟩ := ihs hwf hbelow hK hF ambient

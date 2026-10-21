@@ -108,6 +108,14 @@ structure CheckResult where
   frontier : Nat
   subst : Subst
 
+/-- The semantic output of inferring all branches of a match. Kept separate
+from `InferResult` because a branch traversal completes a list, not one term,
+and its result type is fixed by the enclosing match. -/
+structure InferBranchesResult where
+  frontier : Nat
+  subst : Subst
+  completedBranches : List (MatchPattern × Expr)
+
 private theorem ann_rigid_mem {bindings : List InputRecBinding}
     {binding : InputRecBinding} (hb : binding ∈ bindings) {v : Nat}
     (hv : v ∈ binding.ann.rigidVars) : v ∈ rigidBindingVars bindings := by
@@ -236,6 +244,17 @@ def letResult (scheme : PolyTy) (names : List Nat) (rhsResult : InferResult)
       bodyResult.completedExpr bodyResult.subst
     ty := bodyResult.ty }
 
+/-- Assemble a match result from the inferred scrutinee and the positional
+branch judgment's semantic output. -/
+def matchResult (scrutineeResult : InferResult)
+    (branchesResult : InferBranchesResult) : InferResult :=
+  { frontier := branchesResult.frontier
+    subst := scrutineeResult.subst ++ branchesResult.subst
+    completedExpr := .match_
+      (scrutineeResult.completedExpr.substTyFvars branchesResult.subst)
+      branchesResult.completedBranches
+    ty := branchesResult.subst.onTy (.fvar scrutineeResult.frontier) }
+
 mutual
 /-- Canonical inference carries frozen K and the current images F of live
 provisional forall slots. Sequential calls transform both F and source syntax. -/
@@ -355,18 +374,20 @@ inductive InferCert : InferRequest → InferResult → Prop
          let bodyNames := signatureNames checkedAnn (K ++ softVars checkedSoft) written
            checkedCtx (checkResult.subst.onTy rhsResult.ty)
          letResult bodyScheme bodyNames rhsResult checkResult bodyResult)
-  | match_ :
+  | match_ {K : List Nat} {F : List Ty} {scrut : InferInput}
+      {branches : List (MatchPattern × InferInput)} {frontier : Nat} {ctx : Ctx}
+      {scrutineeResult : InferResult} {branchesResult : InferBranchesResult} :
       SourceScope K F (.match_ scrut branches) →
-      InferCert ⟨K, F, frontier, ctx, scrut⟩ ⟨first, s1, scrutOut, scrutTy⟩ →
+      InferCert ⟨K, F, frontier, ctx, scrut⟩ scrutineeResult →
       branches ≠ [] →
-      (let branchSoft := substSoft s1 F
-       let branchCtx := s1.onCtx ctx
-       let branchInputs := substInputBranches s1 branches
-       InferBranches K branchSoft (first + 1) branchCtx scrutTy (.fvar first)
-         branchInputs next s2 branchesOut) →
+      (let branchSoft := substSoft scrutineeResult.subst F
+       let branchCtx := scrutineeResult.subst.onCtx ctx
+       let branchInputs := substInputBranches scrutineeResult.subst branches
+       InferBranches K branchSoft (scrutineeResult.frontier + 1) branchCtx
+         scrutineeResult.ty (.fvar scrutineeResult.frontier) branchInputs
+         branchesResult.frontier branchesResult.subst branchesResult.completedBranches) →
       InferCert ⟨K, F, frontier, ctx, .match_ scrut branches⟩
-        ⟨next, s1 ++ s2, .match_ (scrutOut.substTyFvars s2) branchesOut,
-          s2.onTy (.fvar first)⟩
+        (matchResult scrutineeResult branchesResult)
 
   | letRec {completed : List CompletedRecMember} :
       (SourceScope K F (.letRec bindings body) ∧ CtxBelow frontier ctx ∧
@@ -1403,8 +1424,12 @@ def inferWithTypesCore (K : List Nat) (frontier : Nat) (ctx : Ctx) (input : Infe
                       nodeTypes := .root ty ++ (scrutResult.nodeTypes.onSubst s2).below .matchScrut ++
                         branchTypes
                       binderSchemes := (scrutResult.binderSchemes.onSubst s2).below .matchScrut ++
-                        branchSchemes },
-                      .match_ hrawScope hs (by intro heq; rw [heq] at hh; simp at hh) hb⟩
+                        branchSchemes }, by
+                      simpa only [matchResult] using
+                        (InferCert.match_
+                          (scrutineeResult := scrutResult.toInferResult)
+                          (branchesResult := ⟨next, s2, branchOut⟩)
+                          hrawScope hs (by intro heq; rw [heq] at hh; simp at hh) hb)⟩
           | .letRec bindings body =>
               if hwf : (bindings.map (·.ann)).all (fun ann => match ann with
                   | .complete scheme => scheme.body.bvarsBelow scheme.paramCount
@@ -3585,8 +3610,10 @@ mutual
       (InferInput.avoid_subst hpre.1 hwe.2)
     have hAll := Subst.sourceAvoid_append_local hpre ⟨hbS, hbD⟩
     exact ⟨hAll.1, hbTy, hAll.2⟩
-  | .match_ _ hs _ hb =>
+  | @InferCert.match_ K F scrut branches frontier ctx
+      ⟨first, s1, scrutOut, scrutTy⟩ ⟨next, s2, branchesOut⟩ _ hs _ hb =>
     intro w hw hrefs hwe
+    dsimp only at hs hb
     expose_names
     simp only [InferInput.erase, Expr.ForallOuter, Expr.rec_strong, Nat.zero_add] at hrefs
     simp only [InferInput.rigidVars, List.mem_append, not_or] at hwe

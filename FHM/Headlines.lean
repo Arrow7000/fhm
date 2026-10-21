@@ -80,6 +80,7 @@ bundle as one premise. -/
 #check @InferCert.app
 #check @InferCert.letIn
 #check @InferCert.letSignature
+#check @InferCert.match_
 #check @InferRun
 #check @InferRun.cert
 #check @InferCert.sourceSound
