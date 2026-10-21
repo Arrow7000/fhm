@@ -72,26 +72,24 @@ theorem inferOfCore_erase {ctors : CtorEnv} {core : Expr} {result : InferenceRes
   (inferWithTypes_erase h).trans
     ((InferInput.ofCore core).toCore_erase (InferInput.toCore_ofCore core)).symm
 
-private def oneResidualGroup (anns : List (Option PolyTy)) : List (List Nat) :=
-  let members := (List.range anns.length).filter (RecGroups.unsignedAtB anns)
+private def oneResidualGroup (bindings : List CoreRecBinding) : List (List Nat) :=
+  let members := (List.range bindings.length).filter (RecGroups.unsignedAtB bindings)
   if members = [] then [] else [members]
 
-private theorem mem_oneResidualGroupMembers {anns : List (Option PolyTy)} {i : Nat} :
-    i ∈ (List.range anns.length).filter (RecGroups.unsignedAtB anns) ↔
-      i < anns.length ∧ RecGroups.UnsignedAt anns i := by
+private theorem mem_oneResidualGroupMembers {bindings : List CoreRecBinding} {i : Nat} :
+    i ∈ (List.range bindings.length).filter (RecGroups.unsignedAtB bindings) ↔
+      i < bindings.length ∧ RecGroups.UnsignedAt bindings i := by
   simp [RecGroups.unsignedAtB_eq_true_iff]
 
-private theorem oneResidualGroup_valid {anns : List (Option PolyTy)}
-    {bindings : List Expr} (hlen : anns.length = bindings.length) :
-    RecGroups.ValidResidualGroups anns bindings (oneResidualGroup anns) := by
-  let members := (List.range anns.length).filter (RecGroups.unsignedAtB anns)
+private theorem oneResidualGroup_valid {bindings : List CoreRecBinding} :
+    RecGroups.ValidResidualGroups bindings (oneResidualGroup bindings) := by
+  let members := (List.range bindings.length).filter (RecGroups.unsignedAtB bindings)
   have hmembers_nodup : members.Nodup := by
     exact List.nodup_range.filter _
   have hmembers_spec (i : Nat) :
-      i ∈ members ↔ i < anns.length ∧ RecGroups.UnsignedAt anns i := by
+      i ∈ members ↔ i < bindings.length ∧ RecGroups.UnsignedAt bindings i := by
     exact mem_oneResidualGroupMembers
   refine {
-    length := hlen
     nonempty := ?_
     flatten_nodup := ?_
     bounded := ?_
@@ -127,11 +125,11 @@ private theorem oneResidualGroup_valid {anns : List (Option PolyTy)}
     · simp [oneResidualGroup, members, hm]
       constructor
       · intro hgroup
-        exact (RecGroups.unsignedAtB_eq_true_iff anns member).mp hgroup.2
+        exact (RecGroups.unsignedAtB_eq_true_iff bindings member).mp hgroup.2
       · intro hu
-        exact ⟨by omega, (RecGroups.unsignedAtB_eq_true_iff anns member).mpr hu⟩
-  · intro stage dependencyStage component dependencyComponent source target rhs
-      hcomponent hdependencyComponent hsource htarget hrhs href
+        exact ⟨by omega, (RecGroups.unsignedAtB_eq_true_iff bindings member).mpr hu⟩
+  · intro stage dependencyStage component dependencyComponent source target binding
+      hcomponent hdependencyComponent hsource htarget hbinding href
     by_cases hm : members = []
     · simp [oneResidualGroup, members, hm] at hcomponent
     · have hs : stage = 0 := by
@@ -1036,7 +1034,7 @@ theorem lowerCoreRecBinds_eq (ke : KindEnv) (tvs recScope : List ValName) (binds
           | some rest' => some ({ ann := ann', rhs := rhs' } :: rest')
           | none => none := by
   cases binds <;> simp only [lowerCoreRecBinds, lowerRecBindsWith, coreLoweringOps_wrapParams]
-  all_goals first | rfl | (repeat' split <;> simp_all [lowerCoreExpr, bindingLowerTyScope])
+  all_goals first | rfl | (repeat' split <;> simp_all [lowerCoreExpr])
 
 
 private theorem lowerCoreExpr_eqs (ke : KindEnv) (tvs vs : List ValName) :
@@ -1258,7 +1256,7 @@ theorem lowerCoreExprList_eq_some_of_CoreLowersExprList {ctors : CtorEnv} {ke : 
   lowerExprListWith_complete h
 
 theorem lowerCoreRecBinds_eq_some_of_CoreLowersRecBinds {ctors : CtorEnv} {ke : KindEnv}
-    {tvs vs : List ValName} {bs : List Surface.Binding} {out : List Expr}
+    {tvs vs : List ValName} {bs : List Surface.Binding} {out : List CoreRecBinding}
     (h : CoreLowersRecBinds ctors ke tvs vs bs out) :
     lowerCoreRecBinds ke tvs vs bs = some out :=
   lowerRecBindsWith_complete h
@@ -1280,7 +1278,7 @@ theorem lowerCoreExprList_isSome_of_CoreLowersExprList {ctors : CtorEnv} {ke : K
   rw [lowerCoreExprList_eq_some_of_CoreLowersExprList h, Option.isSome_some]
 
 theorem lowerCoreRecBinds_isSome_of_CoreLowersRecBinds {ctors : CtorEnv} {ke : KindEnv} {tvs : List ValName}
-    {vs : List ValName} (binds : List Surface.Binding) {bindings' : List Expr}
+    {vs : List ValName} (binds : List Surface.Binding) {bindings' : List CoreRecBinding}
     (h : CoreLowersRecBinds ctors ke tvs vs binds bindings') :
     (lowerCoreRecBinds ke tvs vs binds).isSome := by
   rw [lowerCoreRecBinds_eq_some_of_CoreLowersRecBinds h, Option.isSome_some]
@@ -1330,7 +1328,7 @@ theorem lowerCoreExprList_CoreLowersExprList {ctors : CtorEnv} {ke : KindEnv}
   lowerExprListWith_sound es h
 
 theorem lowerCoreRecBinds_CoreLowersRecBinds {ctors : CtorEnv} {ke : KindEnv}
-    {tvs vs : List ValName} (bs : List Surface.Binding) {out : List Expr}
+    {tvs vs : List ValName} (bs : List Surface.Binding) {out : List CoreRecBinding}
     (h : lowerCoreRecBinds ke tvs vs bs = some out) :
     CoreLowersRecBinds ctors ke tvs vs bs out :=
   lowerRecBindsWith_sound bs h
@@ -1418,7 +1416,7 @@ theorem CoreLowersExprList_unique_of_NoMatch (ctors : CtorEnv) (ke : KindEnv) (t
 
 theorem CoreLowersRecBinds_unique_of_NoMatch (ctors : CtorEnv) (ke : KindEnv) (tvs : List ValName)
     (vs : List ValName) (binds : List Surface.Binding)
-    (es₁ es₂ : List Expr)
+    (es₁ es₂ : List CoreRecBinding)
     (_hnm : SurfaceExprLetRecNoMatch binds)
     (_h₁ : CoreLowersRecBinds ctors ke tvs vs binds es₁)
     (_h₂ : CoreLowersRecBinds ctors ke tvs vs binds es₂) : es₁ = es₂ := by
@@ -1427,17 +1425,19 @@ theorem CoreLowersRecBinds_unique_of_NoMatch (ctors : CtorEnv) (ke : KindEnv) (t
     cases _h₁; cases _h₂; rfl
   | cons he hrest =>
     cases _h₁ with
-    | cons he₁ hwrap₁ hrest₁ =>
+    | cons hann₁ he₁ hwrap₁ hrest₁ =>
       cases _h₂ with
-      | cons he₂ hwrap₂ hrest₂ =>
+      | cons hann₂ he₂ hwrap₂ hrest₂ =>
         expose_names
+        have hannEq : ann' = ann'_1 :=
+          Option.some_inj.mp (hann₁.symm.trans hann₂)
         have hrhs := CoreLowersExpr_unique_of_NoMatch ctors ke (bindingLowerTyScope bind tvs)
             (paramTermScope bind.params vs) bind.rhs _ _ he he₁ he₂
         have hwrapEq : e' = e'_1 :=
           Option.some_inj.mp (hwrap₁.symm.trans (by rw [hrhs]; exact hwrap₂))
         have hrest' :=
           CoreLowersRecBinds_unique_of_NoMatch ctors ke tvs vs _ _ _ hrest hrest₁ hrest₂
-        simp [hwrapEq, hrest']
+        simp [hannEq, hwrapEq, hrest']
 end
 
 /-- On the `NoMatch` fragment, a `CoreLowers` witness equals the executable `lowerCore`. -/
@@ -4421,14 +4421,37 @@ private theorem lowerCoreRecBinds_isSome_appendTyScopeMid_aux {ke : KindEnv} {A 
     | some ann =>
       cases hr : lowerCoreExpr ke (bindingLowerTyScope b (A ++ B))
           (paramTermScope b.params recScope) b.rhs with
-      | none => simp [hann, hr, bindingLowerTyScope] at h
+      | none =>
+        have hrAt : lowerCoreExpr ke
+            (letAnnTyPrefix b.tyParams (finalizeAnn b.tyParams b.params b.ann) ++ (A ++ B))
+            (paramTermScope b.params recScope) b.rhs = none := by
+          simpa [bindingLowerTyScope] using hr
+        simp [hann, hrAt] at h
       | some rhsCore =>
         cases hwrap : wrapCoreParams ke (bindingLowerTyScope b (A ++ B))
             b.params rhsCore with
-        | none => simp [hann, hr, hwrap, bindingLowerTyScope] at h
+        | none =>
+          have hrAt : lowerCoreExpr ke
+              (letAnnTyPrefix b.tyParams (finalizeAnn b.tyParams b.params b.ann) ++ (A ++ B))
+              (paramTermScope b.params recScope) b.rhs = some rhsCore := by
+            simpa [bindingLowerTyScope] using hr
+          have hwrapAt : wrapCoreParams ke
+              (letAnnTyPrefix b.tyParams (finalizeAnn b.tyParams b.params b.ann) ++ (A ++ B))
+              b.params rhsCore = none := by
+            simpa [bindingLowerTyScope] using hwrap
+          simp [hann, hrAt, hwrapAt] at h
         | some rhs =>
           cases hrest : lowerCoreRecBinds ke (A ++ B) recScope rest with
-          | none => simp [hann, hr, hwrap, hrest, bindingLowerTyScope] at h
+          | none =>
+            have hrAt : lowerCoreExpr ke
+                (letAnnTyPrefix b.tyParams (finalizeAnn b.tyParams b.params b.ann) ++ (A ++ B))
+                (paramTermScope b.params recScope) b.rhs = some rhsCore := by
+              simpa [bindingLowerTyScope] using hr
+            have hwrapAt : wrapCoreParams ke
+                (letAnnTyPrefix b.tyParams (finalizeAnn b.tyParams b.params b.ann) ++ (A ++ B))
+                b.params rhsCore = some rhs := by
+              simpa [bindingLowerTyScope] using hwrap
+            simp [hann, hrAt, hwrapAt, hrest] at h
           | some rest' =>
             have hannNew := lowerPolyAnnIn_isSome_appendTyScopeMid
               (A := A) (tvs' := tvs') (B := B)
@@ -4437,25 +4460,51 @@ private theorem lowerCoreRecBinds_isSome_appendTyScopeMid_aux {ke : KindEnv} {A 
             have hrNew := hBindRhs b List.mem_cons_self
               (Option.isSome_iff_exists.mpr ⟨rhsCore, hr⟩)
             obtain ⟨rhsCoreNew, hrNew⟩ := Option.isSome_iff_exists.mp hrNew
-            let prefix := letAnnTyPrefix b.tyParams
+            let tyPrefix := letAnnTyPrefix b.tyParams
               (finalizeAnn b.tyParams b.params b.ann)
             have hwrapAt :
-                wrapCoreParams ke ((prefix ++ A) ++ B) b.params rhsCore = some rhs := by
-              simpa [prefix, bindingLowerTyScope, List.append_assoc] using hwrap
+                wrapCoreParams ke ((tyPrefix ++ A) ++ B) b.params rhsCore = some rhs := by
+              simpa [tyPrefix, bindingLowerTyScope, List.append_assoc] using hwrap
             have hwrapExtended := wrapCoreParams_isSome_appendTyScopeMid
-              (A := prefix ++ A) (tvs' := tvs') (B := B)
+              (A := tyPrefix ++ A) (tvs' := tvs') (B := B)
               (Option.isSome_iff_exists.mpr ⟨rhs, hwrapAt⟩)
             have hwrapNew :
                 (wrapCoreParams ke (bindingLowerTyScope b (A ++ tvs' ++ B))
                   b.params rhsCoreNew).isSome := by
               refine wrapCoreParams_isSome_invariant (e := rhsCore) ?_
-              simpa [prefix, bindingLowerTyScope, List.append_assoc] using hwrapExtended
+              simpa [tyPrefix, bindingLowerTyScope, List.append_assoc] using hwrapExtended
             obtain ⟨rhsNew, hwrapNew⟩ := Option.isSome_iff_exists.mp hwrapNew
             have hrestNew := ih
               (fun b' hb' hIs => hBindRhs b' (List.mem_cons_of_mem _ hb') hIs)
               (Option.isSome_iff_exists.mpr ⟨rest', hrest⟩)
             obtain ⟨restNew, hrestNew⟩ := Option.isSome_iff_exists.mp hrestNew
-            simp [hannNew, hrNew, hwrapNew, hrestNew, bindingLowerTyScope]
+            have hrNewAt : lowerCoreExpr ke
+                (letAnnTyPrefix b.tyParams (finalizeAnn b.tyParams b.params b.ann) ++
+                  (A ++ tvs' ++ B))
+                (paramTermScope b.params recScope) b.rhs = some rhsCoreNew := by
+              simpa [bindingLowerTyScope] using hrNew
+            have hwrapNewAt : wrapCoreParams ke
+                (letAnnTyPrefix b.tyParams (finalizeAnn b.tyParams b.params b.ann) ++
+                  (A ++ tvs' ++ B))
+                b.params rhsCoreNew = some rhsNew := by
+              simpa [bindingLowerTyScope] using hwrapNew
+            have hannNew' : lowerPolyAnnIn ke (A ++ (tvs' ++ B))
+                (finalizeAnn b.tyParams b.params b.ann) = some annNew := by
+              simpa only [List.append_assoc] using hannNew
+            have hrNewAt' : lowerCoreExpr ke
+                (letAnnTyPrefix b.tyParams (finalizeAnn b.tyParams b.params b.ann) ++
+                  (A ++ (tvs' ++ B)))
+                (paramTermScope b.params recScope) b.rhs = some rhsCoreNew := by
+              simpa only [List.append_assoc] using hrNewAt
+            have hwrapNewAt' : wrapCoreParams ke
+                (letAnnTyPrefix b.tyParams (finalizeAnn b.tyParams b.params b.ann) ++
+                  (A ++ (tvs' ++ B)))
+                b.params rhsCoreNew = some rhsNew := by
+              simpa only [List.append_assoc] using hwrapNewAt
+            have hrestNew' : lowerCoreRecBinds ke (A ++ (tvs' ++ B)) recScope rest =
+                some restNew := by
+              simpa only [List.append_assoc] using hrestNew
+            simp [hannNew', hrNewAt', hwrapNewAt', hrestNew']
 
 private theorem lowerCoreRecBinds_isSome_appendTyScope_aux {ke : KindEnv} {tvs recScope tvs' : List ValName}
     {binds : List Surface.Binding}
@@ -5146,7 +5195,12 @@ theorem lowerCoreRecBinds_isSome_appendTyScope {ke : KindEnv} {tvs recScope tvs'
     {binds : List Surface.Binding} (h : (lowerCoreRecBinds ke tvs recScope binds).isSome) :
     (lowerCoreRecBinds ke (tvs' ++ tvs) recScope binds).isSome := by
   exact lowerCoreRecBinds_isSome_appendTyScope_aux
-    (fun b hb hIs => lowerCoreExpr_isSome_appendTyScope (tvs' := tvs') hIs) h
+    (fun b _ hIs => by
+      have h' := lowerCoreExpr_isSome_appendTyScopeMid
+        (A := letAnnTyPrefix b.tyParams (finalizeAnn b.tyParams b.params b.ann))
+        (tvs' := tvs') (B := tvs) (by
+          simpa [bindingLowerTyScope] using hIs)
+      simpa [bindingLowerTyScope, List.append_assoc] using h') h
 
 
 theorem lowerCoreRecBinds_isSome_appendTyScopeMid {ke : KindEnv} {A tvs' B recScope : List ValName}
@@ -5191,7 +5245,15 @@ private theorem lowerCoreRecBinds_isSome_of_forall {ke : KindEnv} {tvs recScope 
       (fun i hi => by
         simpa [List.getElem_cons_succ] using h (i + 1) (Nat.succ_lt_succ hi))
     obtain ⟨_, htl'⟩ := Option.isSome_iff_exists.mp htl
-    simp [hann', hhd', hwrap', htl', bindingLowerTyScope]
+    have hhdAt : lowerCoreExpr ke
+        (letAnnTyPrefix hd.tyParams (finalizeAnn hd.tyParams hd.params hd.ann) ++ tvs)
+        (paramTermScope hd.params recScope) hd.rhs = some rhsCore := by
+      simpa [bindingLowerTyScope] using hhd'
+    have hwrapAt : wrapCoreParams ke
+        (letAnnTyPrefix hd.tyParams (finalizeAnn hd.tyParams hd.params hd.ann) ++ tvs)
+        hd.params rhsCore = some rhs' := by
+      simpa [bindingLowerTyScope] using hwrap'
+    simp only [hann', hhdAt, hwrapAt, htl', Option.isSome_some]
 
 private theorem lowerAnnList_all_none
     {ke : KindEnv} {binds : List Surface.Binding}
@@ -5338,6 +5400,19 @@ private theorem List.getElem_mem_zip {α β : Type _} {as : List α} {bs : List 
         simp only [List.zip_cons_cons, List.getElem_cons_succ, List.mem_cons]
         exact Or.inr (ih (Nat.lt_of_succ_lt_succ hi) (Nat.lt_of_succ_lt_succ hj))
 
+private theorem Expr.TyBvarBounded.RecGroup_of_forall
+    {n : Nat} {bindings : List CoreRecBinding}
+    (h : ∀ binding ∈ bindings,
+      (∀ σ, binding.ann = some σ → ContainsBvarsUpTo (n + σ.paramCount) σ.body) ∧
+      binding.rhs.TyBvarBounded (n + RecAnn.params binding.ann)) :
+    Expr.TyBvarBounded.RecGroup n bindings := by
+  induction bindings with
+  | nil => trivial
+  | cons binding rest ih =>
+      simp only [Expr.TyBvarBounded.RecGroup]
+      exact ⟨(h binding List.mem_cons_self).1, (h binding List.mem_cons_self).2,
+        ih (fun binding' hbinding' => h binding' (List.mem_cons_of_mem binding hbinding'))⟩
+
 private theorem RecSpec.map_ann_mono (τs : List Ty) :
     (τs.map RecSpec.mono).map RecSpec.ann = List.replicate τs.length none := by
   induction τs with
@@ -5348,28 +5423,14 @@ private theorem lowerCoreRecBinds_length {ke : KindEnv} {tvs recScope : List Val
     {binds : List Surface.Binding} {bs' : List CoreRecBinding}
     (h : lowerCoreRecBinds ke tvs recScope binds = some bs') :
     bs'.length = binds.length := by
-  induction binds generalizing bs' with
-  | nil =>
-    simp only [lowerCoreRecBinds_eqs, Option.some.injEq] at h; subst h; rfl
-  | cons hd tl ih =>
-    simp only [lowerCoreRecBinds_eqs] at h
-    cases hann : lowerPolyAnnIn ke tvs (finalizeAnn hd.tyParams hd.params hd.ann) with
-    | none => simp [hann] at h
-    | some ann' =>
-      cases hhd : lowerCoreExpr ke (bindingLowerTyScope hd tvs)
-          (paramTermScope hd.params recScope) hd.rhs with
-      | none => simp [hann, hhd, bindingLowerTyScope] at h
-      | some rhsCore =>
-        cases hwrap : wrapCoreParams ke (bindingLowerTyScope hd tvs) hd.params rhsCore with
-        | none => simp [hann, hhd, hwrap, bindingLowerTyScope] at h
-        | some e' =>
-          cases htl : lowerCoreRecBinds ke tvs recScope tl with
-          | none => simp [hann, hhd, hwrap, htl, bindingLowerTyScope] at h
-          | some rest' =>
-            simp only [hann, hhd, hwrap, htl, bindingLowerTyScope,
-              Option.some.injEq] at h
-            subst h
-            simp [ih htl]
+  have hrel := lowerCoreRecBinds_CoreLowersRecBinds (ctors := []) binds h
+  cases hrel with
+  | nil => rfl
+  | cons _ _ _ hrest =>
+      simp only [List.length_cons,
+        lowerCoreRecBinds_length (lowerCoreRecBinds_eq_some_of_CoreLowersRecBinds hrest)]
+termination_by binds.length
+decreasing_by simp_all
 
 private theorem lowerCoreRecBinds_get {ke : KindEnv} {tvs recScope : List ValName}
     {binds : List Surface.Binding} {bs' : List CoreRecBinding}
@@ -5384,34 +5445,30 @@ private theorem lowerCoreRecBinds_get {ke : KindEnv} {tvs recScope : List ValNam
         wrapCoreParams ke (bindingLowerTyScope (binds[i]'hi) tvs)
           (binds[i]'hi).params rhsCore =
           some (bs'[i]'(by simpa [lowerCoreRecBinds_length h] using hi)).rhs := by
-  induction binds generalizing bs' with
+  have hrel := lowerCoreRecBinds_CoreLowersRecBinds (ctors := []) binds h
+  cases hrel with
   | nil => intro i hi; cases hi
-  | cons hd tl ih =>
-    simp only [lowerCoreRecBinds_eqs] at h
-    cases hann : lowerPolyAnnIn ke tvs (finalizeAnn hd.tyParams hd.params hd.ann) with
-    | none => simp [hann] at h
-    | some ann' =>
-      cases hhd : lowerCoreExpr ke (bindingLowerTyScope hd tvs)
-          (paramTermScope hd.params recScope) hd.rhs with
-      | none => simp [hann, hhd, bindingLowerTyScope] at h
-      | some rhsCore =>
-        cases hwrap : wrapCoreParams ke (bindingLowerTyScope hd tvs) hd.params rhsCore with
-        | none => simp [hann, hhd, hwrap, bindingLowerTyScope] at h
-        | some e' =>
-          cases htl : lowerCoreRecBinds ke tvs recScope tl with
-          | none => simp [hann, hhd, hwrap, htl, bindingLowerTyScope] at h
-          | some rest' =>
-            simp only [hann, hhd, hwrap, htl, bindingLowerTyScope,
-              Option.some.injEq] at h
-            subst h
-            intro i hi
-            match i with
-            | 0 =>
-              simp only [List.getElem_cons_zero]
-              exact ⟨rhsCore, hann, hhd, hwrap⟩
-            | i' + 1 =>
-              have hi' : i' < tl.length := Nat.lt_of_succ_lt_succ hi
-              simpa using ih htl i' hi'
+  | @cons _ _ bind ann' rhsCore rhs' rest rest' hann hrhs hwrap hrest =>
+      intro i hi
+      match i with
+      | 0 =>
+        simp only [List.getElem_cons_zero]
+        change lowerPolyAnnIn ke tvs
+          (finalizeAnn bind.tyParams bind.params bind.ann) = some ann' at hann
+        have hrhs' : lowerCoreExpr ke (bindingLowerTyScope bind tvs)
+            (paramTermScope bind.params recScope) bind.rhs = some rhsCore := by
+          simpa [bindingLowerTyScope] using
+            lowerCoreExpr_eq_some_of_CoreLowersExpr hrhs
+        have hwrap' : wrapCoreParams ke (bindingLowerTyScope bind tvs)
+            bind.params rhsCore = some rhs' := by
+          simpa [bindingLowerTyScope] using hwrap
+        exact ⟨rhsCore, hann, hrhs', hwrap'⟩
+      | i' + 1 =>
+        have hi' : i' < rest.length := Nat.lt_of_succ_lt_succ hi
+        simpa using lowerCoreRecBinds_get
+          (lowerCoreRecBinds_eq_some_of_CoreLowersRecBinds hrest) i' hi'
+termination_by binds.length
+decreasing_by simp_all
 
 private theorem lowerCoreRecBinds_anns {ke : KindEnv} {tvs recScope : List ValName}
     {binds : List Surface.Binding} {bs' : List CoreRecBinding}
@@ -5419,30 +5476,36 @@ private theorem lowerCoreRecBinds_anns {ke : KindEnv} {tvs recScope : List ValNa
     lowerAnnListIn ke tvs
       (binds.map fun b => finalizeAnn b.tyParams b.params b.ann) =
         some (bs'.map (·.ann)) := by
-  induction binds generalizing bs' with
-  | nil =>
+  match binds with
+  | [] =>
     simp only [lowerCoreRecBinds_eqs, Option.some.injEq] at h
     subst h
     rfl
-  | cons hd tl ih =>
+  | b :: rest =>
     simp only [lowerCoreRecBinds_eqs] at h
-    cases hann : lowerPolyAnnIn ke tvs (finalizeAnn hd.tyParams hd.params hd.ann) with
+    cases hann : lowerPolyAnnIn ke tvs
+        (finalizeAnn b.tyParams b.params b.ann) with
     | none => simp [hann] at h
     | some ann' =>
-      cases hhd : lowerCoreExpr ke (bindingLowerTyScope hd tvs)
-          (paramTermScope hd.params recScope) hd.rhs with
-      | none => simp [hann, hhd, bindingLowerTyScope] at h
+      cases hrhs : lowerCoreExpr ke
+          (letAnnTyPrefix b.tyParams (finalizeAnn b.tyParams b.params b.ann) ++ tvs)
+          (paramTermScope b.params recScope) b.rhs with
+      | none => simp [hann, hrhs] at h
       | some rhsCore =>
-        cases hwrap : wrapCoreParams ke (bindingLowerTyScope hd tvs) hd.params rhsCore with
-        | none => simp [hann, hhd, hwrap, bindingLowerTyScope] at h
+        cases hwrap : wrapCoreParams ke
+            (letAnnTyPrefix b.tyParams (finalizeAnn b.tyParams b.params b.ann) ++ tvs)
+            b.params rhsCore with
+        | none => simp [hann, hrhs, hwrap] at h
         | some rhs' =>
-          cases htl : lowerCoreRecBinds ke tvs recScope tl with
-          | none => simp [hann, hhd, hwrap, htl, bindingLowerTyScope] at h
+          cases hrest : lowerCoreRecBinds ke tvs recScope rest with
+          | none => simp [hann, hrhs, hwrap, hrest] at h
           | some rest' =>
-            simp only [hann, hhd, hwrap, htl, bindingLowerTyScope,
-              Option.some.injEq] at h
+            simp only [hann, hrhs, hwrap, hrest, Option.some.injEq] at h
             subst h
-            simp only [List.map_cons, lowerAnnListIn, hann, ih htl]
+            simp only [List.map_cons, lowerAnnListIn, hann,
+              lowerCoreRecBinds_anns hrest]
+termination_by binds.length
+decreasing_by simp_wf
 
 /-- `lowerPoly` yields a well-formed scheme (`PolyTy.WF`). -/
 theorem lowerPoly_WF {ke : KindEnv} {σ : Surface.PolyTy} {σ' : PolyTy}
@@ -5998,51 +6061,36 @@ theorem lowerCoreExpr_tyBvarBounded {ke : KindEnv} {tvs vs : List ValName} :
         have hEq : some (Expr.letRec bindings' body') = some c := by
           simpa [hbinds, hb] using h
         cases hEq
-        have hann := lowerCoreRecBinds_anns hbinds
         simp only [Expr.TyBvarBounded]
-        refine ⟨?_, ?_, lowerCoreExpr_tyBvarBounded hb⟩
+        refine ⟨Expr.TyBvarBounded.RecGroup_of_forall ?_,
+          lowerCoreExpr_tyBvarBounded hb⟩
+        intro binding hbinding
+        obtain ⟨i, hi, rfl⟩ := List.mem_iff_getElem.mp hbinding
+        have hlen := lowerCoreRecBinds_length hbinds
+        have hiB : i < binds.length := by simpa [hlen] using hi
+        obtain ⟨rhsCore, hann_i, hr, hwrap⟩ :=
+          lowerCoreRecBinds_get hbinds i hiB
+        constructor
         · intro σ hσ
-          exact lowerAnnListIn_containsBvars hann σ hσ
-        · exact Expr.TyBvarBounded.RecGroup_of_zip
-            (by simp)
-            (by
-              intro p hp
-              obtain ⟨i, hi, hb_eq, hann_eq⟩ :=
-                List.mem_zip_getElem (by simp) hp
-              have hlen := lowerCoreRecBinds_length hbinds
-              have hiB : i < binds.length := by simpa [hlen] using hi
-              obtain ⟨rhsCore, hann_i, hr, hwrap⟩ :=
-                lowerCoreRecBinds_get hbinds i hiB
-              rw [← hb_eq]
-              cases hp2 : p.2 with
-              | none =>
-                have hann_none :
-                    lowerPolyAnnIn ke tvs
-                        (finalizeAnn binds[i].tyParams binds[i].params binds[i].ann) =
-                      some none := by
-                  rw [hann_i]
-                  simpa using hann_eq.trans hp2
-                have hF := lowerPolyAnnIn_finalizeAnn_none hann_none
-                have hscopeEq : bindingLowerTyScope binds[i] tvs = tvs := by
-                  simp [bindingLowerTyScope, letAnnTyPrefix, hF]
-                have hrhs :=
-                  wrapCoreParams_tyBvarBounded hwrap (lowerCoreExpr_tyBvarBounded hr)
-                simpa [hscopeEq] using hrhs
-              | some σ =>
-                have hann_some :
-                    lowerPolyAnnIn ke tvs
-                        (finalizeAnn binds[i].tyParams binds[i].params binds[i].ann) =
-                      some (some σ) := by
-                  rw [hann_i]
-                  simpa using hann_eq.trans hp2
-                have hpc := lowerPolyAnnIn_some_paramCount hann_some
-                have hrhs :=
-                  wrapCoreParams_tyBvarBounded hwrap (lowerCoreExpr_tyBvarBounded hr)
-                have hlen' : (bindingLowerTyScope binds[i] tvs).length =
-                    tvs.length + RecAnn.params (some σ) := by
-                  simp [bindingLowerTyScope, RecAnn.params, hpc, List.length_append,
-                    Nat.add_comm]
-                rwa [hlen'] at hrhs)
+          exact lowerPolyAnnIn_containsBvars hann_i σ hσ
+        · cases hann : bindings'[i].ann with
+          | none =>
+            have hF := lowerPolyAnnIn_finalizeAnn_none (hann_i.trans (congrArg some hann))
+            have hscopeEq : bindingLowerTyScope binds[i] tvs = tvs := by
+              simp [bindingLowerTyScope, letAnnTyPrefix, hF]
+            have hrhs := wrapCoreParams_tyBvarBounded hwrap
+              (lowerCoreExpr_tyBvarBounded hr)
+            simpa [hann, hscopeEq] using hrhs
+          | some σ =>
+            have hann_some := hann_i.trans (congrArg some hann)
+            have hpc := lowerPolyAnnIn_some_paramCount hann_some
+            have hrhs := wrapCoreParams_tyBvarBounded hwrap
+              (lowerCoreExpr_tyBvarBounded hr)
+            have hlen' : (bindingLowerTyScope binds[i] tvs).length =
+                tvs.length + RecAnn.params (some σ) := by
+              simp [bindingLowerTyScope, RecAnn.params, hpc, List.length_append,
+                Nat.add_comm]
+            simpa [hann, hlen'] using hrhs
   | .var name =>
     simp only [lowerCoreExpr_eqs] at h
     cases hi : tvarIndex vs name with
@@ -6442,34 +6490,29 @@ theorem TypeOfHM.tyBvarBounded {ctx : Ctx} {e : Expr} {τ : Ty}
     exact ihbrs (p, b) hmem
   | letRec hgroups hwf hmono hpoly heq hbody ihmono ihpoly ihbody =>
     expose_names
-    refine ⟨?_, ?_, ihbody⟩
+    refine ⟨Expr.TyBvarBounded.RecGroup_of_forall ?_, ihbody⟩
+    intro binding hbindingMem
+    obtain ⟨i, hi, rfl⟩ := List.mem_iff_getElem.mp hbindingMem
+    have hiS : i < specs.length := by
+      simpa [hwf.length] using hi
+    have hann' : (specs[i]'hiS).ann = bindings[i].ann := by
+      have hannAt := congrArg (fun xs => xs[i]?) hwf.anns_eq
+      simpa [List.getElem?_map, hiS, hi] using hannAt
+    constructor
     · intro σ hσ
-      rw [← hwf.anns_eq] at hσ
-      obtain ⟨s, hs, hsa⟩ := List.mem_map.mp hσ
-      cases RecSpec.ann_eq_some hsa
-      simpa using hwf.poly_wf σ hs
-    · rw [← hwf.anns_eq]
-      refine Expr.TyBvarBounded.RecGroup_of_zip
-        (by simpa [List.length_map] using hwf.length) (fun p hp => ?_)
-      obtain ⟨e, annO⟩ := p
-      have hlen' : bindings.length = (specs.map RecSpec.ann).length := by
-        simpa [List.length_map] using hwf.length
-      obtain ⟨i, hi, heq, hann⟩ := List.mem_zip_getElem hlen' hp
-      have hiS : i < specs.length := by
-        rwa [hwf.length] at hi
-      obtain ⟨Xs, hXlen, hXnodup, hXavoid⟩ := exists_fresh_names L G.length
+      have hs : specs[i]'hiS = .poly σ :=
+        RecSpec.ann_eq_some (hann'.trans hσ)
+      simpa [PolyTy.WF] using hwf.poly_wf σ (hs ▸ List.getElem_mem hiS)
+    · obtain ⟨Xs, hXlen, hXnodup, hXavoid⟩ := exists_fresh_names L G.length
       have hfresh : FreshNames L G.length Xs := ⟨hXlen, hXnodup, hXavoid⟩
-      have hmem : (e, specs[i]'hiS) ∈ bindings.zip specs := by
-        simpa [heq] using List.getElem_mem_zip hi hiS
-      have hann' : (specs[i]'hiS).ann = annO := by
-        simpa only [List.getElem_map] using hann
+      have hmem : (bindings[i]'hi, specs[i]'hiS) ∈ bindings.zip specs :=
+        List.getElem_mem_zip hi hiS
       cases hs : specs[i]'hiS with
       | mono τm =>
-          have hannNone : annO = none := by
+          have hannNone : bindings[i].ann = none := by
             simpa [hs, RecSpec.ann] using hann'.symm
-          have hunsigned : RecGroups.UnsignedAt anns i := by
-            rw [RecGroups.UnsignedAt, ← hwf.anns_eq]
-            simp [hiS, hs, RecSpec.ann]
+          have hunsigned : RecGroups.UnsignedAt bindings i := by
+            simp [RecGroups.UnsignedAt, hi, hannNone]
           have hmemGroups : i ∈ groups.flatten := by
             exact (hgroups.covers_unsigned i hi).2 hunsigned
           obtain ⟨component, hcomponentMem, hiComponent⟩ :=
@@ -6478,21 +6521,22 @@ theorem TypeOfHM.tyBvarBounded {ctx : Ctx} {e : Expr} {τ : Ty}
             List.mem_iff_getElem.mp hcomponentMem
           have hcomponent : groups[stage]? = some component := by
             simp [hstage, hcomponentEq]
-          have hbinding : bindings[i]? = some e := by
-            simp [hi, heq]
+          have hbinding : bindings[i]? = some bindings[i] := by simp [hi]
           have hspec : specs[i]? = some (.mono τm) := by
             simp [hiS, hs]
-          have hb0 := ihmono stage component hcomponent Xs hfresh i hiComponent e τm
+          have hb0 := ihmono stage component hcomponent Xs hfresh i hiComponent
+            bindings[i] τm
             hbinding hspec
-          exact Expr.TyBvarBounded.mono hb0 (Nat.zero_le _)
+          simpa [hannNone, RecAnn.params] using hb0
       | poly σ =>
           obtain ⟨Ys, hYlen, hYnodup, hYavoid⟩ :=
             exists_fresh_names L σ.paramCount
-          have hb0 := ihpoly (e, .poly σ) (hs ▸ hmem) σ rfl Ys
+          have hb0 := ihpoly (bindings[i], .poly σ) (hs ▸ hmem) σ rfl Ys
             ⟨hYlen, hYnodup, hYavoid⟩
-          have hb := Expr.tyBvarBounded_of_openTyVarsAux Ys e 0
+          have hb := Expr.tyBvarBounded_of_openTyVarsAux Ys bindings[i].rhs 0
             (by simpa only [Expr.openTyVars] using hb0)
-          have hσann : annO = some σ := by simpa [hs, RecSpec.ann] using hann'.symm
+          have hσann : bindings[i].ann = some σ := by
+            simpa [hs, RecSpec.ann] using hann'.symm
           simpa only [hσann, RecAnn.params, Nat.zero_add, hYlen] using hb
   | mk _ _ _ ih => exact ih
   | wildcard _ ih => exact ih
@@ -6704,36 +6748,41 @@ theorem TypeOfHM_of_lowerExpr_of_SurfaceWTExpr {ctors : CtorEnv} {ke : KindEnv}
       lowerCoreExpr_letRecIn_decomp (binds := binds) (body := body) hlow
     subst hc
     let annsL := members.map (·.ann)
-    let bindings' := members.map (·.rhs)
     have hann' := @lowerAnnListIn_finalizeAnn_none ke tvs' binds hann
     have hannL := lowerCoreRecBinds_anns hbindsL
     have anns_eq : annsL = List.replicate binds.length (none : Option PolyTy) := by
       exact Option.some.inj (hannL.symm.trans hann')
-    have hlenB : bindings'.length = binds.length := by
-      simpa [bindings'] using lowerCoreRecBinds_length hbindsL
+    have hlenB : members.length = binds.length := lowerCoreRecBinds_length hbindsL
     have hgetB := lowerCoreRecBinds_get hbindsL
     set specs : List RecSpec := τs.map RecSpec.mono with hspecs
     have hanns_eq : specs.map RecSpec.ann = annsL := by
       simpa [specs, hlen, anns_eq] using RecSpec.map_ann_mono τs
-    have hanns_len : annsL.length = bindings'.length := by
-      simpa [anns_eq] using hlenB.symm
-    have hgroups : RecGroups.ValidResidualGroups annsL bindings'
-        (oneResidualGroup annsL) := oneResidualGroup_valid hanns_len
-    have hgroups_eq : oneResidualGroup annsL =
-        if bindings'.length = 0 then [] else [List.range bindings'.length] := by
-      subst annsL
+    have hgroups : RecGroups.ValidResidualGroups members
+        (oneResidualGroup members) := oneResidualGroup_valid
+    have hgroups_eq : oneResidualGroup members =
+        if members.length = 0 then [] else [List.range members.length] := by
       rw [oneResidualGroup]
-      simp only [List.length_replicate]
       have hfilter :
-          List.filter (RecGroups.unsignedAtB (List.replicate binds.length none))
-              (List.range binds.length) = List.range binds.length := by
+          List.filter (RecGroups.unsignedAtB members) (List.range members.length) =
+            List.range members.length := by
         apply List.filter_eq_self.mpr
         intro member hmember
         have hbound := List.mem_range.mp hmember
-        simp [RecGroups.unsignedAtB, hbound]
+        apply (RecGroups.unsignedAtB_eq_true_iff members member).mpr
+        simp only [RecGroups.UnsignedAt]
+        rw [← List.getElem?_map]
+        change annsL[member]? = some none
+        calc
+          annsL[member]? = (List.replicate binds.length (none : Option PolyTy))[member]? :=
+            congrArg (fun xs => xs[member]?) anns_eq
+          _ = some none := by
+            apply List.getElem?_eq_some_iff.mpr
+            have hm : member < binds.length := by omega
+            have hr : member < (List.replicate binds.length
+                (none : Option PolyTy)).length := by simpa using hm
+            exact ⟨hr, List.getElem_replicate hr⟩
       rw [hfilter]
-      rw [hlenB]
-      by_cases hnil : binds.length = 0 <;> simp [hnil]
+      by_cases hnil : members.length = 0 <;> simp [hnil]
     have hscope_i : ∀ (i : Nat) (hi : i < binds.length),
         bindingLowerTyScope (binds[i]'hi) tvs' =
           letRhsTyScope (binds[i]'hi).tyParams (binds[i]'hi).params
@@ -6742,9 +6791,8 @@ theorem TypeOfHM_of_lowerExpr_of_SurfaceWTExpr {ctors : CtorEnv} {ke : KindEnv}
       have hann_i : (binds[i]'hi).ann = (none : Option Surface.PolyTy) :=
         hann _ (List.getElem_mem hi)
       simp [bindingLowerTyScope, letRhsTyScope, hann_i, finalizeAnn_none, letAnnTyPrefix]
-    have hwf : RecSpecs.WF annsL bindings' specs [] := by
-      refine ⟨hanns_eq, ?_, List.nodup_nil, ?_, ?_⟩
-      · simp only [specs, List.length_map, hlenB, hlen]
+    have hwf : RecSpecs.WF members specs [] := by
+      refine ⟨hanns_eq, List.nodup_nil, ?_, ?_⟩
       · intro τm hτ
         simp only [specs, List.mem_map] at hτ
         obtain ⟨τ', hτ', hτeq⟩ := hτ
@@ -6761,19 +6809,19 @@ theorem TypeOfHM_of_lowerExpr_of_SurfaceWTExpr {ctors : CtorEnv} {ke : KindEnv}
         have hwrap' :
             wrapCoreParams ke (letRhsTyScope (binds[i]'hiB).tyParams (binds[i]'hiB).params
                 (none : Option Surface.PolyTy) tvs') (binds[i]'hiB).params rhsCore =
-              some (bindings'[i]'(by omega : i < bindings'.length)) := by
-          simpa [bindings', hscope_i i hiB] using hwrap
+              some (members[i]'(by omega : i < members.length)).rhs := by
+          simpa [hscope_i i hiB] using hwrap
         have hTyW := wrapCoreParams_TypeOfHM (hLL i hiB) hwrap' (hrhs_ih i hiB hr')
         exact TypeOfHM.regular (by simpa [← hτbinds i hiB] using hTyW)
       · intro σ hσ
         simp only [specs, List.mem_map] at hσ
         obtain ⟨_, _, hcontrad⟩ := hσ
         cases hcontrad
-    refine TypeOfHM.letRec (specs := specs) (groups := oneResidualGroup annsL)
+    refine TypeOfHM.letRec (specs := specs) (groups := oneResidualGroup members)
       (G := []) (L := []) hgroups hwf ?mono ?poly rfl ?body
-    · intro stage component hcomponent Xs hXs member hmember rhs τm hrhs hτm
+    · intro stage component hcomponent Xs hXs member hmember binding τm hbinding hτm
       rw [hgroups_eq] at hcomponent
-      have hzero : bindings'.length ≠ 0 := by
+      have hzero : members.length ≠ 0 := by
         intro hz
         simp [hz] at hcomponent
       rw [if_neg hzero] at hcomponent
@@ -6781,13 +6829,13 @@ theorem TypeOfHM_of_lowerExpr_of_SurfaceWTExpr {ctors : CtorEnv} {ke : KindEnv}
       have hstageLt : stage < 1 := by simpa using hlookup.1
       have hstage : stage = 0 := by omega
       subst stage
-      have hcomponent_eq : component = List.range bindings'.length := by
+      have hcomponent_eq : component = List.range members.length := by
         simpa using hlookup.2.symm
       subst component
-      have hiB : member < bindings'.length := List.mem_range.mp hmember
-      have hrhs' := List.getElem?_eq_some_iff.mp hrhs
-      have hiRhs : member < bindings'.length := hrhs'.1
-      have hrhsEq : bindings'[member]'hiRhs = rhs := hrhs'.2
+      have hiB : member < members.length := List.mem_range.mp hmember
+      have hbinding' := List.getElem?_eq_some_iff.mp hbinding
+      have hiRhs : member < members.length := hbinding'.1
+      have hbindingEq : members[member]'hiRhs = binding := hbinding'.2
       have hspec' : τs[member]? = some τm := by
         cases hopt : τs[member]? with
         | none => simp [specs, hopt] at hτm
@@ -6808,13 +6856,13 @@ theorem TypeOfHM_of_lowerExpr_of_SurfaceWTExpr {ctors : CtorEnv} {ke : KindEnv}
       have hwrap' :
           wrapCoreParams ke (letRhsTyScope (binds[member]'hiBind).tyParams
               (binds[member]'hiBind).params (none : Option Surface.PolyTy) tvs')
-            (binds[member]'hiBind).params rhsCore = some (bindings'[member]'hiRhs) := by
-        simpa [bindings', hscope_i member hiBind] using hwrap
+            (binds[member]'hiBind).params rhsCore = some (members[member]'hiRhs).rhs := by
+        simpa [hscope_i member hiBind] using hwrap
       have hTyW := wrapCoreParams_TypeOfHM
         (hLL member hiBind) hwrap' (hrhs_ih member hiBind hr')
       simp only [List.take_zero, List.flatten_nil, RecSpecs.stageCtx]
       rw [stageEntries_none_eq_rhsEntries]
-      simpa [RecSpecs.rhsCtx, RecSpec.rhsEntry, specs, hrhsEq,
+      simpa [RecSpecs.rhsCtx, RecSpec.rhsEntry, specs, hbindingEq,
         ← hτsEq, ← hτbinds member hiBind] using hTyW
     · intro p hp σ hσ
       have hs : p.2 ∈ specs := (List.of_mem_zip hp).2
@@ -6835,49 +6883,44 @@ theorem TypeOfHM_of_lowerExpr_of_SurfaceWTExpr {ctors : CtorEnv} {ke : KindEnv}
       lowerCoreExpr_letRecIn_decomp (binds := binds) (body := body) hlow
     subst hc
     let annsL := members.map (·.ann)
-    let bindings' := members.map (·.rhs)
     have hannL := lowerCoreRecBinds_anns hbindsL
-    have hlenB : bindings'.length = binds.length := by
-      simpa [bindings'] using lowerCoreRecBinds_length hbindsL
+    have hlenB : members.length = binds.length := lowerCoreRecBinds_length hbindsL
     have hgetB := lowerCoreRecBinds_get hbindsL
     have hannIn : lowerAnnListIn ke []
         (binds.map fun b => finalizeAnn b.tyParams b.params b.ann) = some anns' := by
       simpa only [lowerAnnListIn_nil] using hann
     have anns_eq : annsL = anns' := Option.some.inj (hannL.symm.trans hannIn)
-    have hwf : RecSpecs.WF annsL bindings' specs G :=
-      ⟨anns_eq ▸ hanns_eq, hlenB.trans hlen, hnodup, hmono_lc, hpoly_wf⟩
-    have hanns_len : annsL.length = bindings'.length := by
-      calc
-        annsL.length = specs.length := by
-          simpa using congrArg List.length hwf.anns_eq |>.symm
-        _ = bindings'.length := hwf.length.symm
-    have hgroups : RecGroups.ValidResidualGroups annsL bindings'
-        (oneResidualGroup annsL) := oneResidualGroup_valid hanns_len
-    refine TypeOfHM.letRec (specs := specs) (groups := oneResidualGroup annsL)
+    have hwf : RecSpecs.WF members specs G :=
+      ⟨by simpa [annsL] using hanns_eq.trans anns_eq.symm,
+        hnodup, hmono_lc, hpoly_wf⟩
+    have hgroups : RecGroups.ValidResidualGroups members
+        (oneResidualGroup members) := oneResidualGroup_valid
+    refine TypeOfHM.letRec (specs := specs) (groups := oneResidualGroup members)
       (G := G) (L := L) hgroups hwf ?_ ?_ rfl ?_
-    · intro stage component hcomponent Xs hfresh member hmember rhs τm hrhs hτm
-      let members := (List.range annsL.length).filter (RecGroups.unsignedAtB annsL)
-      have hmembers_ne : members ≠ [] := by
+    · intro stage component hcomponent Xs hfresh member hmember binding τm hbinding hτm
+      let unsignedMembers :=
+        (List.range members.length).filter (RecGroups.unsignedAtB members)
+      have hmembers_ne : unsignedMembers ≠ [] := by
         intro hnil
-        simp [oneResidualGroup, members, hnil] at hcomponent
-      simp only [oneResidualGroup, members, hmembers_ne] at hcomponent
+        simp [oneResidualGroup, unsignedMembers, hnil] at hcomponent
+      simp only [oneResidualGroup, unsignedMembers, hmembers_ne] at hcomponent
       have hlookup := List.getElem?_eq_some_iff.mp hcomponent
       have hstageLt : stage < 1 := by simpa using hlookup.1
       have hstage : stage = 0 := by omega
       subst stage
-      have hcomponent_eq : component = members := by
+      have hcomponent_eq : component = unsignedMembers := by
         simpa using hlookup.2.symm
       subst component
-      have hiCore : member < bindings'.length := hgroups.bounded member (by
-        simpa [oneResidualGroup, members, hmembers_ne] using hmember)
+      have hiCore : member < members.length := hgroups.bounded member (by
+        simpa [oneResidualGroup, unsignedMembers, hmembers_ne] using hmember)
       have hiB : member < binds.length := by omega
       have hiSpec : member < specs.length := by
         rw [← hwf.length]
         exact hiCore
       have hspecLookup := List.getElem?_eq_some_iff.mp hτm
       have hspec : specs[member]'hiSpec = .mono τm := hspecLookup.2
-      have hrhsLookup := List.getElem?_eq_some_iff.mp hrhs
-      have hrhsEq : bindings'[member]'hrhsLookup.1 = rhs := hrhsLookup.2
+      have hbindingLookup := List.getElem?_eq_some_iff.mp hbinding
+      have hbindingEq : members[member]'hbindingLookup.1 = binding := hbindingLookup.2
       obtain ⟨rhsCore, _hann, hr, hwrap⟩ := hgetB member hiB
       have hr' :
           lowerCoreExpr ke (letRhsTyScope (binds[member]'hiB).tyParams (binds[member]'hiB).params
@@ -6888,18 +6931,18 @@ theorem TypeOfHM_of_lowerExpr_of_SurfaceWTExpr {ctors : CtorEnv} {ke : KindEnv}
       have hwrap' :
           wrapCoreParams ke (letRhsTyScope (binds[member]'hiB).tyParams (binds[member]'hiB).params
               (binds[member]'hiB).ann []) (binds[member]'hiB).params rhsCore =
-            some (bindings'[member]'hiCore) := by
-        simpa [bindings', bindingLowerTyScope, letRhsTyScope] using hwrap
+            some (members[member]'hiCore).rhs := by
+        simpa [bindingLowerTyScope, letRhsTyScope] using hwrap
       have hTyR := hmono_ih Xs hfresh member hiB τm hspec hr'
       have hTyW := wrapCoreParams_TypeOfHM
         (hLLMono Xs hfresh member hiB τm hspec) hwrap' hTyR
       have harr := hτbindsMono Xs hfresh member hiB τm hspec
       have hTyW' : TypeOfHM (RecSpecs.stageCtx ⟨Γ, ctors⟩ specs
-          (oneResidualGroup annsL |>.take 0).flatten G Xs) rhs
+          (oneResidualGroup members |>.take 0).flatten G Xs) binding.rhs
           (Ty.renameG G Xs τm) := by
         simp only [List.take_zero, List.flatten_nil, RecSpecs.stageCtx]
         rw [stageEntries_none_eq_rhsEntries]
-        simpa [RecSpecs.rhsCtx, ← harr, hrhsEq] using hTyW
+        simpa [RecSpecs.rhsCtx, ← harr, hbindingEq] using hTyW
       exact hTyW'
     · intro p hp σ hσ Ys hYs
       obtain ⟨i, hi, hb_eq, hs_eq⟩ := List.mem_zip_getElem hwf.length hp
@@ -6915,19 +6958,19 @@ theorem TypeOfHM_of_lowerExpr_of_SurfaceWTExpr {ctors : CtorEnv} {ke : KindEnv}
       have hwrap' :
           wrapCoreParams ke (letRhsTyScope (binds[i]'hiB).tyParams (binds[i]'hiB).params
               (binds[i]'hiB).ann []) (binds[i]'hiB).params rhsCore =
-            some (bindings'[i]'hi) := by
-        simpa [bindings', bindingLowerTyScope, letRhsTyScope] using hwrap
+            some (members[i]'hi).rhs := by
+        simpa [bindingLowerTyScope, letRhsTyScope] using hwrap
       have hTyR := hpoly_ih i hiB σ hspec Ys hYs hr'
       have hTyW := wrapCoreParams_TypeOfHM
         (hLLPoly i hiB σ hspec Ys hYs) hwrap' hTyR
       have harr := hτbindsPoly i hiB σ hspec Ys hYs
       have hTy : TypeOfHM (RecSpecs.bodyCtx ⟨Γ, ctors⟩ specs G)
-          (bindings'[i]'hi) (σ.openVars Ys) := by
+          (members[i]'hi).rhs (σ.openVars Ys) := by
         simpa [RecSpecs.bodyCtx, ← harr] using hTyW
-      have hb0 : (bindings'[i]'hi).TyBvarBounded 0 := TypeOfHM.tyBvarBounded hTy
-      have hp1 : p.1 = bindings'[i]'hi := hb_eq.symm
+      have hb0 : (members[i]'hi).rhs.TyBvarBounded 0 := TypeOfHM.tyBvarBounded hTy
+      have hp1 : p.1 = members[i]'hi := hb_eq.symm
       simp only [hp1, Expr.openTyVars]
-      rwa [Expr.openTyVarsAux_eq_self_of_tyBvarBounded Ys (bindings'[i]'hi) 0 hb0]
+      rwa [Expr.openTyVarsAux_eq_self_of_tyBvarBounded Ys (members[i]'hi).rhs 0 hb0]
     · simpa [RecSpecs.bodyCtx] using hbody_ih hbL
   | match_ =>
     rename_i vs Γ scrut brs T tyArgs τres hs hbrs hpats hexh hkind hwk ihs ihbrs
@@ -7048,45 +7091,6 @@ theorem lowerPolyAnnIn_freeVars {ke : KindEnv} {tvs : List ValName}
     obtain ⟨b, hb, rfl⟩ := Option.map_eq_some_iff.mp hσ
     simp [lowerTy_freeVars hb]
 
-theorem lowerAnnList_freeVars {ke : KindEnv} :
-    ∀ {as : List (Option Surface.PolyTy)} {as' : List (Option PolyTy)},
-      lowerAnnList ke as = some as' →
-      Expr.tyFreeVars.AnnList.tyFreeVars as' = []
-  | [], as', h => by
-    simp only [lowerAnnList, Option.some.injEq] at h; subst h; rfl
-  | a :: as, as', h => by
-    simp only [lowerAnnList] at h
-    cases ha : lowerPolyAnn ke a with
-    | none => simp [ha] at h
-    | some a' =>
-      cases has : lowerAnnList ke as with
-      | none => simp [ha, has] at h
-      | some as'' =>
-        simp only [ha, has, Option.some.injEq] at h; subst h
-        simp only [Expr.tyFreeVars.AnnList.tyFreeVars, lowerPolyAnn_freeVars ha,
-          lowerAnnList_freeVars has, List.nil_append]
-
-theorem lowerAnnListIn_freeVars {ke : KindEnv} {tvs : List ValName} :
-    ∀ {as : List (Option Surface.PolyTy)} {as' : List (Option PolyTy)},
-      lowerAnnListIn ke tvs as = some as' →
-      Expr.tyFreeVars.AnnList.tyFreeVars as' = []
-  | [], as', h => by
-    simp only [lowerAnnListIn, Option.some.injEq] at h
-    subst h
-    rfl
-  | a :: as, as', h => by
-    simp only [lowerAnnListIn] at h
-    cases ha : lowerPolyAnnIn ke tvs a with
-    | none => simp [ha] at h
-    | some a' =>
-      cases has : lowerAnnListIn ke tvs as with
-      | none => simp [ha, has] at h
-      | some as'' =>
-        simp only [ha, has, Option.some.injEq] at h
-        subst h
-        simp only [Expr.tyFreeVars.AnnList.tyFreeVars, lowerPolyAnnIn_freeVars ha,
-          lowerAnnListIn_freeVars has, List.nil_append]
-
 theorem wrapCoreParams_tyFreeVars {ke : KindEnv} {tvs : List ValName}
     {params : List (ValName × Option Surface.Ty)} {e e' : Expr}
     (hwrap : wrapCoreParams ke tvs params e = some e')
@@ -7131,33 +7135,6 @@ private theorem shiftFrom_matchBranches (n : Nat) (scrut : Expr)
     rw [shiftFrom_match_cons, ih]
     simp only [List.map_cons]
 
-private theorem shiftFrom_letRec_bridge (binding : CoreRecBinding)
-    (rest : List CoreRecBinding) (body : Expr) (base n : Nat) :
-    ((Expr.letRec (binding :: rest) body).shiftFrom base n).letRecBindingsOf.tail
-      = ((Expr.letRec rest body).shiftFrom (base + 1) n).letRecBindingsOf := by
-  simp only [Expr.shiftFrom, Expr.letRecBindingsOf, List.length_cons]
-  rw [show base + (rest.length + 1) = base + 1 + rest.length from by omega]
-  rfl
-
-private theorem shiftFrom_letRec_headtail (binding : CoreRecBinding)
-    (rest : List CoreRecBinding) (body : Expr) (t n : Nat) :
-    ((Expr.letRec (binding :: rest) body).shiftFrom t n).letRecBindingsOf
-      = binding.mapRhs (fun rhs => rhs.shiftFrom (t + (binding :: rest).length) n)
-        :: ((Expr.letRec (binding :: rest) body).shiftFrom t n).letRecBindingsOf.tail := rfl
-
-private theorem shiftFrom_letRecBindings (n : Nat) (bindings : List CoreRecBinding)
-    (base : Nat) (body : Expr) :
-    ((Expr.letRec bindings body).shiftFrom base n).letRecBindingsOf
-      = bindings.map (RecBinding.mapRhs (·.shiftFrom (base + bindings.length) n)) := by
-  induction bindings generalizing base with
-  | nil => rfl
-  | cons binding rest ih =>
-    rw [shiftFrom_letRec_headtail, shiftFrom_letRec_bridge, ih]
-    simp only [List.map_cons, List.length_cons]
-    congr 1
-    apply List.map_congr_left
-    intro x _; congr 1; omega
-
 private theorem branchList_tyFreeVars_nil (brs : List (MatchPattern × Expr))
     (h : ∀ p e, (p, e) ∈ brs → e.tyFreeVars = []) :
     Expr.tyFreeVars.BranchList.tyFreeVars brs = [] := by
@@ -7167,14 +7144,17 @@ private theorem branchList_tyFreeVars_nil (brs : List (MatchPattern × Expr))
     simp only [Expr.tyFreeVars.BranchList.tyFreeVars, List.append_eq_nil_iff]
     exact ⟨h br.1 br.2 List.mem_cons_self, ih fun p e hp => h p e (List.mem_cons_of_mem _ hp)⟩
 
-private theorem recGroup_tyFreeVars_nil (bs : List Expr)
-    (h : ∀ e ∈ bs, e.tyFreeVars = []) :
+private theorem recGroup_tyFreeVars_nil (bs : List CoreRecBinding)
+    (h : ∀ binding ∈ bs,
+      binding.ann.elim [] (fun σ => σ.body.freeVars) = [] ∧
+      binding.rhs.tyFreeVars = []) :
     Expr.tyFreeVars.RecGroup.tyFreeVars bs = [] := by
   induction bs with
   | nil => rfl
-  | cons e rest ih =>
+  | cons binding rest ih =>
     simp only [Expr.tyFreeVars.RecGroup.tyFreeVars, List.append_eq_nil_iff]
-    exact ⟨h e List.mem_cons_self, ih fun e' he' => h e' (List.mem_cons_of_mem _ he')⟩
+    exact ⟨⟨(h binding List.mem_cons_self).1, (h binding List.mem_cons_self).2⟩,
+      ih fun binding' hbinding' => h binding' (List.mem_cons_of_mem _ hbinding')⟩
 
 private theorem mem_of_branchList_tyFreeVars_nil (brs : List (MatchPattern × Expr))
     (h : Expr.tyFreeVars.BranchList.tyFreeVars brs = []) :
@@ -7188,17 +7168,19 @@ private theorem mem_of_branchList_tyFreeVars_nil (brs : List (MatchPattern × Ex
     · obtain ⟨rfl, rfl⟩ := he; exact h.1
     · exact ih h.2 p e he
 
-private theorem mem_of_recGroup_tyFreeVars_nil (bs : List Expr)
+private theorem mem_of_recGroup_tyFreeVars_nil (bs : List CoreRecBinding)
     (h : Expr.tyFreeVars.RecGroup.tyFreeVars bs = []) :
-    ∀ e ∈ bs, e.tyFreeVars = [] := by
+    ∀ binding ∈ bs,
+      binding.ann.elim [] (fun σ => σ.body.freeVars) = [] ∧
+      binding.rhs.tyFreeVars = [] := by
   induction bs with
   | nil => intro _ he; cases he
-  | cons e rest ih =>
-    intro e' he'
+  | cons binding rest ih =>
+    intro binding' he'
     simp only [Expr.tyFreeVars.RecGroup.tyFreeVars, List.append_eq_nil_iff, List.mem_cons] at h he'
     rcases he' with rfl | he'
     · exact h.1
-    · exact ih h.2 e' he'
+    · exact ih h.2 binding' he'
 
 /-- Term-variable shifting does not introduce free type variables. -/
 theorem Expr.tyFreeVars_shiftFrom (e : Expr) (threshold n : Nat)
@@ -7231,16 +7213,16 @@ theorem Expr.tyFreeVars_shiftFrom (e : Expr) (threshold n : Nat)
     exact ihbr pb.1 pb.2 hpb (threshold + pb.1.bindCount)
       (mem_of_branchList_tyFreeVars_nil branches h.2 pb.1 pb.2 hpb)
   | letRec bindings body ihbind ihbody =>
-    have heq : (Expr.letRec bindings body).shiftFrom threshold n =
-        .letRec ((Expr.letRec bindings body).shiftFrom threshold n).letRecBindingsOf
-          (body.shiftFrom (threshold + bindings.length) n) := rfl
-    rw [heq, shiftFrom_letRecBindings]
-    simp only [Expr.tyFreeVars, List.append_eq_nil_iff] at h ⊢
-    refine ⟨⟨h.1.1, recGroup_tyFreeVars_nil _ ?_⟩, ihbody (threshold + bindings.length) h.2⟩
-    intro e he
-    obtain ⟨e0, he0, rfl⟩ := List.mem_map.mp he
-    exact ihbind e0 he0 (threshold + bindings.length)
-      (mem_of_recGroup_tyFreeVars_nil bindings h.1.2 e0 he0)
+    simp only [Expr.shiftFrom, Expr.tyFreeVars, List.append_eq_nil_iff] at h ⊢
+    refine ⟨?_, ihbody (threshold + bindings.length) h.2⟩
+    rw [RecGroup.shiftFrom_eq_map]
+    refine recGroup_tyFreeVars_nil _ ?_
+    intro shifted hshifted
+    obtain ⟨binding, hbinding, rfl⟩ := List.mem_map.mp hshifted
+    have hfree := mem_of_recGroup_tyFreeVars_nil bindings h.1 binding hbinding
+    exact ⟨by simpa [RecBinding.mapRhs] using hfree.1,
+      by simpa [RecBinding.mapRhs] using
+        ihbind binding hbinding (threshold + bindings.length) hfree.2⟩
 
 private theorem emitLets_tyFreeVars (env : List Occ) (binds : List Occ) (body : Expr)
     (hb : body.tyFreeVars = []) :
@@ -7481,7 +7463,7 @@ theorem lowerCoreExpr_tyFreeVars {ke : KindEnv} {tvs vs : List ValName} :
         cases hEq
         have hbindings := lowerCoreRecBinds_tyFreeVars hbinds
         simp only [Expr.tyFreeVars, List.append_eq_nil_iff]
-        exact ⟨hbindings.1, hbindings.2, lowerCoreExpr_tyFreeVars hb⟩
+        exact ⟨hbindings, lowerCoreExpr_tyFreeVars hb⟩
   | .var name =>
     simp only [lowerCoreExpr_eqs] at h
     cases hi : tvarIndex vs name with
@@ -7576,38 +7558,22 @@ theorem lowerCoreBranches_tyFreeVars {ke : KindEnv} {tvs vs : List ValName} :
 theorem lowerCoreRecBinds_tyFreeVars {ke : KindEnv} {tvs recScope : List ValName} :
     ∀ {binds : List Surface.Binding} {bindings' : List CoreRecBinding},
       lowerCoreRecBinds ke tvs recScope binds = some bindings' →
-      Expr.tyFreeVars.AnnList.tyFreeVars (bindings'.map (·.ann)) = [] ∧
-      Expr.tyFreeVars.RecGroup.tyFreeVars (bindings'.map (·.rhs)) = [] := by
+      Expr.tyFreeVars.RecGroup.tyFreeVars bindings' = [] := by
   intro binds bindings' h
-  match binds with
-  | [] =>
-    simp only [lowerCoreRecBinds_eqs, Option.some.injEq] at h
-    subst h
-    exact ⟨rfl, rfl⟩
-  | b :: rest =>
-    simp only [lowerCoreRecBinds_eqs] at h
-    cases hann : lowerPolyAnnIn ke tvs (finalizeAnn b.tyParams b.params b.ann) with
-    | none => simp [hann] at h
-    | some ann' =>
-      cases he0 : lowerCoreExpr ke (bindingLowerTyScope b tvs)
-          (paramTermScope b.params recScope) b.rhs with
-      | none => simp [hann, he0, bindingLowerTyScope] at h
-      | some e0' =>
-        cases hwrap : wrapCoreParams ke (bindingLowerTyScope b tvs) b.params e0' with
-        | none => simp [hann, he0, hwrap, bindingLowerTyScope] at h
-        | some rhs' =>
-          cases hrest : lowerCoreRecBinds ke tvs recScope rest with
-          | none => simp [hann, he0, hwrap, hrest, bindingLowerTyScope] at h
-          | some rest' =>
-            simp only [hann, he0, hwrap, hrest, bindingLowerTyScope,
-              Option.some.injEq] at h
-            subst h
-            simp only [List.map_cons, Expr.tyFreeVars.AnnList.tyFreeVars,
-              Expr.tyFreeVars.RecGroup.tyFreeVars, List.append_eq_nil_iff]
-            have hrestClosed := lowerCoreRecBinds_tyFreeVars hrest
-            exact ⟨⟨lowerPolyAnnIn_freeVars hann, hrestClosed.1⟩,
-              ⟨wrapCoreParams_tyFreeVars hwrap (lowerCoreExpr_tyFreeVars he0),
-                hrestClosed.2⟩⟩
+  have hrel := lowerCoreRecBinds_CoreLowersRecBinds (ctors := []) binds h
+  cases hrel with
+  | nil => rfl
+  | @cons _ _ bind ann' rhsCore rhs' rest rest' hann hrhs hwrap hrest =>
+      have hrhs' : lowerCoreExpr ke _ _ _ = some _ :=
+        lowerCoreExpr_eq_some_of_CoreLowersExpr hrhs
+      have hwrap' : wrapCoreParams ke (bindingLowerTyScope bind tvs)
+          bind.params rhsCore = some rhs' := by
+        simpa [bindingLowerTyScope] using hwrap
+      simp only [Expr.tyFreeVars.RecGroup.tyFreeVars, List.append_eq_nil_iff]
+      exact ⟨⟨lowerPolyAnnIn_freeVars hann,
+        wrapCoreParams_tyFreeVars hwrap' (lowerCoreExpr_tyFreeVars hrhs')⟩,
+        lowerCoreRecBinds_tyFreeVars
+          (lowerCoreRecBinds_eq_some_of_CoreLowersRecBinds hrest)⟩
 
 end
 
@@ -7823,34 +7789,49 @@ private theorem lowerCoreRecBinds_exhaustive {ctors : CtorEnv} {ke : KindEnv} {t
         AllMatchesExhaustive ctors rhs')
     (hlow : lowerCoreRecBinds ke tvs recScope binds = some bs') :
     ∀ binding ∈ bs', AllMatchesExhaustive ctors binding.rhs := by
-  induction binds generalizing bs' with
-  | nil =>
-    simp only [lowerCoreRecBinds_eqs, Option.some.injEq] at hlow; subst hlow
-    intro _ he; exact nomatch he
-  | cons b rest ih_bs =>
+  match binds with
+  | [] =>
+    simp only [lowerCoreRecBinds_eqs, Option.some.injEq] at hlow
+    subst hlow
+    intro _ hmem
+    exact nomatch hmem
+  | b :: rest =>
     simp only [lowerCoreRecBinds_eqs] at hlow
-    cases hann : lowerPolyAnnIn ke tvs (finalizeAnn b.tyParams b.params b.ann) with
+    cases hann : lowerPolyAnnIn ke tvs
+        (finalizeAnn b.tyParams b.params b.ann) with
     | none => simp [hann] at hlow
     | some ann' =>
-      cases he : lowerCoreExpr ke (bindingLowerTyScope b tvs)
+      cases hrhs : lowerCoreExpr ke
+          (letAnnTyPrefix b.tyParams (finalizeAnn b.tyParams b.params b.ann) ++ tvs)
           (paramTermScope b.params recScope) b.rhs with
-      | none => simp [hann, he, bindingLowerTyScope] at hlow
+      | none => simp [hann, hrhs] at hlow
       | some rhsCore =>
-        cases hwrap : wrapCoreParams ke (bindingLowerTyScope b tvs) b.params rhsCore with
-        | none => simp [hann, he, hwrap, bindingLowerTyScope] at hlow
-        | some e' =>
-          cases hr : lowerCoreRecBinds ke tvs recScope rest with
-          | none => simp [hann, he, hwrap, hr, bindingLowerTyScope] at hlow
+        cases hwrap : wrapCoreParams ke
+            (letAnnTyPrefix b.tyParams (finalizeAnn b.tyParams b.params b.ann) ++ tvs)
+            b.params rhsCore with
+        | none => simp [hann, hrhs, hwrap] at hlow
+        | some rhs' =>
+          cases hrest : lowerCoreRecBinds ke tvs recScope rest with
+          | none => simp [hann, hrhs, hwrap, hrest] at hlow
           | some rest' =>
-            simp only [hann, he, hwrap, hr, bindingLowerTyScope,
-              Option.some.injEq] at hlow
+            simp only [hann, hrhs, hwrap, hrest, Option.some.injEq] at hlow
             subst hlow
-            intro x hx
-            simp only [List.mem_cons] at hx
-            rcases hx with rfl | hx
-            · exact ih b List.mem_cons_self he _ hwrap
-            · exact ih_bs (fun b' hb' => hcov b' (List.mem_cons_of_mem _ hb'))
-                (fun b' hb' => ih b' (List.mem_cons_of_mem _ hb')) hr x hx
+            intro binding hbinding
+            simp only [List.mem_cons] at hbinding
+            rcases hbinding with rfl | hbinding
+            · have hrhs' : lowerCoreExpr ke (bindingLowerTyScope b tvs)
+                  (paramTermScope b.params recScope) b.rhs = some rhsCore := by
+                simpa [bindingLowerTyScope] using hrhs
+              have hwrap' : wrapCoreParams ke (bindingLowerTyScope b tvs)
+                  b.params rhsCore = some rhs' := by
+                simpa [bindingLowerTyScope] using hwrap
+              exact ih b List.mem_cons_self hrhs' _ hwrap'
+            · exact lowerCoreRecBinds_exhaustive
+                (fun b' hb' => hcov b' (List.mem_cons_of_mem _ hb'))
+                (fun b' hb' => ih b' (List.mem_cons_of_mem _ hb'))
+                hrest binding hbinding
+termination_by binds.length
+decreasing_by simp_wf
 
 /-- `lowerCoreBranches` bodies (and the `.ctor cNil` default) are exhaustive. -/
 private theorem lowerCoreBranches_getD_exhaustive {ctors : CtorEnv} {ke : KindEnv}
