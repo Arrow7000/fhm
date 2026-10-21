@@ -2618,7 +2618,10 @@ theorem Infer.sourcePrincipal_letIn
           (sCheck.onCtx (s1.onCtx ctx)).env }
       (body.substTyFvars (s1 ++ sCheck)) next s2 bodyOut bodyTy)
     (ihr : Infer.SourcePrincipal hr) (ihb : Infer.SourcePrincipal hb) :
-    Infer.SourcePrincipal (.letIn hscope hr hc hb) := by
+    Infer.SourcePrincipal
+      (InferCert.letIn (rhsResult := ⟨first, s1, rhsOut, rhsTy⟩)
+        (checkResult := ⟨checked, sCheck⟩)
+        (bodyResult := ⟨next, s2, bodyOut, bodyTy⟩) hscope hr hc hb) := by
   intro hwf hbelow hK hF ambient target P hS hP hfix hfreeze htyping
   obtain ⟨V, hV, hVP, hagPrefix, hbodyD, hbodyWF, hbodyB, hprefixB⟩ :=
     hr.source_let_frame hscope hc ihr hwf hbelow hK hF ambient target P hS hP hfix hfreeze htyping

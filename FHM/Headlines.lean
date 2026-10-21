@@ -78,6 +78,7 @@ bundle as one premise. -/
 #check @InferCert
 #check @InferCert.lambda
 #check @InferCert.app
+#check @InferCert.letIn
 #check @InferRun
 #check @InferRun.cert
 #check @InferCert.sourceSound

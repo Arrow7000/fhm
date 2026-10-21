@@ -102,6 +102,12 @@ structure SeedResult where
   param : Ty
   frontier : Nat
 
+/-- The advanced frontier and substitution produced by either form of binding
+annotation check. Shared by ordinary and explicitly signed lets. -/
+structure CheckResult where
+  frontier : Nat
+  subst : Subst
+
 private theorem ann_rigid_mem {bindings : List InputRecBinding}
     {binding : InputRecBinding} (hb : binding ∈ bindings) {v : Nat}
     (hv : v ∈ binding.ann.rigidVars) : v ∈ rigidBindingVars bindings := by
@@ -219,6 +225,17 @@ def appResult (functionResult argumentResult : InferResult) (unifier : Subst) : 
 def letOutput (scheme : PolyTy) (names : List Nat) (rhs body : Expr) (subst : Subst) : Expr :=
   .letIn (some (subst.onPolyTy scheme)) ((rhs.closeTyVars names).substTyFvars subst) body
 
+/-- Assemble either form of let result from its chosen scheme and binder names,
+RHS inference, annotation check, and body inference. -/
+def letResult (scheme : PolyTy) (names : List Nat) (rhsResult : InferResult)
+    (checkResult : CheckResult) (bodyResult : InferResult) : InferResult :=
+  { frontier := bodyResult.frontier
+    subst := rhsResult.subst ++ checkResult.subst ++ bodyResult.subst
+    completedExpr := letOutput scheme names
+      (rhsResult.completedExpr.substTyFvars checkResult.subst)
+      bodyResult.completedExpr bodyResult.subst
+    ty := bodyResult.ty }
+
 mutual
 /-- Canonical inference carries frozen K and the current images F of live
 provisional forall slots. Sequential calls transform both F and source syntax. -/
@@ -277,27 +294,32 @@ inductive InferCert : InferRequest → InferResult → Prop
         (.arrow argumentResult.ty (.fvar argumentResult.frontier)) unifier →
       InferCert ⟨K, F, frontier, ctx, .app f arg⟩
         (appResult functionResult argumentResult unifier)
-  | letIn :
+  | letIn {K : List Nat} {F : List Ty} {ann : BindingAnn} {rhs body : InferInput}
+      {frontier : Nat} {ctx : Ctx} {rhsResult : InferResult}
+      {checkResult : CheckResult} {bodyResult : InferResult} :
       SourceScope K F (.letIn ann rhs body) →
-      InferCert ⟨K, F, frontier, ctx, rhs⟩ ⟨first, s1, rhsOut, rhsTy⟩ →
-      LetCheck K (substSoft s1 F) first rhsTy (ann.substTyFvars s1) checked sCheck →
-      (let checkedSubst := s1 ++ sCheck
+      InferCert ⟨K, F, frontier, ctx, rhs⟩ rhsResult →
+      LetCheck K (substSoft rhsResult.subst F) rhsResult.frontier rhsResult.ty
+        (ann.substTyFvars rhsResult.subst) checkResult.frontier checkResult.subst →
+      (let checkedSubst := rhsResult.subst ++ checkResult.subst
        let checkedSoft := substSoft checkedSubst F
-       let checkedCtx := sCheck.onCtx (s1.onCtx ctx)
-       let generalized := genScheme (K ++ softVars checkedSoft) checkedCtx.env (sCheck.onTy rhsTy)
+       let checkedCtx := checkResult.subst.onCtx (rhsResult.subst.onCtx ctx)
+       let generalized := genScheme (K ++ softVars checkedSoft) checkedCtx.env
+         (checkResult.subst.onTy rhsResult.ty)
        InferCert
-         ⟨K, checkedSoft, checked, { checkedCtx with env := generalized :: checkedCtx.env },
+         ⟨K, checkedSoft, checkResult.frontier,
+           { checkedCtx with env := generalized :: checkedCtx.env },
            body.substTyFvars checkedSubst⟩
-         ⟨next, s2, bodyOut, bodyTy⟩) →
+         bodyResult) →
       InferCert ⟨K, F, frontier, ctx, .letIn ann rhs body⟩
-        ⟨next, s1 ++ sCheck ++ s2,
-          (let checkedSubst := s1 ++ sCheck
-           let checkedSoft := substSoft checkedSubst F
-           let checkedCtx := sCheck.onCtx (s1.onCtx ctx)
-           let generalized := genScheme (K ++ softVars checkedSoft) checkedCtx.env (sCheck.onTy rhsTy)
-           let generalizedNames := genVars (K ++ softVars checkedSoft) checkedCtx.env (sCheck.onTy rhsTy)
-           letOutput generalized generalizedNames (rhsOut.substTyFvars sCheck) bodyOut s2),
-          bodyTy⟩
+        (let checkedSubst := rhsResult.subst ++ checkResult.subst
+         let checkedSoft := substSoft checkedSubst F
+         let checkedCtx := checkResult.subst.onCtx (rhsResult.subst.onCtx ctx)
+         let generalized := genScheme (K ++ softVars checkedSoft) checkedCtx.env
+           (checkResult.subst.onTy rhsResult.ty)
+         let generalizedNames := genVars (K ++ softVars checkedSoft) checkedCtx.env
+           (checkResult.subst.onTy rhsResult.ty)
+         letResult generalized generalizedNames rhsResult checkResult bodyResult)
   | letSignature :
       SourceScope K F (.letIn ann rhs body) →
       written = freshVars frontier ann.paramCount →
@@ -1345,7 +1367,13 @@ def inferWithTypesCore (K : List Nat) (frontier : Nat) (ctx : Ctx) (input : Infe
                                   bodyResult.nodeTypes.below .letBody
                                 binderSchemes := binder ::
                                   (rhsResult.binderSchemes.onSubst (sCheck ++ bodyResult.subst)).below .letRhs ++
-                                  bodyResult.binderSchemes.below .letBody }, .letIn hrawScope hr hc hb⟩
+                                  bodyResult.binderSchemes.below .letBody }, by
+                                simpa only [letResult] using
+                                  (InferCert.letIn
+                                    (rhsResult := rhsResult.toInferResult)
+                                    (checkResult := ⟨checked, sCheck⟩)
+                                    (bodyResult := bodyResult.toInferResult)
+                                    hrawScope hr hc hb)⟩
           | .match_ scrut branches =>
               match inferWithTypesCore K frontier ctx scrut F with
               | none => none
@@ -2301,7 +2329,9 @@ private theorem InferCert.belowFvars_raw (h : Infer K F frontier ctx input next 
       · exact (hfSubst p hp).mono (haLe.trans (Nat.le_succ _))
       · exact (haSubst p hp).mono (Nat.le_succ _)
     · exact huni p hp
-  | .letIn _ hr hc hb =>
+  | @InferCert.letIn K F ann rhs body frontier ctx
+      ⟨first, s1, rhsOut, rhsTy⟩ ⟨checked, sCheck⟩ ⟨next, s2, bodyOut, bodyTy⟩
+      _ hr hc hb =>
     intro hctx hK hF
     have hrLe := Infer.frontier_le hr
     have hcLe := hc.frontier_le
@@ -3438,7 +3468,9 @@ mutual
       (by simpa only [Ty.freeVars, List.mem_dedup, List.mem_append, not_or] using And.intro haTy hnew)
     have hA := Subst.sourceAvoid_append_local (Subst.sourceAvoid_append_local ⟨hfS, hfD⟩ ⟨haS, haD⟩) huA
     exact ⟨hA.1, Subst.notMemOnTy huA.1 hnew, hA.2⟩
-  | .letIn _ hr hc hb =>
+  | @InferCert.letIn K F ann rhs body frontier ctx
+      ⟨first, s1, rhsOut, rhsTy⟩ ⟨checked, sCheck⟩ ⟨next, s2, bodyOut, bodyTy⟩
+      _ hr hc hb =>
     intro w hw hrefs hwe
     expose_names
     simp only [InferInput.erase, Expr.ForallOuter, Expr.rec_strong, Nat.zero_add] at hrefs
@@ -7609,7 +7641,8 @@ private theorem InferCert.sourceSound_raw (h : Infer K F frontier ctx input next
       rw [heq] at hfTyped
       simp only [Subst.onCtx_append] at hfTyped
       simpa only [Subst.onCtx_append] using TypeOfHM.app hfTyped haTyped
-  | @InferCert.letIn K F ann rhs body frontier ctx first s1 rhsOut rhsTy checked sCheck next s2 bodyOut bodyTy
+  | @InferCert.letIn K F ann rhs body frontier ctx
+      ⟨first, s1, rhsOut, rhsTy⟩ ⟨checked, sCheck⟩ ⟨next, s2, bodyOut, bodyTy⟩
       _ hr hc hb =>
       intro hctx
       have hs1 := (hr.lc hctx).2
@@ -8241,7 +8274,8 @@ private theorem InferCert.inputSound_source_raw (h : Infer K F frontier ctx inpu
       simp only [Subst.onCtx_append] at hfTyped
       simp only [← substSoft_append, ← InferInput.substTyFvars_append, List.append_assoc] at hfTyped haTyped
       simpa only [Subst.onCtx_append, InferInput.substTyFvars, List.append_assoc] using InputTyping.app hfTyped haTyped
-  | @InferCert.letIn K F ann rhs body frontier ctx first s1 rhsOut rhsTy checked sCheck next s2 bodyOut bodyTy
+  | @InferCert.letIn K F ann rhs body frontier ctx
+      ⟨first, s1, rhsOut, rhsTy⟩ ⟨checked, sCheck⟩ ⟨next, s2, bodyOut, bodyTy⟩
       hraw hr hc hb =>
       intro hctx
       have hs1 := (hr.lc hctx).2
@@ -8789,7 +8823,8 @@ private theorem InferCert.completes_source_raw (h : Infer K F frontier ctx input
         unifier hs3 hu.dom_avoids
       simp only [← substSoft_append, ← InferInput.substTyFvars_append, List.append_assoc] at hfComp haComp
       simpa only [List.append_assoc] using AnnotationCompletion.app hfComp haComp
-  | @InferCert.letIn K F ann rhs body frontier ctx first s1 rhsOut rhsTy checked sCheck next s2 bodyOut bodyTy
+  | @InferCert.letIn K F ann rhs body frontier ctx
+      ⟨first, s1, rhsOut, rhsTy⟩ ⟨checked, sCheck⟩ ⟨next, s2, bodyOut, bodyTy⟩
       hraw hr hc hb =>
       intro hctx
       have hs1 := (hr.lc hctx).2
