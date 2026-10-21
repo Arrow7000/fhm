@@ -50,6 +50,47 @@ theorem scope_image {K : List Nat} {F : List Ty} {subst : Subst} {original v : N
 def SourceScope (K : List Nat) (F : List Ty) (input : InferInput) : Prop :=
   ∀ v ∈ input.rigidVars, v ∈ K ++ softVars F
 
+/-- All inputs to one canonical inference call. `protectedVars` is the current
+frozen set `K`; `soft` contains the live provisional written-forall images
+traditionally named `F`. -/
+structure InferRequest where
+  protectedVars : List Nat
+  soft : List Ty
+  frontier : Nat
+  ctx : Ctx
+  input : InferInput
+
+namespace InferRequest
+
+/-- Freshness bounds required by the inference worker independently of source
+scope and semantic well-formedness. -/
+structure Bounds (request : InferRequest) : Prop where
+  ctxBelow : CtxBelow request.frontier request.ctx
+  protectedBelow : ∀ v ∈ request.protectedVars, v < request.frontier
+  softBelow : ∀ ty ∈ request.soft, Ty.BelowFvars request.frontier ty
+
+/-- A bounded request whose term environment is semantically well formed. -/
+structure WF (request : InferRequest) : Prop extends Bounds request where
+  ctxWF : CtxWF request.ctx
+
+/-- The authored rigid leaves of a request are accounted for by its protected
+variables or live provisional images. -/
+def Scoped (request : InferRequest) : Prop :=
+  SourceScope request.protectedVars request.soft request.input
+
+/-- A well-formed request whose source is valid in its current scope. -/
+structure Admissible (request : InferRequest) : Prop extends WF request where
+  sourceScope : request.Scoped
+
+end InferRequest
+
+/-- The semantic output shared by the certificate and public inference APIs. -/
+structure InferResult where
+  frontier : Nat
+  subst : Subst
+  completedExpr : Expr
+  ty : Ty
+
 private theorem ann_rigid_mem {bindings : List InputRecBinding}
     {binding : InputRecBinding} (hb : binding ∈ bindings) {v : Nat}
     (hv : v ∈ binding.ann.rigidVars) : v ∈ rigidBindingVars bindings := by
@@ -379,6 +420,13 @@ inductive InferRecSigned : List Nat → List Ty → Nat → Nat → Ctx → List
         next (s1 ++ s2 ++ tail) final
 
 end
+
+/-- The current inference judgment viewed through bundled call and result
+records. This is a reducible compatibility seam; the underlying mutual
+inductives retain their established indices. -/
+abbrev InferCert (request : InferRequest) (result : InferResult) : Prop :=
+  Infer request.protectedVars request.soft request.frontier request.ctx request.input
+    result.frontier result.subst result.completedExpr result.ty
 
 theorem Seed.lc (h : Seed K frontier ann param initial) : param.IsLC := by
   cases h with
@@ -936,13 +984,6 @@ private theorem ctxBelow_of_all {ctx : Ctx} {frontier : Nat}
   intro v hv
   exact of_decide_eq_true (List.all_eq_true.mp h v (Env.mem_freeVars_iff.mpr ⟨scheme, hscheme, hv⟩))
 
-/-- The semantic output shared by the certificate and public inference APIs. -/
-structure InferResult where
-  frontier : Nat
-  subst : Subst
-  completedExpr : Expr
-  ty : Ty
-
 /-- The internal inference result, including source-indexed metadata. -/
 structure InferCoreResult extends InferResult where
   nodeTypes : InferredNodeTypes
@@ -1488,6 +1529,47 @@ decreasing_by all_goals (simp only [sizeBindings, InferInput.size_openTyVars,
   sizeBindings_substInputBindings]; omega)
 
 end
+
+/-- Run the certified worker from one bundled request. -/
+def inferRequestCore (request : InferRequest) :
+    Option { result : InferCoreResult // InferCert request result.toInferResult } :=
+  inferWithTypesCore request.protectedVars request.frontier request.ctx request.input request.soft
+
+/-- Forget the dependent certificate while retaining the worker's full result. -/
+def InferRequest.run (request : InferRequest) : Option InferCoreResult :=
+  (inferRequestCore request).map Subtype.val
+
+/-- Exact graph of the bundled inference worker. -/
+def InferRun (request : InferRequest) (result : InferCoreResult) : Prop :=
+  request.run = some result
+
+/-- The executable graph returns at most one result for a request. -/
+theorem InferRun.result_eq {request : InferRequest} {first second : InferCoreResult}
+    (hfirst : InferRun request first) (hsecond : InferRun request second) : first = second := by
+  unfold InferRun at hfirst hsecond
+  exact Option.some.inj (hfirst.symm.trans hsecond)
+
+/-- Every recorded worker run carries a derivation of the compact certificate. -/
+theorem InferRun.cert {request : InferRequest} {result : InferCoreResult}
+    (h : InferRun request result) : InferCert request result.toInferResult := by
+  unfold InferRun InferRequest.run at h
+  cases hrun : inferRequestCore request with
+  | none => simp only [hrun, Option.map_none, reduceCtorEq] at h
+  | some certified =>
+      simp only [hrun, Option.map_some, Option.some.injEq] at h
+      rw [← h]
+      exact certified.property
+
+@[simp] theorem InferRequest.run_isSome (request : InferRequest) :
+    request.run.isSome = (inferRequestCore request).isSome := by
+  unfold InferRequest.run
+  cases inferRequestCore request <;> rfl
+
+theorem InferRequest.run_isSome_iff_exists (request : InferRequest) :
+    request.run.isSome ↔ ∃ result, InferRun request result := by
+  cases hrun : request.run with
+  | none => simp [InferRun, hrun]
+  | some result => simp [InferRun, hrun]
 
 /-- The plain certificate API projects the one metadata-producing run. -/
 def inferCore (K : List Nat) (frontier : Nat) (ctx : Ctx) (input : InferInput) :
