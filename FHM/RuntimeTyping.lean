@@ -10,9 +10,9 @@ and do not occur in, the `Expr` being evaluated.
 
 The source rule first solves `.mono τ` members in the mixed initial context,
 then generalizes them and checks signed members under the final schemes.  The
-runtime rule records the resulting, simpler fact: every RHS and the body are
-typed under those final schemes.  The runtime node itself stores only `none`
-annotations.
+runtime rule records the resulting, simpler fact: every row's RHS and the body
+are typed under those final schemes. Stored annotations are operationally inert;
+source erasure replaces them with `none`.
 
 Source typing erases into this judgment. Its substitution and preservation
 theorems then show that evaluation keeps the source program's type, including
@@ -23,7 +23,7 @@ namespace RuntimeTyping
 
 /-- Runtime group evidence has no source-annotation alignment premise: those
 annotations have already erased. -/
-structure RecSpecsWF (bindings : List Expr) (specs : List RecSpec)
+structure RecSpecsWF (bindings : List CoreRecBinding) (specs : List RecSpec)
     (G : List Nat) : Prop where
   length : bindings.length = specs.length
   nodup : G.Nodup
@@ -35,20 +35,20 @@ but erased runtime evidence records their RHSs under the group's final scheme
 environment.  This is the runtime form needed by unfolding: every recursively
 wrapped member may subsequently be substituted at its exported scheme. -/
 def MonoTyped (TypeOf : Ctx → Expr → Ty → Prop) (ctx : Ctx)
-    (bindings : List Expr) (specs : List RecSpec) (G avoid : List Nat) : Prop :=
+    (bindings : List CoreRecBinding) (specs : List RecSpec) (G avoid : List Nat) : Prop :=
   ∀ Xs, FreshNames avoid G.length Xs →
     ∀ pair ∈ bindings.zip specs, ∀ τ, pair.2 = .mono τ →
-      TypeOf (RecSpecs.bodyCtx ctx specs G) pair.1 (Ty.renameG G Xs τ)
+      TypeOf (RecSpecs.bodyCtx ctx specs G) pair.1.rhs (Ty.renameG G Xs τ)
 
 /-- Complete annotations enable scheme-polymorphic recursive use.  Signed RHSs
 are checked under the same final schemes as ordinary RHSs and the group body.
 Runtime terms contain no type syntax, so only the expected type is opened at
 the member's fresh rigid names. -/
 def PolyTyped (TypeOf : Ctx → Expr → Ty → Prop) (ctx : Ctx)
-    (bindings : List Expr) (specs : List RecSpec) (G avoid : List Nat) : Prop :=
+    (bindings : List CoreRecBinding) (specs : List RecSpec) (G avoid : List Nat) : Prop :=
   ∀ pair ∈ bindings.zip specs, ∀ σ, pair.2 = .poly σ →
     ∀ Ys, FreshNames avoid σ.paramCount Ys →
-      TypeOf (RecSpecs.bodyCtx ctx specs G) pair.1 (σ.openVars Ys)
+      TypeOf (RecSpecs.bodyCtx ctx specs G) pair.1.rhs (σ.openVars Ys)
 
 def GeneralisesTo (TypeOf : Ctx → Expr → Ty → Prop) (ctx : Ctx)
     (rhs : Expr) (scheme : PolyTy) (avoid : List Nat) : Prop :=
@@ -114,7 +114,7 @@ inductive RunWT : Ctx → Expr → Ty → Prop
       MonoTyped RunWT ctx bindings specs G avoid →
       PolyTyped RunWT ctx bindings specs G avoid →
       RunWT (RecSpecs.bodyCtx ctx specs G) body resultTy →
-      RunWT ctx (.letRec (bindings.map (fun _ => none)) bindings body) resultTy
+      RunWT ctx (.letRec bindings body) resultTy
 
 /-- Match-branch typing for erased terms. -/
 inductive RunWTMatchBranch :
@@ -444,9 +444,6 @@ theorem TypeOfHM.erase_preserves_typing {ctx : Ctx} {e : Expr} {τ : Ty}
       subst heq
       let runtimeAvoid := L ++ G ++ specs.flatMap RecSpec.monoFreeVars
       simp only [Expr.erase_letRec]
-      rw [show bindings.map (fun _ => none) =
-        (bindings.map Expr.erase).map (fun _ => none) by
-          simp only [List.map_map, Function.comp_def]]
       refine RuntimeTyping.RunWT.letRec (specs := specs) (G := G)
         (avoid := runtimeAvoid)
         ⟨by simpa using hwf.length, hwf.nodup, hwf.mono_lc, hwf.poly_wf⟩
@@ -459,9 +456,12 @@ theorem TypeOfHM.erase_preserves_typing {ctx : Ctx} {e : Expr} {τ : Ty}
         rw [hmono] at hspec
         have hbound : member < bindings.length := by
           exact (List.getElem?_eq_some_iff.mp hbinding).1
-        have hunsigned : RecGroups.UnsignedAt anns member := by
-          simp only [RecGroups.UnsignedAt, ← hwf.anns_eq,
-            List.getElem?_map, hspec, Option.map_some, RecSpec.ann]
+        have hunsigned : RecGroups.UnsignedAt bindings member := by
+          have halign := congrArg (fun entries => entries[member]?) hwf.anns_eq
+          simp only [List.getElem?_map, hspec, hbinding, Option.map_some,
+            RecSpec.ann] at halign
+          simpa only [RecGroups.UnsignedAt, hbinding, Option.map_some] using
+            halign.symm
         have hcovered := (hgroups.covers_unsigned member hbound).2 hunsigned
         obtain ⟨component, hcomponent, hmember⟩ := List.mem_flatten.mp hcovered
         obtain ⟨stage, hstage⟩ := List.mem_iff_getElem?.mp hcomponent
@@ -777,14 +777,14 @@ is now a direct use of the runtime `letRec` rule.
 /-- Re-wrap one recursive member.  Runtime group evidence already types every
 RHS under the final exported schemes, exactly the context used for the wrapper
 body. -/
-theorem RunWT.rec_rewrap_at {ctx : Ctx} {bindings : List Expr}
+theorem RunWT.rec_rewrap_at {ctx : Ctx} {bindings : List CoreRecBinding}
     {specs : List RecSpec} {G avoid : List Nat}
     (hwf : RecSpecsWF bindings specs G)
     (hmono : MonoTyped RunWT ctx bindings specs G avoid)
     (hpoly : PolyTyped RunWT ctx bindings specs G avoid)
     {rhs : Expr} {ty : Ty}
     (hrhs : RunWT (RecSpecs.bodyCtx ctx specs G) rhs ty) :
-    RunWT ctx (.letRec (bindings.map (fun _ => none)) bindings rhs) ty := by
+    RunWT ctx (.letRec bindings rhs) ty := by
   exact RunWT.letRec hwf hmono hpoly hrhs
 
 /-- An erased value inhabits a scheme when it has every locally-closed
@@ -893,14 +893,14 @@ private theorem RunWT.instantiate_opening {ctx : Ctx} {e : Expr}
 /-- A completely annotated recursive member retains its declared scheme when
 the erased group is wrapped around it. -/
 theorem RunHasScheme.ofPolyRecMember {ctx : Ctx}
-    {bindings : List Expr} {specs : List RecSpec} {G avoid : List Nat}
+    {bindings : List CoreRecBinding} {specs : List RecSpec} {G avoid : List Nat}
     (hwf : RecSpecsWF bindings specs G)
     (hmono : MonoTyped RunWT ctx bindings specs G avoid)
     (hpoly : PolyTyped RunWT ctx bindings specs G avoid)
-    {rhs : Expr} {scheme : PolyTy}
-    (hmember : (rhs, .poly scheme) ∈ bindings.zip specs) :
+    {binding : CoreRecBinding} {scheme : PolyTy}
+    (hmember : (binding, .poly scheme) ∈ bindings.zip specs) :
     RunHasScheme ctx
-      (.letRec (bindings.map (fun _ => none)) bindings rhs) scheme := by
+      (.letRec bindings binding.rhs) scheme := by
   intro args ty hlc hinst
   let exactArgs := exactInstArgs scheme.paramCount args
   have hargs : Ty.AreLC scheme.paramCount exactArgs :=
@@ -917,7 +917,7 @@ theorem RunHasScheme.ofPolyRecMember {ctx : Ctx}
     ⟨hYsLen, hYsNodup, fun y hy hmem => hYsAvoid y hy (by
       simp only [List.mem_append]
       exact Or.inl (Or.inl (Or.inl hmem)))⟩
-  have htyped := hpoly (rhs, .poly scheme) hmember scheme rfl Ys hYs
+  have htyped := hpoly (binding, .poly scheme) hmember scheme rfl Ys hYs
   have hwrapped := RunWT.rec_rewrap_at hwf hmono hpoly htyped
   apply RunWT.instantiate_opening hargs hYsLen hYsNodup
     (htyped := hwrapped)
@@ -933,14 +933,14 @@ generalising its shared inference-phase monotype. Source checking performs that
 generalisation before signed RHSs; erased runtime typing records only the final
 scheme environment. -/
 theorem RunHasScheme.ofMonoRecMember {ctx : Ctx}
-    {bindings : List Expr} {specs : List RecSpec} {G avoid : List Nat}
+    {bindings : List CoreRecBinding} {specs : List RecSpec} {G avoid : List Nat}
     (hwf : RecSpecsWF bindings specs G)
     (hmono : MonoTyped RunWT ctx bindings specs G avoid)
     (hpoly : PolyTyped RunWT ctx bindings specs G avoid)
-    {rhs : Expr} {ty : Ty}
-    (hmember : (rhs, .mono ty) ∈ bindings.zip specs) :
+    {binding : CoreRecBinding} {ty : Ty}
+    (hmember : (binding, .mono ty) ∈ bindings.zip specs) :
     RunHasScheme ctx
-      (.letRec (bindings.map (fun _ => none)) bindings rhs)
+      (.letRec bindings binding.rhs)
       (PolyTy.genGroup G ty) := by
   intro args result hlc hinst
   let scheme := PolyTy.genGroup G ty
@@ -969,9 +969,9 @@ theorem RunHasScheme.ofMonoRecMember {ctx : Ctx}
     hXsAvoid x hx (by simp [List.mem_append, hc])
   have hXsBody : ∀ x ∈ Xs, x ∉ scheme.body.freeVars := fun x hx hc =>
     hXsAvoid x hx (by simp [List.mem_append, hc])
-  have htyped := hmono Xs hXs (rhs, .mono ty) hmember ty rfl
+  have htyped := hmono Xs hXs (binding, .mono ty) hmember ty rfl
   have hwrapped : RunWT ctx
-      (.letRec (bindings.map (fun _ => none)) bindings rhs)
+      (.letRec bindings binding.rhs)
       (Ty.renameG G Xs ty) :=
     RunWT.rec_rewrap_at hwf hmono hpoly htyped
   set Xs' := Ty.genFilter Xs (Ty.renameG G Xs ty) with hXsDef
@@ -1177,14 +1177,14 @@ private theorem InstantiatesBy.build_run_match_values
               exact RunHasScheme.ofTrivial hvalue
 
 private theorem RunHasScheme.ofRecMember {ctx : Ctx}
-    {bindings : List Expr} {specs : List RecSpec} {G avoid : List Nat}
+    {bindings : List CoreRecBinding} {specs : List RecSpec} {G avoid : List Nat}
     (hwf : RecSpecsWF bindings specs G)
     (hmono : MonoTyped RunWT ctx bindings specs G avoid)
     (hpoly : PolyTyped RunWT ctx bindings specs G avoid)
-    {rhs : Expr} {spec : RecSpec}
-    (hmember : (rhs, spec) ∈ bindings.zip specs) :
+    {binding : CoreRecBinding} {spec : RecSpec}
+    (hmember : (binding, spec) ∈ bindings.zip specs) :
     RunHasScheme ctx
-      (.letRec (bindings.map (fun _ => none)) bindings rhs)
+      (.letRec bindings binding.rhs)
       (spec.bodyScheme G) := by
   cases spec with
   | mono ty =>
@@ -1197,29 +1197,27 @@ private theorem RunHasScheme.ofRecMember {ctx : Ctx}
 /-- Every recursively wrapped RHS inhabits the scheme exported for its slot.
 This is exactly the replacement list used by `Step.letRecUnfold`. -/
 private theorem recursiveValuesHaveSchemes {ctx : Ctx}
-    {bindings : List Expr} {specs : List RecSpec} {G avoid : List Nat}
+    {bindings : List CoreRecBinding} {specs : List RecSpec} {G avoid : List Nat}
     (hwf : RecSpecsWF bindings specs G)
     (hmono : MonoTyped RunWT ctx bindings specs G avoid)
     (hpoly : PolyTyped RunWT ctx bindings specs G avoid) :
     List.Forall₂ (RunHasScheme ctx)
-      (bindings.map (fun rhs =>
-        .letRec (bindings.map (fun _ => none)) bindings rhs))
+      (bindings.map (fun binding => .letRec bindings binding.rhs))
       (specs.map (RecSpec.bodyScheme G)) := by
   have hall : ∀ pair ∈ bindings.zip specs,
       RunHasScheme ctx
-        (.letRec (bindings.map (fun _ => none)) bindings pair.1)
+        (.letRec bindings pair.1.rhs)
         (pair.2.bodyScheme G) := by
     intro pair hpair
     exact RunHasScheme.ofRecMember hwf hmono hpoly hpair
-  have go : ∀ (bs : List Expr) (ss : List RecSpec),
+  have go : ∀ (bs : List CoreRecBinding) (ss : List RecSpec),
       bs.length = ss.length →
       (∀ pair ∈ bs.zip ss,
         RunHasScheme ctx
-          (.letRec (bindings.map (fun _ => none)) bindings pair.1)
+          (.letRec bindings pair.1.rhs)
           (pair.2.bodyScheme G)) →
       List.Forall₂ (RunHasScheme ctx)
-        (bs.map (fun rhs =>
-          .letRec (bindings.map (fun _ => none)) bindings rhs))
+        (bs.map (fun binding => .letRec bindings binding.rhs))
         (ss.map (RecSpec.bodyScheme G)) := by
     intro bs
     induction bs with
@@ -1228,13 +1226,13 @@ private theorem recursiveValuesHaveSchemes {ctx : Ctx}
         cases ss with
         | nil => exact .nil
         | cons _ _ => simp at hlen
-    | cons rhs rest ih =>
+    | cons binding rest ih =>
         intro ss hlen hmembers
         cases ss with
         | nil => simp at hlen
         | cons spec specs =>
             refine .cons ?_ ?_
-            · exact hmembers (rhs, spec) (by simp)
+            · exact hmembers (binding, spec) (by simp)
             · apply ih specs (by simpa using hlen)
               intro pair hpair
               exact hmembers pair (by simp [hpair])
@@ -1339,16 +1337,10 @@ theorem RunWT.weakenEnv {ctors : CtorEnv} {envPre envExtra env : Env}
       simp only [Expr.shiftFrom, RecGroup.shiftFrom_eq_map]
       have hwf' : RecSpecsWF
           (bindings.map
-            (Expr.shiftFrom (pre.length + bindings.length) envExtra.length))
+            (RecBinding.mapRhs
+              (Expr.shiftFrom (pre.length + bindings.length) envExtra.length)))
           specs G :=
         { hwf with length := by simpa using hwf.length }
-      have hann :
-          (bindings.map
-            (Expr.shiftFrom (pre.length + bindings.length) envExtra.length)).map
-              (fun _ => (none : Option PolyTy)) =
-            bindings.map (fun _ => (none : Option PolyTy)) := by
-        simp only [List.map_map, Function.comp_def]
-      rw [← hann]
       apply RunWT.letRec (specs := specs) (G := G) (avoid := avoid) hwf'
       · intro Xs hXs pair hpair τ hτ
         rw [List.zip_map_left] at hpair
@@ -1502,16 +1494,10 @@ theorem RunWT.substMany {ctors : CtorEnv} {envPre env : Env}
       simp only [Expr.substN, RecGroup.substN_eq_map]
       have hwf' : RecSpecsWF
           (bindings.map
-            (Expr.substN (pre.length + bindings.length) values))
+            (RecBinding.mapRhs
+              (Expr.substN (pre.length + bindings.length) values)))
           specs G :=
         { hwf with length := by simpa using hwf.length }
-      have hann :
-          (bindings.map
-            (Expr.substN (pre.length + bindings.length) values)).map
-              (fun _ => (none : Option PolyTy)) =
-            bindings.map (fun _ => (none : Option PolyTy)) := by
-        simp only [List.map_map, Function.comp_def]
-      rw [← hann]
       apply RunWT.letRec (specs := specs) (G := G) (avoid := avoid) hwf'
       · intro Xs hXs pair hpair τ hτ
         rw [List.zip_map_left] at hpair
@@ -1556,12 +1542,12 @@ theorem RunWT.substMany {ctors : CtorEnv} {envPre env : Env}
 /-- Subject reduction for the recursive-group unfolding rule. Each RHS is
 substituted as an erased self-wrapped value at its exported scheme. -/
 theorem RunWT.letRecUnfold_preservation {ctx : Ctx}
-    {anns : List (Option PolyTy)} {bindings : List Expr} {body : Expr}
+    {bindings : List CoreRecBinding} {body : Expr}
     {ty : Ty}
-    (h : RunWT ctx (.letRec anns bindings body) ty) :
+    (h : RunWT ctx (.letRec bindings body) ty) :
     RunWT ctx
       (body.substN 0
-        (bindings.map (fun rhs => .letRec anns bindings rhs))) ty := by
+        (bindings.map (fun binding => .letRec bindings binding.rhs))) ty := by
   cases h with
   | letRec hwf hmono hpoly hbody =>
       have hvalues := recursiveValuesHaveSchemes hwf hmono hpoly
@@ -1750,7 +1736,7 @@ private lemma RunWT.ctor_chain_has_customTy_form
   | letIn _ _ _ _ _ => cases h_chain
   | var _          => cases h_chain
   | match_ _ _ _ _ => cases h_chain
-  | letRec _ _ _ _ _ => cases h_chain
+  | letRec _ _ _ _ => cases h_chain
 
 /-- A value of arrow type is a λ, a ctor chain, a bare primop, or a one-argument-
     short primop application. -/
@@ -1878,7 +1864,7 @@ theorem RunWT.ctor_chain_inversion {ctx : Ctx} {e : Expr} {τ : Ty}
   | letIn _ _ _ _ _ => cases h_chain
   | var _ => cases h_chain
   | match_ _ _ _ _ => cases h_chain
-  | letRec _ _ _ _ _ => cases h_chain
+  | letRec _ _ _ _ => cases h_chain
 
 /-- Progress: a closed, well-typed term is a value or takes a step. -/
 theorem RunWT.progress {ctx : Ctx} {e : Expr} {τ : Ty}
@@ -1981,7 +1967,7 @@ theorem RunWT.progress {ctx : Ctx} {e : Expr} {τ : Ty}
                   cases h
                   exact ⟨nm, [], .base nm⟩)
                 (fun _ _ _ _ => by intro h; cases h)
-                (fun _ _ _ _ _ => by intro h; cases h)
+                (fun _ _ _ _ => by intro h; cases h)
                 scrut hchain) with ⟨name, args, hcat⟩
             have hcover : ∃ pat body, (pat, body) ∈ branches ∧
                 pat.matchesCtor name args.length = true := by

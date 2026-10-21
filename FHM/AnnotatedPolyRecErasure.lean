@@ -32,7 +32,9 @@ inductive SourceExpr
   | lam (body : SourceExpr)
   | app (fn arg : SourceExpr)
   | letIn (scheme : PolyTy) (rhs body : SourceExpr)
-  | letRec (schemes : List PolyTy) (bindings : List SourceExpr) (body : SourceExpr)
+  | letRec (bindings : List (RecBinding PolyTy SourceExpr)) (body : SourceExpr)
+
+abbrev SourceRecBinding := RecBinding PolyTy SourceExpr
 
 /-- Machine terms.  Recursive schemes are absent. -/
 inductive RunExpr
@@ -52,14 +54,16 @@ def SourceExpr.erase : SourceExpr → RunExpr
   | .lam body => .lam body.erase
   | .app fn arg => .app fn.erase arg.erase
   | .letIn _ rhs body => .letIn rhs.erase body.erase
-  | .letRec _ bindings body =>
-      .letRec (bindings.map SourceExpr.erase) body.erase
+  | .letRec bindings body =>
+      .letRec (bindings.map (fun binding => binding.rhs.erase)) body.erase
 termination_by e => sizeOf e
 decreasing_by
   all_goals simp_wf
   all_goals first
     | omega
-    | (have h := List.sizeOf_lt_of_mem ‹_›; omega)
+    | (have h := List.sizeOf_lt_of_mem ‹_›
+       have hrhs := RecBinding.rhs_sizeOf_lt binding
+       omega)
 
 @[simp] theorem SourceExpr.erase_int (n : Int) :
     (SourceExpr.int n).erase = .int n := by simp only [SourceExpr.erase]
@@ -77,13 +81,13 @@ decreasing_by
     (SourceExpr.letIn scheme rhs body).erase = .letIn rhs.erase body.erase := by
   simp only [SourceExpr.erase]
 
-@[simp] theorem SourceExpr.erase_letRec (schemes : List PolyTy)
-    (bindings : List SourceExpr) (body : SourceExpr) :
-    (SourceExpr.letRec schemes bindings body).erase =
-      .letRec (bindings.map SourceExpr.erase) body.erase := by
+@[simp] theorem SourceExpr.erase_letRec (bindings : List SourceRecBinding)
+    (body : SourceExpr) :
+    (SourceExpr.letRec bindings body).erase =
+      .letRec (bindings.map (fun binding => binding.rhs.erase)) body.erase := by
   simp only [SourceExpr.erase]
 
-/-! ### Lockstep opening of authored scoped type variables
+/-! ### Opening authored scoped type variables
 
 An annotated binding's quantified variables scope over its RHS.  When an outer
 annotation is opened, nested annotations shield their own binders while references
@@ -104,31 +108,21 @@ def SourceExpr.openTyVarsAux (depth : Nat) (names : List Nat) : SourceExpr → S
         { scheme with body := Ty.openTyFrom innerDepth (names.map Ty.fvar) scheme.body }
       .letIn openedScheme (rhs.openTyVarsAux innerDepth names)
         (body.openTyVarsAux depth names)
-  | .letRec schemes bindings body =>
-      let opened := openRecGroupTyVarsAux depth names schemes bindings
-      .letRec opened.1 opened.2 (body.openTyVarsAux depth names)
-termination_by e => sizeOf e
+  | .letRec bindings body =>
+      .letRec (openRecGroupTyVarsAux depth names bindings)
+        (body.openTyVarsAux depth names)
 
 def openRecGroupTyVarsAux (depth : Nat) (names : List Nat) :
-    List PolyTy → List SourceExpr → List PolyTy × List SourceExpr
-  | [], [] => ([], [])
-  | [], rhs :: rest =>
-      let opened := openRecGroupTyVarsAux depth names [] rest
-      (opened.1, rhs.openTyVarsAux depth names :: opened.2)
-  | scheme :: schemes, [] =>
+    List SourceRecBinding → List SourceRecBinding
+  | [] => []
+  | ⟨scheme, rhs⟩ :: rest =>
       let innerDepth := depth + scheme.paramCount
       let openedScheme :=
-        { scheme with body := Ty.openTyFrom innerDepth (names.map Ty.fvar) scheme.body }
-      let opened := openRecGroupTyVarsAux depth names schemes []
-      (openedScheme :: opened.1, opened.2)
-  | scheme :: schemes, rhs :: rest =>
-      let innerDepth := depth + scheme.paramCount
-      let openedScheme :=
-        { scheme with body := Ty.openTyFrom innerDepth (names.map Ty.fvar) scheme.body }
-      let opened := openRecGroupTyVarsAux depth names schemes rest
-      (openedScheme :: opened.1,
-        rhs.openTyVarsAux innerDepth names :: opened.2)
-termination_by schemes bindings => sizeOf schemes + sizeOf bindings
+        { scheme with
+          body := Ty.openTyFrom innerDepth (names.map Ty.fvar) scheme.body }
+      { ann := openedScheme,
+        rhs := rhs.openTyVarsAux innerDepth names } ::
+        openRecGroupTyVarsAux depth names rest
 end
 
 def SourceExpr.openTyVars (names : List Nat) (e : SourceExpr) : SourceExpr :=
@@ -136,7 +130,7 @@ def SourceExpr.openTyVars (names : List Nat) (e : SourceExpr) : SourceExpr :=
 
 /-! The generated recursor does not expose induction hypotheses for expressions
 stored in the `bindings` list.  This stronger recursor does, which is exactly
-what the lockstep-opening proofs need. -/
+what the recursive-group opening proofs need. -/
 
 @[elab_as_elim]
 def SourceExpr.rec_strong.{u} {motive : SourceExpr → Sort u}
@@ -146,9 +140,9 @@ def SourceExpr.rec_strong.{u} {motive : SourceExpr → Sort u}
     (app : ∀ fn arg, motive fn → motive arg → motive (.app fn arg))
     (letIn : ∀ scheme rhs body, motive rhs → motive body →
       motive (.letIn scheme rhs body))
-    (letRec : ∀ schemes bindings body,
-      (∀ e ∈ bindings, motive e) → motive body →
-      motive (.letRec schemes bindings body)) :
+    (letRec : ∀ bindings body,
+      (∀ binding ∈ bindings, motive binding.rhs) → motive body →
+      motive (.letRec bindings body)) :
     (e : SourceExpr) → motive e
   | .int n => int n
   | .var index => var index
@@ -162,39 +156,37 @@ def SourceExpr.rec_strong.{u} {motive : SourceExpr → Sort u}
       letIn scheme rhs body
         (SourceExpr.rec_strong int var lam app letIn letRec rhs)
         (SourceExpr.rec_strong int var lam app letIn letRec body)
-  | .letRec schemes bindings body =>
-      letRec schemes bindings body
-        (fun e _he => SourceExpr.rec_strong int var lam app letIn letRec e)
+  | .letRec bindings body =>
+      letRec bindings body
+        (fun binding _he =>
+          SourceExpr.rec_strong int var lam app letIn letRec binding.rhs)
         (SourceExpr.rec_strong int var lam app letIn letRec body)
 termination_by e => sizeOf e
 decreasing_by
   all_goals simp_wf
   all_goals first
     | omega
-    | (have h := List.sizeOf_lt_of_mem _he; omega)
+    | (have hrow := RecBinding.rhs_sizeOf_lt binding
+       have hlist := List.sizeOf_lt_of_mem _he
+       omega)
 
 private theorem openRecGroupTyVarsAux_erases (depth : Nat) (names : List Nat)
-    (schemes : List PolyTy) (bindings : List SourceExpr) :
-    (∀ rhs ∈ bindings, ∀ depth names,
-      (rhs.openTyVarsAux depth names).erase = rhs.erase) →
-    (openRecGroupTyVarsAux depth names schemes bindings).2.map SourceExpr.erase =
-      bindings.map SourceExpr.erase := by
+    (bindings : List SourceRecBinding) :
+    (∀ binding ∈ bindings, ∀ depth names,
+      (binding.rhs.openTyVarsAux depth names).erase = binding.rhs.erase) →
+    (openRecGroupTyVarsAux depth names bindings).map
+        (fun binding => binding.rhs.erase) =
+      bindings.map (fun binding => binding.rhs.erase) := by
   intro hbindings
-  induction bindings generalizing schemes with
-  | nil =>
-      induction schemes with
-      | nil => simp [openRecGroupTyVarsAux]
-      | cons scheme schemes ih => simp [openRecGroupTyVarsAux, ih]
-  | cons rhs rest ih =>
-      have hrhs := hbindings rhs (by simp)
-      have hrest : ∀ e ∈ rest, ∀ depth names,
-          (e.openTyVarsAux depth names).erase = e.erase := by
-        intro e he
-        exact hbindings e (by simp [he])
-      cases schemes with
-      | nil => simp [openRecGroupTyVarsAux, hrhs, ih [] hrest]
-      | cons scheme schemes =>
-          simp [openRecGroupTyVarsAux, hrhs, ih schemes hrest]
+  induction bindings with
+  | nil => simp [openRecGroupTyVarsAux]
+  | cons binding rest ih =>
+      have hrhs := hbindings binding (by simp)
+      have hrest : ∀ binding ∈ rest, ∀ depth names,
+          (binding.rhs.openTyVarsAux depth names).erase = binding.rhs.erase := by
+        intro binding hbinding
+        exact hbindings binding (by simp [hbinding])
+      simp [openRecGroupTyVarsAux, hrhs, ih hrest]
 
 /-- Opening source-only type annotations has no runtime effect. -/
 theorem SourceExpr.erase_openTyVarsAux (e : SourceExpr) :
@@ -211,10 +203,10 @@ theorem SourceExpr.erase_openTyVarsAux (e : SourceExpr) :
   | letIn scheme rhs body ihrhs ihbody =>
       intro depth names
       simp [SourceExpr.openTyVarsAux, ihrhs, ihbody]
-  | letRec schemes bindings body ihbindings ihbody =>
+  | letRec bindings body ihbindings ihbody =>
       intro depth names
       simp [SourceExpr.openTyVarsAux, ihbody,
-        openRecGroupTyVarsAux_erases depth names schemes bindings ihbindings]
+        openRecGroupTyVarsAux_erases depth names bindings ihbindings]
 
 @[simp] theorem SourceExpr.erase_openTyVars (e : SourceExpr) (names : List Nat) :
     (e.openTyVars names).erase = e.erase :=
@@ -234,24 +226,20 @@ through annotations nested inside that RHS—using the same slice with which
 members' RHSs to their own slices. -/
 
 def SourceExpr.openRecRhsOwn :
-    List PolyTy → List SourceExpr → List Nat → List SourceExpr
-  | [], bindings, _ => bindings
-  | _ :: _, [], _ => []
-  | scheme :: schemes, rhs :: rest, names =>
-      rhs.openTyVars (names.take scheme.paramCount) ::
-        SourceExpr.openRecRhsOwn schemes rest (names.drop scheme.paramCount)
+    List SourceRecBinding → List Nat → List SourceExpr
+  | [], _ => []
+  | binding :: rest, names =>
+      binding.rhs.openTyVars (names.take binding.ann.paramCount) ::
+        SourceExpr.openRecRhsOwn rest (names.drop binding.ann.paramCount)
 
 @[simp] theorem SourceExpr.erase_openRecRhsOwn
-    (schemes : List PolyTy) (bindings : List SourceExpr) (names : List Nat) :
-    (SourceExpr.openRecRhsOwn schemes bindings names).map SourceExpr.erase =
-      bindings.map SourceExpr.erase := by
-  induction schemes generalizing bindings names with
+    (bindings : List SourceRecBinding) (names : List Nat) :
+    (SourceExpr.openRecRhsOwn bindings names).map SourceExpr.erase =
+      bindings.map (fun binding => binding.rhs.erase) := by
+  induction bindings generalizing names with
   | nil => simp [SourceExpr.openRecRhsOwn]
-  | cons scheme schemes ih =>
-      cases bindings with
-      | nil => simp [SourceExpr.openRecRhsOwn]
-      | cons rhs rest =>
-          simp [SourceExpr.openRecRhsOwn, SourceExpr.erase_openTyVars, ih]
+  | cons binding rest ih =>
+      simp [SourceExpr.openRecRhsOwn, SourceExpr.erase_openTyVars, ih]
 
 /-! ## Type-free runtime operations -/
 
@@ -329,12 +317,12 @@ of all group quantifiers.  Recursive uses see all declared schemes; the RHS and
 its expected type are opened with the same member-specific name slice. -/
 def SourceRecGroupChecks
     (TypeOf : Env → SourceExpr → Ty → Prop) (env : Env)
-    (schemes : List PolyTy) (bindings : List SourceExpr)
-    (avoid : List Nat) : Prop :=
-  ∀ names, FreshNames avoid (PolyTy.totalParams schemes) names →
-    ∀ pair ∈ (SourceExpr.openRecRhsOwn schemes bindings names).zip
-        (PolyTy.openGroup schemes names),
-      TypeOf (schemes ++ env) pair.1 pair.2
+    (bindings : List SourceRecBinding) (avoid : List Nat) : Prop :=
+  ∀ names,
+    FreshNames avoid (PolyTy.totalParams (bindings.map (·.ann))) names →
+    ∀ pair ∈ (SourceExpr.openRecRhsOwn bindings names).zip
+        (PolyTy.openGroup (bindings.map (·.ann)) names),
+      TypeOf (bindings.map (·.ann) ++ env) pair.1 pair.2
 
 /-- The runtime counterpart needs no expression opening: annotations have
 already disappeared.  Only the proof's expected types are rigidly opened. -/
@@ -371,11 +359,10 @@ inductive SourceWT : Env → SourceExpr → Ty → Prop
       SourceWT (scheme :: env) body resultTy →
       SourceWT env (.letIn scheme rhs body) resultTy
   | letRec {avoid : List Nat} :
-      bindings.length = schemes.length →
-      (∀ scheme ∈ schemes, scheme.WF) →
-      SourceRecGroupChecks SourceWT env schemes bindings avoid →
-      SourceWT (schemes ++ env) body resultTy →
-      SourceWT env (.letRec schemes bindings body) resultTy
+      (∀ binding ∈ bindings, binding.ann.WF) →
+      SourceRecGroupChecks SourceWT env bindings avoid →
+      SourceWT (bindings.map (·.ann) ++ env) body resultTy →
+      SourceWT env (.letRec bindings body) resultTy
 
 /-- Typing for annotation-free machine terms.  `schemes` in `letRec` is an
 existential proof witness: it is not a field of `RunExpr` and the evaluator never
@@ -415,20 +402,21 @@ private theorem SourceGeneralisesTo.erase
   simpa only [SourceExpr.erase_openTyVars] using herased names hfresh
 
 private theorem SourceRecGroupChecks.erase
-    {env : Env} {schemes : List PolyTy} {bindings : List SourceExpr}
+    {env : Env} {bindings : List SourceRecBinding}
     {avoid : List Nat}
-    (_hsource : SourceRecGroupChecks SourceWT env schemes bindings avoid)
+    (_hsource : SourceRecGroupChecks SourceWT env bindings avoid)
     (herased : ∀ names,
-      FreshNames avoid (PolyTy.totalParams schemes) names →
-      ∀ pair ∈ (SourceExpr.openRecRhsOwn schemes bindings names).zip
-          (PolyTy.openGroup schemes names),
-        RunWT (schemes ++ env) pair.1.erase pair.2) :
-    RunRecGroupChecks RunWT env schemes (bindings.map SourceExpr.erase) avoid := by
+      FreshNames avoid (PolyTy.totalParams (bindings.map (·.ann))) names →
+      ∀ pair ∈ (SourceExpr.openRecRhsOwn bindings names).zip
+          (PolyTy.openGroup (bindings.map (·.ann)) names),
+        RunWT (bindings.map (·.ann) ++ env) pair.1.erase pair.2) :
+    RunRecGroupChecks RunWT env (bindings.map (·.ann))
+      (bindings.map (fun binding => binding.rhs.erase)) avoid := by
   intro names hfresh pair hpair
   have hmap :
-      (SourceExpr.openRecRhsOwn schemes bindings names).map SourceExpr.erase =
-        bindings.map SourceExpr.erase :=
-    SourceExpr.erase_openRecRhsOwn schemes bindings names
+      (SourceExpr.openRecRhsOwn bindings names).map SourceExpr.erase =
+        bindings.map (fun binding => binding.rhs.erase) :=
+    SourceExpr.erase_openRecRhsOwn bindings names
   rw [← hmap] at hpair
   rw [List.zip_map_left] at hpair
   obtain ⟨sourcePair, hsourcePair, rfl⟩ := List.mem_map.mp hpair
@@ -445,9 +433,12 @@ theorem SourceWT.erase_sound {env : Env} {e : SourceExpr} {ty : Ty}
   | letIn hwf hgeneralises _ ihgeneralises ihbody =>
       simpa only [SourceExpr.erase_letIn] using
         RunWT.letIn hwf (SourceGeneralisesTo.erase hgeneralises ihgeneralises) ihbody
-  | letRec hlen hwf hgroup _ ihgroup ihbody =>
+  | letRec hwf hgroup _ ihgroup ihbody =>
       simpa only [SourceExpr.erase_letRec] using
-        RunWT.letRec (by simpa using hlen) hwf
+        RunWT.letRec (by simp) (by
+          intro scheme hscheme
+          obtain ⟨binding, hbinding, rfl⟩ := List.mem_map.mp hscheme
+          exact hwf binding hbinding)
           (SourceRecGroupChecks.erase hgroup ihgroup) ihbody
 
 /-! ## Runtime type substitution
@@ -990,16 +981,15 @@ theorem selfPolyRhs_typed :
     exact ⟨by simp [polyConstInt], by simp; exact ContainsBvarsUpTo.prim⟩
 
 def selfPolySource : SourceExpr :=
-  .letRec [polyConstInt] [selfPolyRhs] (.var 0)
+  .letRec [{ ann := polyConstInt, rhs := selfPolyRhs }] (.var 0)
 
 theorem selfPolySource_typed :
     SourceWT [] selfPolySource (.arrow (.prim .int) (.prim .int)) := by
-  apply SourceWT.letRec (avoid := []) (schemes := [polyConstInt])
-    (bindings := [selfPolyRhs])
-  · simp
-  · intro scheme hscheme
-    simp only [List.mem_singleton] at hscheme
-    subst scheme
+  apply SourceWT.letRec (avoid := [])
+    (bindings := [{ ann := polyConstInt, rhs := selfPolyRhs }])
+  · intro binding hbinding
+    simp only [List.mem_singleton] at hbinding
+    subst binding
     exact polyConstInt_wf
   · intro names hfresh pair hpair
     have hnames : names.take polyConstInt.paramCount = names := by
@@ -1097,20 +1087,23 @@ theorem siblingPolyCalleeRhs_typed :
   exact .lam .int
 
 def siblingPolySource : SourceExpr :=
-  .letRec [polyConstInt, polyConstInt]
-    [siblingPolyCallerRhs, siblingPolyCalleeRhs]
+  .letRec
+    [{ ann := polyConstInt, rhs := siblingPolyCallerRhs },
+      { ann := polyConstInt, rhs := siblingPolyCalleeRhs }]
     (.var 0)
 
 theorem siblingPolySource_typed :
     SourceWT [] siblingPolySource (.arrow (.prim .int) (.prim .int)) := by
   apply SourceWT.letRec (avoid := [])
-    (schemes := [polyConstInt, polyConstInt])
-    (bindings := [siblingPolyCallerRhs, siblingPolyCalleeRhs])
-  · simp
-  · intro scheme hscheme
-    simp at hscheme
-    subst scheme
-    exact polyConstInt_wf
+    (bindings :=
+      [{ ann := polyConstInt, rhs := siblingPolyCallerRhs },
+        { ann := polyConstInt, rhs := siblingPolyCalleeRhs }])
+  · intro binding hbinding
+    rcases List.mem_cons.mp hbinding with rfl | hbinding
+    · exact polyConstInt_wf
+    · have hbinding' := List.mem_singleton.mp hbinding
+      subst binding
+      exact polyConstInt_wf
   · intro names hfresh pair hpair
     obtain ⟨firstName, secondName, rfl⟩ :
         ∃ firstName secondName, names = [firstName, secondName] := by
@@ -1156,10 +1149,10 @@ theorem ambient_rigid_erasure_witness (outer : Nat) :
     let scheme := nestedResult outer
     let rhs : SourceExpr := .lam (.var 2)
     SourceWT [PolyTy.mkTrivial (.fvar outer)]
-      (.letRec [scheme] [rhs] (.var 0))
+      (.letRec [{ ann := scheme, rhs := rhs }] (.var 0))
       (.arrow (.prim .int) (.fvar outer)) ∧
     RunWT [PolyTy.mkTrivial (.fvar outer)]
-      (SourceExpr.erase (.letRec [scheme] [rhs] (.var 0)))
+      (SourceExpr.erase (.letRec [{ ann := scheme, rhs := rhs }] (.var 0)))
       (.arrow (.prim .int) (.fvar outer)) := by
   dsimp
   have hrhs : ∀ args, InstArgs (nestedResult outer) args →
@@ -1173,14 +1166,13 @@ theorem ambient_rigid_erasure_witness (outer : Nat) :
     exact .lam (.var (index := 2) (scheme := PolyTy.mkTrivial (.fvar outer))
       (args := []) (by rfl) ⟨rfl, by simp⟩)
   have hsrc : SourceWT [PolyTy.mkTrivial (.fvar outer)]
-      (.letRec [nestedResult outer] [.lam (.var 2)] (.var 0))
+      (.letRec [{ ann := nestedResult outer, rhs := .lam (.var 2) }] (.var 0))
       (.arrow (.prim .int) (.fvar outer)) := by
-    apply SourceWT.letRec (avoid := [outer]) (schemes := [nestedResult outer])
-      (bindings := [.lam (.var 2)])
-    · simp
-    · intro scheme hscheme
-      simp only [List.mem_singleton] at hscheme
-      subst scheme
+    apply SourceWT.letRec (avoid := [outer])
+      (bindings := [{ ann := nestedResult outer, rhs := .lam (.var 2) }])
+    · intro binding hbinding
+      simp only [List.mem_singleton] at hbinding
+      subst binding
       exact nestedResult_wf outer
     · intro names hfresh pair hpair
       have hnames : names.take (nestedResult outer).paramCount = names := by
@@ -1217,7 +1209,7 @@ theorem ambient_rigid_erasure_witness (outer : Nat) :
 The source below is closed.  The outer `forall c` scopes through its RHS into
 the nested annotation `forall a. a -> c`.  In de Bruijn form that nested `c` is
 `.bvar 1`: its own `a` occupies `.bvar 0`.  When the outer scheme is checked at
-rigid `C`, lockstep opening changes only `.bvar 1`, yielding
+rigid `C`, row-wise opening changes only `.bvar 1`, yielding
 `nestedResult C = forall a. a -> C`. -/
 
 /-- `forall c. c -> Int -> c`. -/
@@ -1231,7 +1223,8 @@ def nestedAuthoredScheme : PolyTy :=
   ⟨1, .arrow (.bvar 0) (.bvar 1)⟩
 
 def genuinelyScopedOuterRhs : SourceExpr :=
-  .lam (.letRec [nestedAuthoredScheme] [.lam (.var 2)] (.var 0))
+  .lam (.letRec
+    [{ ann := nestedAuthoredScheme, rhs := .lam (.var 2) }] (.var 0))
 
 def genuinelyScopedSource : SourceExpr :=
   .letIn scopedOuterScheme genuinelyScopedOuterRhs (.var 0)
@@ -1244,7 +1237,8 @@ theorem scopedOuterScheme_wf : scopedOuterScheme.WF := by
 
 theorem genuinelyScopedOuterRhs_open (outer : Nat) :
     genuinelyScopedOuterRhs.openTyVars [outer] =
-      .lam (.letRec [nestedResult outer] [.lam (.var 2)] (.var 0)) := by
+      .lam (.letRec
+        [{ ann := nestedResult outer, rhs := .lam (.var 2) }] (.var 0)) := by
   simp [genuinelyScopedOuterRhs, nestedAuthoredScheme, nestedResult,
     SourceExpr.openTyVars, SourceExpr.openTyVarsAux,
     openRecGroupTyVarsAux, Ty.openTyFrom, Ty.instantiate]
