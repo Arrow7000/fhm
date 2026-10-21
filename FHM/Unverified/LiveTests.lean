@@ -17,8 +17,10 @@ private def nestedRuntime (depth : Nat) : Expr := Id.run do
 #guard !withinEvaluationDepth (.lambda none (nestedRuntime 512))
 #guard !withinEvaluationDepth (.letIn none (nestedRuntime 512) (.primLit .unit))
 #guard !withinEvaluationDepth (.match_ (.ctor ⟨"Box"⟩) [(.wildcard, nestedRuntime 512)])
-#guard !withinEvaluationDepth (.letRec [none] [nestedRuntime 512] (.primLit .unit))
-#guard withinEvaluationDepth (.letRec [none] [.lambda none (.var 0)] (.primLit .unit))
+#guard !withinEvaluationDepth
+  (.letRec [{ ann := none, rhs := nestedRuntime 512 }] (.primLit .unit))
+#guard withinEvaluationDepth
+  (.letRec [{ ann := none, rhs := .lambda none (.var 0) }] (.primLit .unit))
 
 -- Guard even zero-fuel/value paths before the recursive isValue check or printing.
 #guard (match evalCounting 0 (nestedRuntime 512) 7 with

@@ -209,8 +209,8 @@ def bindingAnn (typed : TypedLowered) (site : SurfaceBinderSite) : Option Bindin
       let .letIn ann _ _ ← inputAtCorePath typed.input path | none
       pure ann
   | .letRec path member =>
-      let .letRec anns _ _ ← inputAtCorePath typed.input path | none
-      anns[member]?
+      let .letRec bindings _ ← inputAtCorePath typed.input path | none
+      (bindings[member]?).map (·.ann)
   | _ => none
 
 /-- Authored complete schemes passed the HM ceiling check. Partial modes keep

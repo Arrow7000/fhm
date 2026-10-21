@@ -159,7 +159,7 @@ private def topBindingTypes (groups : List (List Surface.Binding))
         | [binding] =>
           if binding.refersTo binding.name then
             let declared := match core.atCorePath path with
-              | some (.letRec anns _ _) => anns[0]?.getD none
+              | some (.letRec bindings _) => (bindings[0]?).bind (·.ann)
               | _ => none
             let inferred := (schemes.find? fun (site, _) =>
               site == .letRec path 0).map (·.2)
@@ -181,7 +181,7 @@ private def topBindingTypes (groups : List (List Surface.Binding))
             -- absent from the inferred-scheme map. Read their actual lowered
             -- declaration, including any head-parameter desugaring.
             let declared := match core.atCorePath path with
-              | some (.letRec anns _ _) => anns[member]?.getD none
+              | some (.letRec bindings _) => (bindings[member]?).bind (·.ann)
               | _ => none
             let inferred := (schemes.find? fun (site, _) =>
               site == .letRec path member).map (·.2)
@@ -303,10 +303,10 @@ def withinEvaluationDepth (e : Expr) (limit : Nat := evaluationDepthLimit) : Boo
         pending := pending.push (scrut, childDepth)
         for (_, body) in branches do
           pending := pending.push (body, childDepth)
-    | .letRec _ bindings body =>
+    | .letRec bindings body =>
         pending := pending.push (body, childDepth)
-        for rhs in bindings do
-          pending := pending.push (rhs, childDepth)
+        for binding in bindings do
+          pending := pending.push (binding.rhs, childDepth)
     | .primLit _ | .primBinOp _ | .var _ | .ctor _ => pure ()
   return true
 

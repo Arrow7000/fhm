@@ -295,7 +295,7 @@ def logicalCorePaths : Expr → List CorePath
   | .match_ scrut branches => [] ::
       (logicalCorePaths scrut).map (.matchScrut :: ·) ++
       logicalBranchPaths 0 branches
-  | .letRec _ bindings body => [] ::
+  | .letRec bindings body => [] ::
       logicalBindingPaths 0 bindings ++
       (logicalCorePaths body).map (.letRecBody :: ·)
 
@@ -305,10 +305,10 @@ def logicalBranchPaths (index : Nat) : List (MatchPattern × Expr) → List Core
       (logicalCorePaths body).map (.matchBranch index :: ·) ++
         logicalBranchPaths (index + 1) rest
 
-def logicalBindingPaths (member : Nat) : List Expr → List CorePath
+def logicalBindingPaths (member : Nat) : List CoreRecBinding → List CorePath
   | [] => []
-  | rhs :: rest =>
-      (logicalCorePaths rhs).map (.letRecRhs member :: ·) ++
+  | binding :: rest =>
+      (logicalCorePaths binding.rhs).map (.letRecRhs member :: ·) ++
         logicalBindingPaths (member + 1) rest
 end
 
@@ -563,15 +563,15 @@ def lowerIdentifiedExpr (ke : KindEnv) (tvs vs : List ValName) :
         [(.letIn source.id, .present [.letIn []])])
   | .letRecIn binds body, .letRecIn source srhss sbody => do
       let recScope := binds.map (fun b => b.name) ++ vs
-      let anns' ← binds.mapM fun b =>
-        lowerInputLetAnn ke tvs (finalizeInputAnn b.tyParams b.params b.ann)
       let bindings' ← lowerIdentifiedRecBinds ke tvs recScope source 0 binds srhss
       let body' ← lowerIdentifiedExpr ke tvs recScope body sbody
-      let bindingExprs := bindings'.map fun r => r.expr
-      let bindingParts := bindings'.mapIdx fun member r => r.belowPath [.letRecRhs member]
+      let inputBindings := bindings'.map fun binding =>
+        { ann := binding.ann, rhs := binding.rhs.expr }
+      let bindingParts := bindings'.mapIdx fun member binding =>
+        binding.rhs.belowPath [.letRecRhs member]
       let groupBinders := binds.mapIdx fun member _ =>
         (.letRec source.id member, .present [.letRec [] member])
-      pure (combineAuthored source (.letRec anns' bindingExprs body'.expr)
+      pure (combineAuthored source (.letRec inputBindings body'.expr)
         (bindingParts ++ [body'.belowPath [.letRecBody]]) [] groupBinders
         )
   | .var name, .leaf source => do
@@ -615,16 +615,18 @@ def lowerIdentifiedBranches (ke : KindEnv) (tvs vs : List ValName) :
   | _, _ => none
 
 def lowerIdentifiedRecBinds (ke : KindEnv) (tvs recScope : List ValName)
-    (owner : SourceNode) : Nat → List Surface.Binding → List IdentifiedExpr → Option (List InputLowered)
+    (owner : SourceNode) : Nat → List Surface.Binding → List IdentifiedExpr →
+      Option (List (RecBinding BindingAnn InputLowered))
   | _, [], [] => some []
   | member, b :: rest, srhs :: srest => do
-      let tvs' := letAnnTyPrefix b.tyParams
-        (finalizeInputAnn b.tyParams b.params b.ann) ++ tvs
+      let annF := finalizeInputAnn b.tyParams b.params b.ann
+      let ann' ← lowerInputLetAnn ke tvs annF
+      let tvs' := letAnnTyPrefix b.tyParams annF ++ tvs
       let rhsCore ← lowerIdentifiedExpr ke tvs' (paramTermScope b.params recScope) b.rhs srhs
       let rhs' ← wrapParamsWithProvenance ke tvs' owner
         (fun i => .letRecParam owner.id member i) 0 b.params rhsCore
       let rest' ← lowerIdentifiedRecBinds ke tvs recScope owner (member + 1) rest srest
-      pure (rhs' :: rest')
+      pure ({ ann := ann', rhs := rhs' } :: rest')
   | _, _, _ => none
 
 def lowerListWithProvenance (owner : SourceNode) (index : Nat) (isRoot : Bool) :
@@ -714,29 +716,16 @@ theorem lowerListWithProvenance_project {owner : SourceNode} {index : Nat} {isRo
     simpa only [mkInputList, LoweringOps.mkList, inputLoweringOps, List.map_cons] using
       congrArg (fun tail => InferInput.app (.app (.ctor cCons) item.expr) tail) hp
 
-private theorem input_lowerAnnList_eq_mapM (ke : KindEnv) (tvs : List ValName)
-    (bindings : List Surface.Binding) :
-    inputLoweringOps.lowerAnnList ke tvs
-      (bindings.map fun b => finalizeInputAnn b.tyParams b.params b.ann) =
-    bindings.mapM (fun b => lowerInputLetAnn ke tvs (finalizeInputAnn b.tyParams b.params b.ann)) := by
-  induction bindings with
-  | nil => rfl
-  | cons b bs ih =>
-    change (do
-      let a ← lowerInputLetAnn ke tvs (finalizeInputAnn b.tyParams b.params b.ann)
-      let rest ← inputLoweringOps.lowerAnnList ke tvs (bs.map fun (b : Surface.Binding) => finalizeInputAnn b.tyParams b.params b.ann)
-      pure (a :: rest)) = _
-    rw [ih]
-    simp only [List.mapM_cons]
-
 private theorem lowerRec_nil (ke) (tvs vs) (owner) (index) : lowerIdentifiedRecBinds ke tvs vs owner index [] [] = some [] := by rfl
 private theorem lowerRec_cons (ke) (tvs vs) (owner) (index) (b : Surface.Binding) (rest) (srhs) (srest) :
  lowerIdentifiedRecBinds ke tvs vs owner index (b::rest) (srhs::srest) = (do
- let tvs' := letAnnTyPrefix b.tyParams (finalizeInputAnn b.tyParams b.params b.ann) ++ tvs
+ let annF := finalizeInputAnn b.tyParams b.params b.ann
+ let ann' ← lowerInputLetAnn ke tvs annF
+ let tvs' := letAnnTyPrefix b.tyParams annF ++ tvs
  let rhs ← lowerIdentifiedExpr ke tvs' (paramTermScope b.params vs) b.rhs srhs
  let rhs' ← wrapParamsWithProvenance ke tvs' owner (fun i => .letRecParam owner.id index i) 0 b.params rhs
  let rest' ← lowerIdentifiedRecBinds ke tvs vs owner (index+1) rest srest
- pure (rhs'::rest')) := by rfl
+ pure ({ ann := ann', rhs := rhs' }::rest')) := by rfl
 
 private theorem lowerRec_nil_cons (ke) (tvs vs) (owner) (index) (srhs) (srest) :
  lowerIdentifiedRecBinds ke tvs vs owner index [] (srhs::srest) = none := rfl
@@ -868,14 +857,11 @@ theorem lowerIdentifiedExpr_project {ke : KindEnv} {tvs vs : List ValName}
   | letRecIn bindings body =>
     cases identified <;> simp only [hs, lowerIdentifiedExpr, reduceCtorEq] at h
     simp only [bind, pure, Option.bind_eq_some_iff, Option.some.injEq] at h
-    obtain ⟨anns', ha, bindings', hr, body', hb, rfl⟩ := h
+    obtain ⟨bindings', hr, body', hb, rfl⟩ := h
     have hpr := lowerIdentifiedRecBinds_project hr
     have hpb := lowerIdentifiedExpr_project hb
-    have hpa : inputLoweringOps.lowerAnnList ke tvs
-        (bindings.map fun b => finalizeInputAnn b.tyParams b.params b.ann) = some anns' :=
-      (input_lowerAnnList_eq_mapM ke tvs bindings).trans ha
-    simp only [lowerInputExpr, lowerInputRecBinds, inputLoweringOps] at hpr hpb hpa
-    simp only [lowerInputExpr, lowerExprWith, inputLoweringOps, hpa, hpr, hpb,
+    simp only [lowerInputExpr, lowerInputRecBinds, inputLoweringOps] at hpr hpb
+    simp only [lowerInputExpr, lowerExprWith, inputLoweringOps, hpr, hpb,
       bind, pure, Option.bind_some, combineAuthored]
   | var name =>
     cases identified <;> simp only [hs, lowerIdentifiedExpr, reduceCtorEq] at h
@@ -960,9 +946,11 @@ decreasing_by all_goals (subst_vars; simp_wf) <;> omega
 
 theorem lowerIdentifiedRecBinds_project {ke : KindEnv} {tvs vs : List ValName}
     {owner : SourceNode} {index : Nat} {bindings : List Surface.Binding}
-    {identified : List IdentifiedExpr} {result : List InputLowered}
+    {identified : List IdentifiedExpr}
+    {result : List (RecBinding BindingAnn InputLowered)}
     (h : lowerIdentifiedRecBinds ke tvs vs owner index bindings identified = some result) :
-    lowerInputRecBinds ke tvs vs bindings = some (result.map (·.expr)) := by
+    lowerInputRecBinds ke tvs vs bindings = some (result.map fun binding =>
+      { ann := binding.ann, rhs := binding.rhs.expr }) := by
   cases hbs : bindings with
   | nil =>
     cases identified <;> simp only [hbs, lowerRec_nil, lowerRec_nil_cons, reduceCtorEq] at h
@@ -973,12 +961,12 @@ theorem lowerIdentifiedRecBinds_project {ke : KindEnv} {tvs vs : List ValName}
     rename_i name tyParams params ann rhs
     cases identified <;> simp only [hbs, hbnd, lowerRec_cons, lowerRec_cons_nil, reduceCtorEq] at h
     simp only [bind, pure, Option.bind_eq_some_iff, Option.some.injEq] at h
-    obtain ⟨rhsCore, hr, rhs', hw, rest', hrest, rfl⟩ := h
+    obtain ⟨ann', ha, rhsCore, hr, rhs', hw, rest', hrest, rfl⟩ := h
     have hpr := lowerIdentifiedExpr_project hr
     have hpw := wrapParamsWithProvenance_project hw
     have hps := lowerIdentifiedRecBinds_project hrest
     simp only [lowerInputExpr, lowerInputRecBinds, wrapInputParams, inputLoweringOps] at hpr hpw hps
-    simp only [lowerInputRecBinds, lowerRecBindsWith, inputLoweringOps, hpr, hpw, hps,
+    simp only [lowerInputRecBinds, lowerRecBindsWith, inputLoweringOps, ha, hpr, hpw, hps,
       bind, pure, Option.bind_some, List.map_cons]
 termination_by sizeOf bindings
 decreasing_by all_goals (subst_vars; simp_wf) <;> omega
@@ -1026,10 +1014,10 @@ def inputAtCorePath : InferInput → CorePath → Option InferInput
   | .match_ _ arms, .matchBranch index :: rest => do
       let (_, body) ← arms[index]?
       inputAtCorePath body rest
-  | .letRec _ rhss _, .letRecRhs member :: rest => do
-      let rhs ← rhss[member]?
-      inputAtCorePath rhs rest
-  | .letRec _ _ body, .letRecBody :: rest => inputAtCorePath body rest
+  | .letRec bindings _, .letRecRhs member :: rest => do
+      let binding ← bindings[member]?
+      inputAtCorePath binding.rhs rest
+  | .letRec _ body, .letRecBody :: rest => inputAtCorePath body rest
   | _, _ => none
 termination_by _ path => path.length
 
