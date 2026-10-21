@@ -10349,6 +10349,8 @@ private theorem inferWithTypesCore_sourceComplete_rec_of_unsigned
       exact (Subst.onTy_congr hag0 (hF t ht)).symm
     rw [he] at hv
     exact hXsavoid x hx (by simp only [avoid, List.mem_append]; tauto)
+  have hRfixK : ∀ k ∈ K,R.onTy (.fvar k) = .fvar k :=
+    fun k hk => (hag0 k (hK k hk)).symm.trans (hfixK k hk)
   obtain ⟨⟨⟨first,s1,state1⟩,hstrata⟩,hStrataResult,R1,hR1,hR1P,hR1K,hag1,hres1,
       hBindingsEq1,hXsK1,hXsF1⟩ :=
     hUnsigned P (ambient.onCtx ctx) _ declSpecs declGroups declPrefixes G Xs R
@@ -10365,7 +10367,7 @@ private theorem inferWithTypesCore_sourceComplete_rec_of_unsigned
         have hm : x ∈ declSpecs.flatMap RecSpec.freeVars := List.mem_flatMap.mpr ⟨spec,hs,hv⟩
         tauto))
       (by intro x hx hv;exact hXsavoid x hx (by simp only [avoid,List.mem_append] at hv ⊢;tauto))
-      hctxWF hctxSeed hinitLC hinitBelow hinitFrame hKSeed hFSeed hPSeed hres0 hXsK hXsF
+      hctxWF hctxSeed hinitLC hinitBelow hinitFrame hKSeed hFSeed hPSeed hres0 hRfixK hXsK hXsF
       hannscope hrhsscope hBindingsEq
   have hvalid0 : RecGroups.ValidResidualGroups (bindings.map InputRecBinding.recMode)
       ([] ++ groups) := hvalid
