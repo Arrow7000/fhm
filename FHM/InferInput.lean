@@ -6659,9 +6659,14 @@ theorem CompletedRecMembers.length_eq {members : List RecMemberState}
     members.length = completed.length := by
   simpa only [List.length_map] using congrArg List.length h.exports
 
-private def recSlotName : Ty → Option Nat
+def recSlotName : Ty → Option Nat
   | .fvar name => some name
   | _ => none
+
+def RecMemberState.prefix (member : RecMemberState) : List Nat :=
+  match member.spec with
+  | .poly _ => []
+  | .mono _ => member.slotImages.filterMap recSlotName
 
 /-- Close only authored partial-prefix representatives in editor artifacts.
 Additional generalized variables keep the ordinary inference-variable convention. -/
@@ -7248,15 +7253,67 @@ structure RecState.Frame (base : Nat) (K : List Nat) (F : List Ty)
 /-- Read completed members' ordered written representatives from the retained
 slot images. Complete contracts introduce no provisional slots. -/
 def RecState.prefixes (state : RecState) : List (List Nat) :=
-  state.specs.mapIdx (fun i spec => match spec with
-    | .poly _ => []
-    | .mono _ => (state.slots[i]?.getD []).filterMap recSlotName)
+  state.memberStates.map RecMemberState.prefix
+
+@[simp] theorem RecState.prefixes_length (state : RecState) :
+    state.prefixes.length = state.memberStates.length := by
+  simp [RecState.prefixes]
+
+@[simp] theorem RecState.getElem?_prefixes (state : RecState) (i : Nat) :
+    state.prefixes[i]? = state.memberStates[i]?.map RecMemberState.prefix := by
+  simp [RecState.prefixes]
+
+theorem RecState.getElem?_prefixes_of_mono (state : RecState)
+    {i : Nat} {ty : Ty} (hs : state.specs[i]? = some (RecSpec.mono ty)) :
+    state.prefixes[i]? = state.slots[i]?.map (List.filterMap recSlotName) := by
+  rw [RecState.getElem?_specs] at hs
+  rw [RecState.getElem?_prefixes, RecState.getElem?_slots]
+  cases hm : state.memberStates[i]? with
+  | none => simp [hm] at hs
+  | some member =>
+      simp only [hm, Option.map_some, Option.some.injEq] at hs ⊢
+      simp [RecMemberState.prefix, hs]
+
+theorem RecState.getElem?_prefixes_of_poly (state : RecState)
+    {i : Nat} {scheme : PolyTy} (hs : state.specs[i]? = some (RecSpec.poly scheme)) :
+    state.prefixes[i]? = some [] := by
+  rw [RecState.getElem?_specs] at hs
+  rw [RecState.getElem?_prefixes]
+  cases hm : state.memberStates[i]? with
+  | none => simp [hm] at hs
+  | some member =>
+      simp only [hm, Option.map_some, Option.some.injEq] at hs ⊢
+      simp [RecMemberState.prefix, hs]
 
 /-- A historical SCC stage exposes only exports from earlier components.
 Later exports cannot change the environment in which an earlier RHS was checked. -/
 def RecState.stageEntries (state : RecState) (earlier : List Nat) : List PolyTy :=
-  state.specs.mapIdx (fun i spec => if i ∈ earlier then
-    ((state.exports[i]?).join).getD spec.monoEntry else spec.monoEntry)
+  state.memberStates.mapIdx (fun i member => if i ∈ earlier then
+    member.exported.getD member.spec.monoEntry else member.spec.monoEntry)
+
+theorem RecState.prefixes_eq_of_specs_slots_eq {left right : RecState}
+    (hspec : left.specs = right.specs) (hslots : left.slots = right.slots) :
+    left.prefixes = right.prefixes := by
+  apply List.ext_getElem?
+  intro i
+  have hs := congrArg (fun xs : List RecSpec => xs[i]?) hspec
+  have hn := congrArg (fun xs : List (List Ty) => xs[i]?) hslots
+  simp only [RecState.getElem?_specs, RecState.getElem?_slots,
+    RecState.getElem?_prefixes] at hs hn ⊢
+  cases hl : left.memberStates[i]? <;> cases hr : right.memberStates[i]? <;>
+    simp_all [RecMemberState.prefix]
+
+theorem RecState.stageEntries_eq_of_specs_exports_eq {left right : RecState}
+    (hspec : left.specs = right.specs) (hexports : left.exports = right.exports)
+    (earlier : List Nat) : left.stageEntries earlier = right.stageEntries earlier := by
+  apply List.ext_getElem?
+  intro i
+  have hs := congrArg (fun xs : List RecSpec => xs[i]?) hspec
+  have he := congrArg (fun xs : List (Option PolyTy) => xs[i]?) hexports
+  simp only [RecState.getElem?_specs, RecState.getElem?_exports,
+    RecState.stageEntries, List.getElem?_mapIdx] at hs he ⊢
+  cases hl : left.memberStates[i]? <;> cases hr : right.memberStates[i]? <;>
+    simp_all
 
 def RecState.stageCtx (state : RecState) (ctx : Ctx) (earlier : List Nat) : Ctx :=
   { ctx with env := state.stageEntries earlier ++ ctx.env }
@@ -7265,18 +7322,18 @@ def RecState.stageCtx (state : RecState) (ctx : Ctx) (earlier : List Nat) : Ctx 
     (state.onSubst S).stageEntries earlier = S.onEnv (state.stageEntries earlier) := by
   apply List.ext_getElem?
   intro i
-  simp only [RecState.stageEntries, RecState.specs_onSubst, RecState.exports_onSubst, Subst.onEnv,
-    List.getElem?_mapIdx, List.getElem?_map, Option.map_map]
-  cases hs : state.specs[i]? with
+  simp only [RecState.stageEntries, RecState.onSubst, Subst.onEnv,
+    List.getElem?_mapIdx, List.getElem?_map]
+  cases hm : state.memberStates[i]? with
   | none => rfl
-  | some spec =>
+  | some member =>
     simp only [Option.map_some]
     by_cases hi : i ∈ earlier
     · simp only [hi, if_pos]
-      cases he : state.exports[i]? with
-      | none => cases spec <;> rfl
-      | some exported => cases exported <;> cases spec <;> rfl
+      rcases member with ⟨spec, slots, exported, output, facts⟩
+      cases exported <;> cases spec <;> rfl
     · simp only [hi]
+      rcases member with ⟨spec, slots, exported, output, facts⟩
       cases spec <;> rfl
 
  theorem RecState.stageCtx_onSubst (state : RecState) (S : Subst) (ctx : Ctx) (earlier : List Nat) :
