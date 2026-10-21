@@ -6110,7 +6110,12 @@ theorem Infer.sourcePrincipal_letRec_of_unsigned
     (∀ x ∈ Xs, ∀ k ∈ K, x ∉ (V.onTy (.fvar k)).freeVars) ∧
     (∀ x ∈ Xs, x ∉ softVars (substSoft V (substSoft s1 F))))
  :
-    Infer.SourcePrincipal (.letRec hscope hann hstrata hsigned hcompleted hbody) := by
+    Infer.SourcePrincipal
+      (InferCert.letRec (completed := completed)
+        (strataResult := ⟨first, s1, state1⟩)
+        (signedResult := ⟨second, s2, state2⟩)
+        (bodyResult := ⟨next, s3, bodyOut, bodyTy⟩)
+        hscope hann hstrata hsigned hcompleted hbody) := by
   let groups := RecGroup.inferenceSccs (bindings.map InputRecBinding.recMode)
   intro hctxWF hctx hK hF ambient target P hambient hP hfix hfreeze ht
   change InputTyping P (ambient.onCtx ctx)
@@ -7336,8 +7341,9 @@ theorem Infer.sourcePrincipal (h : Infer K F frontier ctx input next subst outpu
   | .match_ hscope hs hne hb =>
     exact Infer.sourcePrincipal_match hscope hs hne hb (Infer.sourcePrincipal hs)
       (fun body hbody {_ _ _ _ _ _ _ _} hi => Infer.sourcePrincipal hi)
-  | .letRec hscope hann hstrata hsigned hcompleted hbody =>
-    expose_names
+  | @InferCert.letRec K F bindings body frontier ctx completed
+      ⟨first, s1, state1⟩ ⟨second, s2, state2⟩ ⟨next, s3, bodyOut, bodyTy⟩
+      hscope hann hstrata hsigned hcompleted hbody =>
     have hvalid := RecGroup.inferenceSccs_valid
       (bindings := bindings.map InputRecBinding.recMode)
     apply Infer.sourcePrincipal_letRec_of_unsigned hscope hann hstrata hsigned hcompleted hbody

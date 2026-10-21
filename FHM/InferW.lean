@@ -116,6 +116,13 @@ structure InferBranchesResult where
   subst : Subst
   completedBranches : List (MatchPattern × Expr)
 
+/-- The semantic output shared by the inferred-SCC and signed-contract
+recursive phases. Their relations remain distinct despite sharing this shape. -/
+structure RecRunResult where
+  frontier : Nat
+  subst : Subst
+  state : RecState
+
 private theorem ann_rigid_mem {bindings : List InputRecBinding}
     {binding : InputRecBinding} (hb : binding ∈ bindings) {v : Nat}
     (hv : v ∈ binding.ann.rigidVars) : v ∈ rigidBindingVars bindings := by
@@ -255,6 +262,17 @@ def matchResult (scrutineeResult : InferResult)
       branchesResult.completedBranches
     ty := branchesResult.subst.onTy (.fvar scrutineeResult.frontier) }
 
+/-- Assemble a recursive-let result from the two recursive phases, the
+completed member evidence, and body inference. -/
+def letRecResult (completed : List CompletedRecMember)
+    (strataResult signedResult : RecRunResult) (bodyResult : InferResult) : InferResult :=
+  { frontier := bodyResult.frontier
+    subst := strataResult.subst ++ signedResult.subst ++ bodyResult.subst
+    completedExpr := .letRec (completed.map fun member =>
+      { ann := some (bodyResult.subst.onPolyTy member.scheme)
+        rhs := member.output.substTyFvars bodyResult.subst }) bodyResult.completedExpr
+    ty := bodyResult.ty }
+
 mutual
 /-- Canonical inference carries frozen K and the current images F of live
 provisional forall slots. Sequential calls transform both F and source syntax. -/
@@ -389,7 +407,10 @@ inductive InferCert : InferRequest → InferResult → Prop
       InferCert ⟨K, F, frontier, ctx, .match_ scrut branches⟩
         (matchResult scrutineeResult branchesResult)
 
-  | letRec {completed : List CompletedRecMember} :
+  | letRec {K : List Nat} {F : List Ty} {bindings : List InputRecBinding}
+      {body : InferInput} {frontier : Nat} {ctx : Ctx}
+      {completed : List CompletedRecMember} {strataResult signedResult : RecRunResult}
+      {bodyResult : InferResult} :
       (SourceScope K F (.letRec bindings body) ∧ CtxBelow frontier ctx ∧
         (∀ v ∈ K, v < frontier) ∧ (∀ v ∈ softVars F, v < frontier)) →
       (∀ scheme, .complete scheme ∈ bindings.map (·.ann) → scheme.WF) →
@@ -397,24 +418,22 @@ inductive InferCert : InferRequest → InferResult → Prop
        let groups := RecGroup.inferenceSccs modes
        let seededFrontier := frontier + bindings.length
        let initialState := RecState.init frontier bindings
-       InferRecStrata K F seededFrontier ctx bindings initialState groups first s1 state1) →
-      (let signedSoft := substSoft s1 F
-       let signedCtx := s1.onCtx ctx
-       let signedBindings := substInputBindings s1 bindings
-       InferRecSigned K signedSoft 0 first signedCtx signedBindings state1
-         second s2 state2) →
-      state2.Completed completed →
-      (let recSubst := s1 ++ s2
+       InferRecStrata K F seededFrontier ctx bindings initialState groups
+         strataResult.frontier strataResult.subst strataResult.state) →
+      (let signedSoft := substSoft strataResult.subst F
+       let signedCtx := strataResult.subst.onCtx ctx
+       let signedBindings := substInputBindings strataResult.subst bindings
+       InferRecSigned K signedSoft 0 strataResult.frontier signedCtx signedBindings
+         strataResult.state signedResult.frontier signedResult.subst signedResult.state) →
+      signedResult.state.Completed completed →
+      (let recSubst := strataResult.subst ++ signedResult.subst
        InferCert
-         ⟨K, substSoft recSubst F, second, state2.rhsCtx (recSubst.onCtx ctx),
+         ⟨K, substSoft recSubst F, signedResult.frontier,
+           signedResult.state.rhsCtx (recSubst.onCtx ctx),
            body.substTyFvars recSubst⟩
-         ⟨next, s3, bodyOut, bodyTy⟩) →
+         bodyResult) →
       InferCert ⟨K, F, frontier, ctx, .letRec bindings body⟩
-        ⟨next, s1 ++ s2 ++ s3,
-          .letRec (completed.map fun member =>
-            { ann := some (s3.onPolyTy member.scheme), rhs := member.output.substTyFvars s3 })
-            bodyOut,
-          bodyTy⟩
+        (letRecResult completed strataResult signedResult bodyResult)
 
 inductive InferBranches : List Nat → List Ty → Nat → Ctx → Ty → Ty →
     List (MatchPattern × InferInput) → Nat → Subst → List (MatchPattern × Expr) → Prop
@@ -1130,11 +1149,6 @@ structure RecComponentResult where
   subst : Subst
   artifacts : List (Option RecComponentArtifact)
 
-structure RecRunResult where
-  frontier : Nat
-  subst : Subst
-  state : RecState
-
 mutual
 /-- One metadata-producing inference path for all input syntax. Recursive partial signatures remain
 monomorphic until their component is solved and its ordered prefix is validated. -/
@@ -1464,13 +1478,19 @@ def inferWithTypesCore (K : List Nat) (frontier : Nat) (ctx : Ctx) (input : Infe
                               bodyResult.nodeTypes.below .letRecBody
                             binderSchemes := (inferredRecSchemes completed).onSubst bodyResult.subst ++
                               finalRecBinderSchemes final ++
-                              bodyResult.binderSchemes.below .letRecBody },
-                            .letRec ⟨hrawScope, ctxBelow_of_all hctx,
-                              (fun v hv => of_decide_eq_true (List.all_eq_true.mp hK v hv)),
-                              (fun v hv => of_decide_eq_true (List.all_eq_true.mp hF v hv))⟩
-                              (fun scheme hmem => PolyTy.wf_iff_bvarsBelow.mp
-                                (List.all_eq_true.mp hwf (.complete scheme) hmem))
-                              hs hp hcompleted hb⟩
+                              bodyResult.binderSchemes.below .letRecBody }, by
+                            simpa only [letRecResult] using
+                              (InferCert.letRec
+                                (completed := completed)
+                                (strataResult := strata)
+                                (signedResult := signed)
+                                (bodyResult := bodyResult.toInferResult)
+                                ⟨hrawScope, ctxBelow_of_all hctx,
+                                  (fun v hv => of_decide_eq_true (List.all_eq_true.mp hK v hv)),
+                                  (fun v hv => of_decide_eq_true (List.all_eq_true.mp hF v hv))⟩
+                                (fun scheme hmem => PolyTy.wf_iff_bvarsBelow.mp
+                                  (List.all_eq_true.mp hwf (.complete scheme) hmem))
+                                hs hp hcompleted hb)⟩
                       | none => none
               else none
         else none
@@ -2451,9 +2471,11 @@ private theorem InferCert.belowFvars_raw (h : Infer K F frontier ctx input next 
     rcases List.mem_append.mp hp with hp | hp
     · exact (hS1 p hp).mono ((Nat.le_succ _).trans hb.frontier_le)
     · exact hS2 p hp
-  | .letRec hscope _ hstrata hsigned _ hbody =>
+  | @InferCert.letRec K F bindings body frontier ctx completed
+      ⟨first, s1, state1⟩ ⟨second, s2, state2⟩ ⟨next, s3, bodyOut, bodyTy⟩
+      hscope _ hstrata hsigned _ hbody =>
     intro hctx hK hF
-    expose_names
+    dsimp only at hstrata hsigned hbody
     have hbindings : ∀ binding ∈ bindings,
         ∀ v ∈ binding.ann.rigidVars, v < frontier := by
       intro binding hb v hv
@@ -3564,9 +3586,11 @@ mutual
       (by simpa only [InferInput.erase_substTyFvars] using hbrefs) (InferInput.avoid_subst hA.1 hwe.2)
     have hAll := Subst.sourceAvoid_append_local hA ⟨hbS, hbD⟩
     exact ⟨hAll.1, hbTy, hAll.2⟩
-  | .letRec _ _ hs hp _ hb =>
+  | @InferCert.letRec K F bindings body frontier ctx completed
+      ⟨first, s1, state1⟩ ⟨second, s2, state2⟩ ⟨next, s3, bodyOut, bodyTy⟩
+      _ _ hs hp _ hb =>
     intro w hw hrefs hwe
-    expose_names
+    dsimp only at hs hp hb
     simp only [InferInput.erase, Expr.ForallOuter, Expr.rec_strong,
       eraseBindings_length_local, Nat.zero_add] at hrefs
     simp only [InferInput.rigidVars, List.mem_append, not_or] at hwe
@@ -7795,9 +7819,10 @@ private theorem InferCert.sourceSound_raw (h : Infer K F frontier ctx input next
     refine TypeOfHM.letIn (L := avoid) (Subst.onPolyTy_wf hs2 hscheme)
       (fun _ heq => Option.some.inj heq) ?_ rfl bodyTyped
     simpa only [letOutput, ← Subst.onCtx_append] using rhsFinal
-  | .letRec hscope hann hstrata hsigned hcompleted hbody =>
+  | @InferCert.letRec K F bindings body frontier ctx completed
+      ⟨first, s1, state1⟩ ⟨second, s2, state2⟩ ⟨next, s3, bodyOut, bodyTy⟩
+      hscope hann hstrata hsigned hcompleted hbody =>
     intro hctxWF
-    expose_names
     let groups := RecGroup.inferenceSccs (bindings.map InputRecBinding.recMode)
     obtain ⟨hraw, hctx, hK, hFvars⟩ := hscope
     have hF : ∀ t ∈ F, Ty.BelowFvars frontier t := by
@@ -8175,8 +8200,9 @@ private theorem InferCert.erase_raw (h : Infer K F frontier ctx input next subst
         Expr.erase_closeTyVars, InferInput.erase, hr.erase_raw, hb.erase_raw, InferInput.erase_openTyVars, InferInput.erase_substTyFvars]
   | .match_ _ hs _ hb =>
       simp only [Expr.erase, Expr.erase_substTyFvars, InferInput.erase, hs.erase_raw, hb.erase, eraseBranches_substInputBranches]
-  | .letRec _ _ hs hp hcompleted hb =>
-      expose_names
+  | @InferCert.letRec K F bindings body frontier ctx completed
+      ⟨first, s1, state1⟩ ⟨second, s2, state2⟩ ⟨next, s3, bodyOut, bodyTy⟩
+      _ _ hs hp hcompleted hb =>
       have hstate1 := hs.erase_of_infer (fun _ hi => hi.erase_raw)
         (RecState.Erases.init (erased := bindings.map (fun binding => binding.rhs.erase))
           (by simp))
@@ -8504,9 +8530,10 @@ private theorem InferCert.inputSound_source_raw (h : Infer K F frontier ctx inpu
     intro fresh hfresh
     simpa only [← Subst.onCtx_append, List.append_assoc] using htypesFinal fresh hfresh
 
-  | .letRec hscope hann hstrata hsigned hcompleted hbody =>
+  | @InferCert.letRec K F bindings body frontier ctx completed
+      ⟨first, s1, state1⟩ ⟨second, s2, state2⟩ ⟨next, s3, bodyOut, bodyTy⟩
+      hscope hann hstrata hsigned hcompleted hbody =>
     intro hctxWF
-    expose_names
     let groups := RecGroup.inferenceSccs (bindings.map InputRecBinding.recMode)
     obtain ⟨hraw, hctx, hK, hFvars⟩ := hscope
     have hF : ∀ t ∈ F, Ty.BelowFvars frontier t := by
@@ -9055,9 +9082,10 @@ private theorem InferCert.completes_source_raw (h : Infer K F frontier ctx input
       simpa only [List.append_assoc, BindingAnn.paramCount_substTyFvars] using
         hcompleteFinal fresh ⟨hf.length, hf.nodup, fun v hv hm => hf.avoid v hv (List.mem_append_right _ hm)⟩
 
-  | .letRec hscope hann hstrata hsigned hcompleted hbody =>
+  | @InferCert.letRec K F bindings body frontier ctx completed
+      ⟨first, s1, state1⟩ ⟨second, s2, state2⟩ ⟨next, s3, bodyOut, bodyTy⟩
+      hscope hann hstrata hsigned hcompleted hbody =>
     intro hctxWF
-    expose_names
     let groups := RecGroup.inferenceSccs (bindings.map InputRecBinding.recMode)
     obtain ⟨hraw, hctx, hK, hFvars⟩ := hscope
     have hF : ∀ t ∈ F, Ty.BelowFvars frontier t := by
