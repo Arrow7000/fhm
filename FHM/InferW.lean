@@ -1576,6 +1576,16 @@ theorem InferRun.cert {request : InferRequest} {result : InferCoreResult}
   unfold InferRequest.run
   cases inferRequestCore request <;> rfl
 
+/-- The bundled run and the underlying metadata-producing worker have the same
+acceptance behavior. This is the normalization boundary used by proofs that
+reason request-first while executing the concrete worker. -/
+theorem InferRequest.run_isSome_worker (request : InferRequest) :
+    request.run.isSome =
+      (inferWithTypesCore request.protectedVars request.frontier request.ctx
+        request.input request.soft).isSome := by
+  rw [InferRequest.run_isSome]
+  rfl
+
 theorem InferRequest.run_isSome_iff_exists (request : InferRequest) :
     request.run.isSome ↔ ∃ result, InferRun request result := by
   cases hrun : request.run with

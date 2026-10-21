@@ -7449,18 +7449,6 @@ theorem checkSignature_complete_source {K written : List Nat} {F : List Ty}
     | none => simp only [hu, Option.isSome_none] at hunifies; contradiction
     | some result => rcases result with ⟨subst, hun, hav⟩; rfl
 
-/-- Internal producer contract for scoped soft-source visits. The bounded
-protected candidate set is independent of K; public completeness uses P=K. -/
-def InferWithTypesCoreSourceComplete (input : InferInput) : Prop :=
-  ∀ (K : List Nat) (F : List Ty) (frontier : Nat) (ctx : Ctx)
-    (ambient : Subst) (target : Ty) (P : List Nat),
-    (InferRequest.mk K F frontier ctx input).Admissible →
-    (∀ pair ∈ ambient, pair.2.IsLC) →
-    (∀ k ∈ K, ambient.onTy (.fvar k) = .fvar k) →
-    (∀ p ∈ P, p < frontier) → (∀ p ∈ P, ambient.onTy (.fvar p) = .fvar p) →
-    InputTyping P (ambient.onCtx ctx) (input.substTyFvars ambient) target →
-    (inferWithTypesCore K frontier ctx input F).isSome
-
 namespace InferRequest
 
 /-- Source completeness for one bundled inference request. The declarative
@@ -7478,18 +7466,14 @@ def SourceComplete (request : InferRequest) : Prop :=
 
 end InferRequest
 
-/-- The expression-directed completeness induction supplies the fully bundled
-request-native contract; ambient typing witnesses remain theorem-specific. -/
-theorem InferWithTypesCoreSourceComplete.forRequest
-    {request : InferRequest} (hc : InferWithTypesCoreSourceComplete request.input) :
-    request.SourceComplete := by
-  intro ambient target P hreq hS hfix hP hfixP ht
-  rw [InferRequest.run_isSome]
-  exact hc request.protectedVars request.soft request.frontier request.ctx ambient target P
-    hreq hS hfix hP hfixP ht
+/-- Request-native completeness available uniformly below one source-size
+bound. Recursive producer callbacks traffic in actual requests, so changes to
+their scope, frontier, context, and source stay synchronized. -/
+private abbrev RequestSourceCompleteUpTo (bound : Nat) : Prop :=
+  ∀ request : InferRequest, request.input.size ≤ bound → request.SourceComplete
 
- theorem inferRecComponentWithTypesCore_complete
-    (hProducer : ∀ e : InferInput,e.size ≤ sizeBindings bindings → InferWithTypesCoreSourceComplete e)
+theorem inferRecComponentWithTypesCore_complete
+    (hProducer : RequestSourceCompleteUpTo (sizeBindings bindings))
     (hPrincipal : ∀ {κ F' Ψ c e Ψ' T output ty},e.size ≤ sizeBindings bindings →
       (hi : Infer κ F' Ψ c e Ψ' T output ty) → Infer.SourcePrincipal hi)
     (hlen : bindings.length = specs.length)
@@ -7532,9 +7516,12 @@ theorem InferWithTypesCoreSourceComplete.forRequest
           ctxBelow := hctx
           protectedBelow := hK
           softBelow := hF }
-      obtain ⟨⟨⟨⟨first,s1,output,ty⟩,types,schemes⟩,hi⟩,hresult⟩ := Option.isSome_iff_exists.mp
-        (hProducer binding.rhs (by simp only [sizeBindings];omega) K F frontier ctx ambient
-          (ambient.onTy expected) P hrhsReq hambient hfixK hP hfixP hTyping)
+      have hrhsSome := hProducer (InferRequest.mk K F frontier ctx binding.rhs)
+        (by simp only [sizeBindings];omega) ambient (ambient.onTy expected) P
+        hrhsReq hambient hfixK hP hfixP hTyping
+      rw [InferRequest.run_isSome_worker] at hrhsSome
+      obtain ⟨⟨⟨⟨first,s1,output,ty⟩,types,schemes⟩,hi⟩,hresult⟩ :=
+        Option.isSome_iff_exists.mp hrhsSome
       obtain ⟨R1,hR1,hty,hR1P,hag1⟩ := hPrincipal (by simp only [sizeBindings];omega) hi
         hctxWF hctx hK hF ambient (ambient.onTy expected) P hambient hP hfixP
         (fun v _ hk _ => hfixK v hk) hTyping
@@ -7667,17 +7654,21 @@ private theorem source_all (hs : SourceScope K F input) :
     input.rigidVars.all (fun v => decide (v ∈ K ++ softVars F)) = true :=
   List.all_eq_true.mpr (fun v hv => decide_eq_true (hs v hv))
 
-theorem inferWithTypesCore_sourceComplete_primLit (lit : PrimLitExpr) :
-    InferWithTypesCoreSourceComplete (.primLit lit) := by
-  intro K F frontier ctx ambient target P hreq _ _ _ _ _
+theorem inferRequest_sourceComplete_primLit (lit : PrimLitExpr)
+    {K : List Nat} {F : List Ty} {frontier : Nat} {ctx : Ctx} :
+    (InferRequest.mk K F frontier ctx (.primLit lit)).SourceComplete := by
+  intro ambient target P hreq _ _ _ _ _
+  rw [InferRequest.run_isSome_worker]
   cases lit <;>
     simp only [inferWithTypesCore, dif_pos (rigid_all hreq.protectedBelow),
       dif_pos (ctx_all hreq.ctxBelow), dif_pos (soft_all hreq.softBelow),
       dif_pos (source_all hreq.sourceScope), Option.isSome_some]
 
-theorem inferWithTypesCore_sourceComplete_primBinOp (op : PrimBinOp) :
-    InferWithTypesCoreSourceComplete (.primBinOp op) := by
-  intro K F frontier ctx ambient target P hreq _ _ _ _ ht
+theorem inferRequest_sourceComplete_primBinOp (op : PrimBinOp)
+    {K : List Nat} {F : List Ty} {frontier : Nat} {ctx : Ctx} :
+    (InferRequest.mk K F frontier ctx (.primBinOp op)).SourceComplete := by
+  intro ambient target P hreq _ _ _ _ ht
+  rw [InferRequest.run_isSome_worker]
   have hc := (ht.toCore (core := .primBinOp op) rfl).1
   cases hc with
   | primBinOpIntAdd | primBinOpIntSub =>
@@ -7702,9 +7693,11 @@ theorem inferWithTypesCore_sourceComplete_primBinOp (op : PrimBinOp) :
         simp only [Ctor.isBoolCtor_iff.mpr hTrueBool, Ctor.isBoolCtor_iff.mpr hFalseBool,
           dite_true, Option.isSome_some]
 
-theorem inferWithTypesCore_sourceComplete_var (index : Nat) :
-    InferWithTypesCoreSourceComplete (.var index) := by
-  intro K F frontier ctx ambient target P hreq _ _ _ _ ht
+theorem inferRequest_sourceComplete_var (index : Nat)
+    {K : List Nat} {F : List Ty} {frontier : Nat} {ctx : Ctx} :
+    (InferRequest.mk K F frontier ctx (.var index)).SourceComplete := by
+  intro ambient target P hreq _ _ _ _ ht
+  rw [InferRequest.run_isSome_worker]
   have hc := (ht.toCore (core := .var index) rfl).1
   cases hc with
   | var hCandidate _ _ =>
@@ -7718,9 +7711,11 @@ theorem inferWithTypesCore_sourceComplete_var (index : Nat) :
       · rename_i heq; simp only [hlook] at heq; cases heq
       · rfl
 
-theorem inferWithTypesCore_sourceComplete_ctor (name : CtorName) :
-    InferWithTypesCoreSourceComplete (.ctor name) := by
-  intro K F frontier ctx ambient target P hreq _ _ _ _ ht
+theorem inferRequest_sourceComplete_ctor (name : CtorName)
+    {K : List Nat} {F : List Ty} {frontier : Nat} {ctx : Ctx} :
+    (InferRequest.mk K F frontier ctx (.ctor name)).SourceComplete := by
+  intro ambient target P hreq _ _ _ _ ht
+  rw [InferRequest.run_isSome_worker]
   have hc := (ht.toCore (core := .ctor name) rfl).1
   cases hc with
   | ctor hlook _ _ =>
@@ -7732,15 +7727,12 @@ theorem inferWithTypesCore_sourceComplete_ctor (name : CtorName) :
     · rename_i heq; simp only [hlook] at heq; cases heq
     · rfl
 
-theorem inferWithTypesCore_sourceComplete_lambda
-    (ih : ∀ e : InferInput, e.size ≤ body.size → InferWithTypesCoreSourceComplete e)
-    {K : List Nat} {F : List Ty} {frontier : Nat} {ctx : Ctx} {ambient : Subst} {target : Ty} {P : List Nat}
-    (hreq : (InferRequest.mk K F frontier ctx (.lambda ann body)).Admissible)
-    (hS : ∀ pair ∈ ambient, pair.2.IsLC)
-    (hfix : ∀ k ∈ K, ambient.onTy (.fvar k) = .fvar k)
-    (hP : ∀ p ∈ P, p < frontier) (hfixP : ∀ p ∈ P, ambient.onTy (.fvar p) = .fvar p)
-    (ht : InputTyping P (ambient.onCtx ctx) ((InferInput.lambda ann body).substTyFvars ambient) target) :
-    (inferWithTypesCore K frontier ctx (.lambda ann body) F).isSome := by
+theorem inferRequest_sourceComplete_lambda
+    (ih : RequestSourceCompleteUpTo body.size)
+    {K : List Nat} {F : List Ty} {frontier : Nat} {ctx : Ctx} :
+    (InferRequest.mk K F frontier ctx (.lambda ann body)).SourceComplete := by
+  intro ambient target P hreq hS hfix hP hfixP ht
+  rw [InferRequest.run_isSome_worker]
   have hscope : SourceScope K F (.lambda ann body) := hreq.sourceScope
   have hwf : CtxWF ctx := hreq.ctxWF
   have hbelow : CtxBelow frontier ctx := hreq.ctxBelow
@@ -7792,8 +7784,10 @@ theorem inferWithTypesCore_sourceComplete_lambda
       ctxBelow := hbodybelow
       protectedBelow := fun k hk => Nat.lt_of_lt_of_le (hK k hk) hle
       softBelow := fun t ht => (hF t ht).mono hle }
-  have hbody := ih body (Nat.le_refl _) K F initial _ U resultD P hbodyReq
+  have hbody := ih (InferRequest.mk K F initial
+      { ctx with env := PolyTy.mkTrivial param :: ctx.env } body) (Nat.le_refl _) U resultD P hbodyReq
     hU hUfix (fun p hp => Nat.lt_of_lt_of_le (hP p hp) hle) hUP (by rwa [hctxeq, hsourceeq])
+  rw [InferRequest.run_isSome_worker] at hbody
   obtain ⟨⟨⟨⟨next, subst, completed, bodyTy⟩, bodyTypes, bodySchemes⟩, hb⟩, hbodyResult⟩ :=
     Option.isSome_iff_exists.mp hbody
   rw [inferWithTypesCore, dif_pos (rigid_all hK), dif_pos (ctx_all hbelow),
@@ -7801,20 +7795,17 @@ theorem inferWithTypesCore_sourceComplete_lambda
   simp only [hseedResult, hbodyResult, Option.isSome_some]
 
 
-theorem inferWithTypesCore_sourceComplete_app
-    (ihf : ∀ e : InferInput, e.size ≤ f.size → InferWithTypesCoreSourceComplete e)
-    (iha : ∀ e : InferInput, e.size ≤ arg.size → InferWithTypesCoreSourceComplete e)
+theorem inferRequest_sourceComplete_app
+    (ihf : RequestSourceCompleteUpTo f.size)
+    (iha : RequestSourceCompleteUpTo arg.size)
     (pf : ∀ e : InferInput, e.size ≤ f.size →
       ∀ {κ F' Φ c n s o t} (h : Infer κ F' Φ c e n s o t), Infer.SourcePrincipal h)
     (pa : ∀ e : InferInput, e.size ≤ arg.size →
       ∀ {κ F' Φ c n s o t} (h : Infer κ F' Φ c e n s o t), Infer.SourcePrincipal h)
-    {K : List Nat} {F : List Ty} {frontier : Nat} {ctx : Ctx} {ambient : Subst} {target : Ty} {P : List Nat}
-    (hreq : (InferRequest.mk K F frontier ctx (.app f arg)).Admissible)
-    (hS : ∀ pair ∈ ambient, pair.2.IsLC)
-    (hfix : ∀ k ∈ K, ambient.onTy (.fvar k) = .fvar k)
-    (hP : ∀ p ∈ P, p < frontier) (hfixP : ∀ p ∈ P, ambient.onTy (.fvar p) = .fvar p)
-    (ht : InputTyping P (ambient.onCtx ctx) ((InferInput.app f arg).substTyFvars ambient) target) :
-    (inferWithTypesCore K frontier ctx (.app f arg) F).isSome := by
+    {K : List Nat} {F : List Ty} {frontier : Nat} {ctx : Ctx} :
+    (InferRequest.mk K F frontier ctx (.app f arg)).SourceComplete := by
+  intro ambient target P hreq hS hfix hP hfixP ht
+  rw [InferRequest.run_isSome_worker]
   have hscope : SourceScope K F (.app f arg) := hreq.sourceScope
   have hwf : CtxWF ctx := hreq.ctxWF
   have hbelow : CtxBelow frontier ctx := hreq.ctxBelow
@@ -7829,9 +7820,11 @@ theorem inferWithTypesCore_sourceComplete_app
       ctxBelow := hbelow
       protectedBelow := hK
       softBelow := hF }
-  obtain ⟨⟨⟨⟨first, s1, fOut, fTy⟩, fTypes, fSchemes⟩, hf⟩, hfResult⟩ := Option.isSome_iff_exists.mp
-    (ihf f (Nat.le_refl _) K F frontier ctx ambient (.arrow paramD target) P hfReq
-      hS hfix hP hfixP hfD)
+  have hfSome := ihf (InferRequest.mk K F frontier ctx f) (Nat.le_refl _)
+    ambient (.arrow paramD target) P hfReq hS hfix hP hfixP hfD
+  rw [InferRequest.run_isSome_worker] at hfSome
+  obtain ⟨⟨⟨⟨first, s1, fOut, fTy⟩, fTypes, fSchemes⟩, hf⟩, hfResult⟩ :=
+    Option.isSome_iff_exists.mp hfSome
   obtain ⟨Rf, hRf, hfTy, hRfP, hagf⟩ := pf f (Nat.le_refl _) hf hwf hbelow hK hF ambient
     (.arrow paramD target) P hS hP hfixP (fun v _ hk _ => hfix v hk) hfD
   have hfle := hf.frontier_le
@@ -7868,9 +7861,12 @@ theorem inferWithTypesCore_sourceComplete_app
       ctxBelow := hctx1
       protectedBelow := hK1
       softBelow := hF1 }
-  obtain ⟨⟨⟨⟨second, s2, argOut, argTy⟩, argTypes, argSchemes⟩, ha⟩, haResult⟩ := Option.isSome_iff_exists.mp
-    (iha (arg.substTyFvars s1) hargSize K (substSoft s1 F) first (s1.onCtx ctx) Rf paramD P
-      haReq hRf hRfK hP1 hRfP hargD)
+  have haSome := iha
+    (InferRequest.mk K (substSoft s1 F) first (s1.onCtx ctx) (arg.substTyFvars s1))
+    hargSize Rf paramD P haReq hRf hRfK hP1 hRfP hargD
+  rw [InferRequest.run_isSome_worker] at haSome
+  obtain ⟨⟨⟨⟨second, s2, argOut, argTy⟩, argTypes, argSchemes⟩, ha⟩, haResult⟩ :=
+    Option.isSome_iff_exists.mp haSome
   obtain ⟨Ra, hRa, haTy, hRaP, haga⟩ := pa (arg.substTyFvars s1) hargSize ha
     (Subst.onCtx_wf hs1LC hwf) hctx1 hK1 hF1 Rf paramD P hRf hP1 hRfP
       (fun v _ hk _ => hRfK v hk) hargD
@@ -7904,19 +7900,16 @@ theorem inferWithTypesCore_sourceComplete_app
     dif_pos (soft_all hF), dif_pos (source_all hscope)]
   simp only [hfResult, haResult, huResult, Option.isSome_some]
 
-theorem inferWithTypesCore_sourceComplete_letIn
-    (ihr : ∀ e : InferInput, e.size ≤ rhs.size → InferWithTypesCoreSourceComplete e)
-    (ihb : ∀ e : InferInput, e.size ≤ body.size → InferWithTypesCoreSourceComplete e)
+theorem inferRequest_sourceComplete_letIn
+    (ihr : RequestSourceCompleteUpTo rhs.size)
+    (ihb : RequestSourceCompleteUpTo body.size)
     (prhs : ∀ e : InferInput, e.size ≤ rhs.size →
       ∀ {κ F' Φ c n s o t} (h : Infer κ F' Φ c e n s o t), Infer.SourcePrincipal h)
-    {K : List Nat} {F : List Ty} {frontier : Nat} {ctx : Ctx} {ambient : Subst} {target : Ty} {P : List Nat}
+    {K : List Nat} {F : List Ty} {frontier : Nat} {ctx : Ctx}
     (hmode : ann.isSignature = false)
-    (hreq : (InferRequest.mk K F frontier ctx (.letIn ann rhs body)).Admissible)
-    (hS : ∀ pair ∈ ambient, pair.2.IsLC)
-    (hfix : ∀ k ∈ K, ambient.onTy (.fvar k) = .fvar k)
-    (hP : ∀ p ∈ P, p < frontier) (hfixP : ∀ p ∈ P, ambient.onTy (.fvar p) = .fvar p)
-    (ht : InputTyping P (ambient.onCtx ctx) ((InferInput.letIn ann rhs body).substTyFvars ambient) target) :
-    (inferWithTypesCore K frontier ctx (.letIn ann rhs body) F).isSome := by
+    : (InferRequest.mk K F frontier ctx (.letIn ann rhs body)).SourceComplete := by
+  intro ambient target P hreq hS hfix hP hfixP ht
+  rw [InferRequest.run_isSome_worker]
   have hscope : SourceScope K F (.letIn ann rhs body) := hreq.sourceScope
   have hwf : CtxWF ctx := hreq.ctxWF
   have hbelow : CtxBelow frontier ctx := hreq.ctxBelow
@@ -7938,9 +7931,11 @@ theorem inferWithTypesCore_sourceComplete_letIn
       ctxBelow := hbelow
       protectedBelow := hK
       softBelow := hF }
-  obtain ⟨⟨⟨⟨first, s1, rhsOut, rhsTy⟩, rhsTypes, rhsSchemes⟩, hr⟩, hrResult⟩ := Option.isSome_iff_exists.mp
-    (ihr rhs (Nat.le_refl _) K F frontier ctx ambient (M.openVars Xs) P
-      hrhsReq hS hfix hP hfixP (hrD Xs hXs))
+  have hrhsSome := ihr (InferRequest.mk K F frontier ctx rhs) (Nat.le_refl _)
+    ambient (M.openVars Xs) P hrhsReq hS hfix hP hfixP (hrD Xs hXs)
+  rw [InferRequest.run_isSome_worker] at hrhsSome
+  obtain ⟨⟨⟨⟨first, s1, rhsOut, rhsTy⟩, rhsTypes, rhsSchemes⟩, hr⟩, hrResult⟩ :=
+    Option.isSome_iff_exists.mp hrhsSome
   have phr := prhs rhs (Nat.le_refl _) hr
   obtain ⟨R, hR, hrTy, hRP, hagR⟩ := phr hwf hbelow hK hF ambient
     (M.openVars Xs) P hS hP hfixP (fun _ _ hk _ => hfix _ hk) (hrD Xs hXs)
@@ -7995,27 +7990,27 @@ theorem inferWithTypesCore_sourceComplete_letIn
       ctxBelow := hbodyB
       protectedBelow := hKchecked
       softBelow := hFchecked }
+  have hbodySome := ihb
+    (InferRequest.mk K (substSoft (s1 ++ sCheck) F) checked _
+      (body.substTyFvars (s1 ++ sCheck))) (by
+        simpa only [InferInput.size_substTyFvars] using Nat.le_refl body.size)
+    V target P hbodyReq hV hVK hPchecked hVP hbodyD
+  rw [InferRequest.run_isSome_worker] at hbodySome
   obtain ⟨⟨⟨⟨next, s2, bodyOut, bodyTy⟩, bodyTypes, bodySchemes⟩, hb⟩, hbResult⟩ :=
-    Option.isSome_iff_exists.mp (ihb (body.substTyFvars (s1 ++ sCheck)) (by
-      simpa only [InferInput.size_substTyFvars] using Nat.le_refl body.size)
-      K (substSoft (s1 ++ sCheck) F) checked _ V target P hbodyReq
-      hV hVK hPchecked hVP hbodyD)
+    Option.isSome_iff_exists.mp hbodySome
   rw [inferWithTypesCore, dif_pos (rigid_all hK), dif_pos (ctx_all hbelow),
     dif_pos (soft_all hF), dif_pos (source_all hscope)]
   simp only [hmode, Bool.false_eq_true, ↓reduceIte, hrResult, hcResult, hbResult, Option.isSome_some]
 
-theorem inferWithTypesCore_sourceComplete_signature
+theorem inferRequest_sourceComplete_signature
     {ann : BindingAnn} {rhs body : InferInput}
-    (ihr : ∀ e : InferInput, e.size ≤ rhs.size → InferWithTypesCoreSourceComplete e)
-    (ihb : ∀ e : InferInput, e.size ≤ body.size → InferWithTypesCoreSourceComplete e)
-    {K : List Nat} {F : List Ty} {frontier : Nat} {ctx : Ctx} {ambient : Subst} {target : Ty} {P : List Nat}
+    (ihr : RequestSourceCompleteUpTo rhs.size)
+    (ihb : RequestSourceCompleteUpTo body.size)
+    {K : List Nat} {F : List Ty} {frontier : Nat} {ctx : Ctx}
     (hmode : ann.isSignature = true)
-    (hreq : (InferRequest.mk K F frontier ctx (.letIn ann rhs body)).Admissible)
-    (hS : ∀ pair ∈ ambient, pair.2.IsLC)
-    (hfix : ∀ k ∈ K, ambient.onTy (.fvar k) = .fvar k)
-    (hP : ∀ p ∈ P, p < frontier) (hfixP : ∀ p ∈ P, ambient.onTy (.fvar p) = .fvar p)
-    (ht : InputTyping P (ambient.onCtx ctx) ((InferInput.letIn ann rhs body).substTyFvars ambient) target) :
-    (inferWithTypesCore K frontier ctx (.letIn ann rhs body) F).isSome := by
+    : (InferRequest.mk K F frontier ctx (.letIn ann rhs body)).SourceComplete := by
+  intro ambient target P hreq hS hfix hP hfixP ht
+  rw [InferRequest.run_isSome_worker]
   have hscope : SourceScope K F (.letIn ann rhs body) := hreq.sourceScope
   have hwf : CtxWF ctx := hreq.ctxWF
   have hbelow : CtxBelow frontier ctx := hreq.ctxBelow
@@ -8084,10 +8079,13 @@ theorem inferWithTypesCore_sourceComplete_signature
       ctxBelow := hCtxOpen
       protectedBelow := hKOpen
       softBelow := hFOpen }
+  have hrhsSome := ihr
+    (InferRequest.mk (K ++ written) F (frontier + ann.paramCount) ctx
+      (rhs.openTyVars written)) (by simp) moved (M.openVars (written ++ extras))
+    (Q ++ written) hrhsReq hMoved hMovedK hQOpen hMovedFix hAligned'
+  rw [InferRequest.run_isSome_worker] at hrhsSome
   obtain ⟨⟨⟨⟨first, s1, rhsOut, rhsTy⟩, rhsTypes, rhsSchemes⟩, hr⟩, hrResult⟩ :=
-    Option.isSome_iff_exists.mp (ihr (rhs.openTyVars written) (by simp)
-      (K ++ written) F (frontier + ann.paramCount) ctx moved (M.openVars (written ++ extras))
-      (Q ++ written) hrhsReq hMoved hMovedK hQOpen hMovedFix hAligned')
+    Option.isSome_iff_exists.mp hrhsSome
   obtain ⟨R, hR, hRty, hRfix, hagR⟩ := hr.sourcePrincipal hwf hCtxOpen hKOpen hFOpen moved
     (M.openVars (written ++ extras)) (Q ++ written) hMoved hQOpen hMovedFix
     (fun v _ hk _ => hMovedK v hk) hAligned'
@@ -8106,7 +8104,9 @@ theorem inferWithTypesCore_sourceComplete_signature
   have hAnnSource : (ann.substTyFvars s1).substTyFvars R = ann.substTyFvars moved := by
     rw [← BindingAnn.substTyFvars_append]
     exact ann.substTyFvars_congr (fun v hv => (hagR v (by
-      have := hBound v (hscope v (List.mem_append_left _ (List.mem_append_left _ hv))); omega)).symm)
+      exact Nat.lt_of_lt_of_le
+        (hBound v (hscope v (List.mem_append_left _ (List.mem_append_left _ hv))))
+        (Nat.le_add_right _ _))).symm)
   have hAnnScope : ∀ v ∈ (ann.substTyFvars s1).rigidVars, v ∈ K ++ softVars (substSoft s1 F) := by
     intro v hv
     obtain ⟨old, ho, him⟩ := BindingAnn.rigidVars_substTyFvars hv
@@ -8174,11 +8174,14 @@ theorem inferWithTypesCore_sourceComplete_signature
       ctxBelow := hbodyB
       protectedBelow := fun k hk => Nat.lt_of_lt_of_le (hK k hk) hle
       softBelow := substSoft_below hprefixB hle hF }
+  have hbodySome := ihb
+    (InferRequest.mk K (substSoft (s1 ++ sCheck) F) checked _
+      (body.substTyFvars (s1 ++ sCheck))) (by simp) V _ Q hbodyReq
+    hV hVK (fun q hq => Nat.lt_of_lt_of_le (hQ q hq) hle)
+    (fun q hq => hVQ q (List.mem_append_left _ hq)) hbodyV
+  rw [InferRequest.run_isSome_worker] at hbodySome
   obtain ⟨⟨⟨⟨next, s2, bodyOut, bodyTy⟩, bodyTypes, bodySchemes⟩, hb⟩, hbResult⟩ :=
-    Option.isSome_iff_exists.mp (ihb (body.substTyFvars (s1 ++ sCheck)) (by simp) K
-      (substSoft (s1 ++ sCheck) F) checked _ V _ Q hbodyReq
-      hV hVK (fun q hq => Nat.lt_of_lt_of_le (hQ q hq) hle)
-      (fun q hq => hVQ q (List.mem_append_left _ hq)) hbodyV)
+    Option.isSome_iff_exists.mp hbodySome
   rw [inferWithTypesCore, dif_pos (rigid_all hK), dif_pos (ctx_all hbelow),
     dif_pos (soft_all hF), dif_pos (source_all hscope)]
   simp only [written] at hrResult hcResult hbResult hescape
@@ -8254,7 +8257,7 @@ theorem inferBranchesWithTypesCore_sourceComplete_nil : InferBranchesWithTypesCo
   simp only [inferBranchesWithTypesCore, rigidBranchVars, List.all_nil, dite_true, Option.isSome_some]
 
 theorem inferBranchesWithTypesCore_sourceComplete_wildcard
-    (ihbody : ∀ e : InferInput, e.size ≤ body.size → InferWithTypesCoreSourceComplete e)
+    (ihbody : RequestSourceCompleteUpTo body.size)
     (pbody : ∀ e : InferInput, e.size ≤ body.size →
       ∀ {κ F' Φ c n s o t} (h : Infer κ F' Φ c e n s o t), Infer.SourcePrincipal h)
     (ihrest : ∀ bs : List (MatchPattern × InferInput), sizeBranches bs ≤ sizeBranches rest →
@@ -8276,10 +8279,11 @@ theorem inferBranchesWithTypesCore_sourceComplete_wildcard
       softBelow := hF }
   cases hbodyD with
   | wildcard hbodyD =>
+    have hbodySome := ihbody (InferRequest.mk K F frontier ctx body) (Nat.le_refl _)
+      ambient (ambient.onTy resultTy) P hbodyReq hS hfix hP hfixP hbodyD
+    rw [InferRequest.run_isSome_worker] at hbodySome
     obtain ⟨⟨⟨⟨first, s1, bodyOut, bodyTy⟩, bodyTypes, bodySchemes⟩, hb⟩, hbResult⟩ :=
-      Option.isSome_iff_exists.mp
-        (ihbody body (Nat.le_refl _) K F frontier ctx ambient (ambient.onTy resultTy) P
-          hbodyReq hS hfix hP hfixP hbodyD)
+      Option.isSome_iff_exists.mp hbodySome
     obtain ⟨R, hR, hbodyTy, hRP, hag⟩ := pbody body (Nat.le_refl _) hb
       hwf hbelow hK hF ambient (ambient.onTy resultTy) P hS hP hfixP (fun _ _ hk _ => hfix _ hk) hbodyD
     have hle := hb.frontier_le
@@ -8337,7 +8341,7 @@ theorem inferBranchesWithTypesCore_sourceComplete_wildcard
     simp only [inferBranchesWithTypesCore, dif_pos (branch_source_all hscope),
       hbResult, huResult, hrResult, Option.isSome_some]
 theorem inferBranchesWithTypesCore_sourceComplete_named
-    (ihbody : ∀ e : InferInput, e.size ≤ body.size → InferWithTypesCoreSourceComplete e)
+    (ihbody : RequestSourceCompleteUpTo body.size)
     (pbody : ∀ e : InferInput, e.size ≤ body.size →
       ∀ {κ F' Φ c n s o t} (h : Infer κ F' Φ c e n s o t), Infer.SourcePrincipal h)
     (ihrest : ∀ bs : List (MatchPattern × InferInput), sizeBranches bs ≤ sizeBranches rest →
@@ -8429,9 +8433,13 @@ theorem inferBranchesWithTypesCore_sourceComplete_named
         ctxBelow := hbodyB
         protectedBelow := hK0
         softBelow := hF0 }
+    have hbodySome := ihbody
+      (InferRequest.mk K (substSoft s0 F) (frontier + ctor.paramCount) _
+        (body.substTyFvars s0)) hbodySize V
+      (ambient.onTy resultTy) P hbodyReq hV hVK hP0 hVP hbD
+    rw [InferRequest.run_isSome_worker] at hbodySome
     obtain ⟨⟨⟨⟨first, s1, bodyOut, bodyTy⟩, bodyTypes, bodySchemes⟩, hb⟩, hbResult⟩ :=
-      Option.isSome_iff_exists.mp (ihbody (body.substTyFvars s0) hbodySize K (substSoft s0 F) _ _ V
-        (ambient.onTy resultTy) P hbodyReq hV hVK hP0 hVP hbD)
+      Option.isSome_iff_exists.mp hbodySome
     obtain ⟨R, hR, hbodyTy, hRP, hag1⟩ := pbody (body.substTyFvars s0) hbodySize hb
       hbodyWF hbodyB hK0 hF0 V (ambient.onTy resultTy) P hV hP0 hVP (fun _ _ hk _ => hVK _ hk) hbD
     have hs1K := Subst.fixes_of_dom_avoids hb.dom_avoids
@@ -8514,7 +8522,8 @@ theorem inferBranchesWithTypesCore_sourceComplete_named
 
 set_option maxRecDepth 4096 in
 theorem inferBranchesWithTypesCore_sourceComplete_of_body (branches : List (MatchPattern × InferInput))
-    (bodyIH : ∀ e : InferInput, e.size < sizeBranches branches → InferWithTypesCoreSourceComplete e)
+    (bodyIH : ∀ request : InferRequest,
+      request.input.size < sizeBranches branches → request.SourceComplete)
     (principalIH : ∀ e : InferInput, e.size < sizeBranches branches →
       ∀ {κ F' Φ c n s o t} (h : Infer κ F' Φ c e n s o t), Infer.SourcePrincipal h) :
     InferBranchesWithTypesCoreSourceComplete branches := by
@@ -8522,8 +8531,8 @@ theorem inferBranchesWithTypesCore_sourceComplete_of_body (branches : List (Matc
   | nil => exact inferBranchesWithTypesCore_sourceComplete_nil
   | cons head rest =>
     rcases head with ⟨pat, body⟩
-    have ihbody : ∀ e : InferInput, e.size ≤ body.size → InferWithTypesCoreSourceComplete e :=
-      fun e he => bodyIH e (by simp only [sizeBranches]; omega)
+    have ihbody : RequestSourceCompleteUpTo body.size :=
+      fun request he => bodyIH request (by simp only [sizeBranches]; omega)
     have pbody : ∀ e : InferInput, e.size ≤ body.size →
         ∀ {κ F' Φ c n s o t} (h : Infer κ F' Φ c e n s o t), Infer.SourcePrincipal h :=
       fun e he {_ _ _ _ _ _ _ _} h => principalIH e (by simp only [sizeBranches]; omega) h
@@ -8531,7 +8540,7 @@ theorem inferBranchesWithTypesCore_sourceComplete_of_body (branches : List (Matc
         InferBranchesWithTypesCoreSourceComplete bs := by
       intro bs hbs
       exact inferBranchesWithTypesCore_sourceComplete_of_body bs
-        (fun e he => bodyIH e (by simp only [sizeBranches]; omega))
+        (fun request he => bodyIH request (by simp only [sizeBranches]; omega))
         (fun e he {_ _ _ _ _ _ _ _} h => principalIH e (by simp only [sizeBranches]; omega) h)
     cases pat with
     | wildcard => exact inferBranchesWithTypesCore_sourceComplete_wildcard ihbody pbody ihrest
@@ -8539,19 +8548,16 @@ theorem inferBranchesWithTypesCore_sourceComplete_of_body (branches : List (Matc
 termination_by sizeBranches branches
 decreasing_by all_goals (subst_vars; simp only [sizeBranches] at *; omega)
 
-theorem inferWithTypesCore_sourceComplete_match
-    (ihs : ∀ e : InferInput, e.size ≤ scrut.size → InferWithTypesCoreSourceComplete e)
+theorem inferRequest_sourceComplete_match
+    (ihs : RequestSourceCompleteUpTo scrut.size)
     (ps : ∀ e : InferInput, e.size ≤ scrut.size →
       ∀ {κ F' Φ c n s o t} (h : Infer κ F' Φ c e n s o t), Infer.SourcePrincipal h)
     (ihb : ∀ bs : List (MatchPattern × InferInput), sizeBranches bs ≤ sizeBranches branches →
       InferBranchesWithTypesCoreSourceComplete bs)
-    {K : List Nat} {F : List Ty} {frontier : Nat} {ctx : Ctx} {ambient : Subst} {target : Ty} {P : List Nat}
-    (hreq : (InferRequest.mk K F frontier ctx (.match_ scrut branches)).Admissible)
-    (hS : ∀ pair ∈ ambient, pair.2.IsLC)
-    (hfix : ∀ k ∈ K, ambient.onTy (.fvar k) = .fvar k)
-    (hP : ∀ p ∈ P, p < frontier) (hfixP : ∀ p ∈ P, ambient.onTy (.fvar p) = .fvar p)
-    (ht : InputTyping P (ambient.onCtx ctx) ((InferInput.match_ scrut branches).substTyFvars ambient) target) :
-    (inferWithTypesCore K frontier ctx (.match_ scrut branches) F).isSome := by
+    {K : List Nat} {F : List Ty} {frontier : Nat} {ctx : Ctx} :
+    (InferRequest.mk K F frontier ctx (.match_ scrut branches)).SourceComplete := by
+  intro ambient target P hreq hS hfix hP hfixP ht
+  rw [InferRequest.run_isSome_worker]
   have hscope : SourceScope K F (.match_ scrut branches) := hreq.sourceScope
   have hwf : CtxWF ctx := hreq.ctxWF
   have hbelow : CtxBelow frontier ctx := hreq.ctxBelow
@@ -8569,9 +8575,11 @@ theorem inferWithTypesCore_sourceComplete_match
       ctxBelow := hbelow
       protectedBelow := hK
       softBelow := hF }
+  have hscrutSome := ihs (InferRequest.mk K F frontier ctx scrut)
+    (Nat.le_refl _) ambient scrutD P hscrutReq hS hfix hP hfixP hsD
+  rw [InferRequest.run_isSome_worker] at hscrutSome
   obtain ⟨⟨⟨⟨first, s1, scrutOut, scrutTy⟩, scrutTypes, scrutSchemes⟩, hs⟩, hsResult⟩ :=
-    Option.isSome_iff_exists.mp (ihs scrut (Nat.le_refl _) K F frontier ctx ambient scrutD P
-      hscrutReq hS hfix hP hfixP hsD)
+    Option.isSome_iff_exists.mp hscrutSome
   obtain ⟨R1, hR1, hscrut, hR1P, hag1⟩ := ps scrut (Nat.le_refl _) hs
     hwf hbelow hK hF ambient scrutD P hS hP hfixP (fun _ _ hk _ => hfix _ hk) hsD
   have hle := hs.frontier_le
@@ -8761,7 +8769,7 @@ theorem finishRecComponent_complete_of_factor {state : RecState} {R : Subst}
 theorem inferRecSignedWithTypesCore_complete_one
     {K P : List Nat} {F : List Ty} {frontier index : Nat} {outer : Ctx}
     {state : RecState} {ambient : Subst} {scheme : PolyTy} {rhs : InferInput}
-    (hProducer : ∀ e : InferInput,e.size ≤ rhs.size → InferWithTypesCoreSourceComplete e)
+    (hProducer : RequestSourceCompleteUpTo rhs.size)
     (hPrincipal : ∀ {κ F' Ψ c e Ψ' T output ty},e.size ≤ rhs.size →
       (hi : Infer κ F' Ψ c e Ψ' T output ty) → Infer.SourcePrincipal hi)
     (hctxWF : CtxWF (state.rhsCtx outer)) (hbelow : CtxBelow frontier (state.rhsCtx outer))
@@ -8842,10 +8850,13 @@ theorem inferRecSignedWithTypesCore_complete_one
       ctxBelow := hCtxOpen
       protectedBelow := hKOpen
       softBelow := hFOpen }
+  have hrhsSome := hProducer
+    (InferRequest.mk (K ++ written) F (frontier + ann.paramCount) ctx
+      (rhs.openTyVars written)) (by simp) moved (M.openVars (written ++ extras))
+    (Q ++ written) hrhsReq hMoved hMovedK hQOpen hMovedFix hAligned'
+  rw [InferRequest.run_isSome_worker] at hrhsSome
   obtain ⟨⟨⟨⟨first, s1, rhsOut, rhsTy⟩, rhsTypes, rhsSchemes⟩, hr⟩, hrResult⟩ :=
-    Option.isSome_iff_exists.mp (hProducer (rhs.openTyVars written) (by simp)
-      (K ++ written) F (frontier + ann.paramCount) ctx moved (M.openVars (written ++ extras))
-      (Q ++ written) hrhsReq hMoved hMovedK hQOpen hMovedFix hAligned')
+    Option.isSome_iff_exists.mp hrhsSome
   obtain ⟨R, hR, hRty, hRfix, hagR⟩ := (hPrincipal (by simp) hr) hctxWF hCtxOpen hKOpen hFOpen moved
     (M.openVars (written ++ extras)) (Q ++ written) hMoved hQOpen hMovedFix
     (fun v _ hk _ => hMovedK v hk) hAligned'
@@ -8864,7 +8875,9 @@ theorem inferRecSignedWithTypesCore_complete_one
   have hAnnSource : (ann.substTyFvars s1).substTyFvars R = ann.substTyFvars moved := by
     rw [← BindingAnn.substTyFvars_append]
     exact ann.substTyFvars_congr (fun v hv => (hagR v (by
-      have := hBound v (hscope v (List.mem_append_left _ (List.mem_append_left _ hv))); omega)).symm)
+      exact Nat.lt_of_lt_of_le
+        (hBound v (hscope v (List.mem_append_left _ (List.mem_append_left _ hv))))
+        (Nat.le_add_right _ _))).symm)
   have hAnnScope : ∀ v ∈ (ann.substTyFvars s1).rigidVars, v ∈ K ++ softVars (substSoft s1 F) := by
     intro v hv
     obtain ⟨old, ho, him⟩ := BindingAnn.rigidVars_substTyFvars hv
@@ -8922,7 +8935,7 @@ theorem inferRecSignedWithTypesCore_complete_one
 
 
 theorem inferRecSignedWithTypesCore_complete
-    (hProducer : ∀ e : InferInput, e.size ≤ sizeBindings bindings → InferWithTypesCoreSourceComplete e)
+    (hProducer : RequestSourceCompleteUpTo (sizeBindings bindings))
     (hPrincipal : ∀ {κ F' Ψ c e Ψ' T output ty}, e.size ≤ sizeBindings bindings →
       (hi : Infer κ F' Ψ c e Ψ' T output ty) → Infer.SourcePrincipal hi)
     {P declPool Xs done : List Nat} {declCtx : Ctx} {declSpecs : List RecSpec}
@@ -9231,7 +9244,7 @@ private theorem inferRecStrataWithTypesCore_complete_of_step
     (hStep : ∀ {K : List Nat} {F : List Ty} {frontier : Nat}
       {ctx : Ctx} {bindings : List InputRecBinding}
       {state : RecState} {past rest : List (List Nat)} {component : List Nat} {R : Subst},
-      (∀ e : InferInput,e.size ≤ sizeBindings bindings → InferWithTypesCoreSourceComplete e) →
+      RequestSourceCompleteUpTo (sizeBindings bindings) →
       (∀ {κ F' Ψ c e Ψ' T output ty},e.size ≤ sizeBindings bindings →
         (hi : Infer κ F' Ψ c e Ψ' T output ty) → Infer.SourcePrincipal hi) →
       RecGroups.ValidResidualGroups (bindings.map InputRecBinding.recMode)
@@ -9258,7 +9271,7 @@ private theorem inferRecStrataWithTypesCore_complete_of_step
           Subst.AgreesBelow frontier R (one.val.subst ++ U) ∧
           RecResidual P declCtx declSpecs declPrefixes G Xs (one.val.subst.onCtx ctx)
             one.val.state (past.flatten ++ component) U)
-    (hProducer : ∀ e : InferInput,e.size ≤ sizeBindings bindings → InferWithTypesCoreSourceComplete e)
+    (hProducer : RequestSourceCompleteUpTo (sizeBindings bindings))
     (hInfer : ∀ {κ F' Ψ c e Ψ' T output ty},e.size ≤ sizeBindings bindings →
       (hi : Infer κ F' Ψ c e Ψ' T output ty) → Infer.SourcePrincipal hi)
     (hvalid : RecGroups.ValidResidualGroups (bindings.map InputRecBinding.recMode) (past ++ groups))
@@ -9695,7 +9708,7 @@ theorem inferRecStrataWithTypesCore_aligned_singleton
     {openings : List RecOpening} {U : Subst} {declSpecs : List RecSpec} {declPrefixes : List (List Nat)}
     (ho : OpenRecAnns members 0 frontier bindings opened openings)
     (hOpenRun : openRecAnns members 0 frontier bindings = some ⟨(opened,openings),ho⟩)
-    (hProducer : ∀ e : InferInput, e.size ≤ sizeBindings bindings → InferWithTypesCoreSourceComplete e)
+    (hProducer : RequestSourceCompleteUpTo (sizeBindings bindings))
     (hPrincipal : ∀ {κ F' Ψ c e Ψ' T output ty}, e.size ≤ sizeBindings bindings →
       (hi : Infer κ F' Ψ c e Ψ' T output ty) → Infer.SourcePrincipal hi)
     (hres : RecResidual P declCtx declSpecs declPrefixes G Xs ctx state done U)
@@ -10005,7 +10018,7 @@ theorem inferRecStrataWithTypesCore_fresh_local_singleton
       (ho : OpenRecAnns component 0 frontier bindings opened openings) →
       openRecAnns component 0 frontier bindings = some ⟨(opened,openings),ho⟩ →
       (∀ g ∈ G, opened ≤ g) → (∀ x ∈ Xs, opened ≤ x) →
-      (∀ e : InferInput, e.size ≤ sizeBindings bindings → InferWithTypesCoreSourceComplete e) →
+      RequestSourceCompleteUpTo (sizeBindings bindings) →
       (∀ {κ F' Ψ c e Ψ' T output ty}, e.size ≤ sizeBindings bindings →
         (hi : Infer κ F' Ψ c e Ψ' T output ty) → Infer.SourcePrincipal hi) →
       RecGroups.ValidResidualGroups (bindings.map InputRecBinding.recMode)
@@ -10106,7 +10119,7 @@ theorem inferRecStrataWithTypesCore_dynamic_singleton
       ,
       (ho : OpenRecAnns component 0 frontier bindings opened openings) →
       openRecAnns component 0 frontier bindings = some ⟨(opened,openings),ho⟩ →
-      (∀ e : InferInput, e.size ≤ sizeBindings bindings → InferWithTypesCoreSourceComplete e) →
+      RequestSourceCompleteUpTo (sizeBindings bindings) →
       (∀ {κ F' Ψ c e Ψ' T output ty}, e.size ≤ sizeBindings bindings →
         (hi : Infer κ F' Ψ c e Ψ' T output ty) → Infer.SourcePrincipal hi) →
       RecGroups.ValidResidualGroups (bindings.map InputRecBinding.recMode)
@@ -10487,13 +10500,13 @@ theorem RecResidual.openRecAnns_complete
   · simpa only [hn0, Option.getD_some] using hfits
   · simpa only [hn0, Option.getD_some] using hcount
 
-private theorem inferWithTypesCore_sourceComplete_rec_of_unsigned
+private theorem inferRequest_sourceComplete_rec_of_unsigned
     {K : List Nat} {F : List Ty} {frontier : Nat} {ctx : Ctx}
     {bindings : List InputRecBinding} {body : InferInput}
-    (hProducer : ∀ e : InferInput,e.size ≤ sizeBindings bindings → InferWithTypesCoreSourceComplete e)
+    (hProducer : RequestSourceCompleteUpTo (sizeBindings bindings))
     (hInfer : ∀ {κ F' Ψ c e Ψ' T output ty},e.size ≤ sizeBindings bindings →
       (hi : Infer κ F' Ψ c e Ψ' T output ty) → Infer.SourcePrincipal hi)
-    (hBodyProducer : ∀ e : InferInput,e.size ≤ body.size → InferWithTypesCoreSourceComplete e)
+    (hBodyProducer : RequestSourceCompleteUpTo body.size)
     (hUnsigned : ∀ (P : List Nat) (declCtx : Ctx)
       (declBindings : List InputRecBinding) (declSpecs : List RecSpec)
       (declGroups declPrefixes : List (List Nat)) (G Xs : List Nat) (R : Subst),
@@ -10547,14 +10560,9 @@ private theorem inferWithTypesCore_sourceComplete_rec_of_unsigned
           substInputBindings R1 (substInputBindings strata.val.subst bindings) = declBindings ∧
           (∀ x ∈ Xs,∀ k ∈ K,x ∉ (R1.onTy (.fvar k)).freeVars) ∧
           (∀ x ∈ Xs,x ∉ softVars (substSoft R1 (substSoft strata.val.subst F))))
-    {ambient : Subst} {target : Ty} {P : List Nat}
-    (hreq : (InferRequest.mk K F frontier ctx (.letRec bindings body)).Admissible)
-    (hambient : ∀ pair ∈ ambient,pair.2.IsLC)
-    (hfixK : ∀ k ∈ K,ambient.onTy (.fvar k) = .fvar k)
-    (hP : ∀ p ∈ P,p < frontier) (hfix : ∀ p ∈ P,ambient.onTy (.fvar p) = .fvar p)
-    (ht : InputTyping P (ambient.onCtx ctx)
-      ((InferInput.letRec bindings body).substTyFvars ambient) target) :
-    (inferWithTypesCore K frontier ctx (.letRec bindings body) F).isSome := by
+    : (InferRequest.mk K F frontier ctx (.letRec bindings body)).SourceComplete := by
+  intro ambient target P hreq hambient hfixK hP hfix ht
+  rw [InferRequest.run_isSome_worker]
   have hscope : SourceScope K F (.letRec bindings body) := hreq.sourceScope
   have hctxWF : CtxWF ctx := hreq.ctxWF
   have hctx : CtxBelow frontier ctx := hreq.ctxBelow
@@ -10631,7 +10639,8 @@ private theorem inferWithTypesCore_sourceComplete_rec_of_unsigned
   have hFSeed : ∀ t ∈ F, Ty.BelowFvars (frontier + bindings.length) t :=
     fun t ht => (hF t ht).mono (by omega)
   have hKSeed : ∀ k ∈ K, k < frontier + bindings.length := fun k hk => by have := hK k hk; omega
-  have hPSeed : ∀ p ∈ P, p < frontier + bindings.length := fun p hp => by have := hP p hp; omega
+  have hPSeed : ∀ p ∈ P, p < frontier + bindings.length := fun p hp =>
+    Nat.lt_of_lt_of_le (hP p hp) (Nat.le_add_right _ _)
   let avoid := G ++ L ++ (ambient.onCtx ctx).env.freeVars ++ P ++ declSpecs.flatMap RecSpec.freeVars ++
     K.flatMap (fun k => (ambient.onTy (.fvar k)).freeVars) ++ softVars (substSoft ambient F) ++ List.range (frontier + bindings.length)
   obtain ⟨Xs, hXslen, hXsnd, hXsavoid⟩ := exists_fresh_names avoid G.length
@@ -10839,10 +10848,14 @@ private theorem inferWithTypesCore_sourceComplete_rec_of_unsigned
       ctxBelow := hctxbodyB
       protectedBelow := fun k hk => (hK k hk).trans_le hbase2
       softBelow := hFbody }
+  have hbodySome := hBodyProducer
+    (InferRequest.mk K (substSoft (s1 ++ s2) F) second
+      (state2.rhsCtx ((s1 ++ s2).onCtx ctx)) (body.substTyFvars (s1 ++ s2)))
+    (by simp) R2 target P hBodyReq hR2 hR2K
+    (fun p hp => (hP p hp).trans_le hbase2) hR2P hTypedBody
+  rw [InferRequest.run_isSome_worker] at hbodySome
   obtain ⟨⟨⟨⟨next,s3,bodyOut,bodyTy⟩,bodyTypes,bodySchemes⟩,hbody⟩,hBodyResult⟩ :=
-    Option.isSome_iff_exists.mp (hBodyProducer (body.substTyFvars (s1 ++ s2)) (by simp)
-      K (substSoft (s1 ++ s2) F) second (state2.rhsCtx ((s1 ++ s2).onCtx ctx)) R2 target P
-      hBodyReq hR2 hR2K (fun p hp => (hP p hp).trans_le hbase2) hR2P hTypedBody)
+    Option.isSome_iff_exists.mp hbodySome
   have hCompleted := InferRecSigned.completed_members_of_strata
     hstrata hsigned hvalid hinitFrame hframe1 hframe2
   obtain ⟨⟨completed,hcompleted⟩,hCollectCompleted⟩ :=
@@ -10862,92 +10875,67 @@ private theorem inferWithTypesCore_sourceComplete_rec_of_unsigned
     | complete sigma => exact PolyTy.wf_iff_bvarsBelow.mpr (hann sigma ha)
 
 
-/-- Internal assembly only: recursive execution is supplied by its actual phase
-producer, while all child visits recurse on source size. -/
-private theorem inferWithTypesCore_sourceComplete_of_rec
-    (hRec : ∀ (bindings : List InputRecBinding) (body : InferInput),
-      (∀ e : InferInput,e.size ≤ sizeBindings bindings → InferWithTypesCoreSourceComplete e) →
-      (∀ e : InferInput,e.size ≤ body.size → InferWithTypesCoreSourceComplete e) →
-      InferWithTypesCoreSourceComplete (.letRec bindings body))
-    (input : InferInput) : InferWithTypesCoreSourceComplete input := by
-  induction hs : input.size using Nat.strong_induction_on generalizing input with
+/-- Request-native assembly only: recursive execution is supplied by its actual
+phase producer, while every child visit carries its complete worker request. -/
+private theorem inferRequest_sourceComplete_of_rec
+    (hRec : ∀ {K : List Nat} {F : List Ty} {frontier : Nat} {ctx : Ctx}
+      (bindings : List InputRecBinding) (body : InferInput),
+      RequestSourceCompleteUpTo (sizeBindings bindings) →
+      RequestSourceCompleteUpTo body.size →
+      (InferRequest.mk K F frontier ctx (.letRec bindings body)).SourceComplete)
+    (request : InferRequest) : request.SourceComplete := by
+  induction hs : request.input.size using Nat.strong_induction_on generalizing request with
   | h size ih =>
-    intro K F frontier ctx ambient target P hreq hS hfix hP hfixP ht
-    have smaller : ∀ e : InferInput,e.size < input.size → InferWithTypesCoreSourceComplete e := by
-      intro e he
-      exact ih e.size (by omega) e rfl
+    have smaller : ∀ child : InferRequest,
+        child.input.size < request.input.size → child.SourceComplete := by
+      intro child he
+      exact ih child.input.size (by omega) child rfl
+    rcases request with ⟨K, F, frontier, ctx, input⟩
     cases input with
     | primLit lit =>
-      exact inferWithTypesCore_sourceComplete_primLit lit K F frontier ctx ambient target P
-        hreq hS hfix hP hfixP ht
+      exact inferRequest_sourceComplete_primLit lit
     | primBinOp op =>
-      exact inferWithTypesCore_sourceComplete_primBinOp op K F frontier ctx ambient target P
-        hreq hS hfix hP hfixP ht
+      exact inferRequest_sourceComplete_primBinOp op
     | var i =>
-      exact inferWithTypesCore_sourceComplete_var i K F frontier ctx ambient target P
-        hreq hS hfix hP hfixP ht
+      exact inferRequest_sourceComplete_var i
     | ctor name =>
-      exact inferWithTypesCore_sourceComplete_ctor name K F frontier ctx ambient target P
-        hreq hS hfix hP hfixP ht
+      exact inferRequest_sourceComplete_ctor name
     | lambda ann body =>
-      exact inferWithTypesCore_sourceComplete_lambda
-        (fun e he => smaller e (by simp only [InferInput.size];omega))
-        hreq hS hfix hP hfixP ht
+      exact inferRequest_sourceComplete_lambda
+        (fun child he => smaller child (by simp only [InferInput.size] at *; omega))
     | app f arg =>
-      exact inferWithTypesCore_sourceComplete_app
-        (fun e he => smaller e (by simp only [InferInput.size];omega))
-        (fun e he => smaller e (by simp only [InferInput.size];omega))
+      exact inferRequest_sourceComplete_app
+        (fun child he => smaller child (by simp only [InferInput.size] at *; omega))
+        (fun child he => smaller child (by simp only [InferInput.size] at *; omega))
         (fun _ _ => Infer.sourcePrincipal) (fun _ _ => Infer.sourcePrincipal)
-        hreq hS hfix hP hfixP ht
     | letIn ann rhs body =>
       cases hmode : ann.isSignature with
       | false =>
-        exact inferWithTypesCore_sourceComplete_letIn
-          (fun e he => smaller e (by simp only [InferInput.size];omega))
-          (fun e he => smaller e (by simp only [InferInput.size];omega))
+        exact inferRequest_sourceComplete_letIn
+          (fun child he => smaller child (by simp only [InferInput.size] at *; omega))
+          (fun child he => smaller child (by simp only [InferInput.size] at *; omega))
           (fun _ _ => Infer.sourcePrincipal)
-          hmode hreq hS hfix hP hfixP ht
+          hmode
       | true =>
-        exact inferWithTypesCore_sourceComplete_signature
-          (fun e he => smaller e (by simp only [InferInput.size];omega))
-          (fun e he => smaller e (by simp only [InferInput.size];omega))
-          hmode hreq hS hfix hP hfixP ht
+        exact inferRequest_sourceComplete_signature
+          (fun child he => smaller child (by simp only [InferInput.size] at *; omega))
+          (fun child he => smaller child (by simp only [InferInput.size] at *; omega))
+          hmode
     | match_ scrut branches =>
-      apply inferWithTypesCore_sourceComplete_match
-        (fun e he => smaller e (by simp only [InferInput.size];omega))
+      apply inferRequest_sourceComplete_match
+        (fun child he => smaller child (by simp only [InferInput.size] at *; omega))
         (fun _ _ => Infer.sourcePrincipal) ?_
-        hreq hS hfix hP hfixP ht
       intro bs hbs
       exact inferBranchesWithTypesCore_sourceComplete_of_body bs
-        (fun e he => smaller e (by simp only [InferInput.size];omega))
+        (fun child he => smaller child (by simp only [InferInput.size] at *; omega))
         (fun _ _ => Infer.sourcePrincipal)
     | letRec bindings body =>
       exact hRec bindings body
-        (fun e he => smaller e (by simp only [InferInput.size];omega))
-        (fun e he => smaller e (by simp only [InferInput.size];omega))
-        K F frontier ctx ambient target P hreq hS hfix hP hfixP ht
-
-/-- Public fixed-source completeness is the F=[] specialization of source
-completeness; the source is fixed because its authored variables lie in K. -/
-theorem InferWithTypesCoreSourceComplete.complete
-    {input : InferInput} (hc : InferWithTypesCoreSourceComplete input) : InferWithTypesCoreComplete input := by
-  intro K frontier ctx ambient target hwf hbelow hK hS hfix ht
-  have hraw : ∀ v ∈ input.rigidVars,v ∈ K := ht.rigidVars
-  have hsource : input.substTyFvars ambient = input :=
-    input.substTyFvars_eq_self_of_fixes (fun v hv => hfix v (hraw v hv))
-  have hreq : (InferRequest.mk K [] frontier ctx input).Admissible :=
-    { sourceScope := fun v hv => by
-        simpa only [softVars, TyList.freeVars, List.append_nil] using hraw v hv
-      ctxWF := hwf
-      ctxBelow := hbelow
-      protectedBelow := hK
-      softBelow := by simp }
-  apply hc K [] frontier ctx ambient target K
-    hreq hS hfix hK hfix
-  rwa [hsource]
+        (fun child he => smaller child (by simp only [InferInput.size] at *; omega))
+        (fun child he => smaller child (by simp only [InferInput.size] at *; omega))
 
 set_option maxHeartbeats 2000000 in
-private theorem inferWithTypesCore_sourceComplete_of_singleton
+private theorem inferRequest_sourceComplete_of_singleton
     (hSingleton : ∀ (P : List Nat) (declCtx : Ctx)
       (declBindings : List InputRecBinding) (declSpecs : List RecSpec)
       (declGroups declPrefixes : List (List Nat)) (G Xs : List Nat) (base : Nat),
@@ -10977,7 +10965,7 @@ private theorem inferWithTypesCore_sourceComplete_of_singleton
 ∀ {K : List Nat} {F : List Ty} {frontier : Nat}
       {ctx : Ctx} {bindings : List InputRecBinding}
       {state : RecState} {past rest : List (List Nat)} {component : List Nat} {R : Subst},
-      (∀ e : InferInput,e.size ≤ sizeBindings bindings → InferWithTypesCoreSourceComplete e) →
+      RequestSourceCompleteUpTo (sizeBindings bindings) →
       (∀ {κ F' Ψ c e Ψ' T output ty},e.size ≤ sizeBindings bindings →
         (hi : Infer κ F' Ψ c e Ψ' T output ty) → Infer.SourcePrincipal hi) →
       RecGroups.ValidResidualGroups (bindings.map InputRecBinding.recMode)
@@ -11004,12 +10992,11 @@ private theorem inferWithTypesCore_sourceComplete_of_singleton
           Subst.AgreesBelow frontier R (one.val.subst ++ U) ∧
           RecResidual P declCtx declSpecs declPrefixes G Xs (one.val.subst.onCtx ctx)
             one.val.state (past.flatten ++ component) U)
-    (input : InferInput) : InferWithTypesCoreSourceComplete input := by
-  apply inferWithTypesCore_sourceComplete_of_rec ?_ input
-  intro bindings body hProducer hBodyProducer K F frontier ctx ambient target P hreq hambient hfixK hP hfixP ht
-  apply inferWithTypesCore_sourceComplete_rec_of_unsigned hProducer
+    (request : InferRequest) : request.SourceComplete := by
+  apply inferRequest_sourceComplete_of_rec ?_ request
+  intro K F frontier ctx bindings body hProducer hBodyProducer
+  apply inferRequest_sourceComplete_rec_of_unsigned hProducer
     (fun _ hi => Infer.sourcePrincipal hi) hBodyProducer ?_
-    hreq hambient hfixK hP hfixP ht
   intro P declCtx declBindings declSpecs declGroups declPrefixes G Xs R
     hdeclValid hdeclWF hprefix hGfresh hdeclRows hdeclFits hdeclTypes
     hGhigh hXhigh hXlen hXnd hGX hXspec hXctxP
@@ -11030,12 +11017,12 @@ private theorem inferWithTypesCore_sourceComplete_of_singleton
     hXsK hXsF hannScope hrhsScope hbindingsEq
 
 
-/-- The sole artifact worker accepts every independently typed anonymous input.
-Recursive visits rechoose only private candidate names after each known opening
-allocation; no future frontier or candidate-type bound is required. -/
-theorem inferWithTypesCore_sourceComplete (input : InferInput) :
-    InferWithTypesCoreSourceComplete input := by
-  apply inferWithTypesCore_sourceComplete_of_singleton ?_ input
+/-- Canonical request-native completeness engine. Its declaration precedes the
+legacy positional API below: the induction and every recursive producer depend
+only on actual `InferRequest` values and `InferRequest.SourceComplete`. -/
+theorem inferRequest_sourceComplete (request : InferRequest) :
+    request.SourceComplete := by
+  apply inferRequest_sourceComplete_of_singleton ?_ request
   intro P declCtx declBindings declSpecs declGroups declPrefixes G Xs base
     hdeclValid hdeclWF hprefix hGfresh hdeclRows hFits hTyped hGhigh hXhigh
     hXlen hXnd hGX hXspec hXctxP
@@ -11053,10 +11040,58 @@ theorem inferWithTypesCore_sourceComplete (input : InferInput) :
       hXsK hXsF hannScope hrhsScope hbindingsEq
   exact ⟨one, hRun, V, hV, hVP, hag, hresFinal⟩
 
-/-- Every admissible bundled request succeeds whenever its ambient
-specialization supplies an independently typed source. -/
-theorem inferRequest_sourceComplete (request : InferRequest) : request.SourceComplete :=
-  (inferWithTypesCore_sourceComplete request.input).forRequest
+/-- Legacy positional source-completeness contract. This deliberately appears
+after the canonical request engine and is retained only as a compatibility
+view for existing callers. -/
+def InferWithTypesCoreSourceComplete (input : InferInput) : Prop :=
+  ∀ (K : List Nat) (F : List Ty) (frontier : Nat) (ctx : Ctx)
+    (ambient : Subst) (target : Ty) (P : List Nat),
+    SourceScope K F input → CtxWF ctx → CtxBelow frontier ctx →
+    (∀ k ∈ K, k < frontier) → (∀ t ∈ F, Ty.BelowFvars frontier t) →
+    (∀ pair ∈ ambient, pair.2.IsLC) →
+    (∀ k ∈ K, ambient.onTy (.fvar k) = .fvar k) →
+    (∀ p ∈ P, p < frontier) → (∀ p ∈ P, ambient.onTy (.fvar p) = .fvar p) →
+    InputTyping P (ambient.onCtx ctx) (input.substTyFvars ambient) target →
+    (inferWithTypesCore K frontier ctx input F).isSome
+
+/-- A legacy positional proof specializes to the corresponding bundled
+request. The canonical theorem above supplies this wrapper, not conversely. -/
+theorem InferWithTypesCoreSourceComplete.forRequest
+    {request : InferRequest} (hc : InferWithTypesCoreSourceComplete request.input) :
+    request.SourceComplete := by
+  intro ambient target P hreq hS hfix hP hfixP ht
+  rw [InferRequest.run_isSome_worker]
+  exact hc request.protectedVars request.soft request.frontier request.ctx ambient target P
+    hreq.sourceScope hreq.ctxWF hreq.ctxBelow hreq.protectedBelow hreq.softBelow
+    hS hfix hP hfixP ht
+
+/-- Legacy input-indexed completeness is a projection of the canonical
+request-native engine. -/
+theorem inferWithTypesCore_sourceComplete (input : InferInput) :
+    InferWithTypesCoreSourceComplete input := by
+  intro K F frontier ctx ambient target P hscope hwf hbelow hK hF hS hfix hP hfixP ht
+  have hreq : (InferRequest.mk K F frontier ctx input).Admissible :=
+    { sourceScope := hscope
+      ctxWF := hwf
+      ctxBelow := hbelow
+      protectedBelow := hK
+      softBelow := hF }
+  have hrun := inferRequest_sourceComplete (InferRequest.mk K F frontier ctx input)
+    ambient target P hreq hS hfix hP hfixP ht
+  simpa only [InferRequest.run_isSome_worker] using hrun
+
+/-- Public fixed-source completeness is the F=[] specialization of the legacy
+positional view, itself derived from the canonical request engine. -/
+theorem InferWithTypesCoreSourceComplete.complete
+    {input : InferInput} (hc : InferWithTypesCoreSourceComplete input) : InferWithTypesCoreComplete input := by
+  intro K frontier ctx ambient target hwf hbelow hK hS hfix ht
+  have hraw : ∀ v ∈ input.rigidVars,v ∈ K := ht.rigidVars
+  have hsource : input.substTyFvars ambient = input :=
+    input.substTyFvars_eq_self_of_fixes (fun v hv => hfix v (hraw v hv))
+  apply hc K [] frontier ctx ambient target K
+    (fun v hv => by simpa only [softVars,TyList.freeVars,List.append_nil] using hraw v hv)
+    hwf hbelow hK (by simp) hS hfix hK hfix
+  rwa [hsource]
 
 /-- Public complete-source compatibility is a specialization of the same run. -/
 theorem inferWithTypesCore_complete (input : InferInput) : InferWithTypesCoreComplete input :=
