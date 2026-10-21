@@ -90,7 +90,8 @@ def completedSchemes (typed : TypedLowered) (site : SurfaceBinderSite) : List (C
           pure (path ++ [.letRhs], sig)
       | .letRec path member => do
           let .letRec bindings _ ← typed.lowering.expr.atCorePath path | none
-          let some sig ← (bindings[member]?).bind (·.ann) | none
+          let binding ← bindings[member]?
+          let sig ← binding.ann
           pure (path ++ [.letRecRhs member], sig)
       | _ => none
   | _ => []
