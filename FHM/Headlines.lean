@@ -91,6 +91,8 @@ bundle as one premise. -/
 #check @InferCert.completes
 #check @InferCert.erase
 #check @InferCert.sound
+#check @InferCert.Principal
+#check @InferCert.principal
 
 example (K : List Nat) (frontier : Nat) (ctx : Ctx) (input : InferInput) : InferRequest :=
   InferRequest.core K frontier ctx input
@@ -104,12 +106,12 @@ example {request : InferRequest} {result : InferResult}
     TypeOfHM (result.subst.onCtx request.ctx) result.completedExpr result.ty :=
   InferCert.sourceSound h hctx
 
-/-- `Infer.Principal` now receives all worker well-formedness and freshness
+/-- `InferCert.Principal` receives all worker well-formedness and freshness
 invariants through `request.WF`; the remaining result is its residual
 factorization contract. -/
 example {request : InferRequest} {result : InferResult}
     (h : InferCert request result) (hreq : request.WF) :=
-  (Infer.principal h) hreq
+  (InferCert.principal h) hreq
 
 /-! ### Request-native completeness and acceptance
 
@@ -153,6 +155,12 @@ example {K : List Nat} {frontier : Nat} {ctx : Ctx} {input : InferInput}
 compatibility APIs. In particular, `InferWithTypesCoreSourceComplete` and
 `inferWithTypesCore_sourceComplete` are legacy positional views derived from the
 canonical request-native engine. -/
+example {request : InferRequest} {result : InferResult} :
+    InferCert request result ↔
+      Infer request.protectedVars request.soft request.frontier request.ctx request.input
+        result.frontier result.subst result.completedExpr result.ty :=
+  Iff.rfl
+
 #check @Infer.sourceSound
 #check @Infer.inputSound_source
 #check @Infer.inputSound

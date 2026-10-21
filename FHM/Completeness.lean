@@ -7368,6 +7368,16 @@ decreasing_by
 theorem Infer.principal (h : Infer K F frontier ctx input next subst output ty) :
     Infer.Principal h := (Infer.sourcePrincipal h).principal
 
+/-- Request-indexed view of the residual principality contract. -/
+abbrev InferCert.Principal {request : InferRequest} {result : InferResult}
+    (h : InferCert request result) : Prop :=
+  Infer.Principal h
+
+/-- Every inference certificate satisfies the request-indexed principality contract. -/
+theorem InferCert.principal {request : InferRequest} {result : InferResult}
+    (h : InferCert request result) : InferCert.Principal h :=
+  Infer.principal h
+
 end
 
 /-! ## Complete -/
