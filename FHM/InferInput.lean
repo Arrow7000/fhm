@@ -6115,6 +6115,13 @@ structure RecMemberState where
   output : Option Expr
   facts : RecFacts
 
+/-- The two externally visible products of a completed recursive member.
+Keeping them together prevents finalization from independently collecting two
+lists whose positional agreement is already structural in `RecMemberState`. -/
+structure CompletedRecMember where
+  scheme : PolyTy
+  output : Expr
+
 def RecMemberState.init (frontier : Nat) (ann : BindingAnn) : RecMemberState :=
   match ann.recModeAnn with
   | none =>
@@ -6164,6 +6171,15 @@ def RecState.exports (state : RecState) : List (Option PolyTy) :=
 
 def RecState.outputs (state : RecState) : List (Option Expr) :=
   state.memberStates.map RecMemberState.output
+
+structure CompletedRecMembers (members : List RecMemberState)
+    (completed : List CompletedRecMember) : Prop where
+  exports : members.map RecMemberState.exported =
+    (completed.map CompletedRecMember.scheme).map some
+  outputs : members.map RecMemberState.output =
+    (completed.map CompletedRecMember.output).map some
+
+abbrev RecState.Completed (state : RecState) := CompletedRecMembers state.memberStates
 
 @[simp] theorem RecState.getElem?_specs (state : RecState) (i : Nat) :
     state.specs[i]? = state.memberStates[i]?.map RecMemberState.spec := by
@@ -6560,15 +6576,26 @@ theorem RecState.getElem?_exports_exportComponent (state : RecState) (members : 
     (state.setSigned member names output facts).pool = state.pool := rfl
 
 
-/-- Extract a completed aligned vector, retaining its exact positional equation. -/
-def collectRecValues {α : Type} : (values : List (Option α)) →
-    Option { result : List α // values = result.map some }
-  | [] => some ⟨[], rfl⟩
-  | none :: _ => none
-  | some value :: rest =>
-      match collectRecValues rest with
-      | none => none
-      | some ⟨values, hv⟩ => some ⟨value :: values, congrArg (some value :: ·) hv⟩
+/-- Collect completed members once, pairing each exported scheme with its RHS. -/
+def collectCompletedRecMembers : (members : List RecMemberState) →
+    Option { result : List CompletedRecMember // CompletedRecMembers members result }
+  | [] => some ⟨[], ⟨rfl, rfl⟩⟩
+  | member :: rest =>
+      match he : member.exported, ho : member.output with
+      | some scheme, some output =>
+          match collectCompletedRecMembers rest with
+          | some ⟨completed, hcompleted⟩ =>
+              some ⟨{ scheme, output } :: completed, {
+                exports := by simp only [List.map_cons, he, hcompleted.exports]
+                outputs := by simp only [List.map_cons, ho, hcompleted.outputs]
+              }⟩
+          | none => none
+      | _, _ => none
+
+theorem CompletedRecMembers.length_eq {members : List RecMemberState}
+    {completed : List CompletedRecMember} (h : CompletedRecMembers members completed) :
+    members.length = completed.length := by
+  simpa only [List.length_map] using congrArg List.length h.exports
 
 private def recSlotName : Ty → Option Nat
   | .fvar name => some name
