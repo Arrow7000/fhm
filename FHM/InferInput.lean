@@ -458,7 +458,7 @@ theorem sizeBindings_openInputBindings (bindings : List InputRecBinding) (d : Na
 termination_by sizeOf bindings
 decreasing_by
   all_goals (subst_vars; simp_wf)
-  all_goals first | omega | (have h := List.sizeOf_lt_of_mem (show binding ∈ binding :: rest by simp); have hrhs := RecBinding.rhs_sizeOf_lt binding; omega)
+  all_goals first | omega | (have hrhs := RecBinding.rhs_sizeOf_lt binding; omega)
 end
 
 @[simp] theorem InferInput.size_openTyVars (input : InferInput) (Xs : List Nat) :
@@ -497,7 +497,7 @@ theorem eraseBindings_openInputBindings (bindings : List InputRecBinding) (d : N
 termination_by sizeOf bindings
 decreasing_by
   all_goals (subst_vars; simp_wf)
-  all_goals first | omega | (have h := List.sizeOf_lt_of_mem (show binding ∈ binding :: rest by simp); have hrhs := RecBinding.rhs_sizeOf_lt binding; omega)
+  all_goals first | omega | (have hrhs := RecBinding.rhs_sizeOf_lt binding; omega)
 end
 
 @[simp] theorem InferInput.erase_openTyVars (input : InferInput) (Xs : List Nat) :
@@ -638,7 +638,7 @@ theorem completeBindings_openTyVarsFrom (bindings : List InputRecBinding)
 termination_by sizeOf bindings
 decreasing_by
   all_goals (subst_vars; simp_wf)
-  all_goals first | omega | (have h := List.sizeOf_lt_of_mem (show binding ∈ binding :: rest by simp); have hrhs := RecBinding.rhs_sizeOf_lt binding; omega)
+  all_goals first | omega | (have hrhs := RecBinding.rhs_sizeOf_lt binding; omega)
 end
 
 theorem InferInput.toCore_openTyVars (input : InferInput) {core : Expr}
@@ -751,7 +751,7 @@ theorem sizeBindings_substInputBindings (bindings : List InputRecBinding) (subst
 termination_by sizeOf bindings
 decreasing_by
   all_goals (subst_vars; simp_wf)
-  all_goals first | omega | (have h := List.sizeOf_lt_of_mem (show binding ∈ binding :: rest by simp); have hrhs := RecBinding.rhs_sizeOf_lt binding; omega)
+  all_goals first | omega | (have hrhs := RecBinding.rhs_sizeOf_lt binding; omega)
 end
 
 mutual
@@ -787,7 +787,7 @@ theorem eraseBindings_substInputBindings (bindings : List InputRecBinding) (subs
 termination_by sizeOf bindings
 decreasing_by
   all_goals (subst_vars; simp_wf)
-  all_goals first | omega | (have h := List.sizeOf_lt_of_mem (show binding ∈ binding :: rest by simp); have hrhs := RecBinding.rhs_sizeOf_lt binding; omega)
+  all_goals first | omega | (have hrhs := RecBinding.rhs_sizeOf_lt binding; omega)
 end
 
 mutual
@@ -932,7 +932,7 @@ theorem completeBindings_substTyFvars (bindings : List InputRecBinding)
 termination_by sizeOf bindings
 decreasing_by
   all_goals (subst_vars; simp_wf)
-  all_goals first | omega | (have h := List.sizeOf_lt_of_mem (show binding ∈ binding :: rest by simp); have hrhs := RecBinding.rhs_sizeOf_lt binding; omega)
+  all_goals first | omega | (have hrhs := RecBinding.rhs_sizeOf_lt binding; omega)
 end
 
 mutual
@@ -1063,7 +1063,7 @@ theorem substInputBindings_zip_open (bindings : List InputRecBinding) {Ys Xs : L
 termination_by sizeOf bindings
 decreasing_by
   all_goals (subst_vars; simp_wf)
-  all_goals first | omega | (have h := List.sizeOf_lt_of_mem (show binding ∈ binding :: rest by simp); have hrhs := RecBinding.rhs_sizeOf_lt binding; omega)
+  all_goals first | omega | (have hrhs := RecBinding.rhs_sizeOf_lt binding; omega)
 end
 
 /-- Top-level fresh-block replacement, with the same assumptions as the Core
@@ -1176,7 +1176,7 @@ theorem substInputBindings_openInputBindings (bindings : List InputRecBinding)
 termination_by sizeOf bindings
 decreasing_by
   all_goals (subst_vars; simp_wf)
-  all_goals first | omega | (have h := List.sizeOf_lt_of_mem (show binding ∈ binding :: rest by simp); have hrhs := RecBinding.rhs_sizeOf_lt binding; omega)
+  all_goals first | omega | (have hrhs := RecBinding.rhs_sizeOf_lt binding; omega)
 end
 
 theorem InferInput.substTyFvars_openTyVars (input : InferInput) {subst : List (Nat × Ty)} {Xs : List Nat}
@@ -1290,7 +1290,7 @@ theorem substInputBindings_eq_self_of_fixes (bindings : List InputRecBinding) {s
 termination_by sizeOf bindings
 decreasing_by
   all_goals (subst_vars; simp_wf)
-  all_goals first | omega | (have h := List.sizeOf_lt_of_mem (show binding ∈ binding :: rest by simp); have hrhs := RecBinding.rhs_sizeOf_lt binding; omega)
+  all_goals first | omega | (have hrhs := RecBinding.rhs_sizeOf_lt binding; omega)
 end
 
 private theorem ty_substFvars_append (ty : Ty) (first second : List (Nat × Ty)) :
@@ -1366,7 +1366,7 @@ theorem substInputBindings_append (bindings : List InputRecBinding) (first secon
 termination_by sizeOf bindings
 decreasing_by
   all_goals (subst_vars; simp_wf)
-  all_goals first | omega | (have h := List.sizeOf_lt_of_mem (show binding ∈ binding :: rest by simp); have hrhs := RecBinding.rhs_sizeOf_lt binding; omega)
+  all_goals first | omega | (have hrhs := RecBinding.rhs_sizeOf_lt binding; omega)
 end
 
 private theorem input_ty_substFvars_congr {subst other : List (Nat × Ty)} {ty : Ty}
@@ -1473,7 +1473,7 @@ theorem substInputBindings_congr (bindings : List InputRecBinding) {subst other 
 termination_by sizeOf bindings
 decreasing_by
   all_goals (subst_vars; simp_wf)
-  all_goals first | omega | (have h := List.sizeOf_lt_of_mem (show binding ∈ binding :: rest by simp); have hrhs := RecBinding.rhs_sizeOf_lt binding; omega)
+  all_goals first | omega | (have hrhs := RecBinding.rhs_sizeOf_lt binding; omega)
 end
 
 
@@ -1603,7 +1603,7 @@ theorem openInputBindings_scope (bindings : List InputRecBinding) {K : List Nat}
 termination_by sizeOf bindings
 decreasing_by
   all_goals (subst_vars; simp_wf)
-  all_goals first | omega | (have h := List.sizeOf_lt_of_mem (show binding ∈ binding :: rest by simp); have hrhs := RecBinding.rhs_sizeOf_lt binding; omega)
+  all_goals first | omega | (have hrhs := RecBinding.rhs_sizeOf_lt binding; omega)
 end
 
 theorem InferInput.openTyVars_scope (input : InferInput) {K : List Nat}
@@ -2991,12 +2991,12 @@ theorem Expr.substTyFvars_eq_self_of_fixes {S : Subst} {e : Expr}
     intro binding hb
     apply RecBinding.ext
     · cases ha : binding.ann with
-      | none => simp [ha]
+      | none => simp
       | some scheme =>
           have hs : Ty.substFvars S scheme.body = scheme.body :=
             Subst.onTy_eq_self_of_fixes (fun v hv =>
               hgroup v (recGroup_ann_tyFreeVars_mem hb ha hv))
-          simp [ha, hs, PolyTy.substFvars_eq]
+          simp [hs, PolyTy.substFvars_eq]
     · exact ihbs binding hb (fun v hv =>
         hgroup v (recGroup_rhs_tyFreeVars_mem hb hv))
 
@@ -3241,7 +3241,7 @@ theorem substInputBindings_openInputBindings_of_fixes (bindings : List InputRecB
 termination_by sizeOf bindings
 decreasing_by
   all_goals (subst_vars; simp_wf)
-  all_goals first | omega | (have h := List.sizeOf_lt_of_mem (show binding ∈ binding :: rest by simp); have hrhs := RecBinding.rhs_sizeOf_lt binding; omega)
+  all_goals first | omega | (have hrhs := RecBinding.rhs_sizeOf_lt binding; omega)
 end
 
 theorem InferInput.substTyFvars_openTyVars_of_fixes (input : InferInput) {subst : Subst} {Xs : List Nat}
@@ -3853,7 +3853,7 @@ theorem rigidBindingVars_substTyFvars {bindings : List InputRecBinding} {subst :
 termination_by sizeOf bindings
 decreasing_by
   all_goals (subst_vars; simp_wf)
-  all_goals first | omega | (have h := List.sizeOf_lt_of_mem (show binding ∈ binding :: rest by simp); have hrhs := RecBinding.rhs_sizeOf_lt binding; omega)
+  all_goals first | omega | (have hrhs := RecBinding.rhs_sizeOf_lt binding; omega)
 end
 
 
@@ -4877,15 +4877,13 @@ theorem AnnotationCompletion.rigidVars (h : AnnotationCompletion K input output)
         | partialForall _ _ => cases hfit Xs hFresh
       · exact ihr Xs hFresh v hv
     · exact ihb v hv
-  · intro K body bodyOut ann rhs rhsOut M L hann hrhs hfit hchild hbody ihchild ihbody
-    intro v hv
+  · intro K body bodyOut ann rhs rhsOut M L hann hrhs hfit hchild hbody ihchild ihbody v hv
     rcases List.mem_append.mp hv with hv | hv
     · exact (List.mem_append.mp hv).elim (hann v) (hrhs v)
     · exact ihbody v hv
   · intro K scrut scrutOut branches branchesOut hscrut hbranches ihscrut ihbranches v hv
     exact (List.mem_append.mp hv).elim (ihscrut v) (ihbranches v)
-  · intro bindings K body bodyOut completed L hBindings hcompleted hbody ihcompleted ihbody
-    intro v hv
+  · intro bindings K body bodyOut completed L hBindings hcompleted hbody ihcompleted ihbody v hv
     rcases List.mem_append.mp hv with hv | hv
     · obtain ⟨binding, hb, hv⟩ := rigidBindingVars_mem_iff.mp hv
       exact hBindings binding hb v (List.mem_append.mpr hv)
@@ -5232,7 +5230,7 @@ theorem substInputBindings_openInputBindings_of_images (bindings : List InputRec
 termination_by sizeOf bindings
 decreasing_by
   all_goals simp_wf
-  all_goals first | omega | (have h := List.sizeOf_lt_of_mem (show binding ∈ binding :: rest by simp); have hrhs := RecBinding.rhs_sizeOf_lt binding; omega)
+  all_goals first | omega | (have hrhs := RecBinding.rhs_sizeOf_lt binding; omega)
 end
 
 theorem InferInput.substTyFvars_openTyVars_of_images (input : InferInput) {subst : Subst} {roots resolved : List Nat}
@@ -5623,8 +5621,8 @@ theorem OpenRecAnn.written_nodup (h : OpenRecAnn frontier ann next opening) : op
   | partialForall => exact freshVars_nodup
 
 theorem OpenRecAnn.written_length (h : OpenRecAnn frontier ann next opening) :
-    opening.written.length = (match ann with | .partialForall n _ => n | _ => 0) := by
-  cases h <;> simp [RecOpening.empty, freshVars_length]
+    opening.written.length = ann.recPrefixCount := by
+  cases h <;> simp [RecOpening.empty, freshVars_length, BindingAnn.recPrefixCount]
 
 theorem OpenRecAnn.written_range (h : OpenRecAnn frontier ann next opening) :
     ∀ v ∈ opening.written, frontier ≤ v ∧ v < next := by

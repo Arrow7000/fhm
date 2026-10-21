@@ -6,11 +6,6 @@ import FHM.InferW
 
 section
 
-private theorem OpenRecAnn.written_length_recPrefixCount
-    (h : OpenRecAnn frontier ann next opening) :
-    opening.written.length = ann.recPrefixCount := by
-  cases h <;> simp [RecOpening.empty, freshVars_length, BindingAnn.recPrefixCount]
-
 @[simp] theorem substInputBindings_length (S : Subst) (bindings : List InputRecBinding) :
     (substInputBindings S bindings).length = bindings.length := by
   rw [substInputBindings_eq_map, List.length_map]
@@ -177,7 +172,7 @@ theorem InferInput.inferenceSccs_substTyFvars
     | none => rfl
     | some binding =>
       rcases binding with ⟨ann, rhs⟩
-      simp only [hb, Option.map_some]
+      simp only [Option.map_some]
       cases ann <;> rfl
   · intro binding _
     rfl
@@ -338,14 +333,9 @@ private theorem validResidualGroups_erase_iff {bindings : List CoreRecBinding} :
     exact h.map_bindings eraseRecRhs
       (by
         intro i
-        simp only [RecGroups.UnsignedAt, List.getElem?_map, eraseRecRhs]
+        simp only [RecGroups.UnsignedAt, List.getElem?_map]
         cases bindings[i]? <;> rfl)
       (fun binding _ => recGroupRefs_erase binding.rhs _ _)
-
-private theorem completeBindings_length {inputs : List InputRecBinding} {cores : List CoreRecBinding}
-    (h : completeBindings inputs = some cores) : inputs.length = cores.length := by
-  have hh := congrArg List.length (completeBindings_erase inputs h)
-  simpa only [List.length_map, eraseBindings_length] using hh.symm
 
 private theorem completeBindings_lookup {inputs : List InputRecBinding} {cores : List CoreRecBinding}
     (h : completeBindings inputs = some cores) {i : Nat} {binding : InputRecBinding}
@@ -3524,7 +3514,7 @@ theorem RecResidual.selected_view
   have hbindings : bindings.map (fun binding => binding.rhs.erase) =
       declBindings.map (fun binding => binding.rhs.erase) := by
     rw [← hbindingsEq, substInputBindings_eq_map]
-    simp only [List.map_map, Function.comp_def, RecBinding.bimap,
+    simp only [List.map_map, Function.comp_def,
       InferInput.erase_substTyFvars]
   have hmask : ∀ i, RecGroup.isUnsignedAt (bindings.map InputRecBinding.recMode) i =
       RecGroup.isUnsignedAt (declBindings.map InputRecBinding.recMode) i := by
@@ -4281,7 +4271,7 @@ theorem OpenRecAnns.written_alignment
       have hz := hcounts 0 _ ns rfl rfl
       simp only [Nat.add_zero, if_pos hs] at hz
       apply List.Forall₂.cons
-      · exact ho.written_length_recPrefixCount.trans hz.symm
+      · exact ho.written_length.trans hz.symm
       · apply ih (by simpa only [List.length_cons, Nat.add_right_cancel_iff] using hlen)
         intro j binding ns ha hn
         simpa only [List.getElem?_cons_succ, Nat.add_assoc, Nat.add_comm 1 j] using
@@ -5293,7 +5283,6 @@ private theorem signed_ann_freeze {ann : BindingAnn} {K : List Nat} {F : List Ty
         rw [substInputBindings_eq_map, List.getElem?_map] at hb
         obtain ⟨oldBinding, hbo, heq⟩ := Option.map_eq_some_iff.mp hb
         rcases oldBinding with ⟨oldAnn, oldRhs⟩
-        simp only [RecBinding.bimap] at heq
         cases oldAnn with
         | absent | template _ | partialForall _ _ => cases heq
         | complete old =>
@@ -5360,7 +5349,7 @@ theorem RecResidual.init
         (Option.map ambient.onPolyTy) := by
     rw [hwf.anns_eq]
     simp only [substInputBindings_eq_map, List.map_map, Function.comp_def,
-      InputRecBinding.recMode, RecBinding.bimap, BindingAnn.recModeAnn_subst_source]
+      InputRecBinding.recMode, BindingAnn.recModeAnn_subst_source]
   have hlen : declSpecs.length = bindings.length := by
     have he := congrArg List.length hmodes
     simpa only [List.length_map] using he
@@ -5811,7 +5800,7 @@ private theorem InferRecStrata.sourcePrincipal_residual_of_step
           cases hb : bindings[i]? with
           | none => rfl
           | some binding =>
-            simp only [hb, Option.map_some, RecBinding.bimap]
+            simp only [Option.map_some]
             apply congrArg some
             apply RecBinding.ext
             · change BindingAnn.substTyFvars (pre ++ current ++ U) binding.ann =
@@ -9216,7 +9205,7 @@ private theorem inferRecStrataWithTypesCore_complete_of_step
             cases hb : bindings[i]? with
             | none => rfl
             | some binding =>
-              simp only [hb, Option.map_some, RecBinding.bimap]
+              simp only [Option.map_some]
               apply congrArg some
               apply RecBinding.ext
               · change BindingAnn.substTyFvars (pre ++ current ++ U) binding.ann =
@@ -9468,7 +9457,7 @@ theorem InferRecSigned.outputs_present
               rhs := rhs.substTyFvars (s1 ++ s2) } := by
           simp only [substInputBindings_eq_map, List.getElem?_map,
             show bindings_1[j]? = some { ann := .complete sigma, rhs := rhs } from hb,
-            Option.map_some, RecBinding.bimap, BindingAnn.substTyFvars, Subst.onPolyTy,
+            Option.map_some, BindingAnn.substTyFvars, Subst.onPolyTy,
             Subst.onTy]
         simpa only [Nat.add_assoc,Nat.add_comm 1 j] using
           hFill j ((s1 ++ s2).onPolyTy sigma) (rhs.substTyFvars (s1 ++ s2)) hnew

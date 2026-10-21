@@ -3494,7 +3494,7 @@ private theorem soft_avoids_subst {F : List Ty} {S : Subst} {v : Nat}
       cases spec <;> rfl
     rw [hm, h.modes]
     simp only [substInputBindings_eq_map, List.map_map, Function.comp_def,
-      InputRecBinding.recMode, BindingAnn.recModeAnn_subst_source]
+      BindingAnn.recModeAnn_subst_source]
   · rw [RecState.annInfo_onSubst, h.annInfo]
     simp only [substInputBindings_eq_map, List.map_map, Function.comp_def,
       BindingAnn.recMemberAnnInfo_substTyFvars]
@@ -4147,7 +4147,7 @@ theorem RecState.SourceTyped.letRec {state : RecState}
     rcases pair with ⟨binding, spec⟩
     obtain ⟨i, hget⟩ := List.mem_iff_getElem?.mp hp
     obtain ⟨hb, hs⟩ := List.getElem?_zip_eq_some.mp hget
-    simp only [rows, List.getElem?_map] at hb
+    simp only [List.getElem?_map] at hb
     simp only [specs, List.getElem?_map] at hs
     obtain ⟨left, hleft, hb⟩ := Option.map_eq_some_iff.mp hb
     obtain ⟨right, hright, hs⟩ := Option.map_eq_some_iff.mp hs
@@ -4860,7 +4860,7 @@ private theorem ResolveRecSlots.names_avoid_of_slots
       cases spec <;> rfl
     rw [RecState.specs_exportComponent, hm, h.modes]
     simp only [substInputBindings_eq_map, List.map_map, Function.comp_def,
-      InputRecBinding.recMode, BindingAnn.recModeAnn_subst_source]
+      BindingAnn.recModeAnn_subst_source]
   · rw [RecState.annInfo_exportComponent]
     change (state.onSubst S).memberStates.map RecMemberState.annInfo = _
     rw [RecState.annInfo_onSubst, h.annInfo]
@@ -5170,7 +5170,7 @@ theorem recValid_subst {bindings : List InputRecBinding}
       | some binding =>
         cases hann : binding.ann <;>
           simp [f, InputRecBinding.recMode, BindingAnn.recModeAnn,
-            BindingAnn.substTyFvars, RecAnn.substFvars_none,
+            RecAnn.substFvars_none,
             RecAnn.substFvars_some, hann])
     (fun _ _ => rfl)
   simpa only [substInputBindings_eq_map, List.map_map, Function.comp_def,
@@ -5624,7 +5624,7 @@ theorem RecState.Frame.prefixes_wf {state : RecState} {bindings : List InputRecB
     have hm := congrArg (fun xs : List (Option PolyTy) => xs[i]?) h.modes
     simp only [List.getElem?_map, hget, hb, Option.map_some, RecSpec.ann] at hm
     cases hann : binding.ann <;>
-      simp_all [hann, BindingAnn.recModeAnn, BindingAnn.recPrefixCount]
+      simp_all [BindingAnn.recModeAnn, BindingAnn.recPrefixCount]
 
 private theorem RecState.Frame.export_mono_prefixes {state : RecState} {i : Nat}
     (h : state.Frame base K F ctx bindings done)
@@ -5680,11 +5680,11 @@ private theorem RecState.Frame.stageCtx_rename {state : RecState} {earlier Xs : 
     | none =>
       have hs : state.specs[i]? = none := by
         simp [RecState.getElem?_specs, hm]
-      simp [hm, hs, recStageEntry]
+      simp [hs]
     | some member =>
       have hs : state.specs[i]? = some member.spec := by
         simp [RecState.getElem?_specs, hm]
-      simp only [hm, Option.map_some, Function.comp_apply]
+      simp only [Option.map_some, Function.comp_apply]
       cases hspec : member.spec with
       | poly scheme =>
         have hspoly : state.specs[i]? = some (.poly scheme) := by simpa [hspec] using hs
@@ -5695,16 +5695,16 @@ private theorem RecState.Frame.stageCtx_rename {state : RecState} {earlier Xs : 
           Subst.onPolyTy_eq_self_of_dom_avoids
             (fun p hp => h.pool_poly scheme ⟨i, hspoly⟩ p.1 (List.of_mem_zip hp).1)
         by_cases hi : i ∈ earlier <;>
-          simp [hi, hspec, hspoly, hex, recStageEntry, RecSpec.monoEntry, hfixed]
+          simp [hi, hspoly, hex, recStageEntry, RecSpec.monoEntry, hfixed]
       | mono ty =>
         have hsmono : state.specs[i]? = some (.mono ty) := by simpa [hspec] using hs
         by_cases hi : i ∈ earlier
         · have hex := h.export_mono_prefixes hsmono (hdone i hi)
           rw [RecState.getElem?_exports, hm] at hex
           simp only [Option.map_some, Option.some.injEq] at hex
-          simp [hi, hspec, hsmono, hex, recStageEntry, RecSpec.monoEntry,
+          simp [hi, hsmono, hex, recStageEntry, RecSpec.monoEntry,
             recScheme_pool_fixed]
-        · simp [hi, hspec, hsmono, recStageEntry, RecSpec.monoEntry]
+        · simp [hi, hsmono, recStageEntry, RecSpec.monoEntry]
           rfl
 
 private theorem recFits_of_images {ann : BindingAnn} {names fresh : List Nat} {ty : Ty} {R : Subst}
@@ -6283,7 +6283,7 @@ private theorem trace_stage_all {state : RecState}
   apply List.ext_getElem?
   intro i
   simp only [RecState.stageEntries, RecState.entries, List.getElem?_mapIdx,
-    List.getElem?_map, RecState.getElem?_specs]
+    List.getElem?_map]
   cases hm : state.memberStates[i]? with
   | none => rfl
   | some member =>
@@ -6294,7 +6294,7 @@ private theorem trace_stage_all {state : RecState}
         simp only [RecState.getElem?_specs, hm, Option.map_some, hs])
       rw [RecState.getElem?_exports, hm] at hp
       simp only [Option.map_some, Option.some.injEq] at hp
-      simp [hm, hp, RecSpec.monoEntry]
+      simp [hp, RecSpec.monoEntry]
     | mono ty =>
       have hmono : state.specs[i]? = some (.mono ty) := by
         simp only [RecState.getElem?_specs, hm, Option.map_some, hs]
@@ -6302,7 +6302,7 @@ private theorem trace_stage_all {state : RecState}
       · obtain ⟨ns, _, _, _, _, he⟩ := if_pos hd ▸ h.mono i ty hmono
         rw [RecState.getElem?_exports, hm] at he
         simp only [Option.map_some, Option.some.injEq] at he
-        simp [hm, hd, he, RecSpec.monoEntry]
+        simp [hd, he, RecSpec.monoEntry]
       · have he := if_neg hd ▸ h.mono i ty hmono
         rw [RecState.getElem?_exports, hm] at he
         simp only [Option.map_some, Option.some.injEq] at he
@@ -7303,12 +7303,6 @@ theorem InferBranches.nil_iff
 
 
 
-private theorem rec_rhs_rigid_mem {bindings : List InputRecBinding}
-    {binding : InputRecBinding} {v : Nat}
-    (hb : binding ∈ bindings) (hv : v ∈ binding.rhs.rigidVars) :
-    v ∈ rigidBindingVars bindings :=
-  rigidBindingVars_mem hb hv
-
 mutual
 /-- Successful elaboration produces ordinary annotated Core typing. The proof
 constructs the typing from the inference derivation; it does not recheck output
@@ -8298,7 +8292,7 @@ theorem Infer.inputSound_source (h : Infer K F frontier ctx input next subst out
             (s1 ++ s2 ++ s3) hfix123 v hv
     simp only [← substInputBindings_append, ← substSoft_append,
       ← Subst.onCtx_append, List.nil_append] at hframe3 htrace3 hcomplete3 hctxeq
-    simp only [← substInputBindings_append, List.nil_append] at hvalid3
+    simp only [← substInputBindings_append] at hvalid3
     change (state2.onSubst s3).Frame frontier K
       (substSoft s3 (substSoft (s1 ++ s2) F)) ((s1 ++ s2 ++ s3).onCtx ctx)
       (substInputBindings (s1 ++ s2 ++ s3) bindings) groups.flatten at hframe3
@@ -8751,7 +8745,7 @@ theorem Infer.completes_source (h : Infer K F frontier ctx input next subst outp
       (by simp) ((RecState.outputs_length state1).trans hframe1.memberStates_length)
       (fun j binding scheme hb ha => by
         simpa only [Nat.zero_add] using hframe1.complete_export hb ha) hfid1
-    simp only [← substSoft_append, substInputBindings_append] at hfid2
+    simp only [← substSoft_append] at hfid2
     obtain ⟨hS2, hLC2⟩ := hsigned.lc_of_infer (fun _ hi => hi.lc) (Subst.onCtx_wf hS1 hctxWF) hLC1
     have hbodyCtx := hLC2.rhsCtx (Subst.onCtx_wf hS2 (Subst.onCtx_wf hS1 hctxWF))
     rw [← Subst.onCtx_append] at hbodyCtx
@@ -8760,7 +8754,7 @@ theorem Infer.completes_source (h : Infer K F frontier ctx input next subst outp
     simp only [← substSoft_append, ← InferInput.substTyFvars_append] at hbodyComplete
     have hfidFinal := hfid2.onSubst_source hS3
       (fun k hk v hv => scope_image (Subst.fixes_of_dom_avoids hbody.dom_avoids) hk hv)
-    simp only [← substSoft_append, substInputBindings_append] at hfidFinal
+    simp only [← substSoft_append] at hfidFinal
     have hexports : state2.exports =
         (completed.map CompletedRecMember.scheme).map some := hcompleted.exports
     have houtputs : state2.outputs =
