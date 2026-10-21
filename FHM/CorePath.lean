@@ -52,18 +52,20 @@ def Expr.atCorePath : Expr → CorePath → Option Expr
       match _h : branches[index]? with
       | some (_, body) => body.atCorePath rest
       | none => none
-  | .letRec _ bindings _, .letRecRhs member :: rest =>
+  | .letRec bindings _, .letRecRhs member :: rest =>
       match _h : bindings[member]? with
-      | some rhs => rhs.atCorePath rest
+      | some binding => binding.rhs.atCorePath rest
       | none => none
-  | .letRec _ _ body, .letRecBody :: rest => body.atCorePath rest
+  | .letRec _ body, .letRecBody :: rest => body.atCorePath rest
   | _, _ => none
 termination_by e path => sizeOf e + sizeOf path
 decreasing_by
   all_goals simp_wf
   all_goals first
     | omega
-    | (have hsz := List.sizeOf_lt_of_mem (List.mem_of_getElem? _h); omega)
+    | (have hsz := List.sizeOf_lt_of_mem (List.mem_of_getElem? _h)
+       have hrhs := RecBinding.rhs_sizeOf_lt binding
+       omega)
     | (have hsz := List.sizeOf_lt_of_mem (List.mem_of_getElem? _h)
        simp only [Prod.mk.sizeOf_spec] at hsz
        omega)
@@ -104,18 +106,18 @@ theorem Expr.atCorePath_append (e : Expr) : ∀ basePath suffix,
           | some br =>
               simpa [atIndex] using
                 ihb br.1 br.2 (List.mem_of_getElem? atIndex) rest suffix
-  | letRec ann rhss body ihr ihb =>
+  | letRec bindings body ihbindings ihbody =>
       intro basePath suffix
       cases basePath with
       | nil => simp only [List.nil_append, Expr.atCorePath, Option.bind_some]
       | cons step rest =>
-          cases step <;> try simp [Expr.atCorePath, ihb]
+          cases step <;> try simp [Expr.atCorePath, ihbody]
           rename_i index
-          cases atIndex : rhss[index]? with
+          cases atIndex : bindings[index]? with
           | none => simp
-          | some rhs =>
+          | some binding =>
               simpa [atIndex] using
-                ihr rhs (List.mem_of_getElem? atIndex) rest suffix
+                ihbindings binding (List.mem_of_getElem? atIndex) rest suffix
 
 #print axioms Expr.atCorePath_append
 

@@ -128,14 +128,14 @@ def Expr.prettyAux (ctx : List String) (prec : Nat) : Expr → String
   | .match_ scrut branches =>
       prettyParenIf (prec ≥ 1) ("match " ++ Expr.prettyAux ctx 0 scrut ++ " with"
         ++ Expr.prettyBranches ctx branches)
-  | .letRec anns bindings body =>
+  | .letRec bindings body =>
       -- The `n = bindings.length` group binders are in scope (de Bruijn `0..n-1`)
       -- in every binding *and* the body, named by depth like the other cases.
       -- Annotated members print their declared (load-bearing) recursion scheme
       -- inline: `let rec (f : σ) = e and g = e' in body`.
       let names := (List.range bindings.length).map (fun j => prettyTermVarName (ctx.length + j))
       let ctx' := names ++ ctx
-      prettyParenIf (prec ≥ 1) ("let rec " ++ Expr.prettyRecGroup ctx' names anns bindings
+      prettyParenIf (prec ≥ 1) ("let rec " ++ Expr.prettyRecGroup ctx' names bindings
         ++ " in " ++ Expr.prettyAux ctx' 0 body)
 
 /-- If `e` is a proper `Nil`/`Cons` spine, return pretty-printed elements; else `none`. -/
@@ -158,15 +158,15 @@ def Expr.prettyBranches (ctx : List String) : List (MatchPattern × Expr) → St
     printed in the (already group-extended) context `ctx'`; annotated members
     show their declared scheme. -/
 def Expr.prettyRecGroup (ctx' : List String) (names : List String)
-    (anns : List (Option PolyTy)) : List Expr → String
+    : List CoreRecBinding → String
   | [] => ""
-  | e :: rest =>
-      (match anns.headD none with
+  | binding :: rest =>
+      (match binding.ann with
         | none => names.headD "?"
         | some σ => "(" ++ names.headD "?" ++ " : " ++ σ.pretty ++ ")")
-        ++ " = " ++ Expr.prettyAux ctx' 0 e
+        ++ " = " ++ Expr.prettyAux ctx' 0 binding.rhs
         ++ (match rest with | [] => "" | _ :: _ => " and ")
-        ++ Expr.prettyRecGroup ctx' names.tail anns.tail rest
+        ++ Expr.prettyRecGroup ctx' names.tail rest
 
 end
 
