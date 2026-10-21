@@ -968,6 +968,15 @@ namespace AuditCapstone
 private def corePrincipalType (ctors : CtorEnv) (expr : Expr) : Option Ty :=
   principalType ctors (InferInput.ofCore expr)
 
+/-- The public certificate projection computes the same type as the metadata-rich
+    worker. Keep the wrapper boundary out of the concrete reduction proofs below. -/
+private theorem inferCore_map_ty_eq_worker (K : List Nat) (frontier : Nat)
+    (ctx : Ctx) (input : InferInput) :
+    (inferCore K frontier ctx input).map (fun result => result.val.ty) =
+      (inferWithTypesCore K frontier ctx input).map (fun result => result.val.ty) := by
+  unfold inferCore inferRequest inferRequestCore InferRequest.core
+  cases inferWithTypesCore K frontier ctx input <;> rfl
+
 /-! ### A typeable program — all three headlines fire -/
 
 /-- `λx. x`. -/
@@ -1050,7 +1059,8 @@ set_option maxRecDepth 100_000 in
 /-- `λx. x` has principal monotype `α → α` (computed, not postulated). -/
 theorem polyId_principalType : corePrincipalType [] polyId = some (.arrow (.fvar 0) (.fvar 0)) := by
   change (inferCore [] 0 ⟨[], []⟩ (.lambda none (.var 0))).map (·.val.ty) = _
-  simp [inferCore, inferWithTypesCore, seed, InferInput.rigidVars,
+  rw [inferCore_map_ty_eq_worker]
+  simp [inferWithTypesCore, seed, InferInput.rigidVars,
     softVars, TyList.freeVars, Env.freeVars, Ty.freeVars, List.getElem?_cons_zero,
     PolyTy.mkTrivial, PolyTy.openVars, Ty.openVars, freshVars, Subst.onTy, Ty.substFvars]
   rfl
@@ -1172,7 +1182,8 @@ set_option maxRecDepth 100_000 in
     Opening the signature allocates `0`, the RHS allocates `1`, and the two
     body instantiations allocate `2` and `3`, leaving principal variable `3`. -/
 theorem idid_principalType : corePrincipalType [] idid = some (.arrow (.fvar 3) (.fvar 3)) := by
-  unfold corePrincipalType
+  unfold corePrincipalType principalType
+  rw [inferCore_map_ty_eq_worker]
   have hSig :
       (unifyCoreK [0] (.arrow (.fvar 1) (.fvar 1)) (.arrow (.fvar 0) (.fvar 0))).map Subtype.val =
         some [(1, .fvar 0)] := by
@@ -1237,7 +1248,7 @@ theorem idid_principalType : corePrincipalType [] idid = some (.arrow (.fvar 3) 
       have hs : S = [(2,.arrow (.fvar 3) (.fvar 3)),(4,.arrow (.fvar 3) (.fvar 3))] := by
         simpa only [heApp,Option.map_some,Option.some.injEq] using hApp
       subst S
-      simp (config := {maxSteps := 1000000}) [heSig,heApp,idid,principalType,inferCore,inferWithTypesCore,seed,InferInput.ofCore,
+      simp (config := {maxSteps := 1000000}) [heSig,heApp,idid,inferWithTypesCore,seed,InferInput.ofCore,
         InferInput.rigidVars,InferInput.freshFloor,tyVarCeil,BindingAnn.rigidVars,BindingAnn.ofCore,
         softVars,TyList.freeVars,Env.freeVars,Ty.freeVars,List.getElem?_cons_zero,
         PolyTy.mkTrivial,PolyTy.openVars,Ty.openVars,freshVars,Subst.onTy,Ty.substFvars,Ty.substFvar,
@@ -1351,6 +1362,7 @@ theorem matchWild_principalType :
     corePrincipalType [] matchWild = some (.arrow (.fvar 0) (.prim .int)) := by
   change (inferCore [] 0 ⟨[], []⟩ (.lambda none
     (.match_ (.var 0) [(.wildcard,.primLit (.int 0))]))).map (·.val.ty) = _
+  rw [inferCore_map_ty_eq_worker]
   have huni : (unifyCoreK [] (.prim .int) (.fvar 1)).map Subtype.val = some [(1,.prim .int)] := by
     unfold unifyCoreK
     rfl
@@ -1360,7 +1372,7 @@ theorem matchWild_principalType :
     rcases result with ⟨S,hun,havoid⟩
     have hs : S = [(1,.prim .int)] := by simpa only [he,Option.map_some,Option.some.injEq] using huni
     subst S
-    simp (config := {maxSteps := 1000000}) [he, inferCore, inferWithTypesCore, inferBranchesWithTypesCore, seed, InferInput.rigidVars,
+    simp (config := {maxSteps := 1000000}) [he, inferWithTypesCore, inferBranchesWithTypesCore, seed, InferInput.rigidVars,
       softVars, TyList.freeVars, Env.freeVars, Ty.freeVars, List.getElem?_cons_zero,
       PolyTy.mkTrivial, PolyTy.openVars, Ty.openVars,
       Subst.onTy, Ty.substFvars, Subst.onCtx, Subst.onEnv, InferInput.substTyFvars,
