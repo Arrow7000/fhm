@@ -76,6 +76,7 @@ bundle as one premise. -/
 #check @inferRequest
 #check @InferRequest.run
 #check @InferCert
+#check @InferCert.lambda
 #check @InferCert.app
 #check @InferRun
 #check @InferRun.cert

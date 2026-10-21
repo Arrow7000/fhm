@@ -1610,7 +1610,10 @@ theorem Infer.sourcePrincipal_lambda {ctx : Ctx}
     (hs : Seed (K ++ softVars F) frontier ann param initial)
     (hb : Infer K F initial { ctx with env := PolyTy.mkTrivial param :: ctx.env }
       body next subst completed bodyTy)
-    (ih : Infer.SourcePrincipal hb) : Infer.SourcePrincipal (.lambda hscope hs hb) := by
+    (ih : Infer.SourcePrincipal hb) :
+    Infer.SourcePrincipal
+      (InferCert.lambda (seeded := ⟨param, initial⟩)
+        (bodyResult := ⟨next, subst, completed, bodyTy⟩) hscope hs hb) := by
   intro hwf hbelow hK hF ambient target P hS hP hfix hfreeze htyping
   obtain ⟨paramD, resultD, rfl, hparamD, hfit, _, hbodyD⟩ := htyping.lambda_inv
   have hscopeBound : ∀ v ∈ K ++ softVars F, v < frontier :=

@@ -96,6 +96,12 @@ structure InferResult where
   completedExpr : Expr
   ty : Ty
 
+/-- The parameter type and advanced frontier produced while seeding a lambda
+parameter from its optional annotation. -/
+structure SeedResult where
+  param : Ty
+  frontier : Nat
+
 private theorem ann_rigid_mem {bindings : List InputRecBinding}
     {binding : InputRecBinding} (hb : binding ∈ bindings) {v : Nat}
     (hv : v ∈ binding.ann.rigidVars) : v ∈ rigidBindingVars bindings := by
@@ -192,6 +198,14 @@ def signatureScheme (ann : BindingAnn) (K written : List Nat) (ctx : Ctx) (ty : 
 def lambdaOutput (ann : Option TyTemplate) (param : Ty) (subst : Subst) (body : Expr) : Expr :=
   .lambda (ann.map fun _ => subst.onTy param) body
 
+/-- Assemble a lambda result from its seeded parameter and inferred body. -/
+def lambdaResult (ann : Option TyTemplate) (seeded : SeedResult)
+    (bodyResult : InferResult) : InferResult :=
+  { frontier := bodyResult.frontier
+    subst := bodyResult.subst
+    completedExpr := lambdaOutput ann seeded.param bodyResult.subst bodyResult.completedExpr
+    ty := .arrow (bodyResult.subst.onTy seeded.param) bodyResult.ty }
+
 /-- Assemble the semantic result of sequential function/argument inference and
 the final application unifier. -/
 def appResult (functionResult argumentResult : InferResult) (unifier : Subst) : InferResult :=
@@ -241,13 +255,16 @@ inductive InferCert : InferRequest → InferResult → Prop
       InferCert ⟨K, F, frontier, ctx, .ctor name⟩
         ⟨frontier + ctor.paramCount, [], .ctor name,
           ctor.toTy.openVars (freshVars frontier ctor.paramCount)⟩
-  | lambda :
+  | lambda {K : List Nat} {F : List Ty} {ann : Option TyTemplate} {body : InferInput}
+      {frontier : Nat} {ctx : Ctx} {seeded : SeedResult} {bodyResult : InferResult} :
       SourceScope K F (.lambda ann body) →
-      Seed (K ++ softVars F) frontier ann param initial →
-      InferCert ⟨K, F, initial, { ctx with env := PolyTy.mkTrivial param :: ctx.env }, body⟩
-        ⟨next, subst, completed, bodyTy⟩ →
+      Seed (K ++ softVars F) frontier ann seeded.param seeded.frontier →
+      InferCert
+        ⟨K, F, seeded.frontier,
+          { ctx with env := PolyTy.mkTrivial seeded.param :: ctx.env }, body⟩
+        bodyResult →
       InferCert ⟨K, F, frontier, ctx, .lambda ann body⟩
-        ⟨next, subst, lambdaOutput ann param subst completed, .arrow (subst.onTy param) bodyTy⟩
+        (lambdaResult ann seeded bodyResult)
   | app {K : List Nat} {F : List Ty} {f arg : InferInput} {frontier : Nat} {ctx : Ctx}
       {functionResult argumentResult : InferResult} {unifier : Subst} :
       SourceScope K F (.app f arg) →
@@ -855,9 +872,10 @@ private theorem InferCert.lc_raw (h : Infer K F frontier ctx input next subst ou
   | .ctor hlook =>
       intro _
       exact ⟨PolyTy.openVars_isLC (Ctor.toTy_wf _) (by simp [Ctor.toTy]), by simp⟩
-  | @InferCert.lambda K F ann body frontier param initial ctx next subst completed bodyTy _ hs hb =>
+  | @InferCert.lambda K F ann body frontier ctx seeded _ _ hs hb =>
       intro hctx
-      have hbodyCtx : CtxWF { ctx with env := PolyTy.mkTrivial param :: ctx.env } := by
+      have hbodyCtx : CtxWF
+          { ctx with env := PolyTy.mkTrivial seeded.param :: ctx.env } := by
         intro scheme hscheme
         rcases List.mem_cons.mp hscheme with rfl | hscheme
         · exact hs.lc
@@ -1209,7 +1227,10 @@ def inferWithTypesCore (K : List Nat) (frontier : Nat) (ctx : Ctx) (input : Infe
                         completedExpr := lambdaOutput ann param bodyResult.subst bodyResult.completedExpr
                         ty := ty
                         nodeTypes := .root ty ++ bodyResult.nodeTypes.below .lambdaBody
-                        binderSchemes := bodyResult.binderSchemes.below .lambdaBody }, .lambda hrawScope hs hb⟩
+                        binderSchemes := bodyResult.binderSchemes.below .lambdaBody }, by
+                        simpa only [lambdaResult] using
+                          (InferCert.lambda (seeded := ⟨param, initial⟩)
+                            (bodyResult := bodyResult.toInferResult) hrawScope hs hb)⟩
           | .app f arg =>
               match inferWithTypesCore K frontier ctx f F with
               | none => none
@@ -7555,9 +7576,10 @@ private theorem InferCert.sourceSound_raw (h : Infer K F frontier ctx input next
         obtain ⟨_, _, rfl⟩ := List.mem_map.mp ht
         exact .fvar
       · exact InstantiatesBy.openVars (Ctor.toTy_wf ctor) (by simp [Ctor.toTy])
-  | @InferCert.lambda K F ann body frontier param initial ctx next subst completed bodyTy _ hs hb =>
+  | @InferCert.lambda K F ann body frontier ctx seeded _ _ hs hb =>
       intro hctx
-      have hbodyCtx : CtxWF { ctx with env := PolyTy.mkTrivial param :: ctx.env } := by
+      have hbodyCtx : CtxWF
+          { ctx with env := PolyTy.mkTrivial seeded.param :: ctx.env } := by
         intro scheme hscheme
         rcases List.mem_cons.mp hscheme with rfl | hscheme
         · exact hs.lc
@@ -8172,9 +8194,10 @@ private theorem InferCert.inputSound_source_raw (h : Infer K F frontier ctx inpu
   | leaf@(.ctor _) =>
       intro hctx
       exact .complete rfl (by simp [Expr.tyFreeVars]) (leaf.sourceSound hctx)
-  | @InferCert.lambda K F ann body frontier param initial ctx next subst completed bodyTy _ hs hb =>
+  | @InferCert.lambda K F ann body frontier ctx seeded bodyResult _ hs hb =>
       intro hctx
-      have hbodyCtx : CtxWF { ctx with env := PolyTy.mkTrivial param :: ctx.env } := by
+      have hbodyCtx : CtxWF
+          { ctx with env := PolyTy.mkTrivial seeded.param :: ctx.env } := by
         intro scheme hscheme
         rcases List.mem_cons.mp hscheme with rfl | hscheme
         · exact hs.lc
@@ -8187,7 +8210,7 @@ private theorem InferCert.inputSound_source_raw (h : Infer K F frontier ctx inpu
         | none => cases heq
         | some original =>
           cases heq
-          exact (hs.fits original rfl).substTyFvars subst
+          exact (hs.fits original rfl).substTyFvars bodyResult.subst
       · intro template heq v hv
         cases ann with
         | none => cases heq
@@ -8720,17 +8743,19 @@ private theorem InferCert.completes_source_raw (h : Infer K F frontier ctx input
   | .primLitUnit | .primLitInt | .primLitNat | .primLitChar | .primBinOpIntAdd | .primBinOpIntSub | .primBinOpIntLt _ _ _ _ | .primBinOpCharLt _ _ _ _ | .var _ | .ctor _ =>
       intro _
       exact .complete rfl (by simp [Expr.tyFreeVars])
-  | @InferCert.lambda K F ann body frontier param initial ctx next subst completed bodyTy _ hs hb =>
+  | @InferCert.lambda K F ann body frontier ctx seeded bodyResult _ hs hb =>
       intro hctx
-      have hbodyCtx : CtxWF { ctx with env := PolyTy.mkTrivial param :: ctx.env } := by
+      have hbodyCtx : CtxWF
+          { ctx with env := PolyTy.mkTrivial seeded.param :: ctx.env } := by
         intro scheme hscheme
         rcases List.mem_cons.mp hscheme with rfl | hscheme
         · exact hs.lc
         · exact hctx scheme hscheme
       have hsubst := (hb.lc hbodyCtx).2
       simp only [InferInput.substTyFvars]
-      have hout : ann.map (fun _ => subst.onTy param) =
-          (ann.map (TyTemplate.substTyFvars subst)).map (fun _ => subst.onTy param) := by
+      have hout : ann.map (fun _ => bodyResult.subst.onTy seeded.param) =
+          (ann.map (TyTemplate.substTyFvars bodyResult.subst)).map
+            (fun _ => bodyResult.subst.onTy seeded.param) := by
         cases ann <;> rfl
       simp only [lambdaOutput, hout]
       refine AnnotationCompletion.lambda ?_ ?_ ?_
@@ -8739,7 +8764,7 @@ private theorem InferCert.completes_source_raw (h : Infer K F frontier ctx input
         | none => cases heq
         | some original =>
           cases heq
-          exact (hs.fits original rfl).substTyFvars subst
+          exact (hs.fits original rfl).substTyFvars bodyResult.subst
       · intro template heq v hv
         cases ann with
         | none => cases heq
