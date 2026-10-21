@@ -54,23 +54,86 @@ theorem lower_and_infer_sound {ctors : CtorEnv} {source : Surface.Expr}
       TypeOfHM ⟨[], ctors⟩ result.completedExpr result.ty ∧
       result.completedExpr.erase = input.erase := by
   exact ⟨lower_sound hlow, inferWithTypes_input_sound hinfer,
-    (inferWithTypes_infer hinfer).completes CtxWF.empty,
+    InferCert.completes (inferWithTypes_infer hinfer) CtxWF.empty,
     inferWithTypes_source_sound hinfer, inferWithTypes_erase hinfer⟩
 
-/-! ### Canonical partial-input elaboration: exact output and source guarantees
+/-! ### Canonical partial-input elaboration: bundled requests, runs, and certificates
 
-Production lowering preserves anonymous holes in `InferInput` and shared
-pattern emission. `inferWithTypes` completes that input once, returning the exact
-Core expression executed after erasure and the maps used by editor joins.
-`Infer.sourceSound` types that completed expression; `Infer.inputSound` independently
-types the authored input when the provisional context is empty. `Infer.completes`
-records exact annotation fidelity, and `Infer.erase` preserves runtime syntax.
-The `_source` variants also cover internal mutable provisional contexts.
-`Infer.principal` factors independently typed candidates through the inferred
-result. `Infer.complete` and the executable completeness wrappers establish
-acceptance of independently typed inputs, including recursive groups.
-The metadata field guards preserve the artifact API; editor source joins remain
-operational code outside the verified boundary. -/
+`InferRequest` is the public description of one worker call. `InferRequest.run`
+retains the exact deterministic result, including node and binder metadata;
+`InferRun` is its graph. `InferCert` is the smaller semantic certificate relating
+the same request to its projected result. Every run supplies a certificate, but
+the converse is deliberately not claimed: the relation permits choices that the
+worker resolves deterministically and does not record artifact metadata.
+
+Production `inferWithTypes` completes an `InferInput` once. The `InferCert`
+interface exposes completed-output typing, independent input typing, annotation
+fidelity, erasure, bounds, and runtime soundness without repeating the relation's
+positional indices. Principality similarly takes the request's complete `WF`
+bundle as one premise. -/
+#check @InferRequest.core
+#check @inferRequestCore
+#check @inferRequest
+#check @InferRequest.run
+#check @InferCert
+#check @InferRun
+#check @InferRun.cert
+#check @InferCert.sourceSound
+#check @InferCert.inputSound_source
+#check @InferCert.inputSound
+#check @InferCert.completes_source
+#check @InferCert.completes
+#check @InferCert.erase
+#check @InferCert.sound
+
+example (K : List Nat) (frontier : Nat) (ctx : Ctx) (input : InferInput) : InferRequest :=
+  InferRequest.core K frontier ctx input
+
+example {request : InferRequest} {result : InferCoreResult}
+    (h : InferRun request result) : InferCert request result.toInferResult :=
+  h.cert
+
+example {request : InferRequest} {result : InferResult}
+    (h : InferCert request result) (hctx : CtxWF request.ctx) :
+    TypeOfHM (result.subst.onCtx request.ctx) result.completedExpr result.ty :=
+  InferCert.sourceSound h hctx
+
+/-- `Infer.Principal` now receives all worker well-formedness and freshness
+invariants through `request.WF`; the remaining result is its residual
+factorization contract. -/
+example {request : InferRequest} {result : InferResult}
+    (h : InferCert request result) (hreq : request.WF) :=
+  (Infer.principal h) hreq
+
+/-! ### Request-native completeness and acceptance
+
+Source completeness covers arbitrary soft/provisional requests and concludes
+that the exact metadata run exists. Ordinary core completeness specializes to
+`InferRequest.core`; its acceptance theorem characterizes executable success by
+independent `InputTyping`. -/
+#check @InferRequest.SourceComplete
+#check @inferRequest_sourceComplete
+#check @InferCoreCompleteReq
+#check @inferCore_complete_req
+#check @Infer.complete_req
+#check @inferCore_accepts_iff_req
+
+example (request : InferRequest) : request.SourceComplete :=
+  inferRequest_sourceComplete request
+
+example (input : InferInput) : InferCoreCompleteReq input :=
+  inferCore_complete_req input
+
+example {K : List Nat} {frontier : Nat} {ctx : Ctx} {input : InferInput}
+    (hreq : (InferRequest.core K frontier ctx input).WF) :
+    (inferCore K frontier ctx input).isSome ↔
+      ∃ (ambient : Subst) (target : Ty), (∀ pair ∈ ambient, pair.2.IsLC) ∧
+        (∀ k ∈ K, ambient.onTy (.fvar k) = .fvar k) ∧
+        InputTyping K (ambient.onCtx ctx) input target :=
+  inferCore_accepts_iff_req hreq
+
+/-! The positional relation and premise-by-premise theorems remain supported
+compatibility APIs and are useful inside constructor-local induction proofs. -/
 #check @Infer.sourceSound
 #check @Infer.inputSound_source
 #check @Infer.inputSound
@@ -98,7 +161,7 @@ operational code outside the verified boundary. -/
 #check @inferWithTypes_infer
 
 example (h : Infer K F frontier ctx input next subst output ty) : Infer.Principal h :=
-  h.principal
+  Infer.principal h
 
 example (input : InferInput) : InferWithTypesCoreSourceComplete input :=
   inferWithTypesCore_sourceComplete input
@@ -336,6 +399,18 @@ guards live in `FHM.Headlines.CompleteCore`. -/
 
 -- Checked for all canonical constructors, including partial recursive signatures.
 #print axioms lower_and_infer_sound
+#print axioms InferRun.cert
+#print axioms InferCert.sourceSound
+#print axioms InferCert.inputSound
+#print axioms InferCert.completes
+#print axioms InferCert.erase
+#print axioms InferCert.sound
+#print axioms inferRequest_sourceComplete
+#print axioms inferCore_complete_req
+#print axioms Infer.complete_req
+#print axioms inferCore_accepts_iff_req
+
+-- Positional compatibility surface.
 #print axioms Infer.sourceSound
 #print axioms Infer.inputSound_source
 #print axioms Infer.inputSound
