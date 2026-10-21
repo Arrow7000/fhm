@@ -3128,7 +3128,7 @@ structure LoweringOps (Term ParamAnn BindAnn : Type) where
   app : Term → Term → Term
   lambda : ParamAnn → Term → Term
   letIn : BindAnn → Term → Term → Term
-  letRec : List BindAnn → List Term → Term → Term
+  letRec : List (RecBinding BindAnn Term) → Term → Term
   lowerParamAnn : KindEnv → List ValName → Option Surface.Ty → Option ParamAnn
   finalize : List ValName → List (ValName × Option Surface.Ty) → Option Surface.PolyTy → Option Surface.PolyTy
   lowerBindAnn : KindEnv → List ValName → Option Surface.PolyTy → Option BindAnn
@@ -3152,11 +3152,6 @@ def LoweringOps.wrapParams (ops : LoweringOps Term ParamAnn BindAnn)
       let ann' ← ops.lowerParamAnn ke tvs ann
       let inner ← ops.wrapParams ke tvs rest body
       pure (ops.lambda ann' inner)
-
-def LoweringOps.lowerAnnList (ops : LoweringOps Term ParamAnn BindAnn)
-    (ke : KindEnv) (tvs : List ValName) : List (Option Surface.PolyTy) → Option (List BindAnn)
-  | [] => some []
-  | ann :: rest => return (← ops.lowerBindAnn ke tvs ann) :: (← ops.lowerAnnList ke tvs rest)
 
 def LoweringOps.match_ (ops : LoweringOps Term ParamAnn BindAnn)
     (scrut : Term) (pats : List Surface.Pattern) (bodies : List Term) : Term :=
@@ -3195,10 +3190,9 @@ mutual
        pure (ops.letIn ann' rhs' body')
    | .letRecIn binds body => do
        let recScope := binds.map (·.name) ++ vs
-       let anns' ← ops.lowerAnnList ke tvs (binds.map fun b => ops.finalize b.tyParams b.params b.ann)
        let bindings' ← lowerRecBindsWith ops ke tvs recScope binds
        let body' ← lowerExprWith ops ke tvs recScope body
-       pure (ops.letRec anns' bindings' body')
+       pure (ops.letRec bindings' body')
    | .var name => (tvarIndex vs name).map ops.emission.var
    | .ctor name => some (ops.emission.ctor name)
    | .ife c t f => do
@@ -3225,13 +3219,16 @@ mutual
  termination_by bs => lowerBranchesSize bs
  decreasing_by all_goals simp [lowerBranchesSize] <;> omega
  def lowerRecBindsWith (ops : LoweringOps Term ParamAnn BindAnn) (ke : KindEnv)
-     (tvs vs : List ValName) : List Surface.Binding → Option (List Term)
+     (tvs vs : List ValName) :
+     List Surface.Binding → Option (List (RecBinding BindAnn Term))
    | [] => some []
    | b :: rest => do
-       let tvs' := letAnnTyPrefix b.tyParams (ops.finalize b.tyParams b.params b.ann) ++ tvs
+       let annF := ops.finalize b.tyParams b.params b.ann
+       let ann' ← ops.lowerBindAnn ke tvs annF
+       let tvs' := letAnnTyPrefix b.tyParams annF ++ tvs
        let rhsCore ← lowerExprWith ops ke tvs' (paramTermScope b.params vs) b.rhs
        let rhs' ← ops.wrapParams ke tvs' b.params rhsCore
-       return rhs' :: (← lowerRecBindsWith ops ke tvs vs rest)
+       return { ann := ann', rhs := rhs' } :: (← lowerRecBindsWith ops ke tvs vs rest)
  termination_by bs => lowerRecBindsSize bs
  decreasing_by all_goals simp [lowerRecBindsSize] <;> omega
 end
@@ -3277,11 +3274,10 @@ inductive LowersExprWith (ops : LoweringOps Term ParamAnn BindAnn) (ctors : Ctor
         params rhsCore = some rhs' →
       LowersExprWith ops ctors ke tvs (name :: vs) body body' →
       LowersExprWith ops ctors ke tvs vs (.letIn name tyParams params ann rhs body) (ops.letIn ann' rhs' body')
-  | letRecIn {tvs vs binds anns' bindings' body body'} :
-      ops.lowerAnnList ke tvs (binds.map fun b => ops.finalize b.tyParams b.params b.ann) = some anns' →
+  | letRecIn {tvs vs binds bindings' body body'} :
       LowersRecBindsWith ops ctors ke tvs (binds.map (·.name) ++ vs) binds bindings' →
       LowersExprWith ops ctors ke tvs (binds.map (·.name) ++ vs) body body' →
-      LowersExprWith ops ctors ke tvs vs (.letRecIn binds body) (ops.letRec anns' bindings' body')
+      LowersExprWith ops ctors ke tvs vs (.letRecIn binds body) (ops.letRec bindings' body')
   | var {tvs vs name i} : tvarIndex vs name = some i →
       LowersExprWith ops ctors ke tvs vs (.var name) (ops.emission.var i)
   | ctor {tvs vs name} : LowersExprWith ops ctors ke tvs vs (.ctor name) (ops.emission.ctor name)
@@ -3298,15 +3294,18 @@ inductive LowersExprListWith (ops : LoweringOps Term ParamAnn BindAnn) (ctors : 
   | cons {tvs vs e es e' es'} : LowersExprWith ops ctors ke tvs vs e e' →
       LowersExprListWith ops ctors ke tvs vs es es' → LowersExprListWith ops ctors ke tvs vs (e :: es) (e' :: es')
 inductive LowersRecBindsWith (ops : LoweringOps Term ParamAnn BindAnn) (ctors : CtorEnv) (ke : KindEnv) :
-    List ValName → List ValName → List Surface.Binding → List Term → Prop where
+    List ValName → List ValName → List Surface.Binding →
+      List (RecBinding BindAnn Term) → Prop where
   | nil {tvs vs} : LowersRecBindsWith ops ctors ke tvs vs [] []
-  | cons {tvs vs bind rhsCore e' rest rest'} :
+  | cons {tvs vs bind ann' rhsCore e' rest rest'} :
+      ops.lowerBindAnn ke tvs (ops.finalize bind.tyParams bind.params bind.ann) = some ann' →
       LowersExprWith ops ctors ke (letAnnTyPrefix bind.tyParams (ops.finalize bind.tyParams bind.params bind.ann) ++ tvs)
         (paramTermScope bind.params vs) bind.rhs rhsCore →
       ops.wrapParams ke (letAnnTyPrefix bind.tyParams (ops.finalize bind.tyParams bind.params bind.ann) ++ tvs)
         bind.params rhsCore = some e' →
       LowersRecBindsWith ops ctors ke tvs vs rest rest' →
-      LowersRecBindsWith ops ctors ke tvs vs (bind :: rest) (e' :: rest')
+      LowersRecBindsWith ops ctors ke tvs vs (bind :: rest)
+        ({ ann := ann', rhs := e' } :: rest')
 inductive LowersBranchesWith (ops : LoweringOps Term ParamAnn BindAnn) (ctors : CtorEnv) (ke : KindEnv) :
     List ValName → List ValName → List (Surface.Pattern × Surface.Expr) → List Term → Prop where
   | nil {tvs vs} : LowersBranchesWith ops ctors ke tvs vs [] []
@@ -3330,7 +3329,7 @@ theorem lowerExprWith_complete {ops : LoweringOps Term ParamAnn BindAnn}
       cases param <;> simp_all [compoundLambdaPattern, lowerExprWith, lowerExprWith_complete hb]
   | app ha hb => simp [lowerExprWith, lowerExprWith_complete ha, lowerExprWith_complete hb]
   | letIn ha hr hw hb => simp [lowerExprWith, ha, lowerExprWith_complete hr, hw, lowerExprWith_complete hb]
-  | letRecIn ha hr hb => simp [lowerExprWith, ha, lowerRecBindsWith_complete hr, lowerExprWith_complete hb]
+  | letRecIn hr hb => simp [lowerExprWith, lowerRecBindsWith_complete hr, lowerExprWith_complete hb]
   | var hi => simp [lowerExprWith, hi]
   | ife hc ht hf => simp [lowerExprWith, lowerExprWith_complete hc, lowerExprWith_complete ht, lowerExprWith_complete hf]
   | match_ hs hb => simp [lowerExprWith, lowerExprWith_complete hs, lowerBranchesWith_complete hb]
@@ -3345,7 +3344,9 @@ theorem lowerRecBindsWith_complete {ops : LoweringOps Term ParamAnn BindAnn}
     lowerRecBindsWith ops ke tvs vs bs = some cs := by
   cases h with
   | nil => simp [lowerRecBindsWith]
-  | cons he hw hr => simp [lowerRecBindsWith, lowerExprWith_complete he, hw, lowerRecBindsWith_complete hr]
+  | cons ha he hw hr =>
+      simp [lowerRecBindsWith, ha, lowerExprWith_complete he, hw,
+        lowerRecBindsWith_complete hr]
 theorem lowerBranchesWith_complete {ops : LoweringOps Term ParamAnn BindAnn}
     {ctors ke tvs vs bs cs} (h : LowersBranchesWith ops ctors ke tvs vs bs cs) :
     lowerBranchesWith ops ke tvs vs bs = some cs := by
@@ -3421,11 +3422,10 @@ theorem lowerExprWith_sound {ops : LoweringOps Term ParamAnn BindAnn} {ctors ke 
       exact .letIn ha (lowerExprWith_sound rhs hr) hw (lowerExprWith_sound body hb)
   | .letRecIn binds body =>
       simp only [lowerExprWith] at h
-      obtain ⟨anns', ha, h⟩ := lowering_bind_eq_some h
       obtain ⟨bs', hr, h⟩ := lowering_bind_eq_some h
       obtain ⟨body', hb, h⟩ := lowering_bind_eq_some h
       simp only [pure, Option.some.injEq] at h; subst h
-      exact .letRecIn ha (lowerRecBindsWith_sound binds hr) (lowerExprWith_sound body hb)
+      exact .letRecIn (lowerRecBindsWith_sound binds hr) (lowerExprWith_sound body hb)
   | .var name =>
       simp only [lowerExprWith] at h
       cases hi : tvarIndex vs name with
@@ -3471,11 +3471,12 @@ theorem lowerRecBindsWith_sound {ops : LoweringOps Term ParamAnn BindAnn} {ctors
   | [] => simp only [lowerRecBindsWith, Option.some.injEq] at h; subst h; exact .nil
   | b :: rest =>
       simp only [lowerRecBindsWith] at h
+      obtain ⟨ann', ha, h⟩ := lowering_bind_eq_some h
       obtain ⟨e', he, h⟩ := lowering_bind_eq_some h
       obtain ⟨wrapped, hw, h⟩ := lowering_bind_eq_some h
       obtain ⟨rest', hr, h⟩ := lowering_bind_eq_some h
       simp only [pure, Option.some.injEq] at h; subst h
-      exact .cons (lowerExprWith_sound b.rhs he) hw (lowerRecBindsWith_sound rest hr)
+      exact .cons ha (lowerExprWith_sound b.rhs he) hw (lowerRecBindsWith_sound rest hr)
 termination_by lowerRecBindsSize bs
 decreasing_by
   all_goals (try simp only [lowerRecBindsSize])
