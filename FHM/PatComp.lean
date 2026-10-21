@@ -1581,7 +1581,7 @@ theorem varsBelow_getCtorArgs {n : Nat} {v : Expr} {c : CtorName}
   | var i => simp [getCtorArgs] at hget
   | letIn ann rhs body _ _ => simp [getCtorArgs] at hget
   | match_ s brs _ _ => simp [getCtorArgs] at hget
-  | letRec anns bs body _ _ => simp [getCtorArgs] at hget
+  | letRec bindings body _ _ => simp [getCtorArgs] at hget
 
 /-- A ctor chain is itself a value. -/
 private theorem isValue_of_isCtorChain {v : Expr} (h : IsCtorChain v) : IsValue v := by
@@ -1620,7 +1620,7 @@ theorem isValue_getCtorArgs {v : Expr} {c : CtorName} {args : List Expr}
   | var i => simp [getCtorArgs] at hget
   | letIn ann rhs body _ _ => simp [getCtorArgs] at hget
   | match_ s brs _ _ => simp [getCtorArgs] at hget
-  | letRec anns bs body _ _ => simp [getCtorArgs] at hget
+  | letRec bindings body _ _ => simp [getCtorArgs] at hget
 
 /-- `getCtorArgs` soundness towards the declarative decomposition used by
     `Step.matchReduce`. (Core has this bridge but keeps it `private`.) -/
@@ -1645,7 +1645,7 @@ theorem getCtorArgs_ctorAppliedTo {v : Expr} {c : CtorName} {args : List Expr}
   | var i => simp [getCtorArgs] at hget
   | letIn ann rhs body _ _ => simp [getCtorArgs] at hget
   | match_ s brs _ _ => simp [getCtorArgs] at hget
-  | letRec anns bs body _ _ => simp [getCtorArgs] at hget
+  | letRec bindings body _ _ => simp [getCtorArgs] at hget
 
 /-- A ctor chain always decomposes via `getCtorArgs` (Core's version of this
     bridge is `private`). -/
@@ -1664,7 +1664,7 @@ private theorem getCtorArgs_of_isCtorChain {v : Expr} (h : IsCtorChain v) :
   | var i  => cases h
   | letIn ann rhs body _ _ => cases h
   | match_ s brs _ _ => cases h
-  | letRec anns bs body _ _ => cases h
+  | letRec bindings body _ _ => cases h
 
 /-- Fetched sub-values of a closed value are closed values. -/
 theorem fetch_varsBelow {root v : Expr} {o : Occ}
@@ -1724,40 +1724,57 @@ private theorem Expr.instTyAux_match_cons (Ts : List Ty) (s : Expr) (p : MatchPa
     ((Expr.match_ s ((p, b) :: rest)).instTyAux d Ts).matchBranchesOf
       = (p, b.instTyAux d Ts) :: ((Expr.match_ s rest).instTyAux d Ts).matchBranchesOf := rfl
 
-private theorem Expr.instTyAux_letRec_eq (Ts : List Ty) (anns : List (Option PolyTy))
-    (bs : List Expr) (body : Expr) (d : Nat) :
-    (Expr.letRec anns bs body).instTyAux d Ts
-      = Expr.letRec (RecGroup.instAnns d Ts anns)
-          (((Expr.letRec anns bs body).instTyAux d Ts).letRecBindingsOf)
-          (body.instTyAux d Ts) := rfl
+/-- The row-structural action of type instantiation on a recursive group. -/
+private def RecBindingList.instTyAux (d : Nat) (Ts : List Ty) :
+    List CoreRecBinding → List CoreRecBinding
+  | [] => []
+  | ⟨ann, rhs⟩ :: rest =>
+      { ann := ann.map (fun σ =>
+          { σ with body := Ty.openTyFrom (d + σ.paramCount) Ts σ.body })
+        rhs := rhs.instTyAux (d + RecAnn.params ann) Ts } ::
+      RecBindingList.instTyAux d Ts rest
 
-private theorem Expr.instTyAux_letRec_cons_ann (Ts : List Ty) (a : Option PolyTy)
-    (as : List (Option PolyTy)) (e : Expr) (rest : List Expr) (body : Expr) (d : Nat) :
-    ((Expr.letRec (a :: as) (e :: rest) body).instTyAux d Ts).letRecBindingsOf
-      = e.instTyAux (d + RecAnn.params a) Ts
-        :: ((Expr.letRec as rest body).instTyAux d Ts).letRecBindingsOf := rfl
+private def patCompLetRecBindingsOf : Expr → List CoreRecBinding
+  | .letRec bindings _ => bindings
+  | _ => []
 
-private theorem Expr.instTyAux_letRec_cons_nil (Ts : List Ty) (e : Expr)
-    (rest : List Expr) (body : Expr) (d : Nat) :
-    ((Expr.letRec [] (e :: rest) body).instTyAux d Ts).letRecBindingsOf
-      = e.instTyAux d Ts :: ((Expr.letRec [] rest body).instTyAux d Ts).letRecBindingsOf := rfl
+private theorem Expr.instTyAux_letRec_projected (Ts : List Ty)
+    (bindings : List CoreRecBinding) (body : Expr) (d : Nat) :
+    (Expr.letRec bindings body).instTyAux d Ts =
+      Expr.letRec (patCompLetRecBindingsOf ((Expr.letRec bindings body).instTyAux d Ts))
+        (body.instTyAux d Ts) := rfl
 
-private theorem Expr.instTyAux_letRec_nil (Ts : List Ty) (anns : List (Option PolyTy))
-    (body : Expr) (d : Nat) :
-    ((Expr.letRec anns [] body).instTyAux d Ts).letRecBindingsOf = [] := by
-  cases anns <;> rfl
+private theorem Expr.instTyAux_letRec_cons (Ts : List Ty) (ann : Option PolyTy)
+    (rhs : Expr) (rest : List CoreRecBinding) (body : Expr) (d : Nat) :
+    patCompLetRecBindingsOf ((Expr.letRec (⟨ann, rhs⟩ :: rest) body).instTyAux d Ts) =
+      { ann := ann.map (fun σ =>
+          { σ with body := Ty.openTyFrom (d + σ.paramCount) Ts σ.body })
+        rhs := rhs.instTyAux (d + RecAnn.params ann) Ts } ::
+      patCompLetRecBindingsOf ((Expr.letRec rest body).instTyAux d Ts) := rfl
 
-private theorem instTyAux_letRecBindings_length (Ts : List Ty) (body : Expr) :
-    ∀ (bs : List Expr) (anns : List (Option PolyTy)) (d : Nat),
-      ((Expr.letRec anns bs body).instTyAux d Ts).letRecBindingsOf.length = bs.length := by
-  intro bs
-  induction bs with
-  | nil => intro anns d; rw [Expr.instTyAux_letRec_nil]
-  | cons e rest ih =>
-    intro anns d
-    cases anns with
-    | nil => rw [Expr.instTyAux_letRec_cons_nil]; simp only [List.length_cons, ih]
-    | cons a as => rw [Expr.instTyAux_letRec_cons_ann]; simp only [List.length_cons, ih]
+private theorem Expr.instTyAux_letRec_bindings_eq (Ts : List Ty)
+    (bindings : List CoreRecBinding) (body : Expr) (d : Nat) :
+    patCompLetRecBindingsOf ((Expr.letRec bindings body).instTyAux d Ts) =
+      RecBindingList.instTyAux d Ts bindings := by
+  induction bindings with
+  | nil => rfl
+  | cons binding rest ih =>
+    rcases binding with ⟨ann, rhs⟩
+    rw [Expr.instTyAux_letRec_cons, RecBindingList.instTyAux, ih]
+
+private theorem Expr.instTyAux_letRec_eq (Ts : List Ty)
+    (bindings : List CoreRecBinding) (body : Expr) (d : Nat) :
+    (Expr.letRec bindings body).instTyAux d Ts =
+      Expr.letRec (RecBindingList.instTyAux d Ts bindings) (body.instTyAux d Ts) := by
+  rw [Expr.instTyAux_letRec_projected,
+    Expr.instTyAux_letRec_bindings_eq]
+
+@[simp] private theorem RecBindingList.instTyAux_length (d : Nat) (Ts : List Ty)
+    (bindings : List CoreRecBinding) :
+    (RecBindingList.instTyAux d Ts bindings).length = bindings.length := by
+  induction bindings with
+  | nil => rfl
+  | cons binding rest ih => rcases binding with ⟨ann, rhs⟩; simp [RecBindingList.instTyAux, ih]
 
 /-- Type instantiation never touches term variables (any depth). -/
 private theorem Expr.varsBelow_instTyAux (Ts : List Ty) :
@@ -1794,35 +1811,28 @@ private theorem Expr.varsBelow_instTyAux (Ts : List Ty) :
       simp only [BranchListClosed.varsBelow]
       rw [ihbrs p b List.mem_cons_self (n + p.bindCount) d,
         ihtl (fun p' b' hm => ihbrs p' b' (List.mem_cons_of_mem _ hm))]
-  | letRec anns bindings body ihbindings ihbody =>
+  | letRec bindings body ihbindings ihbody =>
     intro n d
     rw [Expr.instTyAux_letRec_eq]
-    simp only [Expr.varsBelow]
-    rw [instTyAux_letRecBindings_length Ts body bindings anns d,
-      ihbody (n + bindings.length) d]
+    simp only [Expr.varsBelow, RecBindingList.instTyAux_length]
+    rw [ihbody (n + bindings.length) d]
     congr 1
-    have key : ∀ (bs : List Expr) (as : List (Option PolyTy)),
-        (∀ e ∈ bs, ∀ n' d', Expr.varsBelow n' (e.instTyAux d' Ts) = Expr.varsBelow n' e) →
-        ∀ d', RecGroupClosed.varsBelow (n + bindings.length)
-            (((Expr.letRec as bs body).instTyAux d' Ts).letRecBindingsOf)
-          = RecGroupClosed.varsBelow (n + bindings.length) bs := by
+    have key : ∀ (bs : List CoreRecBinding),
+        (∀ binding ∈ bs, ∀ n' d',
+          Expr.varsBelow n' (binding.rhs.instTyAux d' Ts) =
+            Expr.varsBelow n' binding.rhs) →
+        ∀ q d', RecGroupClosed.varsBelow q (RecBindingList.instTyAux d' Ts bs) =
+          RecGroupClosed.varsBelow q bs := by
       intro bs
       induction bs with
-      | nil => intro as _ d'; rw [Expr.instTyAux_letRec_nil]
-      | cons e rest ihrest =>
-        intro as hb d'
-        cases as with
-        | nil =>
-          rw [Expr.instTyAux_letRec_cons_nil]
-          simp only [RecGroupClosed.varsBelow]
-          rw [hb e List.mem_cons_self (n + bindings.length) d',
-            ihrest [] (fun x hx => hb x (List.mem_cons_of_mem _ hx)) d']
-        | cons a as' =>
-          rw [Expr.instTyAux_letRec_cons_ann]
-          simp only [RecGroupClosed.varsBelow]
-          rw [hb e List.mem_cons_self (n + bindings.length) (d' + RecAnn.params a),
-            ihrest as' (fun x hx => hb x (List.mem_cons_of_mem _ hx)) d']
-    exact key bindings anns ihbindings d
+      | nil => intro _ q d'; rfl
+      | cons binding rest ih =>
+        rcases binding with ⟨ann, rhs⟩
+        intro hb q d'
+        simp only [RecBindingList.instTyAux, RecGroupClosed.varsBelow,
+          hb ⟨ann, rhs⟩ List.mem_cons_self q (d' + RecAnn.params ann)]
+        rw [ih (fun binding hmem => hb binding (List.mem_cons_of_mem _ hmem)) q d']
+    exact key bindings ihbindings (n + bindings.length) d
 
 /-- Type instantiation never touches term variables. -/
 theorem Expr.varsBelow_instTy {n : Nat} (e : Expr) (tys : List Ty) :
@@ -1859,12 +1869,14 @@ theorem Expr.substN_nil (e : Expr) (k : Nat) : e.substN k [] = e := by
     intro pb hmem
     obtain ⟨pat, body⟩ := pb
     simp only [ihbrs pat body hmem]
-  | letRec anns bindings body ihbindings ihbody =>
+  | letRec bindings body ihbindings ihbody =>
     rw [Expr.substN_letRec, ihbody]
     congr 1
     apply List.map_self_of_mem
-    intro e hmem
-    exact ihbindings e hmem _
+    intro binding hmem
+    apply RecBinding.ext
+    · rfl
+    · exact ihbindings binding hmem _
 
 /-- Substitution consumes exactly the shift that made room for it: shift
     `vs.length` binders in at `k`, substitute `vs` at `k`, and you're back
@@ -1895,13 +1907,17 @@ theorem Expr.substN_shiftFrom_cancel (e : Expr) (k : Nat) (vs : List Expr) :
     intro pb hmem
     obtain ⟨pat, body⟩ := pb
     simp only [Function.comp_apply, ihbrs pat body hmem]
-  | letRec anns bindings body ihbindings ihbody =>
+  | letRec bindings body ihbindings ihbody =>
     rw [Expr.shiftFrom_letRec, Expr.substN_letRec, List.map_map, List.length_map,
       ihbody]
     congr 1
     apply List.map_self_of_mem
-    intro e hmem
-    simp only [Function.comp_apply, ihbindings e hmem]
+    intro binding hmem
+    rcases binding with ⟨ann, rhs⟩
+    simp only [Function.comp_apply, RecBinding.mapRhs]
+    apply RecBinding.ext
+    · rfl
+    · exact ihbindings ⟨ann, rhs⟩ hmem _
 
 
 /-! ## The structural side conditions -/
