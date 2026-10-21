@@ -10908,6 +10908,22 @@ theorem inferWithTypesCore_complete (input : InferInput) : InferWithTypesCoreCom
   (inferWithTypesCore_sourceComplete input).complete
 
 
+/-- Request-native completeness of the plain result API. -/
+def InferCoreCompleteReq (input : InferInput) : Prop :=
+  ∀ (K : List Nat) (frontier : Nat) (ctx : Ctx) (ambient : Subst) (target : Ty),
+    (InferRequest.core K frontier ctx input).WF →
+    (∀ pair ∈ ambient, pair.2.IsLC) →
+    (∀ k ∈ K, ambient.onTy (.fvar k) = .fvar k) →
+    InputTyping K (ambient.onCtx ctx) input target →
+    (inferCore K frontier ctx input).isSome
+
+theorem inferCore_complete_req (input : InferInput) : InferCoreCompleteReq input := by
+  intro K frontier ctx ambient target hreq hS hfix ht
+  rw [inferCore_isSome]
+  exact inferWithTypesCore_complete input K frontier ctx ambient target
+    hreq.ctxWF hreq.ctxBelow hreq.protectedBelow hS hfix ht
+
+
 /-- Completeness of the plain result API follows by projection of the same run. -/
 def InferCoreComplete (input : InferInput) : Prop :=
   ∀ (K : List Nat) (frontier : Nat) (ctx : Ctx) (ambient : Subst) (target : Ty),
@@ -10918,11 +10934,33 @@ def InferCoreComplete (input : InferInput) : Prop :=
 
 theorem inferCore_complete (input : InferInput) : InferCoreComplete input := by
   intro K frontier ctx ambient target hwf hbelow hK hS hfix ht
-  rw [inferCore_isSome]
-  exact inferWithTypesCore_complete input K frontier ctx ambient target hwf hbelow hK hS hfix ht
+  exact inferCore_complete_req input K frontier ctx ambient target
+    { ctxBelow := hbelow
+      protectedBelow := hK
+      softBelow := by simp [InferRequest.core]
+      ctxWF := hwf }
+    hS hfix ht
 
 /-- Producer completeness also yields the usual relational residual contract;
 it is a corollary of concrete success and principality, not a second worker. -/
+theorem Infer.complete_req {input : InferInput} {ctx : Ctx} {K : List Nat}
+    {frontier : Nat} {ambient : Subst} {target : Ty}
+    (hreq : (InferRequest.core K frontier ctx input).WF)
+    (hS : ∀ pair ∈ ambient, pair.2.IsLC)
+    (hfix : ∀ k ∈ K, ambient.onTy (.fvar k) = .fvar k)
+    (ht : InputTyping K (ambient.onCtx ctx) input target) :
+    ∃ result : InferResult, ∃ residual,
+      InferCert (InferRequest.core K frontier ctx input) result ∧
+      (∀ pair ∈ residual, pair.2.IsLC) ∧ target = residual.onTy result.ty ∧
+      (∀ k ∈ K, residual.onTy (.fvar k) = .fvar k) ∧
+      Subst.AgreesBelow frontier ambient (result.subst ++ residual) := by
+  obtain ⟨⟨⟨next, subst, output, ty⟩, hi⟩, _⟩ := Option.isSome_iff_exists.mp
+    (inferCore_complete_req input K frontier ctx ambient target hreq hS hfix ht)
+  obtain ⟨R, hR, hty, hRK, hag⟩ := hi.principal hreq.ctxWF hreq.ctxBelow
+    hreq.protectedBelow (by simp) ambient target K hS hreq.protectedBelow hfix ht
+  exact ⟨⟨next, subst, output, ty⟩, R, hi, hR, hty, hRK, hag⟩
+
+/-- Compatibility wrapper for the original premise-by-premise API. -/
 theorem Infer.complete {input : InferInput} {ctx : Ctx} {K : List Nat}
     {frontier : Nat} {ambient : Subst} {target : Ty}
     (hwf : CtxWF ctx) (hbelow : CtxBelow frontier ctx) (hK : ∀ k ∈ K, k < frontier)
@@ -10934,15 +10972,19 @@ theorem Infer.complete {input : InferInput} {ctx : Ctx} {K : List Nat}
       (∀ pair ∈ residual, pair.2.IsLC) ∧ target = residual.onTy ty ∧
       (∀ k ∈ K, residual.onTy (.fvar k) = .fvar k) ∧
       Subst.AgreesBelow frontier ambient (subst ++ residual) := by
-  obtain ⟨⟨⟨next, subst, output, ty⟩, hi⟩, _⟩ := Option.isSome_iff_exists.mp
-    (inferCore_complete input K frontier ctx ambient target hwf hbelow hK hS hfix ht)
-  obtain ⟨R, hR, hty, hRK, hag⟩ := hi.principal hwf hbelow hK (by simp) ambient target K hS hK hfix ht
-  exact ⟨next, subst, output, ty, R, hi, hR, hty, hRK, hag⟩
+  obtain ⟨result, residual, hi, hR, hty, hRK, hag⟩ := Infer.complete_req
+    { ctxBelow := hbelow
+      protectedBelow := hK
+      softBelow := by simp [InferRequest.core]
+      ctxWF := hwf }
+    hS hfix ht
+  exact ⟨result.frontier, result.subst, result.completedExpr, result.ty,
+    residual, hi, hR, hty, hRK, hag⟩
 
 /-- Acceptance is exactly independent input typing under some admissible
 specialization of the flexible context. Written rigid variables stay fixed. -/
-theorem inferCore_accepts_iff {K : List Nat} {frontier : Nat} {ctx : Ctx} {input : InferInput}
-    (hwf : CtxWF ctx) (hbelow : CtxBelow frontier ctx) (hK : ∀ k ∈ K, k < frontier) :
+theorem inferCore_accepts_iff_req {K : List Nat} {frontier : Nat} {ctx : Ctx}
+    {input : InferInput} (hreq : (InferRequest.core K frontier ctx input).WF) :
     (inferCore K frontier ctx input).isSome ↔
       ∃ (ambient : Subst) (target : Ty), (∀ pair ∈ ambient, pair.2.IsLC) ∧
         (∀ k ∈ K, ambient.onTy (.fvar k) = .fvar k) ∧
@@ -10950,9 +10992,23 @@ theorem inferCore_accepts_iff {K : List Nat} {frontier : Nat} {ctx : Ctx} {input
   constructor
   · intro hsome
     obtain ⟨⟨⟨next, subst, output, ty⟩, hi⟩, _⟩ := Option.isSome_iff_exists.mp hsome
-    exact ⟨subst, ty, (hi.lc hwf).2, Subst.fixes_of_dom_avoids hi.dom_avoids, hi.inputSound hwf⟩
+    exact ⟨subst, ty, (hi.lc hreq.ctxWF).2, Subst.fixes_of_dom_avoids hi.dom_avoids,
+      hi.inputSound hreq.ctxWF⟩
   · rintro ⟨ambient, target, hS, hfix, ht⟩
-    exact inferCore_complete input K frontier ctx ambient target hwf hbelow hK hS hfix ht
+    exact inferCore_complete_req input K frontier ctx ambient target hreq hS hfix ht
+
+/-- Compatibility wrapper for the original premise-by-premise API. -/
+theorem inferCore_accepts_iff {K : List Nat} {frontier : Nat} {ctx : Ctx} {input : InferInput}
+    (hwf : CtxWF ctx) (hbelow : CtxBelow frontier ctx) (hK : ∀ k ∈ K, k < frontier) :
+    (inferCore K frontier ctx input).isSome ↔
+      ∃ (ambient : Subst) (target : Ty), (∀ pair ∈ ambient, pair.2.IsLC) ∧
+        (∀ k ∈ K, ambient.onTy (.fvar k) = .fvar k) ∧
+        InputTyping K (ambient.onCtx ctx) input target :=
+  inferCore_accepts_iff_req
+    { ctxBelow := hbelow
+      protectedBelow := hK
+      softBelow := by simp [InferRequest.core]
+      ctxWF := hwf }
 
 /-- For closed terms no context specialization is needed: accepted inputs are
 precisely those admitted by the independent declarative fragment. -/
@@ -10964,16 +11020,26 @@ theorem inferCore_empty_accepts_iff {K : List Nat} {frontier : Nat} {ctors : Cto
     obtain ⟨⟨⟨next, subst, output, ty⟩, hi⟩, _⟩ := Option.isSome_iff_exists.mp hsome
     exact ⟨ty, by simpa only [Subst.onCtx, Subst.onEnv, List.map_nil] using hi.inputSound CtxWF.empty⟩
   · rintro ⟨ty, ht⟩
-    exact inferCore_complete input K frontier ⟨[], ctors⟩ [] ty CtxWF.empty CtxBelow.empty hK
-      (by simp) (by simp) (by simpa only [Subst.onCtx, Subst.onEnv, List.map_nil] using ht)
+    exact inferCore_complete_req input K frontier ⟨[], ctors⟩ [] ty
+      { ctxBelow := CtxBelow.empty
+        protectedBelow := hK
+        softBelow := by simp [InferRequest.core]
+        ctxWF := CtxWF.empty }
+      (by simp) (by simp)
+      (by simpa only [Subst.onCtx, Subst.onEnv, List.map_nil] using ht)
 
 /-- Public artifact inference is complete for independent input typing. -/
 theorem inferWithTypes_complete {ctors : CtorEnv} {input : InferInput} {ty : Ty}
     (ht : InputTyping input.rigidVars ⟨[], ctors⟩ input ty) : (inferWithTypes ctors input).isSome := by
   unfold inferWithTypes
   rw [Option.isSome_map]
-  exact inferWithTypesCore_complete input input.rigidVars input.freshFloor ⟨[], ctors⟩ [] ty
-    CtxWF.empty CtxBelow.empty (fun v hv => InferInput.lt_freshFloor hv) (by simp) (by simp)
+  rw [← inferCore_isSome]
+  exact inferCore_complete_req input input.rigidVars input.freshFloor ⟨[], ctors⟩ [] ty
+    { ctxBelow := CtxBelow.empty
+      protectedBelow := fun v hv => InferInput.lt_freshFloor hv
+      softBelow := by simp [InferRequest.core]
+      ctxWF := CtxWF.empty }
+    (by simp) (by simp)
     (by simpa only [Subst.onCtx_empty] using ht)
 
 theorem inferWithTypes_accepts_iff {ctors : CtorEnv} {input : InferInput} :
