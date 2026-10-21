@@ -7462,6 +7462,34 @@ def InferWithTypesCoreSourceComplete (input : InferInput) : Prop :=
     InputTyping P (ambient.onCtx ctx) (input.substTyFvars ambient) target →
     (inferWithTypesCore K frontier ctx input F).isSome
 
+namespace InferRequest
+
+/-- Source completeness for one bundled inference request. The declarative
+candidate set `P` remains theorem-specific rather than part of the worker request. -/
+def SourceComplete (request : InferRequest) : Prop :=
+  ∀ (ambient : Subst) (target : Ty) (P : List Nat),
+    request.Admissible →
+    (∀ pair ∈ ambient, pair.2.IsLC) →
+    (∀ k ∈ request.protectedVars, ambient.onTy (.fvar k) = .fvar k) →
+    (∀ p ∈ P, p < request.frontier) →
+    (∀ p ∈ P, ambient.onTy (.fvar p) = .fvar p) →
+    InputTyping P (ambient.onCtx request.ctx)
+      (request.input.substTyFvars ambient) target →
+    request.run.isSome
+
+end InferRequest
+
+/-- The established source-completeness induction supplies the request-native
+contract without changing its constructor-local proof interface. -/
+theorem InferWithTypesCoreSourceComplete.forRequest
+    {request : InferRequest} (hc : InferWithTypesCoreSourceComplete request.input) :
+    request.SourceComplete := by
+  intro ambient target P hreq hS hfix hP hfixP ht
+  rw [InferRequest.run_isSome]
+  exact hc request.protectedVars request.soft request.frontier request.ctx ambient target P
+    hreq.sourceScope hreq.ctxWF hreq.ctxBelow hreq.protectedBelow hreq.softBelow
+    hS hfix hP hfixP ht
+
  theorem inferRecComponentWithTypesCore_complete
     (hProducer : ∀ e : InferInput,e.size ≤ sizeBindings bindings → InferWithTypesCoreSourceComplete e)
     (hPrincipal : ∀ {κ F' Ψ c e Ψ' T output ty},e.size ≤ sizeBindings bindings →
@@ -10901,6 +10929,11 @@ theorem inferWithTypesCore_sourceComplete (input : InferInput) :
       hvalid hcanonical hframe hstateLC hstateB hctxWF hctx hbase hK hF hP hres hFixK
       hXsK hXsF hannScope hrhsScope hbindingsEq
   exact ⟨one, hRun, V, hV, hVP, hag, hresFinal⟩
+
+/-- Every admissible bundled request succeeds whenever its ambient
+specialization supplies an independently typed source. -/
+theorem inferRequest_sourceComplete (request : InferRequest) : request.SourceComplete :=
+  (inferWithTypesCore_sourceComplete request.input).forRequest
 
 /-- Public complete-source compatibility is a specialization of the same run. -/
 theorem inferWithTypesCore_complete (input : InferInput) : InferWithTypesCoreComplete input :=
