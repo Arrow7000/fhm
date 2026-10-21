@@ -9488,7 +9488,7 @@ theorem collectCompletedRecMembers_complete {members : List RecMemberState}
     cases hr : collectCompletedRecMembers rest with
     | none => simp only [hr, Option.isSome_none] at ht; contradiction
     | some result =>
-      rcases member with ⟨spec, slotImages, exported, memberOutput, facts⟩
+      rcases member with ⟨spec, slotImages, exported, memberOutput, facts, annInfo⟩
       simp only at hs ho
       subst exported
       subst memberOutput
