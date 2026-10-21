@@ -4451,6 +4451,14 @@ section
 /-! Annotation adapters for the shared surface and pattern-lowering pipeline.
 Holes remain syntax until inference visits each generated occurrence. -/
 
+@[simp] private theorem eraseBindings_length (bindings : List InputRecBinding) :
+    (eraseBindings bindings).length = bindings.length := by
+  induction bindings with
+  | nil => rfl
+  | cons binding rest ih =>
+      rcases binding with ⟨ann, rhs⟩
+      simp only [eraseBindings, List.length_cons, ih]
+
 mutual
 /-- Erasure commutes with term shifting, including recursive group binders. -/
 theorem InferInput.erase_shiftFrom (input : InferInput) (threshold count : Nat) :
@@ -4472,16 +4480,10 @@ theorem InferInput.erase_shiftFrom (input : InferInput) (threshold count : Nat) 
       Expr.match_ (scrut.erase.shiftFrom threshold count)
         (((Expr.match_ (.primLit .unit) (eraseBranches branches)).shiftFrom threshold count).matchBranchesOf)
     rw [eraseBranches_shiftFrom]
-  | letRec anns bindings body =>
-    have hlength : ∀ start, (shiftBindings start count bindings).length = bindings.length := by
-      induction bindings with
-      | nil => intro _; rfl
-      | cons head tail ih =>
-        intro start
-        simp only [shiftBindings, List.length_cons, ih]
+  | letRec bindings body =>
     have hbindings := eraseBindings_shiftFrom bindings (threshold + bindings.length) count
     simp only [InferInput.shiftFrom, InferInput.erase, Expr.shiftFrom, body.erase_shiftFrom,
-      eraseBindings_length, hbindings, List.map_const', hlength]
+      hbindings, eraseBindings_length]
 termination_by sizeOf input
 decreasing_by
   all_goals simp_wf
@@ -4502,14 +4504,15 @@ termination_by sizeOf branches
 decreasing_by
   all_goals simp_wf
   all_goals omega
-private theorem eraseBindings_shiftFrom (bindings : List InferInput) (threshold count : Nat) :
+private theorem eraseBindings_shiftFrom (bindings : List InputRecBinding) (threshold count : Nat) :
     eraseBindings (shiftBindings threshold count bindings) =
       RecGroup.shiftFrom threshold count (eraseBindings bindings) := by
   cases bindings with
   | nil => rfl
-  | cons body rest =>
+  | cons binding rest =>
+    rcases binding with ⟨ann, rhs⟩
     have hrest := eraseBindings_shiftFrom rest threshold count
-    simp only [shiftBindings, eraseBindings, RecGroup.shiftFrom, body.erase_shiftFrom, hrest]
+    simp only [shiftBindings, eraseBindings, RecGroup.shiftFrom, rhs.erase_shiftFrom, hrest]
 termination_by sizeOf bindings
 decreasing_by
   all_goals simp_wf
