@@ -1217,7 +1217,7 @@ theorem SourceScope.residual_freeze {K : List Nat} {F : List Ty} {input : InferI
     obtain ⟨hiLC,hs1LC⟩ := hi.lc hctxWF
     have hs2LC := hu.unifies.lc hiLC (Subst.onTy_lc hs1LC (hspecLC _ List.mem_cons_self))
     have hbothLC : ∀ p ∈ s1 ++ s2,p.2.IsLC := fun p hp => (List.mem_append.mp hp).elim (hs1LC p) (hs2LC p)
-    obtain ⟨hiB,hs1B⟩ := hi.belowFvars hctx hK hF
+    obtain ⟨hiB,hs1B⟩ := Infer.belowFvars hi hctx hK hF
     have hs2B := hu.unifies.belowFvars hiB (Subst.onTy_belowFvars hs1B (hheadB.mono hle))
     have hbothB : ∀ p ∈ s1 ++ s2,Ty.BelowFvars first p.2 := fun p hp => (List.mem_append.mp hp).elim (hs1B p) (hs2B p)
     have hbothFix : ∀ k ∈ K,(s1 ++ s2).onTy (.fvar k) = .fvar k :=
@@ -7312,20 +7312,23 @@ theorem Infer.sourcePrincipal (h : Infer K F frontier ctx input next subst outpu
   | .primBinOpCharLt hT hbT hF hbF => exact Infer.sourcePrincipal_primBinOpCharLt hT hbT hF hbF
   | .var hlook => exact Infer.sourcePrincipal_var hlook
   | .ctor hlook => exact Infer.sourcePrincipal_ctor hlook
-  | .lambda hs seed hb => exact Infer.sourcePrincipal_lambda hs seed hb hb.sourcePrincipal
-  | .app hs hf ha hu => exact Infer.sourcePrincipal_app hs hf ha hu hf.sourcePrincipal ha.sourcePrincipal
-  | .letIn hs hr hc hb => exact Infer.sourcePrincipal_letIn hs hr hc hb hr.sourcePrincipal hb.sourcePrincipal
+  | .lambda hs seed hb => exact Infer.sourcePrincipal_lambda hs seed hb (Infer.sourcePrincipal hb)
+  | .app hs hf ha hu =>
+    exact Infer.sourcePrincipal_app hs hf ha hu (Infer.sourcePrincipal hf) (Infer.sourcePrincipal ha)
+  | .letIn hs hr hc hb =>
+    exact Infer.sourcePrincipal_letIn hs hr hc hb (Infer.sourcePrincipal hr) (Infer.sourcePrincipal hb)
   | .letSignature hs hp ha hr hc he hb =>
-    exact Infer.sourcePrincipal_letSignature hs hp ha hr hc he hb hr.sourcePrincipal hb.sourcePrincipal
+    exact Infer.sourcePrincipal_letSignature hs hp ha hr hc he hb
+      (Infer.sourcePrincipal hr) (Infer.sourcePrincipal hb)
   | .match_ hscope hs hne hb =>
-    exact Infer.sourcePrincipal_match hscope hs hne hb hs.sourcePrincipal
-      (fun body hbody {_ _ _ _ _ _ _ _} hi => hi.sourcePrincipal)
+    exact Infer.sourcePrincipal_match hscope hs hne hb (Infer.sourcePrincipal hs)
+      (fun body hbody {_ _ _ _ _ _ _ _} hi => Infer.sourcePrincipal hi)
   | .letRec hscope hann hstrata hsigned hcompleted hbody =>
     expose_names
     have hvalid := RecGroup.inferenceSccs_valid
       (bindings := bindings.map InputRecBinding.recMode)
     apply Infer.sourcePrincipal_letRec_of_unsigned hscope hann hstrata hsigned hcompleted hbody
-      (fun he hi => hi.sourcePrincipal) hbody.sourcePrincipal
+      (fun he hi => Infer.sourcePrincipal hi) (Infer.sourcePrincipal hbody)
     intro P declCtx declBindings declSpecs declGroups declPrefixes G Xs R
       hdeclValid hdeclWF hprefix hGfresh hdeclRows hdeclFits hdeclTypes
       hGhigh hXhigh hXlen hXnd hGX hXmono hXctxP
@@ -7334,7 +7337,8 @@ theorem Infer.sourcePrincipal (h : Infer K F frontier ctx input next subst outpu
     simpa only [List.nil_append] using InferRecStrata.sourcePrincipal_residual_of_step (past := []) (base := frontier)
       (RecResidual.successful_step hdeclValid hdeclWF hprefix hGfresh hdeclRows hdeclFits hdeclTypes
         hGhigh hXhigh hXlen hXnd hGX hXmono hXctxP)
-      hstrata (fun he hi => hi.sourcePrincipal) (hsigned.frontier_le.trans hbody.frontier_le)
+      hstrata (fun he hi => Infer.sourcePrincipal hi)
+      (hsigned.frontier_le.trans (Infer.frontier_le hbody))
       hvalid rfl hframe hstateLC hstateB hctxWF hctx (by omega) hK hF hP hres
       hXsK hXsF hannScope hrhsScope hbindingsEq hannFreeze hrhsFreeze
 termination_by input.size
@@ -7343,7 +7347,7 @@ decreasing_by
 
 /-- The public residual contract retains independent P and its protection. -/
 theorem Infer.principal (h : Infer K F frontier ctx input next subst output ty) :
-    Infer.Principal h := h.sourcePrincipal.principal
+    Infer.Principal h := (Infer.sourcePrincipal h).principal
 
 end
 
@@ -11253,7 +11257,7 @@ theorem inferWithTypes_principal {ctors : CtorEnv} {input : InferInput} {result 
       protectedBelow := fun v hv => InferInput.lt_freshFloor hv
       softBelow := by simp [InferRequest.core]
       ctxWF := CtxWF.empty }
-  obtain ⟨R, hR, hty, hfix, _⟩ := hi.principal hreq [] target input.rigidVars (by simp)
+  obtain ⟨R, hR, hty, hfix, _⟩ := Infer.principal hi hreq [] target input.rigidVars (by simp)
     (fun v hv => InferInput.lt_freshFloor hv) (by simp)
     (by simpa only [Subst.onCtx_empty] using ht)
   exact ⟨R, hR, hty, hfix⟩

@@ -198,70 +198,84 @@ def letOutput (scheme : PolyTy) (names : List Nat) (rhs body : Expr) (subst : Su
 mutual
 /-- Canonical inference carries frozen K and the current images F of live
 provisional forall slots. Sequential calls transform both F and source syntax. -/
-inductive Infer : List Nat → List Ty → Nat → Ctx → InferInput → Nat → Subst → Expr → Ty → Prop
-  | primLitUnit : Infer K F frontier ctx (.primLit .unit) frontier [] (.primLit .unit) (.prim .unit)
-  | primLitInt : Infer K F frontier ctx (.primLit (.int n)) frontier [] (.primLit (.int n)) (.prim .int)
-  | primLitNat : Infer K F frontier ctx (.primLit (.nat n)) frontier [] (.primLit (.nat n)) (.prim .nat)
-  | primLitChar : Infer K F frontier ctx (.primLit (.char c)) frontier [] (.primLit (.char c)) (.prim .char)
-  | primBinOpIntAdd : Infer K F frontier ctx (.primBinOp .intAdd) frontier [] (.primBinOp .intAdd) (.arrow (.prim .int) (.arrow (.prim .int) (.prim .int)))
-  | primBinOpIntSub : Infer K F frontier ctx (.primBinOp .intSub) frontier [] (.primBinOp .intSub) (.arrow (.prim .int) (.arrow (.prim .int) (.prim .int)))
+inductive InferCert : InferRequest → InferResult → Prop
+  | primLitUnit : InferCert ⟨K, F, frontier, ctx, .primLit .unit⟩
+      ⟨frontier, [], .primLit .unit, .prim .unit⟩
+  | primLitInt : InferCert ⟨K, F, frontier, ctx, .primLit (.int n)⟩
+      ⟨frontier, [], .primLit (.int n), .prim .int⟩
+  | primLitNat : InferCert ⟨K, F, frontier, ctx, .primLit (.nat n)⟩
+      ⟨frontier, [], .primLit (.nat n), .prim .nat⟩
+  | primLitChar : InferCert ⟨K, F, frontier, ctx, .primLit (.char c)⟩
+      ⟨frontier, [], .primLit (.char c), .prim .char⟩
+  | primBinOpIntAdd : InferCert ⟨K, F, frontier, ctx, .primBinOp .intAdd⟩
+      ⟨frontier, [], .primBinOp .intAdd, .arrow (.prim .int) (.arrow (.prim .int) (.prim .int))⟩
+  | primBinOpIntSub : InferCert ⟨K, F, frontier, ctx, .primBinOp .intSub⟩
+      ⟨frontier, [], .primBinOp .intSub, .arrow (.prim .int) (.arrow (.prim .int) (.prim .int))⟩
   | primBinOpIntLt :
       LookupList.get? ctx.ctors ⟨"True"⟩ = some trueC → trueC.IsBoolCtor →
       LookupList.get? ctx.ctors ⟨"False"⟩ = some falseC → falseC.IsBoolCtor →
-      Infer K F frontier ctx (.primBinOp .intLt) frontier [] (.primBinOp .intLt)
-        (.arrow (.prim .int) (.arrow (.prim .int) (.customTy ⟨"Bool"⟩ [])))
+      InferCert ⟨K, F, frontier, ctx, .primBinOp .intLt⟩
+        ⟨frontier, [], .primBinOp .intLt,
+          .arrow (.prim .int) (.arrow (.prim .int) (.customTy ⟨"Bool"⟩ []))⟩
   | primBinOpCharLt :
       LookupList.get? ctx.ctors ⟨"True"⟩ = some trueC → trueC.IsBoolCtor →
       LookupList.get? ctx.ctors ⟨"False"⟩ = some falseC → falseC.IsBoolCtor →
-      Infer K F frontier ctx (.primBinOp .charLt) frontier [] (.primBinOp .charLt)
-        (.arrow (.prim .char) (.arrow (.prim .char) (.customTy ⟨"Bool"⟩ [])))
+      InferCert ⟨K, F, frontier, ctx, .primBinOp .charLt⟩
+        ⟨frontier, [], .primBinOp .charLt,
+          .arrow (.prim .char) (.arrow (.prim .char) (.customTy ⟨"Bool"⟩ []))⟩
   | var : ctx.env[index]? = some scheme →
-      Infer K F frontier ctx (.var index) (frontier + scheme.paramCount) [] (.var index)
-        (scheme.openVars (freshVars frontier scheme.paramCount))
+      InferCert ⟨K, F, frontier, ctx, .var index⟩
+        ⟨frontier + scheme.paramCount, [], .var index,
+          scheme.openVars (freshVars frontier scheme.paramCount)⟩
   | ctor : LookupList.get? ctx.ctors name = some ctor →
-      Infer K F frontier ctx (.ctor name) (frontier + ctor.paramCount) [] (.ctor name)
-        (ctor.toTy.openVars (freshVars frontier ctor.paramCount))
+      InferCert ⟨K, F, frontier, ctx, .ctor name⟩
+        ⟨frontier + ctor.paramCount, [], .ctor name,
+          ctor.toTy.openVars (freshVars frontier ctor.paramCount)⟩
   | lambda :
       SourceScope K F (.lambda ann body) →
       Seed (K ++ softVars F) frontier ann param initial →
-      Infer K F initial { ctx with env := PolyTy.mkTrivial param :: ctx.env }
-        body next subst completed bodyTy →
-      Infer K F frontier ctx (.lambda ann body) next subst
-        (lambdaOutput ann param subst completed) (.arrow (subst.onTy param) bodyTy)
+      InferCert ⟨K, F, initial, { ctx with env := PolyTy.mkTrivial param :: ctx.env }, body⟩
+        ⟨next, subst, completed, bodyTy⟩ →
+      InferCert ⟨K, F, frontier, ctx, .lambda ann body⟩
+        ⟨next, subst, lambdaOutput ann param subst completed, .arrow (subst.onTy param) bodyTy⟩
   | app :
       SourceScope K F (.app f arg) →
-      Infer K F frontier ctx f first s1 fOut fTy →
+      InferCert ⟨K, F, frontier, ctx, f⟩ ⟨first, s1, fOut, fTy⟩ →
       (let argSoft := substSoft s1 F
        let argCtx := s1.onCtx ctx
        let argInput := arg.substTyFvars s1
-       Infer K argSoft first argCtx argInput second s2 argOut argTy) →
+       InferCert ⟨K, argSoft, first, argCtx, argInput⟩ ⟨second, s2, argOut, argTy⟩) →
       RigidUnify K (s2.onTy fTy) (.arrow argTy (.fvar second)) s3 →
-      Infer K F frontier ctx (.app f arg) (second + 1) (s1 ++ s2 ++ s3)
-        (.app (fOut.substTyFvars (s2 ++ s3)) (argOut.substTyFvars s3)) (s3.onTy (.fvar second))
+      InferCert ⟨K, F, frontier, ctx, .app f arg⟩
+        ⟨second + 1, s1 ++ s2 ++ s3,
+          .app (fOut.substTyFvars (s2 ++ s3)) (argOut.substTyFvars s3), s3.onTy (.fvar second)⟩
   | letIn :
       SourceScope K F (.letIn ann rhs body) →
-      Infer K F frontier ctx rhs first s1 rhsOut rhsTy →
+      InferCert ⟨K, F, frontier, ctx, rhs⟩ ⟨first, s1, rhsOut, rhsTy⟩ →
       LetCheck K (substSoft s1 F) first rhsTy (ann.substTyFvars s1) checked sCheck →
       (let checkedSubst := s1 ++ sCheck
        let checkedSoft := substSoft checkedSubst F
        let checkedCtx := sCheck.onCtx (s1.onCtx ctx)
        let generalized := genScheme (K ++ softVars checkedSoft) checkedCtx.env (sCheck.onTy rhsTy)
-       Infer K checkedSoft checked { checkedCtx with env := generalized :: checkedCtx.env }
-         (body.substTyFvars checkedSubst) next s2 bodyOut bodyTy) →
-      Infer K F frontier ctx (.letIn ann rhs body) next (s1 ++ sCheck ++ s2)
-        (let checkedSubst := s1 ++ sCheck
-         let checkedSoft := substSoft checkedSubst F
-         let checkedCtx := sCheck.onCtx (s1.onCtx ctx)
-         let generalized := genScheme (K ++ softVars checkedSoft) checkedCtx.env (sCheck.onTy rhsTy)
-         let generalizedNames := genVars (K ++ softVars checkedSoft) checkedCtx.env (sCheck.onTy rhsTy)
-         letOutput generalized generalizedNames (rhsOut.substTyFvars sCheck) bodyOut s2)
-        bodyTy
+       InferCert
+         ⟨K, checkedSoft, checked, { checkedCtx with env := generalized :: checkedCtx.env },
+           body.substTyFvars checkedSubst⟩
+         ⟨next, s2, bodyOut, bodyTy⟩) →
+      InferCert ⟨K, F, frontier, ctx, .letIn ann rhs body⟩
+        ⟨next, s1 ++ sCheck ++ s2,
+          (let checkedSubst := s1 ++ sCheck
+           let checkedSoft := substSoft checkedSubst F
+           let checkedCtx := sCheck.onCtx (s1.onCtx ctx)
+           let generalized := genScheme (K ++ softVars checkedSoft) checkedCtx.env (sCheck.onTy rhsTy)
+           let generalizedNames := genVars (K ++ softVars checkedSoft) checkedCtx.env (sCheck.onTy rhsTy)
+           letOutput generalized generalizedNames (rhsOut.substTyFvars sCheck) bodyOut s2),
+          bodyTy⟩
   | letSignature :
       SourceScope K F (.letIn ann rhs body) →
       written = freshVars frontier ann.paramCount →
       (∀ name ∈ written, name ∉ K ++ softVars F) →
-      Infer (K ++ written) F (frontier + ann.paramCount) ctx (rhs.openTyVars written)
-        first s1 rhsOut rhsTy →
+      InferCert ⟨K ++ written, F, frontier + ann.paramCount, ctx, rhs.openTyVars written⟩
+        ⟨first, s1, rhsOut, rhsTy⟩ →
       SignatureCheck K (substSoft s1 F) written first rhsTy (ann.substTyFvars s1) checked sCheck →
       (let checkedSubst := s1 ++ sCheck
        let checkedSoft := substSoft checkedSubst F
@@ -273,30 +287,34 @@ inductive Infer : List Nat → List Ty → Nat → Ctx → InferInput → Nat �
        let checkedAnn := ann.substTyFvars checkedSubst
        let bodyScheme := signatureScheme checkedAnn (K ++ softVars checkedSoft) written
          checkedCtx (sCheck.onTy rhsTy)
-       Infer K checkedSoft checked { checkedCtx with env := bodyScheme :: checkedCtx.env }
-         (body.substTyFvars checkedSubst) next s2 bodyOut bodyTy) →
-      Infer K F frontier ctx (.letIn ann rhs body) next (s1 ++ sCheck ++ s2)
-        (let checkedSubst := s1 ++ sCheck
-         let checkedSoft := substSoft checkedSubst F
-         let checkedCtx := sCheck.onCtx (s1.onCtx ctx)
-         let checkedAnn := ann.substTyFvars checkedSubst
-         let bodyScheme := signatureScheme checkedAnn (K ++ softVars checkedSoft) written
-           checkedCtx (sCheck.onTy rhsTy)
-         let bodyNames := signatureNames checkedAnn (K ++ softVars checkedSoft) written
-           checkedCtx (sCheck.onTy rhsTy)
-         letOutput bodyScheme bodyNames (rhsOut.substTyFvars sCheck) bodyOut s2)
-        bodyTy
+       InferCert
+         ⟨K, checkedSoft, checked, { checkedCtx with env := bodyScheme :: checkedCtx.env },
+           body.substTyFvars checkedSubst⟩
+         ⟨next, s2, bodyOut, bodyTy⟩) →
+      InferCert ⟨K, F, frontier, ctx, .letIn ann rhs body⟩
+        ⟨next, s1 ++ sCheck ++ s2,
+          (let checkedSubst := s1 ++ sCheck
+           let checkedSoft := substSoft checkedSubst F
+           let checkedCtx := sCheck.onCtx (s1.onCtx ctx)
+           let checkedAnn := ann.substTyFvars checkedSubst
+           let bodyScheme := signatureScheme checkedAnn (K ++ softVars checkedSoft) written
+             checkedCtx (sCheck.onTy rhsTy)
+           let bodyNames := signatureNames checkedAnn (K ++ softVars checkedSoft) written
+             checkedCtx (sCheck.onTy rhsTy)
+           letOutput bodyScheme bodyNames (rhsOut.substTyFvars sCheck) bodyOut s2),
+          bodyTy⟩
   | match_ :
       SourceScope K F (.match_ scrut branches) →
-      Infer K F frontier ctx scrut first s1 scrutOut scrutTy →
+      InferCert ⟨K, F, frontier, ctx, scrut⟩ ⟨first, s1, scrutOut, scrutTy⟩ →
       branches ≠ [] →
       (let branchSoft := substSoft s1 F
        let branchCtx := s1.onCtx ctx
        let branchInputs := substInputBranches s1 branches
        InferBranches K branchSoft (first + 1) branchCtx scrutTy (.fvar first)
          branchInputs next s2 branchesOut) →
-      Infer K F frontier ctx (.match_ scrut branches) next (s1 ++ s2)
-        (.match_ (scrutOut.substTyFvars s2) branchesOut) (s2.onTy (.fvar first))
+      InferCert ⟨K, F, frontier, ctx, .match_ scrut branches⟩
+        ⟨next, s1 ++ s2, .match_ (scrutOut.substTyFvars s2) branchesOut,
+          s2.onTy (.fvar first)⟩
 
   | letRec {completed : List CompletedRecMember} :
       (SourceScope K F (.letRec bindings body) ∧ CtxBelow frontier ctx ∧
@@ -314,19 +332,23 @@ inductive Infer : List Nat → List Ty → Nat → Ctx → InferInput → Nat �
          second s2 state2) →
       state2.Completed completed →
       (let recSubst := s1 ++ s2
-       Infer K (substSoft recSubst F) second (state2.rhsCtx (recSubst.onCtx ctx))
-         (body.substTyFvars recSubst) next s3 bodyOut bodyTy) →
-      Infer K F frontier ctx (.letRec bindings body) next (s1 ++ s2 ++ s3)
-        (.letRec (completed.map fun member =>
-          { ann := some (s3.onPolyTy member.scheme), rhs := member.output.substTyFvars s3 })
-          bodyOut) bodyTy
+       InferCert
+         ⟨K, substSoft recSubst F, second, state2.rhsCtx (recSubst.onCtx ctx),
+           body.substTyFvars recSubst⟩
+         ⟨next, s3, bodyOut, bodyTy⟩) →
+      InferCert ⟨K, F, frontier, ctx, .letRec bindings body⟩
+        ⟨next, s1 ++ s2 ++ s3,
+          .letRec (completed.map fun member =>
+            { ann := some (s3.onPolyTy member.scheme), rhs := member.output.substTyFvars s3 })
+            bodyOut,
+          bodyTy⟩
 
 inductive InferBranches : List Nat → List Ty → Nat → Ctx → Ty → Ty →
     List (MatchPattern × InferInput) → Nat → Subst → List (MatchPattern × Expr) → Prop
   | nil : InferBranches K F frontier ctx scrutTy resultTy [] frontier [] []
   | consWild :
       (∀ v ∈ rigidBranchVars ((.wildcard, body) :: rest), v ∈ K ++ softVars F) →
-      Infer K F frontier ctx body first s1 bodyOut bodyTy →
+      InferCert ⟨K, F, frontier, ctx, body⟩ ⟨first, s1, bodyOut, bodyTy⟩ →
       RigidUnify K bodyTy (s1.onTy resultTy) s2 →
       InferBranches K (substSoft (s1 ++ s2) F) first (s2.onCtx (s1.onCtx ctx))
         (s2.onTy (s1.onTy scrutTy)) (s2.onTy (s1.onTy resultTy))
@@ -338,11 +360,13 @@ inductive InferBranches : List Nat → List Ty → Nat → Ctx → Ty → Ty →
       LookupList.get? ctx.ctors name = some ctor →
       count = ctor.contents.length →
       RigidUnify K scrutTy (.customTy ctor.tyName ((freshVars frontier ctor.paramCount).map Ty.fvar)) s0 →
-      Infer K (substSoft s0 F) (frontier + ctor.paramCount)
-        { (s0.onCtx ctx) with
-          env := (ctor.contents.map (Ty.openWith (((freshVars frontier ctor.paramCount).map Ty.fvar).map s0.onTy))).map PolyTy.mkTrivial ++
-              (s0.onCtx ctx).env }
-        (body.substTyFvars s0) first s1 bodyOut bodyTy →
+      InferCert
+        ⟨K, substSoft s0 F, frontier + ctor.paramCount,
+          { (s0.onCtx ctx) with
+            env := (ctor.contents.map (Ty.openWith (((freshVars frontier ctor.paramCount).map Ty.fvar).map s0.onTy))).map PolyTy.mkTrivial ++
+                (s0.onCtx ctx).env },
+          body.substTyFvars s0⟩
+        ⟨first, s1, bodyOut, bodyTy⟩ →
       RigidUnify K bodyTy (s1.onTy (s0.onTy resultTy)) s2 →
       InferBranches K (substSoft (s0 ++ s1 ++ s2) F) first (s2.onCtx (s1.onCtx (s0.onCtx ctx)))
         (s2.onTy (s1.onTy (s0.onTy scrutTy))) (s2.onTy (s1.onTy (s0.onTy resultTy)))
@@ -365,7 +389,7 @@ inductive InferRecComponent : List Nat → List Ty → List Nat → Nat → Nat 
         next subst (none :: artifacts)
   | consSelected {bodyFacts : RecFacts} :
       index ∈ members →
-      Infer K F frontier ctx binding.rhs first s1 output ty →
+      InferCert ⟨K, F, frontier, ctx, binding.rhs⟩ ⟨first, s1, output, ty⟩ →
       RigidUnify K ty (s1.onTy expected) s2 →
       InferRecComponent K (substSoft (s1 ++ s2) F) members (index + 1) first
         (s2.onCtx (s1.onCtx ctx)) (substInputBindings (s1 ++ s2) rest)
@@ -408,9 +432,10 @@ inductive InferRecSigned : List Nat → List Ty → Nat → Nat → Ctx → List
   | cons {scheme : PolyTy} {rhs : InferInput} {state : RecState} {bodyFacts : RecFacts} :
       scheme.WF →
       (∀ v ∈ rhs.rigidVars, v ∈ K ++ softVars F) →
-      Infer (K ++ freshVars frontier scheme.paramCount) F (frontier + scheme.paramCount)
-        (state.rhsCtx ctx) (rhs.openTyVars (freshVars frontier scheme.paramCount))
-        first s1 output ty →
+      InferCert
+        ⟨K ++ freshVars frontier scheme.paramCount, F, frontier + scheme.paramCount,
+          state.rhsCtx ctx, rhs.openTyVars (freshVars frontier scheme.paramCount)⟩
+        ⟨first, s1, output, ty⟩ →
       RigidUnify (K ++ freshVars frontier scheme.paramCount) ty
         ((s1.onPolyTy scheme).openVars (freshVars frontier scheme.paramCount)) s2 →
       (∀ y ∈ freshVars frontier scheme.paramCount,
@@ -426,12 +451,12 @@ inductive InferRecSigned : List Nat → List Ty → Nat → Nat → Ctx → List
 
 end
 
-/-- The current inference judgment viewed through bundled call and result
-records. This is a reducible compatibility seam; the underlying mutual
-inductives retain their established indices. -/
-abbrev InferCert (request : InferRequest) (result : InferResult) : Prop :=
-  Infer request.protectedVars request.soft request.frontier request.ctx request.input
-    result.frontier result.subst result.completedExpr result.ty
+/-- Positional compatibility view of the canonical bundled certificate.
+New proofs should state their contracts with `InferCert`; this alias keeps the
+established internal theorem surface definitionally equal during migration. -/
+abbrev Infer (K : List Nat) (F : List Ty) (frontier : Nat) (ctx : Ctx)
+    (input : InferInput) (next : Nat) (subst : Subst) (output : Expr) (ty : Ty) : Prop :=
+  InferCert (InferRequest.mk K F frontier ctx input) (InferResult.mk next subst output ty)
 
 theorem Seed.lc (h : Seed K frontier ann param initial) : param.IsLC := by
   cases h with
@@ -600,7 +625,7 @@ theorem SignatureCheck.scheme_eq_close (h : SignatureCheck K F written frontier 
       exact ⟨hl.symm, True.intro⟩
   | partialSignature _ _ _ _ => rfl
 
-theorem Infer.sourceScope (h : Infer K F frontier ctx input next subst output ty) :
+private theorem InferCert.sourceScope_raw (h : Infer K F frontier ctx input next subst output ty) :
     SourceScope K F input := by
   cases h with
   | primLitUnit | primLitInt | primLitNat | primLitChar | primBinOpIntAdd | primBinOpIntSub | primBinOpIntLt _ _ _ _ | primBinOpCharLt _ _ _ _ | var _ | ctor _ =>
@@ -612,26 +637,36 @@ theorem Infer.sourceScope (h : Infer K F frontier ctx input next subst output ty
   | match_ hs _ _ _ => exact hs
   | letRec hs _ _ _ _ _ => exact hs.1
 
+theorem InferCert.sourceScope {request : InferRequest} {result : InferResult}
+    (h : InferCert request result) : request.Scoped := by
+  cases request
+  cases result
+  exact InferCert.sourceScope_raw h
+
+theorem Infer.sourceScope (h : Infer K F frontier ctx input next subst output ty) :
+    SourceScope K F input :=
+  InferCert.sourceScope_raw h
+
 private theorem avoids_append {K : List Nat} {S T : Subst}
     (hS : ∀ p ∈ S, p.1 ∉ K) (hT : ∀ p ∈ T, p.1 ∉ K) :
     ∀ p ∈ S ++ T, p.1 ∉ K :=
   fun p hp => (List.mem_append.mp hp).elim (hS p) (hT p)
 
 mutual
-theorem Infer.dom_avoids (h : Infer K F frontier ctx input next subst output ty) :
+private theorem InferCert.dom_avoids_raw (h : Infer K F frontier ctx input next subst output ty) :
     ∀ pair ∈ subst, pair.1 ∉ K := by
   match h with
   | .primLitUnit | .primLitInt | .primLitNat | .primLitChar | .primBinOpIntAdd | .primBinOpIntSub | .primBinOpIntLt _ _ _ _ | .primBinOpCharLt _ _ _ _ | .var _ | .ctor _ => simp
-  | .lambda _ _ hb => exact hb.dom_avoids
-  | .app _ hf ha hu => exact avoids_append (avoids_append hf.dom_avoids ha.dom_avoids) hu.dom_avoids
-  | .letIn _ hr hc hb => exact avoids_append (avoids_append hr.dom_avoids hc.dom_avoids) hb.dom_avoids
+  | .lambda _ _ hb => exact hb.dom_avoids_raw
+  | .app _ hf ha hu => exact avoids_append (avoids_append hf.dom_avoids_raw ha.dom_avoids_raw) hu.dom_avoids
+  | .letIn _ hr hc hb => exact avoids_append (avoids_append hr.dom_avoids_raw hc.dom_avoids) hb.dom_avoids_raw
   | .letSignature _ _ _ hr hc _ hb =>
     exact avoids_append (avoids_append
-      (fun p hp hk => hr.dom_avoids p hp (List.mem_append_left _ hk))
-      (fun p hp hk => hc.dom_avoids p hp (List.mem_append_left _ hk))) hb.dom_avoids
-  | .match_ _ hs _ hb => exact avoids_append hs.dom_avoids hb.dom_avoids
+      (fun p hp hk => hr.dom_avoids_raw p hp (List.mem_append_left _ hk))
+      (fun p hp hk => hc.dom_avoids p hp (List.mem_append_left _ hk))) hb.dom_avoids_raw
+  | .match_ _ hs _ hb => exact avoids_append hs.dom_avoids_raw hb.dom_avoids
   | .letRec _ _ hstrata hsigned _ hbody =>
-      exact avoids_append (avoids_append hstrata.dom_avoids hsigned.dom_avoids) hbody.dom_avoids
+      exact avoids_append (avoids_append hstrata.dom_avoids hsigned.dom_avoids) hbody.dom_avoids_raw
 termination_by (input.size, 0)
 decreasing_by all_goals (simp only [InferInput.size, InferInput.size_openTyVars, InferInput.size_substTyFvars, sizeBranches_substInputBranches, sizeBindings_substInputBindings]; omega)
 
@@ -640,9 +675,9 @@ theorem InferBranches.dom_avoids
     ∀ pair ∈ subst, pair.1 ∉ K := by
   match h with
   | .nil => simp
-  | .consWild _ hb hu hr => exact avoids_append (avoids_append hb.dom_avoids hu.dom_avoids) hr.dom_avoids
+  | .consWild _ hb hu hr => exact avoids_append (avoids_append hb.dom_avoids_raw hu.dom_avoids) hr.dom_avoids
   | .cons _ _ _ hu0 hb hu hr =>
-    exact avoids_append (avoids_append (avoids_append hu0.dom_avoids hb.dom_avoids) hu.dom_avoids) hr.dom_avoids
+    exact avoids_append (avoids_append (avoids_append hu0.dom_avoids hb.dom_avoids_raw) hu.dom_avoids) hr.dom_avoids
 termination_by (sizeBranches branches, 0)
 decreasing_by all_goals (simp only [sizeBranches, InferInput.size_substTyFvars, sizeBranches_substInputBranches]; omega)
 
@@ -653,7 +688,7 @@ theorem InferRecComponent.dom_avoids
   | .nil => simp
   | .skipMono _ hr | .skipPoly hr => exact hr.dom_avoids
   | .consSelected _ hi hu hr =>
-      exact avoids_append (avoids_append hi.dom_avoids hu.dom_avoids) hr.dom_avoids
+      exact avoids_append (avoids_append hi.dom_avoids_raw hu.dom_avoids) hr.dom_avoids
 termination_by (sizeBindings bindings, 0)
 decreasing_by all_goals (simp only [sizeBindings, sizeBindings_substInputBindings]; omega)
 
@@ -677,11 +712,22 @@ theorem InferRecSigned.dom_avoids
   | .skip _ hr => exact hr.dom_avoids
   | .cons _ _ hi hu _ hr =>
       exact avoids_append (avoids_append
-        (fun p hp hk => hi.dom_avoids p hp (List.mem_append_left _ hk))
+        (fun p hp hk => hi.dom_avoids_raw p hp (List.mem_append_left _ hk))
         (fun p hp hk => hu.dom_avoids p hp (List.mem_append_left _ hk))) hr.dom_avoids
 termination_by (sizeBindings bindings, 0)
 decreasing_by all_goals (simp only [sizeBindings, InferInput.size_openTyVars, sizeBindings_substInputBindings]; omega)
 end
+
+theorem InferCert.dom_avoids {request : InferRequest} {result : InferResult}
+    (h : InferCert request result) :
+    ∀ pair ∈ result.subst, pair.1 ∉ request.protectedVars := by
+  cases request
+  cases result
+  exact InferCert.dom_avoids_raw h
+
+theorem Infer.dom_avoids (h : Infer K F frontier ctx input next subst output ty) :
+    ∀ pair ∈ subst, pair.1 ∉ K :=
+  InferCert.dom_avoids_raw h
 
  theorem InferRecComponent.lc_of_infer
     (h : InferRecComponent K F members index frontier ctx bindings specs next S artifacts)
@@ -781,7 +827,7 @@ end
 
 
 mutual
-theorem Infer.lc (h : Infer K F frontier ctx input next subst output ty) :
+private theorem InferCert.lc_raw (h : Infer K F frontier ctx input next subst output ty) :
     CtxWF ctx → ty.IsLC ∧ ∀ pair ∈ subst, pair.2.IsLC := by
   match h with
   | .primLitUnit => intro _; exact ⟨.prim, by simp⟩
@@ -798,19 +844,19 @@ theorem Infer.lc (h : Infer K F frontier ctx input next subst output ty) :
   | .ctor hlook =>
       intro _
       exact ⟨PolyTy.openVars_isLC (Ctor.toTy_wf _) (by simp [Ctor.toTy]), by simp⟩
-  | @Infer.lambda K F ann body frontier param initial ctx next subst completed bodyTy _ hs hb =>
+  | @InferCert.lambda K F ann body frontier param initial ctx next subst completed bodyTy _ hs hb =>
       intro hctx
       have hbodyCtx : CtxWF { ctx with env := PolyTy.mkTrivial param :: ctx.env } := by
         intro scheme hscheme
         rcases List.mem_cons.mp hscheme with rfl | hscheme
         · exact hs.lc
         · exact hctx scheme hscheme
-      obtain ⟨ht, hsubst⟩ := hb.lc hbodyCtx
+      obtain ⟨ht, hsubst⟩ := hb.lc_raw hbodyCtx
       exact ⟨.arrow (Subst.onTy_lc hsubst hs.lc) ht, hsubst⟩
   | .app _ hf hx hu =>
       intro hctx
-      obtain ⟨hfTy, hs1⟩ := hf.lc hctx
-      obtain ⟨hxTy, hs2⟩ := hx.lc (Subst.onCtx_wf hs1 hctx)
+      obtain ⟨hfTy, hs1⟩ := hf.lc_raw hctx
+      obtain ⟨hxTy, hs2⟩ := hx.lc_raw (Subst.onCtx_wf hs1 hctx)
       have hs3 := hu.unifies.lc (Subst.onTy_lc hs2 hfTy) (.arrow hxTy .fvar)
       refine ⟨Subst.onTy_lc hs3 .fvar, ?_⟩
       intro pair hp
@@ -819,9 +865,9 @@ theorem Infer.lc (h : Infer K F frontier ctx input next subst output ty) :
       · exact hs3 pair hp
   | .letIn _ hr hc hb =>
       intro hctx
-      obtain ⟨hrTy, hs1⟩ := hr.lc hctx
+      obtain ⟨hrTy, hs1⟩ := hr.lc_raw hctx
       have hcheck := hc.lc hrTy
-      obtain ⟨hbTy, hs2⟩ := hb.lc (by
+      obtain ⟨hbTy, hs2⟩ := hb.lc_raw (by
         intro scheme hscheme
         rcases List.mem_cons.mp hscheme with rfl | hscheme
         · exact genScheme_wf (Subst.onTy_lc hcheck hrTy)
@@ -836,9 +882,9 @@ theorem Infer.lc (h : Infer K F frontier ctx input next subst output ty) :
     intro hctx
     have hlen : _ := congrArg List.length hprefix
     simp only [freshVars_length] at hlen
-    obtain ⟨hrTy, hs1⟩ := hr.lc hctx
+    obtain ⟨hrTy, hs1⟩ := hr.lc_raw hctx
     have hcheck := hc.lc (by simpa using hlen) hrTy
-    obtain ⟨hbTy, hs2⟩ := hb.lc (by
+    obtain ⟨hbTy, hs2⟩ := hb.lc_raw (by
       intro scheme hscheme
       rcases List.mem_cons.mp hscheme with rfl | hscheme
       · simpa only [BindingAnn.substTyFvars_append] using hc.scheme_wf (Q := K ++ softVars (substSoft (_ ++ _) F)) (by simpa using hlen) hrTy
@@ -847,19 +893,19 @@ theorem Infer.lc (h : Infer K F frontier ctx input next subst output ty) :
       (fun hp => (List.mem_append.mp hp).elim (hs1 p) (hcheck p)) (hs2 p)⟩
   | .match_ _ hs _ hb =>
     intro hctx
-    obtain ⟨ht, hS1⟩ := hs.lc hctx
+    obtain ⟨ht, hS1⟩ := hs.lc_raw hctx
     obtain ⟨hresult, hS2⟩ := hb.lc (Subst.onCtx_wf hS1 hctx) ht .fvar
     exact ⟨hresult, fun p hp => (List.mem_append.mp hp).elim (hS1 p) (hS2 p)⟩
   | .letRec _ hann hs hp _ hb =>
     intro hctx
     obtain ⟨hs1, hstate1⟩ := hs.lc_of_infer
-      (fun he hi => hi.lc) hctx (RecState.LC.init (fun binding hbinding scheme heq =>
+      (fun he hi => hi.lc_raw) hctx (RecState.LC.init (fun binding hbinding scheme heq =>
         hann scheme (List.mem_map.mpr ⟨binding, hbinding, heq⟩)))
     obtain ⟨hs2, hstate2⟩ := hp.lc_of_infer
-      (fun he hi => hi.lc) (Subst.onCtx_wf hs1 hctx) hstate1
+      (fun he hi => hi.lc_raw) (Subst.onCtx_wf hs1 hctx) hstate1
     have hbodyCtx := hstate2.rhsCtx (Subst.onCtx_wf hs2 (Subst.onCtx_wf hs1 hctx))
     rw [← Subst.onCtx_append] at hbodyCtx
-    obtain ⟨ht, hs3⟩ := hb.lc hbodyCtx
+    obtain ⟨ht, hs3⟩ := hb.lc_raw hbodyCtx
     exact ⟨ht, fun p hp => (List.mem_append.mp hp).elim
       (fun hp => (List.mem_append.mp hp).elim (hs1 p) (hs2 p)) (hs3 p)⟩
 termination_by (input.size, 0)
@@ -878,7 +924,7 @@ theorem InferBranches.lc {Φ ctx scrutTy ρ brs Φ' S}
     have huni := huniRigid.unifies
     have hS₀ := huni0.lc hscrutTy
       (.customTy (fun t ht => by obtain ⟨x, _, rfl⟩ := List.mem_map.mp ht; exact ContainsBvarsUpTo.fvar))
-    obtain ⟨hτb_lc, hS₁⟩ := Infer.lc hbody
+    obtain ⟨hτb_lc, hS₁⟩ := InferCert.lc_raw hbody
       (branchBindings_wf (Subst.onCtx_wf hS₀ hctx)
         (fun t ht => by
           obtain ⟨v, hv, rfl⟩ := List.mem_map.mp ht
@@ -900,7 +946,7 @@ theorem InferBranches.lc {Φ ctx scrutTy ρ brs Φ' S}
       · exact hS₃ p hp
   | .consWild _ hbody huniRigid hrest =>
     have huni := huniRigid.unifies
-    obtain ⟨hτb_lc, hS₁⟩ := Infer.lc hbody hctx
+    obtain ⟨hτb_lc, hS₁⟩ := InferCert.lc_raw hbody hctx
     have hS₂ := huni.lc hτb_lc (Subst.onTy_lc hS₁ hρ)
     obtain ⟨hres, hS₃⟩ := InferBranches.lc hrest
       (Subst.onCtx_wf hS₂ (Subst.onCtx_wf hS₁ hctx))
@@ -917,6 +963,17 @@ termination_by (sizeBranches brs, 0)
 decreasing_by
   all_goals (simp only [sizeBranches, InferInput.size_substTyFvars, sizeBranches_substInputBranches]; omega)
 end
+
+theorem InferCert.lc {request : InferRequest} {result : InferResult}
+    (h : InferCert request result) (hctx : CtxWF request.ctx) :
+    result.ty.IsLC ∧ ∀ pair ∈ result.subst, pair.2.IsLC := by
+  cases request
+  cases result
+  exact InferCert.lc_raw h hctx
+
+theorem Infer.lc (h : Infer K F frontier ctx input next subst output ty) :
+    CtxWF ctx → ty.IsLC ∧ ∀ pair ∈ subst, pair.2.IsLC :=
+  InferCert.lc_raw h
 
 end
 
@@ -1930,21 +1987,22 @@ theorem SignatureCheck.scheme_belowFvars (h : SignatureCheck K F written frontie
 
 set_option maxHeartbeats 400000 in
 mutual
-theorem Infer.frontier_le (h : Infer K F frontier ctx input next subst output ty) : frontier ≤ next := by
+private theorem InferCert.frontier_le_raw
+    (h : Infer K F frontier ctx input next subst output ty) : frontier ≤ next := by
   match h with
   | .primLitUnit | .primLitInt | .primLitNat | .primLitChar | .primBinOpIntAdd | .primBinOpIntSub | .primBinOpIntLt _ _ _ _ | .primBinOpCharLt _ _ _ _ => exact Nat.le_refl _
   | .var _ | .ctor _ => exact Nat.le_add_right _ _
-  | .lambda _ hs hb => exact hs.frontier_le.trans hb.frontier_le
-  | .app _ hf ha _ => have := hf.frontier_le; have := ha.frontier_le; omega
-  | .letIn _ hr hc hb => exact hr.frontier_le.trans (hc.frontier_le.trans hb.frontier_le)
+  | .lambda _ hs hb => exact hs.frontier_le.trans hb.frontier_le_raw
+  | .app _ hf ha _ => have := hf.frontier_le_raw; have := ha.frontier_le_raw; omega
+  | .letIn _ hr hc hb => exact hr.frontier_le_raw.trans (hc.frontier_le.trans hb.frontier_le_raw)
   | .letSignature _ _ _ hr hc _ hb =>
-      have := hr.frontier_le
+      have := hr.frontier_le_raw
       have := hc.frontier_le
-      have := hb.frontier_le
+      have := hb.frontier_le_raw
       omega
-  | .match_ _ hs _ hb => have := hs.frontier_le; have := hb.frontier_le; omega
+  | .match_ _ hs _ hb => have := hs.frontier_le_raw; have := hb.frontier_le; omega
   | .letRec _ _ hstrata hsigned _ hbody =>
-      have := hstrata.frontier_le; have := hsigned.frontier_le; have := hbody.frontier_le; omega
+      have := hstrata.frontier_le; have := hsigned.frontier_le; have := hbody.frontier_le_raw; omega
 termination_by (input.size, 0)
 decreasing_by all_goals (simp only [InferInput.size, InferInput.size_openTyVars, InferInput.size_substTyFvars, sizeBranches_substInputBranches, sizeBindings_substInputBindings] at *; omega)
 
@@ -1952,8 +2010,8 @@ theorem InferBranches.frontier_le
     (h : InferBranches K F frontier ctx scrutTy resultTy branches next subst output) : frontier ≤ next := by
   match h with
   | .nil => omega
-  | .cons _ _ _ _ hb _ hr => have := hb.frontier_le; have := hr.frontier_le; omega
-  | .consWild _ hb _ hr => have := hb.frontier_le; have := hr.frontier_le; omega
+  | .cons _ _ _ _ hb _ hr => have := hb.frontier_le_raw; have := hr.frontier_le; omega
+  | .consWild _ hb _ hr => have := hb.frontier_le_raw; have := hr.frontier_le; omega
 termination_by (sizeBranches branches, 0)
 decreasing_by all_goals (simp only [sizeBranches, InferInput.size_substTyFvars, sizeBranches_substInputBranches]; omega)
 
@@ -1963,7 +2021,7 @@ theorem InferRecComponent.frontier_le
   match h with
   | .nil => exact Nat.le_refl _
   | .skipMono _ hr | .skipPoly hr => exact hr.frontier_le
-  | .consSelected _ hi _ hr => exact hi.frontier_le.trans hr.frontier_le
+  | .consSelected _ hi _ hr => exact hi.frontier_le_raw.trans hr.frontier_le
 termination_by (sizeBindings bindings, 0)
 decreasing_by all_goals (simp only [sizeBindings, sizeBindings_substInputBindings]; omega)
 
@@ -1980,10 +2038,19 @@ theorem InferRecSigned.frontier_le
   match h with
   | .nil => exact Nat.le_refl _
   | .skip _ hr => exact hr.frontier_le
-  | .cons _ _ hi _ _ hr => have := hi.frontier_le; have := hr.frontier_le; omega
+  | .cons _ _ hi _ _ hr => have := hi.frontier_le_raw; have := hr.frontier_le; omega
 termination_by (sizeBindings bindings, 0)
 decreasing_by all_goals (simp only [sizeBindings, InferInput.size_openTyVars, sizeBindings_substInputBindings]; omega)
 end
+
+theorem InferCert.frontier_le {request : InferRequest} {result : InferResult}
+    (h : InferCert request result) : request.frontier ≤ result.frontier := by
+  cases request
+  cases result
+  exact InferCert.frontier_le_raw h
+
+theorem Infer.frontier_le (h : Infer K F frontier ctx input next subst output ty) : frontier ≤ next :=
+  InferCert.frontier_le_raw h
 
 
 private theorem bindings_below_subst {bindings : List InputRecBinding}
@@ -2044,7 +2111,7 @@ private theorem specs_below_subst {specs : List RecSpec}
         hctx hK hF (fun spec hm => hspec spec (List.mem_cons_of_mem _ hm))
   | .consSelected _ hi hu hr =>
       expose_names
-      have hle := hi.frontier_le
+      have hle := Infer.frontier_le hi
       have hrle := hr.frontier_le
       obtain ⟨hiTy, hiS⟩ := hInfer (by simp only [sizeBindings]; omega) hi hctx hK hF
       have huS := hu.unifies.belowFvars hiTy (Subst.onTy_belowFvars hiS ((hspec _ List.mem_cons_self).mono hle))
@@ -2118,7 +2185,7 @@ private theorem specs_below_subst {specs : List RecSpec}
         hctx hK hF hstate (fun binding hb => hbindings binding (List.mem_cons_of_mem _ hb))
   | .cons _ _ hi hu _ hr =>
       expose_names
-      have hle := hi.frontier_le
+      have hle := Infer.frontier_le hi
       have hrle := hr.frontier_le
       have hbase : frontier ≤ first := by omega
       obtain ⟨hiTy, hiS⟩ := hInfer (by simp only [InferInput.size_openTyVars, sizeBindings]; omega) hi
@@ -2148,7 +2215,7 @@ private theorem specs_below_subst {specs : List RecSpec}
  termination_by structural h
 
 mutual
-theorem Infer.belowFvars (h : Infer K F frontier ctx input next subst output ty) :
+private theorem InferCert.belowFvars_raw (h : Infer K F frontier ctx input next subst output ty) :
     CtxBelow frontier ctx → (∀ k ∈ K, k < frontier) →
       (∀ t ∈ F, Ty.BelowFvars frontier t) →
       Ty.BelowFvars next ty ∧ ∀ p ∈ subst, Ty.BelowFvars next p.2 := by
@@ -2175,20 +2242,20 @@ theorem Infer.belowFvars (h : Infer K F frontier ctx input next subst output ty)
     intro hctx hK hF
     have hle := hs.frontier_le
     have hparam := hs.belowFvars (rigid_soft_lt hK hF)
-    obtain ⟨hbTy, hbSubst⟩ := hb.belowFvars (by
+    obtain ⟨hbTy, hbSubst⟩ := hb.belowFvars_raw (by
       intro M hM
       rcases List.mem_cons.mp hM with rfl | hM
       · exact hparam
       · exact (hctx M hM).mono hle)
       (fun k hk => Nat.lt_of_lt_of_le (hK k hk) hle)
       (fun t ht => (hF t ht).mono hle)
-    exact ⟨.arrow (Subst.onTy_belowFvars hbSubst (hparam.mono hb.frontier_le)) hbTy, hbSubst⟩
+    exact ⟨.arrow (Subst.onTy_belowFvars hbSubst (hparam.mono (Infer.frontier_le hb))) hbTy, hbSubst⟩
   | .app _ hf ha hu =>
     intro hctx hK hF
-    have hfLe := hf.frontier_le
-    have haLe := ha.frontier_le
-    obtain ⟨hfTy, hfSubst⟩ := hf.belowFvars hctx hK hF
-    obtain ⟨haTy, haSubst⟩ := ha.belowFvars (Subst.onCtx_below hfSubst hfLe hctx)
+    have hfLe := Infer.frontier_le hf
+    have haLe := Infer.frontier_le ha
+    obtain ⟨hfTy, hfSubst⟩ := hf.belowFvars_raw hctx hK hF
+    obtain ⟨haTy, haSubst⟩ := ha.belowFvars_raw (Subst.onCtx_below hfSubst hfLe hctx)
       (fun k hk => Nat.lt_of_lt_of_le (hK k hk) hfLe)
       (substSoft_below hfSubst hfLe hF)
     have huni := hu.unifies.belowFvars
@@ -2204,16 +2271,16 @@ theorem Infer.belowFvars (h : Infer K F frontier ctx input next subst output ty)
     · exact huni p hp
   | .letIn _ hr hc hb =>
     intro hctx hK hF
-    have hrLe := hr.frontier_le
+    have hrLe := Infer.frontier_le hr
     have hcLe := hc.frontier_le
-    have hbLe := hb.frontier_le
-    obtain ⟨hrTy, hrSubst⟩ := hr.belowFvars hctx hK hF
+    have hbLe := Infer.frontier_le hb
+    obtain ⟨hrTy, hrSubst⟩ := hr.belowFvars_raw hctx hK hF
     have hFfirst := substSoft_below hrSubst hrLe hF
     have hcSubst := hc.belowFvars hrTy (fun k hk => Nat.lt_of_lt_of_le (hK k hk) hrLe) hFfirst
     have hcTy := Subst.onTy_belowFvars hcSubst (hrTy.mono hcLe)
     have hcheckedCtx := Subst.onCtx_below hcSubst hcLe
       (Subst.onCtx_below hrSubst hrLe hctx)
-    obtain ⟨hbTy, hbSubst⟩ := hb.belowFvars (by
+    obtain ⟨hbTy, hbSubst⟩ := hb.belowFvars_raw (by
       intro M hM
       rcases List.mem_cons.mp hM with rfl | hM
       · exact hcTy.closeOver
@@ -2228,13 +2295,13 @@ theorem Infer.belowFvars (h : Infer K F frontier ctx input next subst output ty)
       · exact (hcSubst p hp).mono hbLe
     · exact hbSubst p hp
 
-  | @Infer.letSignature K F ann rhs body written frontier ctx first s1 rhsOut rhsTy checked sCheck
+  | @InferCert.letSignature K F ann rhs body written frontier ctx first s1 rhsOut rhsTy checked sCheck
       next s2 bodyOut bodyTy _ hprefix _ hr hc _ hb =>
     intro hctx hK hF
-    have hrLe := hr.frontier_le
+    have hrLe := Infer.frontier_le hr
     have hcLe := hc.frontier_le
-    have hbLe := hb.frontier_le
-    obtain ⟨hrTy, hrSubst⟩ := hr.belowFvars
+    have hbLe := Infer.frontier_le hb
+    obtain ⟨hrTy, hrSubst⟩ := hr.belowFvars_raw
       (fun M hM => (hctx M hM).mono (by omega)) (by
         intro k hk
         rcases List.mem_append.mp hk with hk | hk
@@ -2254,7 +2321,7 @@ theorem Infer.belowFvars (h : Infer K F frontier ctx input next subst output ty)
       obtain ⟨k, hk, hv⟩ := BindingAnn.rigidVars_substTyFvars hv
       exact (Subst.onTy_belowFvars hcSubst (.fvar
         (Nat.lt_of_lt_of_le (rigid_soft_lt hKfirst hFfirst k (hc.rigid k hk)) hcLe))).mem_lt v hv
-    obtain ⟨hbTy, hbSubst⟩ := hb.belowFvars (by
+    obtain ⟨hbTy, hbSubst⟩ := hb.belowFvars_raw (by
       intro M hM
       rcases List.mem_cons.mp hM with rfl | hM
       · rw [BindingAnn.substTyFvars_append]
@@ -2272,8 +2339,8 @@ theorem Infer.belowFvars (h : Infer K F frontier ctx input next subst output ty)
 
   | .match_ _ hs _ hb =>
     intro hctx hK hF
-    obtain ⟨ht, hS1⟩ := hs.belowFvars hctx hK hF
-    have hle := hs.frontier_le
+    obtain ⟨ht, hS1⟩ := hs.belowFvars_raw hctx hK hF
+    have hle := Infer.frontier_le hs
     obtain ⟨hresult, hS2⟩ := hb.belowFvars
       (Subst.onCtx_below (fun p hp => (hS1 p hp).mono (Nat.le_succ _)) (hle.trans (Nat.le_succ _)) hctx)
       (ht.mono (Nat.le_succ _)) (.fvar (Nat.lt_succ_self _))
@@ -2295,7 +2362,7 @@ theorem Infer.belowFvars (h : Infer K F frontier ctx input next subst output ty)
         exact Or.inl (ann_rigid_mem hb hv)))
     have hseed : frontier ≤ frontier + bindings.length := by omega
     obtain ⟨hs1, hstate1⟩ := hstrata.belowFvars_of_infer
-      (fun he hi => hi.belowFvars)
+      (fun he hi => hi.belowFvars_raw)
       (fun M hm => (hctx M hm).mono hseed)
       (fun k hk => Nat.lt_of_lt_of_le (hK k hk) hseed)
       (fun t ht => (hF t ht).mono hseed)
@@ -2303,18 +2370,18 @@ theorem Infer.belowFvars (h : Infer K F frontier ctx input next subst output ty)
       (fun binding hb v hv => Nat.lt_of_lt_of_le (hbindings binding hb v hv) hseed)
     have hle1 := hstrata.frontier_le
     have hle2 := hsigned.frontier_le
-    have hle3 := hbody.frontier_le
+    have hle3 := Infer.frontier_le hbody
     have hbase1 : frontier ≤ first := by omega
     have hbase2 : frontier ≤ second := by omega
     obtain ⟨hs2, hstate2⟩ := hsigned.belowFvars_of_infer
-      (fun he hi => hi.belowFvars)
+      (fun he hi => hi.belowFvars_raw)
       (Subst.onCtx_below hs1 hbase1 hctx)
       (fun k hk => Nat.lt_of_lt_of_le (hK k hk) hbase1)
       (substSoft_below hs1 hbase1 hF) hstate1
       (bindings_below_subst hbindings hs1 hbase1)
     have hs12 : ∀ p ∈ s1 ++ s2, Ty.BelowFvars second p.2 :=
       fun p hp => (List.mem_append.mp hp).elim (fun hp => (hs1 p hp).mono hle2) (hs2 p)
-    obtain ⟨hbodyTy, hs3⟩ := hbody.belowFvars
+    obtain ⟨hbodyTy, hs3⟩ := hbody.belowFvars_raw
       (hstate2.rhsCtx (Subst.onCtx_below hs12 hbase2 hctx))
       (fun k hk => Nat.lt_of_lt_of_le (hK k hk) hbase2)
       (substSoft_below hs12 hbase2 hF)
@@ -2337,7 +2404,7 @@ theorem InferBranches.belowFvars {Φ ctx scrutTy ρ brs Φ' S}
         (.customTy (fun t ht => by
           obtain ⟨x, hx, rfl⟩ := List.mem_map.mp ht
           exact .fvar (by have := freshVars_lt x hx; omega)))
-    obtain ⟨hτb, hS₁⟩ := Infer.belowFvars hbody
+    obtain ⟨hτb, hS₁⟩ := InferCert.belowFvars_raw hbody
       (branchBindings_below (ctorr := ctor)
         (ta := ((freshVars Φ ctor.paramCount).map (Ty.fvar ·)).map S₀.onTy)
         (Subst.onCtx_below hS₀ (by omega) hctx)
@@ -2376,7 +2443,7 @@ theorem InferBranches.belowFvars {Φ ctx scrutTy ρ brs Φ' S}
       · exact hS₃ p hp
   | .consWild _ hbody huniRigid hrest =>
     have huni := huniRigid.unifies
-    obtain ⟨hτb, hS₁⟩ := Infer.belowFvars hbody hctx
+    obtain ⟨hτb, hS₁⟩ := InferCert.belowFvars_raw hbody hctx
       hK hF
     have hle1 := Infer.frontier_le hbody
     have hS₁ρ := Subst.onTy_belowFvars hS₁ (hρ.mono hle1)
@@ -2400,6 +2467,20 @@ termination_by (sizeBranches brs, 0)
 decreasing_by
   all_goals (try subst_vars; try simp only [sizeBranches, InferInput.size_substTyFvars, sizeBranches_substInputBranches]; omega)
 end
+
+theorem InferCert.belowFvars {request : InferRequest} {result : InferResult}
+    (h : InferCert request result) (bounds : request.Bounds) :
+    Ty.BelowFvars result.frontier result.ty ∧
+      ∀ pair ∈ result.subst, Ty.BelowFvars result.frontier pair.2 := by
+  cases request
+  cases result
+  exact InferCert.belowFvars_raw h bounds.ctxBelow bounds.protectedBelow bounds.softBelow
+
+theorem Infer.belowFvars (h : Infer K F frontier ctx input next subst output ty) :
+    CtxBelow frontier ctx → (∀ k ∈ K, k < frontier) →
+    (∀ soft ∈ F, Ty.BelowFvars frontier soft) →
+    Ty.BelowFvars next ty ∧ ∀ pair ∈ subst, Ty.BelowFvars next pair.2 :=
+  InferCert.belowFvars_raw h
 
 
 private theorem generalizes_lookup {new old : Env}
@@ -2854,7 +2935,7 @@ private theorem branches_refs_subst {brs : List (MatchPattern × InferInput)} {c
       (fun he h => hInfer (by
         simp only [sizeBindings_substInputBindings] at he
         simp only [sizeBindings]; omega) h)
-      (Nat.lt_of_lt_of_le hw hi.frontier_le) hrestRefs hrestTargets
+      (Nat.lt_of_lt_of_le hw (Infer.frontier_le hi)) hrestRefs hrestTargets
     refine ⟨?_, ?_⟩
     · intro p hp
       rw [List.mem_append, List.mem_append] at hp
@@ -3221,7 +3302,7 @@ private theorem FinishRecComponent.memberStates_length
         simp only [sizeBindings_substInputBindings] at he
         simp only [sizeBindings]
         omega) hh)
-      (by have := hi.frontier_le; omega) hanext groupSize
+      (by have := Infer.frontier_le hi; omega) hanext groupSize
       (by simpa [RecState.setSigned, RecState.onSubst] using hlen)
       (by
         intro binding hm
@@ -3274,7 +3355,7 @@ private theorem rigidBindingVars_mem {bindings : List InputRecBinding}
  termination_by structural h
 
 mutual
- theorem Infer.sourceLocality (h : Infer K F frontier ctx input next subst output ty) :
+ private theorem InferCert.sourceLocality_raw (h : Infer K F frontier ctx input next subst output ty) :
     ∀ {w}, w < frontier →
     input.erase.ForallOuter (fun i => ∀ M, ctx.env[i]? = some M → w ∉ M.body.freeVars) 0 →
     w ∉ input.rigidVars →
@@ -3306,7 +3387,7 @@ mutual
     have hp := hs.sourceAvoid hw (by intro t ht; cases ht; exact hwe.1)
     have hbrefs := Expr.ForallOuter.lookupAvoid_prepend (pre := [PolyTy.mkTrivial _]) hrefs
       (by intro M hM; rcases List.mem_singleton.mp hM with rfl; exact hp)
-    obtain ⟨hS, hty, hD⟩ := hb.sourceLocality (Nat.lt_of_lt_of_le hw hs.frontier_le) hbrefs hwe.2
+    obtain ⟨hS, hty, hD⟩ := hb.sourceLocality_raw (Nat.lt_of_lt_of_le hw hs.frontier_le) hbrefs hwe.2
     exact ⟨hS, by simpa only [Ty.freeVars, List.mem_dedup, List.mem_append, not_or]
       using And.intro (Subst.notMemOnTy hS hp) hty, hD⟩
   | .app _ hf ha hu =>
@@ -3314,12 +3395,13 @@ mutual
     expose_names
     simp only [InferInput.erase, Expr.ForallOuter, Expr.rec_strong] at hrefs
     simp only [InferInput.rigidVars, List.mem_append, not_or] at hwe
-    obtain ⟨hfS, hfTy, hfD⟩ := hf.sourceLocality hw hrefs.1 hwe.1
-    obtain ⟨haS, haTy, haD⟩ := ha.sourceLocality (Nat.lt_of_lt_of_le hw hf.frontier_le)
+    obtain ⟨hfS, hfTy, hfD⟩ := hf.sourceLocality_raw hw hrefs.1 hwe.1
+    obtain ⟨haS, haTy, haD⟩ := ha.sourceLocality_raw (Nat.lt_of_lt_of_le hw (Infer.frontier_le hf))
       (by simpa only [InferInput.erase_substTyFvars] using Expr.ForallOuter.lookupAvoid_onSubst hrefs.2 hfS)
       (InferInput.avoid_subst hfS hwe.2)
     have hnew : w ∉ (Ty.fvar second).freeVars := by
-      simp only [Ty.freeVars, List.mem_singleton]; have := hf.frontier_le; have := ha.frontier_le; omega
+      simp only [Ty.freeVars, List.mem_singleton];
+      have := Infer.frontier_le hf; have := Infer.frontier_le ha; omega
     have huA := UnifyRel.sourceAvoid_local hu.unifies (Subst.notMemOnTy haS hfTy)
       (by simpa only [Ty.freeVars, List.mem_dedup, List.mem_append, not_or] using And.intro haTy hnew)
     have hA := Subst.sourceAvoid_append_local (Subst.sourceAvoid_append_local ⟨hfS, hfD⟩ ⟨haS, haD⟩) huA
@@ -3329,8 +3411,8 @@ mutual
     expose_names
     simp only [InferInput.erase, Expr.ForallOuter, Expr.rec_strong, Nat.zero_add] at hrefs
     simp only [InferInput.rigidVars, List.mem_append, not_or] at hwe
-    obtain ⟨hrS, hrTy, hrD⟩ := hr.sourceLocality hw hrefs.1 hwe.1.2
-    have hcA := hc.sourceAvoid (Nat.lt_of_lt_of_le hw hr.frontier_le) hrTy
+    obtain ⟨hrS, hrTy, hrD⟩ := hr.sourceLocality_raw hw hrefs.1 hwe.1.2
+    have hcA := hc.sourceAvoid (Nat.lt_of_lt_of_le hw (Infer.frontier_le hr)) hrTy
       (BindingAnn.avoid_subst hrS hwe.1.1)
     have hA := Subst.sourceAvoid_append_local ⟨hrS, hrD⟩ hcA
     have hfinalTy := Subst.notMemOnTy hcA.1 hrTy
@@ -3340,8 +3422,8 @@ mutual
     have hbrefs := Expr.ForallOuter.lookupAvoid_prepend (pre := [genScheme _ _ _])
       (Expr.ForallOuter.lookupAvoid_onSubst (Expr.ForallOuter.lookupAvoid_onSubst hrefs.2 hrS) hcA.1)
       (by intro M hM; rcases List.mem_singleton.mp hM with rfl; exact hp)
-    obtain ⟨hbS, hbTy, hbD⟩ := hb.sourceLocality
-      (Nat.lt_of_lt_of_le hw (hr.frontier_le.trans hc.frontier_le))
+    obtain ⟨hbS, hbTy, hbD⟩ := hb.sourceLocality_raw
+      (Nat.lt_of_lt_of_le hw ((Infer.frontier_le hr).trans hc.frontier_le))
       (by simpa only [InferInput.erase_substTyFvars] using hbrefs) (InferInput.avoid_subst hA.1 hwe.2)
     have hAll := Subst.sourceAvoid_append_local hA ⟨hbS, hbD⟩
     exact ⟨hAll.1, hbTy, hAll.2⟩
@@ -3352,10 +3434,10 @@ mutual
     simp only [InferInput.erase, Expr.ForallOuter, Expr.rec_strong, Nat.zero_add] at hrefs
     simp only [InferInput.rigidVars, List.mem_append, not_or] at hwe
     have hwr : w ∉ freshVars frontier ann.paramCount := fun hm => by have := freshVars_ge w hm; omega
-    obtain ⟨hrS, hrTy, hrD⟩ := hr.sourceLocality (by omega)
+    obtain ⟨hrS, hrTy, hrD⟩ := hr.sourceLocality_raw (by omega)
       (by simpa only [InferInput.erase_openTyVars] using hrefs.1)
       (fun hm => (InferInput.rigidVars_openTyVarsFrom hm).elim hwe.1.2 hwr)
-    have hcA := hc.sourceAvoid (Nat.lt_of_lt_of_le hw (by have := hr.frontier_le; omega)) hrTy
+    have hcA := hc.sourceAvoid (Nat.lt_of_lt_of_le hw (by have := Infer.frontier_le hr; omega)) hrTy
       (BindingAnn.avoid_subst hrS hwe.1.1) hwr
     have hA := Subst.sourceAvoid_append_local ⟨hrS, hrD⟩ hcA
     have hp : w ∉ (signatureScheme (ann.substTyFvars (s1 ++ sCheck))
@@ -3368,8 +3450,8 @@ mutual
     have hbrefs := Expr.ForallOuter.lookupAvoid_prepend (pre := [signatureScheme _ _ _ _ _])
       (Expr.ForallOuter.lookupAvoid_onSubst (Expr.ForallOuter.lookupAvoid_onSubst hrefs.2 hrS) hcA.1)
       (by intro M hM; rcases List.mem_singleton.mp hM with rfl; exact hp)
-    obtain ⟨hbS, hbTy, hbD⟩ := hb.sourceLocality
-      (Nat.lt_of_lt_of_le hw (by have := hr.frontier_le; have := hc.frontier_le; omega))
+    obtain ⟨hbS, hbTy, hbD⟩ := hb.sourceLocality_raw
+      (Nat.lt_of_lt_of_le hw (by have := Infer.frontier_le hr; have := hc.frontier_le; omega))
       (by simpa only [InferInput.erase_substTyFvars] using hbrefs) (InferInput.avoid_subst hA.1 hwe.2)
     have hAll := Subst.sourceAvoid_append_local hA ⟨hbS, hbD⟩
     exact ⟨hAll.1, hbTy, hAll.2⟩
@@ -3387,12 +3469,12 @@ mutual
       intro binding hb
       exact ⟨hrefs.1 { ann := none, rhs := binding.rhs.erase } (mem_eraseBindings hb),
         fun hv => hwe.1 (rigidBindingVars_mem hb hv)⟩
-    obtain ⟨hsS, hsD, hstate1⟩ := hs.sourceLocality_of_infer (fun _ hi => hi.sourceLocality)
+    obtain ⟨hsS, hsD, hstate1⟩ := hs.sourceLocality_of_infer (fun _ hi => hi.sourceLocality_raw)
       (by omega) (RecState.Avoids.init hw hbindings)
       (by simp [RecState.init]) hbindings hrhs
     have hs1len : state1.memberStates.length = bindings.length :=
       hs.memberStates_length.trans (by simp [RecState.init])
-    obtain ⟨hpS, hpD, hstate2⟩ := hp.sourceLocality_of_infer (fun _ hi => hi.sourceLocality)
+    obtain ⟨hpS, hpD, hstate2⟩ := hp.sourceLocality_of_infer (fun _ hi => hi.sourceLocality_raw)
       (by have := hs.frontier_le; omega) hstate1 bindings.length hs1len
       (by
         intro binding hm
@@ -3412,7 +3494,7 @@ mutual
         state2.entries.length = state2.memberStates.length := by simp [RecState.entries]
         _ = state1.memberStates.length := hp.memberStates_length
         _ = bindings.length := hs1len
-    obtain ⟨hbS, hbTy, hbD⟩ := hb.sourceLocality (show w < second from by have := hs.frontier_le; have := hp.frontier_le; omega)
+    obtain ⟨hbS, hbTy, hbD⟩ := hb.sourceLocality_raw (show w < second from by have := hs.frontier_le; have := hp.frontier_le; omega)
       (by
         have hh := hstate2.rhsCtx hentries (Expr.ForallOuter.lookupAvoid_onSubst hrefs.2 hpre.1)
         simpa only [InferInput.erase_substTyFvars] using hh)
@@ -3424,10 +3506,10 @@ mutual
     expose_names
     simp only [InferInput.erase, Expr.ForallOuter, Expr.rec_strong, Nat.zero_add] at hrefs
     simp only [InferInput.rigidVars, List.mem_append, not_or] at hwe
-    obtain ⟨hsS, hsTy, hsD⟩ := hs.sourceLocality hw hrefs.1 hwe.1
+    obtain ⟨hsS, hsTy, hsD⟩ := hs.sourceLocality_raw hw hrefs.1 hwe.1
     have hnew : w ∉ (Ty.fvar first).freeVars := by
-      simp only [Ty.freeVars, List.mem_singleton]; have := hs.frontier_le; omega
-    obtain ⟨hbS, hbTy, hbD⟩ := hb.sourceLocality (by have := hs.frontier_le; omega)
+      simp only [Ty.freeVars, List.mem_singleton]; have := Infer.frontier_le hs; omega
+    obtain ⟨hbS, hbTy, hbD⟩ := hb.sourceLocality (by have := Infer.frontier_le hs; omega)
       (branches_refs_subst (fun p b hm => hrefs.2 p b.erase (mem_eraseBranches hm)) hsS)
       hsTy hnew (branches_avoid_subst hsS hwe.2)
     have hA := Subst.sourceAvoid_append_local ⟨hsS, hsD⟩ ⟨hbS, hbD⟩
@@ -3471,12 +3553,12 @@ mutual
       intro M hM; obtain ⟨t, ht, rfl⟩ := List.mem_map.mp hM
       obtain ⟨t₀, ht₀, rfl⟩ := List.mem_map.mp ht
       exact Ty.not_mem_freeVars_openWith hta ((ctor.closed t₀ ht₀).not_mem_freeVars w)
-    obtain ⟨hbS, hbTy, hbD⟩ := hb.sourceLocality (by omega)
+    obtain ⟨hbS, hbTy, hbD⟩ := hb.sourceLocality_raw (by omega)
       (by simpa only [InferInput.erase_substTyFvars] using hbrefs) (InferInput.avoid_subst hA₀.1 hbrs.1)
     have hA₂ := UnifyRel.sourceAvoid_local hu.unifies hbTy
       (Subst.notMemOnTy hbS (Subst.notMemOnTy hA₀.1 hρ))
     have hApre := Subst.sourceAvoid_append_local (Subst.sourceAvoid_append_local hA₀ ⟨hbS,hbD⟩) hA₂
-    obtain ⟨hrS, hrTy, hrD⟩ := hr.sourceLocality (by have := hb.frontier_le; omega)
+    obtain ⟨hrS, hrTy, hrD⟩ := hr.sourceLocality (by have := Infer.frontier_le hb; omega)
       (by
         have hf := branches_refs_subst
           (fun p b hm => hrefs p b (List.mem_cons_of_mem _ hm)) hApre.1
@@ -3490,11 +3572,11 @@ mutual
     intro w hw hrefs hscrut hρ hbrs
     expose_names
     simp only [rigidBranchVars, List.mem_append, not_or] at hbrs
-    obtain ⟨hbS, hbTy, hbD⟩ := hb.sourceLocality hw
+    obtain ⟨hbS, hbTy, hbD⟩ := hb.sourceLocality_raw hw
       (hrefs .wildcard body List.mem_cons_self) hbrs.1
     have hA₂ := UnifyRel.sourceAvoid_local hu.unifies hbTy (Subst.notMemOnTy hbS hρ)
     have hApre := Subst.sourceAvoid_append_local ⟨hbS,hbD⟩ hA₂
-    obtain ⟨hrS, hrTy, hrD⟩ := hr.sourceLocality (Nat.lt_of_lt_of_le hw hb.frontier_le)
+    obtain ⟨hrS, hrTy, hrD⟩ := hr.sourceLocality (Nat.lt_of_lt_of_le hw (Infer.frontier_le hb))
       (by
         have hf := branches_refs_subst
           (fun p b hm => hrefs p b (List.mem_cons_of_mem _ hm)) hApre.1
@@ -3507,6 +3589,25 @@ mutual
  termination_by (sizeBranches brs, 0)
  decreasing_by all_goals (simp only [sizeBranches, InferInput.size_substTyFvars, sizeBranches_substInputBranches]; omega)
 end
+
+theorem InferCert.sourceLocality {request : InferRequest} {result : InferResult}
+    (h : InferCert request result) {w : Nat} (hw : w < request.frontier)
+    (hrefs : request.input.erase.ForallOuter
+      (fun i => ∀ scheme, request.ctx.env[i]? = some scheme → w ∉ scheme.body.freeVars) 0)
+    (hrigid : w ∉ request.input.rigidVars) :
+    (∀ pair ∈ result.subst, w ∉ pair.2.freeVars) ∧
+      w ∉ result.ty.freeVars ∧ w ∉ result.subst.map Prod.fst := by
+  cases request
+  cases result
+  exact InferCert.sourceLocality_raw h hw hrefs hrigid
+
+theorem Infer.sourceLocality (h : Infer K F frontier ctx input next subst output ty) :
+    ∀ {w}, w < frontier →
+    input.erase.ForallOuter
+      (fun i => ∀ M, ctx.env[i]? = some M → w ∉ M.body.freeVars) 0 →
+    w ∉ input.rigidVars →
+    (∀ pair ∈ subst, w ∉ pair.2.freeVars) ∧ w ∉ ty.freeVars ∧ w ∉ subst.map Prod.fst :=
+  InferCert.sourceLocality_raw h
 
 theorem RecSpec.notMem_freeVars_onSubstSource {S : Subst} {spec : RecSpec} {w : Nat}
     (hS : ∀ p ∈ S, w ∉ p.2.freeVars) (h : w ∉ spec.freeVars) :
@@ -5489,7 +5590,7 @@ private theorem RecState.Frame.poly_of_complete {state : RecState} {i : Nat} {sc
       hnextFrame
       (by simp only [substInputBindings_eq_map, ← List.map_drop,
         List.drop_add_one_eq_tail_drop, hremaining, List.map_cons, List.tail_cons]) hnextMono
-      (by intro g hg; have hlt := hpoolBelow g hg; have := hi.frontier_le; omega)
+      (by intro g hg; have hlt := hpoolBelow g hg; have := Infer.frontier_le hi; omega)
     refine ⟨?_, ?_⟩
     · simpa only [substSoft_append, Subst.onCtx_append,
         substInputBindings_append] using hfinal
@@ -6858,7 +6959,7 @@ private theorem RecState.CompleteInput.setSigned {state : RecState} {member : Na
         simp only [sizeBindings]
         omega) hh)
       (Subst.onCtx_wf hSLC hctx) ((hstate.onSubst hSLC).setSigned)
-      (fun k hk => by have := hK k hk; have := hi.frontier_le; omega)
+      (fun k hk => by have := hK k hk; have := Infer.frontier_le hi; omega)
       (by simp only [substInputBindings_eq_map, ← List.map_drop,
         List.drop_add_one_eq_tail_drop, hBindings, List.map_cons, List.tail_cons])
       hnextScope hcheckNext
@@ -7307,7 +7408,7 @@ private theorem RecState.Fidelity.setSigned_complete {state : RecState} {member 
         simp only [sizeBindings]
         omega) hh)
       (Subst.onCtx_wf hSLC hctx) ((hstate.onSubst hSLC).setSigned)
-      (fun k hk => by have := hK k hk; have := hi.frontier_le; omega)
+      (fun k hk => by have := hK k hk; have := Infer.frontier_le hi; omega)
       (by simp only [substInputBindings_eq_map, ← List.map_drop,
         List.drop_add_one_eq_tail_drop, hBindings, List.map_cons, List.tail_cons])
       (by
@@ -7408,7 +7509,7 @@ mutual
 /-- Successful elaboration produces ordinary annotated Core typing. The proof
 constructs the typing from the inference derivation; it does not recheck output
 with the Core inferer. -/
-theorem Infer.sourceSound (h : Infer K F frontier ctx input next subst output ty) :
+private theorem InferCert.sourceSound_raw (h : Infer K F frontier ctx input next subst output ty) :
     CtxWF ctx → TypeOfHM (subst.onCtx ctx) output ty := by
   match h with
   | .primLitUnit => intro _; simpa only [Subst.onCtx_nil] using (TypeOfHM.primLitUnit (ctx := _))
@@ -7443,7 +7544,7 @@ theorem Infer.sourceSound (h : Infer K F frontier ctx input next subst output ty
         obtain ⟨_, _, rfl⟩ := List.mem_map.mp ht
         exact .fvar
       · exact InstantiatesBy.openVars (Ctor.toTy_wf ctor) (by simp [Ctor.toTy])
-  | @Infer.lambda K F ann body frontier param initial ctx next subst completed bodyTy _ hs hb =>
+  | @InferCert.lambda K F ann body frontier param initial ctx next subst completed bodyTy _ hs hb =>
       intro hctx
       have hbodyCtx : CtxWF { ctx with env := PolyTy.mkTrivial param :: ctx.env } := by
         intro scheme hscheme
@@ -7457,8 +7558,8 @@ theorem Infer.sourceSound (h : Infer K F frontier ctx input next subst output ty
         | none => cases heq
         | some template => exact Option.some.inj heq
       · simpa only [lambdaOutput, Subst.onCtx, Subst.onEnv, List.map_cons,
-          Subst.onPolyTy, PolyTy.mkTrivial] using hb.sourceSound hbodyCtx
-  | @Infer.app K F f arg frontier ctx first s1 fOut fTy second s2 argOut argTy s3 _ hf ha hu =>
+          Subst.onPolyTy, PolyTy.mkTrivial] using hb.sourceSound_raw hbodyCtx
+  | @InferCert.app K F f arg frontier ctx first s1 fOut fTy second s2 argOut argTy s3 _ hf ha hu =>
       intro hctx
       have hs1 := (hf.lc hctx).2
       have haCtx := Subst.onCtx_wf hs1 hctx
@@ -7466,15 +7567,15 @@ theorem Infer.sourceSound (h : Infer K F frontier ctx input next subst output ty
       have hs3 := hu.unifies.lc (Subst.onTy_lc hs2 (hf.lc hctx).1)
         (.arrow (ha.lc haCtx).1 .fvar)
       have hfTyped := TypeOfHM.onSubst (s2 ++ s3)
-        (fun pair hp => (List.mem_append.mp hp).elim (hs2 pair) (hs3 pair)) (hf.sourceSound hctx)
-      have haTyped := TypeOfHM.onSubst s3 hs3 (ha.sourceSound haCtx)
+        (fun pair hp => (List.mem_append.mp hp).elim (hs2 pair) (hs3 pair)) (hf.sourceSound_raw hctx)
+      have haTyped := TypeOfHM.onSubst s3 hs3 (ha.sourceSound_raw haCtx)
       have heq : (s2 ++ s3).onTy fTy =
           .arrow (s3.onTy argTy) (s3.onTy (.fvar second)) := by
         simpa only [Unifies, Subst.onTy_append, Subst.onTy_arrow] using hu.unifies.unifies
       rw [heq] at hfTyped
       simp only [Subst.onCtx_append] at hfTyped
       simpa only [Subst.onCtx_append] using TypeOfHM.app hfTyped haTyped
-  | @Infer.letIn K F ann rhs body frontier ctx first s1 rhsOut rhsTy checked sCheck next s2 bodyOut bodyTy
+  | @InferCert.letIn K F ann rhs body frontier ctx first s1 rhsOut rhsTy checked sCheck next s2 bodyOut bodyTy
       _ hr hc hb =>
       intro hctx
       have hs1 := (hr.lc hctx).2
@@ -7491,14 +7592,14 @@ theorem Infer.sourceSound (h : Infer K F frontier ctx input next subst output ty
         · exact genScheme_wf checkedTyLC
         · exact checkedCtxWF scheme hscheme
       have hs2 := (hb.lc bodyCtxWF).2
-      have rhsTyped := TypeOfHM.onSubst sCheck hsCheck (hr.sourceSound hctx)
+      have rhsTyped := TypeOfHM.onSubst sCheck hsCheck (hr.sourceSound_raw hctx)
       have rhsGeneral := TypeOfHM.generaliseAnnotated
         (names := genVars (K ++ softVars (substSoft (s1 ++ sCheck) F)) (sCheck.onCtx (s1.onCtx ctx)).env (sCheck.onTy rhsTy))
         rhsTyped genVars_nodup
         (fun name hn => genVars_not_mem hn)
       obtain ⟨avoid, rhsFinal⟩ := GeneralisesTo.onSubst_annotated
         (genScheme_wf checkedTyLC) rhsGeneral s2 hs2
-      have bodyTyped := hb.sourceSound bodyCtxWF
+      have bodyTyped := hb.sourceSound_raw bodyCtxWF
       have hctxeq :
           s2.onCtx
             { sCheck.onCtx (s1.onCtx ctx) with
@@ -7514,7 +7615,7 @@ theorem Infer.sourceSound (h : Infer K F frontier ctx input next subst output ty
         (fun _ heq => Option.some.inj heq) ?_ rfl bodyTyped
       simpa only [letOutput, genScheme, ← Subst.onCtx_append] using rhsFinal
 
-  | @Infer.letSignature K F ann rhs body written frontier ctx first s1 rhsOut rhsTy checked sCheck next s2 bodyOut bodyTy
+  | @InferCert.letSignature K F ann rhs body written frontier ctx first s1 rhsOut rhsTy checked sCheck next s2 bodyOut bodyTy
       hraw hprefix havoid hr hc hescape hb =>
     intro hctx
     have hlen : written.length = ann.paramCount := by simpa only [freshVars_length] using congrArg List.length hprefix
@@ -7554,7 +7655,7 @@ theorem Infer.sourceSound (h : Infer K F frontier ctx input next subst output ty
       · exact hscheme
       · exact checkedCtxWF scheme hschemeMem
     have hs2 := (hb.lc bodyCtxWF).2
-    have rhsTyped := TypeOfHM.onSubst sCheck hsCheck (hr.sourceSound hctx)
+    have rhsTyped := TypeOfHM.onSubst sCheck hsCheck (hr.sourceSound_raw hctx)
     have rhsGeneral := TypeOfHM.generaliseAnnotated
       (names := signatureNames (ann.substTyFvars (s1 ++ sCheck)) (K ++ softVars (substSoft (s1 ++ sCheck) F)) written (sCheck.onCtx (s1.onCtx ctx)) (sCheck.onTy rhsTy))
       rhsTyped (by simpa only [BindingAnn.substTyFvars_append] using hc.names_nodup (Q := K ++ softVars (substSoft (s1 ++ sCheck) F)) hnd)
@@ -7565,7 +7666,7 @@ theorem Infer.sourceSound (h : Infer K F frontier ctx input next subst output ty
     simp only [← BindingAnn.substTyFvars_append] at hclose
     rw [← hclose] at rhsGeneral
     obtain ⟨avoid, rhsFinal⟩ := GeneralisesTo.onSubst_annotated hscheme rhsGeneral s2 hs2
-    have bodyTyped := hb.sourceSound bodyCtxWF
+    have bodyTyped := hb.sourceSound_raw bodyCtxWF
     have hctxeq :
         s2.onCtx { sCheck.onCtx (s1.onCtx ctx) with
           env := signatureScheme (ann.substTyFvars (s1 ++ sCheck)) (K ++ softVars (substSoft (s1 ++ sCheck) F)) written (sCheck.onCtx (s1.onCtx ctx)) (sCheck.onTy rhsTy) ::
@@ -7617,7 +7718,7 @@ theorem Infer.sourceSound (h : Infer K F frontier ctx input next subst output ty
       (by omega) hbindingscope
     have htyped1 := hstrata.sourceSound_of_infer
       (fun _ hi => hi.sourceLocality) hvalid0 hinitFrame hinitLC hctxWF hinitBelow hctxSeed hFSeed
-      (by omega) hbindingscope (fun _ hi => hi.sourceSound) RecState.SourceTyped.init
+      (by omega) hbindingscope (fun _ hi => hi.sourceSound_raw) RecState.SourceTyped.init
     obtain ⟨hS1, hLC1⟩ := hstrata.lc_of_infer (fun _ hi => hi.lc) hctxWF hinitLC
     obtain ⟨hB1, hBelow1⟩ := hstrata.belowFvars_of_infer (fun _ hi => hi.belowFvars)
       hctxSeed (fun k hk => Nat.lt_of_lt_of_le (hK k hk) (by omega)) hFSeed hinitBelow
@@ -7627,14 +7728,14 @@ theorem Infer.sourceSound (h : Infer K F frontier ctx input next subst output ty
     obtain ⟨hframe2, _⟩ := hsigned.frame_of_infer
       (fun _ hi => hi.sourceLocality) hframe1 (by simp) hdone1 hBelow1.2.2.2
     have htyped2 := hsigned.sourceSound_of_infer
-      (fun he hi => hi.sourceSound) (Subst.onCtx_wf hS1 hctxWF) hLC1 htyped1
+      (fun he hi => hi.sourceSound_raw) (Subst.onCtx_wf hS1 hctxWF) hLC1 htyped1
       (fun j binding scheme hb ha => by
         simpa only [Nat.zero_add] using hframe1.complete_export hb ha)
     obtain ⟨hS2, hLC2⟩ := hsigned.lc_of_infer (fun _ hi => hi.lc) (Subst.onCtx_wf hS1 hctxWF) hLC1
     have hbodyCtx := hLC2.rhsCtx (Subst.onCtx_wf hS2 (Subst.onCtx_wf hS1 hctxWF))
     rw [← Subst.onCtx_append] at hbodyCtx
     obtain ⟨_, hS3⟩ := hbody.lc hbodyCtx
-    have hbodyTyped := hbody.sourceSound hbodyCtx
+    have hbodyTyped := hbody.sourceSound_raw hbodyCtx
     have htypedFinal := htyped2.onSubst s3 hS3
     have hexports : state2.exports =
         (completed.map CompletedRecMember.scheme).map some := hcompleted.exports
@@ -7667,7 +7768,7 @@ theorem Infer.sourceSound (h : Infer K F frontier ctx input next subst output ty
     intro hctx
     have hs1 := (hs.lc hctx).2
     have hbr := hb.lc (Subst.onCtx_wf hs1 hctx) (hs.lc hctx).1 .fvar
-    have hscrut := TypeOfHM.onSubst _ hbr.2 (hs.sourceSound hctx)
+    have hscrut := TypeOfHM.onSubst _ hbr.2 (hs.sourceSound_raw hctx)
     have hbranches := hb.sourceSound (Subst.onCtx_wf hs1 hctx) (hs.lc hctx).1 .fvar
     simpa only [Subst.onCtx_append] using
       TypeOfHM.match_ hscrut (fun hnil => hne (substInputBranches_eq_nil _ _ |>.mp (hb.nil_iff.mp hnil))) hbranches
@@ -7695,7 +7796,7 @@ theorem InferBranches.sourceSound
     intro branch hbranch
     rcases List.mem_cons.mp hbranch with rfl | hbranch
     · have head := TypeOfHM.onSubst (s2 ++ s3)
-        (fun p hp => (List.mem_append.mp hp).elim (hs2 p) (hs3 p)) (hb.sourceSound hctx)
+        (fun p hp => (List.mem_append.mp hp).elim (hs2 p) (hs3 p)) (hb.sourceSound_raw hctx)
       have heq := congrArg s3.onTy hu.unifies.unifies
       rw [Subst.onTy_append] at head
       rw [heq] at head
@@ -7730,7 +7831,7 @@ theorem InferBranches.sourceSound
         · simp only [args, List.length_map, freshVars_length]
         · exact forall₂_self_map (fun t ht => InstantiatesBy.openWith (ctor.bound t ht)
             (by simp only [args, List.length_map, freshVars_length]; omega))
-      have head0 := TypeOfMatchBranch.mk hspec (Subst.onCtx_branchBindings hs1) (hb.sourceSound hbodyWF)
+      have head0 := TypeOfMatchBranch.mk hspec (Subst.onCtx_branchBindings hs1) (hb.sourceSound_raw hbodyWF)
       have head := head0.onSubst (s2 ++ s3)
         (fun p hp => (List.mem_append.mp hp).elim (hs2 p) (hs3 p))
       have heq := congrArg s3.onTy hu.unifies.unifies
@@ -7741,6 +7842,17 @@ theorem InferBranches.sourceSound
 termination_by (sizeBranches branches, 0)
 decreasing_by all_goals (simp only [sizeBranches, InferInput.size_substTyFvars, sizeBranches_substInputBranches]; omega)
 end
+
+theorem InferCert.sourceSound {request : InferRequest} {result : InferResult}
+    (h : InferCert request result) (hctx : CtxWF request.ctx) :
+    TypeOfHM (result.subst.onCtx request.ctx) result.completedExpr result.ty := by
+  cases request
+  cases result
+  exact InferCert.sourceSound_raw h hctx
+
+theorem Infer.sourceSound (h : Infer K F frontier ctx input next subst output ty) :
+    CtxWF ctx → TypeOfHM (subst.onCtx ctx) output ty :=
+  InferCert.sourceSound_raw h
 
 
 /-- Every stored completed RHS retains the erased source at its original slot. -/
@@ -7931,29 +8043,29 @@ private theorem erased_remaining_tail {erased : List Expr} {binding : InputRecBi
 
 mutual
 /-- Inference completes annotations and binders while preserving runtime syntax. -/
-theorem Infer.erase (h : Infer K F frontier ctx input next subst output ty) :
+private theorem InferCert.erase_raw (h : Infer K F frontier ctx input next subst output ty) :
     output.erase = input.erase := by
   match h with
   | .primLitUnit | .primLitInt | .primLitNat | .primLitChar | .primBinOpIntAdd | .primBinOpIntSub | .primBinOpIntLt _ _ _ _ | .primBinOpCharLt _ _ _ _ | .var _ | .ctor _ => simp only [Expr.erase, InferInput.erase]
   | .lambda _ _ hb =>
       simpa only [lambdaOutput, Expr.erase, InferInput.erase] using
-        congrArg (Expr.lambda none) hb.erase
+        congrArg (Expr.lambda none) hb.erase_raw
   | .app _ hf ha _ =>
-      simp only [Expr.erase, Expr.erase_substTyFvars, InferInput.erase, hf.erase, ha.erase, InferInput.erase_substTyFvars]
+      simp only [Expr.erase, Expr.erase_substTyFvars, InferInput.erase, hf.erase_raw, ha.erase_raw, InferInput.erase_substTyFvars]
   | .letIn _ hr _ hb =>
       simp only [letOutput, Expr.erase, Expr.erase_substTyFvars,
-        Expr.erase_closeTyVars, InferInput.erase, hr.erase, hb.erase, InferInput.erase_substTyFvars]
+        Expr.erase_closeTyVars, InferInput.erase, hr.erase_raw, hb.erase_raw, InferInput.erase_substTyFvars]
   | .letSignature _ _ _ hr _ _ hb =>
       simp only [letOutput, Expr.erase, Expr.erase_substTyFvars,
-        Expr.erase_closeTyVars, InferInput.erase, hr.erase, hb.erase, InferInput.erase_openTyVars, InferInput.erase_substTyFvars]
+        Expr.erase_closeTyVars, InferInput.erase, hr.erase_raw, hb.erase_raw, InferInput.erase_openTyVars, InferInput.erase_substTyFvars]
   | .match_ _ hs _ hb =>
-      simp only [Expr.erase, Expr.erase_substTyFvars, InferInput.erase, hs.erase, hb.erase, eraseBranches_substInputBranches]
+      simp only [Expr.erase, Expr.erase_substTyFvars, InferInput.erase, hs.erase_raw, hb.erase, eraseBranches_substInputBranches]
   | .letRec _ _ hs hp hcompleted hb =>
       expose_names
-      have hstate1 := hs.erase_of_infer (fun _ hi => hi.erase)
+      have hstate1 := hs.erase_of_infer (fun _ hi => hi.erase_raw)
         (RecState.Erases.init (erased := bindings.map (fun binding => binding.rhs.erase))
           (by simp))
-      have hstate2 := hp.erase_of_infer (fun _ hi => hi.erase)
+      have hstate2 := hp.erase_of_infer (fun _ hi => hi.erase_raw)
         (by simpa only [erase_map_subst_inputs] using hstate1)
         (by simp only [erase_map_subst_inputs, List.drop_zero])
       have houtputs := hstate2.outputs_eq hcompleted.outputs
@@ -7964,7 +8076,7 @@ theorem Infer.erase (h : Infer K F frontier ctx input next subst output ty) :
         simpa only [List.map_map, Function.comp_def] using congrArg
           (List.map (fun rhs : Expr => ({ ann := none, rhs := rhs } : CoreRecBinding))) houtputs
       simp only [Expr.erase_letRec, InferInput.erase, List.map_map, Function.comp_def,
-        Expr.erase_substTyFvars, hb.erase, InferInput.erase_substTyFvars, hrows]
+        Expr.erase_substTyFvars, hb.erase_raw, InferInput.erase_substTyFvars, hrows]
 termination_by (input.size, 0)
 decreasing_by
   all_goals simp only [sizeBindings_substInputBindings] at *
@@ -7976,12 +8088,22 @@ theorem InferBranches.erase
   match h with
   | .nil => rfl
   | .consWild _ hb _ hr =>
-      simp only [List.map_cons, eraseBranches, Expr.erase_substTyFvars, hb.erase, hr.erase, eraseBranches_substInputBranches]
+      simp only [List.map_cons, eraseBranches, Expr.erase_substTyFvars, hb.erase_raw, hr.erase, eraseBranches_substInputBranches]
   | .cons _ _ _ _ hb _ hr =>
-      simp only [List.map_cons, eraseBranches, Expr.erase_substTyFvars, hb.erase, hr.erase, InferInput.erase_substTyFvars, eraseBranches_substInputBranches]
+      simp only [List.map_cons, eraseBranches, Expr.erase_substTyFvars, hb.erase_raw, hr.erase, InferInput.erase_substTyFvars, eraseBranches_substInputBranches]
 termination_by (sizeBranches branches, 0)
 decreasing_by all_goals (simp only [sizeBranches, InferInput.size_substTyFvars, sizeBranches_substInputBranches]; omega)
 end
+
+theorem InferCert.erase {request : InferRequest} {result : InferResult}
+    (h : InferCert request result) : result.completedExpr.erase = request.input.erase := by
+  cases request
+  cases result
+  exact InferCert.erase_raw h
+
+theorem Infer.erase (h : Infer K F frontier ctx input next subst output ty) :
+    output.erase = input.erase :=
+  InferCert.erase_raw h
 
 theorem Infer.sound (h : Infer K F frontier ctx input next subst output ty) (hctx : CtxWF ctx) :
     RuntimeTyping.RunWT (subst.onCtx ctx) input.erase ty := by
@@ -8005,7 +8127,7 @@ theorem BranchTyping.onSubst_soft {K : List Nat} {F : List Ty}
 mutual
 /-- Successful inference also satisfies the independent partial-input rules.
 This connects input admissibility and completed-output typing at the same type. -/
-theorem Infer.inputSound_source (h : Infer K F frontier ctx input next subst output ty) :
+private theorem InferCert.inputSound_source_raw (h : Infer K F frontier ctx input next subst output ty) :
     CtxWF ctx → InputTyping (K ++ softVars (substSoft subst F)) (subst.onCtx ctx) (input.substTyFvars subst) ty := by
   match h with
   | leaf@(.primLitUnit) =>
@@ -8038,7 +8160,7 @@ theorem Infer.inputSound_source (h : Infer K F frontier ctx input next subst out
   | leaf@(.ctor _) =>
       intro hctx
       exact .complete rfl (by simp [Expr.tyFreeVars]) (leaf.sourceSound hctx)
-  | @Infer.lambda K F ann body frontier param initial ctx next subst completed bodyTy _ hs hb =>
+  | @InferCert.lambda K F ann body frontier param initial ctx next subst completed bodyTy _ hs hb =>
       intro hctx
       have hbodyCtx : CtxWF { ctx with env := PolyTy.mkTrivial param :: ctx.env } := by
         intro scheme hscheme
@@ -8062,18 +8184,18 @@ theorem Infer.inputSound_source (h : Infer K F frontier ctx input next subst out
           obtain ⟨old, hold, hv⟩ := TyTemplate.rigidVars_substTyFvars hv
           exact scope_image (Subst.fixes_of_dom_avoids hb.dom_avoids) (hs.rigid original rfl old hold) hv
       · simpa only [Subst.onCtx, Subst.onEnv, List.map_cons, Subst.onPolyTy,
-          PolyTy.mkTrivial] using hb.inputSound_source hbodyCtx
-  | @Infer.app K F f arg frontier ctx first s1 fOut fTy second s2 argOut argTy s3 _ hf ha hu =>
+          PolyTy.mkTrivial] using hb.inputSound_source_raw hbodyCtx
+  | @InferCert.app K F f arg frontier ctx first s1 fOut fTy second s2 argOut argTy s3 _ hf ha hu =>
       intro hctx
       have hs1 := (hf.lc hctx).2
       have haCtx := Subst.onCtx_wf hs1 hctx
       have hs2 := (ha.lc haCtx).2
       have hs3 := hu.unifies.lc (Subst.onTy_lc hs2 (hf.lc hctx).1)
         (.arrow (ha.lc haCtx).1 .fvar)
-      have hfTyped := (hf.inputSound_source hctx).onSubst_soft (s2 ++ s3)
+      have hfTyped := (hf.inputSound_source_raw hctx).onSubst_soft (s2 ++ s3)
         (fun pair hp => (List.mem_append.mp hp).elim (hs2 pair) (hs3 pair))
         (fun pair hp => (List.mem_append.mp hp).elim (ha.dom_avoids pair) (hu.dom_avoids pair))
-      have haTyped := (ha.inputSound_source haCtx).onSubst_soft s3 hs3 hu.dom_avoids
+      have haTyped := (ha.inputSound_source_raw haCtx).onSubst_soft s3 hs3 hu.dom_avoids
       have heq : (s2 ++ s3).onTy fTy =
           .arrow (s3.onTy argTy) (s3.onTy (.fvar second)) := by
         simpa only [Unifies, Subst.onTy_append, Subst.onTy_arrow] using hu.unifies.unifies
@@ -8081,7 +8203,7 @@ theorem Infer.inputSound_source (h : Infer K F frontier ctx input next subst out
       simp only [Subst.onCtx_append] at hfTyped
       simp only [← substSoft_append, ← InferInput.substTyFvars_append, List.append_assoc] at hfTyped haTyped
       simpa only [Subst.onCtx_append, InferInput.substTyFvars, List.append_assoc] using InputTyping.app hfTyped haTyped
-  | @Infer.letIn K F ann rhs body frontier ctx first s1 rhsOut rhsTy checked sCheck next s2 bodyOut bodyTy
+  | @InferCert.letIn K F ann rhs body frontier ctx first s1 rhsOut rhsTy checked sCheck next s2 bodyOut bodyTy
       hraw hr hc hb =>
       intro hctx
       have hs1 := (hr.lc hctx).2
@@ -8109,7 +8231,7 @@ theorem Infer.inputSound_source (h : Infer K F frontier ctx input next subst out
         · exact genScheme_wf checkedTyLC
         · exact checkedCtxWF scheme hscheme
       have hs2 := (hb.lc bodyCtxWF).2
-      have rhsTyped := (hr.inputSound_source hctx).onSubst_soft sCheck hsCheck hc.dom_avoids
+      have rhsTyped := (hr.inputSound_source_raw hctx).onSubst_soft sCheck hsCheck hc.dom_avoids
       simp only [← substSoft_append, ← InferInput.substTyFvars_append] at rhsTyped
       have rhsGeneral := rhsTyped.generalise
         (names := genVars (K ++ softVars (substSoft (s1 ++ sCheck) F))
@@ -8129,7 +8251,7 @@ theorem Infer.inputSound_source (h : Infer K F frontier ctx input next subst out
         intro template heq v hv
         exact hp v (List.mem_append_left _ (List.mem_append_left _ (by
           simpa only [BindingAnn.rigidVars, heq] using hv)))
-      have bodyTyped := hb.inputSound_source bodyCtxWF
+      have bodyTyped := hb.inputSound_source_raw bodyCtxWF
       have hctxeq :
           s2.onCtx
             { sCheck.onCtx (s1.onCtx ctx) with
@@ -8150,7 +8272,7 @@ theorem Infer.inputSound_source (h : Infer K F frontier ctx input next subst out
       intro fresh hfresh
       simpa only [← Subst.onCtx_append, List.append_assoc] using hgeneral fresh hfresh
 
-  | @Infer.letSignature K F ann rhs body written frontier ctx first s1 rhsOut rhsTy checked sCheck next s2 bodyOut bodyTy
+  | @InferCert.letSignature K F ann rhs body written frontier ctx first s1 rhsOut rhsTy checked sCheck next s2 bodyOut bodyTy
       hscope hprefix havoid hr hc hescape hb =>
     intro hctx
     have hlen : written.length = ann.paramCount := by simpa only [freshVars_length] using congrArg List.length hprefix
@@ -8194,7 +8316,7 @@ theorem Infer.inputSound_source (h : Infer K F frontier ctx input next subst out
       (List.mem_append.mp hp).elim (hs1 p) (hsCheck p)
     have hprefixAvoid : ∀ p ∈ s1 ++ sCheck, p.1 ∉ K ++ written := fun p hp =>
       (List.mem_append.mp hp).elim (hr.dom_avoids p) (hc.dom_avoids p)
-    have rhsTyped0 := (hr.inputSound_source hctx).onSubst_soft sCheck hsCheck hc.dom_avoids
+    have rhsTyped0 := (hr.inputSound_source_raw hctx).onSubst_soft sCheck hsCheck hc.dom_avoids
     simp only [← substSoft_append, ← InferInput.substTyFvars_append] at rhsTyped0
     rw [InferInput.substTyFvars_openTyVars rhs hprefixLC
       (fun p hp hw => hprefixAvoid p hp (List.mem_append_right _ hw))] at rhsTyped0
@@ -8233,7 +8355,7 @@ theorem Infer.inputSound_source (h : Infer K F frontier ctx input next subst out
     obtain ⟨avoid, hfitsFinal, htypesFinal⟩ := InputTyping.signatureBinding_onSubst_source
       hfitBoth htypeBoth s2 hs2
       (fun _ hk _ hv => scope_image (Subst.fixes_of_dom_avoids hb.dom_avoids) hk hv)
-    have bodyTyped := hb.inputSound_source bodyCtxWF
+    have bodyTyped := hb.inputSound_source_raw bodyCtxWF
     have hctxeq :
         s2.onCtx { sCheck.onCtx (s1.onCtx ctx) with
           env := signatureScheme (ann.substTyFvars (s1 ++ sCheck)) (K ++ softVars (substSoft (s1 ++ sCheck) F)) written (sCheck.onCtx (s1.onCtx ctx)) (sCheck.onTy rhsTy) ::
@@ -8299,7 +8421,7 @@ theorem Infer.inputSound_source (h : Infer K F frontier ctx input next subst out
       (by omega) hbindingscope
     have htrace1 := hstrata.inputTrace_of_infer
       (fun _ hi => hi.sourceLocality) hvalid0 hinitFrame hinitLC hctxWF hinitBelow hctxSeed hFSeed
-      (by omega) hbindingscope (fun _ hi => hi.inputSound_source) (by
+      (by omega) hbindingscope (fun _ hi => hi.inputSound_source_raw) (by
         intro stage component hc
         cases hc)
     obtain ⟨hS1, hLC1⟩ := hstrata.lc_of_infer (fun _ hi => hi.lc) hctxWF hinitLC
@@ -8337,13 +8459,13 @@ theorem Infer.inputSound_source (h : Infer K F frontier ctx input next subst out
       exact scope_image (Subst.fixes_of_dom_avoids hstrata.dom_avoids)
         (hbindingscope original ho k (List.mem_append_left _ hk)) hv
     have hcomplete2 := hsigned.inputSound_of_infer
-      (fullBindings := substInputBindings s1 bindings) (fun _ hi => hi.inputSound_source)
+      (fullBindings := substInputBindings s1 bindings) (fun _ hi => hi.inputSound_source_raw)
       (Subst.onCtx_wf hS1 hctxWF) hLC1
       (fun k hk => Nat.lt_of_lt_of_le (hK k hk) hbase1) (by simp) hscope1
       RecState.CompleteInput.init
     have hbodyCtx := hLC2.rhsCtx (Subst.onCtx_wf hS2 (Subst.onCtx_wf hS1 hctxWF))
     rw [← Subst.onCtx_append] at hbodyCtx
-    have hbodyTyped := hbody.inputSound_source hbodyCtx
+    have hbodyTyped := hbody.inputSound_source_raw hbodyCtx
     have hS3 := (hbody.lc hbodyCtx).2
     have hvalid2 := recValid_subst hvalid1 s2
     have hdone2 := hframe2.all_mono_done hvalid2
@@ -8442,7 +8564,7 @@ theorem Infer.inputSound_source (h : Infer K F frontier ctx input next subst out
     intro hctx
     have hs1 := (hs.lc hctx).2
     have hbr := hb.lc (Subst.onCtx_wf hs1 hctx) (hs.lc hctx).1 .fvar
-    have hscrut := (hs.inputSound_source hctx).onSubst_soft _ hbr.2 hb.dom_avoids
+    have hscrut := (hs.inputSound_source_raw hctx).onSubst_soft _ hbr.2 hb.dom_avoids
     have hbranches := hb.inputSound_source (Subst.onCtx_wf hs1 hctx) (hs.lc hctx).1 .fvar
     simp only [← substSoft_append, ← InferInput.substTyFvars_append] at hscrut
     simp only [InferInput.substTyFvars, Subst.onCtx_append]
@@ -8479,7 +8601,7 @@ theorem InferBranches.inputSound_source
     have htail := hr.inputSound_source hctxRest hscrutRest hresultRest
     intro branch hbranch
     rcases List.mem_cons.mp hbranch with rfl | hbranch
-    · have head := (hb.inputSound_source hctx).onSubst_soft (s2 ++ s3)
+    · have head := (hb.inputSound_source_raw hctx).onSubst_soft (s2 ++ s3)
         (fun p hp => (List.mem_append.mp hp).elim (hs2 p) (hs3 p))
         (fun p hp => (List.mem_append.mp hp).elim (hu.dom_avoids p) (hr.dom_avoids p))
       have heq := congrArg s3.onTy hu.unifies.unifies
@@ -8525,7 +8647,7 @@ theorem InferBranches.inputSound_source
           (s1.onCtx (s0.onCtx ctx)) (.named name count, body.substTyFvars (s0 ++ s1)) (s1.onTy (s0.onTy scrutTy)) bodyTy := by
         refine .named hspec ?_
         rw [← Subst.onCtx_branchBindings hs1]
-        simpa only [← substSoft_append, ← InferInput.substTyFvars_append] using hb.inputSound_source hbodyWF
+        simpa only [← substSoft_append, ← InferInput.substTyFvars_append] using hb.inputSound_source_raw hbodyWF
       have head := head0.onSubst_soft (s2 ++ s3)
         (fun p hp => (List.mem_append.mp hp).elim (hs2 p) (hs3 p))
         (fun p hp => (List.mem_append.mp hp).elim (hu.dom_avoids p) (hr.dom_avoids p))
@@ -8542,6 +8664,21 @@ theorem InferBranches.inputSound_source
 termination_by (sizeBranches branches, 0)
 decreasing_by all_goals (simp only [sizeBranches, InferInput.size_substTyFvars, sizeBranches_substInputBranches]; omega)
 end
+
+theorem InferCert.inputSound_source {request : InferRequest} {result : InferResult}
+    (h : InferCert request result) (hctx : CtxWF request.ctx) :
+    InputTyping
+      (request.protectedVars ++ softVars (substSoft result.subst request.soft))
+      (result.subst.onCtx request.ctx) (request.input.substTyFvars result.subst) result.ty := by
+  cases request
+  cases result
+  exact InferCert.inputSound_source_raw h hctx
+
+theorem Infer.inputSound_source (h : Infer K F frontier ctx input next subst output ty) :
+    CtxWF ctx →
+      InputTyping (K ++ softVars (substSoft subst F)) (subst.onCtx ctx)
+        (input.substTyFvars subst) ty :=
+  InferCert.inputSound_source_raw h
 
 /-- With no provisional slots, actual inference preserves authored annotations. -/
 theorem Infer.inputSound (h : Infer K [] frontier ctx input next subst output ty)
@@ -8562,13 +8699,13 @@ theorem AnnotationCompletion.onSubst_soft {K : List Nat} {F : List Ty}
 mutual
 /-- Exact annotation fidelity follows the same scoped source transformation as
 input typing. Completed let binders are compared by cofinite openings. -/
-theorem Infer.completes_source (h : Infer K F frontier ctx input next subst output ty) :
+private theorem InferCert.completes_source_raw (h : Infer K F frontier ctx input next subst output ty) :
     CtxWF ctx → AnnotationCompletion (K ++ softVars (substSoft subst F)) (input.substTyFvars subst) output := by
   match h with
   | .primLitUnit | .primLitInt | .primLitNat | .primLitChar | .primBinOpIntAdd | .primBinOpIntSub | .primBinOpIntLt _ _ _ _ | .primBinOpCharLt _ _ _ _ | .var _ | .ctor _ =>
       intro _
       exact .complete rfl (by simp [Expr.tyFreeVars])
-  | @Infer.lambda K F ann body frontier param initial ctx next subst completed bodyTy _ hs hb =>
+  | @InferCert.lambda K F ann body frontier param initial ctx next subst completed bodyTy _ hs hb =>
       intro hctx
       have hbodyCtx : CtxWF { ctx with env := PolyTy.mkTrivial param :: ctx.env } := by
         intro scheme hscheme
@@ -8596,21 +8733,21 @@ theorem Infer.completes_source (h : Infer K F frontier ctx input next subst outp
           obtain ⟨old, hold, hv⟩ := TyTemplate.rigidVars_substTyFvars hv
           exact scope_image (Subst.fixes_of_dom_avoids hb.dom_avoids) (hs.rigid original rfl old hold) hv
       · simpa only [Subst.onCtx, Subst.onEnv, List.map_cons, Subst.onPolyTy,
-          PolyTy.mkTrivial] using hb.completes_source hbodyCtx
-  | @Infer.app K F f arg frontier ctx first s1 fOut fTy second s2 argOut argTy s3 _ hf ha hu =>
+          PolyTy.mkTrivial] using hb.completes_source_raw hbodyCtx
+  | @InferCert.app K F f arg frontier ctx first s1 fOut fTy second s2 argOut argTy s3 _ hf ha hu =>
       intro hctx
       have hs1 := (hf.lc hctx).2
       have haCtx := Subst.onCtx_wf hs1 hctx
       have hs2 := (ha.lc haCtx).2
       have hs3 := hu.unifies.lc (Subst.onTy_lc hs2 (hf.lc hctx).1)
         (.arrow (ha.lc haCtx).1 .fvar)
-      have hfComp := (hf.completes_source hctx).onSubst_soft (s2 ++ s3)
+      have hfComp := (hf.completes_source_raw hctx).onSubst_soft (s2 ++ s3)
         (fun pair hp => (List.mem_append.mp hp).elim (hs2 pair) (hs3 pair))
         (fun pair hp => (List.mem_append.mp hp).elim (ha.dom_avoids pair) (hu.dom_avoids pair))
-      have haComp := (ha.completes_source haCtx).onSubst_soft s3 hs3 hu.dom_avoids
+      have haComp := (ha.completes_source_raw haCtx).onSubst_soft s3 hs3 hu.dom_avoids
       simp only [← substSoft_append, ← InferInput.substTyFvars_append, List.append_assoc] at hfComp haComp
       simpa only [List.append_assoc] using AnnotationCompletion.app hfComp haComp
-  | @Infer.letIn K F ann rhs body frontier ctx first s1 rhsOut rhsTy checked sCheck next s2 bodyOut bodyTy
+  | @InferCert.letIn K F ann rhs body frontier ctx first s1 rhsOut rhsTy checked sCheck next s2 bodyOut bodyTy
       hraw hr hc hb =>
       intro hctx
       have hs1 := (hr.lc hctx).2
@@ -8658,7 +8795,7 @@ theorem Infer.completes_source (h : Infer K F frontier ctx input next subst outp
         intro template heq v hv
         exact hp v (List.mem_append_left _ (List.mem_append_left _ (by
           simpa only [BindingAnn.rigidVars, heq] using hv)))
-      have rhsComp := (hr.completes_source hctx).onSubst_soft sCheck hsCheck hc.dom_avoids
+      have rhsComp := (hr.completes_source_raw hctx).onSubst_soft sCheck hsCheck hc.dom_avoids
       simp only [← substSoft_append, ← InferInput.substTyFvars_append] at rhsComp
       have rhsBound := (TypeOfHM.onSubst sCheck hsCheck (hr.sourceSound hctx)).tyBvarBounded
       obtain ⟨compAvoid, hcomplete⟩ := rhsComp.generalise_closed_after_source
@@ -8666,7 +8803,7 @@ theorem Infer.completes_source (h : Infer K F frontier ctx input next subst outp
           (sCheck.onCtx (s1.onCtx ctx)).env (sCheck.onTy rhsTy))
         genVars_nodup (fun _ hn => genVars_not_mem_rigid hn) rhsBound s2 hs2
         (fun _ hk _ hv => scope_image (Subst.fixes_of_dom_avoids hb.dom_avoids) hk hv)
-      have bodyComp := hb.completes_source bodyCtxWF
+      have bodyComp := hb.completes_source_raw bodyCtxWF
       simp only [← substSoft_append, ← InferInput.substTyFvars_append, ← BindingAnn.substTyFvars_append,
         List.append_assoc] at hfits hcomplete bodyComp hannFinal ⊢
       simp only [letOutput]
@@ -8676,7 +8813,7 @@ theorem Infer.completes_source (h : Infer K F frontier ctx input next subst outp
       · intro fresh hf
         exact hcomplete fresh ⟨hf.length, hf.nodup, fun v hv hm => hf.avoid v hv (List.mem_append_right _ hm)⟩
 
-  | @Infer.letSignature K F ann rhs body written frontier ctx first s1 rhsOut rhsTy checked sCheck next s2 bodyOut bodyTy
+  | @InferCert.letSignature K F ann rhs body written frontier ctx first s1 rhsOut rhsTy checked sCheck next s2 bodyOut bodyTy
       hscope hprefix havoid hr hc hescape hb =>
     intro hctx
     have hlen : written.length = ann.paramCount := by simpa only [freshVars_length] using congrArg List.length hprefix
@@ -8759,7 +8896,7 @@ theorem Infer.completes_source (h : Infer K F frontier ctx input next subst outp
     obtain ⟨avoid, hfitsFinal, htypesFinal⟩ := InputTyping.signatureBinding_onSubst_source
       hfitBoth htypeBoth s2 hs2
       (fun _ hk _ hv => scope_image (Subst.fixes_of_dom_avoids hb.dom_avoids) hk hv)
-    have rhsComp0 := (hr.completes_source hctx).onSubst_soft sCheck hsCheck hc.dom_avoids
+    have rhsComp0 := (hr.completes_source_raw hctx).onSubst_soft sCheck hsCheck hc.dom_avoids
     simp only [← substSoft_append, ← InferInput.substTyFvars_append] at rhsComp0
     rw [InferInput.substTyFvars_openTyVars rhs hprefixLC
       (fun p hp hw => hprefixAvoid p hp (List.mem_append_right _ hw))] at rhsComp0
@@ -8770,7 +8907,7 @@ theorem Infer.completes_source (h : Infer K F frontier ctx input next subst outp
     obtain ⟨completeAvoid, hcomplete⟩ := hcomp.cofinite_completes rhsComp hnamesND hnamesAvoid hrawPost rhsBound
     obtain ⟨finalCompAvoid, hcompleteFinal⟩ := AnnotationCompletion.signatureBinding_onSubst_source hcomplete s2 hs2
       (fun _ hk _ hv => scope_image (Subst.fixes_of_dom_avoids hb.dom_avoids) hk hv)
-    have bodyComp := hb.completes_source bodyCtxWF
+    have bodyComp := hb.completes_source_raw bodyCtxWF
     have hpostFinal := hscope.subst (s1 ++ sCheck ++ s2) (Subst.fixes_of_dom_avoids
       (fun p hp hk => (List.mem_append.mp hp).elim
         (fun hp => hprefixAvoid p hp (List.mem_append_left _ hk))
@@ -8829,7 +8966,7 @@ theorem Infer.completes_source (h : Infer K F frontier ctx input next subst outp
       (by omega) hbindingscope
     have hfid1 := hstrata.fidelity_of_infer
       (fun _ hi => hi.sourceLocality) hvalid0 hinitFrame hinitLC hctxWF hinitBelow hctxSeed hFSeed
-      (by omega) hbindingscope (fun _ hi => hi.completes_source) (fun _ hi => hi.sourceSound)
+      (by omega) hbindingscope (fun _ hi => hi.completes_source_raw) (fun _ hi => hi.sourceSound)
       RecState.Fidelity.init
     obtain ⟨hS1, hLC1⟩ := hstrata.lc_of_infer (fun _ hi => hi.lc) hctxWF hinitLC
     obtain ⟨hB1, hBelow1⟩ := hstrata.belowFvars_of_infer (fun _ hi => hi.belowFvars)
@@ -8840,7 +8977,7 @@ theorem Infer.completes_source (h : Infer K F frontier ctx input next subst outp
     obtain ⟨hframe2, _⟩ := hsigned.frame_of_infer
       (fun _ hi => hi.sourceLocality) hframe1 (by simp) hdone1 hBelow1.2.2.2
     have hfid2 := hsigned.completes_of_infer
-      (fun _ hi => hi.completes_source) (fun _ hi => hi.sourceSound)
+      (fun _ hi => hi.completes_source_raw) (fun _ hi => hi.sourceSound)
       (Subst.onCtx_wf hS1 hctxWF) hLC1
       (fun k hk => by have := hK k hk; have := hstrata.frontier_le; omega)
       (by simp) ((RecState.outputs_length state1).trans hframe1.memberStates_length)
@@ -8851,7 +8988,7 @@ theorem Infer.completes_source (h : Infer K F frontier ctx input next subst outp
     have hbodyCtx := hLC2.rhsCtx (Subst.onCtx_wf hS2 (Subst.onCtx_wf hS1 hctxWF))
     rw [← Subst.onCtx_append] at hbodyCtx
     obtain ⟨_, hS3⟩ := hbody.lc hbodyCtx
-    have hbodyComplete := hbody.completes_source hbodyCtx
+    have hbodyComplete := hbody.completes_source_raw hbodyCtx
     simp only [← substSoft_append, ← InferInput.substTyFvars_append] at hbodyComplete
     have hfidFinal := hfid2.onSubst_source hS3
       (fun k hk v hv => scope_image (Subst.fixes_of_dom_avoids hbody.dom_avoids) hk hv)
@@ -8920,7 +9057,7 @@ theorem Infer.completes_source (h : Infer K F frontier ctx input next subst outp
     intro hctx
     have hs1 := (hs.lc hctx).2
     have hbr := hb.lc (Subst.onCtx_wf hs1 hctx) (hs.lc hctx).1 .fvar
-    have hscrut := (hs.completes_source hctx).onSubst_soft _ hbr.2 hb.dom_avoids
+    have hscrut := (hs.completes_source_raw hctx).onSubst_soft _ hbr.2 hb.dom_avoids
     have hbranches := hb.completes_source (Subst.onCtx_wf hs1 hctx) (hs.lc hctx).1 .fvar
     simp only [← substSoft_append, ← InferInput.substTyFvars_append] at hscrut
     simp only [← substSoft_append, ← substInputBranches_append] at hbranches
@@ -8947,7 +9084,7 @@ theorem InferBranches.completes_source
     have hresultRest := Subst.onTy_lc hs2 (Subst.onTy_lc hs1 hresult)
     have hs3 := (hr.lc hctxRest hscrutRest hresultRest).2
     have htail := hr.completes_source hctxRest hscrutRest hresultRest
-    have head := (hb.completes_source hctx).onSubst_soft (s2 ++ s3)
+    have head := (hb.completes_source_raw hctx).onSubst_soft (s2 ++ s3)
       (fun p hp => (List.mem_append.mp hp).elim (hs2 p) (hs3 p))
       (fun p hp => (List.mem_append.mp hp).elim (hu.dom_avoids p) (hr.dom_avoids p))
     simp only [← substSoft_append, ← InferInput.substTyFvars_append, ← substInputBranches_append,
@@ -8971,7 +9108,7 @@ theorem InferBranches.completes_source
     have hresultRest := Subst.onTy_lc hs2 (Subst.onTy_lc hs1 (Subst.onTy_lc hs0 hresult))
     have hs3 := (hr.lc hctxRest hscrutRest hresultRest).2
     have htail := hr.completes_source hctxRest hscrutRest hresultRest
-    have head := (hb.completes_source hbodyWF).onSubst_soft (s2 ++ s3)
+    have head := (hb.completes_source_raw hbodyWF).onSubst_soft (s2 ++ s3)
       (fun p hp => (List.mem_append.mp hp).elim (hs2 p) (hs3 p))
       (fun p hp => (List.mem_append.mp hp).elim (hu.dom_avoids p) (hr.dom_avoids p))
     simp only [← substSoft_append, ← InferInput.substTyFvars_append, ← substInputBranches_append,
@@ -8980,6 +9117,21 @@ theorem InferBranches.completes_source
 termination_by (sizeBranches branches, 0)
 decreasing_by all_goals (simp only [sizeBranches, InferInput.size_substTyFvars, sizeBranches_substInputBranches]; omega)
 end
+
+theorem InferCert.completes_source {request : InferRequest} {result : InferResult}
+    (h : InferCert request result) (hctx : CtxWF request.ctx) :
+    AnnotationCompletion
+      (request.protectedVars ++ softVars (substSoft result.subst request.soft))
+      (request.input.substTyFvars result.subst) result.completedExpr := by
+  cases request
+  cases result
+  exact InferCert.completes_source_raw h hctx
+
+theorem Infer.completes_source (h : Infer K F frontier ctx input next subst output ty) :
+    CtxWF ctx →
+      AnnotationCompletion (K ++ softVars (substSoft subst F))
+        (input.substTyFvars subst) output :=
+  InferCert.completes_source_raw h
 
 /-- The public empty-soft-context judgment preserves all authored annotations. -/
 theorem Infer.completes (h : Infer K [] frontier ctx input next subst output ty)
@@ -8995,67 +9147,10 @@ theorem Infer.completes (h : Infer K [] frontier ctx input next subst output ty)
 
 namespace InferCert
 
-theorem sourceScope {request : InferRequest} {result : InferResult}
-    (h : InferCert request result) : request.Scoped :=
-  Infer.sourceScope h
-
-theorem dom_avoids {request : InferRequest} {result : InferResult}
-    (h : InferCert request result) :
-    ∀ pair ∈ result.subst, pair.1 ∉ request.protectedVars :=
-  Infer.dom_avoids h
-
-theorem lc {request : InferRequest} {result : InferResult}
-    (h : InferCert request result) (hctx : CtxWF request.ctx) :
-    result.ty.IsLC ∧ ∀ pair ∈ result.subst, pair.2.IsLC :=
-  Infer.lc h hctx
-
-theorem frontier_le {request : InferRequest} {result : InferResult}
-    (h : InferCert request result) : request.frontier ≤ result.frontier :=
-  Infer.frontier_le h
-
-theorem belowFvars {request : InferRequest} {result : InferResult}
-    (h : InferCert request result) (bounds : request.Bounds) :
-    Ty.BelowFvars result.frontier result.ty ∧
-      ∀ pair ∈ result.subst, Ty.BelowFvars result.frontier pair.2 :=
-  Infer.belowFvars h bounds.ctxBelow bounds.protectedBelow bounds.softBelow
-
-theorem sourceLocality {request : InferRequest} {result : InferResult}
-    (h : InferCert request result) {w : Nat} (hw : w < request.frontier)
-    (hrefs : request.input.erase.ForallOuter
-      (fun i => ∀ scheme, request.ctx.env[i]? = some scheme → w ∉ scheme.body.freeVars) 0)
-    (hrigid : w ∉ request.input.rigidVars) :
-    (∀ pair ∈ result.subst, w ∉ pair.2.freeVars) ∧
-      w ∉ result.ty.freeVars ∧ w ∉ result.subst.map Prod.fst :=
-  Infer.sourceLocality h hw hrefs hrigid
-
-theorem sourceSound {request : InferRequest} {result : InferResult}
-    (h : InferCert request result) (hctx : CtxWF request.ctx) :
-    TypeOfHM (result.subst.onCtx request.ctx) result.completedExpr result.ty :=
-  Infer.sourceSound h hctx
-
-theorem erase {request : InferRequest} {result : InferResult}
-    (h : InferCert request result) :
-    result.completedExpr.erase = request.input.erase :=
-  Infer.erase h
-
 theorem sound {request : InferRequest} {result : InferResult}
     (h : InferCert request result) (hctx : CtxWF request.ctx) :
     RuntimeTyping.RunWT (result.subst.onCtx request.ctx) request.input.erase result.ty :=
   Infer.sound h hctx
-
-theorem inputSound_source {request : InferRequest} {result : InferResult}
-    (h : InferCert request result) (hctx : CtxWF request.ctx) :
-    InputTyping
-      (request.protectedVars ++ softVars (substSoft result.subst request.soft))
-      (result.subst.onCtx request.ctx) (request.input.substTyFvars result.subst) result.ty :=
-  Infer.inputSound_source h hctx
-
-theorem completes_source {request : InferRequest} {result : InferResult}
-    (h : InferCert request result) (hctx : CtxWF request.ctx) :
-    AnnotationCompletion
-      (request.protectedVars ++ softVars (substSoft result.subst request.soft))
-      (request.input.substTyFvars result.subst) result.completedExpr :=
-  Infer.completes_source h hctx
 
 /-- Ordinary core inference has no provisional soft slots, so its certificate
 directly types the authored input. -/
