@@ -39,7 +39,7 @@ private def logicalPaths : Expr → List CorePath
   | .match_ scrut branches => [] ::
       (logicalPaths scrut).map (.matchScrut :: ·) ++
       logicalBranchPaths 0 branches
-  | .letRec _ bindings body => [] ::
+  | .letRec bindings body => [] ::
       logicalBindingPaths 0 bindings ++
       (logicalPaths body).map (.letRecBody :: ·)
 
@@ -49,10 +49,10 @@ private def logicalBranchPaths (index : Nat) : List (MatchPattern × Expr) → L
       (logicalPaths body).map (.matchBranch index :: ·) ++
         logicalBranchPaths (index + 1) rest
 
-private def logicalBindingPaths (member : Nat) : List Expr → List CorePath
+private def logicalBindingPaths (member : Nat) : List CoreRecBinding → List CorePath
   | [] => []
-  | rhs :: rest =>
-      (logicalPaths rhs).map (.letRecRhs member :: ·) ++
+  | binding :: rest =>
+      (logicalPaths binding.rhs).map (.letRecRhs member :: ·) ++
         logicalBindingPaths (member + 1) rest
 end
 
@@ -123,7 +123,7 @@ private def matchBranchPathsAreTyped : Bool :=
   | none => false
 
 private def recursiveId : Expr :=
-  .letRec [none] [.lambda none (.var 0)]
+  .letRec [{ ann := none, rhs := .lambda none (.var 0) }]
     (.app (.var 0) (.primLit (.int 3)))
 
 private def letRecRhsPathsAreTyped : Bool :=
@@ -171,7 +171,7 @@ private def branchSchemePaths : Bool :=
 
 private def recSchemesIndexed : Bool :=
   let binding : Expr := .letIn none (.lambda none (.var 0)) (.var 0)
-  let source : Expr := .letRec [none] [binding] (.var 0)
+  let source : Expr := .letRec [{ ann := none, rhs := binding }] (.var 0)
   match inferWithTypes [] source with
   | some r => match r.binderSchemes with
     | [(.letRec [] 0, ⟨1, .arrow (.bvar 0) (.bvar 0)⟩),
@@ -210,7 +210,7 @@ private def polyIdAnn : PolyTy :=
     does. -/
 private def annotatedRecursiveSkolemsAreClosed : Bool :=
   let source : Expr :=
-    .letRec [some polyIdAnn] [.lambda none (.var 0)] (.var 0)
+    .letRec [{ ann := some polyIdAnn, rhs := .lambda none (.var 0) }] (.var 0)
   match inferWithTypes [] source with
   | some r =>
       hasTy r.nodeTypes [.letRecRhs 0]
@@ -226,7 +226,7 @@ private def annotatedRecursiveSkolemsAreClosed : Bool :=
     separate instantiations in the body. -/
 private def annotatedPolyUseAfterBlockAccepted : Bool :=
   let source : Expr :=
-    .letRec [some polyIdAnn] [.lambda none (.var 0)]
+    .letRec [{ ann := some polyIdAnn, rhs := .lambda none (.var 0) }]
       (pair
         (.app (.var 0) (.primLit (.int 1)))
         (.app (.var 0) (.primLit (.char 'x'))))
@@ -240,11 +240,11 @@ private def annotatedPolyUseAfterBlockAccepted : Bool :=
     the SCC, so an ordinary sibling may instantiate it independently. -/
 private def annotatedPolyUseInsideBlockAccepted : Bool :=
   let source : Expr :=
-    .letRec [some polyIdAnn, none]
-      [.lambda none (.var 0),
-       pair
-        (.app (.var 0) (.primLit (.int 1)))
-        (.app (.var 0) (.primLit (.char 'x')))]
+    .letRec
+      [{ ann := some polyIdAnn, rhs := .lambda none (.var 0) },
+       { ann := none, rhs := pair
+          (.app (.var 0) (.primLit (.int 1)))
+          (.app (.var 0) (.primLit (.char 'x'))) }]
       (.primLit .unit)
   (inferWithTypes preludeCtors source).isSome
 

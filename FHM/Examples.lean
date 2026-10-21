@@ -348,22 +348,25 @@ at its declared scheme after those inferred schemes have been fixed. -/
 
 -- let rec f = λx. x in f  :  ∀ a. a → a
 -- (a non-recursive binding placed in a letRec — still sound, generalised as usual)
-#eval showType (.letRec [none] [.lambda none (.var 0)] (.var 0))
+#eval showType (.letRec [{ ann := none, rhs := .lambda none (.var 0) }] (.var 0))
 
 -- let rec f = λx. f x in f  :  ∀ a b. a → b
 -- (genuine self-recursion: `f` calls itself; the loop is well-typed, productive `f`
 --  would need a productive body — here the type is the most general fixpoint shape)
-#eval showType (.letRec [none] [.lambda none (.app (.var 1) (.var 0))] (.var 0))
+#eval showType (.letRec
+  [{ ann := none, rhs := .lambda none (.app (.var 1) (.var 0)) }] (.var 0))
 
 -- let rec f = g and g = f in f  :  ∀ a. a
 -- (mutual recursion: `f` and `g` share one monotype in the group, which is
 --  generalized for the body)
-#eval showType (.letRec [none, none] [.var 1, .var 0] (.var 0))
+#eval showType (.letRec
+  [{ ann := none, rhs := .var 1 }, { ann := none, rhs := .var 0 }] (.var 0))
 
 -- let rec f = λx. g x and g = λx. f x in f  :  ∀ a b. a → b
 -- (mutual deferral: `f` and `g` share their `a → b` shape across the group)
-#eval showType (.letRec [none, none]
-  [.lambda none (.app (.var 2) (.var 0)), .lambda none (.app (.var 1) (.var 0))]
+#eval showType (.letRec
+  [{ ann := none, rhs := .lambda none (.app (.var 2) (.var 0)) },
+   { ann := none, rhs := .lambda none (.app (.var 1) (.var 0)) }]
   (.var 0))
 
 
@@ -378,7 +381,7 @@ generalisation variables. -/
 /-- A recursive `Int` annotation refines the enclosing lambda parameter's
     flexible inference variable. -/
 private def recAnnRefinesOuter : Expr :=
-  .lambda none (.letRec [some ⟨0, .prim .int⟩] [.var 1] (.var 0))
+  .lambda none (.letRec [{ ann := some ⟨0, .prim .int⟩, rhs := .var 1 }] (.var 0))
 
 #guard match checkCore [] recAnnRefinesOuter with
   | some ⟨0, .arrow (.prim .int) (.prim .int)⟩ => true
@@ -387,8 +390,10 @@ private def recAnnRefinesOuter : Expr :=
 /-- A less-general monomorphic contract is a valid type at which to check the
     otherwise polymorphic identity. -/
 private def recAnnSpecialisesIdentity : Expr :=
-  .letRec [some ⟨0, .arrow (.prim .int) (.prim .int)⟩]
-    [.lambda none (.var 0)] (.var 0)
+  .letRec
+    [{ ann := some ⟨0, .arrow (.prim .int) (.prim .int)⟩,
+       rhs := .lambda none (.var 0) }]
+    (.var 0)
 
 #guard match checkCore [] recAnnSpecialisesIdentity with
   | some ⟨0, .arrow (.prim .int) (.prim .int)⟩ => true
@@ -396,14 +401,14 @@ private def recAnnSpecialisesIdentity : Expr :=
 
 /-- `1` has only type `Int`, so it cannot justify the declared `∀a. a`. -/
 private def recAnnOverclaims : Expr :=
-  .letRec [some ⟨1, .bvar 0⟩] [.primLit (.int 1)] (.var 0)
+  .letRec [{ ann := some ⟨1, .bvar 0⟩, rhs := .primLit (.int 1) }] (.var 0)
 
 #guard (checkCore [] recAnnOverclaims).isNone
 
 /-- A free variable written in an annotation is source-rigid, not an inference
     metavariable which contract checking may solve. -/
 private def recAnnCannotSolveRigid : Expr :=
-  .letRec [some ⟨0, .fvar 7⟩] [.primLit (.int 1)] (.var 0)
+  .letRec [{ ann := some ⟨0, .fvar 7⟩, rhs := .primLit (.int 1) }] (.var 0)
 
 #guard (checkCore [] recAnnCannotSolveRigid).isNone
 
@@ -411,8 +416,10 @@ private def recAnnCannotSolveRigid : Expr :=
     has already been inferred and generalized, so the body can instantiate it
     at both `Int` and `Char`. -/
 private def recAnnKeepsSiblingPolymorphic : Expr :=
-  .letRec [some ⟨0, .arrow (.prim .int) (.prim .int)⟩, none]
-    [.lambda none (.var 0), .lambda none (.var 0)]
+  .letRec
+    [{ ann := some ⟨0, .arrow (.prim .int) (.prim .int)⟩,
+       rhs := .lambda none (.var 0) },
+     { ann := none, rhs := .lambda none (.var 0) }]
     (.letIn none (.app (.var 1) (.primLit (.int 1)))
       (.app (.var 2) (.primLit (.char 'c'))))
 
@@ -434,10 +441,10 @@ at its *own* monotype — exactly the monomorphic recursion `letRec` provides. -
 -- in length
 -- (`t : List a` recurses, the result is a `Peano`; `length` generalises to be
 --  polymorphic in the element type `a` once the group is closed)
-#eval showTypeP (.letRec [none]
-  [.lambda none (.match_ (.var 0)
+#eval showTypeP (.letRec
+  [{ ann := none, rhs := .lambda none (.match_ (.var 0)
     [ (.named (.mk "Nil") 0, .ctor (.mk "Zero"))
-    , (.named (.mk "Cons") 2, .app (.ctor (.mk "Succ")) (.app (.var 3) (.var 1))) ])]
+    , (.named (.mk "Cons") 2, .app (.ctor (.mk "Succ")) (.app (.var 3) (.var 1))) ]) }]
   (.var 0))
 
 -- let rec map = λf. λxs. match xs with             ∀ a b. (a → b) → List a → List b
@@ -446,12 +453,12 @@ at its *own* monotype — exactly the monomorphic recursion `letRec` provides. -
 -- in map
 -- (`map` recurses monomorphically inside the group; the body then sees the fully
 --  generalized `∀ a b. (a → b) → List a → List b`)
-#eval showTypeP (.letRec [none]
-  [.lambda none (.lambda none (.match_ (.var 0)
+#eval showTypeP (.letRec
+  [{ ann := none, rhs := .lambda none (.lambda none (.match_ (.var 0)
     [ (.named (.mk "Nil") 0, .ctor (.mk "Nil"))
     , (.named (.mk "Cons") 2,
         .app (.app (.ctor (.mk "Cons")) (.app (.var 3) (.var 0)))
-          (.app (.app (.var 4) (.var 3)) (.var 1))) ]))]
+          (.app (.app (.var 4) (.var 3)) (.var 1))) ])) }]
   (.var 0))
 
 
@@ -467,13 +474,14 @@ generalised independently for the body. -/
 -- in even
 -- (the textbook mutual recursion: `even` calls `odd` and vice versa; the body
 --  returns `even`. Both share the monotype `Peano → Bool` across the group)
-#eval showTypeP (.letRec [none, none]
-  [ .lambda none (.match_ (.var 0)
+#eval showTypeP (.letRec
+  [ { ann := none, rhs := .lambda none (.match_ (.var 0)
       [ (.named (.mk "Zero") 0, .ctor (.mk "True"))
       , (.named (.mk "Succ") 1, .app (.var 3) (.var 0)) ])
-  , .lambda none (.match_ (.var 0)
+    }
+  , { ann := none, rhs := .lambda none (.match_ (.var 0)
       [ (.named (.mk "Zero") 0, .ctor (.mk "False"))
-      , (.named (.mk "Succ") 1, .app (.var 2) (.var 0)) ]) ]
+      , (.named (.mk "Succ") 1, .app (.var 2) (.var 0)) ]) } ]
   (.var 0))
 
 -- let rec mapTree   = λf. λt.  match t with                            (the complex one)
@@ -485,16 +493,17 @@ generalised independently for the body. -/
 -- (mutual recursion mirroring mutually-recursive *data* (`Tree`/`Forest`). The whole
 --  group shares the single `(a → b)` and a single element-type pair `a`/`b` — the
 --  exact polymorphic cross-binding sharing the old rule severed)
-#eval showTypeP (.letRec [none, none]
-  [ .lambda none (.lambda none (.match_ (.var 0)
+#eval showTypeP (.letRec
+  [ { ann := none, rhs := .lambda none (.lambda none (.match_ (.var 0)
       [ (.named (.mk "Node") 2,
           .app (.app (.ctor (.mk "Node")) (.app (.var 3) (.var 0)))
             (.app (.app (.var 5) (.var 3)) (.var 1))) ]))
-  , .lambda none (.lambda none (.match_ (.var 0)
+    }
+  , { ann := none, rhs := .lambda none (.lambda none (.match_ (.var 0)
       [ (.named (.mk "FNil") 0, .ctor (.mk "FNil"))
       , (.named (.mk "FCons") 2,
           .app (.app (.ctor (.mk "FCons")) (.app (.app (.var 4) (.var 3)) (.var 0)))
-            (.app (.app (.var 5) (.var 3)) (.var 1))) ])) ]
+            (.app (.app (.var 5) (.var 3)) (.var 1))) ])) } ]
   (.var 0))
 
 
@@ -508,7 +517,8 @@ be accepted. -/
 -- (`id id` forces the body's `id` to be used at two types at once — only typeable
 --  because the body generalises the group binding to `∀ a. a → a`. A checker that
 --  forgot to generalise the body would reject this)
-#eval showType (.letRec [none] [.lambda none (.var 0)] (.app (.var 0) (.var 0)))
+#eval showType (.letRec [{ ann := none, rhs := .lambda none (.var 0) }]
+  (.app (.var 0) (.var 0)))
 
 
 /-! ### A recursive annotation referencing an outer scoped type variable
@@ -523,8 +533,9 @@ the enclosing skolem and closes it back, so the whole thing infers `∀ a. a →
 
 -- let (g : ∀ a. a → a) = (let rec (loop : a → a) = λy. loop y in loop) in g   :  ∀ a. a → a
 #eval showType (.letIn (some ⟨1, .arrow (.bvar 0) (.bvar 0)⟩)
-  (.letRec [some ⟨0, .arrow (.bvar 0) (.bvar 0)⟩]
-     [.lambda none (.app (.var 1) (.var 0))]
+  (.letRec
+     [{ ann := some ⟨0, .arrow (.bvar 0) (.bvar 0)⟩,
+        rhs := .lambda none (.app (.var 1) (.var 0)) }]
      (.var 0))
   (.var 0))
 
@@ -554,32 +565,38 @@ private def gRhs : Expr := .lambda none (.app (.var 1) (.var 0))
 -- in g 0   :   Int
 -- `f` is checked against its complete scheme and may instantiate itself at
 -- `Unit`; `g` independently instantiates the same declared scheme at `Int`.
-#eval showType (.letRec [some selfSig, none] [fRhs, gRhs]
+#eval showType (.letRec
+  [{ ann := some selfSig, rhs := fRhs }, { ann := none, rhs := gRhs }]
   (.app (.var 1) (.primLit (.int 0))))
-#guard (checkCore [] (.letRec [some selfSig, none] [fRhs, gRhs]
+#guard (checkCore [] (.letRec
+  [{ ann := some selfSig, rhs := fRhs }, { ann := none, rhs := gRhs }]
   (.app (.var 1) (.primLit (.int 0))))).isSome = true
 
 -- …and the SAME program's all-unannotated reading is REJECTED (the recursive call
 -- `f ()` pins `f`'s monotype to `unit → unit`, so the body's `g 0` fails): the
 -- mixed witness genuinely needs BOTH regimes at once.
-#guard (checkCore [] (.letRec [none, none] [fRhs, gRhs]
+#guard (checkCore [] (.letRec
+  [{ ann := none, rhs := fRhs }, { ann := none, rhs := gRhs }]
   (.app (.var 1) (.primLit (.int 0))))).isSome = false
 
 -- let rec (f : ∀ a. a → a) = λx. g x and g = λx. f x in f
 -- The complete contract for `f` is assumed while `g` is inferred and generalized;
 -- `f` is then checked with that final scheme for `g`. Thus adding `f`'s principal
 -- annotation does not make this ordinary HM cycle fail.
-#eval showType (.letRec [some selfSig, none]
-  [.lambda none (.app (.var 2) (.var 0)), .lambda none (.app (.var 1) (.var 0))]
+#eval showType (.letRec
+  [{ ann := some selfSig, rhs := .lambda none (.app (.var 2) (.var 0)) },
+   { ann := none, rhs := .lambda none (.app (.var 1) (.var 0)) }]
   (.var 0))
-#guard (checkCore [] (.letRec [some selfSig, none]
-  [.lambda none (.app (.var 2) (.var 0)), .lambda none (.app (.var 1) (.var 0))]
+#guard (checkCore [] (.letRec
+  [{ ann := some selfSig, rhs := .lambda none (.app (.var 2) (.var 0)) },
+   { ann := none, rhs := .lambda none (.app (.var 1) (.var 0)) }]
   (.var 0))).isSome = true
 
 -- Giving the sibling its own complete scheme makes both directions explicitly
 -- polymorphic, so the same recursive cycle is accepted.
-#guard (checkCore [] (.letRec [some selfSig, some selfSig]
-  [.lambda none (.app (.var 2) (.var 0)), .lambda none (.app (.var 1) (.var 0))]
+#guard (checkCore [] (.letRec
+  [{ ann := some selfSig, rhs := .lambda none (.app (.var 2) (.var 0)) },
+   { ann := some selfSig, rhs := .lambda none (.app (.var 1) (.var 0)) }]
   (.var 0))).isSome = true
 
 
@@ -614,16 +631,22 @@ private def bumpRhs : Expr := .lambda none (.app (.ctor ⟨"Succ"⟩) (.var 0))
 -- (polymorphic recursion over a NESTED datatype: the recursive call `slen xs`
 --  instantiates `slen` at `List a`; the complete annotation enables this
 --  deliberate in-group polymorphic recursion.)
-#eval showTypeP (.letRec [some slenSig, none] [slenRhs, bumpRhs] (.var 0))
+#eval showTypeP (.letRec
+  [{ ann := some slenSig, rhs := slenRhs }, { ann := none, rhs := bumpRhs }]
+  (.var 0))
 #guard (checkCore demoCtors
-  (.letRec [some slenSig, none] [slenRhs, bumpRhs] (.var 0))).isSome = true
+  (.letRec
+    [{ ann := some slenSig, rhs := slenRhs }, { ann := none, rhs := bumpRhs }]
+    (.var 0))).isSome = true
 
 -- …and WITHOUT the annotation the same program is REJECTED: monomorphic `slen`
 -- forces `a = List a` at the recursive call (no finite type). Adding an
 -- annotation is what unlocks polymorphic recursion, as the previous guard shows.
-#eval showTypeP (.letRec [none, none] [slenRhs, bumpRhs] (.var 0))
+#eval showTypeP (.letRec
+  [{ ann := none, rhs := slenRhs }, { ann := none, rhs := bumpRhs }] (.var 0))
 #guard (checkCore demoCtors
-  (.letRec [none, none] [slenRhs, bumpRhs] (.var 0))).isSome = false
+  (.letRec [{ ann := none, rhs := slenRhs }, { ann := none, rhs := bumpRhs }]
+    (.var 0))).isSome = false
 
 /-! A three-member mixed positive example: one annotated member recurses
 polymorphically, another instantiates it at a different in-group type, and a third
@@ -636,21 +659,25 @@ recurses monomorphically over `Forest`. -/
 -- in λt. sizeF (dup t)   :   ∀ a. Tree a → Peano
 -- (`poly`'s complete annotation permits the `Peano` self-call and `dup`'s
 --  independent instantiation, while `sizeF` remains ordinary monomorphic recursion.)
-#eval showTypeP (.letRec [some selfSig, none, none]
-  [ .lambda none (.letIn none (.app (.var 1) (.ctor ⟨"Zero"⟩)) (.var 1))
-  , .lambda none (.app (.app (.ctor ⟨"FCons"⟩) (.app (.var 1) (.var 0)))
-      (.app (.app (.ctor ⟨"FCons"⟩) (.var 0)) (.ctor ⟨"FNil"⟩)))
-  , .lambda none (.match_ (.var 0)
+#eval showTypeP (.letRec
+  [ { ann := some selfSig,
+      rhs := .lambda none (.letIn none (.app (.var 1) (.ctor ⟨"Zero"⟩)) (.var 1)) }
+  , { ann := none,
+      rhs := .lambda none (.app (.app (.ctor ⟨"FCons"⟩) (.app (.var 1) (.var 0)))
+        (.app (.app (.ctor ⟨"FCons"⟩) (.var 0)) (.ctor ⟨"FNil"⟩))) }
+  , { ann := none, rhs := .lambda none (.match_ (.var 0)
       [ (.named ⟨"FNil"⟩ 0, .ctor ⟨"Zero"⟩)
-      , (.named ⟨"FCons"⟩ 2, .app (.ctor ⟨"Succ"⟩) (.app (.var 5) (.var 1))) ]) ]
+      , (.named ⟨"FCons"⟩ 2, .app (.ctor ⟨"Succ"⟩) (.app (.var 5) (.var 1))) ]) } ]
   (.lambda none (.app (.var 3) (.app (.var 2) (.var 0)))))
-#guard (checkCore demoCtors (.letRec [some selfSig, none, none]
-  [ .lambda none (.letIn none (.app (.var 1) (.ctor ⟨"Zero"⟩)) (.var 1))
-  , .lambda none (.app (.app (.ctor ⟨"FCons"⟩) (.app (.var 1) (.var 0)))
-      (.app (.app (.ctor ⟨"FCons"⟩) (.var 0)) (.ctor ⟨"FNil"⟩)))
-  , .lambda none (.match_ (.var 0)
+#guard (checkCore demoCtors (.letRec
+  [ { ann := some selfSig,
+      rhs := .lambda none (.letIn none (.app (.var 1) (.ctor ⟨"Zero"⟩)) (.var 1)) }
+  , { ann := none,
+      rhs := .lambda none (.app (.app (.ctor ⟨"FCons"⟩) (.app (.var 1) (.var 0)))
+        (.app (.app (.ctor ⟨"FCons"⟩) (.var 0)) (.ctor ⟨"FNil"⟩))) }
+  , { ann := none, rhs := .lambda none (.match_ (.var 0)
       [ (.named ⟨"FNil"⟩ 0, .ctor ⟨"Zero"⟩)
-      , (.named ⟨"FCons"⟩ 2, .app (.ctor ⟨"Succ"⟩) (.app (.var 5) (.var 1))) ]) ]
+      , (.named ⟨"FCons"⟩ 2, .app (.ctor ⟨"Succ"⟩) (.app (.var 5) (.var 1))) ]) } ]
   (.lambda none (.app (.var 3) (.app (.var 2) (.var 0)))))).isSome = true
 
 /-! Complete contracts also cut dependencies in the other direction. An unsigned
@@ -667,16 +694,20 @@ private def fUsesHTwice : Expr :=
 -- in f
 -- `h` is inferred as the identity and generalized before `f` is checked, so its
 -- `Int` and `Unit` uses are independent instantiations.
-#eval showType (.letRec [some selfSig, none]
-  [fUsesHTwice, .lambda none (.var 0)] (.var 0))
-#guard (checkCore [] (.letRec [some selfSig, none]
-  [fUsesHTwice, .lambda none (.var 0)] (.var 0))).isSome = true
+#eval showType (.letRec
+  [{ ann := some selfSig, rhs := fUsesHTwice },
+   { ann := none, rhs := .lambda none (.var 0) }] (.var 0))
+#guard (checkCore [] (.letRec
+  [{ ann := some selfSig, rhs := fUsesHTwice },
+   { ann := none, rhs := .lambda none (.var 0) }] (.var 0))).isSome = true
 
 -- Giving `h` its own complete annotation is equivalent at this boundary.
-#eval showType (.letRec [some selfSig, some selfSig]
-  [fUsesHTwice, .lambda none (.var 0)] (.var 0))
-#guard (checkCore [] (.letRec [some selfSig, some selfSig]
-  [fUsesHTwice, .lambda none (.var 0)] (.var 0))).isSome = true
+#eval showType (.letRec
+  [{ ann := some selfSig, rhs := fUsesHTwice },
+   { ann := some selfSig, rhs := .lambda none (.var 0) }] (.var 0))
+#guard (checkCore [] (.letRec
+  [{ ann := some selfSig, rhs := fUsesHTwice },
+   { ann := some selfSig, rhs := .lambda none (.var 0) }] (.var 0))).isSome = true
 
 
 /-! ### Adversarial: where `letRec` is *supposed* to say no
@@ -690,25 +721,25 @@ and through ordinary `let`. -/
 -- (polymorphic recursion: `f` is used at both `Int → _` and `Unit → _` inside its own
 --  group, where it is monomorphic. A complete annotation would opt this member
 --  into checked polymorphic recursion.)
-#eval showType (.letRec [none]
-  [.lambda none
+#eval showType (.letRec
+  [{ ann := none, rhs := .lambda none
     (.letIn none (.app (.var 1) (.primLit (.int 0)))
       (.letIn none (.app (.var 2) (.primLit .unit))
-        (.var 2)))]
+        (.var 2))) }]
   (.var 0))
 
 -- let rec f = f f in f   :  ill-typed
 -- (self-application under recursion: `f`'s monotype `a` must equal `a → b`. Occurs
 --  check fails — the recursive binding cannot paper over a non-finite type)
-#eval showType (.letRec [none] [.app (.var 0) (.var 0)] (.var 0))
+#eval showType (.letRec [{ ann := none, rhs := .app (.var 0) (.var 0) }] (.var 0))
 
 -- let rec id = λx. x and bad = λu. let a = id 0 in id () in bad   :  ∀ a. a → Unit
 -- (`id` does not depend on `bad`, so dependency analysis places it in an earlier
 --  component and generalizes it before `bad` uses it at `Int` and `Unit`.)
-#eval showType (.letRec [none, none]
-  [ .lambda none (.var 0)
-  , .lambda none (.letIn none (.app (.var 1) (.primLit (.int 0)))
-      (.app (.var 2) (.primLit .unit))) ]
+#eval showType (.letRec
+  [ { ann := none, rhs := .lambda none (.var 0) }
+  , { ann := none, rhs := .lambda none (.letIn none (.app (.var 1) (.primLit (.int 0)))
+      (.app (.var 2) (.primLit .unit))) } ]
   (.var 1))
 
 -- let id = λx. x in let bad = λu. let a = id 0 in id () in bad   :  ∀ a. a → Unit
@@ -1372,9 +1403,9 @@ type-sharing — proved unsound vs Damas–Milner for `n > 1`); the shared-monot
 rule does. Its principal type is `∀a. a`. This is the capstone witness that the
 recursive-binding inference fires end-to-end at the principal type. -/
 
-/-- `letRec [none, none] [var 1, var 0] (var 0)` — the `f = g; g = f` mutual loop
-    (both unannotated) returning `f`. -/
-def mutualRec : Expr := .letRec [none, none] [.var 1, .var 0] (.var 0)
+/-- The `f = g; g = f` mutual loop (both rows unannotated), returning `f`. -/
+def mutualRec : Expr := .letRec
+  [{ ann := none, rhs := .var 1 }, { ann := none, rhs := .var 0 }] (.var 0)
 
 /-- The all-`none` mutual group types at its principal monotype under
     `TypeOfHM.letRec`: `specs = [.mono (fvar 100), .mono (fvar 100)]`, witnesses
@@ -1563,12 +1594,16 @@ def signedBodyHole : InferInput :=
   | _ => false
 
 def partialRecursion : InferInput :=
-  .letRec [.template (.arrow .hole (.fixed (.prim .int)))]
-    [.lambda none (.primLit (.int 0))] (.var 0)
+  .letRec
+    [{ ann := .template (.arrow .hole (.fixed (.prim .int))),
+       rhs := .lambda none (.primLit (.int 0)) }]
+    (.var 0)
 
 def partialRecursionCodomainRejected : InferInput :=
-  .letRec [.template (.arrow .hole (.fixed (.prim .int)))]
-    [.lambda none (.primLit .unit)] (.var 0)
+  .letRec
+    [{ ann := .template (.arrow .hole (.fixed (.prim .int))),
+       rhs := .lambda none (.primLit .unit) }]
+    (.var 0)
 
 #guard (inferCore [] 0 ctx polymorphicId).isSome
 #guard (inferCore [] 0 ctx independentHoles).isSome
@@ -1580,8 +1615,10 @@ def partialRecursionCodomainRejected : InferInput :=
 #guard (inferCore [] 0 ctx quantifiedId).isSome
 #guard match inferCore [] 0 ctx partialRecursion with
   | some result => match result.val.completedExpr, result.val.ty with
-    | .letRec [some ⟨1, .arrow (.bvar 0) (.prim .int)⟩]
-        [.lambda none (.primLit (.int 0))] (.var 0), .arrow (.fvar _) (.prim .int) => true
+    | .letRec
+        [{ ann := some ⟨1, .arrow (.bvar 0) (.prim .int)⟩,
+           rhs := .lambda none (.primLit (.int 0)) }]
+        (.var 0), .arrow (.fvar _) (.prim .int) => true
     | _, _ => false
   | _ => false
 #guard !(inferCore [] 0 ctx partialRecursionCodomainRejected).isSome
@@ -1686,9 +1723,10 @@ private def violatesRigidLet : InferInput :=
   | _ => false
 
 private def polyrec : InferInput :=
-  .letRec [.complete ⟨1, .arrow (.bvar 0) (.prim .int)⟩]
-    [.lambda none
-      (.app (.var 1) (.app (.app (.ctor ⟨"Pair"⟩) (.var 0)) (.var 0)))]
+  .letRec
+    [{ ann := .complete ⟨1, .arrow (.bvar 0) (.prim .int)⟩,
+       rhs := .lambda none
+         (.app (.var 1) (.app (.app (.ctor ⟨"Pair"⟩) (.var 0)) (.var 0))) }]
     (.app (.var 0) (.ctor ⟨"True"⟩))
 #guard (inferCore [] 0 ctx polyrec).isSome
 #guard (inferCore [] 0 ctx

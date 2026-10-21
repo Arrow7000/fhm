@@ -12,15 +12,19 @@ def polySelfRhs : Expr :=
   .lambda none
     (.app (.lambda none (.var 1)) (.app (.var 1) (.primLit (.int 0))))
 
-def polySelfBindings : List Expr := [polySelfRhs]
+def polySelfBindings : List CoreRecBinding :=
+  [{ ann := some polyId, rhs := polySelfRhs }]
+
+def erasedPolySelfBindings : List CoreRecBinding :=
+  polySelfBindings.map fun binding => { ann := none, rhs := binding.rhs.erase }
 
 theorem polyId_wf : polyId.WF := by
   show ContainsBvarsUpTo 1 (.arrow (.bvar 0) (.bvar 0))
   exact .arrow (.bvar (by omega)) (.bvar (by omega))
 
 theorem polySelf_specs_wf :
-    RecSpecsWF polySelfBindings [.poly polyId] [] := by
-  refine ⟨by simp [polySelfBindings], by simp, ?_, ?_⟩
+    RecSpecsWF erasedPolySelfBindings [.poly polyId] [] := by
+  refine ⟨by simp [erasedPolySelfBindings, polySelfBindings], by simp, ?_, ?_⟩
   · intro ty hty
     simp at hty
   · intro scheme hscheme
@@ -29,11 +33,11 @@ theorem polySelf_specs_wf :
     exact polyId_wf
 
 theorem polySelf_mono :
-    MonoTyped RunWT ⟨[], []⟩ polySelfBindings [.poly polyId] [] [] := by
+    MonoTyped RunWT ⟨[], []⟩ erasedPolySelfBindings [.poly polyId] [] [] := by
   intro Xs hXs pair hpair ty hmono
   have hXsNil : Xs = [] := List.length_eq_zero_iff.mp hXs.length
   subst Xs
-  simp [polySelfBindings] at hpair
+  simp [erasedPolySelfBindings, polySelfBindings] at hpair
   subst pair
   simp at hmono
 
@@ -42,15 +46,16 @@ private theorem singleton_of_fresh_one {avoid names : List Nat}
   exact List.length_eq_one_iff.mp h.length
 
 theorem polySelf_poly :
-    PolyTyped RunWT ⟨[], []⟩ polySelfBindings [.poly polyId] [] [] := by
+    PolyTyped RunWT ⟨[], []⟩ erasedPolySelfBindings [.poly polyId] [] [] := by
   intro pair hpair scheme hscheme Ys hYs
-  simp [polySelfBindings] at hpair
+  simp [erasedPolySelfBindings, polySelfBindings] at hpair
   subst pair
   simp only [RecSpec.poly.injEq] at hscheme
   subst scheme
   obtain ⟨Y, rfl⟩ := singleton_of_fresh_one hYs
-  change RunWT ⟨[polyId], []⟩ polySelfRhs
+  change RunWT ⟨[polyId], []⟩ polySelfRhs.erase
     (.arrow (.fvar Y) (.fvar Y))
+  simp only [polySelfRhs, Expr.erase]
   apply RunWT.lambda .fvar
   apply RunWT.app (argTy := .prim .int)
   · apply RunWT.lambda .prim
@@ -72,22 +77,20 @@ theorem polySelf_body :
 /-- The annotated source accepts the same independently instantiated recursive
 call. Its complete annotation is checked before the machine sees the term. -/
 theorem annotated_polySelf_typed :
-    TypeOfHM ⟨[], []⟩ (.letRec [some polyId] polySelfBindings (.var 0))
+    TypeOfHM ⟨[], []⟩ (.letRec polySelfBindings (.var 0))
       (.arrow (.prim .unit) (.prim .unit)) := by
   refine TypeOfHM.letRec (specs := [.poly polyId]) (groups := [])
-    (G := []) (L := []) ?_ ⟨rfl, rfl, by simp, ?_, ?_⟩ ?_ ?_ rfl ?_
-  · refine ⟨by simp [polySelfBindings], ?_, ?_, ?_, ?_, ?_⟩
+    (G := []) (L := []) ?_ ⟨rfl, by simp, ?_, ?_⟩ ?_ ?_ rfl ?_
+  · refine ⟨?_, by simp, ?_, ?_, ?_⟩
     · intro component hcomponent
       simp at hcomponent
     · simp
-    · intro member hmember
-      simp at hmember
     · intro member hbound
       have hzero : member = 0 := by
         simp [polySelfBindings] at hbound
         omega
       subst member
-      simp [RecGroups.UnsignedAt]
+      simp [RecGroups.UnsignedAt, polySelfBindings]
     · intro stage dependencyStage component dependencyComponent source target rhs
         hstage _ _ _ _ _
       simp at hstage
@@ -124,28 +127,24 @@ theorem annotated_polySelf_typed :
 /-- No scheme or type application occurs anywhere in this runtime expression. -/
 theorem erased_polySelf_typed :
     RunWT ⟨[], []⟩
-      (.letRec (polySelfBindings.map (fun _ => none))
-        polySelfBindings (.var 0))
+      (.letRec erasedPolySelfBindings (.var 0))
       (.arrow (.prim .unit) (.prim .unit)) := by
-  simpa [Expr.erase, polySelfBindings, polySelfRhs] using
+  simpa [Expr.erase, erasedPolySelfBindings, polySelfBindings, polySelfRhs] using
     TypeOfHM.erase_preserves_typing annotated_polySelf_typed
 
 theorem erased_polySelf_steps :
     SmallStep.Step
-      (.letRec (polySelfBindings.map (fun _ => none))
-        polySelfBindings (.var 0))
+      (.letRec erasedPolySelfBindings (.var 0))
       ((Expr.var 0).substN 0
-        (polySelfBindings.map (fun rhs =>
-          .letRec (polySelfBindings.map (fun _ => none))
-            polySelfBindings rhs))) := by
+        (erasedPolySelfBindings.map (fun binding =>
+          .letRec erasedPolySelfBindings binding.rhs))) := by
   exact .letRecUnfold
 
 theorem erased_polySelf_unfolded_typed :
     RunWT ⟨[], []⟩
       ((Expr.var 0).substN 0
-        (polySelfBindings.map (fun rhs =>
-          .letRec (polySelfBindings.map (fun _ => none))
-            polySelfBindings rhs)))
+        (erasedPolySelfBindings.map (fun binding =>
+          .letRec erasedPolySelfBindings binding.rhs)))
       (.arrow (.prim .unit) (.prim .unit)) := by
   exact RunWT.letRecUnfold_preservation erased_polySelf_typed
 
