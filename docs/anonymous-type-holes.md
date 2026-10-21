@@ -115,7 +115,9 @@ The executable `inferWithTypes_source_sound`, `inferWithTypes_input_sound`, and
 The global canonical `Infer.principal` and `Infer.complete` contracts include
 recursive groups. Principality protects an independent candidate scope and
 factors arbitrary valid result types through an LC residual substitution.
-`inferWithTypesCore_sourceComplete` covers internal transformed-source visits;
+`inferRequest_sourceComplete` is the canonical completeness theorem for
+admissible requests with arbitrary soft/provisional `F`;
+`inferWithTypesCore_sourceComplete` is its positional compatibility wrapper.
 `inferCore_complete` specializes this result to the public empty provisional
 context. `inferCore_accepts_iff` characterizes acceptance under admissible context
 specialization, and `inferCore_empty_accepts_iff` characterizes closed inputs.
