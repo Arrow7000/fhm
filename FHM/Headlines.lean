@@ -107,10 +107,11 @@ example {request : InferRequest} {result : InferResult}
 
 /-! ### Request-native completeness and acceptance
 
-Source completeness covers arbitrary soft/provisional requests and concludes
-that the exact metadata run exists. Ordinary core completeness specializes to
-`InferRequest.core`; its acceptance theorem characterizes executable success by
-independent `InputTyping`. -/
+`InferRequest.SourceComplete` and `inferRequest_sourceComplete` are the canonical
+request-native completeness contract and engine. They cover arbitrary
+soft/provisional requests and conclude that the exact metadata run exists.
+Ordinary core completeness specializes to `InferRequest.core`; its acceptance
+theorem characterizes executable success by independent `InputTyping`. -/
 #check @InferRequest.SourceComplete
 #check @inferRequest_sourceComplete
 #check @InferCoreCompleteReq
@@ -120,6 +121,16 @@ independent `InputTyping`. -/
 
 example (request : InferRequest) : request.SourceComplete :=
   inferRequest_sourceComplete request
+
+example {request : InferRequest} {ambient : Subst} {target : Ty} {P : List Nat}
+    (hreq : request.Admissible) (hambient : ∀ pair ∈ ambient, pair.2.IsLC)
+    (hfix : ∀ k ∈ request.protectedVars, ambient.onTy (.fvar k) = .fvar k)
+    (hP : ∀ p ∈ P, p < request.frontier)
+    (hfixP : ∀ p ∈ P, ambient.onTy (.fvar p) = .fvar p)
+    (ht : InputTyping P (ambient.onCtx request.ctx)
+      (request.input.substTyFvars ambient) target) :
+    request.run.isSome :=
+  inferRequest_sourceComplete request ambient target P hreq hambient hfix hP hfixP ht
 
 example (input : InferInput) : InferCoreCompleteReq input :=
   inferCore_complete_req input
@@ -133,7 +144,9 @@ example {K : List Nat} {frontier : Nat} {ctx : Ctx} {input : InferInput}
   inferCore_accepts_iff_req hreq
 
 /-! The positional relation and premise-by-premise theorems remain supported
-compatibility APIs and are useful inside constructor-local induction proofs. -/
+compatibility APIs. In particular, `InferWithTypesCoreSourceComplete` and
+`inferWithTypesCore_sourceComplete` are legacy positional views derived from the
+canonical request-native engine. -/
 #check @Infer.sourceSound
 #check @Infer.inputSound_source
 #check @Infer.inputSound
@@ -165,6 +178,21 @@ example (h : Infer K F frontier ctx input next subst output ty) : Infer.Principa
 
 example (input : InferInput) : InferWithTypesCoreSourceComplete input :=
   inferWithTypesCore_sourceComplete input
+
+example {K : List Nat} {F : List Ty} {frontier : Nat} {ctx : Ctx}
+    {input : InferInput} {ambient : Subst} {target : Ty} {P : List Nat}
+    (hc : InferWithTypesCoreSourceComplete input)
+    (hscope : SourceScope K F input) (hwf : CtxWF ctx)
+    (hbelow : CtxBelow frontier ctx) (hK : ∀ k ∈ K, k < frontier)
+    (hF : ∀ ty ∈ F, Ty.BelowFvars frontier ty)
+    (hambient : ∀ pair ∈ ambient, pair.2.IsLC)
+    (hfix : ∀ k ∈ K, ambient.onTy (.fvar k) = .fvar k)
+    (hP : ∀ p ∈ P, p < frontier)
+    (hfixP : ∀ p ∈ P, ambient.onTy (.fvar p) = .fvar p)
+    (ht : InputTyping P (ambient.onCtx ctx) (input.substTyFvars ambient) target) :
+    (inferWithTypesCore K frontier ctx input F).isSome :=
+  hc K F frontier ctx ambient target P hscope hwf hbelow hK hF
+    hambient hfix hP hfixP ht
 
 example (input : InferInput) : InferWithTypesCoreComplete input :=
   inferWithTypesCore_complete input
