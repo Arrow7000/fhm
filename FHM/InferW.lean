@@ -126,6 +126,25 @@ structure InferBranchesRequest where
   resultTy : Ty
   branches : List (MatchPattern × InferInput)
 
+/-- All semantic inputs to one traversal of an inferred recursive component.
+The remaining bindings and their solved specifications stay distinct because
+they play different roles in component inference. -/
+structure InferRecComponentRequest where
+  protectedVars : List Nat
+  soft : List Ty
+  members : List Nat
+  index : Nat
+  frontier : Nat
+  ctx : Ctx
+  bindings : List InputRecBinding
+  specs : List RecSpec
+
+/-- The result of inferring one recursive component in original member order. -/
+structure RecComponentResult where
+  frontier : Nat
+  subst : Subst
+  artifacts : List (Option RecComponentArtifact)
+
 /-- The semantic output shared by the inferred-SCC and signed-contract
 recursive phases. Their relations remain distinct despite sharing this shape. -/
 structure RecRunResult where
@@ -293,6 +312,21 @@ def namedBranchesResult (name : CtorName) (count : Nat) (scrutineeUnifier : Subs
       (.named name count,
         bodyResult.completedExpr.substTyFvars (bodyUnifier ++ tailResult.subst)) ::
         tailResult.completedBranches }
+
+/-- Preserve a skipped recursive member's position in the component result. -/
+def skippedRecComponentResult (tailResult : RecComponentResult) : RecComponentResult :=
+  { frontier := tailResult.frontier
+    subst := tailResult.subst
+    artifacts := none :: tailResult.artifacts }
+
+/-- Assemble the selected member's solved body and the remaining component. -/
+def selectedRecComponentResult (bodyResult : InferResult) (bodyFacts : RecFacts)
+    (unifier : Subst) (tailResult : RecComponentResult) : RecComponentResult :=
+  { frontier := tailResult.frontier
+    subst := bodyResult.subst ++ unifier ++ tailResult.subst
+    artifacts :=
+      some ((RecComponentArtifact.mk bodyResult.completedExpr bodyFacts).onSubst
+        (unifier ++ tailResult.subst)) :: tailResult.artifacts }
 
 /-- Assemble a recursive-let result from the two recursive phases, the
 completed member evidence, and body inference. -/
@@ -523,28 +557,43 @@ inductive InferBranchesCert : InferBranchesRequest → InferBranchesResult → P
         (namedBranchesResult name count scrutineeUnifier bodyResult bodyUnifier tailResult)
 /-- Infer one selected SCC in the original full group coordinates. Sources have
 already been opened at flexible written roots and transformed by shape solving. -/
-inductive InferRecComponent : List Nat → List Ty → List Nat → Nat → Nat → Ctx →
-    List InputRecBinding → List RecSpec → Nat → Subst → List (Option RecComponentArtifact) → Prop
-  | nil : InferRecComponent K F members index frontier ctx [] [] frontier [] []
-  | skipMono :
+inductive InferRecComponentCert : InferRecComponentRequest → RecComponentResult → Prop
+  | nil : InferRecComponentCert ⟨K, F, members, index, frontier, ctx, [], []⟩
+      ⟨frontier, [], []⟩
+  | skipMono {K : List Nat} {F : List Ty} {members : List Nat} {index frontier : Nat}
+      {ctx : Ctx} {binding : InputRecBinding} {rest : List InputRecBinding}
+      {ty : Ty} {specs : List RecSpec} {tailResult : RecComponentResult} :
       index ∉ members →
-      InferRecComponent K F members (index + 1) frontier ctx rest specs next subst artifacts →
-      InferRecComponent K F members index frontier ctx (binding :: rest) (.mono ty :: specs)
-        next subst (none :: artifacts)
-  | skipPoly :
-      InferRecComponent K F members (index + 1) frontier ctx rest specs next subst artifacts →
-      InferRecComponent K F members index frontier ctx (binding :: rest) (.poly scheme :: specs)
-        next subst (none :: artifacts)
-  | consSelected {bodyFacts : RecFacts} :
+      InferRecComponentCert
+        ⟨K, F, members, index + 1, frontier, ctx, rest, specs⟩ tailResult →
+      InferRecComponentCert
+        ⟨K, F, members, index, frontier, ctx, binding :: rest, .mono ty :: specs⟩
+        (skippedRecComponentResult tailResult)
+  | skipPoly {K : List Nat} {F : List Ty} {members : List Nat} {index frontier : Nat}
+      {ctx : Ctx} {binding : InputRecBinding} {rest : List InputRecBinding}
+      {scheme : PolyTy} {specs : List RecSpec} {tailResult : RecComponentResult} :
+      InferRecComponentCert
+        ⟨K, F, members, index + 1, frontier, ctx, rest, specs⟩ tailResult →
+      InferRecComponentCert
+        ⟨K, F, members, index, frontier, ctx, binding :: rest, .poly scheme :: specs⟩
+        (skippedRecComponentResult tailResult)
+  | consSelected {K : List Nat} {F : List Ty} {members : List Nat}
+      {index frontier : Nat} {ctx : Ctx} {binding : InputRecBinding}
+      {rest : List InputRecBinding} {expected : Ty} {specs : List RecSpec}
+      {bodyResult : InferResult} {bodyFacts : RecFacts} {unifier : Subst}
+      {tailResult : RecComponentResult} :
       index ∈ members →
-      InferCert ⟨K, F, frontier, ctx, binding.rhs⟩ ⟨first, s1, output, ty⟩ →
-      RigidUnify K ty (s1.onTy expected) s2 →
-      InferRecComponent K (substSoft (s1 ++ s2) F) members (index + 1) first
-        (s2.onCtx (s1.onCtx ctx)) (substInputBindings (s1 ++ s2) rest)
-        (specs.map (RecSpec.onSubstSource (s1 ++ s2))) next s3 artifacts →
-      InferRecComponent K F members index frontier ctx (binding :: rest) (.mono expected :: specs)
-        next (s1 ++ s2 ++ s3)
-        (some ((RecComponentArtifact.mk output bodyFacts).onSubst (s2 ++ s3)) :: artifacts)
+      InferCert ⟨K, F, frontier, ctx, binding.rhs⟩ bodyResult →
+      RigidUnify K bodyResult.ty (bodyResult.subst.onTy expected) unifier →
+      InferRecComponentCert
+        ⟨K, substSoft (bodyResult.subst ++ unifier) F, members, index + 1,
+          bodyResult.frontier, unifier.onCtx (bodyResult.subst.onCtx ctx),
+          substInputBindings (bodyResult.subst ++ unifier) rest,
+          specs.map (RecSpec.onSubstSource (bodyResult.subst ++ unifier))⟩
+        tailResult →
+      InferRecComponentCert
+        ⟨K, F, members, index, frontier, ctx, binding :: rest, .mono expected :: specs⟩
+        (selectedRecComponentResult bodyResult bodyFacts unifier tailResult)
 
 /-- Component scheduling is shared with complete Core. Only completed contracts
 cut dependencies; each partial signature is solved in its monomorphic SCC. -/
@@ -554,12 +603,13 @@ inductive InferRecStrata : List Nat → List Ty → Nat → Ctx → List InputRe
   | cons {state : RecState} :
       OpenRecAnns component 0 frontier bindings opened openings →
       CheckRecShapes K ((state.installOpenings component openings).shapes component openings) pre →
-      InferRecComponent K
-        (substSoft pre (F ++ (openings.flatMap RecOpening.written).map Ty.fvar)) component 0 opened
-        (((state.installOpenings component openings).onSubst pre).rhsCtx (pre.onCtx ctx))
-        (substInputBindings pre (openRecSources openings bindings))
-        ((state.installOpenings component openings).onSubst pre).specs
-        first current artifacts →
+      InferRecComponentCert
+        ⟨K, substSoft pre (F ++ (openings.flatMap RecOpening.written).map Ty.fvar),
+          component, 0, opened,
+          ((state.installOpenings component openings).onSubst pre).rhsCtx (pre.onCtx ctx),
+          substInputBindings pre (openRecSources openings bindings),
+          ((state.installOpenings component openings).onSubst pre).specs⟩
+        ⟨first, current, artifacts⟩ →
       FinishRecComponent K (softVars (substSoft (pre ++ current) F)) component
         ((pre ++ current).onCtx ctx) ((state.installOpenings component openings).onSubst (pre ++ current))
         artifacts exported →
@@ -607,6 +657,16 @@ abbrev InferBranches (K : List Nat) (F : List Ty) (frontier : Nat) (ctx : Ctx)
   InferBranchesCert
     ⟨K, F, frontier, ctx, scrutTy, resultTy, branches⟩
     ⟨next, subst, completed⟩
+
+/-- Positional compatibility view of recursive-component inference. New code
+should use `InferRecComponentCert` with bundled request and result values. -/
+abbrev InferRecComponent (K : List Nat) (F : List Ty) (members : List Nat)
+    (index frontier : Nat) (ctx : Ctx) (bindings : List InputRecBinding)
+    (specs : List RecSpec) (next : Nat) (subst : Subst)
+    (artifacts : List (Option RecComponentArtifact)) : Prop :=
+  InferRecComponentCert
+    ⟨K, F, members, index, frontier, ctx, bindings, specs⟩
+    ⟨next, subst, artifacts⟩
 
 /-- Positional compatibility view of the canonical bundled certificate.
 New proofs should state their contracts with `InferCert`; this alias keeps the
@@ -845,15 +905,18 @@ decreasing_by
     (simp only [sizeBranches, InferInput.size_substTyFvars,
       sizeBranches_substInputBranches]; omega)
 
-theorem InferRecComponent.dom_avoids
-    (h : InferRecComponent K F members index frontier ctx bindings specs next S artifacts) :
-    ∀ pair ∈ S, pair.1 ∉ K := by
+private theorem InferRecComponentCert.dom_avoids_raw
+    {request : InferRecComponentRequest} {result : RecComponentResult}
+    (h : InferRecComponentCert request result) :
+    ∀ pair ∈ result.subst, pair.1 ∉ request.protectedVars := by
   match h with
   | .nil => simp
-  | .skipMono _ hr | .skipPoly hr => exact hr.dom_avoids
+  | .skipMono _ hr | .skipPoly hr =>
+      simpa only [skippedRecComponentResult] using hr.dom_avoids_raw
   | .consSelected _ hi hu hr =>
-      exact avoids_append (avoids_append hi.dom_avoids_raw hu.dom_avoids) hr.dom_avoids
-termination_by (sizeBindings bindings, 0)
+      simp only [selectedRecComponentResult]
+      exact avoids_append (avoids_append hi.dom_avoids_raw hu.dom_avoids) hr.dom_avoids_raw
+termination_by (sizeBindings request.bindings, 0)
 decreasing_by all_goals (simp only [sizeBindings, sizeBindings_substInputBindings]; omega)
 
 theorem InferRecStrata.dom_avoids
@@ -862,7 +925,7 @@ theorem InferRecStrata.dom_avoids
   match h with
   | .nil => simp
   | .cons _ hpre hcurrent _ htail =>
-      exact avoids_append (avoids_append hpre.dom_avoids hcurrent.dom_avoids) htail.dom_avoids
+      exact avoids_append (avoids_append hpre.dom_avoids hcurrent.dom_avoids_raw) htail.dom_avoids
 termination_by (sizeBindings bindings, groups.length + 1)
 decreasing_by
   all_goals (simp only [sizeBindings_substInputBindings, sizeBindings_openRecSources, List.length_cons])
@@ -900,26 +963,41 @@ theorem InferBranches.dom_avoids
     ∀ pair ∈ subst, pair.1 ∉ K :=
   InferBranchesCert.dom_avoids h
 
+theorem InferRecComponentCert.dom_avoids
+    {request : InferRecComponentRequest} {result : RecComponentResult}
+    (h : InferRecComponentCert request result) :
+    ∀ pair ∈ result.subst, pair.1 ∉ request.protectedVars :=
+  InferRecComponentCert.dom_avoids_raw h
+
+theorem InferRecComponent.dom_avoids
+    (h : InferRecComponent K F members index frontier ctx bindings specs next S artifacts) :
+    ∀ pair ∈ S, pair.1 ∉ K :=
+  InferRecComponentCert.dom_avoids h
+
 theorem Infer.dom_avoids (h : Infer K F frontier ctx input next subst output ty) :
     ∀ pair ∈ subst, pair.1 ∉ K :=
   InferCert.dom_avoids_raw h
 
- theorem InferRecComponent.lc_of_infer
-    (h : InferRecComponent K F members index frontier ctx bindings specs next S artifacts)
-    (hInfer : ∀ {κ F' Ψ c e Ψ' T output ty}, e.size ≤ sizeBindings bindings →
+private theorem InferRecComponentCert.lc_of_infer_raw
+    {request : InferRecComponentRequest} {result : RecComponentResult}
+    (h : InferRecComponentCert request result)
+    (hInfer : ∀ {κ F' Ψ c e Ψ' T output ty}, e.size ≤ sizeBindings request.bindings →
       Infer κ F' Ψ c e Ψ' T output ty → CtxWF c → ty.IsLC ∧ ∀ p ∈ T, p.2.IsLC)
-    (hctx : CtxWF ctx) (hspec : ∀ spec ∈ specs, spec.LC) : ∀ p ∈ S, p.2.IsLC := by
+    (hctx : CtxWF request.ctx) (hspec : ∀ spec ∈ request.specs, spec.LC) :
+    ∀ p ∈ result.subst, p.2.IsLC := by
   match h with
   | .nil => simp
   | .skipMono _ hr | .skipPoly hr =>
-      exact hr.lc_of_infer (fun he h => hInfer (by simp only [sizeBindings]; omega) h)
+      simp only [skippedRecComponentResult] at ⊢
+      exact hr.lc_of_infer_raw (fun he h => hInfer (by simp only at he; simp only [sizeBindings]; omega) h)
         hctx (fun spec hm => hspec spec (List.mem_cons_of_mem _ hm))
-  | .consSelected _ hi hu hr =>
-      expose_names
+  | @consSelected K F members index frontier ctx binding rest expected specs
+      ⟨first, s1, output, ty⟩ bodyFacts s2 ⟨next, s3, artifacts⟩ _ hi hu hr =>
+      simp only [selectedRecComponentResult] at ⊢
       obtain ⟨hiTy, hiS⟩ := hInfer (by simp only [sizeBindings]; omega) hi hctx
       have huS := hu.unifies.lc hiTy (Subst.onTy_lc hiS (hspec _ List.mem_cons_self))
       have hS12 : ∀ p ∈ s1 ++ s2, p.2.IsLC := fun p hp => (List.mem_append.mp hp).elim (hiS p) (huS p)
-      have hrS := hr.lc_of_infer
+      have hrS := hr.lc_of_infer_raw
         (fun he h => hInfer (by simp only [sizeBindings_substInputBindings] at he; simp only [sizeBindings]; omega) h)
         (Subst.onCtx_wf huS (Subst.onCtx_wf hiS hctx)) (by
           intro spec hm
@@ -928,6 +1006,22 @@ theorem Infer.dom_avoids (h : Infer K F frontier ctx input next subst output ty)
       intro p hp
       exact (List.mem_append.mp hp).elim (hS12 p) (hrS p)
  termination_by structural h
+
+theorem InferRecComponentCert.lc_of_infer
+    {request : InferRecComponentRequest} {result : RecComponentResult}
+    (h : InferRecComponentCert request result)
+    (hInfer : ∀ {κ F' Ψ c e Ψ' T output ty}, e.size ≤ sizeBindings request.bindings →
+      Infer κ F' Ψ c e Ψ' T output ty → CtxWF c → ty.IsLC ∧ ∀ p ∈ T, p.2.IsLC)
+    (hctx : CtxWF request.ctx) (hspec : ∀ spec ∈ request.specs, spec.LC) :
+    ∀ p ∈ result.subst, p.2.IsLC :=
+  InferRecComponentCert.lc_of_infer_raw h hInfer hctx hspec
+
+theorem InferRecComponent.lc_of_infer
+    (h : InferRecComponent K F members index frontier ctx bindings specs next S artifacts)
+    (hInfer : ∀ {κ F' Ψ c e Ψ' T output ty}, e.size ≤ sizeBindings bindings →
+      Infer κ F' Ψ c e Ψ' T output ty → CtxWF c → ty.IsLC ∧ ∀ p ∈ T, p.2.IsLC)
+    (hctx : CtxWF ctx) (hspec : ∀ spec ∈ specs, spec.LC) : ∀ p ∈ S, p.2.IsLC :=
+  InferRecComponentCert.lc_of_infer h hInfer hctx hspec
 
 
  theorem RecState.shapes_lc {state : RecState} {openings : List RecOpening} (hstate : state.LC)
@@ -1246,11 +1340,6 @@ private theorem ctxBelow_of_all {ctx : Ctx} {frontier : Nat}
 structure InferCoreResult extends InferResult where
   nodeTypes : InferredNodeTypes
   binderSchemes : InferredBinderSchemes
-
-structure RecComponentResult where
-  frontier : Nat
-  subst : Subst
-  artifacts : List (Option RecComponentArtifact)
 
 mutual
 /-- One metadata-producing inference path for all input syntax. Recursive partial signatures remain
@@ -1682,8 +1771,8 @@ decreasing_by
 /-- One monomorphic component visit, with artifacts in original member order. -/
 def inferRecComponentWithTypesCore (K : List Nat) (F : List Ty) (members : List Nat)
     (index frontier : Nat) (ctx : Ctx) (bindings : List InputRecBinding) (specs : List RecSpec) :
-    Option { result : RecComponentResult // InferRecComponent K F members index frontier ctx bindings specs
-      result.frontier result.subst result.artifacts } :=
+    Option { result : RecComponentResult //
+      InferRecComponentCert ⟨K, F, members, index, frontier, ctx, bindings, specs⟩ result } :=
   match bindings, specs with
   | [], [] => some ⟨⟨frontier, [], []⟩, .nil⟩
   | binding :: rest, .mono expected :: specs =>
@@ -2246,21 +2335,23 @@ private theorem InferBranchesCert.frontier_le_raw
 termination_by (sizeBranches request.branches, 0)
 decreasing_by all_goals (simp only [sizeBranches, InferInput.size_substTyFvars, sizeBranches_substInputBranches]; omega)
 
-theorem InferRecComponent.frontier_le
-    (h : InferRecComponent K F members index frontier ctx bindings specs next S artifacts) :
-    frontier ≤ next := by
+private theorem InferRecComponentCert.frontier_le_raw
+    {request : InferRecComponentRequest} {result : RecComponentResult}
+    (h : InferRecComponentCert request result) : request.frontier ≤ result.frontier := by
   match h with
   | .nil => exact Nat.le_refl _
-  | .skipMono _ hr | .skipPoly hr => exact hr.frontier_le
-  | .consSelected _ hi _ hr => exact hi.frontier_le_raw.trans hr.frontier_le
-termination_by (sizeBindings bindings, 0)
+  | .skipMono _ hr | .skipPoly hr =>
+      simpa only [skippedRecComponentResult] using hr.frontier_le_raw
+  | .consSelected _ hi _ hr =>
+      simpa only [selectedRecComponentResult] using hi.frontier_le_raw.trans hr.frontier_le_raw
+termination_by (sizeBindings request.bindings, 0)
 decreasing_by all_goals (simp only [sizeBindings, sizeBindings_substInputBindings]; omega)
 
 theorem InferRecStrata.frontier_le
     (h : InferRecStrata K F frontier ctx bindings state groups next S final) : frontier ≤ next := by
   match h with
   | .nil => exact Nat.le_refl _
-  | .cons ho _ hc _ hr => exact ho.frontier_le.trans (hc.frontier_le.trans hr.frontier_le)
+  | .cons ho _ hc _ hr => exact ho.frontier_le.trans (hc.frontier_le_raw.trans hr.frontier_le)
 termination_by (sizeBindings bindings, groups.length + 1)
 decreasing_by all_goals (simp only [sizeBindings_substInputBindings, sizeBindings_openRecSources, List.length_cons]; omega)
 
@@ -2282,6 +2373,16 @@ theorem InferBranchesCert.frontier_le
 theorem InferBranches.frontier_le
     (h : InferBranches K F frontier ctx scrutTy resultTy branches next subst output) : frontier ≤ next :=
   InferBranchesCert.frontier_le h
+
+theorem InferRecComponentCert.frontier_le
+    {request : InferRecComponentRequest} {result : RecComponentResult}
+    (h : InferRecComponentCert request result) : request.frontier ≤ result.frontier :=
+  InferRecComponentCert.frontier_le_raw h
+
+theorem InferRecComponent.frontier_le
+    (h : InferRecComponent K F members index frontier ctx bindings specs next S artifacts) :
+    frontier ≤ next :=
+  InferRecComponentCert.frontier_le h
 
 theorem InferCert.frontier_le {request : InferRequest} {result : InferResult}
     (h : InferCert request result) : request.frontier ≤ result.frontier := by
@@ -2336,28 +2437,34 @@ private theorem specs_below_subst {specs : List RecSpec}
         exact ⟨hstate.1 _ (List.mem_map.mpr ⟨member, hmember_mem, hs⟩),
           hopen opening (List.mem_of_getElem? ho)⟩
 
- theorem InferRecComponent.belowFvars_of_infer
-    (h : InferRecComponent K F members index frontier ctx bindings specs next S artifacts)
-    (hInfer : ∀ {κ F' Ψ c e Ψ' T output ty}, e.size ≤ sizeBindings bindings →
+private theorem InferRecComponentCert.belowFvars_of_infer_raw
+    {request : InferRecComponentRequest} {result : RecComponentResult}
+    (h : InferRecComponentCert request result)
+    (hInfer : ∀ {κ F' Ψ c e Ψ' T output ty}, e.size ≤ sizeBindings request.bindings →
       Infer κ F' Ψ c e Ψ' T output ty → CtxBelow Ψ c → (∀ k ∈ κ, k < Ψ) →
       (∀ t ∈ F', Ty.BelowFvars Ψ t) → Ty.BelowFvars Ψ' ty ∧ ∀ p ∈ T, Ty.BelowFvars Ψ' p.2)
-    (hctx : CtxBelow frontier ctx) (hK : ∀ k ∈ K, k < frontier)
-    (hF : ∀ t ∈ F, Ty.BelowFvars frontier t) (hspec : ∀ spec ∈ specs, spec.BelowFvars frontier) :
-    ∀ p ∈ S, Ty.BelowFvars next p.2 := by
+    (hctx : CtxBelow request.frontier request.ctx)
+    (hK : ∀ k ∈ request.protectedVars, k < request.frontier)
+    (hF : ∀ t ∈ request.soft, Ty.BelowFvars request.frontier t)
+    (hspec : ∀ spec ∈ request.specs, spec.BelowFvars request.frontier) :
+    ∀ p ∈ result.subst, Ty.BelowFvars result.frontier p.2 := by
   match h with
   | .nil => simp
   | .skipMono _ hr | .skipPoly hr =>
-      exact hr.belowFvars_of_infer (fun he h => hInfer (by simp only [sizeBindings]; omega) h)
+      simp only [skippedRecComponentResult] at ⊢
+      exact hr.belowFvars_of_infer_raw
+        (fun he h => hInfer (by simp only at he; simp only [sizeBindings]; omega) h)
         hctx hK hF (fun spec hm => hspec spec (List.mem_cons_of_mem _ hm))
-  | .consSelected _ hi hu hr =>
-      expose_names
+  | @consSelected K F members index frontier ctx binding rest expected specs
+      ⟨first, s1, output, ty⟩ bodyFacts s2 ⟨next, s3, artifacts⟩ _ hi hu hr =>
+      simp only [selectedRecComponentResult] at ⊢
       have hle := Infer.frontier_le hi
-      have hrle := hr.frontier_le
+      have hrle := hr.frontier_le_raw
       obtain ⟨hiTy, hiS⟩ := hInfer (by simp only [sizeBindings]; omega) hi hctx hK hF
       have huS := hu.unifies.belowFvars hiTy (Subst.onTy_belowFvars hiS ((hspec _ List.mem_cons_self).mono hle))
       have hboth : ∀ p ∈ s1 ++ s2, Ty.BelowFvars first p.2 :=
         fun p hp => (List.mem_append.mp hp).elim (hiS p) (huS p)
-      have hrS := hr.belowFvars_of_infer
+      have hrS := hr.belowFvars_of_infer_raw
         (fun he h => hInfer (by simp only [sizeBindings_substInputBindings] at he; simp only [sizeBindings]; omega) h)
         (by simpa only [Subst.onCtx_append] using Subst.onCtx_below hboth hle hctx)
         (fun k hk => Nat.lt_of_lt_of_le (hK k hk) hle)
@@ -2366,6 +2473,29 @@ private theorem specs_below_subst {specs : List RecSpec}
       intro p hp
       exact (List.mem_append.mp hp).elim (fun hp => (hboth p hp).mono hrle) (hrS p)
  termination_by structural h
+
+theorem InferRecComponentCert.belowFvars_of_infer
+    {request : InferRecComponentRequest} {result : RecComponentResult}
+    (h : InferRecComponentCert request result)
+    (hInfer : ∀ {κ F' Ψ c e Ψ' T output ty}, e.size ≤ sizeBindings request.bindings →
+      Infer κ F' Ψ c e Ψ' T output ty → CtxBelow Ψ c → (∀ k ∈ κ, k < Ψ) →
+      (∀ t ∈ F', Ty.BelowFvars Ψ t) → Ty.BelowFvars Ψ' ty ∧ ∀ p ∈ T, Ty.BelowFvars Ψ' p.2)
+    (hctx : CtxBelow request.frontier request.ctx)
+    (hK : ∀ k ∈ request.protectedVars, k < request.frontier)
+    (hF : ∀ t ∈ request.soft, Ty.BelowFvars request.frontier t)
+    (hspec : ∀ spec ∈ request.specs, spec.BelowFvars request.frontier) :
+    ∀ p ∈ result.subst, Ty.BelowFvars result.frontier p.2 :=
+  InferRecComponentCert.belowFvars_of_infer_raw h hInfer hctx hK hF hspec
+
+theorem InferRecComponent.belowFvars_of_infer
+    (h : InferRecComponent K F members index frontier ctx bindings specs next S artifacts)
+    (hInfer : ∀ {κ F' Ψ c e Ψ' T output ty}, e.size ≤ sizeBindings bindings →
+      Infer κ F' Ψ c e Ψ' T output ty → CtxBelow Ψ c → (∀ k ∈ κ, k < Ψ) →
+      (∀ t ∈ F', Ty.BelowFvars Ψ t) → Ty.BelowFvars Ψ' ty ∧ ∀ p ∈ T, Ty.BelowFvars Ψ' p.2)
+    (hctx : CtxBelow frontier ctx) (hK : ∀ k ∈ K, k < frontier)
+    (hF : ∀ t ∈ F, Ty.BelowFvars frontier t) (hspec : ∀ spec ∈ specs, spec.BelowFvars frontier) :
+    ∀ p ∈ S, Ty.BelowFvars next p.2 :=
+  InferRecComponentCert.belowFvars_of_infer h hInfer hctx hK hF hspec
 
  theorem InferRecStrata.belowFvars_of_infer
     (h : InferRecStrata K F frontier ctx bindings state groups next S final)
@@ -3151,26 +3281,29 @@ private theorem branches_refs_subst {brs : List (MatchPattern × InferInput)} {c
   simpa only [InferInput.erase_substTyFvars] using Expr.ForallOuter.lookupAvoid_onSubst
     (hrefs oldpat oldbody hold) hS
 
- theorem InferRecComponent.sourceLocality_of_infer
-    (h : InferRecComponent K F members index frontier ctx bindings specs next S artifacts)
-    (hInfer : ∀ {κ F' Ψ c e Ψ' T output ty}, e.size ≤ sizeBindings bindings →
+private theorem InferRecComponentCert.sourceLocality_of_infer_raw
+    {request : InferRecComponentRequest} {result : RecComponentResult}
+    (h : InferRecComponentCert request result)
+    (hInfer : ∀ {κ F' Ψ c e Ψ' T output ty}, e.size ≤ sizeBindings request.bindings →
       Infer κ F' Ψ c e Ψ' T output ty →
       ∀ {w}, w < Ψ →
       e.erase.ForallOuter (fun i => ∀ M, c.env[i]? = some M → w ∉ M.body.freeVars) 0 →
       w ∉ e.rigidVars →
       (∀ p ∈ T, w ∉ p.2.freeVars) ∧ w ∉ ty.freeVars ∧ w ∉ T.map Prod.fst) :
-    ∀ {w}, w < frontier →
-    (∀ j binding, index + j ∈ members → bindings[j]? = some binding →
+    ∀ {w}, w < request.frontier →
+    (∀ j binding, request.index + j ∈ request.members → request.bindings[j]? = some binding →
       binding.rhs.erase.ForallOuter
-        (fun i => ∀ M, ctx.env[i]? = some M → w ∉ M.body.freeVars) 0 ∧
+        (fun i => ∀ M, request.ctx.env[i]? = some M → w ∉ M.body.freeVars) 0 ∧
         w ∉ binding.rhs.rigidVars) →
-    (∀ j ty, index + j ∈ members → specs[j]? = some (.mono ty) → w ∉ ty.freeVars) →
-    (∀ p ∈ S, w ∉ p.2.freeVars) ∧ w ∉ S.map Prod.fst := by
+    (∀ j ty, request.index + j ∈ request.members →
+      request.specs[j]? = some (.mono ty) → w ∉ ty.freeVars) →
+    (∀ p ∈ result.subst, w ∉ p.2.freeVars) ∧ w ∉ result.subst.map Prod.fst := by
   match h with
   | .nil => intro w _ _ _; exact ⟨by simp, by simp⟩
-  | .consSelected hsel hi hu hrest =>
+  | @consSelected K F members index frontier ctx binding rest expected specs
+      ⟨first, s1, output, ty⟩ bodyFacts s2 ⟨next, s3, artifacts⟩ hsel hi hu hrest =>
+    simp only [selectedRecComponentResult] at ⊢
     intro w hw hrefs htargets
-    expose_names
     have hrhs := hrefs 0 binding (by simpa using hsel) rfl
     obtain ⟨hiS, hiTy, hiD⟩ := hInfer (by simp only [sizeBindings]; omega) hi hw hrhs.1 hrhs.2
     have ht : w ∉ expected.freeVars := htargets 0 expected (by simpa using hsel) rfl
@@ -3200,7 +3333,7 @@ private theorem branches_refs_subst {brs : List (MatchPattern × InferInput)} {c
       simpa only [InferInput.erase_substTyFvars, Subst.onCtx_append] using
         Expr.ForallOuter.lookupAvoid_onSubst (S := s1 ++ s2) horig.1 hS12
     have hrestTargets : ∀ j ty, index + 1 + j ∈ members →
-        (specs_1.map (RecSpec.onSubstSource (s1 ++ s2)))[j]? = some (.mono ty) →
+        (specs.map (RecSpec.onSubstSource (s1 ++ s2)))[j]? = some (.mono ty) →
         w ∉ ty.freeVars := by
       intro j ty hj hget
       rw [List.getElem?_map] at hget
@@ -3212,7 +3345,7 @@ private theorem branches_refs_subst {brs : List (MatchPattern × InferInput)} {c
           exact Subst.notMemOnTy hS12 (htargets (j + 1) τ
             (by simpa only [Nat.add_assoc, Nat.add_comm 1 j] using hj)
             (by simpa only [List.getElem?_cons_succ] using hold))
-    obtain ⟨hrS, hrD⟩ := hrest.sourceLocality_of_infer
+    obtain ⟨hrS, hrD⟩ := hrest.sourceLocality_of_infer_raw
       (fun he h => hInfer (by
         simp only [sizeBindings_substInputBindings] at he
         simp only [sizeBindings]; omega) h)
@@ -3227,9 +3360,10 @@ private theorem branches_refs_subst {brs : List (MatchPattern × InferInput)} {c
     · simpa only [List.map_append, List.mem_append, not_or] using
         And.intro (And.intro hiD huD) hrD
   | .skipMono _ hrest | .skipPoly hrest =>
+    simp only [skippedRecComponentResult] at ⊢
     intro w hw hrefs htargets
-    apply hrest.sourceLocality_of_infer
-      (fun he h => hInfer (by simp only [sizeBindings]; omega) h) hw
+    apply hrest.sourceLocality_of_infer_raw
+      (fun he h => hInfer (by simp only at he; simp only [sizeBindings]; omega) h) hw
     · intro j rhs hj hget
       exact hrefs (j + 1) rhs
         (by simpa only [Nat.add_assoc, Nat.add_comm 1 j] using hj)
@@ -3239,6 +3373,42 @@ private theorem branches_refs_subst {brs : List (MatchPattern × InferInput)} {c
         (by simpa only [Nat.add_assoc, Nat.add_comm 1 j] using hj)
         (by simpa only [List.getElem?_cons_succ] using hget)
  termination_by structural h
+
+theorem InferRecComponentCert.sourceLocality_of_infer
+    {request : InferRecComponentRequest} {result : RecComponentResult}
+    (h : InferRecComponentCert request result)
+    (hInfer : ∀ {κ F' Ψ c e Ψ' T output ty}, e.size ≤ sizeBindings request.bindings →
+      Infer κ F' Ψ c e Ψ' T output ty →
+      ∀ {w}, w < Ψ →
+      e.erase.ForallOuter (fun i => ∀ M, c.env[i]? = some M → w ∉ M.body.freeVars) 0 →
+      w ∉ e.rigidVars →
+      (∀ p ∈ T, w ∉ p.2.freeVars) ∧ w ∉ ty.freeVars ∧ w ∉ T.map Prod.fst) :
+    ∀ {w}, w < request.frontier →
+    (∀ j binding, request.index + j ∈ request.members → request.bindings[j]? = some binding →
+      binding.rhs.erase.ForallOuter
+        (fun i => ∀ M, request.ctx.env[i]? = some M → w ∉ M.body.freeVars) 0 ∧
+        w ∉ binding.rhs.rigidVars) →
+    (∀ j ty, request.index + j ∈ request.members →
+      request.specs[j]? = some (.mono ty) → w ∉ ty.freeVars) →
+    (∀ p ∈ result.subst, w ∉ p.2.freeVars) ∧ w ∉ result.subst.map Prod.fst :=
+  InferRecComponentCert.sourceLocality_of_infer_raw h hInfer
+
+theorem InferRecComponent.sourceLocality_of_infer
+    (h : InferRecComponent K F members index frontier ctx bindings specs next S artifacts)
+    (hInfer : ∀ {κ F' Ψ c e Ψ' T output ty}, e.size ≤ sizeBindings bindings →
+      Infer κ F' Ψ c e Ψ' T output ty →
+      ∀ {w}, w < Ψ →
+      e.erase.ForallOuter (fun i => ∀ M, c.env[i]? = some M → w ∉ M.body.freeVars) 0 →
+      w ∉ e.rigidVars →
+      (∀ p ∈ T, w ∉ p.2.freeVars) ∧ w ∉ ty.freeVars ∧ w ∉ T.map Prod.fst) :
+    ∀ {w}, w < frontier →
+    (∀ j binding, index + j ∈ members → bindings[j]? = some binding →
+      binding.rhs.erase.ForallOuter
+        (fun i => ∀ M, ctx.env[i]? = some M → w ∉ M.body.freeVars) 0 ∧
+        w ∉ binding.rhs.rigidVars) →
+    (∀ j ty, index + j ∈ members → specs[j]? = some (.mono ty) → w ∉ ty.freeVars) →
+    (∀ p ∈ S, w ∉ p.2.freeVars) ∧ w ∉ S.map Prod.fst :=
+  InferRecComponentCert.sourceLocality_of_infer h hInfer
 
 /-- Only live type specs and exports affect the recursive term environment. -/
 def RecState.Avoids (w : Nat) (state : RecState) : Prop :=
@@ -4768,38 +4938,42 @@ theorem RecState.SourceTyped.letRec {state : RecState}
       exact GeneralisesTo.weaken_annotated (ctx := state.rhsCtx ctx) hwf hgen henv
 
 
- theorem InferRecComponent.sourceSound_of_infer
-    (h : InferRecComponent K F members index frontier ctx bindings specs next S artifacts)
-    (hInfer : ∀ {κ F' Ψ c e Ψ' T output ty}, e.size ≤ sizeBindings bindings →
+private theorem InferRecComponentCert.sourceSound_of_infer_raw
+    {request : InferRecComponentRequest} {result : RecComponentResult}
+    (h : InferRecComponentCert request result)
+    (hInfer : ∀ {κ F' Ψ c e Ψ' T output ty}, e.size ≤ sizeBindings request.bindings →
       Infer κ F' Ψ c e Ψ' T output ty → CtxWF c → TypeOfHM (T.onCtx c) output ty)
-    (hLC : ∀ {κ F' Ψ c e Ψ' T output ty}, e.size ≤ sizeBindings bindings →
+    (hLC : ∀ {κ F' Ψ c e Ψ' T output ty}, e.size ≤ sizeBindings request.bindings →
       Infer κ F' Ψ c e Ψ' T output ty → CtxWF c → ty.IsLC ∧ ∀ p ∈ T, p.2.IsLC)
-    (hctx : CtxWF ctx) (hspec : ∀ spec ∈ specs, spec.LC) :
-    ∀ (j : Nat) (target : Ty) (output : Expr), specs[j]? = some (RecSpec.mono target) →
-      recComponentOutputAt artifacts j = some output →
-      TypeOfHM (S.onCtx ctx) output (S.onTy target) := by
+    (hctx : CtxWF request.ctx) (hspec : ∀ spec ∈ request.specs, spec.LC) :
+    ∀ (j : Nat) (target : Ty) (output : Expr),
+      request.specs[j]? = some (RecSpec.mono target) →
+      recComponentOutputAt result.artifacts j = some output →
+      TypeOfHM (result.subst.onCtx request.ctx) output (result.subst.onTy target) := by
   match h with
   | .nil => intro j target output ht; simp at ht
   | .skipMono _ hr | .skipPoly hr =>
+      simp only [skippedRecComponentResult] at ⊢
       intro j target output ht ho
       cases j with
       | zero => cases ho
       | succ j =>
-          exact hr.sourceSound_of_infer
-            (fun he h => hInfer (by simp only [sizeBindings]; omega) h)
-            (fun he h => hLC (by simp only [sizeBindings]; omega) h)
+          exact hr.sourceSound_of_infer_raw
+            (fun he h => hInfer (by simp only at he; simp only [sizeBindings]; omega) h)
+            (fun he h => hLC (by simp only at he; simp only [sizeBindings]; omega) h)
             hctx (fun spec hm => hspec spec (List.mem_cons_of_mem _ hm)) j target output ht ho
-  | .consSelected _ hi hu hr =>
-      expose_names
+  | @consSelected K F members index frontier ctx binding rest expected specs
+      ⟨first, s1, bodyOutput, ty⟩ bodyFacts s2 ⟨next, s3, artifacts⟩ _ hi hu hr =>
+      simp only [selectedRecComponentResult] at ⊢
       obtain ⟨hiTy, hiS⟩ := hLC (by simp only [sizeBindings]; omega) hi hctx
       have huS := hu.unifies.lc hiTy (Subst.onTy_lc hiS (hspec _ List.mem_cons_self))
       have hS12 : ∀ p ∈ s1 ++ s2, p.2.IsLC := fun p hp => (List.mem_append.mp hp).elim (hiS p) (huS p)
       have hrCtx := Subst.onCtx_wf huS (Subst.onCtx_wf hiS hctx)
-      have hrSpec : ∀ spec ∈ specs_1.map (RecSpec.onSubstSource (s1 ++ s2)), spec.LC := by
+      have hrSpec : ∀ spec ∈ specs.map (RecSpec.onSubstSource (s1 ++ s2)), spec.LC := by
         intro spec hm
         obtain ⟨old, hold, rfl⟩ := List.mem_map.mp hm
         exact RecSpec.lc_onSubstSource hS12 (hspec old (List.mem_cons_of_mem _ hold))
-      have hrLC := hr.lc_of_infer
+      have hrLC := hr.lc_of_infer_raw
         (fun he h => hLC (by simp only [sizeBindings_substInputBindings] at he; simp only [sizeBindings]; omega) h)
         hrCtx hrSpec
       intro j target output ht ho
@@ -4815,13 +4989,39 @@ theorem RecState.SourceTyped.letRec {state : RecState}
         simpa only [Subst.onCtx_append, Subst.onTy_append, heq] using htyped
       | succ j =>
         simp only [List.getElem?_cons_succ] at ht ho
-        have htail := hr.sourceSound_of_infer
+        have htail := hr.sourceSound_of_infer_raw
           (fun he h => hInfer (by simp only [sizeBindings_substInputBindings] at he; simp only [sizeBindings]; omega) h)
           (fun he h => hLC (by simp only [sizeBindings_substInputBindings] at he; simp only [sizeBindings]; omega) h)
           hrCtx hrSpec j ((s1 ++ s2).onTy target) output
           (by simp only [List.getElem?_map, ht, Option.map_some, RecSpec.onSubstSource]) ho
         simpa only [Subst.onCtx_append, Subst.onTy_append] using htail
  termination_by structural h
+
+theorem InferRecComponentCert.sourceSound_of_infer
+    {request : InferRecComponentRequest} {result : RecComponentResult}
+    (h : InferRecComponentCert request result)
+    (hInfer : ∀ {κ F' Ψ c e Ψ' T output ty}, e.size ≤ sizeBindings request.bindings →
+      Infer κ F' Ψ c e Ψ' T output ty → CtxWF c → TypeOfHM (T.onCtx c) output ty)
+    (hLC : ∀ {κ F' Ψ c e Ψ' T output ty}, e.size ≤ sizeBindings request.bindings →
+      Infer κ F' Ψ c e Ψ' T output ty → CtxWF c → ty.IsLC ∧ ∀ p ∈ T, p.2.IsLC)
+    (hctx : CtxWF request.ctx) (hspec : ∀ spec ∈ request.specs, spec.LC) :
+    ∀ (j : Nat) (target : Ty) (output : Expr),
+      request.specs[j]? = some (RecSpec.mono target) →
+      recComponentOutputAt result.artifacts j = some output →
+      TypeOfHM (result.subst.onCtx request.ctx) output (result.subst.onTy target) :=
+  InferRecComponentCert.sourceSound_of_infer_raw h hInfer hLC hctx hspec
+
+theorem InferRecComponent.sourceSound_of_infer
+    (h : InferRecComponent K F members index frontier ctx bindings specs next S artifacts)
+    (hInfer : ∀ {κ F' Ψ c e Ψ' T output ty}, e.size ≤ sizeBindings bindings →
+      Infer κ F' Ψ c e Ψ' T output ty → CtxWF c → TypeOfHM (T.onCtx c) output ty)
+    (hLC : ∀ {κ F' Ψ c e Ψ' T output ty}, e.size ≤ sizeBindings bindings →
+      Infer κ F' Ψ c e Ψ' T output ty → CtxWF c → ty.IsLC ∧ ∀ p ∈ T, p.2.IsLC)
+    (hctx : CtxWF ctx) (hspec : ∀ spec ∈ specs, spec.LC) :
+    ∀ (j : Nat) (target : Ty) (output : Expr), specs[j]? = some (RecSpec.mono target) →
+      recComponentOutputAt artifacts j = some output →
+      TypeOfHM (S.onCtx ctx) output (S.onTy target) :=
+  InferRecComponentCert.sourceSound_of_infer h hInfer hLC hctx hspec
 
  theorem InferRecSigned.sourceSound_of_infer
     (h : InferRecSigned K F index frontier ctx bindings state next S final)
@@ -5771,7 +5971,8 @@ private theorem FinishRecComponent.pool_extends
       (by
         simp only [substInputBindings_eq_map, List.length_map]
         have := ho.frontier_le
-        have := hc.frontier_le
+        have hc_le := hc.frontier_le
+        simp only at hc_le
         omega)
       (by
         intro binding hm v hv
@@ -6081,7 +6282,8 @@ private theorem RecState.Frame.poly_of_complete {state : RecState} {i : Nat} {sc
       (by
         simp only [substInputBindings_eq_map, List.length_map]
         have := ho.frontier_le
-        have := hc.frontier_le
+        have hc_le := hc.frontier_le
+        simp only at hc_le
         omega)
       (by
         intro binding hm v hv
@@ -6382,47 +6584,54 @@ private theorem trace_prefix_lookup {state : RecState} {i : Nat} {ty : Ty} {name
   simpa only [InferInput.substTyFvars_openTyVars_of_fixes _ hlc hfix] using htypingS
 
 
- theorem InferRecComponent.inputSound_of_infer
-    (h : InferRecComponent K F members index frontier ctx bindings specs next S artifacts)
-    (hInfer : ∀ {κ F' Ψ c e Ψ' T output ty}, e.size ≤ sizeBindings bindings →
+private theorem InferRecComponentCert.inputSound_of_infer_raw
+    {request : InferRecComponentRequest} {result : RecComponentResult}
+    (h : InferRecComponentCert request result)
+    (hInfer : ∀ {κ F' Ψ c e Ψ' T output ty}, e.size ≤ sizeBindings request.bindings →
       Infer κ F' Ψ c e Ψ' T output ty → CtxWF c →
       InputTyping (κ ++ softVars (substSoft T F')) (T.onCtx c) (e.substTyFvars T) ty)
-    (hctx : CtxWF ctx) (hspec : ∀ spec ∈ specs, spec.LC) :
-    ∀ (j : Nat) (binding : InputRecBinding) (target : Ty), index + j ∈ members →
-      bindings[j]? = some binding → specs[j]? = some (.mono target) →
-      InputTyping (K ++ softVars (substSoft S F)) (S.onCtx ctx)
-        (binding.rhs.substTyFvars S) (S.onTy target) := by
+    (hctx : CtxWF request.ctx) (hspec : ∀ spec ∈ request.specs, spec.LC) :
+    ∀ (j : Nat) (binding : InputRecBinding) (target : Ty),
+      request.index + j ∈ request.members → request.bindings[j]? = some binding →
+      request.specs[j]? = some (.mono target) →
+      InputTyping
+        (request.protectedVars ++ softVars (substSoft result.subst request.soft))
+        (result.subst.onCtx request.ctx) (binding.rhs.substTyFvars result.subst)
+        (result.subst.onTy target) := by
   match h with
   | .nil => intro j binding target _ hb; simp at hb
   | .skipMono hn hr =>
+    simp only [skippedRecComponentResult] at ⊢
     intro j binding target hj hb ht
     cases j with
     | zero => exact False.elim (hn (by simpa only [Nat.add_zero] using hj))
     | succ j =>
-      exact hr.inputSound_of_infer
-        (fun he hi => hInfer (by simp only [sizeBindings]; omega) hi)
+      exact hr.inputSound_of_infer_raw
+        (fun he hi => hInfer (by simp only at he; simp only [sizeBindings]; omega) hi)
         hctx (fun spec hm => hspec spec (List.mem_cons_of_mem _ hm)) j binding target
         (by simpa [Nat.add_assoc, Nat.add_comm, Nat.add_left_comm] using hj) hb ht
   | .skipPoly hr =>
+    simp only [skippedRecComponentResult] at ⊢
     intro j binding target hj hb ht
     cases j with
     | zero => cases ht
     | succ j =>
-      exact hr.inputSound_of_infer
-        (fun he hi => hInfer (by simp only [sizeBindings]; omega) hi)
+      exact hr.inputSound_of_infer_raw
+        (fun he hi => hInfer (by simp only at he; simp only [sizeBindings]; omega) hi)
         hctx (fun spec hm => hspec spec (List.mem_cons_of_mem _ hm)) j binding target
         (by simpa [Nat.add_assoc, Nat.add_comm, Nat.add_left_comm] using hj) hb ht
-  | .consSelected hm hi hu hr =>
-    expose_names
+  | @consSelected K F members index frontier ctx head rest expected specs
+      ⟨first, s1, bodyOutput, ty⟩ bodyFacts s2 ⟨next, s3, artifacts⟩ hm hi hu hr =>
+    simp only [selectedRecComponentResult] at ⊢
     obtain ⟨hiTy, hiS⟩ := hi.lc hctx
     have huS := hu.unifies.lc hiTy (Subst.onTy_lc hiS (hspec _ List.mem_cons_self))
     have hS12 : ∀ p ∈ s1 ++ s2, p.2.IsLC := fun p hp => (List.mem_append.mp hp).elim (hiS p) (huS p)
     have hrCtx := Subst.onCtx_wf huS (Subst.onCtx_wf hiS hctx)
-    have hrSpec : ∀ spec ∈ specs_1.map (RecSpec.onSubstSource (s1 ++ s2)), spec.LC := by
+    have hrSpec : ∀ spec ∈ specs.map (RecSpec.onSubstSource (s1 ++ s2)), spec.LC := by
       intro spec hm
       obtain ⟨old, hold, rfl⟩ := List.mem_map.mp hm
       exact RecSpec.lc_onSubstSource hS12 (hspec old (List.mem_cons_of_mem _ hold))
-    have hrLC := hr.lc_of_infer (fun _ hi => hi.lc) hrCtx hrSpec
+    have hrLC := hr.lc_of_infer_raw (fun _ hi => hi.lc) hrCtx hrSpec
     intro j binding target hj hb ht
     cases j with
     | zero =>
@@ -6440,7 +6649,7 @@ private theorem trace_prefix_lookup {state : RecState} {i : Nat} {ty : Ty} {name
         ← substSoft_append, ← InferInput.substTyFvars_append] using htyping
     | succ j =>
       simp only [List.getElem?_cons_succ] at hb ht
-      have htail := hr.inputSound_of_infer
+      have htail := hr.inputSound_of_infer_raw
         (fun he hi => hInfer (by simp only [sizeBindings_substInputBindings] at he; simp only [sizeBindings]; omega) hi)
         hrCtx hrSpec j
           { ann := binding.ann.substTyFvars (s1 ++ s2),
@@ -6451,6 +6660,34 @@ private theorem trace_prefix_lookup {state : RecState} {i : Nat} {ty : Ty} {name
         (by simp only [List.getElem?_map, ht, Option.map_some, RecSpec.onSubstSource])
       simpa only [← substSoft_append, Subst.onCtx_append, Subst.onTy_append, ← InferInput.substTyFvars_append] using htail
  termination_by structural h
+
+theorem InferRecComponentCert.inputSound_of_infer
+    {request : InferRecComponentRequest} {result : RecComponentResult}
+    (h : InferRecComponentCert request result)
+    (hInfer : ∀ {κ F' Ψ c e Ψ' T output ty}, e.size ≤ sizeBindings request.bindings →
+      Infer κ F' Ψ c e Ψ' T output ty → CtxWF c →
+      InputTyping (κ ++ softVars (substSoft T F')) (T.onCtx c) (e.substTyFvars T) ty)
+    (hctx : CtxWF request.ctx) (hspec : ∀ spec ∈ request.specs, spec.LC) :
+    ∀ (j : Nat) (binding : InputRecBinding) (target : Ty),
+      request.index + j ∈ request.members → request.bindings[j]? = some binding →
+      request.specs[j]? = some (.mono target) →
+      InputTyping
+        (request.protectedVars ++ softVars (substSoft result.subst request.soft))
+        (result.subst.onCtx request.ctx) (binding.rhs.substTyFvars result.subst)
+        (result.subst.onTy target) :=
+  InferRecComponentCert.inputSound_of_infer_raw h hInfer hctx hspec
+
+theorem InferRecComponent.inputSound_of_infer
+    (h : InferRecComponent K F members index frontier ctx bindings specs next S artifacts)
+    (hInfer : ∀ {κ F' Ψ c e Ψ' T output ty}, e.size ≤ sizeBindings bindings →
+      Infer κ F' Ψ c e Ψ' T output ty → CtxWF c →
+      InputTyping (κ ++ softVars (substSoft T F')) (T.onCtx c) (e.substTyFvars T) ty)
+    (hctx : CtxWF ctx) (hspec : ∀ spec ∈ specs, spec.LC) :
+    ∀ (j : Nat) (binding : InputRecBinding) (target : Ty), index + j ∈ members →
+      bindings[j]? = some binding → specs[j]? = some (.mono target) →
+      InputTyping (K ++ softVars (substSoft S F)) (S.onCtx ctx)
+        (binding.rhs.substTyFvars S) (S.onTy target) :=
+  InferRecComponentCert.inputSound_of_infer h hInfer hctx hspec
 
 
 /-- Signed recursive RHS checks already completed during the positional scan.
@@ -6735,35 +6972,42 @@ theorem RecState.Fidelity.installOpenings {state : RecState}
       exact h i binding scheme output hb heOld hoOld
 
 
- theorem InferRecComponent.completes_of_infer
-    (h : InferRecComponent K F members index frontier ctx bindings specs next S artifacts)
-    (hInfer : ∀ {κ F' Ψ c e Ψ' T output ty}, e.size ≤ sizeBindings bindings →
+private theorem InferRecComponentCert.completes_of_infer_raw
+    {request : InferRecComponentRequest} {result : RecComponentResult}
+    (h : InferRecComponentCert request result)
+    (hInfer : ∀ {κ F' Ψ c e Ψ' T output ty}, e.size ≤ sizeBindings request.bindings →
       Infer κ F' Ψ c e Ψ' T output ty → CtxWF c →
       AnnotationCompletion (κ ++ softVars (substSoft T F')) (e.substTyFvars T) output)
-    (hctx : CtxWF ctx) (hspec : ∀ spec ∈ specs, spec.LC) :
-    ∀ (j : Nat) (binding : InputRecBinding) (output : Expr), bindings[j]? = some binding →
-      recComponentOutputAt artifacts j = some output →
-      AnnotationCompletion (K ++ softVars (substSoft S F)) (binding.rhs.substTyFvars S) output := by
+    (hctx : CtxWF request.ctx) (hspec : ∀ spec ∈ request.specs, spec.LC) :
+    ∀ (j : Nat) (binding : InputRecBinding) (output : Expr),
+      request.bindings[j]? = some binding →
+      recComponentOutputAt result.artifacts j = some output →
+      AnnotationCompletion
+        (request.protectedVars ++ softVars (substSoft result.subst request.soft))
+        (binding.rhs.substTyFvars result.subst) output := by
   match h with
   | .nil => intro j binding output hb; simp at hb
   | .skipMono _ hr | .skipPoly hr =>
+      simp only [skippedRecComponentResult] at ⊢
       intro j binding output hb ho
       cases j with
       | zero => cases ho
       | succ j =>
-        exact hr.completes_of_infer (fun he hi => hInfer (by simp only [sizeBindings]; omega) hi)
+        exact hr.completes_of_infer_raw
+          (fun he hi => hInfer (by simp only at he; simp only [sizeBindings]; omega) hi)
           hctx (fun spec hm => hspec spec (List.mem_cons_of_mem _ hm)) j binding output hb ho
-  | .consSelected _ hi hu hr =>
-    expose_names
+  | @consSelected K F members index frontier ctx head rest expected specs
+      ⟨first, s1, bodyOutput, ty⟩ bodyFacts s2 ⟨next, s3, artifacts⟩ _ hi hu hr =>
+    simp only [selectedRecComponentResult] at ⊢
     obtain ⟨hiTy, hiS⟩ := hi.lc hctx
     have huS := hu.unifies.lc hiTy (Subst.onTy_lc hiS (hspec _ List.mem_cons_self))
     have hS12 : ∀ p ∈ s1 ++ s2, p.2.IsLC := fun p hp => (List.mem_append.mp hp).elim (hiS p) (huS p)
     have hrCtx := Subst.onCtx_wf huS (Subst.onCtx_wf hiS hctx)
-    have hrSpec : ∀ spec ∈ specs_1.map (RecSpec.onSubstSource (s1 ++ s2)), spec.LC := by
+    have hrSpec : ∀ spec ∈ specs.map (RecSpec.onSubstSource (s1 ++ s2)), spec.LC := by
       intro spec hm
       obtain ⟨old, hold, rfl⟩ := List.mem_map.mp hm
       exact RecSpec.lc_onSubstSource hS12 (hspec old (List.mem_cons_of_mem _ hold))
-    have hrLC := hr.lc_of_infer (fun _ hi => hi.lc) hrCtx hrSpec
+    have hrLC := hr.lc_of_infer_raw (fun _ hi => hi.lc) hrCtx hrSpec
     intro j binding output hb ho
     cases j with
     | zero =>
@@ -6777,7 +7021,7 @@ theorem RecState.Fidelity.installOpenings {state : RecState}
       simpa only [← substSoft_append, ← InferInput.substTyFvars_append, List.append_assoc] using hcomplete
     | succ j =>
       simp only [List.getElem?_cons_succ] at hb ho
-      have htail := hr.completes_of_infer
+      have htail := hr.completes_of_infer_raw
         (fun he hi => hInfer (by simp only [sizeBindings_substInputBindings] at he; simp only [sizeBindings]; omega) hi)
         hrCtx hrSpec j
           { ann := binding.ann.substTyFvars (s1 ++ s2),
@@ -6786,6 +7030,32 @@ theorem RecState.Fidelity.installOpenings {state : RecState}
         (by simp only [substInputBindings_eq_map, List.getElem?_map, hb, Option.map_some]) ho
       simpa only [← substSoft_append, ← InferInput.substTyFvars_append] using htail
  termination_by structural h
+
+theorem InferRecComponentCert.completes_of_infer
+    {request : InferRecComponentRequest} {result : RecComponentResult}
+    (h : InferRecComponentCert request result)
+    (hInfer : ∀ {κ F' Ψ c e Ψ' T output ty}, e.size ≤ sizeBindings request.bindings →
+      Infer κ F' Ψ c e Ψ' T output ty → CtxWF c →
+      AnnotationCompletion (κ ++ softVars (substSoft T F')) (e.substTyFvars T) output)
+    (hctx : CtxWF request.ctx) (hspec : ∀ spec ∈ request.specs, spec.LC) :
+    ∀ (j : Nat) (binding : InputRecBinding) (output : Expr),
+      request.bindings[j]? = some binding →
+      recComponentOutputAt result.artifacts j = some output →
+      AnnotationCompletion
+        (request.protectedVars ++ softVars (substSoft result.subst request.soft))
+        (binding.rhs.substTyFvars result.subst) output :=
+  InferRecComponentCert.completes_of_infer_raw h hInfer hctx hspec
+
+theorem InferRecComponent.completes_of_infer
+    (h : InferRecComponent K F members index frontier ctx bindings specs next S artifacts)
+    (hInfer : ∀ {κ F' Ψ c e Ψ' T output ty}, e.size ≤ sizeBindings bindings →
+      Infer κ F' Ψ c e Ψ' T output ty → CtxWF c →
+      AnnotationCompletion (κ ++ softVars (substSoft T F')) (e.substTyFvars T) output)
+    (hctx : CtxWF ctx) (hspec : ∀ spec ∈ specs, spec.LC) :
+    ∀ (j : Nat) (binding : InputRecBinding) (output : Expr), bindings[j]? = some binding →
+      recComponentOutputAt artifacts j = some output →
+      AnnotationCompletion (K ++ softVars (substSoft S F)) (binding.rhs.substTyFvars S) output :=
+  InferRecComponentCert.completes_of_infer h hInfer hctx hspec
 
 
 private theorem trace_stage_export {state : RecState}
@@ -7103,7 +7373,8 @@ theorem openRecSources_lookup {i : Nat} {binding : InputRecBinding}
       (by
         simp only [substInputBindings_eq_map, List.length_map]
         have := ho.frontier_le
-        have := hc.frontier_le
+        have hc_le := hc.frontier_le
+        simp only at hc_le
         omega)
       (by
         intro binding hm v hv
@@ -7531,7 +7802,8 @@ private theorem fidelity_fvar_map_inj {a b : List Nat}
       (by
         simp only [substInputBindings_eq_map, List.length_map]
         have := ho.frontier_le
-        have := hc.frontier_le
+        have hc_le := hc.frontier_le
+        simp only at hc_le
         omega)
       (by
         intro binding hm v hv
@@ -8321,22 +8593,27 @@ def RecState.Erases (erased : List Expr) (state : RecState) : Prop :=
   simp only [substInputBindings_eq_map, List.map_map, Function.comp_def,
     InferInput.erase_substTyFvars]
 
- theorem InferRecComponent.erase_of_infer
-    (h : InferRecComponent K F members index frontier ctx bindings specs next S artifacts)
-    (hInfer : ∀ {κ F' Ψ c e Ψ' T output ty}, e.size ≤ sizeBindings bindings →
+private theorem InferRecComponentCert.erase_of_infer_raw
+    {request : InferRecComponentRequest} {result : RecComponentResult}
+    (h : InferRecComponentCert request result)
+    (hInfer : ∀ {κ F' Ψ c e Ψ' T output ty}, e.size ≤ sizeBindings request.bindings →
       Infer κ F' Ψ c e Ψ' T output ty → output.erase = e.erase) :
-    ∀ (i : Nat) (output : Expr), recComponentOutputAt artifacts i = some output →
-      (bindings.map (fun binding => binding.rhs.erase))[i]? = some output.erase := by
+    ∀ (i : Nat) (output : Expr), recComponentOutputAt result.artifacts i = some output →
+      (request.bindings.map (fun binding => binding.rhs.erase))[i]? = some output.erase := by
   match h with
   | .nil => intro i output hget; simp at hget
   | .skipMono _ hr | .skipPoly hr =>
+      simp only [skippedRecComponentResult] at ⊢
       intro i output hget
       cases i with
       | zero => cases hget
       | succ i =>
-          exact hr.erase_of_infer
-            (fun he h => hInfer (by simp only [sizeBindings]; omega) h) i output hget
-  | .consSelected _ hi _ hr =>
+          exact hr.erase_of_infer_raw
+            (fun he h => hInfer (by simp only at he; simp only [sizeBindings]; omega) h)
+            i output hget
+  | @consSelected K F members index frontier ctx head rest expected specs
+      ⟨first, s1, bodyOutput, ty⟩ bodyFacts s2 ⟨next, s3, artifacts⟩ _ hi hu hr =>
+      simp only [selectedRecComponentResult] at ⊢
       intro i output hget
       cases i with
       | zero =>
@@ -8345,11 +8622,28 @@ def RecState.Erases (erased : List Expr) (state : RecState) : Prop :=
           Expr.erase_substTyFvars,
           hInfer (by simp only [sizeBindings]; omega) hi]
       | succ i =>
-        have hh := hr.erase_of_infer
+        have hh := hr.erase_of_infer_raw
           (fun he h => hInfer (by simp only [sizeBindings_substInputBindings] at he; simp only [sizeBindings]; omega) h)
           i output hget
         simpa only [erase_map_subst_inputs] using hh
  termination_by structural h
+
+theorem InferRecComponentCert.erase_of_infer
+    {request : InferRecComponentRequest} {result : RecComponentResult}
+    (h : InferRecComponentCert request result)
+    (hInfer : ∀ {κ F' Ψ c e Ψ' T output ty}, e.size ≤ sizeBindings request.bindings →
+      Infer κ F' Ψ c e Ψ' T output ty → output.erase = e.erase) :
+    ∀ (i : Nat) (output : Expr), recComponentOutputAt result.artifacts i = some output →
+      (request.bindings.map (fun binding => binding.rhs.erase))[i]? = some output.erase :=
+  InferRecComponentCert.erase_of_infer_raw h hInfer
+
+theorem InferRecComponent.erase_of_infer
+    (h : InferRecComponent K F members index frontier ctx bindings specs next S artifacts)
+    (hInfer : ∀ {κ F' Ψ c e Ψ' T output ty}, e.size ≤ sizeBindings bindings →
+      Infer κ F' Ψ c e Ψ' T output ty → output.erase = e.erase) :
+    ∀ (i : Nat) (output : Expr), recComponentOutputAt artifacts i = some output →
+      (bindings.map (fun binding => binding.rhs.erase))[i]? = some output.erase :=
+  InferRecComponentCert.erase_of_infer h hInfer
 
  theorem InferRecStrata.erase_of_infer
     (h : InferRecStrata K F frontier ctx bindings state groups next S final)

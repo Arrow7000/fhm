@@ -88,6 +88,13 @@ bundle as one premise. -/
 #check @InferBranchesCert.nil
 #check @InferBranchesCert.consWild
 #check @InferBranchesCert.cons
+#check @InferRecComponentRequest
+#check @RecComponentResult
+#check @InferRecComponentCert
+#check @InferRecComponentCert.nil
+#check @InferRecComponentCert.skipMono
+#check @InferRecComponentCert.skipPoly
+#check @InferRecComponentCert.consSelected
 #check @InferRun
 #check @InferRun.cert
 #check @InferCert.sourceSound
@@ -102,6 +109,18 @@ bundle as one premise. -/
 #check @InferBranchesCert.SourcePrincipal
 #check @InferBranchesCert.nil_det
 #check @InferBranchesCert.sourcePrincipal_of_body
+#check @InferRecComponentCert.dom_avoids
+#check @InferRecComponentCert.lc_of_infer
+#check @InferRecComponentCert.frontier_le
+#check @InferRecComponentCert.belowFvars_of_infer
+#check @InferRecComponentCert.sourceLocality_of_infer
+#check @InferRecComponentCert.sourceSound_of_infer
+#check @InferRecComponentCert.inputSound_of_infer
+#check @InferRecComponentCert.completes_of_infer
+#check @InferRecComponentCert.erase_of_infer
+#check @InferRecComponentCert.sourcePrincipal_of_infer
+#check @InferRecComponentCert.sourcePrincipal_after_shapes
+#check @InferRecComponentCert.outputs_selected
 
 example (K : List Nat) (frontier : Nat) (ctx : Ctx) (input : InferInput) : InferRequest :=
   InferRequest.core K frontier ctx input
@@ -177,6 +196,13 @@ example {request : InferBranchesRequest} {result : InferBranchesResult} :
         result.frontier result.subst result.completedBranches :=
   Iff.rfl
 
+example {request : InferRecComponentRequest} {result : RecComponentResult} :
+    InferRecComponentCert request result ↔
+      InferRecComponent request.protectedVars request.soft request.members request.index
+        request.frontier request.ctx request.bindings request.specs
+        result.frontier result.subst result.artifacts :=
+  Iff.rfl
+
 #check @Infer.sourceSound
 #check @Infer.inputSound_source
 #check @Infer.inputSound
@@ -191,6 +217,18 @@ example {request : InferBranchesRequest} {result : InferBranchesResult} :
 #check @InferBranches.SourcePrincipal
 #check @InferBranches.nil_det
 #check @InferBranches.sourcePrincipal_of_body
+#check @InferRecComponent.dom_avoids
+#check @InferRecComponent.lc_of_infer
+#check @InferRecComponent.frontier_le
+#check @InferRecComponent.belowFvars_of_infer
+#check @InferRecComponent.sourceLocality_of_infer
+#check @InferRecComponent.sourceSound_of_infer
+#check @InferRecComponent.inputSound_of_infer
+#check @InferRecComponent.completes_of_infer
+#check @InferRecComponent.erase_of_infer
+#check @InferRecComponent.sourcePrincipal_of_infer
+#check @InferRecComponent.sourcePrincipal_after_shapes
+#check @InferRecComponent.outputs_selected
 #check @inferWithTypes_source_sound
 #check @inferWithTypes_input_sound
 #check @inferWithTypes_erase

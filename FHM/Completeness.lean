@@ -1164,30 +1164,37 @@ theorem SourceScope.residual_freeze {K : List Nat} {F : List Ty} {input : InferI
   rw [Subst.onTy_append, hfixed, hfreeze original horiginal horiginalK horiginalNotF] at hag
   exact hag.symm
 
- theorem InferRecComponent.sourcePrincipal_of_infer
-    (h : InferRecComponent K F members index frontier ctx bindings specs next S artifacts)
-    (hInfer : ∀ {κ F' Ψ c e Ψ' T output ty}, e.size ≤ sizeBindings bindings →
+private theorem InferRecComponentCert.sourcePrincipal_of_infer_raw
+    {request : InferRecComponentRequest} {result : RecComponentResult}
+    (h : InferRecComponentCert request result)
+    (hInfer : ∀ {κ F' Ψ c e Ψ' T output ty}, e.size ≤ sizeBindings request.bindings →
       (hi : Infer κ F' Ψ c e Ψ' T output ty) → Infer.SourcePrincipal hi)
-    (hctxWF : CtxWF ctx) (hctx : CtxBelow frontier ctx)
-    (hK : ∀ k ∈ K,k < frontier) (hF : ∀ t ∈ F,Ty.BelowFvars frontier t)
-    (hspecLC : ∀ spec ∈ specs,spec.LC) (hspecB : ∀ spec ∈ specs,spec.BelowFvars frontier)
-    (hscope : ∀ binding ∈ bindings,SourceScope K F binding.rhs)
+    (hctxWF : CtxWF request.ctx) (hctx : CtxBelow request.frontier request.ctx)
+    (hK : ∀ k ∈ request.protectedVars,k < request.frontier)
+    (hF : ∀ t ∈ request.soft,Ty.BelowFvars request.frontier t)
+    (hspecLC : ∀ spec ∈ request.specs,spec.LC)
+    (hspecB : ∀ spec ∈ request.specs,spec.BelowFvars request.frontier)
+    (hscope : ∀ binding ∈ request.bindings,
+      SourceScope request.protectedVars request.soft binding.rhs)
     (ambient : Subst) (P : List Nat) (hambient : ∀ p ∈ ambient,p.2.IsLC)
-    (hP : ∀ p ∈ P,p < frontier) (hfixP : ∀ p ∈ P,ambient.onTy (.fvar p) = .fvar p)
-    (hfreeze : ∀ (j : Nat) (binding : InputRecBinding),index + j ∈ members →
-      bindings[j]? = some binding → ∀ v ∈ binding.rhs.rigidVars,v ∈ K →
-      v ∉ softVars F → ambient.onTy (.fvar v) = .fvar v)
+    (hP : ∀ p ∈ P,p < request.frontier)
+    (hfixP : ∀ p ∈ P,ambient.onTy (.fvar p) = .fvar p)
+    (hfreeze : ∀ (j : Nat) (binding : InputRecBinding),
+      request.index + j ∈ request.members → request.bindings[j]? = some binding →
+      ∀ v ∈ binding.rhs.rigidVars,v ∈ request.protectedVars →
+      v ∉ softVars request.soft → ambient.onTy (.fvar v) = .fvar v)
     (hcandidate : ∀ (j : Nat) (binding : InputRecBinding) (target : Ty),
-      index + j ∈ members → bindings[j]? = some binding →
-      specs[j]? = some (.mono target) → InputTyping P (ambient.onCtx ctx)
+      request.index + j ∈ request.members → request.bindings[j]? = some binding →
+      request.specs[j]? = some (.mono target) → InputTyping P (ambient.onCtx request.ctx)
         (binding.rhs.substTyFvars ambient) (ambient.onTy target)) :
     ∃ R : Subst,(∀ p ∈ R,p.2.IsLC) ∧ (∀ p ∈ P,R.onTy (.fvar p) = .fvar p) ∧
-      Subst.AgreesBelow frontier ambient (S ++ R) := by
+      Subst.AgreesBelow request.frontier ambient (result.subst ++ R) := by
   match h with
   | .nil => exact ⟨ambient,hambient,hfixP,fun _ _ => rfl⟩
   | .skipMono hn hr | .skipPoly hr =>
-    exact hr.sourcePrincipal_of_infer
-      (fun he hi => hInfer (by simp only [sizeBindings];omega) hi)
+    simp only [skippedRecComponentResult] at ⊢
+    exact hr.sourcePrincipal_of_infer_raw
+      (fun he hi => hInfer (by simp only at he; simp only [sizeBindings]; omega) hi)
       hctxWF hctx hK hF
       (fun spec hm => hspecLC spec (List.mem_cons_of_mem _ hm))
       (fun spec hm => hspecB spec (List.mem_cons_of_mem _ hm))
@@ -1196,8 +1203,9 @@ theorem SourceScope.residual_freeze {K : List Nat} {F : List Ty} {input : InferI
         (by simpa [Nat.add_assoc,Nat.add_comm,Nat.add_left_comm] using hm) hb)
       (fun j binding target hm hb ht => hcandidate (j+1) binding target
         (by simpa [Nat.add_assoc,Nat.add_comm,Nat.add_left_comm] using hm) hb ht)
-  | .consSelected hm hi hu hr =>
-    expose_names
+  | @consSelected K F members index frontier ctx binding rest expected specs
+      ⟨first, s1, bodyOutput, ty⟩ bodyFacts s2 ⟨next, s3, artifacts⟩ hm hi hu hr =>
+    simp only [selectedRecComponentResult] at ⊢
     have hle := hi.frontier_le
     have hheadB : Ty.BelowFvars frontier expected := hspecB _ List.mem_cons_self
     have hheadSource := hscope _ List.mem_cons_self
@@ -1227,7 +1235,7 @@ theorem SourceScope.residual_freeze {K : List Nat} {F : List Ty} {input : InferI
     have htailWF := Subst.onCtx_wf hs2LC (Subst.onCtx_wf hs1LC hctxWF)
     have htailB : CtxBelow first (s2.onCtx (s1.onCtx ctx)) := by
       simpa only [Subst.onCtx_append] using Subst.onCtx_below hbothB hle hctx
-    obtain ⟨R3,hR3,hR3P,hag3⟩ := hr.sourcePrincipal_of_infer
+    obtain ⟨R3,hR3,hR3P,hag3⟩ := hr.sourcePrincipal_of_infer_raw
       (fun he hi => hInfer (by
         simp only [sizeBindings_substInputBindings] at he
         simp only [sizeBindings]
@@ -1272,6 +1280,56 @@ theorem SourceScope.residual_freeze {K : List Nat} {F : List Ty} {input : InferI
           (by simpa [Nat.add_assoc,Nat.add_comm,Nat.add_left_comm] using hj) ho hot)
     exact ⟨R3,hR3,hR3P,by simpa only [List.append_assoc] using hag12.trans_append hle hbothB hag3⟩
  termination_by structural h
+
+theorem InferRecComponentCert.sourcePrincipal_of_infer
+    {request : InferRecComponentRequest} {result : RecComponentResult}
+    (h : InferRecComponentCert request result)
+    (hInfer : ∀ {κ F' Ψ c e Ψ' T output ty}, e.size ≤ sizeBindings request.bindings →
+      (hi : Infer κ F' Ψ c e Ψ' T output ty) → Infer.SourcePrincipal hi)
+    (hctxWF : CtxWF request.ctx) (hctx : CtxBelow request.frontier request.ctx)
+    (hK : ∀ k ∈ request.protectedVars,k < request.frontier)
+    (hF : ∀ t ∈ request.soft,Ty.BelowFvars request.frontier t)
+    (hspecLC : ∀ spec ∈ request.specs,spec.LC)
+    (hspecB : ∀ spec ∈ request.specs,spec.BelowFvars request.frontier)
+    (hscope : ∀ binding ∈ request.bindings,
+      SourceScope request.protectedVars request.soft binding.rhs)
+    (ambient : Subst) (P : List Nat) (hambient : ∀ p ∈ ambient,p.2.IsLC)
+    (hP : ∀ p ∈ P,p < request.frontier)
+    (hfixP : ∀ p ∈ P,ambient.onTy (.fvar p) = .fvar p)
+    (hfreeze : ∀ (j : Nat) (binding : InputRecBinding),
+      request.index + j ∈ request.members → request.bindings[j]? = some binding →
+      ∀ v ∈ binding.rhs.rigidVars,v ∈ request.protectedVars →
+      v ∉ softVars request.soft → ambient.onTy (.fvar v) = .fvar v)
+    (hcandidate : ∀ (j : Nat) (binding : InputRecBinding) (target : Ty),
+      request.index + j ∈ request.members → request.bindings[j]? = some binding →
+      request.specs[j]? = some (.mono target) → InputTyping P (ambient.onCtx request.ctx)
+        (binding.rhs.substTyFvars ambient) (ambient.onTy target)) :
+    ∃ R : Subst,(∀ p ∈ R,p.2.IsLC) ∧ (∀ p ∈ P,R.onTy (.fvar p) = .fvar p) ∧
+      Subst.AgreesBelow request.frontier ambient (result.subst ++ R) :=
+  InferRecComponentCert.sourcePrincipal_of_infer_raw h hInfer hctxWF hctx hK hF
+    hspecLC hspecB hscope ambient P hambient hP hfixP hfreeze hcandidate
+
+theorem InferRecComponent.sourcePrincipal_of_infer
+    (h : InferRecComponent K F members index frontier ctx bindings specs next S artifacts)
+    (hInfer : ∀ {κ F' Ψ c e Ψ' T output ty}, e.size ≤ sizeBindings bindings →
+      (hi : Infer κ F' Ψ c e Ψ' T output ty) → Infer.SourcePrincipal hi)
+    (hctxWF : CtxWF ctx) (hctx : CtxBelow frontier ctx)
+    (hK : ∀ k ∈ K,k < frontier) (hF : ∀ t ∈ F,Ty.BelowFvars frontier t)
+    (hspecLC : ∀ spec ∈ specs,spec.LC) (hspecB : ∀ spec ∈ specs,spec.BelowFvars frontier)
+    (hscope : ∀ binding ∈ bindings,SourceScope K F binding.rhs)
+    (ambient : Subst) (P : List Nat) (hambient : ∀ p ∈ ambient,p.2.IsLC)
+    (hP : ∀ p ∈ P,p < frontier) (hfixP : ∀ p ∈ P,ambient.onTy (.fvar p) = .fvar p)
+    (hfreeze : ∀ (j : Nat) (binding : InputRecBinding),index + j ∈ members →
+      bindings[j]? = some binding → ∀ v ∈ binding.rhs.rigidVars,v ∈ K →
+      v ∉ softVars F → ambient.onTy (.fvar v) = .fvar v)
+    (hcandidate : ∀ (j : Nat) (binding : InputRecBinding) (target : Ty),
+      index + j ∈ members → bindings[j]? = some binding →
+      specs[j]? = some (.mono target) → InputTyping P (ambient.onCtx ctx)
+        (binding.rhs.substTyFvars ambient) (ambient.onTy target)) :
+    ∃ R : Subst,(∀ p ∈ R,p.2.IsLC) ∧ (∀ p ∈ P,R.onTy (.fvar p) = .fvar p) ∧
+      Subst.AgreesBelow frontier ambient (S ++ R) :=
+  InferRecComponentCert.sourcePrincipal_of_infer h hInfer hctxWF hctx hK hF
+    hspecLC hspecB hscope ambient P hambient hP hfixP hfreeze hcandidate
 
 
 /-- Candidate roots are class labels; a representative is the actual slot at
@@ -4916,11 +4974,14 @@ theorem FinishRecComponent.export_fresh_of_agrees
     rw [Subst.onTy_append] at hh
     exact hXsF x hx (mem_softVars_substSoft.mpr ⟨original,horiginal,hh ▸ hxOriginal⟩)
 
- theorem InferRecComponent.sourcePrincipal_after_shapes
+theorem InferRecComponentCert.sourcePrincipal_after_shapes
     {specs : List RecSpec} {bindings : List InputRecBinding}
+    {componentResult : RecComponentResult}
     (hshape : CheckRecShapes K shapes pre)
-    (hcomponent : InferRecComponent K (substSoft pre F) members index frontier (pre.onCtx ctx)
-      (substInputBindings pre bindings) (specs.map (RecSpec.onSubstSource pre)) next current artifacts)
+    (hcomponent : InferRecComponentCert
+      ⟨K, substSoft pre F, members, index, frontier, pre.onCtx ctx,
+        substInputBindings pre bindings, specs.map (RecSpec.onSubstSource pre)⟩
+      componentResult)
     (hInfer : ∀ {κ F' Ψ c e Ψ' T output ty}, e.size ≤ sizeBindings bindings →
       (hi : Infer κ F' Ψ c e Ψ' T output ty) → Infer.SourcePrincipal hi)
     (hctxWF : CtxWF ctx) (hctx : CtxBelow frontier ctx)
@@ -4941,7 +5002,8 @@ theorem FinishRecComponent.export_fresh_of_agrees
       InputTyping P (ambient.onCtx ctx) (binding.rhs.substTyFvars ambient) (ambient.onTy target)) :
     ∃ residual : Subst, (∀ pair ∈ residual, pair.2.IsLC) ∧
       (∀ p ∈ P, residual.onTy (.fvar p) = .fvar p) ∧
-      Subst.AgreesBelow frontier ambient (pre ++ current ++ residual) := by
+      Subst.AgreesBelow frontier ambient (pre ++ componentResult.subst ++ residual) := by
+  rcases componentResult with ⟨next, current, artifacts⟩
   obtain ⟨V, hV, hVP, hFactor⟩ := hshape.factor hAmbient hSolve hFix
   have hPreFix := Subst.fixes_of_dom_avoids hshape.dom_avoids
   have hAgreement : Subst.AgreesBelow frontier ambient (pre ++ V) := by
@@ -5003,6 +5065,36 @@ theorem FinishRecComponent.export_fresh_of_agrees
     _ = (current ++ residual).onTy (pre.onTy (.fvar v)) :=
       Subst.onTy_congr hResidualAgree (Subst.onTy_belowFvars hPreB (.fvar hv))
     _ = _ := by simp only [Subst.onTy_append]
+
+theorem InferRecComponent.sourcePrincipal_after_shapes
+    {specs : List RecSpec} {bindings : List InputRecBinding}
+    (hshape : CheckRecShapes K shapes pre)
+    (hcomponent : InferRecComponent K (substSoft pre F) members index frontier (pre.onCtx ctx)
+      (substInputBindings pre bindings) (specs.map (RecSpec.onSubstSource pre)) next current artifacts)
+    (hInfer : ∀ {κ F' Ψ c e Ψ' T output ty}, e.size ≤ sizeBindings bindings →
+      (hi : Infer κ F' Ψ c e Ψ' T output ty) → Infer.SourcePrincipal hi)
+    (hctxWF : CtxWF ctx) (hctx : CtxBelow frontier ctx)
+    (hK : ∀ k ∈ K, k < frontier) (hF : ∀ t ∈ F, Ty.BelowFvars frontier t)
+    (hSpecLC : ∀ spec ∈ specs, spec.LC)
+    (hSpecB : ∀ spec ∈ specs, spec.BelowFvars frontier)
+    (hSource : ∀ binding ∈ bindings, SourceScope K F binding.rhs)
+    (hPreLC : ∀ pair ∈ pre, pair.2.IsLC)
+    (hPreB : ∀ pair ∈ pre, Ty.BelowFvars frontier pair.2)
+    (ambient : Subst) (P : List Nat) (hAmbient : ∀ pair ∈ ambient, pair.2.IsLC)
+    (hP : ∀ p ∈ P, p < frontier) (hFix : ∀ p ∈ P, ambient.onTy (.fvar p) = .fvar p)
+    (hSolve : ∀ ty expected, (ty, some expected) ∈ shapes → ambient.onTy ty = ambient.onTy expected)
+    (hFreeze : ∀ (j : Nat) (binding : InputRecBinding), index + j ∈ members →
+      bindings[j]? = some binding → ∀ v ∈ binding.rhs.rigidVars, v ∈ K →
+      v ∉ softVars F → ambient.onTy (.fvar v) = .fvar v)
+    (hCandidate : ∀ (j : Nat) (binding : InputRecBinding) (target : Ty),
+      index + j ∈ members → bindings[j]? = some binding → specs[j]? = some (.mono target) →
+      InputTyping P (ambient.onCtx ctx) (binding.rhs.substTyFvars ambient) (ambient.onTy target)) :
+    ∃ residual : Subst, (∀ pair ∈ residual, pair.2.IsLC) ∧
+      (∀ p ∈ P, residual.onTy (.fvar p) = .fvar p) ∧
+      Subst.AgreesBelow frontier ambient (pre ++ current ++ residual) :=
+  InferRecComponentCert.sourcePrincipal_after_shapes hshape hcomponent hInfer hctxWF hctx
+    hK hF hSpecLC hSpecB hSource hPreLC hPreB ambient P hAmbient hP hFix hSolve
+    hFreeze hCandidate
 
 
 theorem RecResidual.completed_entries_generalize
@@ -9515,25 +9607,30 @@ private theorem inferRecStrataWithTypesCore_complete_of_step
         simpa only [substSoft_append,List.append_assoc] using hXFFinal
 termination_by groups.length
 
-theorem InferRecComponent.outputs_selected
-    (h : InferRecComponent K F members index frontier ctx bindings specs next S artifacts) :
-    ∀ (j : Nat) (ty : Ty),index+j ∈ members → specs[j]? = some (.mono ty) →
-      ∃ output,recComponentOutputAt artifacts j = some output := by
+theorem InferRecComponentCert.outputs_selected
+    {request : InferRecComponentRequest} {result : RecComponentResult}
+    (h : InferRecComponentCert request result) :
+    ∀ (j : Nat) (ty : Ty), request.index + j ∈ request.members →
+      request.specs[j]? = some (.mono ty) →
+      ∃ output, recComponentOutputAt result.artifacts j = some output := by
   match h with
   | .nil => intro j ty _ hs;cases hs
   | .skipMono hn hr =>
+    simp only [skippedRecComponentResult] at ⊢
     intro j ty hm hs
     cases j with
     | zero => exact (hn (by simpa only [Nat.add_zero] using hm)).elim
     | succ j =>
       exact hr.outputs_selected j ty (by simpa [Nat.add_assoc,Nat.add_comm 1 j] using hm) hs
   | .skipPoly hr =>
+    simp only [skippedRecComponentResult] at ⊢
     intro j ty hm hs
     cases j with
     | zero => cases hs
     | succ j => exact hr.outputs_selected j ty (by simpa [Nat.add_assoc,Nat.add_comm 1 j] using hm) hs
-  | .consSelected hm hi hu hr =>
-    expose_names
+  | @consSelected K F members index frontier ctx head rest expected specs
+      ⟨first, s1, bodyOutput, bodyTy⟩ bodyFacts s2 ⟨next, s3, artifacts⟩ hm hi hu hr =>
+    simp only [selectedRecComponentResult] at ⊢
     intro j target hj hs
     cases j with
     | zero => exact ⟨_,rfl⟩
@@ -9542,6 +9639,12 @@ theorem InferRecComponent.outputs_selected
       apply hr.outputs_selected j ((s1 ++ s2).onTy target) (by simpa [Nat.add_assoc,Nat.add_comm 1 j] using hj)
       simp only [List.getElem?_map,hs,Option.map_some,RecSpec.onSubstSource]
 termination_by structural h
+
+theorem InferRecComponent.outputs_selected
+    (h : InferRecComponent K F members index frontier ctx bindings specs next S artifacts) :
+    ∀ (j : Nat) (ty : Ty),index+j ∈ members → specs[j]? = some (.mono ty) →
+      ∃ output,recComponentOutputAt artifacts j = some output :=
+  InferRecComponentCert.outputs_selected h
 
 theorem RecState.output_onSubst {state : RecState} {S : Subst} {i : Nat} {output : Expr}
     (h : state.outputs[i]? = some (some output)) :
