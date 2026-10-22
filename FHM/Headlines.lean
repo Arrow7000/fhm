@@ -254,59 +254,6 @@ example {request : InferRecSignedRequest} {result : RecRunResult} :
         request.ctx request.bindings request.state result.frontier result.subst result.state :=
   Iff.rfl
 
-#check @Infer.sourceSound
-#check @Infer.inputSound_source
-#check @Infer.inputSound
-#check @Infer.completes_source
-#check @Infer.completes
-#check @Infer.erase
-#check @Infer.sound
-#check @InferBranches.sourceSound
-#check @InferBranches.inputSound_source
-#check @InferBranches.completes_source
-#check @InferBranches.erase
-#check @InferBranches.SourcePrincipal
-#check @InferBranches.nil_det
-#check @InferBranches.sourcePrincipal_of_body
-#check @InferRecComponent.dom_avoids
-#check @InferRecComponent.lc_of_infer
-#check @InferRecComponent.frontier_le
-#check @InferRecComponent.belowFvars_of_infer
-#check @InferRecComponent.sourceLocality_of_infer
-#check @InferRecComponent.sourceSound_of_infer
-#check @InferRecComponent.inputSound_of_infer
-#check @InferRecComponent.completes_of_infer
-#check @InferRecComponent.erase_of_infer
-#check @InferRecComponent.sourcePrincipal_of_infer
-#check @InferRecComponent.sourcePrincipal_after_shapes
-#check @InferRecComponent.outputs_selected
-#check @InferRecStrata.dom_avoids
-#check @InferRecStrata.lc_of_infer
-#check @InferRecStrata.frontier_le
-#check @InferRecStrata.belowFvars_of_infer
-#check @InferRecStrata.sourceLocality_of_infer
-#check @InferRecStrata.memberStates_length
-#check @InferRecStrata.frame_of_infer
-#check @InferRecStrata.sourceSound_of_infer
-#check @InferRecStrata.inputTrace_of_infer
-#check @InferRecStrata.fidelity_of_infer
-#check @InferRecStrata.erase_of_infer
-#check @InferRecStrata.outputs_present
-#check @InferRecSigned.dom_avoids
-#check @InferRecSigned.lc_of_infer
-#check @InferRecSigned.frontier_le
-#check @InferRecSigned.belowFvars_of_infer
-#check @InferRecSigned.sourceLocality_of_infer
-#check @InferRecSigned.memberStates_length
-#check @InferRecSigned.sourceSound_of_infer
-#check @InferRecSigned.frame_of_infer
-#check @InferRecSigned.inputSound_of_infer
-#check @InferRecSigned.type_fields
-#check @InferRecSigned.completes_of_infer
-#check @InferRecSigned.erase_of_infer
-#check @InferRecSigned.sourcePrincipal_residual
-#check @InferRecSigned.outputs_present
-#check @InferRecSigned.completed_members_of_strata
 #check @inferRecStrataWithTypesCore
 #check @inferWithTypes_source_sound
 #check @inferWithTypes_input_sound
@@ -588,18 +535,7 @@ guards live in `FHM.Headlines.CompleteCore`. -/
 #print axioms Infer.complete_req
 #print axioms inferCore_accepts_iff_req
 
--- Positional compatibility surface.
-#print axioms Infer.sourceSound
-#print axioms Infer.inputSound_source
-#print axioms Infer.inputSound
-#print axioms Infer.completes_source
-#print axioms Infer.completes
-#print axioms Infer.erase
-#print axioms Infer.sound
-#print axioms InferBranches.sourceSound
-#print axioms InferBranches.inputSound_source
-#print axioms InferBranches.completes_source
-#print axioms InferBranches.erase
+-- High-level inference compatibility and executable API.
 #print axioms inferWithTypes_source_sound
 #print axioms inferWithTypes_input_sound
 #print axioms inferWithTypes_erase
