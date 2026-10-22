@@ -5256,46 +5256,56 @@ private theorem signed_ann_freeze {ann : BindingAnn} {K : List Nat} {F : List Ty
   simpa only [InferInput.substTyFvars, InferInput.rigidVars, List.append_nil] using
     hs.residual_freeze hb hsolved hf hag
 
- theorem InferRecSigned.sourcePrincipal_residual
-    (h : InferRecSigned K F index frontier ctx bindings state next S final)
-    (hInfer : ∀ {κ F' Ψ c e Ψ' T output ty}, e.size ≤ sizeBindings bindings →
+private theorem InferRecSignedCert.sourcePrincipal_residual_raw
+    {request : InferRecSignedRequest} {result : RecRunResult}
+    (h : InferRecSignedCert request result)
+    (hInfer : ∀ {κ F' Ψ c e Ψ' T output ty}, e.size ≤ sizeBindings request.bindings →
       (hi : Infer κ F' Ψ c e Ψ' T output ty) → Infer.SourcePrincipal hi)
     {P declPool Xs done : List Nat} {declCtx : Ctx} {declSpecs : List RecSpec}
     {declPrefixes : List (List Nat)} {R : Subst}
-    (hres : RecResidual P declCtx declSpecs declPrefixes declPool Xs ctx state done R)
-    (hctxWF : CtxWF ctx) (hctx : CtxBelow frontier ctx)
-    (hstateLC : state.LC) (hstateB : state.Below frontier)
-    (hK : ∀ k ∈ K, k < frontier) (hF : ∀ t ∈ F, Ty.BelowFvars frontier t)
-    (hP : ∀ p ∈ P, p < frontier)
-    (hpoly : ∀ (i : Nat) (scheme : PolyTy), state.specs[i]? = some (.poly scheme) →
-      state.exports[i]? = some (some scheme))
-    (hdone : ∀ i ty, state.specs[i]? = some (.mono ty) → i ∈ done)
-    (hannScope : ∀ binding ∈ bindings,
-      ∀ v ∈ binding.ann.rigidVars, v ∈ K ++ softVars F)
-    (hrhsScope : ∀ binding ∈ bindings, SourceScope K F binding.rhs)
-    (hannFreeze : ∀ binding ∈ bindings, ∀ v ∈ binding.ann.rigidVars,
-      v ∈ K → v ∉ softVars F → R.onTy (.fvar v) = .fvar v)
-    (hrhsFreeze : ∀ binding ∈ bindings, ∀ v ∈ binding.rhs.rigidVars,
-      v ∈ K → v ∉ softVars F → R.onTy (.fvar v) = .fvar v)
-    (hcandAnn : ∀ binding ∈ bindings,
+    (hres : RecResidual P declCtx declSpecs declPrefixes declPool Xs
+      request.ctx request.state done R)
+    (hctxWF : CtxWF request.ctx) (hctx : CtxBelow request.frontier request.ctx)
+    (hstateLC : request.state.LC) (hstateB : request.state.Below request.frontier)
+    (hK : ∀ k ∈ request.protectedVars, k < request.frontier)
+    (hF : ∀ t ∈ request.soft, Ty.BelowFvars request.frontier t)
+    (hP : ∀ p ∈ P, p < request.frontier)
+    (hpoly : ∀ (i : Nat) (scheme : PolyTy),
+      request.state.specs[i]? = some (.poly scheme) →
+      request.state.exports[i]? = some (some scheme))
+    (hdone : ∀ i ty, request.state.specs[i]? = some (.mono ty) → i ∈ done)
+    (hannScope : ∀ binding ∈ request.bindings,
+      ∀ v ∈ binding.ann.rigidVars,
+        v ∈ request.protectedVars ++ softVars request.soft)
+    (hrhsScope : ∀ binding ∈ request.bindings,
+      SourceScope request.protectedVars request.soft binding.rhs)
+    (hannFreeze : ∀ binding ∈ request.bindings, ∀ v ∈ binding.ann.rigidVars,
+      v ∈ request.protectedVars → v ∉ softVars request.soft →
+      R.onTy (.fvar v) = .fvar v)
+    (hrhsFreeze : ∀ binding ∈ request.bindings, ∀ v ∈ binding.rhs.rigidVars,
+      v ∈ request.protectedVars → v ∉ softVars request.soft →
+      R.onTy (.fvar v) = .fvar v)
+    (hcandAnn : ∀ binding ∈ request.bindings,
       ∀ v ∈ (binding.ann.substTyFvars R).rigidVars, v ∈ P)
-    (hcandRhs : ∀ binding ∈ bindings,
+    (hcandRhs : ∀ binding ∈ request.bindings,
       ∀ v ∈ (binding.rhs.substTyFvars R).rigidVars, v ∈ P)
     (hcandidate : ∀ (j : Nat) (scheme : PolyTy) (rhs : InferInput),
-      bindings[j]? = some { ann := .complete scheme, rhs := rhs } →
+      request.bindings[j]? = some { ann := .complete scheme, rhs := rhs } →
       ∃ L, ∀ Ys, FreshNames L scheme.paramCount Ys →
         InputTyping (P ++ Ys) (recBodyCtx declCtx declSpecs declPrefixes declPool)
           ((rhs.substTyFvars R).openTyVars Ys) ((R.onPolyTy scheme).openVars Ys)) :
     ∃ U : Subst, (∀ pair ∈ U, pair.2.IsLC) ∧
       (∀ p ∈ P, U.onTy (.fvar p) = .fvar p) ∧
-      Subst.AgreesBelow frontier R (S ++ U) ∧
-      RecResidual P declCtx declSpecs declPrefixes declPool Xs (S.onCtx ctx) final done U := by
+      Subst.AgreesBelow request.frontier R (result.subst ++ U) ∧
+      RecResidual P declCtx declSpecs declPrefixes declPool Xs
+        (result.subst.onCtx request.ctx) result.state done U := by
   match h with
   | .nil =>
     exact ⟨R, hres.lc, hres.fixes, (by intro v hv; simp only [Subst.onTy_append, Subst.onTy_nil]),
       by simpa only [Subst.onCtx_nil] using hres⟩
   | .skip hmode hr =>
-    apply hr.sourcePrincipal_residual (fun he hi => hInfer (by simp only [sizeBindings]; omega) hi)
+    apply hr.sourcePrincipal_residual_raw
+      (fun he hi => hInfer (by simp only at he; simp only [sizeBindings]; omega) hi)
       hres hctxWF hctx hstateLC hstateB hK hF hP hpoly hdone
     · exact fun binding hm => hannScope binding (List.mem_cons_of_mem _ hm)
     · exact fun binding hm => hrhsScope binding (List.mem_cons_of_mem _ hm)
@@ -5306,8 +5316,11 @@ private theorem signed_ann_freeze {ann : BindingAnn} {K : List Nat} {F : List Ty
     · intro j scheme rhs hb
       exact hcandidate (j + 1) scheme rhs
         (by simpa only [List.getElem?_cons_succ] using hb)
-  | .cons hwf hraw hi hu hescape hr =>
-    expose_names
+  | @cons K F index frontier ctx scheme rhs bindings state
+      ⟨first, s1, output, ty⟩ bodyFacts s2 ⟨next, tail, final⟩ hwf hraw hi hu hescape hr =>
+    simp only [signedRecResult] at ⊢
+    simp only at hres hctxWF hctx hstateLC hstateB hK hF hP hpoly hdone hannScope
+    simp only at hrhsScope hannFreeze hrhsFreeze hcandAnn hcandRhs hcandidate
     have hiCtxWF := hstateLC.rhsCtx hctxWF
     have hiCtxB := hstateB.rhsCtx hctx
     have hheadAnn : ∀ v ∈ scheme.body.freeVars, v ∈ K ++ softVars F :=
@@ -5334,7 +5347,9 @@ private theorem signed_ann_freeze {ann : BindingAnn} {K : List Nat} {F : List Ty
       (output.substTyFvars s2) (bodyFacts.onSubst s2)
     have hstep : InferRecSigned K F index frontier ctx
         [{ ann := .complete scheme, rhs := rhs }] state first
-        ((s1 ++ s2) ++ []) checked := .cons hwf hraw hi hu hescape .nil
+        ((s1 ++ s2) ++ []) checked :=
+      InferRecSignedCert.cons (index := index) (bindings := []) (bodyFacts := bodyFacts)
+        hwf hraw hi hu hescape InferRecSignedCert.nil
     have hstep' : InferRecSigned K F index frontier ctx
         [{ ann := .complete scheme, rhs := rhs }] state first
         (s1 ++ s2) checked := by simpa only [List.append_nil] using hstep
@@ -5354,22 +5369,22 @@ private theorem signed_ann_freeze {ann : BindingAnn} {K : List Nat} {F : List Ty
       residual_congr_types (hres.onSubst_of_agreesBelow hstateB hctx hag hU hUP)
         (by simp only [checked, RecState.specs_setSigned])
         (by simp only [checked, RecState.exports_setSigned])
-    have hannBelow : ∀ binding ∈ ({ ann := .complete scheme, rhs := rhs } :: bindings_1),
+    have hannBelow : ∀ binding ∈ ({ ann := .complete scheme, rhs := rhs } :: bindings),
         ∀ v ∈ binding.ann.rigidVars, v < frontier :=
       fun binding hb v hv => (List.mem_append.mp (hannScope binding hb v hv)).elim
         (hK v) (softVars_lt hF v)
-    have hrhsBelow : ∀ binding ∈ ({ ann := .complete scheme, rhs := rhs } :: bindings_1),
+    have hrhsBelow : ∀ binding ∈ ({ ann := .complete scheme, rhs := rhs } :: bindings),
         ∀ v ∈ binding.rhs.rigidVars, v < frontier :=
       fun binding hb v hv => (List.mem_append.mp (hrhsScope binding hb v hv)).elim
         (hK v) (softVars_lt hF v)
-    have annEq : ∀ binding ∈ ({ ann := .complete scheme, rhs := rhs } :: bindings_1),
+    have annEq : ∀ binding ∈ ({ ann := .complete scheme, rhs := rhs } :: bindings),
         (binding.ann.substTyFvars (s1 ++ s2)).substTyFvars U =
           binding.ann.substTyFvars R := by
       intro binding hb
       rw [← BindingAnn.substTyFvars_append]
       exact binding.ann.substTyFvars_congr
         (fun v hv => (hag v (hannBelow binding hb v hv)).symm)
-    have rhsEq : ∀ binding ∈ ({ ann := .complete scheme, rhs := rhs } :: bindings_1),
+    have rhsEq : ∀ binding ∈ ({ ann := .complete scheme, rhs := rhs } :: bindings),
         (binding.rhs.substTyFvars (s1 ++ s2)).substTyFvars U =
           binding.rhs.substTyFvars R := by
       intro binding hb
@@ -5389,7 +5404,7 @@ private theorem signed_ann_freeze {ann : BindingAnn} {K : List Nat} {F : List Ty
         cases heq
         simp only [checked, RecState.exports_setSigned, RecState.exports_onSubst, List.getElem?_map,
           hpoly i old hold, Option.map_some]
-    obtain ⟨V, hV, hVP, hagTail, hresFinal⟩ := hr.sourcePrincipal_residual
+    obtain ⟨V, hV, hVP, hagTail, hresFinal⟩ := hr.sourcePrincipal_residual_raw
       (fun he hi => hInfer (by
         simp only [sizeBindings_substInputBindings] at he
         simp only [sizeBindings]
@@ -5470,6 +5485,92 @@ private theorem signed_ann_freeze {ann : BindingAnn} {K : List Nat} {F : List Ty
     · simpa only [List.append_assoc] using Subst.AgreesBelow.trans_append hle hag hbothB hagTail
     · simpa only [Subst.onCtx_append, List.append_assoc] using hresFinal
 termination_by structural h
+
+theorem InferRecSignedCert.sourcePrincipal_residual
+    {request : InferRecSignedRequest} {result : RecRunResult}
+    (h : InferRecSignedCert request result)
+    (hInfer : ∀ {κ F' Ψ c e Ψ' T output ty}, e.size ≤ sizeBindings request.bindings →
+      (hi : Infer κ F' Ψ c e Ψ' T output ty) → Infer.SourcePrincipal hi)
+    {P declPool Xs done : List Nat} {declCtx : Ctx} {declSpecs : List RecSpec}
+    {declPrefixes : List (List Nat)} {R : Subst}
+    (hres : RecResidual P declCtx declSpecs declPrefixes declPool Xs
+      request.ctx request.state done R)
+    (hctxWF : CtxWF request.ctx) (hctx : CtxBelow request.frontier request.ctx)
+    (hstateLC : request.state.LC) (hstateB : request.state.Below request.frontier)
+    (hK : ∀ k ∈ request.protectedVars, k < request.frontier)
+    (hF : ∀ t ∈ request.soft, Ty.BelowFvars request.frontier t)
+    (hP : ∀ p ∈ P, p < request.frontier)
+    (hpoly : ∀ (i : Nat) (scheme : PolyTy),
+      request.state.specs[i]? = some (.poly scheme) →
+      request.state.exports[i]? = some (some scheme))
+    (hdone : ∀ i ty, request.state.specs[i]? = some (.mono ty) → i ∈ done)
+    (hannScope : ∀ binding ∈ request.bindings,
+      ∀ v ∈ binding.ann.rigidVars,
+        v ∈ request.protectedVars ++ softVars request.soft)
+    (hrhsScope : ∀ binding ∈ request.bindings,
+      SourceScope request.protectedVars request.soft binding.rhs)
+    (hannFreeze : ∀ binding ∈ request.bindings, ∀ v ∈ binding.ann.rigidVars,
+      v ∈ request.protectedVars → v ∉ softVars request.soft →
+      R.onTy (.fvar v) = .fvar v)
+    (hrhsFreeze : ∀ binding ∈ request.bindings, ∀ v ∈ binding.rhs.rigidVars,
+      v ∈ request.protectedVars → v ∉ softVars request.soft →
+      R.onTy (.fvar v) = .fvar v)
+    (hcandAnn : ∀ binding ∈ request.bindings,
+      ∀ v ∈ (binding.ann.substTyFvars R).rigidVars, v ∈ P)
+    (hcandRhs : ∀ binding ∈ request.bindings,
+      ∀ v ∈ (binding.rhs.substTyFvars R).rigidVars, v ∈ P)
+    (hcandidate : ∀ (j : Nat) (scheme : PolyTy) (rhs : InferInput),
+      request.bindings[j]? = some { ann := .complete scheme, rhs := rhs } →
+      ∃ L, ∀ Ys, FreshNames L scheme.paramCount Ys →
+        InputTyping (P ++ Ys) (recBodyCtx declCtx declSpecs declPrefixes declPool)
+          ((rhs.substTyFvars R).openTyVars Ys) ((R.onPolyTy scheme).openVars Ys)) :
+    ∃ U : Subst, (∀ pair ∈ U, pair.2.IsLC) ∧
+      (∀ p ∈ P, U.onTy (.fvar p) = .fvar p) ∧
+      Subst.AgreesBelow request.frontier R (result.subst ++ U) ∧
+      RecResidual P declCtx declSpecs declPrefixes declPool Xs
+        (result.subst.onCtx request.ctx) result.state done U :=
+  InferRecSignedCert.sourcePrincipal_residual_raw h hInfer hres hctxWF hctx hstateLC
+    hstateB hK hF hP hpoly hdone hannScope hrhsScope hannFreeze hrhsFreeze
+    hcandAnn hcandRhs hcandidate
+
+theorem InferRecSigned.sourcePrincipal_residual
+    (h : InferRecSigned K F index frontier ctx bindings state next S final)
+    (hInfer : ∀ {κ F' Ψ c e Ψ' T output ty}, e.size ≤ sizeBindings bindings →
+      (hi : Infer κ F' Ψ c e Ψ' T output ty) → Infer.SourcePrincipal hi)
+    {P declPool Xs done : List Nat} {declCtx : Ctx} {declSpecs : List RecSpec}
+    {declPrefixes : List (List Nat)} {R : Subst}
+    (hres : RecResidual P declCtx declSpecs declPrefixes declPool Xs ctx state done R)
+    (hctxWF : CtxWF ctx) (hctx : CtxBelow frontier ctx)
+    (hstateLC : state.LC) (hstateB : state.Below frontier)
+    (hK : ∀ k ∈ K, k < frontier) (hF : ∀ t ∈ F, Ty.BelowFvars frontier t)
+    (hP : ∀ p ∈ P, p < frontier)
+    (hpoly : ∀ (i : Nat) (scheme : PolyTy), state.specs[i]? = some (.poly scheme) →
+      state.exports[i]? = some (some scheme))
+    (hdone : ∀ i ty, state.specs[i]? = some (.mono ty) → i ∈ done)
+    (hannScope : ∀ binding ∈ bindings,
+      ∀ v ∈ binding.ann.rigidVars, v ∈ K ++ softVars F)
+    (hrhsScope : ∀ binding ∈ bindings, SourceScope K F binding.rhs)
+    (hannFreeze : ∀ binding ∈ bindings, ∀ v ∈ binding.ann.rigidVars,
+      v ∈ K → v ∉ softVars F → R.onTy (.fvar v) = .fvar v)
+    (hrhsFreeze : ∀ binding ∈ bindings, ∀ v ∈ binding.rhs.rigidVars,
+      v ∈ K → v ∉ softVars F → R.onTy (.fvar v) = .fvar v)
+    (hcandAnn : ∀ binding ∈ bindings,
+      ∀ v ∈ (binding.ann.substTyFvars R).rigidVars, v ∈ P)
+    (hcandRhs : ∀ binding ∈ bindings,
+      ∀ v ∈ (binding.rhs.substTyFvars R).rigidVars, v ∈ P)
+    (hcandidate : ∀ (j : Nat) (scheme : PolyTy) (rhs : InferInput),
+      bindings[j]? = some { ann := .complete scheme, rhs := rhs } →
+      ∃ L, ∀ Ys, FreshNames L scheme.paramCount Ys →
+        InputTyping (P ++ Ys) (recBodyCtx declCtx declSpecs declPrefixes declPool)
+          ((rhs.substTyFvars R).openTyVars Ys) ((R.onPolyTy scheme).openVars Ys)) :
+    ∃ U : Subst, (∀ pair ∈ U, pair.2.IsLC) ∧
+      (∀ p ∈ P, U.onTy (.fvar p) = .fvar p) ∧
+      Subst.AgreesBelow frontier R (S ++ U) ∧
+      RecResidual P declCtx declSpecs declPrefixes declPool Xs
+        (S.onCtx ctx) final done U :=
+  InferRecSignedCert.sourcePrincipal_residual h hInfer hres hctxWF hctx hstateLC hstateB
+    hK hF hP hpoly hdone hannScope hrhsScope hannFreeze hrhsFreeze hcandAnn hcandRhs
+    hcandidate
 
 
 /-- Allocate the actual recursion seeds against unrestricted candidate pool
@@ -9206,9 +9307,10 @@ theorem inferRecSignedWithTypesCore_complete
           · have hstep : InferRecSigned K F index frontier ctx
                 [{ ann := .complete scheme, rhs := rhs }] state first
                 (s1 ++ s2) checked := by
-              simpa only [List.append_nil] using
-                (InferRecSigned.cons (bindings := []) (index := index)
-                  (bodyFacts := RecFacts.mk types schemes) hSchemeWF hraw hi ⟨hu,hdom⟩ hescape InferRecSigned.nil)
+              simpa only [signedRecResult, List.append_nil] using
+                (InferRecSignedCert.cons (bindings := []) (index := index)
+                  (bodyFacts := RecFacts.mk types schemes) hSchemeWF hraw hi ⟨hu,hdom⟩ hescape
+                  InferRecSignedCert.nil)
             obtain ⟨U,hU,hUP,hag,hresChecked⟩ := hstep.sourcePrincipal_residual
               (fun he hi => hPrincipal (by simp only [sizeBindings] at he ⊢;omega) hi)
               hres hctxWF hctx hstateLC hstateB hK hF hP hpoly hdone
@@ -9742,35 +9844,39 @@ theorem RecState.output_setSigned {state : RecState} {member i : Nat} {written :
       rw [RecState.getElem?_outputs_setSigned_of_ne state member i written output facts hi]
       exact ho⟩
 
-theorem InferRecSigned.outputs_present
-    (h : InferRecSigned K F index frontier ctx bindings state next S final)
-    (hbound : index + bindings.length ≤ state.outputs.length) :
-    (∀ (i : Nat) (output : Expr),state.outputs[i]? = some (some output) → ∃ out,final.outputs[i]? = some (some out)) ∧
+private theorem InferRecSignedCert.outputs_present_raw
+    {request : InferRecSignedRequest} {result : RecRunResult}
+    (h : InferRecSignedCert request result)
+    (hbound : request.index + request.bindings.length ≤ request.state.outputs.length) :
+    (∀ (i : Nat) (output : Expr), request.state.outputs[i]? = some (some output) →
+      ∃ out, result.state.outputs[i]? = some (some out)) ∧
     (∀ (j : Nat) (scheme : PolyTy) (rhs : InferInput),
-      bindings[j]? = some { ann := .complete scheme, rhs := rhs } →
-      ∃ out,final.outputs[index+j]? = some (some out)) := by
+      request.bindings[j]? = some { ann := .complete scheme, rhs := rhs } →
+      ∃ out, result.state.outputs[request.index + j]? = some (some out)) := by
   match h with
   | .nil => exact ⟨fun _ output ho => ⟨output,ho⟩,by intro j scheme rhs hb;cases hb⟩
-  | .skip hmode hr =>
-    expose_names
-    have hb : index + 1 + bindings_1.length ≤ state.outputs.length := by
+  | @skip K F index frontier ctx binding bindings state ⟨next, tail, final⟩ hmode hr =>
+    simp only at hbound ⊢
+    have hb : index + 1 + bindings.length ≤ state.outputs.length := by
       simp only [List.length_cons] at hbound; omega
-    obtain ⟨hKeep,hFill⟩ := hr.outputs_present hb
+    obtain ⟨hKeep,hFill⟩ := hr.outputs_present_raw hb
     refine ⟨hKeep,?_⟩
     intro j scheme rhs hb
     cases j with
     | zero => cases hb; cases hmode
     | succ j => simpa only [Nat.add_assoc,Nat.add_comm 1 j] using hFill j scheme rhs hb
-  | .cons hwf hraw hi hu hescape hr =>
-    expose_names
+  | @cons K F index frontier ctx scheme rhs bindings state
+      ⟨first, s1, output, ty⟩ bodyFacts s2 ⟨next, tail, final⟩ hwf hraw hi hu hescape hr =>
+    simp only [signedRecResult] at ⊢
+    simp only at hbound
     let checked := (state.onSubst (s1 ++ s2)).setSigned index (freshVars frontier scheme.paramCount)
       (output.substTyFvars s2) (bodyFacts.onSubst s2)
-    have hb : index + 1 + (substInputBindings (s1 ++ s2) bindings_1).length ≤
+    have hb : index + 1 + (substInputBindings (s1 ++ s2) bindings).length ≤
         checked.outputs.length := by
       simpa only [checked, RecState.outputs_length, RecState.setSigned, RecState.onSubst,
         List.length_mapIdx, List.length_map, substInputBindings_length, List.length_cons,
-        Nat.add_assoc,Nat.add_comm 1 bindings_1.length] using hbound
-    obtain ⟨hKeep,hFill⟩ := hr.outputs_present hb
+        Nat.add_assoc,Nat.add_comm 1 bindings.length] using hbound
+    obtain ⟨hKeep,hFill⟩ := hr.outputs_present_raw hb
     constructor
     · intro i old ho
       obtain ⟨moved,hmoved⟩ := RecState.output_onSubst (S := s1 ++ s2) ho
@@ -9792,16 +9898,37 @@ theorem InferRecSigned.outputs_present
               (output.substTyFvars s2) (bodyFacts.onSubst s2) hib
         simpa only [Nat.add_zero] using hKeep index _ hout
       | succ j =>
-        have hnew : (substInputBindings (s1 ++ s2) bindings_1)[j]? = some
+        have hnew : (substInputBindings (s1 ++ s2) bindings)[j]? = some
             { ann := .complete ((s1 ++ s2).onPolyTy sigma),
               rhs := rhs.substTyFvars (s1 ++ s2) } := by
           simp only [substInputBindings_eq_map, List.getElem?_map,
-            show bindings_1[j]? = some { ann := .complete sigma, rhs := rhs } from hb,
+            show bindings[j]? = some { ann := .complete sigma, rhs := rhs } from hb,
             Option.map_some, BindingAnn.substTyFvars, Subst.onPolyTy,
             Subst.onTy]
         simpa only [Nat.add_assoc,Nat.add_comm 1 j] using
           hFill j ((s1 ++ s2).onPolyTy sigma) (rhs.substTyFvars (s1 ++ s2)) hnew
 termination_by structural h
+
+theorem InferRecSignedCert.outputs_present
+    {request : InferRecSignedRequest} {result : RecRunResult}
+    (h : InferRecSignedCert request result)
+    (hbound : request.index + request.bindings.length ≤ request.state.outputs.length) :
+    (∀ (i : Nat) (output : Expr), request.state.outputs[i]? = some (some output) →
+      ∃ out, result.state.outputs[i]? = some (some out)) ∧
+    (∀ (j : Nat) (scheme : PolyTy) (rhs : InferInput),
+      request.bindings[j]? = some { ann := .complete scheme, rhs := rhs } →
+      ∃ out, result.state.outputs[request.index + j]? = some (some out)) :=
+  InferRecSignedCert.outputs_present_raw h hbound
+
+theorem InferRecSigned.outputs_present
+    (h : InferRecSigned K F index frontier ctx bindings state next S final)
+    (hbound : index + bindings.length ≤ state.outputs.length) :
+    (∀ (i : Nat) (output : Expr),state.outputs[i]? = some (some output) →
+      ∃ out,final.outputs[i]? = some (some out)) ∧
+    (∀ (j : Nat) (scheme : PolyTy) (rhs : InferInput),
+      bindings[j]? = some { ann := .complete scheme, rhs := rhs } →
+      ∃ out,final.outputs[index+j]? = some (some out)) :=
+  InferRecSignedCert.outputs_present h hbound
 
 theorem collectCompletedRecMembers_complete {members : List RecMemberState}
     (h : ∀ (i : Nat), i < members.length →
@@ -9841,17 +9968,23 @@ theorem RecState.Frame.exports_present
 
 
 
-theorem InferRecSigned.completed_members_of_strata
+theorem InferRecSignedCert.completed_members_of_strata
+    {signedResult : RecRunResult}
     (hs : InferRecStrata K F frontier ctx bindings state groups first S1 state1)
-    (hp : InferRecSigned K (substSoft S1 F) 0 first (S1.onCtx ctx)
-      (substInputBindings S1 bindings) state1 second S2 state2)
+    (hp : InferRecSignedCert
+      ⟨K, substSoft S1 F, 0, first, S1.onCtx ctx,
+        substInputBindings S1 bindings, state1⟩ signedResult)
     (hvalid : RecGroups.ValidResidualGroups (bindings.map InputRecBinding.recMode) groups)
     (hframe : state.Frame base K F ctx bindings [])
     (hframe1 : state1.Frame base K (substSoft S1 F) (S1.onCtx ctx)
       (substInputBindings S1 bindings) groups.flatten)
-    (hframe2 : state2.Frame base K (substSoft S2 (substSoft S1 F)) (S2.onCtx (S1.onCtx ctx))
-      (substInputBindings S2 (substInputBindings S1 bindings)) groups.flatten) :
-    (collectCompletedRecMembers state2.memberStates).isSome := by
+    (hframe2 : signedResult.state.Frame base K
+      (substSoft signedResult.subst (substSoft S1 F))
+      (signedResult.subst.onCtx (S1.onCtx ctx))
+      (substInputBindings signedResult.subst (substInputBindings S1 bindings))
+      groups.flatten) :
+    (collectCompletedRecMembers signedResult.state.memberStates).isSome := by
+  rcases signedResult with ⟨second, S2, state2⟩
   have hSelected : ∀ i ∈ groups.flatten,∃ ty,state.specs[i]? = some (.mono ty) := by
     intro i hi
     exact hframe.mono_at_unsigned (unsignedAt_recMode_lookup
@@ -9893,6 +10026,19 @@ theorem InferRecSigned.completed_members_of_strata
       exact hKeep i out ho
   obtain ⟨output, houtput⟩ := hOutput
   exact ⟨exported, output, hexport, houtput⟩
+
+theorem InferRecSigned.completed_members_of_strata
+    (hs : InferRecStrata K F frontier ctx bindings state groups first S1 state1)
+    (hp : InferRecSigned K (substSoft S1 F) 0 first (S1.onCtx ctx)
+      (substInputBindings S1 bindings) state1 second S2 state2)
+    (hvalid : RecGroups.ValidResidualGroups (bindings.map InputRecBinding.recMode) groups)
+    (hframe : state.Frame base K F ctx bindings [])
+    (hframe1 : state1.Frame base K (substSoft S1 F) (S1.onCtx ctx)
+      (substInputBindings S1 bindings) groups.flatten)
+    (hframe2 : state2.Frame base K (substSoft S2 (substSoft S1 F)) (S2.onCtx (S1.onCtx ctx))
+      (substInputBindings S2 (substInputBindings S1 bindings)) groups.flatten) :
+    (collectCompletedRecMembers state2.memberStates).isSome :=
+  InferRecSignedCert.completed_members_of_strata hs hp hvalid hframe hframe1 hframe2
 
 
 set_option maxHeartbeats 3000000 in
