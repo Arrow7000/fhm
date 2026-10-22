@@ -5842,7 +5842,7 @@ private theorem InferRecStrataCert.sourcePrincipal_residual_of_step_raw
     · simpa only [substSoft_nil] using hXsF
   | @cons K F frontier ctx bindings state component rest opened openings pre
       ⟨first, current, artifacts⟩ exported ⟨next, tail, final⟩ ho hp hc hf hr =>
-    have hfirst : first ≤ cutoff := (InferRecStrata.frontier_le hr).trans hcutoff
+    have hfirst : first ≤ cutoff := (InferRecStrataCert.frontier_le hr).trans hcutoff
     obtain ⟨U, hU, hUP, hag, hresStep⟩ := hStep ho hp hc hf hInfer hfirst hvalid hcanonical
       hframe hstateLC hstateB hctxWF hctx hbase hK hF hP hres hXsK hXsF
       hannScope hrhsScope hbindingsEq hannFreeze hrhsFreeze
@@ -6229,12 +6229,15 @@ theorem Infer.sourcePrincipal_letRec_of_unsigned
       ([] ++ groups) := hvalid
   obtain ⟨hframe1, _⟩ := hstrata.frame_of_infer
     (fun _ hi => hi.sourceLocality) hvalid0 hinitFrame hinitLC hctxWF hinitBelow hctxSeed hFSeed
-    (by omega) (fun binding hb v hv => (List.mem_append.mp hv).elim
+    (by change frontier + bindings.length ≤ frontier + bindings.length; exact Nat.le_refl _)
+    (fun binding hb v hv => (List.mem_append.mp hv).elim
       (hannscope binding hb v) (hrhsscope binding hb v))
   obtain ⟨hS1, hLC1⟩ := hstrata.lc_of_infer (fun _ hi => hi.lc) hctxWF hinitLC
   obtain ⟨hB1, hBelow1⟩ := hstrata.belowFvars_of_infer (fun _ hi => hi.belowFvars)
     hctxSeed hKSeed hFSeed hinitBelow
-    (fun ann ha v hv => Nat.lt_of_lt_of_le (hannbelow ann ha v hv) (by omega))
+    (fun ann ha v hv => Nat.lt_of_lt_of_le (hannbelow ann ha v hv) (by
+      change frontier ≤ frontier + bindings.length
+      omega))
   have hvalid1 := recValid_subst hvalid s1
   have hdone1 := hframe1.all_mono_done hvalid1
   obtain ⟨hframe2, _⟩ := hsigned.frame_of_infer
@@ -10826,12 +10829,15 @@ private theorem inferRequest_sourceComplete_rec_of_unsigned
       ([] ++ groups) := hvalid
   obtain ⟨hframe1, _⟩ := hstrata.frame_of_infer
     (fun _ hi => hi.sourceLocality) hvalid0 hinitFrame hinitLC hctxWF hinitBelow hctxSeed hFSeed
-    (by omega) (fun binding hb v hv => (List.mem_append.mp hv).elim
+    (by change frontier + bindings.length ≤ frontier + bindings.length; exact Nat.le_refl _)
+    (fun binding hb v hv => (List.mem_append.mp hv).elim
       (hannscope binding hb v) (hrhsscope binding hb v))
   obtain ⟨hS1, hLC1⟩ := hstrata.lc_of_infer (fun _ hi => hi.lc) hctxWF hinitLC
   obtain ⟨hB1, hBelow1⟩ := hstrata.belowFvars_of_infer (fun _ hi => hi.belowFvars)
     hctxSeed hKSeed hFSeed hinitBelow
-    (fun ann ha v hv => Nat.lt_of_lt_of_le (hannbelow ann ha v hv) (by omega))
+    (fun ann ha v hv => Nat.lt_of_lt_of_le (hannbelow ann ha v hv) (by
+      change frontier ≤ frontier + bindings.length
+      omega))
   have hvalid1 := recValid_subst hvalid s1
   have hdone1 := hframe1.all_mono_done hvalid1
   have hle1 := hstrata.frontier_le
