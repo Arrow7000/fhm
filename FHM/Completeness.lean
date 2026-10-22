@@ -5927,7 +5927,7 @@ theorem RecResidual.close_opened_component
     (by simpa only [RecState.fixedCtx, RecState.exports_installOpenings] using hXsCtx)
     hXsK hXsF
 
-private theorem InferRecStrata.sourcePrincipal_residual_of_step
+private theorem InferRecStrataCert.sourcePrincipal_residual_of_step_raw
     {P G Xs : List Nat} {declCtx : Ctx} {declBindings : List InputRecBinding}
     {declSpecs : List RecSpec}
     {declPrefixes : List (List Nat)} {cutoff base : Nat}
@@ -6024,9 +6024,9 @@ private theorem InferRecStrata.sourcePrincipal_residual_of_step
     · simpa only [bindingsNil, substSoft_nil] using hannFreeze
     · simpa only [bindingsNil, substSoft_nil] using hrhsFreeze
     · simpa only [substSoft_nil] using hXsF
-  | .cons ho hp hc hf hr =>
-    expose_names
-    have hfirst : first ≤ cutoff := hr.frontier_le.trans hcutoff
+  | @cons K F frontier ctx bindings state component rest opened openings pre
+      ⟨first, current, artifacts⟩ exported ⟨next, tail, final⟩ ho hp hc hf hr =>
+    have hfirst : first ≤ cutoff := (InferRecStrata.frontier_le hr).trans hcutoff
     obtain ⟨U, hU, hUP, hag, hresStep⟩ := hStep ho hp hc hf hInfer hfirst hvalid hcanonical
       hframe hstateLC hstateB hctxWF hctx hbase hK hF hP hres hXsK hXsF
       hannScope hrhsScope hbindingsEq hannFreeze hrhsFreeze
@@ -6103,7 +6103,7 @@ private theorem InferRecStrata.sourcePrincipal_residual_of_step
       simpa only [List.flatten_append, List.flatten_cons, List.flatten_nil, List.append_nil] using hresStep
     obtain ⟨V, hV, hVP, hagTail, hresFinal, hBindingsFinal, hAFinal,
       hRFinal, hXKFinal, hXFFinal⟩ :=
-      InferRecStrata.sourcePrincipal_residual_of_step hStep hr
+      InferRecStrataCert.sourcePrincipal_residual_of_step_raw hStep hr
         (fun he hi => hInfer (by simpa only [sizeBindings_substInputBindings] using he) hi)
         hcutoff htailValid htailCanonical htailFrame hstepLC hstepB
         (Subst.onCtx_wf hbothLC hctxWF) (Subst.onCtx_below hbothB hle hctx)
@@ -6145,7 +6145,8 @@ private theorem InferRecStrata.sourcePrincipal_residual_of_step
     · simpa only [substInputBindings_append, substSoft_append,
         List.append_assoc] using hRFinal
     · simpa only [substSoft_append, List.append_assoc] using hXFFinal
-termination_by structural h
+termination_by groups.length
+decreasing_by simp
 
 
 theorem InputTyping.rec_inv_high (floor : Nat)
@@ -7604,7 +7605,8 @@ theorem Infer.sourcePrincipal (h : Infer K F frontier ctx input next subst outpu
       hGhigh hXhigh hXlen hXnd hGX hXmono hXctxP
       hctxWF hctx hstateLC hstateB hframe hK hF hP hres hXsK hXsF hannScope hrhsScope
       hbindingsEq hannFreeze hrhsFreeze
-    simpa only [List.nil_append] using InferRecStrata.sourcePrincipal_residual_of_step (past := []) (base := frontier)
+    simpa only [List.nil_append] using InferRecStrataCert.sourcePrincipal_residual_of_step_raw
+      (past := []) (base := frontier)
       (RecResidual.successful_step hdeclValid hdeclWF hprefix hGfresh hdeclRows hdeclFits hdeclTypes
         hGhigh hXhigh hXlen hXnd hGX hXmono hXctxP)
       hstrata (fun he hi => Infer.sourcePrincipal hi)
@@ -9600,9 +9602,10 @@ private theorem inferRecStrataWithTypesCore_complete_of_step
       hStep hProducer hInfer hvalid hcanonical hframe hstateLC hstateB hctxWF hctx hbase
         hK hF hP hres hfixK hXsK hXsF hannScope hrhsScope hbindingsEq
     cases hOne with
-    | cons ho hp hc hf hr =>
+    | @cons K F frontier ctx bindings state component rest opened openings pre
+        componentResult exported tailResult ho hp hc hf hr =>
+      rcases componentResult with ⟨componentFirst, current, artifacts⟩
       cases hr
-      expose_names
       have hneutral : List.append (pre ++ current) [] = pre ++ current := List.append_nil _
       simp only [hneutral] at hOneEq hag hresStep
       obtain ⟨hstepFrame,_,_⟩ := recStep_frame ho hp hc hf
@@ -9610,9 +9613,9 @@ private theorem inferRecStrataWithTypesCore_complete_of_step
         (fun binding hb v hv => (List.mem_append.mp hv).elim
           (hannScope binding hb v) (hrhsScope binding hb v))
       have hstep : InferRecStrata K F frontier ctx bindings state [component]
-          first (pre ++ current ++ []) exported := .cons ho hp hc hf .nil
+          componentFirst (pre ++ current ++ []) exported := .cons ho hp hc hf .nil
       have hstep' : InferRecStrata K F frontier ctx bindings state [component]
-          first (pre ++ current) exported := by simpa only [List.append_nil] using hstep
+          componentFirst (pre ++ current) exported := by simpa only [List.append_nil] using hstep
       have hle := hstep'.frontier_le
       have hannBelow : ∀ binding ∈ bindings,∀ v ∈ binding.ann.rigidVars,v < frontier :=
         fun binding hb v hv =>
@@ -9697,7 +9700,7 @@ private theorem inferRecStrataWithTypesCore_complete_of_step
               exact (hrhsScope old ho).subst _ hbothFix)
           hbindingsEqStep
       obtain ⟨result,hResult,hFront,hSubst,hFinal⟩ := inferRecStrataWithTypesCore_cons_of_singleton
-        ⟨⟨first,pre ++ current,exported⟩,hstep'⟩ hOneEq tail hTailEq
+        ⟨⟨componentFirst,pre ++ current,exported⟩,hstep'⟩ hOneEq tail hTailEq
       refine ⟨result,hResult,V,hV,hVP,hVK,?_,?_,?_,hXKFinal,?_⟩
       · rw [hSubst]
         exact Subst.AgreesBelow.trans_append hle hag hbothB hagTail
@@ -9786,15 +9789,20 @@ theorem FinishRecComponent.outputs_present
             if_neg hi]
           exact ho
 
-theorem InferRecStrata.outputs_present
-    (h : InferRecStrata K F frontier ctx bindings state groups next S final)
-    (hSelected : ∀ i ∈ groups.flatten,∃ ty,state.specs[i]? = some (.mono ty)) :
-    (∀ (i : Nat) (output : Expr),state.outputs[i]? = some (some output) → ∃ out,final.outputs[i]? = some (some out)) ∧
-    (∀ i ∈ groups.flatten,∃ out,final.outputs[i]? = some (some out)) := by
+private theorem InferRecStrataCert.outputs_present_raw
+    {request : InferRecStrataRequest} {result : RecRunResult}
+    (h : _root_.InferRecStrataCert request result)
+    (hSelected : ∀ i ∈ request.groups.flatten,
+      ∃ ty, request.state.specs[i]? = some (.mono ty)) :
+    (∀ (i : Nat) (output : Expr), request.state.outputs[i]? = some (some output) →
+      ∃ out, result.state.outputs[i]? = some (some out)) ∧
+    (∀ i ∈ request.groups.flatten, ∃ out, result.state.outputs[i]? = some (some out)) := by
   match h with
   | .nil => exact ⟨fun _ output ho => ⟨output,ho⟩,by simp⟩
-  | .cons ho hp hc hf hr =>
-    expose_names
+  | @cons K F frontier ctx bindings state component rest opened openings pre
+      ⟨first, current, artifacts⟩ exported ⟨next, tail, final⟩ ho hp hc hf hr =>
+    simp only [recStrataResult] at ⊢
+    simp only at hSelected
     have hCurrent : ∀ i ∈ component,∃ ty,
         ((state.installOpenings component openings).onSubst (pre ++ current)).specs[i]? = some (.mono ty) ∧
         ∃ output,recComponentOutputAt artifacts i = some output := by
@@ -9815,7 +9823,7 @@ theorem InferRecStrata.outputs_present
       simp only [RecState.specs_exportComponent, RecState.specs_onSubst,
         RecState.specs_installOpenings, List.getElem?_map, ht, Option.map_some,
         RecSpec.onSubstSource]
-    obtain ⟨hTailKeep,hTailFill⟩ := hr.outputs_present hSelectedRest
+    obtain ⟨hTailKeep,hTailFill⟩ := hr.outputs_present_raw hSelectedRest
     constructor
     · intro i output hout
       obtain ⟨moved,hmoved⟩ := RecState.output_onSubst (S := pre ++ current) hout
@@ -9829,6 +9837,24 @@ theorem InferRecStrata.outputs_present
       · exact hTailFill i hm
 
 termination_by structural h
+
+theorem InferRecStrataCert.outputs_present
+    {request : InferRecStrataRequest} {result : RecRunResult}
+    (h : _root_.InferRecStrataCert request result)
+    (hSelected : ∀ i ∈ request.groups.flatten,
+      ∃ ty, request.state.specs[i]? = some (.mono ty)) :
+    (∀ (i : Nat) (output : Expr), request.state.outputs[i]? = some (some output) →
+      ∃ out, result.state.outputs[i]? = some (some out)) ∧
+    (∀ i ∈ request.groups.flatten, ∃ out, result.state.outputs[i]? = some (some out)) :=
+  InferRecStrataCert.outputs_present_raw h hSelected
+
+theorem InferRecStrata.outputs_present
+    (h : InferRecStrata K F frontier ctx bindings state groups next S final)
+    (hSelected : ∀ i ∈ groups.flatten, ∃ ty, state.specs[i]? = some (.mono ty)) :
+    (∀ (i : Nat) (output : Expr), state.outputs[i]? = some (some output) →
+      ∃ out, final.outputs[i]? = some (some out)) ∧
+    (∀ i ∈ groups.flatten, ∃ out, final.outputs[i]? = some (some out)) :=
+  InferRecStrataCert.outputs_present h hSelected
 
 
 
@@ -9969,22 +9995,28 @@ theorem RecState.Frame.exports_present
 
 
 theorem InferRecSignedCert.completed_members_of_strata
-    {signedResult : RecRunResult}
-    (hs : InferRecStrata K F frontier ctx bindings state groups first S1 state1)
+    {strataResult signedResult : RecRunResult}
+    (hs : _root_.InferRecStrataCert
+      ⟨K, F, frontier, ctx, bindings, state, groups⟩ strataResult)
     (hp : InferRecSignedCert
-      ⟨K, substSoft S1 F, 0, first, S1.onCtx ctx,
-        substInputBindings S1 bindings, state1⟩ signedResult)
+      ⟨K, substSoft strataResult.subst F, 0, strataResult.frontier,
+        strataResult.subst.onCtx ctx,
+        substInputBindings strataResult.subst bindings, strataResult.state⟩ signedResult)
     (hvalid : RecGroups.ValidResidualGroups (bindings.map InputRecBinding.recMode) groups)
     (hframe : state.Frame base K F ctx bindings [])
-    (hframe1 : state1.Frame base K (substSoft S1 F) (S1.onCtx ctx)
-      (substInputBindings S1 bindings) groups.flatten)
+    (hframe1 : strataResult.state.Frame base K (substSoft strataResult.subst F)
+      (strataResult.subst.onCtx ctx)
+      (substInputBindings strataResult.subst bindings) groups.flatten)
     (hframe2 : signedResult.state.Frame base K
-      (substSoft signedResult.subst (substSoft S1 F))
-      (signedResult.subst.onCtx (S1.onCtx ctx))
-      (substInputBindings signedResult.subst (substInputBindings S1 bindings))
+      (substSoft signedResult.subst (substSoft strataResult.subst F))
+      (signedResult.subst.onCtx (strataResult.subst.onCtx ctx))
+      (substInputBindings signedResult.subst
+        (substInputBindings strataResult.subst bindings))
       groups.flatten) :
     (collectCompletedRecMembers signedResult.state.memberStates).isSome := by
+  rcases strataResult with ⟨first, S1, state1⟩
   rcases signedResult with ⟨second, S2, state2⟩
+  simp only at hs hp hframe1 hframe2
   have hSelected : ∀ i ∈ groups.flatten,∃ ty,state.specs[i]? = some (.mono ty) := by
     intro i hi
     exact hframe.mono_at_unsigned (unsignedAt_recMode_lookup

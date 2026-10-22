@@ -95,6 +95,11 @@ bundle as one premise. -/
 #check @InferRecComponentCert.skipMono
 #check @InferRecComponentCert.skipPoly
 #check @InferRecComponentCert.consSelected
+#check @InferRecStrataRequest
+#check @recStrataResult
+#check @InferRecStrataCert
+#check @InferRecStrataCert.nil
+#check @InferRecStrataCert.cons
 #check @InferRecSignedRequest
 #check @RecRunResult
 #check @InferRecSignedCert
@@ -127,6 +132,18 @@ bundle as one premise. -/
 #check @InferRecComponentCert.sourcePrincipal_of_infer
 #check @InferRecComponentCert.sourcePrincipal_after_shapes
 #check @InferRecComponentCert.outputs_selected
+#check @InferRecStrataCert.dom_avoids
+#check @InferRecStrataCert.lc_of_infer
+#check @InferRecStrataCert.frontier_le
+#check @InferRecStrataCert.belowFvars_of_infer
+#check @InferRecStrataCert.sourceLocality_of_infer
+#check @InferRecStrataCert.memberStates_length
+#check @InferRecStrataCert.frame_of_infer
+#check @InferRecStrataCert.sourceSound_of_infer
+#check @InferRecStrataCert.inputTrace_of_infer
+#check @InferRecStrataCert.fidelity_of_infer
+#check @InferRecStrataCert.erase_of_infer
+#check @InferRecStrataCert.outputs_present
 #check @InferRecSignedCert.dom_avoids
 #check @InferRecSignedCert.lc_of_infer
 #check @InferRecSignedCert.frontier_le
@@ -224,6 +241,13 @@ example {request : InferRecComponentRequest} {result : RecComponentResult} :
         result.frontier result.subst result.artifacts :=
   Iff.rfl
 
+example {request : InferRecStrataRequest} {result : RecRunResult} :
+    InferRecStrataCert request result ↔
+      InferRecStrata request.protectedVars request.soft request.frontier request.ctx
+        request.bindings request.state request.groups
+        result.frontier result.subst result.state :=
+  Iff.rfl
+
 example {request : InferRecSignedRequest} {result : RecRunResult} :
     InferRecSignedCert request result ↔
       InferRecSigned request.protectedVars request.soft request.index request.frontier
@@ -256,6 +280,18 @@ example {request : InferRecSignedRequest} {result : RecRunResult} :
 #check @InferRecComponent.sourcePrincipal_of_infer
 #check @InferRecComponent.sourcePrincipal_after_shapes
 #check @InferRecComponent.outputs_selected
+#check @InferRecStrata.dom_avoids
+#check @InferRecStrata.lc_of_infer
+#check @InferRecStrata.frontier_le
+#check @InferRecStrata.belowFvars_of_infer
+#check @InferRecStrata.sourceLocality_of_infer
+#check @InferRecStrata.memberStates_length
+#check @InferRecStrata.frame_of_infer
+#check @InferRecStrata.sourceSound_of_infer
+#check @InferRecStrata.inputTrace_of_infer
+#check @InferRecStrata.fidelity_of_infer
+#check @InferRecStrata.erase_of_infer
+#check @InferRecStrata.outputs_present
 #check @InferRecSigned.dom_avoids
 #check @InferRecSigned.lc_of_infer
 #check @InferRecSigned.frontier_le
@@ -271,6 +307,7 @@ example {request : InferRecSignedRequest} {result : RecRunResult} :
 #check @InferRecSigned.sourcePrincipal_residual
 #check @InferRecSigned.outputs_present
 #check @InferRecSigned.completed_members_of_strata
+#check @inferRecStrataWithTypesCore
 #check @inferWithTypes_source_sound
 #check @inferWithTypes_input_sound
 #check @inferWithTypes_erase
