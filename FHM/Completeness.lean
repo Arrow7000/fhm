@@ -2640,23 +2640,35 @@ theorem Infer.sourcePrincipal_letIn
 
 /-- Residual factorization for a nonempty branch thread. The independent
 protected set scopes authored annotations; both common type images are explicit. -/
-def InferBranches.SourcePrincipal
-    (_h : InferBranches K F frontier ctx scrutTy resultTy branches next subst completed)
-    (_hne : branches ≠ []) : Prop :=
-  CtxWF ctx → CtxBelow frontier ctx → (∀ k ∈ K, k < frontier) →
-  (∀ soft ∈ F, Ty.BelowFvars frontier soft) →
+def InferBranchesCert.SourcePrincipal
+    {request : InferBranchesRequest} {result : InferBranchesResult}
+    (_h : InferBranchesCert request result)
+    (_hne : request.branches ≠ []) : Prop :=
+  CtxWF request.ctx → CtxBelow request.frontier request.ctx →
+  (∀ k ∈ request.protectedVars, k < request.frontier) →
+  (∀ soft ∈ request.soft, Ty.BelowFvars request.frontier soft) →
   ∀ (ambient : Subst) (scrutD resultD : Ty) (P : List Nat),
-    (∀ pair ∈ ambient, pair.2.IsLC) → scrutD.IsLC → scrutTy.IsLC → resultTy.IsLC →
-    Ty.BelowFvars frontier scrutTy → Ty.BelowFvars frontier resultTy →
-    (∀ p ∈ P, p < frontier) →
+    (∀ pair ∈ ambient, pair.2.IsLC) → scrutD.IsLC → request.scrutineeTy.IsLC →
+    request.resultTy.IsLC →
+    Ty.BelowFvars request.frontier request.scrutineeTy →
+    Ty.BelowFvars request.frontier request.resultTy →
+    (∀ p ∈ P, p < request.frontier) →
     (∀ p ∈ P, ambient.onTy (.fvar p) = .fvar p) →
-    (∀ v ∈ rigidBranchVars branches, v ∈ K → v ∉ softVars F → ambient.onTy (.fvar v) = .fvar v) →
-    resultD = ambient.onTy resultTy → scrutD = ambient.onTy scrutTy →
-    (∀ b ∈ branches, BranchTyping InputTyping P (ambient.onCtx ctx) (b.1, b.2.substTyFvars ambient) scrutD resultD) →
+    (∀ v ∈ rigidBranchVars request.branches, v ∈ request.protectedVars →
+      v ∉ softVars request.soft → ambient.onTy (.fvar v) = .fvar v) →
+    resultD = ambient.onTy request.resultTy →
+    scrutD = ambient.onTy request.scrutineeTy →
+    (∀ b ∈ request.branches, BranchTyping InputTyping P (ambient.onCtx request.ctx)
+      (b.1, b.2.substTyFvars ambient) scrutD resultD) →
     ∃ residual : Subst, (∀ pair ∈ residual, pair.2.IsLC) ∧
-      Subst.AgreesBelow frontier ambient (subst ++ residual) ∧
+      Subst.AgreesBelow request.frontier ambient (result.subst ++ residual) ∧
       (∀ p ∈ P, residual.onTy (.fvar p) = .fvar p) ∧
-      resultD = residual.onTy (subst.onTy resultTy)
+      resultD = residual.onTy (result.subst.onTy request.resultTy)
+
+def InferBranches.SourcePrincipal
+    (h : InferBranches K F frontier ctx scrutTy resultTy branches next subst completed)
+    (hne : branches ≠ []) : Prop :=
+  InferBranchesCert.SourcePrincipal h hne
 
 theorem BranchTyping.factor_named
     {Φ : Nat} {ctx : Ctx} {c : CtorName} {nbr : Nat} {ctor : Ctor}
@@ -2745,10 +2757,18 @@ theorem BranchTyping.factor_named
       rwa [← hbodyCtxEq] at hbE
     exact ⟨R₀, hR₀, hR₀K, hAgreeBelow₀, hbE'⟩
 
-theorem InferBranches.nil_det
-    (h : InferBranches κ F Φ ctx st rt [] Φ' S out) : Φ' = Φ ∧ S = [] := by
+theorem InferBranchesCert.nil_det
+    {request : InferBranchesRequest} {result : InferBranchesResult}
+    (h : InferBranchesCert request result) (hnil : request.branches = []) :
+    result.frontier = request.frontier ∧ result.subst = [] := by
   cases h
-  exact ⟨rfl, rfl⟩
+  · exact ⟨rfl, rfl⟩
+  · cases hnil
+  · cases hnil
+
+theorem InferBranches.nil_det
+    (h : InferBranches κ F Φ ctx st rt [] Φ' S out) : Φ' = Φ ∧ S = [] :=
+  InferBranchesCert.nil_det h rfl
 
 private theorem principal_branch_rigid_mem {bs : List (MatchPattern × InferInput)} {b : MatchPattern × InferInput}
     (hb : b ∈ bs) {v : Nat} (hv : v ∈ b.2.rigidVars) : v ∈ rigidBranchVars bs := by
@@ -2788,14 +2808,20 @@ private theorem branch_freeze_frame {κ : List Nat} {F : List Ty} {bs : List (Ma
       v ∈ κ → v ∉ softVars (substSoft solved F) → residual.onTy (.fvar v) = .fvar v := by
   exact SourceScope.residual_freeze (input := .match_ (.var 0) bs) hscope hbelow hprefix hfreeze hag
 set_option maxRecDepth 4096 in
-theorem InferBranches.sourcePrincipal_of_body
-    (h : InferBranches κ F Φ ctx scrutTy ρ brs Φ' S out) (hne : brs ≠ [])
-    (bodyIH : ∀ body : InferInput, body.size < sizeBranches brs →
+theorem InferBranchesCert.sourcePrincipal_of_body
+    {request : InferBranchesRequest} {result : InferBranchesResult}
+    (h : InferBranchesCert request result) (hne : request.branches ≠ [])
+    (bodyIH : ∀ body : InferInput, body.size < sizeBranches request.branches →
       ∀ {κ F' f c n s o t} (hb : Infer κ F' f c body n s o t), Infer.SourcePrincipal hb) :
-    InferBranches.SourcePrincipal h hne := by
+    InferBranchesCert.SourcePrincipal h hne := by
   cases h with
       | nil => exact False.elim (hne rfl)
-      | @cons c nbr body rest κ F ctor scrutTy Φ S₀ ctx Φ₁ S₁ bodyOut τb ρ S₂ Φ' S₃ restOut hscope hlook hn h₀Rigid hinfbody h₂Rigid hrest =>
+      | @cons c nbr body rest κ F ctor scrutTy Φ S₀ ctx
+          bodyResult ρ S₂ tailResult
+          hscope hlook hn h₀Rigid hinfbody h₂Rigid hrest =>
+        rcases bodyResult with ⟨Φ₁, S₁, bodyOut, τb⟩
+        rcases tailResult with ⟨Φ', S₃, restOut⟩
+        simp only [InferBranchesCert.SourcePrincipal, namedBranchesResult] at ⊢
         have h₀ := h₀Rigid.unifies
         have h₂ := h₂Rigid.unifies
         exact fun hwf hbelow hκ hF S₀amb scruT₀ ρe K hS₀amb hscruLC hscrutLC hρLC hbscrut hbρ hKΦ hKfix hfreeze hIMGρ hIMGscru hbrs => by
@@ -2959,7 +2985,7 @@ theorem InferBranches.sourcePrincipal_of_body
           by_cases hrestNe : rest = []
           · -- rest = []: the rest derivation is `nil`, so S₃ = [] and Φ₂ = Φ₁.
             subst hrestNe
-            have hnil := InferBranches.nil_det hrest
+            have hnil := InferBranchesCert.nil_det hrest (by simp)
             have hAgree1 : Subst.AgreesBelow Φ S₀amb ((S₀ ++ S₁ ++ S₂) ++ R_u) := by
               have hA : Subst.AgreesBelow Φ S₀amb ((S₀ ++ (S₁ ++ S₂)) ++ R_u) :=
                 @Subst.AgreesBelow.trans_append Φ (Φ + ctor.paramCount) S₀amb S₀ R₀ (S₁ ++ S₂) R_u
@@ -2967,13 +2993,14 @@ theorem InferBranches.sourcePrincipal_of_body
                   (@Subst.AgreesBelow.trans_append (Φ + ctor.paramCount) Φ₁ R₀ S₁ R_b S₂ R_u
                     hle_b hagb hS₁_bel hAgreeUni)
               simpa [List.append_assoc] using hA
-            rw [hnil.2]
+            have hS3 : S₃ = [] := by simpa using hnil.2
+            rw [hS3]
             refine ⟨R_u, hR_u, by simpa [List.append_assoc, List.append_nil] using hAgree1, hR_uK, ?_⟩
             · simpa [Subst.onTy_append, List.append_assoc, List.append_nil] using hρImg_u
           · -- rest ≠ []: recurse with the tier IH.
             have hrestNe' : rest ≠ [] := hrestNe
             obtain ⟨R_r, hR_r, hAgreeRest, hR_rK, htyRest⟩ :=
-              InferBranches.sourcePrincipal_of_body hrest (by
+              InferBranchesCert.sourcePrincipal_of_body hrest (by
                 intro heq
                 cases rest with
                 | nil => exact hrestNe rfl
@@ -2981,7 +3008,10 @@ theorem InferBranches.sourcePrincipal_of_body
                 (fun b hb {_ _ _ _ _ _ _ _} hi => bodyIH b (by
                   rw [sizeBranches_substInputBranches] at hb
                   simp only [sizeBranches]; omega) hi)
-                hwf' hbelow' (fun k hk => Nat.lt_of_lt_of_le (hκ k hk) (by omega)) hF' R_u scruT₀ ρe K
+                hwf' hbelow' (fun k hk => by
+                  change k < Φ₁
+                  exact Nat.lt_of_lt_of_le (hκ k hk) (hfle₀.trans hle_b))
+                hF' R_u scruT₀ ρe K
                 hR_u hscruLC hscrutTy'lc hρ'lc hbscrut' hbρ' hKΦ₁ hR_uK hfreeze' hρImg_u hscrutImg' hbr'
             have hAgree1 : Subst.AgreesBelow Φ₁ R_u (S₃ ++ R_r) := hAgreeRest
             have hAgree01 : Subst.AgreesBelow Φ S₀amb ((S₀ ++ S₁ ++ S₂) ++ R_u) := by
@@ -3005,7 +3035,12 @@ theorem InferBranches.sourcePrincipal_of_body
               simpa [List.append_assoc] using hA
             refine ⟨R_r, hR_r, hAgree, hR_rK, ?_⟩
             · simpa [Subst.onTy_append] using htyRest
-      | @consWild body rest κ F Φ ctx Φ₁ S₁ bodyOut τb ρ S₂ scrutTy Φ' S₃ restOut hscope hinfbody h₂Rigid hrest =>
+      | @consWild body rest κ F Φ ctx scrutTy ρ
+          bodyResult S₂ tailResult
+          hscope hinfbody h₂Rigid hrest =>
+        rcases bodyResult with ⟨Φ₁, S₁, bodyOut, τb⟩
+        rcases tailResult with ⟨Φ', S₃, restOut⟩
+        simp only [InferBranchesCert.SourcePrincipal, wildcardBranchesResult] at ⊢
         have h₂ := h₂Rigid.unifies
         exact fun hwf hbelow hκ hF S₀amb scruT₀ ρe K hS₀amb hscruLC hscrutLC hρLC hbscrut hbρ hKΦ hKfix hfreeze hIMGρ hIMGscru hbrs => by
           have hrawBelow : ∀ v ∈ rigidBranchVars ((.wildcard, body) :: rest), v < Φ := by
@@ -3093,15 +3128,16 @@ theorem InferBranches.sourcePrincipal_of_body
             (fun b hb => hbrs b (List.mem_cons_of_mem _ hb))
           by_cases hrestNe : rest = []
           · subst hrestNe
-            have hnil := InferBranches.nil_det hrest
+            have hnil := InferBranchesCert.nil_det hrest (by simp)
             have hAgree : Subst.AgreesBelow Φ S₀amb ((S₁ ++ S₂) ++ R_u) :=
               @Subst.AgreesBelow.trans_append Φ Φ₁ S₀amb S₁ R_b S₂ R_u hle_b hagb hS₁_bel hAgreeUni
-            rw [hnil.2]
+            have hS3 : S₃ = [] := by simpa using hnil.2
+            rw [hS3]
             refine ⟨R_u, hR_u, by simpa [List.append_assoc, List.append_nil] using hAgree, hR_uK, ?_⟩
             · simpa [Subst.onTy_append, List.append_assoc, List.append_nil] using hρImg_u
           · have hrestNe' : rest ≠ [] := hrestNe
             obtain ⟨R_r, hR_r, hAgreeRest, hR_rK, htyRest⟩ :=
-              InferBranches.sourcePrincipal_of_body hrest (by
+              InferBranchesCert.sourcePrincipal_of_body hrest (by
                 intro heq
                 cases rest with
                 | nil => exact hrestNe rfl
@@ -3124,8 +3160,15 @@ theorem InferBranches.sourcePrincipal_of_body
             refine ⟨R_r, hR_r, hAgree, hR_rK, ?_⟩
             · simpa [Subst.onTy_append] using htyRest
 
-termination_by sizeBranches brs
+termination_by sizeBranches request.branches
 decreasing_by all_goals (subst_vars; simp only [sizeBranches_substInputBranches, sizeBranches]; omega)
+
+theorem InferBranches.sourcePrincipal_of_body
+    (h : InferBranches κ F Φ ctx scrutTy ρ brs Φ' S out) (hne : brs ≠ [])
+    (bodyIH : ∀ body : InferInput, body.size < sizeBranches brs →
+      ∀ {κ F' f c n s o t} (hb : Infer κ F' f c body n s o t), Infer.SourcePrincipal hb) :
+    InferBranches.SourcePrincipal h hne :=
+  InferBranchesCert.sourcePrincipal_of_body h hne bodyIH
 
 
 theorem Infer.sourcePrincipal_match
@@ -3184,16 +3227,31 @@ theorem Infer.sourcePrincipal_match
     | cons b bs => intro heq; cases heq
   have ihb := hb.sourcePrincipal_of_body hne' (fun body hbody {_ _ _ _ _ _ _ _} hi =>
     bodyIH body (by rwa [sizeBranches_substInputBranches] at hbody) hi)
+  simp only at ihb
   obtain ⟨R2, hR2, hag2, hR2P, htarget⟩ := ihb hctxWF
-    (fun M hM => (hctxB M hM).mono (by omega))
-    (fun k hk => by have := hK k hk; omega)
+    (fun M hM => (hctxB M hM).mono (by
+      change first ≤ first + 1
+      exact Nat.le_succ first))
+    (fun k hk => by
+      change k < first + 1
+      exact Nat.lt_of_lt_of_le (hK k hk) (hle.trans (Nat.le_succ first)))
     (substSoft_below (fun p hp => (hs1B p hp).mono (Nat.le_succ _))
       (hle.trans (Nat.le_succ _)) hF)
     U scrutD target P hU hsD.regular hsLC .fvar
-    (hsB.mono (by omega)) (.fvar (by omega))
-    (fun p hp => by have := hP p hp; omega) hUP hfreezeB hUtarget.symm hUst hbrU
+    (hsB.mono (by
+      change first ≤ first + 1
+      exact Nat.le_succ first))
+    (.fvar (by
+      change first < first + 1
+      exact Nat.lt_succ_self first))
+    (fun p hp => by
+      change p < first + 1
+      exact Nat.lt_of_lt_of_le (hP p hp) (hle.trans (Nat.le_succ first)))
+    hUP hfreezeB hUtarget.symm hUst hbrU
   have hag2' : Subst.AgreesBelow first R1 (s2 ++ R2) := fun v hv =>
-    (hagU v hv).trans (hag2 v (by omega))
+    (hagU v hv).trans (hag2 v (by
+      change v < first + 1
+      exact Nat.lt_succ_of_lt hv))
   exact ⟨R2, hR2, htarget, hR2P, Subst.AgreesBelow.trans_append hle hag1 hs1B hag2'⟩
 
 theorem Infer.sourcePrincipal_letSignature {rhs body : InferInput} {ann : BindingAnn}

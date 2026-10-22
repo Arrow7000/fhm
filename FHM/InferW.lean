@@ -116,6 +116,16 @@ structure InferBranchesResult where
   subst : Subst
   completedBranches : List (MatchPattern × Expr)
 
+/-- All semantic inputs to inference over the remaining match branches. -/
+structure InferBranchesRequest where
+  protectedVars : List Nat
+  soft : List Ty
+  frontier : Nat
+  ctx : Ctx
+  scrutineeTy : Ty
+  resultTy : Ty
+  branches : List (MatchPattern × InferInput)
+
 /-- The semantic output shared by the inferred-SCC and signed-contract
 recursive phases. Their relations remain distinct despite sharing this shape. -/
 structure RecRunResult where
@@ -262,6 +272,28 @@ def matchResult (scrutineeResult : InferResult)
       branchesResult.completedBranches
     ty := branchesResult.subst.onTy (.fvar scrutineeResult.frontier) }
 
+/-- Assemble the result of a wildcard branch followed by the remaining
+branches. -/
+def wildcardBranchesResult (bodyResult : InferResult) (unifier : Subst)
+    (tailResult : InferBranchesResult) : InferBranchesResult :=
+  { frontier := tailResult.frontier
+    subst := bodyResult.subst ++ unifier ++ tailResult.subst
+    completedBranches :=
+      (.wildcard, bodyResult.completedExpr.substTyFvars (unifier ++ tailResult.subst)) ::
+        tailResult.completedBranches }
+
+/-- Assemble the result of a named constructor branch followed by the
+remaining branches. -/
+def namedBranchesResult (name : CtorName) (count : Nat) (scrutineeUnifier : Subst)
+    (bodyResult : InferResult) (bodyUnifier : Subst)
+    (tailResult : InferBranchesResult) : InferBranchesResult :=
+  { frontier := tailResult.frontier
+    subst := scrutineeUnifier ++ bodyResult.subst ++ bodyUnifier ++ tailResult.subst
+    completedBranches :=
+      (.named name count,
+        bodyResult.completedExpr.substTyFvars (bodyUnifier ++ tailResult.subst)) ::
+        tailResult.completedBranches }
+
 /-- Assemble a recursive-let result from the two recursive phases, the
 completed member evidence, and body inference. -/
 def letRecResult (completed : List CompletedRecMember)
@@ -401,9 +433,10 @@ inductive InferCert : InferRequest → InferResult → Prop
       (let branchSoft := substSoft scrutineeResult.subst F
        let branchCtx := scrutineeResult.subst.onCtx ctx
        let branchInputs := substInputBranches scrutineeResult.subst branches
-       InferBranches K branchSoft (scrutineeResult.frontier + 1) branchCtx
-         scrutineeResult.ty (.fvar scrutineeResult.frontier) branchInputs
-         branchesResult.frontier branchesResult.subst branchesResult.completedBranches) →
+       InferBranchesCert
+         ⟨K, branchSoft, scrutineeResult.frontier + 1, branchCtx,
+           scrutineeResult.ty, .fvar scrutineeResult.frontier, branchInputs⟩
+         branchesResult) →
       InferCert ⟨K, F, frontier, ctx, .match_ scrut branches⟩
         (matchResult scrutineeResult branchesResult)
 
@@ -435,36 +468,59 @@ inductive InferCert : InferRequest → InferResult → Prop
       InferCert ⟨K, F, frontier, ctx, .letRec bindings body⟩
         (letRecResult completed strataResult signedResult bodyResult)
 
-inductive InferBranches : List Nat → List Ty → Nat → Ctx → Ty → Ty →
-    List (MatchPattern × InferInput) → Nat → Subst → List (MatchPattern × Expr) → Prop
-  | nil : InferBranches K F frontier ctx scrutTy resultTy [] frontier [] []
-  | consWild :
+inductive InferBranchesCert : InferBranchesRequest → InferBranchesResult → Prop
+  | nil : InferBranchesCert ⟨K, F, frontier, ctx, scrutTy, resultTy, []⟩
+      ⟨frontier, [], []⟩
+  | consWild {body : InferInput} {rest : List (MatchPattern × InferInput)}
+      {K : List Nat} {F : List Ty} {frontier : Nat} {ctx : Ctx}
+      {scrutTy resultTy : Ty} {bodyResult : InferResult} {unifier : Subst}
+      {tailResult : InferBranchesResult} :
       (∀ v ∈ rigidBranchVars ((.wildcard, body) :: rest), v ∈ K ++ softVars F) →
-      InferCert ⟨K, F, frontier, ctx, body⟩ ⟨first, s1, bodyOut, bodyTy⟩ →
-      RigidUnify K bodyTy (s1.onTy resultTy) s2 →
-      InferBranches K (substSoft (s1 ++ s2) F) first (s2.onCtx (s1.onCtx ctx))
-        (s2.onTy (s1.onTy scrutTy)) (s2.onTy (s1.onTy resultTy))
-        (substInputBranches (s1 ++ s2) rest) next s3 restOut →
-      InferBranches K F frontier ctx scrutTy resultTy ((.wildcard, body) :: rest) next (s1 ++ s2 ++ s3)
-        ((.wildcard, bodyOut.substTyFvars (s2 ++ s3)) :: restOut)
-  | cons :
+      InferCert ⟨K, F, frontier, ctx, body⟩ bodyResult →
+      RigidUnify K bodyResult.ty (bodyResult.subst.onTy resultTy) unifier →
+      InferBranchesCert
+        ⟨K, substSoft (bodyResult.subst ++ unifier) F, bodyResult.frontier,
+          unifier.onCtx (bodyResult.subst.onCtx ctx),
+          unifier.onTy (bodyResult.subst.onTy scrutTy),
+          unifier.onTy (bodyResult.subst.onTy resultTy),
+          substInputBranches (bodyResult.subst ++ unifier) rest⟩
+        tailResult →
+      InferBranchesCert ⟨K, F, frontier, ctx, scrutTy, resultTy,
+        (.wildcard, body) :: rest⟩
+        (wildcardBranchesResult bodyResult unifier tailResult)
+  | cons {name : CtorName} {count : Nat} {body : InferInput}
+      {rest : List (MatchPattern × InferInput)} {K : List Nat} {F : List Ty}
+      {ctor : Ctor} {scrutTy : Ty} {frontier : Nat} {scrutineeUnifier : Subst}
+      {ctx : Ctx} {bodyResult : InferResult} {resultTy : Ty} {bodyUnifier : Subst}
+      {tailResult : InferBranchesResult} :
       (∀ v ∈ rigidBranchVars ((.named name count, body) :: rest), v ∈ K ++ softVars F) →
       LookupList.get? ctx.ctors name = some ctor →
       count = ctor.contents.length →
-      RigidUnify K scrutTy (.customTy ctor.tyName ((freshVars frontier ctor.paramCount).map Ty.fvar)) s0 →
+      RigidUnify K scrutTy
+        (.customTy ctor.tyName ((freshVars frontier ctor.paramCount).map Ty.fvar))
+        scrutineeUnifier →
       InferCert
-        ⟨K, substSoft s0 F, frontier + ctor.paramCount,
-          { (s0.onCtx ctx) with
-            env := (ctor.contents.map (Ty.openWith (((freshVars frontier ctor.paramCount).map Ty.fvar).map s0.onTy))).map PolyTy.mkTrivial ++
-                (s0.onCtx ctx).env },
-          body.substTyFvars s0⟩
-        ⟨first, s1, bodyOut, bodyTy⟩ →
-      RigidUnify K bodyTy (s1.onTy (s0.onTy resultTy)) s2 →
-      InferBranches K (substSoft (s0 ++ s1 ++ s2) F) first (s2.onCtx (s1.onCtx (s0.onCtx ctx)))
-        (s2.onTy (s1.onTy (s0.onTy scrutTy))) (s2.onTy (s1.onTy (s0.onTy resultTy)))
-        (substInputBranches (s0 ++ s1 ++ s2) rest) next s3 restOut →
-      InferBranches K F frontier ctx scrutTy resultTy ((.named name count, body) :: rest) next
-        (s0 ++ s1 ++ s2 ++ s3) ((.named name count, bodyOut.substTyFvars (s2 ++ s3)) :: restOut)
+        ⟨K, substSoft scrutineeUnifier F, frontier + ctor.paramCount,
+          { (scrutineeUnifier.onCtx ctx) with
+            env := (ctor.contents.map (Ty.openWith
+              (((freshVars frontier ctor.paramCount).map Ty.fvar).map
+                scrutineeUnifier.onTy))).map PolyTy.mkTrivial ++
+                (scrutineeUnifier.onCtx ctx).env },
+          body.substTyFvars scrutineeUnifier⟩
+        bodyResult →
+      RigidUnify K bodyResult.ty
+        (bodyResult.subst.onTy (scrutineeUnifier.onTy resultTy)) bodyUnifier →
+      InferBranchesCert
+        ⟨K, substSoft (scrutineeUnifier ++ bodyResult.subst ++ bodyUnifier) F,
+          bodyResult.frontier,
+          bodyUnifier.onCtx (bodyResult.subst.onCtx (scrutineeUnifier.onCtx ctx)),
+          bodyUnifier.onTy (bodyResult.subst.onTy (scrutineeUnifier.onTy scrutTy)),
+          bodyUnifier.onTy (bodyResult.subst.onTy (scrutineeUnifier.onTy resultTy)),
+          substInputBranches (scrutineeUnifier ++ bodyResult.subst ++ bodyUnifier) rest⟩
+        tailResult →
+      InferBranchesCert ⟨K, F, frontier, ctx, scrutTy, resultTy,
+        (.named name count, body) :: rest⟩
+        (namedBranchesResult name count scrutineeUnifier bodyResult bodyUnifier tailResult)
 /-- Infer one selected SCC in the original full group coordinates. Sources have
 already been opened at flexible written roots and transformed by shape solving. -/
 inductive InferRecComponent : List Nat → List Ty → List Nat → Nat → Nat → Ctx →
@@ -542,6 +598,15 @@ inductive InferRecSigned : List Nat → List Ty → Nat → Nat → Ctx → List
         next (s1 ++ s2 ++ tail) final
 
 end
+
+/-- Positional compatibility view of branch inference. New code should use
+`InferBranchesCert` with bundled request and result values. -/
+abbrev InferBranches (K : List Nat) (F : List Ty) (frontier : Nat) (ctx : Ctx)
+    (scrutTy resultTy : Ty) (branches : List (MatchPattern × InferInput))
+    (next : Nat) (subst : Subst) (completed : List (MatchPattern × Expr)) : Prop :=
+  InferBranchesCert
+    ⟨K, F, frontier, ctx, scrutTy, resultTy, branches⟩
+    ⟨next, subst, completed⟩
 
 /-- Positional compatibility view of the canonical bundled certificate.
 New proofs should state their contracts with `InferCert`; this alias keeps the
@@ -756,22 +821,29 @@ private theorem InferCert.dom_avoids_raw (h : Infer K F frontier ctx input next 
     exact avoids_append (avoids_append
       (fun p hp hk => hr.dom_avoids_raw p hp (List.mem_append_left _ hk))
       (fun p hp hk => hc.dom_avoids p hp (List.mem_append_left _ hk))) hb.dom_avoids_raw
-  | .match_ _ hs _ hb => exact avoids_append hs.dom_avoids_raw hb.dom_avoids
+  | .match_ _ hs _ hb => exact avoids_append hs.dom_avoids_raw hb.dom_avoids_raw
   | .letRec _ _ hstrata hsigned _ hbody =>
       exact avoids_append (avoids_append hstrata.dom_avoids hsigned.dom_avoids) hbody.dom_avoids_raw
 termination_by (input.size, 0)
 decreasing_by all_goals (simp only [InferInput.size, InferInput.size_openTyVars, InferInput.size_substTyFvars, sizeBranches_substInputBranches, sizeBindings_substInputBindings]; omega)
 
-theorem InferBranches.dom_avoids
-    (h : InferBranches K F frontier ctx scrutTy resultTy branches next subst completed) :
-    ∀ pair ∈ subst, pair.1 ∉ K := by
+private theorem InferBranchesCert.dom_avoids_raw
+    {request : InferBranchesRequest} {result : InferBranchesResult}
+    (h : InferBranchesCert request result) :
+    ∀ pair ∈ result.subst, pair.1 ∉ request.protectedVars := by
   match h with
   | .nil => simp
-  | .consWild _ hb hu hr => exact avoids_append (avoids_append hb.dom_avoids_raw hu.dom_avoids) hr.dom_avoids
+  | .consWild _ hb hu hr =>
+      exact avoids_append (avoids_append hb.dom_avoids_raw hu.dom_avoids) hr.dom_avoids_raw
   | .cons _ _ _ hu0 hb hu hr =>
-    exact avoids_append (avoids_append (avoids_append hu0.dom_avoids hb.dom_avoids_raw) hu.dom_avoids) hr.dom_avoids
-termination_by (sizeBranches branches, 0)
-decreasing_by all_goals (simp only [sizeBranches, InferInput.size_substTyFvars, sizeBranches_substInputBranches]; omega)
+      exact avoids_append
+        (avoids_append (avoids_append hu0.dom_avoids hb.dom_avoids_raw) hu.dom_avoids)
+        hr.dom_avoids_raw
+termination_by (sizeBranches request.branches, 0)
+decreasing_by
+  all_goals
+    (simp only [sizeBranches, InferInput.size_substTyFvars,
+      sizeBranches_substInputBranches]; omega)
 
 theorem InferRecComponent.dom_avoids
     (h : InferRecComponent K F members index frontier ctx bindings specs next S artifacts) :
@@ -816,6 +888,17 @@ theorem InferCert.dom_avoids {request : InferRequest} {result : InferResult}
   cases request
   cases result
   exact InferCert.dom_avoids_raw h
+
+theorem InferBranchesCert.dom_avoids
+    {request : InferBranchesRequest} {result : InferBranchesResult}
+    (h : InferBranchesCert request result) :
+    ∀ pair ∈ result.subst, pair.1 ∉ request.protectedVars :=
+  InferBranchesCert.dom_avoids_raw h
+
+theorem InferBranches.dom_avoids
+    (h : InferBranches K F frontier ctx scrutTy resultTy branches next subst completed) :
+    ∀ pair ∈ subst, pair.1 ∉ K :=
+  InferBranchesCert.dom_avoids h
 
 theorem Infer.dom_avoids (h : Infer K F frontier ctx input next subst output ty) :
     ∀ pair ∈ subst, pair.1 ∉ K :=
@@ -987,7 +1070,7 @@ private theorem InferCert.lc_raw (h : Infer K F frontier ctx input next subst ou
   | .match_ _ hs _ hb =>
     intro hctx
     obtain ⟨ht, hS1⟩ := hs.lc_raw hctx
-    obtain ⟨hresult, hS2⟩ := hb.lc (Subst.onCtx_wf hS1 hctx) ht .fvar
+    obtain ⟨hresult, hS2⟩ := hb.lc_raw (Subst.onCtx_wf hS1 hctx) ht .fvar
     exact ⟨hresult, fun p hp => (List.mem_append.mp hp).elim (hS1 p) (hS2 p)⟩
   | .letRec _ hann hs hp _ hb =>
     intro hctx
@@ -1006,10 +1089,13 @@ decreasing_by
   all_goals simp only [sizeBindings_substInputBindings] at *
   all_goals (simp only [InferInput.size, InferInput.size_openTyVars, InferInput.size_substTyFvars, sizeBranches_substInputBranches]; omega)
 
-theorem InferBranches.lc {Φ ctx scrutTy ρ brs Φ' S}
-    (h : InferBranches κ F Φ ctx scrutTy ρ brs Φ' S out)
-    (hctx : CtxWF ctx) (hscrutTy : scrutTy.IsLC) (hρ : ρ.IsLC) :
-    (S.onTy ρ).IsLC ∧ (∀ p ∈ S, p.2.IsLC) := by
+private theorem InferBranchesCert.lc_raw
+    {request : InferBranchesRequest} {result : InferBranchesResult}
+    (h : InferBranchesCert request result)
+    (hctx : CtxWF request.ctx) (hscrutTy : request.scrutineeTy.IsLC)
+    (hρ : request.resultTy.IsLC) :
+    (result.subst.onTy request.resultTy).IsLC ∧
+      (∀ p ∈ result.subst, p.2.IsLC) := by
   match h with
   | .nil => exact ⟨by simpa using hρ, by simp⟩
   | .cons _ hlook hn huni0Rigid hbody huniRigid hrest =>
@@ -1025,10 +1111,11 @@ theorem InferBranches.lc {Φ ctx scrutTy ρ brs Φ' S}
           exact Subst.onTy_lc hS₀ ContainsBvarsUpTo.fvar)
         (by simp))
     have hS₂ := huni.lc hτb_lc (Subst.onTy_lc hS₁ (Subst.onTy_lc hS₀ hρ))
-    obtain ⟨hres, hS₃⟩ := InferBranches.lc hrest
+    obtain ⟨hres, hS₃⟩ := InferBranchesCert.lc_raw hrest
       (Subst.onCtx_wf hS₂ (Subst.onCtx_wf hS₁ (Subst.onCtx_wf hS₀ hctx)))
       (Subst.onTy_lc hS₂ (Subst.onTy_lc hS₁ (Subst.onTy_lc hS₀ hscrutTy)))
       (Subst.onTy_lc hS₂ (Subst.onTy_lc hS₁ (Subst.onTy_lc hS₀ hρ)))
+    simp only [namedBranchesResult]
     refine ⟨?_, ?_⟩
     · rw [Subst.onTy_append, Subst.onTy_append, Subst.onTy_append]; exact hres
     · intro p hp; rw [List.mem_append, List.mem_append, List.mem_append] at hp
@@ -1041,10 +1128,11 @@ theorem InferBranches.lc {Φ ctx scrutTy ρ brs Φ' S}
     have huni := huniRigid.unifies
     obtain ⟨hτb_lc, hS₁⟩ := InferCert.lc_raw hbody hctx
     have hS₂ := huni.lc hτb_lc (Subst.onTy_lc hS₁ hρ)
-    obtain ⟨hres, hS₃⟩ := InferBranches.lc hrest
+    obtain ⟨hres, hS₃⟩ := InferBranchesCert.lc_raw hrest
       (Subst.onCtx_wf hS₂ (Subst.onCtx_wf hS₁ hctx))
       (Subst.onTy_lc hS₂ (Subst.onTy_lc hS₁ hscrutTy))
       (Subst.onTy_lc hS₂ (Subst.onTy_lc hS₁ hρ))
+    simp only [wildcardBranchesResult]
     refine ⟨?_, ?_⟩
     · rw [Subst.onTy_append, Subst.onTy_append]; exact hres
     · intro p hp; rw [List.mem_append, List.mem_append] at hp
@@ -1052,10 +1140,25 @@ theorem InferBranches.lc {Φ ctx scrutTy ρ brs Φ' S}
       · exact hS₁ p hp
       · exact hS₂ p hp
       · exact hS₃ p hp
-termination_by (sizeBranches brs, 0)
+termination_by (sizeBranches request.branches, 0)
 decreasing_by
   all_goals (simp only [sizeBranches, InferInput.size_substTyFvars, sizeBranches_substInputBranches]; omega)
 end
+
+theorem InferBranchesCert.lc
+    {request : InferBranchesRequest} {result : InferBranchesResult}
+    (h : InferBranchesCert request result)
+    (hctx : CtxWF request.ctx) (hscrutTy : request.scrutineeTy.IsLC)
+    (hρ : request.resultTy.IsLC) :
+    (result.subst.onTy request.resultTy).IsLC ∧
+      (∀ p ∈ result.subst, p.2.IsLC) :=
+  InferBranchesCert.lc_raw h hctx hscrutTy hρ
+
+theorem InferBranches.lc {Φ ctx scrutTy ρ brs Φ' S}
+    (h : InferBranches κ F Φ ctx scrutTy ρ brs Φ' S out)
+    (hctx : CtxWF ctx) (hscrutTy : scrutTy.IsLC) (hρ : ρ.IsLC) :
+    (S.onTy ρ).IsLC ∧ (∀ p ∈ S, p.2.IsLC) :=
+  InferBranchesCert.lc h hctx hscrutTy hρ
 
 theorem InferCert.lc {request : InferRequest} {result : InferResult}
     (h : InferCert request result) (hctx : CtxWF request.ctx) :
@@ -2113,19 +2216,34 @@ private theorem InferCert.frontier_le_raw
       have := hc.frontier_le
       have := hb.frontier_le_raw
       omega
-  | .match_ _ hs _ hb => have := hs.frontier_le_raw; have := hb.frontier_le; omega
+  | .match_ _ hs _ hb =>
+      have hsle := hs.frontier_le_raw
+      have hble : _ := hb.frontier_le_raw
+      simp only at hble
+      omega
   | .letRec _ _ hstrata hsigned _ hbody =>
       have := hstrata.frontier_le; have := hsigned.frontier_le; have := hbody.frontier_le_raw; omega
 termination_by (input.size, 0)
 decreasing_by all_goals (simp only [InferInput.size, InferInput.size_openTyVars, InferInput.size_substTyFvars, sizeBranches_substInputBranches, sizeBindings_substInputBindings] at *; omega)
 
-theorem InferBranches.frontier_le
-    (h : InferBranches K F frontier ctx scrutTy resultTy branches next subst output) : frontier ≤ next := by
+private theorem InferBranchesCert.frontier_le_raw
+    {request : InferBranchesRequest} {result : InferBranchesResult}
+    (h : InferBranchesCert request result) : request.frontier ≤ result.frontier := by
   match h with
-  | .nil => omega
-  | .cons _ _ _ _ hb _ hr => have := hb.frontier_le_raw; have := hr.frontier_le; omega
-  | .consWild _ hb _ hr => have := hb.frontier_le_raw; have := hr.frontier_le; omega
-termination_by (sizeBranches branches, 0)
+  | .nil => rfl
+  | .cons _ _ _ _ hb _ hr =>
+      have hbody := hb.frontier_le_raw
+      have htail := hr.frontier_le_raw
+      simp only at htail
+      simp only [namedBranchesResult]
+      omega
+  | .consWild _ hb _ hr =>
+      have hbody := hb.frontier_le_raw
+      have htail := hr.frontier_le_raw
+      simp only at htail
+      simp only [wildcardBranchesResult]
+      omega
+termination_by (sizeBranches request.branches, 0)
 decreasing_by all_goals (simp only [sizeBranches, InferInput.size_substTyFvars, sizeBranches_substInputBranches]; omega)
 
 theorem InferRecComponent.frontier_le
@@ -2155,6 +2273,15 @@ theorem InferRecSigned.frontier_le
 termination_by (sizeBindings bindings, 0)
 decreasing_by all_goals (simp only [sizeBindings, InferInput.size_openTyVars, sizeBindings_substInputBindings]; omega)
 end
+
+theorem InferBranchesCert.frontier_le
+    {request : InferBranchesRequest} {result : InferBranchesResult}
+    (h : InferBranchesCert request result) : request.frontier ≤ result.frontier :=
+  InferBranchesCert.frontier_le_raw h
+
+theorem InferBranches.frontier_le
+    (h : InferBranches K F frontier ctx scrutTy resultTy branches next subst output) : frontier ≤ next :=
+  InferBranchesCert.frontier_le h
 
 theorem InferCert.frontier_le {request : InferRequest} {result : InferResult}
     (h : InferCert request result) : request.frontier ≤ result.frontier := by
@@ -2461,7 +2588,7 @@ private theorem InferCert.belowFvars_raw (h : Infer K F frontier ctx input next 
     intro hctx hK hF
     obtain ⟨ht, hS1⟩ := hs.belowFvars_raw hctx hK hF
     have hle := Infer.frontier_le hs
-    obtain ⟨hresult, hS2⟩ := hb.belowFvars
+    obtain ⟨hresult, hS2⟩ := hb.belowFvars_raw
       (Subst.onCtx_below (fun p hp => (hS1 p hp).mono (Nat.le_succ _)) (hle.trans (Nat.le_succ _)) hctx)
       (ht.mono (Nat.le_succ _)) (.fvar (Nat.lt_succ_self _))
       (fun k hk => Nat.lt_of_lt_of_le (hK k hk) (hle.trans (Nat.le_succ _)))
@@ -2511,14 +2638,22 @@ private theorem InferCert.belowFvars_raw (h : Infer K F frontier ctx input next 
 termination_by (input.size, 0)
 decreasing_by all_goals (simp only [InferInput.size, InferInput.size_openTyVars, InferInput.size_substTyFvars, sizeBranches_substInputBranches, sizeBindings_substInputBindings] at *; omega)
 
-theorem InferBranches.belowFvars {Φ ctx scrutTy ρ brs Φ' S}
-    (h : InferBranches κ F Φ ctx scrutTy ρ brs Φ' S out)
-    (hctx : CtxBelow Φ ctx) (hscrutTy : Ty.BelowFvars Φ scrutTy) (hρ : Ty.BelowFvars Φ ρ)
-    (hK : ∀ k ∈ κ, k < Φ) (hF : ∀ t ∈ F, Ty.BelowFvars Φ t) :
-    Ty.BelowFvars Φ' (S.onTy ρ) ∧ (∀ p ∈ S, Ty.BelowFvars Φ' p.2) := by
+private theorem InferBranchesCert.belowFvars_raw
+    {request : InferBranchesRequest} {result : InferBranchesResult}
+    (h : InferBranchesCert request result)
+    (hctx : CtxBelow request.frontier request.ctx)
+    (hscrutTy : Ty.BelowFvars request.frontier request.scrutineeTy)
+    (hρ : Ty.BelowFvars request.frontier request.resultTy)
+    (hK : ∀ k ∈ request.protectedVars, k < request.frontier)
+    (hF : ∀ t ∈ request.soft, Ty.BelowFvars request.frontier t) :
+    Ty.BelowFvars result.frontier (result.subst.onTy request.resultTy) ∧
+      (∀ p ∈ result.subst, Ty.BelowFvars result.frontier p.2) := by
   match h with
   | .nil => exact ⟨by simpa using hρ, by simp⟩
-  | @InferBranches.cons name count body rest κ F ctor scrutTy Φ S₀ ctx Φ₁ S₁ bodyOut bodyTy ρ S₂ Φ' S₃ restOut _ hlook hn huni0Rigid hbody huniRigid hrest =>
+  | @InferBranchesCert.cons name count body rest κ F ctor scrutTy Φ S₀ ctx
+      ⟨Φ₁, S₁, bodyOut, bodyTy⟩ ρ S₂ ⟨Φ', S₃, restOut⟩
+      _ hlook hn huni0Rigid hbody huniRigid hrest =>
+    simp only at hctx hscrutTy hρ hK hF
     have huni0 := huni0Rigid.unifies
     have huni := huniRigid.unifies
     have hS₀ : ∀ p ∈ S₀, Ty.BelowFvars (Φ + ctor.paramCount) p.2 :=
@@ -2547,14 +2682,16 @@ theorem InferBranches.belowFvars {Φ ctx scrutTy ρ brs Φ' S}
       Subst.onCtx_below hS₂ (le_refl _)
         (Subst.onCtx_below hS₁ (le_refl _)
           (Subst.onCtx_below (fun p hp => (hS₀ p hp).mono hle0) (by omega) hctx))
-    obtain ⟨hres, hS₃⟩ := InferBranches.belowFvars hrest hctx1
+    obtain ⟨hres, hS₃⟩ := InferBranchesCert.belowFvars_raw hrest hctx1
       (Subst.onTy_belowFvars hS₂ (Subst.onTy_belowFvars hS₁ hS₀scrut))
       (Subst.onTy_belowFvars hS₂ (Subst.onTy_belowFvars hS₁ hS₀ρ))
-      (fun k hk => Nat.lt_of_lt_of_le (hK k hk) (by omega))
+      (fun k hk => show k < Φ₁ from Nat.lt_of_lt_of_le (hK k hk) (by omega))
       (by simpa only [substSoft_append] using
         substSoft_below hS₂ (le_refl _) (substSoft_below hS₁ (le_refl _)
           (substSoft_below (fun p hp => (hS₀ p hp).mono hle0) (by omega) hF)))
-    have hbrle := InferBranches.frontier_le hrest
+    have hbrle := InferBranchesCert.frontier_le_raw hrest
+    simp only at hres hS₃ hbrle
+    simp only [namedBranchesResult]
     refine ⟨?_, ?_⟩
     · rw [Subst.onTy_append, Subst.onTy_append, Subst.onTy_append]; exact hres
     · intro p hp; rw [List.mem_append, List.mem_append, List.mem_append] at hp
@@ -2564,6 +2701,7 @@ theorem InferBranches.belowFvars {Φ ctx scrutTy ρ brs Φ' S}
       · exact (hS₂ p hp).mono (by omega)
       · exact hS₃ p hp
   | .consWild _ hbody huniRigid hrest =>
+    simp only at hctx hscrutTy hρ hK hF
     have huni := huniRigid.unifies
     obtain ⟨hτb, hS₁⟩ := InferCert.belowFvars_raw hbody hctx
       hK hF
@@ -2571,13 +2709,15 @@ theorem InferBranches.belowFvars {Φ ctx scrutTy ρ brs Φ' S}
     have hS₁ρ := Subst.onTy_belowFvars hS₁ (hρ.mono hle1)
     have hS₂ := UnifyRel.belowFvars huni hτb hS₁ρ
     have hctx1 := Subst.onCtx_below hS₂ (le_refl _) (Subst.onCtx_below hS₁ hle1 hctx)
-    obtain ⟨hres, hS₃⟩ := InferBranches.belowFvars hrest hctx1
+    obtain ⟨hres, hS₃⟩ := InferBranchesCert.belowFvars_raw hrest hctx1
       (Subst.onTy_belowFvars hS₂ (Subst.onTy_belowFvars hS₁ (hscrutTy.mono hle1)))
       (Subst.onTy_belowFvars hS₂ (Subst.onTy_belowFvars hS₁ (hρ.mono hle1)))
       (fun k hk => Nat.lt_of_lt_of_le (hK k hk) hle1)
       (by simpa only [substSoft_append] using
         substSoft_below hS₂ (le_refl _) (substSoft_below hS₁ hle1 hF))
-    have hbrle := InferBranches.frontier_le hrest
+    have hbrle := InferBranchesCert.frontier_le_raw hrest
+    simp only at hres hS₃ hbrle
+    simp only [wildcardBranchesResult]
     refine ⟨?_, ?_⟩
     · rw [Subst.onTy_append, Subst.onTy_append]; exact hres
     · intro p hp; rw [List.mem_append, List.mem_append] at hp
@@ -2585,10 +2725,29 @@ theorem InferBranches.belowFvars {Φ ctx scrutTy ρ brs Φ' S}
       · exact (hS₁ p hp).mono (by omega)
       · exact (hS₂ p hp).mono (by omega)
       · exact hS₃ p hp
-termination_by (sizeBranches brs, 0)
+termination_by (sizeBranches request.branches, 0)
 decreasing_by
   all_goals (try subst_vars; try simp only [sizeBranches, InferInput.size_substTyFvars, sizeBranches_substInputBranches]; omega)
 end
+
+theorem InferBranchesCert.belowFvars
+    {request : InferBranchesRequest} {result : InferBranchesResult}
+    (h : InferBranchesCert request result)
+    (hctx : CtxBelow request.frontier request.ctx)
+    (hscrutTy : Ty.BelowFvars request.frontier request.scrutineeTy)
+    (hρ : Ty.BelowFvars request.frontier request.resultTy)
+    (hK : ∀ k ∈ request.protectedVars, k < request.frontier)
+    (hF : ∀ t ∈ request.soft, Ty.BelowFvars request.frontier t) :
+    Ty.BelowFvars result.frontier (result.subst.onTy request.resultTy) ∧
+      (∀ p ∈ result.subst, Ty.BelowFvars result.frontier p.2) :=
+  InferBranchesCert.belowFvars_raw h hctx hscrutTy hρ hK hF
+
+theorem InferBranches.belowFvars {Φ ctx scrutTy ρ brs Φ' S}
+    (h : InferBranches κ F Φ ctx scrutTy ρ brs Φ' S out)
+    (hctx : CtxBelow Φ ctx) (hscrutTy : Ty.BelowFvars Φ scrutTy) (hρ : Ty.BelowFvars Φ ρ)
+    (hK : ∀ k ∈ κ, k < Φ) (hF : ∀ t ∈ F, Ty.BelowFvars Φ t) :
+    Ty.BelowFvars Φ' (S.onTy ρ) ∧ (∀ p ∈ S, Ty.BelowFvars Φ' p.2) :=
+  InferBranchesCert.belowFvars h hctx hscrutTy hρ hK hF
 
 theorem InferCert.belowFvars {request : InferRequest} {result : InferResult}
     (h : InferCert request result) (bounds : request.Bounds) :
@@ -3644,7 +3803,8 @@ mutual
     obtain ⟨hsS, hsTy, hsD⟩ := hs.sourceLocality_raw hw hrefs.1 hwe.1
     have hnew : w ∉ (Ty.fvar first).freeVars := by
       simp only [Ty.freeVars, List.mem_singleton]; have := Infer.frontier_le hs; omega
-    obtain ⟨hbS, hbTy, hbD⟩ := hb.sourceLocality (by have := Infer.frontier_le hs; omega)
+    have hbranchFrontier : w < first + 1 := by have := Infer.frontier_le hs; omega
+    obtain ⟨hbS, hbTy, hbD⟩ := hb.sourceLocality_raw hbranchFrontier
       (branches_refs_subst (fun p b hm => hrefs.2 p b.erase (mem_eraseBranches hm)) hsS)
       hsTy hnew (branches_avoid_subst hsS hwe.2)
     have hA := Subst.sourceAvoid_append_local ⟨hsS, hsD⟩ ⟨hbS, hbD⟩
@@ -3654,18 +3814,23 @@ mutual
   all_goals simp only [sizeBindings_substInputBindings] at *
   all_goals (simp only [InferInput.size, InferInput.size_substTyFvars, InferInput.size_openTyVars, sizeBranches_substInputBranches]; omega)
 
- theorem InferBranches.sourceLocality
-    (h : InferBranches K F frontier ctx scrutTy resultTy brs next subst completed) :
-    ∀ {w}, w < frontier →
-    (∀ p b, (p,b) ∈ brs → b.erase.ForallOuter
-      (fun i => ∀ M, ctx.env[i]? = some M → w ∉ M.body.freeVars) p.bindCount) →
-    w ∉ scrutTy.freeVars → w ∉ resultTy.freeVars → w ∉ rigidBranchVars brs →
-    (∀ p ∈ subst, w ∉ p.2.freeVars) ∧ w ∉ (subst.onTy resultTy).freeVars ∧ w ∉ subst.map Prod.fst := by
+ private theorem InferBranchesCert.sourceLocality_raw
+    {request : InferBranchesRequest} {result : InferBranchesResult}
+    (h : InferBranchesCert request result) :
+    ∀ {w}, w < request.frontier →
+    (∀ p b, (p,b) ∈ request.branches → b.erase.ForallOuter
+      (fun i => ∀ M, request.ctx.env[i]? = some M → w ∉ M.body.freeVars) p.bindCount) →
+    w ∉ request.scrutineeTy.freeVars → w ∉ request.resultTy.freeVars →
+    w ∉ rigidBranchVars request.branches →
+    (∀ p ∈ result.subst, w ∉ p.2.freeVars) ∧
+      w ∉ (result.subst.onTy request.resultTy).freeVars ∧
+      w ∉ result.subst.map Prod.fst := by
   match h with
   | .nil => intro w _ _ _ hρ _; exact ⟨by simp, by simpa using hρ, by simp⟩
   | .cons _ hlook hn hu₀ hb hu hr =>
     intro w hw hrefs hscrut hρ hbrs
     expose_names
+    simp only [namedBranchesResult] at hw hrefs hscrut hρ hbrs ⊢
     simp only [rigidBranchVars, List.mem_append, not_or] at hbrs
     have hcustom : w ∉ (Ty.customTy ctor.tyName ((freshVars frontier ctor.paramCount).map Ty.fvar)).freeVars := by
       intro hc; simp only [Ty.freeVars] at hc; rw [mem_TyList_freeVars] at hc
@@ -3673,15 +3838,15 @@ mutual
       simp only [Ty.freeVars, List.mem_singleton] at hwt
       have := freshVars_ge x hx; omega
     have hA₀ := UnifyRel.sourceAvoid_local hu₀.unifies hscrut hcustom
-    have hta : ∀ t ∈ ((freshVars frontier ctor.paramCount).map Ty.fvar).map s0.onTy, w ∉ t.freeVars := by
+    have hta : ∀ t ∈ ((freshVars frontier ctor.paramCount).map Ty.fvar).map scrutineeUnifier.onTy, w ∉ t.freeVars := by
       intro t ht; obtain ⟨t₀, ht₀, rfl⟩ := List.mem_map.mp ht
       obtain ⟨x, hx, rfl⟩ := List.mem_map.mp ht₀
       apply Subst.notMemOnTy hA₀.1
       simp only [Ty.freeVars, List.mem_singleton]; have := freshVars_ge x hx; omega
     have hbrefs : body.erase.ForallOuter
         (fun i => ∀ M,
-          ((ctor.contents.map (Ty.openWith (((freshVars frontier ctor.paramCount).map Ty.fvar).map s0.onTy))).map PolyTy.mkTrivial
-            ++ (s0.onCtx ctx).env)[i]? = some M → w ∉ M.body.freeVars) 0 := by
+          ((ctor.contents.map (Ty.openWith (((freshVars frontier ctor.paramCount).map Ty.fvar).map scrutineeUnifier.onTy))).map PolyTy.mkTrivial
+            ++ (scrutineeUnifier.onCtx ctx).env)[i]? = some M → w ∉ M.body.freeVars) 0 := by
       apply Expr.ForallOuter.lookupAvoid_prepend
         (by simpa only [List.length_map, Nat.zero_add, MatchPattern.bindCount, hn] using
           Expr.ForallOuter.lookupAvoid_onSubst (hrefs (.named name count) body List.mem_cons_self) hA₀.1)
@@ -3693,7 +3858,10 @@ mutual
     have hA₂ := UnifyRel.sourceAvoid_local hu.unifies hbTy
       (Subst.notMemOnTy hbS (Subst.notMemOnTy hA₀.1 hρ))
     have hApre := Subst.sourceAvoid_append_local (Subst.sourceAvoid_append_local hA₀ ⟨hbS,hbD⟩) hA₂
-    obtain ⟨hrS, hrTy, hrD⟩ := hr.sourceLocality (by have := Infer.frontier_le hb; omega)
+    have htailFrontier : w < bodyResult.frontier := by
+      have := Infer.frontier_le hb
+      omega
+    obtain ⟨hrS, hrTy, hrD⟩ := hr.sourceLocality_raw htailFrontier
       (by
         have hf := branches_refs_subst
           (fun p b hm => hrefs p b (List.mem_cons_of_mem _ hm)) hApre.1
@@ -3706,12 +3874,13 @@ mutual
   | .consWild _ hb hu hr =>
     intro w hw hrefs hscrut hρ hbrs
     expose_names
+    simp only [wildcardBranchesResult] at hw hrefs hscrut hρ hbrs ⊢
     simp only [rigidBranchVars, List.mem_append, not_or] at hbrs
     obtain ⟨hbS, hbTy, hbD⟩ := hb.sourceLocality_raw hw
       (hrefs .wildcard body List.mem_cons_self) hbrs.1
     have hA₂ := UnifyRel.sourceAvoid_local hu.unifies hbTy (Subst.notMemOnTy hbS hρ)
     have hApre := Subst.sourceAvoid_append_local ⟨hbS,hbD⟩ hA₂
-    obtain ⟨hrS, hrTy, hrD⟩ := hr.sourceLocality (Nat.lt_of_lt_of_le hw (Infer.frontier_le hb))
+    obtain ⟨hrS, hrTy, hrD⟩ := hr.sourceLocality_raw (Nat.lt_of_lt_of_le hw (Infer.frontier_le hb))
       (by
         have hf := branches_refs_subst
           (fun p b hm => hrefs p b (List.mem_cons_of_mem _ hm)) hApre.1
@@ -3721,9 +3890,32 @@ mutual
       (branches_avoid_subst hApre.1 hbrs.2)
     have hA := Subst.sourceAvoid_append_local hApre ⟨hrS,hrD⟩
     exact ⟨hA.1, by simpa only [Subst.onTy_append] using hrTy, hA.2⟩
- termination_by (sizeBranches brs, 0)
+ termination_by (sizeBranches request.branches, 0)
  decreasing_by all_goals (simp only [sizeBranches, InferInput.size_substTyFvars, sizeBranches_substInputBranches]; omega)
 end
+
+theorem InferBranchesCert.sourceLocality
+    {request : InferBranchesRequest} {result : InferBranchesResult}
+    (h : InferBranchesCert request result) :
+    ∀ {w}, w < request.frontier →
+    (∀ p b, (p,b) ∈ request.branches → b.erase.ForallOuter
+      (fun i => ∀ M, request.ctx.env[i]? = some M → w ∉ M.body.freeVars) p.bindCount) →
+    w ∉ request.scrutineeTy.freeVars → w ∉ request.resultTy.freeVars →
+    w ∉ rigidBranchVars request.branches →
+    (∀ p ∈ result.subst, w ∉ p.2.freeVars) ∧
+      w ∉ (result.subst.onTy request.resultTy).freeVars ∧
+      w ∉ result.subst.map Prod.fst :=
+  InferBranchesCert.sourceLocality_raw h
+
+theorem InferBranches.sourceLocality
+    (h : InferBranches K F frontier ctx scrutTy resultTy brs next subst completed) :
+    ∀ {w}, w < frontier →
+    (∀ p b, (p,b) ∈ brs → b.erase.ForallOuter
+      (fun i => ∀ M, ctx.env[i]? = some M → w ∉ M.body.freeVars) p.bindCount) →
+    w ∉ scrutTy.freeVars → w ∉ resultTy.freeVars → w ∉ rigidBranchVars brs →
+    (∀ p ∈ subst, w ∉ p.2.freeVars) ∧ w ∉ (subst.onTy resultTy).freeVars ∧
+      w ∉ subst.map Prod.fst :=
+  InferBranchesCert.sourceLocality h
 
 theorem InferCert.sourceLocality {request : InferRequest} {result : InferResult}
     (h : InferCert request result) {w : Nat} (hw : w < request.frontier)
@@ -7633,9 +7825,16 @@ theorem TypeOfMatchBranch.onSubst
     simp only [Subst.onCtx, Subst.onEnv, List.map_append, List.map_map,
       Function.comp_def, Subst.onPolyTy, PolyTy.mkTrivial]
 
+theorem InferBranchesCert.nil_iff
+    {request : InferBranchesRequest} {result : InferBranchesResult}
+    (h : InferBranchesCert request result) :
+    result.completedBranches = [] ↔ request.branches = [] := by
+  cases h <;> simp [wildcardBranchesResult, namedBranchesResult]
+
 theorem InferBranches.nil_iff
     (h : InferBranches K F frontier ctx scrutTy resultTy branches next subst completed) :
-    completed = [] ↔ branches = [] := by cases h <;> simp
+    completed = [] ↔ branches = [] :=
+  InferBranchesCert.nil_iff h
 
 
 
@@ -7907,9 +8106,9 @@ private theorem InferCert.sourceSound_raw (h : Infer K F frontier ctx input next
   | .match_ _ hs hne hb =>
     intro hctx
     have hs1 := (hs.lc hctx).2
-    have hbr := hb.lc (Subst.onCtx_wf hs1 hctx) (hs.lc hctx).1 .fvar
+    have hbr := hb.lc_raw (Subst.onCtx_wf hs1 hctx) (hs.lc hctx).1 .fvar
     have hscrut := TypeOfHM.onSubst _ hbr.2 (hs.sourceSound_raw hctx)
-    have hbranches := hb.sourceSound (Subst.onCtx_wf hs1 hctx) (hs.lc hctx).1 .fvar
+    have hbranches := hb.sourceSound_raw (Subst.onCtx_wf hs1 hctx) (hs.lc hctx).1 .fvar
     simpa only [Subst.onCtx_append] using
       TypeOfHM.match_ hscrut (fun hnil => hne (substInputBranches_eq_nil _ _ |>.mp (hb.nil_iff.mp hnil))) hbranches
 termination_by (input.size, 0)
@@ -7917,22 +8116,27 @@ decreasing_by
   all_goals simp only [sizeBindings_substInputBindings] at *
   all_goals (simp only [InferInput.size, InferInput.size_openTyVars, InferInput.size_substTyFvars, sizeBranches_substInputBranches]; omega)
 
-theorem InferBranches.sourceSound
-    (h : InferBranches K F frontier ctx scrutTy resultTy branches next subst completed)
-    (hctx : CtxWF ctx) (hscrut : scrutTy.IsLC) (hresult : resultTy.IsLC) :
-    ∀ branch ∈ completed, TypeOfMatchBranch (subst.onCtx ctx) branch
-      (subst.onTy scrutTy) (subst.onTy resultTy) := by
+private theorem InferBranchesCert.sourceSound_raw
+    {request : InferBranchesRequest} {result : InferBranchesResult}
+    (h : InferBranchesCert request result)
+    (hctx : CtxWF request.ctx) (hscrut : request.scrutineeTy.IsLC)
+    (hresult : request.resultTy.IsLC) :
+    ∀ branch ∈ result.completedBranches,
+      TypeOfMatchBranch (result.subst.onCtx request.ctx) branch
+        (result.subst.onTy request.scrutineeTy) (result.subst.onTy request.resultTy) := by
   match h with
   | .nil => intro branch hb; cases hb
-  | @InferBranches.consWild body rest K F frontier ctx first s1 bodyOut bodyTy resultTy s2 scrutTy next s3 restOut
+  | @InferBranchesCert.consWild body rest K F frontier ctx scrutTy resultTy
+      ⟨first, s1, bodyOut, bodyTy⟩ s2 ⟨next, s3, restOut⟩
       _ hb hu hr =>
+    simp only [wildcardBranchesResult] at ⊢
     obtain ⟨hbTy, hs1⟩ := hb.lc hctx
     have hs2 := hu.unifies.lc hbTy (Subst.onTy_lc hs1 hresult)
     have hctxRest := Subst.onCtx_wf hs2 (Subst.onCtx_wf hs1 hctx)
     have hscrutRest := Subst.onTy_lc hs2 (Subst.onTy_lc hs1 hscrut)
     have hresultRest := Subst.onTy_lc hs2 (Subst.onTy_lc hs1 hresult)
-    have hs3 := (hr.lc hctxRest hscrutRest hresultRest).2
-    have htail := hr.sourceSound hctxRest hscrutRest hresultRest
+    have hs3 := (hr.lc_raw hctxRest hscrutRest hresultRest).2
+    have htail := hr.sourceSound_raw hctxRest hscrutRest hresultRest
     intro branch hbranch
     rcases List.mem_cons.mp hbranch with rfl | hbranch
     · have head := TypeOfHM.onSubst (s2 ++ s3)
@@ -7943,8 +8147,10 @@ theorem InferBranches.sourceSound
       simpa only [Subst.onCtx_append, Subst.onTy_append, List.append_assoc] using
         (TypeOfMatchBranch.wildcard (scrutTy := (s1 ++ s2 ++ s3).onTy scrutTy) head)
     · simpa only [Subst.onCtx_append, Subst.onTy_append] using htail branch hbranch
-  | @InferBranches.cons name count body rest K F ctor scrutTy frontier s0 ctx first s1 bodyOut bodyTy resultTy s2 next s3 restOut
+  | @InferBranchesCert.cons name count body rest K F ctor scrutTy frontier s0 ctx
+      ⟨first, s1, bodyOut, bodyTy⟩ resultTy s2 ⟨next, s3, restOut⟩
       _ hlookup hcount hu0 hb hu hr =>
+    simp only [namedBranchesResult] at ⊢
     have hs0 := hu0.unifies.lc hscrut
       (.customTy (fun t ht => by obtain ⟨v, _, rfl⟩ := List.mem_map.mp ht; exact .fvar))
     have hbodyWF := branchBindings_wf (ctorr := ctor)
@@ -7959,8 +8165,8 @@ theorem InferBranches.sourceSound
     have hctxRest := Subst.onCtx_wf hs2 (Subst.onCtx_wf hs1 (Subst.onCtx_wf hs0 hctx))
     have hscrutRest := Subst.onTy_lc hs2 (Subst.onTy_lc hs1 (Subst.onTy_lc hs0 hscrut))
     have hresultRest := Subst.onTy_lc hs2 (Subst.onTy_lc hs1 (Subst.onTy_lc hs0 hresult))
-    have hs3 := (hr.lc hctxRest hscrutRest hresultRest).2
-    have htail := hr.sourceSound hctxRest hscrutRest hresultRest
+    have hs3 := (hr.lc_raw hctxRest hscrutRest hresultRest).2
+    have htail := hr.sourceSound_raw hctxRest hscrutRest hresultRest
     intro branch hbranch
     rcases List.mem_cons.mp hbranch with rfl | hbranch
     · let args := (((freshVars frontier ctor.paramCount).map Ty.fvar).map s0.onTy).map s1.onTy
@@ -7979,9 +8185,26 @@ theorem InferBranches.sourceSound
       rw [heq] at head
       simpa only [Subst.onCtx_append, Subst.onTy_append] using head
     · simpa only [Subst.onCtx_append, Subst.onTy_append] using htail branch hbranch
-termination_by (sizeBranches branches, 0)
+termination_by (sizeBranches request.branches, 0)
 decreasing_by all_goals (simp only [sizeBranches, InferInput.size_substTyFvars, sizeBranches_substInputBranches]; omega)
 end
+
+theorem InferBranchesCert.sourceSound
+    {request : InferBranchesRequest} {result : InferBranchesResult}
+    (h : InferBranchesCert request result)
+    (hctx : CtxWF request.ctx) (hscrut : request.scrutineeTy.IsLC)
+    (hresult : request.resultTy.IsLC) :
+    ∀ branch ∈ result.completedBranches,
+      TypeOfMatchBranch (result.subst.onCtx request.ctx) branch
+        (result.subst.onTy request.scrutineeTy) (result.subst.onTy request.resultTy) :=
+  InferBranchesCert.sourceSound_raw h hctx hscrut hresult
+
+theorem InferBranches.sourceSound
+    (h : InferBranches K F frontier ctx scrutTy resultTy branches next subst completed)
+    (hctx : CtxWF ctx) (hscrut : scrutTy.IsLC) (hresult : resultTy.IsLC) :
+    ∀ branch ∈ completed, TypeOfMatchBranch (subst.onCtx ctx) branch
+      (subst.onTy scrutTy) (subst.onTy resultTy) :=
+  InferBranchesCert.sourceSound h hctx hscrut hresult
 
 theorem InferCert.sourceSound {request : InferRequest} {result : InferResult}
     (h : InferCert request result) (hctx : CtxWF request.ctx) :
@@ -8199,7 +8422,8 @@ private theorem InferCert.erase_raw (h : Infer K F frontier ctx input next subst
       simp only [letOutput, Expr.erase, Expr.erase_substTyFvars,
         Expr.erase_closeTyVars, InferInput.erase, hr.erase_raw, hb.erase_raw, InferInput.erase_openTyVars, InferInput.erase_substTyFvars]
   | .match_ _ hs _ hb =>
-      simp only [Expr.erase, Expr.erase_substTyFvars, InferInput.erase, hs.erase_raw, hb.erase, eraseBranches_substInputBranches]
+      simp only [Expr.erase, Expr.erase_substTyFvars, InferInput.erase, hs.erase_raw,
+        hb.erase_raw, eraseBranches_substInputBranches]
   | @InferCert.letRec K F bindings body frontier ctx completed
       ⟨first, s1, state1⟩ ⟨second, s2, state2⟩ ⟨next, s3, bodyOut, bodyTy⟩
       _ _ hs hp hcompleted hb =>
@@ -8223,18 +8447,35 @@ decreasing_by
   all_goals simp only [sizeBindings_substInputBindings] at *
   all_goals (simp only [InferInput.size, InferInput.size_openTyVars, InferInput.size_substTyFvars, sizeBranches_substInputBranches]; omega)
 
-theorem InferBranches.erase
-    (h : InferBranches K F frontier ctx scrutTy resultTy branches next subst completed) :
-    completed.map (fun pe => (pe.1, pe.2.erase)) = eraseBranches branches := by
+private theorem InferBranchesCert.erase_raw
+    {request : InferBranchesRequest} {result : InferBranchesResult}
+    (h : InferBranchesCert request result) :
+    result.completedBranches.map (fun pe => (pe.1, pe.2.erase)) =
+      eraseBranches request.branches := by
   match h with
   | .nil => rfl
   | .consWild _ hb _ hr =>
-      simp only [List.map_cons, eraseBranches, Expr.erase_substTyFvars, hb.erase_raw, hr.erase, eraseBranches_substInputBranches]
+      simp only [wildcardBranchesResult, List.map_cons, eraseBranches, Expr.erase_substTyFvars,
+        hb.erase_raw, hr.erase_raw, eraseBranches_substInputBranches]
   | .cons _ _ _ _ hb _ hr =>
-      simp only [List.map_cons, eraseBranches, Expr.erase_substTyFvars, hb.erase_raw, hr.erase, InferInput.erase_substTyFvars, eraseBranches_substInputBranches]
-termination_by (sizeBranches branches, 0)
+      simp only [namedBranchesResult, List.map_cons, eraseBranches, Expr.erase_substTyFvars,
+        hb.erase_raw, hr.erase_raw, InferInput.erase_substTyFvars,
+        eraseBranches_substInputBranches]
+termination_by (sizeBranches request.branches, 0)
 decreasing_by all_goals (simp only [sizeBranches, InferInput.size_substTyFvars, sizeBranches_substInputBranches]; omega)
 end
+
+theorem InferBranchesCert.erase
+    {request : InferBranchesRequest} {result : InferBranchesResult}
+    (h : InferBranchesCert request result) :
+    result.completedBranches.map (fun pe => (pe.1, pe.2.erase)) =
+      eraseBranches request.branches :=
+  InferBranchesCert.erase_raw h
+
+theorem InferBranches.erase
+    (h : InferBranches K F frontier ctx scrutTy resultTy branches next subst completed) :
+    completed.map (fun pe => (pe.1, pe.2.erase)) = eraseBranches branches :=
+  InferBranchesCert.erase h
 
 theorem InferCert.erase {request : InferRequest} {result : InferResult}
     (h : InferCert request result) : result.completedExpr.erase = request.input.erase := by
@@ -8711,9 +8952,9 @@ private theorem InferCert.inputSound_source_raw (h : Infer K F frontier ctx inpu
   | .match_ _ hs hne hb =>
     intro hctx
     have hs1 := (hs.lc hctx).2
-    have hbr := hb.lc (Subst.onCtx_wf hs1 hctx) (hs.lc hctx).1 .fvar
-    have hscrut := (hs.inputSound_source_raw hctx).onSubst_soft _ hbr.2 hb.dom_avoids
-    have hbranches := hb.inputSound_source (Subst.onCtx_wf hs1 hctx) (hs.lc hctx).1 .fvar
+    have hbr := hb.lc_raw (Subst.onCtx_wf hs1 hctx) (hs.lc hctx).1 .fvar
+    have hscrut := (hs.inputSound_source_raw hctx).onSubst_soft _ hbr.2 hb.dom_avoids_raw
+    have hbranches := hb.inputSound_source_raw (Subst.onCtx_wf hs1 hctx) (hs.lc hctx).1 .fvar
     simp only [← substSoft_append, ← InferInput.substTyFvars_append] at hscrut
     simp only [InferInput.substTyFvars, Subst.onCtx_append]
     refine InputTyping.match_ hscrut (fun hn => hne (substInputBranches_eq_nil _ _ |>.mp hn)) ?_
@@ -8730,23 +8971,30 @@ decreasing_by
   all_goals simp only [sizeBindings_substInputBindings] at *
   all_goals (simp only [InferInput.size, InferInput.size_openTyVars, InferInput.size_substTyFvars, sizeBranches_substInputBranches]; omega)
 
-theorem InferBranches.inputSound_source
-    (h : InferBranches K F frontier ctx scrutTy resultTy branches next subst completed)
-    (hctx : CtxWF ctx) (hscrut : scrutTy.IsLC) (hresult : resultTy.IsLC) :
-    ∀ branch ∈ branches, BranchTyping InputTyping (K ++ softVars (substSoft subst F))
-      (subst.onCtx ctx) (branch.1, branch.2.substTyFvars subst)
-      (subst.onTy scrutTy) (subst.onTy resultTy) := by
+private theorem InferBranchesCert.inputSound_source_raw
+    {request : InferBranchesRequest} {result : InferBranchesResult}
+    (h : InferBranchesCert request result)
+    (hctx : CtxWF request.ctx) (hscrut : request.scrutineeTy.IsLC)
+    (hresult : request.resultTy.IsLC) :
+    ∀ branch ∈ request.branches,
+      BranchTyping InputTyping
+        (request.protectedVars ++ softVars (substSoft result.subst request.soft))
+        (result.subst.onCtx request.ctx)
+        (branch.1, branch.2.substTyFvars result.subst)
+        (result.subst.onTy request.scrutineeTy) (result.subst.onTy request.resultTy) := by
   match h with
   | .nil => intro branch hb; cases hb
-  | @InferBranches.consWild body rest K F frontier ctx first s1 bodyOut bodyTy resultTy s2 scrutTy next s3 restOut
+  | @InferBranchesCert.consWild body rest K F frontier ctx scrutTy resultTy
+      ⟨first, s1, bodyOut, bodyTy⟩ s2 ⟨next, s3, restOut⟩
       _ hb hu hr =>
+    simp only [wildcardBranchesResult] at ⊢
     obtain ⟨hbTy, hs1⟩ := hb.lc hctx
     have hs2 := hu.unifies.lc hbTy (Subst.onTy_lc hs1 hresult)
     have hctxRest := Subst.onCtx_wf hs2 (Subst.onCtx_wf hs1 hctx)
     have hscrutRest := Subst.onTy_lc hs2 (Subst.onTy_lc hs1 hscrut)
     have hresultRest := Subst.onTy_lc hs2 (Subst.onTy_lc hs1 hresult)
-    have hs3 := (hr.lc hctxRest hscrutRest hresultRest).2
-    have htail := hr.inputSound_source hctxRest hscrutRest hresultRest
+    have hs3 := (hr.lc_raw hctxRest hscrutRest hresultRest).2
+    have htail := hr.inputSound_source_raw hctxRest hscrutRest hresultRest
     intro branch hbranch
     rcases List.mem_cons.mp hbranch with rfl | hbranch
     · have head := (hb.inputSound_source_raw hctx).onSubst_soft (s2 ++ s3)
@@ -8763,8 +9011,10 @@ theorem InferBranches.inputSound_source
         exact List.mem_map.mpr ⟨branch, hbranch, rfl⟩)
       simpa only [Subst.onCtx_append, Subst.onTy_append, ← substSoft_append,
         ← InferInput.substTyFvars_append] using ht
-  | @InferBranches.cons name count body rest K F ctor scrutTy frontier s0 ctx first s1 bodyOut bodyTy resultTy s2 next s3 restOut
+  | @InferBranchesCert.cons name count body rest K F ctor scrutTy frontier s0 ctx
+      ⟨first, s1, bodyOut, bodyTy⟩ resultTy s2 ⟨next, s3, restOut⟩
       _ hlookup hcount hu0 hb hu hr =>
+    simp only [namedBranchesResult] at ⊢
     have hs0 := hu0.unifies.lc hscrut
       (.customTy (fun t ht => by obtain ⟨v, _, rfl⟩ := List.mem_map.mp ht; exact .fvar))
     have hbodyWF := branchBindings_wf (ctorr := ctor)
@@ -8779,8 +9029,8 @@ theorem InferBranches.inputSound_source
     have hctxRest := Subst.onCtx_wf hs2 (Subst.onCtx_wf hs1 (Subst.onCtx_wf hs0 hctx))
     have hscrutRest := Subst.onTy_lc hs2 (Subst.onTy_lc hs1 (Subst.onTy_lc hs0 hscrut))
     have hresultRest := Subst.onTy_lc hs2 (Subst.onTy_lc hs1 (Subst.onTy_lc hs0 hresult))
-    have hs3 := (hr.lc hctxRest hscrutRest hresultRest).2
-    have htail := hr.inputSound_source hctxRest hscrutRest hresultRest
+    have hs3 := (hr.lc_raw hctxRest hscrutRest hresultRest).2
+    have htail := hr.inputSound_source_raw hctxRest hscrutRest hresultRest
     intro branch hbranch
     rcases List.mem_cons.mp hbranch with rfl | hbranch
     · let args := (((freshVars frontier ctor.paramCount).map Ty.fvar).map s0.onTy).map s1.onTy
@@ -8809,9 +9059,30 @@ theorem InferBranches.inputSound_source
         exact List.mem_map.mpr ⟨branch, hbranch, rfl⟩)
       simpa only [Subst.onCtx_append, Subst.onTy_append, ← substSoft_append,
         ← InferInput.substTyFvars_append] using ht
-termination_by (sizeBranches branches, 0)
+termination_by (sizeBranches request.branches, 0)
 decreasing_by all_goals (simp only [sizeBranches, InferInput.size_substTyFvars, sizeBranches_substInputBranches]; omega)
 end
+
+theorem InferBranchesCert.inputSound_source
+    {request : InferBranchesRequest} {result : InferBranchesResult}
+    (h : InferBranchesCert request result)
+    (hctx : CtxWF request.ctx) (hscrut : request.scrutineeTy.IsLC)
+    (hresult : request.resultTy.IsLC) :
+    ∀ branch ∈ request.branches,
+      BranchTyping InputTyping
+        (request.protectedVars ++ softVars (substSoft result.subst request.soft))
+        (result.subst.onCtx request.ctx)
+        (branch.1, branch.2.substTyFvars result.subst)
+        (result.subst.onTy request.scrutineeTy) (result.subst.onTy request.resultTy) :=
+  InferBranchesCert.inputSound_source_raw h hctx hscrut hresult
+
+theorem InferBranches.inputSound_source
+    (h : InferBranches K F frontier ctx scrutTy resultTy branches next subst completed)
+    (hctx : CtxWF ctx) (hscrut : scrutTy.IsLC) (hresult : resultTy.IsLC) :
+    ∀ branch ∈ branches, BranchTyping InputTyping (K ++ softVars (substSoft subst F))
+      (subst.onCtx ctx) (branch.1, branch.2.substTyFvars subst)
+      (subst.onTy scrutTy) (subst.onTy resultTy) :=
+  InferBranchesCert.inputSound_source h hctx hscrut hresult
 
 theorem InferCert.inputSound_source {request : InferRequest} {result : InferResult}
     (h : InferCert request result) (hctx : CtxWF request.ctx) :
@@ -9211,9 +9482,9 @@ private theorem InferCert.completes_source_raw (h : Infer K F frontier ctx input
   | .match_ _ hs _ hb =>
     intro hctx
     have hs1 := (hs.lc hctx).2
-    have hbr := hb.lc (Subst.onCtx_wf hs1 hctx) (hs.lc hctx).1 .fvar
-    have hscrut := (hs.completes_source_raw hctx).onSubst_soft _ hbr.2 hb.dom_avoids
-    have hbranches := hb.completes_source (Subst.onCtx_wf hs1 hctx) (hs.lc hctx).1 .fvar
+    have hbr := hb.lc_raw (Subst.onCtx_wf hs1 hctx) (hs.lc hctx).1 .fvar
+    have hscrut := (hs.completes_source_raw hctx).onSubst_soft _ hbr.2 hb.dom_avoids_raw
+    have hbranches := hb.completes_source_raw (Subst.onCtx_wf hs1 hctx) (hs.lc hctx).1 .fvar
     simp only [← substSoft_append, ← InferInput.substTyFvars_append] at hscrut
     simp only [← substSoft_append, ← substInputBranches_append] at hbranches
     simpa only [InferInput.substTyFvars, ← substSoft_append, substInputBranches_append] using
@@ -9223,30 +9494,37 @@ decreasing_by
   all_goals simp only [sizeBindings_substInputBindings] at *
   all_goals (simp only [InferInput.size, InferInput.size_openTyVars, InferInput.size_substTyFvars, sizeBranches_substInputBranches]; omega)
 
-theorem InferBranches.completes_source
-    (h : InferBranches K F frontier ctx scrutTy resultTy branches next subst completed)
-    (hctx : CtxWF ctx) (hscrut : scrutTy.IsLC) (hresult : resultTy.IsLC) :
-    CompletedBranches AnnotationCompletion (K ++ softVars (substSoft subst F))
-      (substInputBranches subst branches) completed := by
+private theorem InferBranchesCert.completes_source_raw
+    {request : InferBranchesRequest} {result : InferBranchesResult}
+    (h : InferBranchesCert request result)
+    (hctx : CtxWF request.ctx) (hscrut : request.scrutineeTy.IsLC)
+    (hresult : request.resultTy.IsLC) :
+    CompletedBranches AnnotationCompletion
+      (request.protectedVars ++ softVars (substSoft result.subst request.soft))
+      (substInputBranches result.subst request.branches) result.completedBranches := by
   match h with
   | .nil => exact .nil
-  | @InferBranches.consWild body rest K F frontier ctx first s1 bodyOut bodyTy resultTy s2 scrutTy next s3 restOut
+  | @InferBranchesCert.consWild body rest K F frontier ctx scrutTy resultTy
+      ⟨first, s1, bodyOut, bodyTy⟩ s2 ⟨next, s3, restOut⟩
       _ hb hu hr =>
+    simp only [wildcardBranchesResult] at ⊢
     obtain ⟨hbTy, hs1⟩ := hb.lc hctx
     have hs2 := hu.unifies.lc hbTy (Subst.onTy_lc hs1 hresult)
     have hctxRest := Subst.onCtx_wf hs2 (Subst.onCtx_wf hs1 hctx)
     have hscrutRest := Subst.onTy_lc hs2 (Subst.onTy_lc hs1 hscrut)
     have hresultRest := Subst.onTy_lc hs2 (Subst.onTy_lc hs1 hresult)
-    have hs3 := (hr.lc hctxRest hscrutRest hresultRest).2
-    have htail := hr.completes_source hctxRest hscrutRest hresultRest
+    have hs3 := (hr.lc_raw hctxRest hscrutRest hresultRest).2
+    have htail := hr.completes_source_raw hctxRest hscrutRest hresultRest
     have head := (hb.completes_source_raw hctx).onSubst_soft (s2 ++ s3)
       (fun p hp => (List.mem_append.mp hp).elim (hs2 p) (hs3 p))
       (fun p hp => (List.mem_append.mp hp).elim (hu.dom_avoids p) (hr.dom_avoids p))
     simp only [← substSoft_append, ← InferInput.substTyFvars_append, ← substInputBranches_append,
       List.append_assoc] at head htail ⊢
     exact CompletedBranches.cons head htail
-  | @InferBranches.cons name count body rest K F ctor scrutTy frontier s0 ctx first s1 bodyOut bodyTy resultTy s2 next s3 restOut
+  | @InferBranchesCert.cons name count body rest K F ctor scrutTy frontier s0 ctx
+      ⟨first, s1, bodyOut, bodyTy⟩ resultTy s2 ⟨next, s3, restOut⟩
       _ hlookup hcount hu0 hb hu hr =>
+    simp only [namedBranchesResult] at ⊢
     have hs0 := hu0.unifies.lc hscrut
       (.customTy (fun t ht => by obtain ⟨v, _, rfl⟩ := List.mem_map.mp ht; exact .fvar))
     have hbodyWF := branchBindings_wf (ctorr := ctor)
@@ -9261,17 +9539,34 @@ theorem InferBranches.completes_source
     have hctxRest := Subst.onCtx_wf hs2 (Subst.onCtx_wf hs1 (Subst.onCtx_wf hs0 hctx))
     have hscrutRest := Subst.onTy_lc hs2 (Subst.onTy_lc hs1 (Subst.onTy_lc hs0 hscrut))
     have hresultRest := Subst.onTy_lc hs2 (Subst.onTy_lc hs1 (Subst.onTy_lc hs0 hresult))
-    have hs3 := (hr.lc hctxRest hscrutRest hresultRest).2
-    have htail := hr.completes_source hctxRest hscrutRest hresultRest
+    have hs3 := (hr.lc_raw hctxRest hscrutRest hresultRest).2
+    have htail := hr.completes_source_raw hctxRest hscrutRest hresultRest
     have head := (hb.completes_source_raw hbodyWF).onSubst_soft (s2 ++ s3)
       (fun p hp => (List.mem_append.mp hp).elim (hs2 p) (hs3 p))
       (fun p hp => (List.mem_append.mp hp).elim (hu.dom_avoids p) (hr.dom_avoids p))
     simp only [← substSoft_append, ← InferInput.substTyFvars_append, ← substInputBranches_append,
       List.append_assoc] at head htail ⊢
     exact CompletedBranches.cons head htail
-termination_by (sizeBranches branches, 0)
+termination_by (sizeBranches request.branches, 0)
 decreasing_by all_goals (simp only [sizeBranches, InferInput.size_substTyFvars, sizeBranches_substInputBranches]; omega)
 end
+
+theorem InferBranchesCert.completes_source
+    {request : InferBranchesRequest} {result : InferBranchesResult}
+    (h : InferBranchesCert request result)
+    (hctx : CtxWF request.ctx) (hscrut : request.scrutineeTy.IsLC)
+    (hresult : request.resultTy.IsLC) :
+    CompletedBranches AnnotationCompletion
+      (request.protectedVars ++ softVars (substSoft result.subst request.soft))
+      (substInputBranches result.subst request.branches) result.completedBranches :=
+  InferBranchesCert.completes_source_raw h hctx hscrut hresult
+
+theorem InferBranches.completes_source
+    (h : InferBranches K F frontier ctx scrutTy resultTy branches next subst completed)
+    (hctx : CtxWF ctx) (hscrut : scrutTy.IsLC) (hresult : resultTy.IsLC) :
+    CompletedBranches AnnotationCompletion (K ++ softVars (substSoft subst F))
+      (substInputBranches subst branches) completed :=
+  InferBranchesCert.completes_source h hctx hscrut hresult
 
 theorem InferCert.completes_source {request : InferRequest} {result : InferResult}
     (h : InferCert request result) (hctx : CtxWF request.ctx) :

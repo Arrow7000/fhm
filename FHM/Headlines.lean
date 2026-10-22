@@ -82,6 +82,12 @@ bundle as one premise. -/
 #check @InferCert.letSignature
 #check @InferCert.match_
 #check @InferCert.letRec
+#check @InferBranchesRequest
+#check @InferBranchesResult
+#check @InferBranchesCert
+#check @InferBranchesCert.nil
+#check @InferBranchesCert.consWild
+#check @InferBranchesCert.cons
 #check @InferRun
 #check @InferRun.cert
 #check @InferCert.sourceSound
@@ -93,6 +99,9 @@ bundle as one premise. -/
 #check @InferCert.sound
 #check @InferCert.Principal
 #check @InferCert.principal
+#check @InferBranchesCert.SourcePrincipal
+#check @InferBranchesCert.nil_det
+#check @InferBranchesCert.sourcePrincipal_of_body
 
 example (K : List Nat) (frontier : Nat) (ctx : Ctx) (input : InferInput) : InferRequest :=
   InferRequest.core K frontier ctx input
@@ -161,6 +170,13 @@ example {request : InferRequest} {result : InferResult} :
         result.frontier result.subst result.completedExpr result.ty :=
   Iff.rfl
 
+example {request : InferBranchesRequest} {result : InferBranchesResult} :
+    InferBranchesCert request result ↔
+      InferBranches request.protectedVars request.soft request.frontier request.ctx
+        request.scrutineeTy request.resultTy request.branches
+        result.frontier result.subst result.completedBranches :=
+  Iff.rfl
+
 #check @Infer.sourceSound
 #check @Infer.inputSound_source
 #check @Infer.inputSound
@@ -172,6 +188,9 @@ example {request : InferRequest} {result : InferResult} :
 #check @InferBranches.inputSound_source
 #check @InferBranches.completes_source
 #check @InferBranches.erase
+#check @InferBranches.SourcePrincipal
+#check @InferBranches.nil_det
+#check @InferBranches.sourcePrincipal_of_body
 #check @inferWithTypes_source_sound
 #check @inferWithTypes_input_sound
 #check @inferWithTypes_erase
