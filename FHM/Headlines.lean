@@ -42,7 +42,20 @@ example (ctors : CtorEnv) (ke : KindEnv) :
     List ValName → List ValName → Surface.Expr → InferInput → Prop :=
   LowersExpr ctors ke
 
-/-- The verified surface-to-input and input-to-Core stages compose without a
+/-- The production semantic path types partial source and erases it directly.
+No completed expression or annotation-fidelity witness is needed by this API. -/
+theorem lower_and_infer_direct {ctors : CtorEnv} {source : Surface.Expr}
+    {input : InferInput} {result : InferenceResult}
+    (hlow : lower ctors source = some input)
+    (hinfer : inferWithTypes ctors input = some result) :
+    Lowers ctors source input ∧
+      InputTyping input.rigidVars ⟨[], ctors⟩ input result.ty ∧
+      RuntimeTyping.RunWT ⟨[], ctors⟩ input.erase result.ty := by
+  have ht := inferWithTypes_input_sound hinfer
+  exact ⟨lower_sound hlow, ht, ht.erase⟩
+
+/-- Compatibility API including completed-Core and fidelity artifacts.
+The verified surface-to-input and input-to-Core stages compose without a
 second lowering or inference pass. -/
 theorem lower_and_infer_sound {ctors : CtorEnv} {source : Surface.Expr}
     {input : InferInput} {result : InferenceResult}
@@ -524,9 +537,16 @@ guards live in `FHM.Headlines.CompleteCore`. -/
 
 -- Checked for all canonical constructors, including partial recursive signatures.
 #print axioms lower_and_infer_sound
+#print axioms lower_and_infer_direct
 #print axioms InferRun.cert
 #print axioms InferCert.sourceSound
 #print axioms InferCert.inputSound
+#print axioms PartialCore.Ann.SignatureMatches.ofCofinite
+#print axioms PartialCore.Ann.SignatureMatches.onSubst_source
+#print axioms PartialCore.Ann.MonoMatches.ofCofinite
+#print axioms PartialCore.Ann.MonoMatches.onSubst_source
+#print axioms InputTyping.template_completion
+#print axioms InputTyping.partialSignature_completion
 #print axioms InferCert.completes
 #print axioms InferCert.erase
 #print axioms InferCert.sound

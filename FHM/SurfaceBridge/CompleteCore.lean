@@ -43,7 +43,7 @@ theorem coreTypecheck_accepts_iff {ctors : CtorEnv} {core : Expr} :
   · rintro ⟨ty,ht⟩
     apply coreTypecheck_isSome_iff.mpr
     apply inferWithTypes_complete
-    exact InputTyping.complete (InferInput.toCore_ofCore core)
+    exact InputTyping.ofComplete (InferInput.toCore_ofCore core)
       (fun v hv => ((InferInput.ofCore core).toCore_rigidVars
         (InferInput.toCore_ofCore core) v).mpr hv) ht
 
@@ -59,7 +59,7 @@ theorem inferOfCore_principal {ctors : CtorEnv} {core : Expr} {result : Inferenc
     ∃ R : Subst,(∀ pair ∈ R,pair.2.IsLC) ∧ target = R.onTy result.ty ∧
       ∀ v ∈ core.tyFreeVars,R.onTy (.fvar v) = .fvar v := by
   obtain ⟨R,hR,he,hfix⟩ := inferWithTypes_principal h target
-    (InputTyping.complete (InferInput.toCore_ofCore core)
+    (InputTyping.ofComplete (InferInput.toCore_ofCore core)
       (fun v hv => ((InferInput.ofCore core).toCore_rigidVars
         (InferInput.toCore_ofCore core) v).mpr hv) ht)
   exact ⟨R,hR,he,fun v hv => hfix v (((InferInput.ofCore core).toCore_rigidVars

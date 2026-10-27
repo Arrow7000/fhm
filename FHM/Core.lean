@@ -262,7 +262,8 @@ def MatchPattern.matchesCtor : MatchPattern → CtorName → Nat → Bool
   | .wildcard,  _,    _     => true
 
 
-/-- An expression in our language -/
+/-- Completed compatibility syntax and operational terms. Canonical source
+annotations, including holes, live in `InferInput` below. -/
 inductive Expr
   | primLit (prim : PrimLitExpr)
   /-- A primitive binary operator (e.g. `intAdd`). A leaf naming a built-in,
@@ -304,6 +305,80 @@ inductive Expr
   | letRec (bindings : List (RecBinding (Option PolyTy) Expr)) (body : Expr)
 
 abbrev CoreRecBinding := RecBinding (Option PolyTy) Expr
+
+/-! Source syntax lives below inference. `Expr` above is the historical
+completed/operational representation. The default `InferInput` is the canonical
+source spine; no inference state occurs in its annotation syntax. -/
+
+namespace PartialCore
+
+/-- Canonical partial annotation syntax. Names are local to one annotation. -/
+inductive Template where
+  | fixed (ty : Ty)
+  | hole
+  | named (name : String)
+  | arrow (domain codomain : Template)
+  | custom (name : TyName) (args : List Template)
+  deriving Repr
+
+inductive Ann where
+  | absent
+  | complete (scheme : PolyTy)
+  | template (body : Template)
+  | partialForall (paramCount : Nat) (body : Template)
+
+end PartialCore
+
+/-- Compatibility aliases for the same canonical annotation types. -/
+abbrev TyTemplate := PartialCore.Template
+abbrev BindingAnn := PartialCore.Ann
+
+/-- Annotation-parametric Core source. In particular, changing annotation
+syntax does not introduce another language of terms or another universe of
+types, schemes, environments, or constructors. -/
+inductive InferInput (ParamAnn : Type := Option TyTemplate) (BindAnn : Type := BindingAnn) where
+  | primLit (value : PrimLitExpr)
+  | primBinOp (op : PrimBinOp)
+  | lambda (ann : ParamAnn) (body : InferInput ParamAnn BindAnn)
+  | app (fn arg : InferInput ParamAnn BindAnn)
+  | letIn (ann : BindAnn) (rhs body : InferInput ParamAnn BindAnn)
+  | var (index : Nat)
+  | ctor (name : CtorName)
+  | match_ (scrutinee : InferInput ParamAnn BindAnn)
+      (branches : List (MatchPattern × InferInput ParamAnn BindAnn))
+  | letRec (bindings : List (RecBinding BindAnn (InferInput ParamAnn BindAnn)))
+      (body : InferInput ParamAnn BindAnn)
+
+abbrev InputRecBinding := RecBinding BindingAnn InferInput
+
+mutual
+/-- All source annotation policies erase to the same operational Core. -/
+def InferInput.erase {P B : Type} : InferInput P B → Expr
+  | .primLit p => .primLit p
+  | .primBinOp op => .primBinOp op
+  | .lambda _ body => .lambda none body.erase
+  | .app f x => .app f.erase x.erase
+  | .letIn _ rhs body => .letIn none rhs.erase body.erase
+  | .var i => .var i
+  | .ctor c => .ctor c
+  | .match_ scrut branches => .match_ scrut.erase (eraseBranches branches)
+  | .letRec bindings body => .letRec (eraseBindings bindings) body.erase
+def eraseBranches {P B : Type} :
+    List (MatchPattern × InferInput P B) → List (MatchPattern × Expr)
+  | [] => []
+  | (pat, body) :: rest => (pat, body.erase) :: eraseBranches rest
+def eraseBindings {P B : Type} :
+    List (RecBinding B (InferInput P B)) → List CoreRecBinding
+  | [] => []
+  | ⟨_, rhs⟩ :: rest => { ann := none, rhs := rhs.erase } :: eraseBindings rest
+end
+
+namespace PartialCore
+
+/-- Alias for the canonical Core source, with annotation-local named holes. -/
+abbrev Source := InferInput (Option Template) Ann
+
+end PartialCore
 
 def RecBinding.mapAnn (f : Ann → Ann') (binding : RecBinding Ann Term) :
     RecBinding Ann' Term :=
@@ -2896,7 +2971,8 @@ whose scheme witnesses remain in the proof and never enter the runtime terms. -/
 
 mutual
 
-/-- Declarative Hindley–Milner typing for annotated Core source. -/
+/-- Historical complete-Core typing, retained for compatibility and neutral
+runtime lemmas. Canonical partial-source typing is `InputTyping`. -/
 inductive TypeOfHM : Ctx → Expr → Ty → Prop
   | primLitUnit :
     TypeOfHM ctx (.primLit .unit) (.prim .unit)

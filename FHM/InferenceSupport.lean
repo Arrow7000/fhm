@@ -8663,3 +8663,108 @@ theorem exists_instantiation_residual {Φ k : Nat} {S₀ : Subst} {K : List Nat}
        (R.onTy (Ty.openVars (freshVars Φ k) ty))
     rw [hR_def, Subst.onTy_append, Subst.onTy_append, hproxy, hS₀comm]
     exact hzip'.symm
+
+/-! ## Fresh block overrides -/
+
+private theorem override_freshVars_getElem? {Φ n i : Nat} (hi : i < n) :
+    (freshVars Φ n)[i]? = some (Φ + i) := by
+  simp only [freshVars, List.getElem?_map, List.getElem?_range hi, Option.map_some]
+
+/-- Assign a freshly allocated block arbitrary LC targets while preserving an
+existing substitution on every earlier variable. Targets may mention the block. -/
+theorem Subst.override_block {S0 : Subst} (hS0 : ∀ p ∈ S0, p.2.IsLC)
+    (Φ : Nat) (ts : List Ty) (hts : ∀ t ∈ ts, t.IsLC) :
+    ∃ U : Subst, (∀ p ∈ U, p.2.IsLC) ∧ Subst.AgreesBelow Φ S0 U ∧
+      ∀ i (hi : i < ts.length), U.onTy (.fvar (Φ + i)) = ts[i] := by
+  obtain ⟨W, hWge, hWfresh⟩ := exists_fresh_block
+    (S0.map Prod.fst ++ S0.flatMap (fun p => p.2.freeVars) ++ ts.flatMap Ty.freeVars)
+    Φ ts.length
+  let A : Subst := (freshVars Φ ts.length).zip ((freshVars W ts.length).map Ty.fvar)
+  let C : Subst := (freshVars W ts.length).zip ts
+  let U : Subst := A ++ S0 ++ C
+  have hUonTy : ∀ x, U.onTy x = C.onTy (S0.onTy (A.onTy x)) := by
+    intro x; exact (Subst.onTy_append _ _ _).trans (congrArg C.onTy (Subst.onTy_append _ _ _))
+  have hkeys : ∀ w ∈ freshVars W ts.length, w ∉ S0.map Prod.fst := by
+    intro w hw hc
+    have := freshVars_ge w hw
+    have := hWfresh w (List.mem_append_left _ (List.mem_append_left _ hc))
+    omega
+  have hranges : ∀ w ∈ freshVars W ts.length, ∀ p ∈ S0, w ∉ p.2.freeVars := by
+    intro w hw p hp hc
+    have := freshVars_ge w hw
+    have := hWfresh w (List.mem_append_left _ (List.mem_append_right _
+      (List.mem_flatMap.mpr ⟨p, hp, hc⟩)))
+    omega
+  have htargets : ∀ t ∈ ts, Ty.BelowFvars W t := by
+    intro t ht
+    apply Ty.BelowFvars.of_freeVars_lt
+    intro v hv
+    exact hWfresh v (List.mem_append_right _ (List.mem_flatMap.mpr ⟨t, ht, hv⟩))
+  refine ⟨U, ?_, ?_, ?_⟩
+  · intro p hp
+    rcases List.mem_append.mp hp with hp | hp
+    · rcases List.mem_append.mp hp with hp | hp
+      · obtain ⟨x, _, heq⟩ := List.mem_map.mp (List.of_mem_zip hp).2
+        rw [← heq]; exact .fvar
+      · exact hS0 p hp
+    · exact hts p.2 (List.of_mem_zip hp).2
+  · intro v hv
+    symm
+    rw [hUonTy]
+    have hA : A.onTy (.fvar v) = .fvar v := by
+      apply Ty.substFvars_eq_self_of_no_key
+      intro p hp hc
+      simp only [Ty.freeVars, List.mem_singleton] at hc
+      have := freshVars_ge p.1 (List.of_mem_zip hp).1
+      omega
+    rw [hA]
+    apply Ty.substFvars_eq_self_of_no_key
+    intro p hp hc
+    have hw := (List.of_mem_zip hp).1
+    exact Subst.not_mem_onTy_freeVars (hranges p.1 hw)
+      (by simp only [Ty.freeVars, List.mem_singleton]; have := freshVars_ge p.1 hw; omega) hc
+  · intro i hi
+    rw [hUonTy]
+    have hA : A.onTy (.fvar (Φ + i)) = .fvar (W + i) := by
+      apply Ty.substFvars_zip_fvar_eq' freshVars_nodup (override_freshVars_getElem? hi)
+      · rw [List.getElem?_map, override_freshVars_getElem? hi]; rfl
+      · intro x hx hc
+        simp only [Ty.freeVars, List.mem_singleton] at hc
+        have := freshVars_lt x hx
+        omega
+    rw [hA]
+    have hS : S0.onTy (.fvar (W + i)) = .fvar (W + i) := by
+      apply Ty.substFvars_eq_self_of_no_key
+      intro p hp hc
+      simp only [Ty.freeVars, List.mem_singleton] at hc
+      apply hkeys (W + i)
+      · simp only [freshVars, List.mem_map, List.mem_range]
+        exact ⟨i, hi, rfl⟩
+      · rw [← hc]; exact List.mem_map.mpr ⟨p, hp, rfl⟩
+    rw [hS]
+    apply Ty.substFvars_zip_fvar_eq' freshVars_nodup (override_freshVars_getElem? hi)
+      (List.getElem?_eq_getElem hi)
+    intro w hw hc
+    have := freshVars_ge w hw
+    have := (htargets ts[i] (List.getElem_mem hi)).mem_lt w hc
+    omega
+
+/-- Free-variable replacement cannot remove an existing bound variable. -/
+theorem ContainsBvarsUpTo.of_substFvar {n Z : Nat} {U ty : Ty}
+    (h : ContainsBvarsUpTo n (Ty.substFvar Z U ty)) : ContainsBvarsUpTo n ty := by
+  induction ty using Ty.rec_strong with
+  | prim p => exact .prim
+  | bvar i => exact h
+  | fvar v => exact .fvar
+  | arrow a b iha ihb => cases h with | arrow ha hb => exact .arrow (iha ha) (ihb hb)
+  | customTy name args ih =>
+    cases h with
+    | customTy hall =>
+      exact .customTy (fun t ht => ih t ht (hall _ (by
+        rw [TyList.substFvar_eq_map]; exact List.mem_map.mpr ⟨t, ht, rfl⟩)))
+
+theorem ContainsBvarsUpTo.of_substFvars {n : Nat} {S : Subst} {ty : Ty}
+    (h : ContainsBvarsUpTo n (Ty.substFvars S ty)) : ContainsBvarsUpTo n ty := by
+  induction S generalizing ty with
+  | nil => exact h
+  | cons pair rest ih => exact ContainsBvarsUpTo.of_substFvar (ih h)

@@ -3766,7 +3766,7 @@ inductive SurfaceCovers (ctors : CtorEnv) : Surface.Expr → Prop where
 
 Bool mirrors of `DTreeExhaustive` / `MatchExhaustive` / `SurfaceCovers`.
 Soundness (`= true → Prop`) is the confidence gate — not `#guard` smoke.
-Concrete instances preferred as `example … := by native_decide` (kernel-checked). -/
+Concrete executable regressions follow the generic soundness proofs. -/
 
 /-- Every case tests a real ctor of `T` at the declared arity. -/
 def dTreeCasesOk (ctors : CtorEnv) (T : TyName) :
@@ -4395,16 +4395,15 @@ theorem checkExhaustive_sound {ctors : CtorEnv} :
 
 private def ctorsDemo : CtorEnv := (elabDecls preludeDecls).getD []
 
-/- Concrete instances are *theorems* (`native_decide`), not `#guard` smoke.
-    Soundness is `checkExhaustive_sound` / `matchExhaustiveB_sound` above. -/
-example : matchExhaustiveB ctorsDemo nBool []
-    [.ctor cTrue [], .ctor cFalse []] = true := by native_decide
-example : matchExhaustiveB ctorsDemo nBool []
-    [.ctor cTrue []] = false := by native_decide
-example : checkExhaustive ctorsDemo (.primLit (.int 0)) = true := by native_decide
-example : checkExhaustive ctorsDemo
-    (.ife (.primLit (.bool true)) (.primLit (.int 1)) (.primLit (.int 0))) = true := by
-  native_decide
+/- Executable coverage canaries. Generic soundness is proved by
+   `checkExhaustive_sound` / `matchExhaustiveB_sound` above. -/
+#guard matchExhaustiveB ctorsDemo nBool []
+    [.ctor cTrue [], .ctor cFalse []] = true
+#guard matchExhaustiveB ctorsDemo nBool []
+    [.ctor cTrue []] = false
+#guard checkExhaustive ctorsDemo (.primLit (.int 0)) = true
+#guard checkExhaustive ctorsDemo
+    (.ife (.primLit (.bool true)) (.primLit (.int 1)) (.primLit (.int 0))) = true
 example : checkExhaustive ctorsDemo (.primLit (.int 0)) = true →
     SurfaceCovers ctorsDemo (.primLit (.int 0)) :=
   checkExhaustive_sound _
@@ -4416,32 +4415,25 @@ example : checkExhaustive ctorsDemo (.primLit (.int 0)) = true →
      (.cons (.name (.mk "h")) (.name (.mk "t")), .primLit (.int 1))]) = true
 
 -- Nested parameter positions must retain the types imposed by their patterns.
-example : checkExhaustive ctorsDemo
+#guard checkExhaustive ctorsDemo
     (.match_ (.var (.mk "p"))
-      [(.pair (.pair .wildcard .wildcard) .wildcard, .primLit (.int 0))]) = true := by
-  native_decide
+      [(.pair (.pair .wildcard .wildcard) .wildcard, .primLit (.int 0))]) = true
 
-example : checkExhaustive ctorsDemo
+#guard checkExhaustive ctorsDemo
     (.match_ (.var (.mk "p"))
-      [(.pair .wildcard (.pair .wildcard .wildcard), .primLit (.int 0))]) = true := by
-  native_decide
+      [(.pair .wildcard (.pair .wildcard .wildcard), .primLit (.int 0))]) = true
 
-example : checkExhaustive ctorsDemo
+#guard checkExhaustive ctorsDemo
     (.match_ (.var (.mk "xs"))
       [(.list [], .primLit (.int 0)),
        (.cons (.list []) .wildcard, .primLit (.int 1)),
-       (.cons (.cons .wildcard .wildcard) .wildcard, .primLit (.int 2))]) = true := by
-  native_decide
+       (.cons (.cons .wildcard .wildcard) .wildcard, .primLit (.int 2))]) = true
 
 -- Covering the outer List does not excuse an uncovered nonempty inner List.
-example : checkExhaustive ctorsDemo
+#guard checkExhaustive ctorsDemo
     (.match_ (.var (.mk "xs"))
       [(.list [], .primLit (.int 0)),
-       (.cons (.list []) .wildcard, .primLit (.int 1))]) = false := by
-  native_decide
-
-
-
+       (.cons (.list []) .wildcard, .primLit (.int 1))]) = false
 end SurfaceBridge
 
 /-! ## Lowering -/

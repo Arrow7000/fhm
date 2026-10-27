@@ -1249,10 +1249,10 @@ theorem idid_principalType : corePrincipalType [] idid = some (.arrow (.fvar 3) 
         simpa only [heApp,Option.map_some,Option.some.injEq] using hApp
       subst S
       simp (config := {maxSteps := 1000000}) [heSig,heApp,idid,inferWithTypesCore,seed,InferInput.ofCore,
-        InferInput.rigidVars,InferInput.freshFloor,tyVarCeil,BindingAnn.rigidVars,BindingAnn.ofCore,
+        InferInput.rigidVars,InferInput.freshFloor,tyVarCeil,PartialCore.Ann.rigidVars,PartialCore.Ann.ofCore,
         softVars,TyList.freeVars,Env.freeVars,Ty.freeVars,List.getElem?_cons_zero,
         PolyTy.mkTrivial,PolyTy.openVars,Ty.openVars,freshVars,Subst.onTy,Ty.substFvars,Ty.substFvar,
-        Ty.instantiate,checkSignature,BindingAnn.isSignature,BindingAnn.paramCount,BindingAnn.substTyFvars,
+        Ty.instantiate,checkSignature,PartialCore.Ann.isSignature,PartialCore.Ann.paramCount,PartialCore.Ann.substTyFvars,
         InferInput.openTyVars,InferInput.openTyVarsFrom,InferInput.substTyFvars,Subst.onCtx,Subst.onEnv,
         substSoft,signatureScheme,signatureNames,Ty.bvarsBelow]
 
