@@ -1040,5 +1040,119 @@ test("recursive completions preserve unused prefix order before an inferred bind
   run(source, "((1, True), (False, 2))");
 });
 
+
+function holeScope(symbol) {
+  return [symbol.scopeStartLine, symbol.scopeStartCol, symbol.scopeEndLine, symbol.scopeEndCol];
+}
+
+// Named labels start with '?', so identifier word-boundary matching is inappropriate.
+function namedHovers(payload, source) {
+  const { ranged, tokens } = normalizePayload(payload);
+  const holes = payload.symbols.filter(s => s.kind === "typeHole" && s.name.startsWith("?"));
+  assert.ok(holes.length > 0);
+  for (const symbol of holes) {
+    const line0 = symbol.startLine - 1;
+    const line = source.split("\n")[line0];
+    assert.equal(line.slice(symbol.startCol - 1, symbol.endCol - 1), symbol.name);
+    for (let col0 = symbol.startCol - 1; col0 < symbol.endCol - 1; col0++) {
+      const hit = resolveHover(ranged, line0, col0, line, tokens);
+      assert.equal(hit?.kind, "typeHole");
+      assert.equal(hit?.name, symbol.name);
+      assert.equal(hit?.type, symbol.type);
+      assert.ok(hoverMarkdown(hit).includes(symbol.name + " : " + symbol.type));
+      assert.equal(resolveDefinition(ranged, line0, col0, line, tokens), undefined);
+    }
+  }
+  return holes;
+}
+
+test("repeated named holes share one local solution and hover across the '?' token", () => {
+  const source = "(\\(p : (?item, ?item)) -> p) (1, 2)\n";
+  const holes = namedHovers(diagnose(source), source);
+  assert.deepEqual(holes.map(s => [s.name, s.type]), [["?item", "Int"], ["?item", "Int"]]);
+  assert.deepEqual(holeScope(holes[0]), holeScope(holes[1]));
+  assert.notEqual(holes[0].startCol, holes[1].startCol);
+  run(source, "(1, 2)");
+});
+
+test("repeated named holes reject conflicting Int/Bool components", () => {
+  const source = "(\\(p : (?a, ?a)) -> p) (1, True)\n";
+  for (const args of [["diagnose"], ["run", "--json"]]) {
+    const response = cli(args, source);
+    assert.equal(response.status, 1);
+    if (args[0] === "diagnose") {
+      assert.ok(response.payload.diagnostics.some(d => d.code === "type.argumentMismatch"));
+      assert.ok(response.payload.diagnostics.some(d =>
+        d.message.includes("?a") && d.message.includes("this parameter annotation")));
+    } else {
+      assert.equal(response.payload.stage, "typecheck");
+    }
+  }
+});
+
+test("different names and anonymous occurrences remain independent", () => {
+  const source = "(\\(p : (?a, (_, (?a, ?b)))) -> p) (1, (True, (2, 'x')))\n";
+  const payload = diagnose(source);
+  const holes = namedHovers(payload, source);
+  assert.deepEqual(holes.map(s => s.type), ["Int", "Int", "Char"]);
+  assert.deepEqual(payload.symbols.filter(s => s.kind === "typeHole").map(s => s.type),
+    ["Int", "Bool", "Int", "Char"]);
+  run(source, "(1, (True, (2, 'x')))");
+});
+
+test("the same named spelling in separate lambda annotations is independent", () => {
+  const source = "(\\(x : ?a) (y : ?a) -> (x,y)) 1 True\n";
+  const holes = namedHovers(diagnose(source), source);
+  assert.deepEqual(holes.map(s => s.type), ["Int", "Bool"]);
+  assert.notDeepEqual(holeScope(holes[0]), holeScope(holes[1]));
+  run(source, "(1, True)");
+});
+
+test("head desugaring preserves parameter and result annotation-local names", () => {
+  const source = "let f {unused} (x : ?same) (y : ?same) : ?same = 1\nf True 'x'\n";
+  const holes = namedHovers(diagnose(source), source);
+  assert.deepEqual(holes.map(s => s.type), ["a", "b", "Int"]);
+  assert.equal(new Set(holes.map(s => JSON.stringify(holeScope(s)))).size, 3);
+  run(source, "1");
+});
+
+test("named completion under a written forall survives independent instantiations", () => {
+  const source = "let id : {item} ?a -> ?a = \\(x : item) -> x\n(id 1, id True)\n";
+  const payload = diagnose(source);
+  const holes = namedHovers(payload, source);
+  assert.deepEqual(holes.map(s => s.type), ["item", "item"]);
+  assert.deepEqual(holeScope(holes[0]), holeScope(holes[1]));
+  hover(payload, source, 1, "id", "Int → Int", 0);
+  hover(payload, source, 1, "id", "Bool → Bool", 1);
+  run(source, "(1, True)");
+});
+
+test("mutually recursive partial named signatures keep member-local solutions", () => {
+  const source = "let f : {left} left -> ?a = \\(x : left) -> if True then x else g x\n" +
+    "let g : {right} right -> ?a = \\(y : right) -> f y\n(f 1, g False)\n";
+  const holes = namedHovers(diagnose(source), source);
+  assert.deepEqual(holes.toSorted((a, b) => a.startLine - b.startLine).map(s => s.type), ["left", "right"]);
+  assert.notDeepEqual(holeScope(holes[0]), holeScope(holes[1]));
+  run(source, "(1, False)");
+});
+
+test("named-hole spans use UTF-16 with non-BMP source identifiers", () => {
+  const source = "('😀', (\\(x : ?😀) -> x) True)\n";
+  const payload = diagnose(source);
+  const holes = namedHovers(payload, source);
+  assert.deepEqual(holes.map(s => [s.name, s.type]), [["?😀", "Bool"]]);
+  assert.equal(holes[0].endCol - holes[0].startCol, 3);
+  run(source, "('😀', True)");
+});
+
+test("malformed named holes and named holes used as values are rejected", () => {
+  for (const source of ["\\(x : ?) -> x\n", "\\(x : ?1) -> x\n", "\\(x : ? a) -> x\n",
+    "?value\n", "\\(x : ?a Int) -> x\n"]) {
+    const result = cli(["diagnose"], source);
+    assert.equal(result.status, 1, source);
+    assert.ok(result.payload.diagnostics.length > 0, source);
+  }
+});
+
 console.log(`${tests - failures}/${tests} HM CLI/editor semantic smoke checks passed.`);
 process.exitCode = failures ? 1 : 0;

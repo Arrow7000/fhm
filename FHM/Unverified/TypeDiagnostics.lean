@@ -15,6 +15,7 @@ open SurfaceBridge.Provenance Surface.Span
 
 inductive Reason where
   | argumentMismatch (expected actual : Ty)
+  | namedArgumentMismatch (names : List String) (expected actual : Ty)
   | notFunction (actual : Ty)
   | infiniteType (varId : Nat) (within : Ty)
   | incompatibleApplication (functionType argumentType : Ty)
@@ -26,7 +27,7 @@ structure Error where
   deriving Repr
 
 def Reason.code : Reason → String
-  | .argumentMismatch .. => "type.argumentMismatch"
+  | .argumentMismatch .. | .namedArgumentMismatch .. => "type.argumentMismatch"
   | .notFunction .. => "type.notFunction"
   | .infiniteType .. => "type.infiniteType"
   | .incompatibleApplication .. => "type.incompatibleApplication"
@@ -91,6 +92,15 @@ decreasing_by
   all_goals simp only [Expr.size, Expr.size_openTyVars]
   all_goals omega
 
+/-- Keep repeated source names local to this one written parameter annotation.
+This explains a failed application; it does not supply types to inference. -/
+private def argumentReason (fn : InferInput) (expected actual : Ty) : Reason :=
+  let names := match fn with
+    | .lambda (some t) _ => t.names.dedup.filter fun name => 1 < t.names.count name
+    | _ => []
+  if names.isEmpty then .argumentMismatch expected actual
+  else .namedArgumentMismatch names expected actual
+
 /-- Partial annotations follow the canonical worker. Completed subtrees retain
     the existing, more detailed annotation diagnostics. -/
 partial def probe (K : List Nat) (Φ : Nat) (ctx : Ctx)
@@ -114,7 +124,7 @@ partial def probe (K : List Nat) (Φ : Nat) (ctx : Ctx)
             let fnTy := S₂.onTy τf
             if (unifyCoreK K fnTy (.arrow τa (.fvar Φ₂))).isSome then none
             else match fnTy with
-              | .arrow expected _ => some ⟨[.appArg], .argumentMismatch expected τa⟩
+              | .arrow expected _ => some ⟨[.appArg], argumentReason f expected τa⟩
               | .fvar n =>
                   if n ∈ τa.freeVars then
                     some ⟨[], .infiniteType n (.arrow τa (.fvar Φ₂))⟩
@@ -138,7 +148,7 @@ partial def probe (K : List Nat) (Φ : Nat) (ctx : Ctx)
 /-- Keep type values and location separate from human-facing wording. -/
 def Reason.message (reason : Reason) : String :=
   let types := match reason with
-    | .argumentMismatch a b | .incompatibleApplication a b => [a, b]
+    | .argumentMismatch a b | .namedArgumentMismatch _ a b | .incompatibleApplication a b => [a, b]
     | .notFunction a => [a]
     | .infiniteType n a => [.fvar n, a]
   let display : FHM.Unverified.HMDisplay.Context := {
@@ -148,6 +158,9 @@ def Reason.message (reason : Reason) : String :=
   match reason with
   | .argumentMismatch expected actual =>
       s!"type mismatch: expected {pretty expected}, got {pretty actual}"
+  | .namedArgumentMismatch names expected actual =>
+      let labels := String.intercalate ", " (names.map ("?" ++ ·))
+      s!"type mismatch: expected {pretty expected}, got {pretty actual}; repeated names ({labels}) each keep one type within this parameter annotation"
   | .notFunction actual => s!"cannot apply a value of type {pretty actual} as a function"
   | .infiniteType n within =>
       s!"infinite type: {pretty (.fvar n)} would have to equal {pretty within}"

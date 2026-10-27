@@ -105,6 +105,8 @@ structure NameReference where
   name : String
   kind : ReferenceKind
   span : Span
+  /-- Enclosing written annotation for annotation-local named-hole identity. -/
+  annotation? : Option Span := none
   deriving Repr, BEq
 
 /-- Spanned top-level program: RHS hulls per binding in group order + body.

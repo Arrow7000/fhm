@@ -125,6 +125,7 @@ def applyTyArgs (head : Ty) (args : List Ty) : Except String Ty :=
     | .customTy _ (_ :: _) => .error "type application is already saturated"
     | .prim _ => .error "primitive type cannot take arguments"
     | .hole => .error "type hole cannot take arguments"
+    | .namedHole _ => .error "named type hole cannot take arguments"
     | .tvar _ => .error "type variable cannot take arguments"
     | .arrow _ _ => .error "function type cannot take arguments"
     | .pair _ _ => .error "pair type cannot take arguments"
@@ -232,6 +233,7 @@ Expression parsers return `Expr × List ParsedNameSpan × SpannedExpr`.
     backtracking discards both. Public APIs keep returning definition spans. -/
 structure ParsedNameSpan extends BinderSpan where
   isDef : Bool := true
+  annotation? : Option Span := none
   deriving Repr, BEq
 
 abbrev PE := P (Expr × List ParsedNameSpan × SpannedExpr)
@@ -295,6 +297,11 @@ partial def tyAtom : P Ty :=
       do
         let _ ← punct .underscore
         return .hole,
+      do
+        let name ← tokenMap fun t => match t.token with
+          | .namedHole name => some name
+          | _ => none
+        return .namedHole name,
       -- `()` unit
       do
         let _ ← punct .lparen
@@ -363,6 +370,7 @@ end
 def typeWithReferences (p : P Ty) : P (Ty × List ParsedNameSpan) := do
   let (t, start, stop) ← withCapture p
   let stream ← getStream
+  let annotation ← spanOfConsumed start stop
   let refs := (stream.array.extract start stop).toList.filterMap fun tok =>
     match tok.token with
     | .ident name upper => some ({
@@ -375,6 +383,12 @@ def typeWithReferences (p : P Ty) : P (Ty × List ParsedNameSpan) := do
         kind := .param
         span := Span.ofTok tok
         isDef := false } : ParsedNameSpan)
+    | .namedHole name => some ({
+        name := "?" ++ name
+        kind := .param
+        span := Span.ofTok tok
+        isDef := false
+        annotation? := some annotation } : ParsedNameSpan)
     | _ => none
   return (t, refs)
 
@@ -1335,10 +1349,11 @@ def parseProgramWithSpans (src : String) :
         some ({
           name := b.name
           span := b.span
+          annotation? := b.annotation?
           kind := match b.kind with
             | .type => .type
             | .ctor => .ctor
-            | _ => if b.name == "_" then .typeHole else .typeVar } : Surface.Span.NameReference)
+            | _ => if b.name == "_" || b.name.startsWith "?" then .typeHole else .typeVar } : Surface.Span.NameReference)
     let defs := bs.filterMap fun b => if b.isDef then some b.toBinderSpan else none
     let defs ← attachDocs defs toks.toList
     pure (p, defs, { sp with references := refs })

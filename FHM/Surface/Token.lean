@@ -46,6 +46,7 @@ inductive Token
   /-- `/-- … -/` or a `---` line, with its text normalised (`Lex.docBlockText`). -/
   | docComment (text : String)
   | ident (raw : String) (isUpper : Bool)
+  | namedHole (name : String)
   | keyword (kw : Keyword)
   | intLit (n : Int)
   | charLit (c : Char)
@@ -110,6 +111,9 @@ def keywordSurfaces : List String := keywordEntries.map (·.1)
 
 /-- Bool literals recognized by `classifyIdent` (not keywords). -/
 def boolLitSurfaces : List String := ["True", "False"]
+
+/-- Dedicated type-hole prefix, never a value identifier or operator. -/
+def namedHolePrefix : String := "?"
 
 /-- Surface spelling of a builtin operator token. -/
 def BinOpToken.surface : BinOpToken → String

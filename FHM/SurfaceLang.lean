@@ -12,6 +12,8 @@ inductive PrimTy
 inductive Ty
   /-- An independently inferred type at this annotation occurrence. -/
   | hole
+  /-- One annotation-local inferred type shared by equal names. -/
+  | namedHole (name : String)
   | prim : PrimTy → Ty
   | pair : (fst snd : Ty) → Ty
   | arrow : (from_ to_ : Ty) → Ty
@@ -28,6 +30,7 @@ Strong induction for `Ty` with a useful IH on `customTy`:
 @[elab_as_elim]
 def Ty.rec_strong.{u} {motive : Ty → Sort u}
     (hole     : motive .hole)
+    (namedHole : ∀ name, motive (.namedHole name))
     (prim     : ∀ p, motive (.prim p))
     (pair     : ∀ a b, motive a → motive b → motive (.pair a b))
     (arrow    : ∀ a b, motive a → motive b → motive (.arrow a b))
@@ -35,25 +38,42 @@ def Ty.rec_strong.{u} {motive : Ty → Sort u}
     (customTy : ∀ nm tys, (∀ t ∈ tys, motive t) → motive (.customTy nm tys)) :
     (ty : Ty) → motive ty
   | .hole            => hole
+  | .namedHole name  => namedHole name
   | .prim p          => prim p
   | .pair a b        =>
       pair a b
-        (Ty.rec_strong hole prim pair arrow tvar customTy a)
-        (Ty.rec_strong hole prim pair arrow tvar customTy b)
+        (Ty.rec_strong hole namedHole prim pair arrow tvar customTy a)
+        (Ty.rec_strong hole namedHole prim pair arrow tvar customTy b)
   | .arrow a b       =>
       arrow a b
-        (Ty.rec_strong hole prim pair arrow tvar customTy a)
-        (Ty.rec_strong hole prim pair arrow tvar customTy b)
+        (Ty.rec_strong hole namedHole prim pair arrow tvar customTy a)
+        (Ty.rec_strong hole namedHole prim pair arrow tvar customTy b)
   | .tvar n          => tvar n
   | .customTy nm tys =>
       customTy nm tys
-        (fun t _ht => Ty.rec_strong hole prim pair arrow tvar customTy t)
+        (fun t _ht => Ty.rec_strong hole namedHole prim pair arrow tvar customTy t)
 termination_by ty => sizeOf ty
 decreasing_by
   all_goals simp_wf
   all_goals first
     | omega
     | (have := List.sizeOf_lt_of_mem _ht; omega)
+
+mutual
+/-- Qualify local hole names when head sugar combines several separately
+written annotations. Ordinary written type variables retain their scope. -/
+def Ty.scopeHoles (scope : String) : Ty → Ty
+  | .hole => .hole
+  | .namedHole name => .namedHole (scope ++ ":" ++ name)
+  | .prim p => .prim p
+  | .tvar name => .tvar name
+  | .pair a b => .pair (a.scopeHoles scope) (b.scopeHoles scope)
+  | .arrow a b => .arrow (a.scopeHoles scope) (b.scopeHoles scope)
+  | .customTy name args => .customTy name (scopeHoleList scope args)
+def scopeHoleList (scope : String) : List Ty → List Ty
+  | [] => []
+  | t :: ts => t.scopeHoles scope :: scopeHoleList scope ts
+end
 
 /-- Rank-1 type scheme: `{a b} body`. -/
 structure PolyTy where

@@ -1,0 +1,5 @@
+let same = \(p : (?item, ?item)) -> p
+let separate = \(x : ?item) (y : ?item) -> (x,y)
+let id : {element} ?a -> ?a = \(x : element) -> x
+let head {unused} (x : ?same) : ?same = 1
+(same (1, 2), (separate 1 True, (id False, head 'x')))

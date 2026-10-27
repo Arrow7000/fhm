@@ -734,6 +734,33 @@ private def holeIdSrc := "let id = \\(x : _) -> x\n(id 1, id True)\n"
 #guard holeTypes "(\\(x : List _) -> x) [1,2]\n" == some ["Int"]
 #guard holeTypes "(\\(x : (_, _)) -> x) (1, True)\n" == some ["Int", "Bool"]
 
+-- Named holes are tokens, not value identifiers or expression-wide names.
+#guard (match Surface.Lex.lex "?item ?😀" with
+  | .ok ts => match ts.toList with
+    | [a, b] => a.token == .namedHole "item" && a.startCol == 1 && a.endCol == 6 &&
+        b.token == .namedHole "😀" && b.startCol == 7 && b.endCol == 10
+    | _ => false
+  | .error _ => false)
+#guard (Surface.Lex.lex "?").toOption.isNone
+#guard (Surface.Lex.lex "?1").toOption.isNone
+#guard toString (Surface.Ty.namedHole "item") == "?item"
+#guard holeTypes "(\\(p : (?a, ?a)) -> p) (1, 2)\n" == some ["Int", "Int"]
+#guard holeTypes "(\\(p : (?a, ?a)) -> p) (1, True)\n" == none
+#guard holeTypes "(\\(p : (?a, ?b)) -> p) (1, True)\n" == some ["Int", "Bool"]
+#guard holeTypes "(\\(p : (?a, (_, ?a))) -> p) (1, (True, 2))\n" ==
+  some ["Int", "Bool", "Int"]
+#guard holeTypes "(\\(x : ?a) (y : ?a) -> (x,y)) 1 True\n" == some ["Int", "Bool"]
+#guard holeTypes "let id : {item} ?a -> ?a = \\(x : item) -> x\n(id 1,id True)\n" ==
+  some ["item", "item"]
+#guard holeTypes "let f {unused} (x : ?same) (y : ?same) : ?same = 1\nf True 'x'\n" ==
+  some ["a", "b", "Int"]
+#guard (match hoverReport "(\\(p : (?a, ?a)) -> p) (1, 2)\n" with
+  | some r => match r.symbols.filter (fun s => s.kind == "typeHole") with
+    | [a, b] => a.name == "?a" && b.name == "?a" &&
+        a.scope == b.scope && a.span != b.span && !a.isDef && !b.isDef
+    | _ => false
+  | none => false)
+
 -- Missing head annotations allocate inference variables without inventing
 -- source tokens. A written result annotation always describes the result,
 -- including when an earlier head parameter has no annotation.

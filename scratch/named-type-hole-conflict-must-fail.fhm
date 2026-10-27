@@ -1,0 +1,2 @@
+-- The two occurrences belong to one annotation, so Int and Bool conflict.
+(\(pair : (?item, ?item)) -> pair) (1, True)

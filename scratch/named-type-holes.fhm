@@ -1,0 +1,11 @@
+-- Named holes share a type within one annotation only. Hover each ?name.
+let repeated = \(pair : (?item, ?item)) -> pair
+let distinct = \(pair : (?left, ?right)) -> pair
+let mixed = \(triple : (?item, (_, ?item))) -> triple
+let id : {item} ?result -> ?result = \(x : item) -> x
+-- Separate written head annotations retain their own scope after lowering.
+let first {unused} (x : ?same) (y : ?same) : ?same = x
+let separate = (\(x : ?same) -> x) 1
+let another = (\(x : ?same) -> x) True
+(repeated (1, 2), (distinct (1, True),
+  (mixed (1, (True, 2)), (id True, (first 1 True, (separate, another))))))

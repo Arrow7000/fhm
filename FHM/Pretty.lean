@@ -239,6 +239,7 @@ mutual
 
 def Surface.Ty.prettyAux (prec : Nat) : Surface.Ty → String
   | .hole          => "_"
+  | .namedHole name => "?" ++ name
   | .prim p        => Surface.prettyPrimTy p
   | .tvar v        => prettyValName v
   | .pair a b      => "(" ++ Surface.Ty.prettyAux 0 a ++ ", " ++ Surface.Ty.prettyAux 0 b ++ ")"

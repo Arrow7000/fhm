@@ -1,0 +1,72 @@
+1 │ let same = \(p : (?item, ?item)) -> p
+    5-8     "same"         val   same : ∀ a. (a, a) → (a, a)  → def 1:5
+    12-13   "\\("          expr  (a, a) → (a, a)  ⟦\(p : (?item, ?item)) -> p⟧
+    14      "p"            param p : (a, a)  → def 1:14
+    15-18   " : ("         expr  (a, a) → (a, a)  ⟦\(p : (?item, ?item)) -> p⟧
+    19-23   "?item"        typeHole ?item : a
+    24-25   ", "           expr  (a, a) → (a, a)  ⟦\(p : (?item, ?item)) -> p⟧
+    26-30   "?item"        typeHole ?item : a
+    31-36   ")) -> "       expr  (a, a) → (a, a)  ⟦\(p : (?item, ?item)) -> p⟧
+    37      "p"            param p : (a, a)  → def 1:14
+2 │ let separate = \(x : ?item) (y : ?item) -> (x,y)
+    5-12    "separate"     val   separate : ∀ a b. a → b → (a, b)  → def 2:5
+    16-17   "\\("          expr  a → b → (a, b)  ⟦\(x : ?item) (y : ?item) -> (x,y)⟧
+    18      "x"            param x : a  → def 2:18
+    19-21   " : "          expr  a → b → (a, b)  ⟦\(x : ?item) (y : ?item) -> (x,y)⟧
+    22-26   "?item"        typeHole ?item : a
+    27-28   ") "           expr  a → b → (a, b)  ⟦\(x : ?item) (y : ?item) -> (x,y)⟧
+    29      "("            expr  b → (a, b)  ⟦(y : ?item) -> (x,y)⟧
+    30      "y"            param y : b  → def 2:30
+    31-33   " : "          expr  b → (a, b)  ⟦(y : ?item) -> (x,y)⟧
+    34-38   "?item"        typeHole ?item : b
+    39-43   ") -> "        expr  b → (a, b)  ⟦(y : ?item) -> (x,y)⟧
+    44      "("            expr  (a, b)  ⟦(x,y)⟧
+    45      "x"            param x : a  → def 2:18
+    46      ","            expr  (a, b)  ⟦(x,y)⟧
+    47      "y"            param y : b  → def 2:30
+    48      ")"            expr  (a, b)  ⟦(x,y)⟧
+3 │ let id : {element} ?a -> ?a = \(x : element) -> x
+    5-6     "id"           val   id : ∀ element. element → element  → def 3:5
+    11-17   "element"      param element : type variable (scheme binder)  → def 3:11
+    20-21   "?a"           typeHole ?a : element
+    26-27   "?a"           typeHole ?a : element
+    31-32   "\\("          expr  element → element  ⟦\(x : element) -> x⟧
+    33      "x"            param x : element  → def 3:33
+    34-36   " : "          expr  element → element  ⟦\(x : element) -> x⟧
+    44-48   ") -> "        expr  element → element  ⟦\(x : element) -> x⟧
+    49      "x"            param x : element  → def 3:33
+4 │ let head {unused} (x : ?same) : ?same = 1
+    5-8     "head"         val   head : ∀ unused a. a → Int  → def 4:5
+    11-16   "unused"       param unused : type variable (scheme binder)  → def 4:11
+    20      "x"            param x : a  → def 4:20
+    24-28   "?same"        typeHole ?same : a
+    33-37   "?same"        typeHole ?same : Int
+    41      "1"            lit   1 : Int
+5 │ (same (1, 2), (separate 1 True, (id False, head 'x')))
+    1       "("            expr  ((Int, Int), ((Int, Bool), (Bool, Int)))  ⟦(same (1, 2), (separate 1 True, (id False, head 'x')))⟧
+    2-5     "same"         val   same : (Int, Int) → (Int, Int)  → def 1:5
+    6       " "            expr  (Int, Int)  ⟦same (1, 2)⟧
+    7       "("            expr  (Int, Int)  ⟦(1, 2)⟧
+    8       "1"            lit   1 : Int
+    9-10    ", "           expr  (Int, Int)  ⟦(1, 2)⟧
+    11      "2"            lit   2 : Int
+    12      ")"            expr  (Int, Int)  ⟦(1, 2)⟧
+    13-14   ", "           expr  ((Int, Int), ((Int, Bool), (Bool, Int)))  ⟦(same (1, 2), (separate 1 True, (id False, head 'x')))⟧
+    15      "("            expr  ((Int, Bool), (Bool, Int))  ⟦(separate 1 True, (id False, head 'x'))⟧
+    16-23   "separate"     val   separate : Int → Bool → (Int, Bool)  → def 2:5
+    24      " "            expr  Bool → (Int, Bool)  ⟦separate 1⟧
+    25      "1"            lit   1 : Int
+    26      " "            expr  (Int, Bool)  ⟦separate 1 True⟧
+    27-30   "True"         lit   True : Bool
+    31-32   ", "           expr  ((Int, Bool), (Bool, Int))  ⟦(separate 1 True, (id False, head 'x'))⟧
+    33      "("            expr  (Bool, Int)  ⟦(id False, head 'x')⟧
+    34-35   "id"           val   id : Bool → Bool  → def 3:5
+    36      " "            expr  Bool  ⟦id False⟧
+    37-41   "False"        lit   False : Bool
+    42-43   ", "           expr  (Bool, Int)  ⟦(id False, head 'x')⟧
+    44-47   "head"         val   head : Char → Int  → def 4:5
+    48      " "            expr  Int  ⟦head 'x'⟧
+    49-51   "'x'"          lit   'x' : Char
+    52      ")"            expr  (Bool, Int)  ⟦(id False, head 'x')⟧
+    53      ")"            expr  ((Int, Bool), (Bool, Int))  ⟦(separate 1 True, (id False, head 'x'))⟧
+    54      ")"            expr  ((Int, Int), ((Int, Bool), (Bool, Int)))  ⟦(same (1, 2), (separate 1 True, (id False, head 'x')))⟧

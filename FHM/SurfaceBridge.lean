@@ -59,7 +59,7 @@ def tvarIndex : List ValName → ValName → Option Nat
 mutual
 /-- Lower a surface type against a kind env and a tyvar scope. -/
 def lowerTy (ke : KindEnv) (tvs : List ValName) : Surface.Ty → Option Ty
-  | .hole => none
+  | .hole | .namedHole _ => none
   | .prim .unit => some (.prim .unit)
   | .prim .int  => some (.prim .int)
   | .prim .nat  => some (.prim .nat)
@@ -143,7 +143,7 @@ theorem lowerTyList_wellKinded {ke : KindEnv} {tvs : List ValName}
 theorem lowerTy_wellKinded {ke : KindEnv} {tvs : List ValName} {s : Surface.Ty} {c : Ty}
     (h : lowerTy ke tvs s = some c) : Ty.WellKinded ke tvs.length c := by
   cases s with
-  | hole => cases h
+  | hole | namedHole => cases h
   | prim p =>
     cases p with
     | unit | int | nat | char =>
@@ -3021,6 +3021,7 @@ mutual
 surface type lowering. Named scoped variables remain fixed bound variables. -/
 def lowerTemplate (ke : KindEnv) (tvs : List ValName) : Surface.Ty → Option TyTemplate
   | .hole => some .hole
+  | .namedHole name => some (.named name)
   | .prim p => (SurfaceBridge.lowerTy ke tvs (.prim p)).map .fixed
   | .tvar name => (SurfaceBridge.lowerTy ke tvs (.tvar name)).map .fixed
   | .arrow a b => return .arrow (← lowerTemplate ke tvs a) (← lowerTemplate ke tvs b)
@@ -3059,8 +3060,10 @@ def finalizeInputAnn (tyParams : List ValName)
   else
     some {
       foralls := SurfaceBridge.mergeTyParamNames tyParams ((ann.map (·.foralls)).getD [])
-      body := params.foldr (fun (_, domain) result => .arrow (domain.getD .hole) result)
-        ((ann.map (·.body)).getD .hole) }
+      body := (params.mapIdx fun i (name, domain) =>
+        (name, domain.map (Surface.Ty.scopeHoles ("param" ++ toString i)))).foldr
+          (fun (_, domain) result => .arrow (domain.getD .hole) result)
+          ((ann.map (fun a => a.body.scopeHoles "result")).getD .hole) }
 
 
 

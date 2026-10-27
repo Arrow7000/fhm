@@ -4074,7 +4074,7 @@ theorem lowerTy_isSome_appendTyScope {ke : KindEnv} {tvs tvs' : List ValName}
     (lowerTy ke (tvs' ++ tvs) τ).isSome := by
   revert h
   induction τ using Surface.Ty.rec_strong with
-  | hole => simp [lowerTy]
+  | hole | namedHole => simp [lowerTy]
   | prim p =>
     intro h
     cases p with
@@ -4148,7 +4148,7 @@ theorem lowerTy_isSome_appendTyScopeMid {ke : KindEnv} {A tvs' B : List ValName}
     (lowerTy ke (A ++ tvs' ++ B) τ).isSome := by
   revert h
   induction τ using Surface.Ty.rec_strong with
-  | hole => simp [lowerTy]
+  | hole | namedHole => simp [lowerTy]
   | prim p =>
     intro h
     cases p with

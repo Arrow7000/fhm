@@ -34,8 +34,10 @@ def tmLanguage : Json :=
   let boolAlt := regexAlt boolLitSurfaces
   let opAlt := regexAlt binOpSurfaces
   let punctAlt := regexAlt punctSurfaces
-  let identCont := "[\\p{L}\\p{N}\\p{M}_]"
-  let identStart := "[\\p{L}]"
+  -- Same common pictograph ranges as Surface.Lex.isEmoji.
+  let emoji := "🌀-🫿☀-➿🇦-🇿"
+  let identCont := "[\\p{L}\\p{N}\\p{M}_" ++ emoji ++ "]"
+  let identStart := "[\\p{L}" ++ emoji ++ "]"
   Json.mkObj [
     ("$schema", Json.str
       "https://raw.githubusercontent.com/martinring/tmlanguage/master/tmlanguage.json"),
@@ -48,6 +50,7 @@ def tmLanguage : Json :=
       Json.mkObj [("include", Json.str "#keywords")],
       Json.mkObj [("include", Json.str "#booleans")],
       Json.mkObj [("include", Json.str "#numbers")],
+      Json.mkObj [("include", Json.str "#namedHoles")],
       Json.mkObj [("include", Json.str "#ctors")],
       Json.mkObj [("include", Json.str "#identifiers")],
       Json.mkObj [("include", Json.str "#operators")],
@@ -90,6 +93,8 @@ def tmLanguage : Json :=
       ("numbers", pattern "constant.numeric.integer.fhm" "-?\\b[0-9]+\\b"),
       ("ctors", pattern "entity.name.type.fhm"
         ("\\b\\p{Lu}" ++ identCont ++ "*")),
+      ("namedHoles", pattern "variable.other.type-hole.fhm"
+        (regexEscape namedHolePrefix ++ identStart ++ identCont ++ "*")),
       ("identifiers", pattern "variable.other.fhm"
         ("\\b" ++ identStart ++ identCont ++ "*")),
       ("operators", pattern "keyword.operator.fhm" ("(?:" ++ opAlt ++ ")")),
@@ -101,6 +106,7 @@ def tablesJson : Json :=
   Json.mkObj [
     ("keywords", Json.arr (keywordSurfaces.toArray.map Json.str)),
     ("boolLits", Json.arr (boolLitSurfaces.toArray.map Json.str)),
+    ("namedHolePrefix", Json.str namedHolePrefix),
     ("operators", Json.arr (binOpSurfaces.toArray.map Json.str)),
     ("punctuation", Json.arr (punctSurfaces.toArray.map Json.str))
   ]

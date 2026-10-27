@@ -12,13 +12,18 @@
   "operators": {"name": "keyword.operator.fhm", "match": "(?:::|\\+|-|<)"},
   "numbers":
   {"name": "constant.numeric.integer.fhm", "match": "-?\\b[0-9]+\\b"},
+  "namedHoles":
+  {"name": "variable.other.type-hole.fhm",
+   "match": "\\?[\\p{L}🌀-🫿☀-➿🇦-🇿][\\p{L}\\p{N}\\p{M}_🌀-🫿☀-➿🇦-🇿]*"},
   "keywords":
   {"name": "keyword.control.fhm",
    "match": "\\b(?:let|in|match|with|if|then|else|type)\\b"},
   "identifiers":
-  {"name": "variable.other.fhm", "match": "\\b[\\p{L}][\\p{L}\\p{N}\\p{M}_]*"},
+  {"name": "variable.other.fhm",
+   "match": "\\b[\\p{L}🌀-🫿☀-➿🇦-🇿][\\p{L}\\p{N}\\p{M}_🌀-🫿☀-➿🇦-🇿]*"},
   "ctors":
-  {"name": "entity.name.type.fhm", "match": "\\b\\p{Lu}[\\p{L}\\p{N}\\p{M}_]*"},
+  {"name": "entity.name.type.fhm",
+   "match": "\\b\\p{Lu}[\\p{L}\\p{N}\\p{M}_🌀-🫿☀-➿🇦-🇿]*"},
   "comments":
   {"patterns":
    [{"name": "comment.line.double-dash.fhm", "match": "--.*$"},
@@ -40,6 +45,7 @@
   {"include": "#keywords"},
   {"include": "#booleans"},
   {"include": "#numbers"},
+  {"include": "#namedHoles"},
   {"include": "#ctors"},
   {"include": "#identifiers"},
   {"include": "#operators"},

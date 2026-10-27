@@ -8,6 +8,7 @@ import { spawnSync } from "node:child_process";
 const root = fileURLToPath(new URL("../", import.meta.url));
 const binary = process.env.FHM || path.join(root, ".lake/build/bin/fhm");
 const expectedRejects = new Set([
+  "named-type-hole-conflict-must-fail.fhm",
   "polyrec-inner-poly-unannotated-must-fail.fhm",
   "polyrec-mixed-conflict-must-fail.fhm",
   "polyrec-unannotated-must-fail.fhm",
@@ -16,6 +17,9 @@ const expectedRejects = new Set([
 // used to share scratch/ and were accidentally treated as HM acceptance tests merely
 // because they had the same extension.
 const files = [
+  "anonymous-type-holes.fhm",
+  "named-type-holes.fhm",
+  "named-type-hole-conflict-must-fail.fhm",
   "hm-hover.fhm",
   "language-guide.fhm",
   "live.fhm",

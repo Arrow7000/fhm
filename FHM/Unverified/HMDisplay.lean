@@ -198,11 +198,14 @@ def binderType (typed : TypedLowered) (scopes : List Scope) (locations : Locatio
 structure HoleDisplay where
   span : Span
   types : List String
+  name : String := "_"
+  annotation? : Option Span := none
 
 /- Preserve one slot per written hole even if a presentation lookup fails. -/
 mutual
 partial def holeParts : Surface.Ty → Option Ty → List (Option Ty)
   | .hole, ty => [ty]
+  | .namedHole _, ty => [ty]
   | .arrow a b, ty =>
       let pair := ty.bind fun t => match t with | .arrow x y => some (x, y) | _ => none
       holeParts a (pair.map (·.1)) ++ holeParts b (pair.map (·.2))
@@ -256,7 +259,7 @@ def headerHoles (refs : List NameReference) (scopes : List Scope)
       let ctx := context (if completed then scopes.filter (fun s => s.path != path) else scopes)
         path ty completed
       pretty { ctx with boundNames := names ++ ctx.boundNames } ty
-    ⟨ref.span, types.eraseDups⟩
+    { span := ref.span, types := types.eraseDups, name := ref.name, annotation? := ref.annotation? }
 
 def bindingHoleParts (typed : TypedLowered) (scopes : List Scope) (site : SurfaceBinderSite)
     (paramSite : Nat → SurfaceBinderSite) (tyParams : List ValName)

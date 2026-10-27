@@ -136,6 +136,13 @@ partial def lex (input : String) : Except LexError (Array TokenWithSource) :=
     | ':' :: ':' :: rest =>
       go rest line (col + 2)
         (acc.push (mkTok (.op .cons) line col line (col + 2)))
+    | '?' :: c :: rest =>
+      if isIdentStart c then
+        let (line1, col1) := bump line (col + 1) c
+        let (name, rest', line', col') := takeIdentCont rest line1 col1 (String.ofList [c])
+        go rest' line' col' (acc.push (mkTok (.namedHole name) line col line' col'))
+      else .error (.unexpectedChar '?' line col)
+    | '?' :: [] => .error (.unexpectedChar '?' line col)
     | c :: rest =>
       if c.isDigit then
         let (n, rest') := takeDigits (c :: rest) 0
