@@ -2,10 +2,16 @@
 
 FHM is a small, Elm-flavoured functional language with Hindley–Milner type
 inference, formalised in Lean 4, with a command-line tool, watch mode, and browser
-playground. Its canonical frontend elaborates anonymous type holes, with proved
+playground. Its canonical frontend elaborates anonymous and annotation-local named type holes, with proved
 soundness, annotation fidelity, principality, and completeness, including recursive
 groups and partial signatures. The completed-Core type system also has proved
 type safety. See the [feature details](./docs/anonymous-type-holes.md).
+
+The [partial Core architecture](./docs/partial-core.md) judges source annotations
+directly. Inference proves that judgment, and runtime soundness follows by
+erasure. Ordinary, signed, and recursive annotations retain one local completion
+before fresh scheme openings; completed expressions remain compatibility and
+editor artifacts.
 
 ## A taste of the language
 
@@ -66,6 +72,10 @@ Ill-typed programs and non-exhaustive matches are rejected before anything runs.
 - **Anonymous type holes** in expression annotations: `\(x : _) -> x` or
   `let f : {a} a -> _ = …`. Each `_` is inferred independently; eligible
   variables generalise, and authored forall names retain their order.
+- **Annotation-local named holes:** `\(p : (?item, ?item)) -> p` requires both
+  components to have the same type. Different names are independent. The same
+  spelling in a separate annotation is unrelated, including separate parameter
+  and result annotations in a function head. Hover a `?name` to see its solution.
 - **Algebraic data types**, including parameterised and recursive ones.
 - **Nested pattern matching** with wildcards. Matches must be exhaustive.
   Lambda parameters accept exhaustive patterns too: `\(x, y) -> x` or
@@ -88,6 +98,8 @@ Ill-typed programs and non-exhaustive matches are rejected before anything runs.
 [`scratch/anonymous-type-holes.fhm`](./scratch/anonymous-type-holes.fhm) is a
 runnable playground with scattered function-head annotations and anonymous holes:
 try the examples and hover their parameters and `_` tokens.
+[`scratch/named-type-holes.fhm`](./scratch/named-type-holes.fhm) demonstrates
+named holes, mixed holes, and annotation-local scope.
 [`scratch/language-guide.fhm`](./scratch/language-guide.fhm) walks through
 annotations and recursion with runnable examples, and
 [`recursion-language-comparison/`](./recursion-language-comparison/) compares
@@ -106,7 +118,7 @@ the earlier complete-Core surface-safety façade and demonstration.
 | **Type safety:** a well-typed program never gets stuck. It is either a value or can take another step, and its type is preserved.                  | `TypeOfHM.progress`, `TypeOfHM.preservation`, `TypeOfHM.type_safety_star` |
 | **Complete-Core surface safety:** a well-typed, exhaustive surface program accepted by the Core lowering bridge never gets stuck.                  | `program_type_safe`, `surface_type_safe`                                  |
 | **Surface lowering preserves partial annotations:** the structural lowering relation and executable lowerer agree on canonical `InferInput`, including holes, heads, patterns, and recursive groups. | `lower_sound`/`lower_complete`, `lowerProgram_sound`/`lowerProgram_complete` |
-| **Canonical elaboration is sound:** successful inference returns typed completed Core and an independently typed partial input, with exact runtime erasure and annotation fidelity. | `Infer.sourceSound`, `Infer.inputSound`, `Infer.erase`, `Infer.completes` |
+| **Canonical inference is sound:** successful inference directly proves partial-source typing; erasure gives runtime typing. Completed-expression typing and fidelity are derived compatibility views. | `Infer.inputSound_source`, `Infer.inputSound`, `InputTyping.erase`, `Infer.sound` |
 | **Canonical inference is complete and principal:** inference accepts exactly independently well-typed partial inputs, and every valid result type factors through the inferred type. | `Infer.principal`, `Infer.complete`, `inferCore_accepts_iff`, `inferWithTypes_accepts_iff` |
 | **Complete Core uses the same inference engine:** `InferInput.ofCore` preserves source typing, acceptance, and residual principality. | `SurfaceBridge.coreTypecheck_accepts_iff`, `SurfaceBridge.inferOfCore_source_sound`, `SurfaceBridge.inferOfCore_principal` |
 | **Pattern compilation is correct:** nested matches compile to decision trees that select the same branch with the same bindings.                   | `PatComp.compile_correct_surface`, `PatComp.lowerMatch_adequate_of_typed` |
@@ -191,19 +203,20 @@ scripts/install-cursor-extension.sh   # Cursor
 source text
   → parse                   (unverified)
   → surface syntax tree
-  → lower to Input          name resolution, desugaring,
+  → lower to Core source    name resolution, desugaring,
                              shared pattern compilation, recursive grouping
-  → infer and complete      canonical worker returns Core and editor maps
+  → infer                   direct source typing, type and editor artifacts
   → check exhaustiveness
-  → erase completed annotations
+  → erase annotations
   → evaluate                small-step semantics
 ```
 
 The surface language has names, nested patterns, and syntactic sugar. Core is
 a smaller language with de Bruijn indices and only flat, one-constructor-deep
-matches. `InferInput` preserves partial annotation syntax until the
-canonical worker returns a completed Core expression. The CLI executes that
-expression's erasure; editor artifacts come from the same inference result.
+matches. `InferInput` is the canonical source syntax declared in `Core`, including
+partial annotations. `InputTyping` judges it directly. The CLI executes an
+erased term; the worker also retains a completed expression for existing
+metadata consumers, with a proof that its erasure equals source erasure.
 The structural lowering proof covers the term produced by production provenance
 lowering. It does not verify the parser, source-span metadata, editor joins, or
 the unbounded CLI evaluator.
@@ -218,9 +231,10 @@ The design choices that matter most:
 - **Evaluation is type-free.** Annotations are used only for type checking and
   are erased before the program runs. No type information exists at runtime.
 - **Declarative and algorithmic typing are kept separate.** `InputTyping`
-  specifies partial inputs, and `TypeOfHM` specifies completed Core. Canonical
-  `Infer` produces the completed expression and its type. Complete Core is
-  adapted with `InferInput.ofCore` and uses the same worker.
+  specifies canonical partial source using pure annotation matching. Named-hole
+  assignments are existential and local to each annotation. Only inference
+  allocates metavariables. `TypeOfHM` and `InferInput.ofCore` support historical
+  complete-Core clients; they use the same inference worker.
 - **Type variables use a locally nameless representation** with cofinite
   quantification, following
   [Charguéraud's formalisation of mini-ML](https://github.com/charguer/formalmetacoq).
@@ -232,9 +246,12 @@ The design choices that matter most:
 
 | Module                                           | Contents                                                                         |
 | ------------------------------------------------ | -------------------------------------------------------------------------------- |
-| [`Core.lean`](./FHM/Core.lean)                   | Types, Core terms, the typing relation `TypeOfHM`, small-step semantics          |
+| [`Core.lean`](./FHM/Core.lean)                   | Types, canonical source and annotations, completed/runtime syntax and semantics |
 | [`InferenceSupport.lean`](./FHM/InferenceSupport.lean) | Shared unification, generalization, scheduling, and Core typing lemmas       |
-| [`InferInput.lean`](./FHM/InferInput.lean)       | `InferInput`, `TyTemplate`, `BindingAnn`, independent typing and annotation completion |
+| [`AnnotationMatching.lean`](./FHM/AnnotationMatching.lean) | Pure local hole assignments, matching, closed completions, substitution and opening |
+| [`AnnotationAllocation.lean`](./FHM/AnnotationAllocation.lean) | Shared certified hole allocation/checking, independent of generalization policy |
+| [`InferInput.lean`](./FHM/InferInput.lean)       | Main source judgment `InputTyping`, source operations, direct erasure, compatibility completion |
+| [`SourceCompatibility.lean`](./FHM/SourceCompatibility.lean) | Derived complete-Core conversion, outside the source soundness path |
 | [`InferW.lean`](./FHM/InferW.lean)               | The sole inference judgment and worker, bounds, soundness, and fidelity         |
 | [`Completeness.lean`](./FHM/Completeness.lean)   | Principality and executable completeness for that same worker                   |
 | [`RuntimeTyping.lean`](./FHM/RuntimeTyping.lean) | Typing for erased runtime terms, used to prove progress and preservation         |

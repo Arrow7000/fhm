@@ -5,7 +5,7 @@
 --
 -- Hover an annotation's `_`, a parameter, or a definition name. Each type hole
 -- is inferred independently. Pattern wildcards are different; named type holes
--- are deferred. All six result sections below terminate. You can replace the
+-- are demonstrated in named-type-holes.fhm. All six sections below terminate. You can replace the
 -- final expression with one section name to explore it on its own.
 
 type Maybe element = Just element | Nothing
