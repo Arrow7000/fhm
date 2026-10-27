@@ -3818,9 +3818,10 @@ inductive BranchTyping (J : List Nat → Ctx → InferInput → Ty → Prop) :
       BranchTyping J K ctx (.named name count, body) scrutTy resultTy
   | wildcard : J K ctx body resultTy → BranchTyping J K ctx (.wildcard, body) scrutTy resultTy
 
-/-- Main declarative source typing. `K` scopes authored rigid annotation variables;
-context monotypes can still contain flexible variables. Ordinary lets generalize
-cofinally. All nonrecursive binding annotations select one completion before
+/-- Main declarative source typing. `K` scopes free type variables in fixed
+authored annotation leaves; other free type variables may occur in context
+monotypes and inferred types. The judgment has no solver state. Ordinary lets
+generalize cofinally. All nonrecursive binding annotations select one completion before
 those openings. Signed lets preserve the written forall prefix, with any
 additional hole variables quantified after that prefix.
 
@@ -3829,41 +3830,65 @@ signatures remain monomorphic within their
 component; only complete written schemes permit polymorphic recursive use.
 -/
 inductive InputTyping : List Nat → Ctx → InferInput → Ty → Prop
-  | primLit : TypeOfHM ctx (.primLit p) ty → InputTyping K ctx (.primLit p) ty
-  | primBinOp : TypeOfHM ctx (.primBinOp op) ty → InputTyping K ctx (.primBinOp op) ty
+  | primLit :
+    TypeOfHM ctx (.primLit p) ty →
+    InputTyping K ctx (.primLit p) ty
+
+  | primBinOp :
+    TypeOfHM ctx (.primBinOp op) ty →
+    InputTyping K ctx (.primBinOp op) ty
+
   | lambda :
-      paramTy.IsLC →
-      (∀ template, ann = some template → template.Matches paramTy) →
-      (∀ template, ann = some template → ∀ v ∈ template.rigidVars, v ∈ K) →
-      InputTyping K { ctx with env := PolyTy.mkTrivial paramTy :: ctx.env } body bodyTy →
-      InputTyping K ctx (.lambda ann body) (.arrow paramTy bodyTy)
-  | app : InputTyping K ctx f (.arrow argTy retTy) → InputTyping K ctx arg argTy →
-      InputTyping K ctx (.app f arg) retTy
+    paramTy.IsLC →
+    (∀ template, ann = some template → template.Matches paramTy) →
+    (∀ template, ann = some template → ∀ v ∈ template.rigidVars, v ∈ K) →
+    InputTyping K { ctx with env := PolyTy.mkTrivial paramTy :: ctx.env } body bodyTy →
+    InputTyping K ctx (.lambda ann body) (.arrow paramTy bodyTy)
+
+  | app :
+    InputTyping K ctx f (.arrow argTy retTy) →
+    InputTyping K ctx arg argTy →
+    InputTyping K ctx (.app f arg) retTy
+
   | letIn {M : PolyTy} {L : List Nat} :
-      M.WF →
-      (∀ template, ann = .template template → ∀ v ∈ template.rigidVars, v ∈ K) →
-      ann.MonoMatches M →
-      (∀ Xs, FreshNames L M.paramCount Xs → InputTyping K ctx rhs (M.openVars Xs)) →
-      InputTyping K { ctx with env := M :: ctx.env } body bodyTy →
-      InputTyping K ctx (.letIn ann rhs body) bodyTy
+    M.WF →
+    (∀ template, ann = .template template → ∀ v ∈ template.rigidVars, v ∈ K) →
+    ann.MonoMatches M →
+    (∀ Xs, FreshNames L M.paramCount Xs → InputTyping K ctx rhs (M.openVars Xs)) →
+    InputTyping K { ctx with env := M :: ctx.env } body bodyTy →
+    InputTyping K ctx (.letIn ann rhs body) bodyTy
+
   | letSignature {M : PolyTy} {L : List Nat} :
-      M.WF → (∀ v ∈ ann.rigidVars, v ∈ K) → (∀ v ∈ rhs.rigidVars, v ∈ K) →
-      ann.SignatureMatches M →
-      (∀ Xs, FreshNames L M.paramCount Xs →
-        InputTyping (K ++ Xs.take ann.paramCount) ctx (rhs.openTyVars (Xs.take ann.paramCount)) (M.openVars Xs)) →
-      InputTyping K { ctx with env := M :: ctx.env } body bodyTy →
-      InputTyping K ctx (.letIn ann rhs body) bodyTy
-  | var : ctx.env[index]? = some scheme →
-      (∀ arg ∈ args, arg.IsLC) → scheme.InstantiatesTo args ty →
-      InputTyping K ctx (.var index) ty
-  | ctor : LookupList.get? ctx.ctors name = some ctor →
-      (∀ arg ∈ args, arg.IsLC) → ctor.toTy.InstantiatesTo args ty →
-      InputTyping K ctx (.ctor name) ty
-  | match_ : InputTyping K ctx scrut scrutTy → branches ≠ [] →
-      (∀ branch ∈ branches, BranchTyping InputTyping K ctx branch scrutTy resultTy) →
-      InputTyping K ctx (.match_ scrut branches) resultTy
-  | letRec {specs : List RecSpec} {groups : List (List Nat)} {prefixes : List (List Nat)}
-      {G L : List Nat} :
+    M.WF →
+    (∀ v ∈ ann.rigidVars, v ∈ K) →
+    (∀ v ∈ rhs.rigidVars, v ∈ K) →
+    ann.SignatureMatches M →
+    (∀ Xs, FreshNames L M.paramCount Xs →
+      InputTyping (K ++ Xs.take ann.paramCount) ctx
+        (rhs.openTyVars (Xs.take ann.paramCount)) (M.openVars Xs)) →
+    InputTyping K { ctx with env := M :: ctx.env } body bodyTy →
+    InputTyping K ctx (.letIn ann rhs body) bodyTy
+
+  | var :
+    ctx.env[index]? = some scheme →
+    (∀ arg ∈ args, arg.IsLC) →
+    scheme.InstantiatesTo args ty →
+    InputTyping K ctx (.var index) ty
+
+  | ctor :
+    LookupList.get? ctx.ctors name = some ctor →
+    (∀ arg ∈ args, arg.IsLC) →
+    ctor.toTy.InstantiatesTo args ty →
+    InputTyping K ctx (.ctor name) ty
+
+  | match_ :
+    InputTyping K ctx scrut scrutTy →
+    branches ≠ [] →
+    (∀ branch ∈ branches, BranchTyping InputTyping K ctx branch scrutTy resultTy) →
+    InputTyping K ctx (.match_ scrut branches) resultTy
+
+  | letRec {specs : List RecSpec} {groups : List (List Nat)}
+      {prefixes : List (List Nat)} {G L : List Nat} :
     RecGroups.ValidResidualGroups (bindings.map InputRecBinding.recMode) groups →
     RecSpecs.WF (bindings.map InputRecBinding.recMode) specs G →
     RecPrefixesWF bindings specs prefixes G →
@@ -3875,8 +3900,10 @@ inductive InputTyping : List Nat → Ctx → InferInput → Ty → Prop
       ∀ (member : Nat), member ∈ component →
         ∀ (binding : InputRecBinding) (names : List Nat) (ty : Ty),
         bindings[member]? = some binding →
-        prefixes[member]? = some names → specs[member]? = some (.mono ty) →
-        InputTyping (K ++ Xs) (recStageCtx ctx specs prefixes (groups.take stage).flatten G Xs)
+        prefixes[member]? = some names →
+        specs[member]? = some (.mono ty) →
+        InputTyping (K ++ Xs)
+          (recStageCtx ctx specs prefixes (groups.take stage).flatten G Xs)
           (binding.rhs.openTyVars (recRenameNames G Xs names)) (Ty.renameG G Xs ty)) →
     (∀ (member : Nat) (binding : InputRecBinding) (scheme : PolyTy),
       bindings[member]? = some binding →

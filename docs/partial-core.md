@@ -128,8 +128,15 @@ effect.
 ## Retained compatibility
 
 The historical `Expr` and `TypeOfHM` support completed-Core clients, neutral
-runtime/typing facts, and the opt-in `FHMCompatibility` façade. They are not a
-second production source language. `InputTyping.ofComplete` in
+runtime/typing facts, and the opt-in `FHMCompatibility` façade. `InputTyping`
+also currently reuses `TypeOfHM` for literal and primitive-operator leaves.
+This retains every primitive side condition, including the `True`/`False`
+constructor premises for comparison operators, but leaves a dependency on
+the historical relation. Restoring explicit primitive constructors would
+remove that coupling without changing source acceptance.
+
+The completed syntax is not a second production source language.
+`InputTyping.ofComplete` in
 `SourceCompatibility` derives structural source typing for complete syntax;
 it is not a typing constructor or soundness premise.
 

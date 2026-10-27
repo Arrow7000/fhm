@@ -2958,11 +2958,12 @@ def RecSpecs.PolyTypedFinal (TypeOf : Ctx → Expr → Ty → Prop) (ctx : Ctx)
         (pair.1.rhs.openTyVars Ys) (σ.openVars Ys)
 
 
-/-! ### The *declarative* HM typing relation `TypeOfHM` (the completeness spec).
+/-! ### Historical complete-Core typing `TypeOfHM`.
 
 Rank-one let-polymorphism with complete annotations admitting polymorphic
-recursive uses. This is the algorithm-independent specification of accepted
-source programs. A variable use instantiates its environment scheme by
+recursive uses. The canonical partial-source specification is `InputTyping`;
+this relation retains complete-Core compatibility and supplies its primitive
+leaf rules. A variable use instantiates its environment scheme by
 existential witness types. Source annotations constrain `lambda`, `letIn`,
 and `letRec`.
 
@@ -2971,8 +2972,9 @@ whose scheme witnesses remain in the proof and never enter the runtime terms. -/
 
 mutual
 
-/-- Historical complete-Core typing, retained for compatibility and neutral
-runtime lemmas. Canonical partial-source typing is `InputTyping`. -/
+/-- Historical complete-Core typing, retained for compatibility, shared
+primitive rules and neutral runtime lemmas. Canonical partial-source typing
+is `InputTyping`. -/
 inductive TypeOfHM : Ctx → Expr → Ty → Prop
   | primLitUnit :
     TypeOfHM ctx (.primLit .unit) (.prim .unit)
