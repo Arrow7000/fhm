@@ -1522,7 +1522,7 @@ end AuditCapstone
 section
 
 /-! Semantic canaries for anonymous lambda, signature, match, and recursive elaboration.
-These run the elaborator itself; output typing follows from `Infer.sourceSound`.
+These run inference itself; source typing follows from `InferCert.inputSound`.
 -/
 
 namespace InferenceExamples
@@ -1838,10 +1838,7 @@ def unusedHole : InferInput :=
   | some (_, .arrow (.fvar 0) (.fvar 0)) => true
   | _ => false
 
-#print axioms Infer.sourceSound
 #print axioms InferCert.inputSound
-#print axioms Infer.completes
-#print axioms Infer.erase
 
 end InferenceExamples
 

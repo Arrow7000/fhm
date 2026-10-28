@@ -115,12 +115,8 @@ complete `WF` bundle as one premise. -/
 #check @InferRecSignedCert.cons
 #check @InferRun
 #check @InferRun.cert
-#check @InferCert.sourceSound
 #check @InferCert.scopedSound_source
 #check @InferCert.scopedSound
-#check @InferCert.completes_source
-#check @InferCert.completes
-#check @InferCert.erase
 #check @InferCert.sound
 #check @InferCert.Principal
 #check @InferCert.principal
@@ -132,10 +128,7 @@ complete `WF` bundle as one premise. -/
 #check @InferRecComponentCert.frontier_le
 #check @InferRecComponentCert.belowFvars_of_infer
 #check @InferRecComponentCert.sourceLocality_of_infer
-#check @InferRecComponentCert.sourceSound_of_infer
 #check @InferRecComponentCert.scopedSound_of_infer
-#check @InferRecComponentCert.completes_of_infer
-#check @InferRecComponentCert.erase_of_infer
 #check @InferRecComponentCert.sourcePrincipal_of_infer
 #check @InferRecComponentCert.sourcePrincipal_after_shapes
 #check @InferRecComponentCert.outputs_selected
@@ -146,10 +139,7 @@ complete `WF` bundle as one premise. -/
 #check @InferRecStrataCert.sourceLocality_of_infer
 #check @InferRecStrataCert.memberStates_length
 #check @InferRecStrataCert.frame_of_infer
-#check @InferRecStrataCert.sourceSound_of_infer
 #check @InferRecStrataCert.inputTrace_of_infer
-#check @InferRecStrataCert.fidelity_of_infer
-#check @InferRecStrataCert.erase_of_infer
 #check @InferRecStrataCert.outputs_present
 #check @InferRecSignedCert.dom_avoids
 #check @InferRecSignedCert.lc_of_infer
@@ -157,12 +147,9 @@ complete `WF` bundle as one premise. -/
 #check @InferRecSignedCert.belowFvars_of_infer
 #check @InferRecSignedCert.sourceLocality_of_infer
 #check @InferRecSignedCert.memberStates_length
-#check @InferRecSignedCert.sourceSound_of_infer
 #check @InferRecSignedCert.frame_of_infer
 #check @InferRecSignedCert.scopedSound_of_infer
 #check @InferRecSignedCert.type_fields
-#check @InferRecSignedCert.completes_of_infer
-#check @InferRecSignedCert.erase_of_infer
 #check @InferRecSignedCert.sourcePrincipal_residual
 #check @InferRecSignedCert.outputs_present
 #check @InferRecSignedCert.completed_members_of_strata
@@ -176,8 +163,8 @@ example {request : InferRequest} {result : InferCoreResult}
 
 example {request : InferRequest} {result : InferResult}
     (h : InferCert request result) (hctx : CtxWF request.ctx) :
-    TypeOfHM (result.subst.onCtx request.ctx) result.completedExpr result.ty :=
-  InferCert.sourceSound h hctx
+    RuntimeTyping.RunWT (result.subst.onCtx request.ctx) request.input.erase result.ty :=
+  InferCert.sound h hctx
 
 /-- `InferCert.Principal` receives all worker well-formedness and freshness
 invariants through `request.WF`; the remaining result is its residual
@@ -532,7 +519,6 @@ guards live in `FHM.Headlines.CompleteCore`. -/
 #print axioms lower_and_infer_sound
 #print axioms lower_and_infer_direct
 #print axioms InferRun.cert
-#print axioms InferCert.sourceSound
 #print axioms InferCert.scopedSound
 #print axioms PartialCore.Ann.SignatureMatches.ofCofinite
 #print axioms PartialCore.Ann.SignatureMatches.onSubst_source
@@ -540,8 +526,6 @@ guards live in `FHM.Headlines.CompleteCore`. -/
 #print axioms PartialCore.Ann.MonoMatches.onSubst_source
 #print axioms ScopedTyping.template_completion
 #print axioms ScopedTyping.partialSignature_completion
-#print axioms InferCert.completes
-#print axioms InferCert.erase
 #print axioms InferCert.sound
 #print axioms inferRequest_sourceComplete
 #print axioms inferCore_complete_req
