@@ -89,9 +89,9 @@ structure Admissible (request : InferRequest) : Prop extends WF request where
 
 end InferRequest
 
-/-- Output shared by the certificate and public inference APIs. `completedExpr`
-is retained for compatibility and metadata consumers; direct source/runtime
-soundness is available without a completion relation between expressions. -/
+/-- Internal compatibility result used by the worker/certificate proofs.
+The public `InferenceResult` below returns types and metadata only.
+Removing this internal tree computation is a separate migration step. -/
 structure InferResult where
   frontier : Nat
   subst : Subst
@@ -1987,8 +1987,12 @@ def inferCore (K : List Nat) (frontier : Nat) (ctx : Ctx) (input : InferInput) :
   | none => rfl
   | some result => rfl
 
-/-- Public artifacts and completed ordinary Core come from the same inference. -/
-structure InferenceResult extends InferResult where
+/-- Public semantic and editor artifacts. The source expression stays with
+the caller; inference does not return a second annotated copy of it. -/
+structure InferenceResult where
+  frontier : Nat
+  subst : Subst
+  ty : Ty
   nodeTypes : NodeTypeMap
   binderSchemes : BinderSchemeMap
 
@@ -2000,7 +2004,9 @@ theorem InferInput.lt_freshFloor {input : InferInput} {v : Nat} (h : v ∈ input
 def inferWithTypes (ctors : CtorEnv) (input : InferInput) : Option InferenceResult :=
   (inferWithTypesCore input.rigidVars input.freshFloor ⟨[], ctors⟩ input).map fun result =>
     {
-      toInferResult := result.val.toInferResult
+      frontier := result.val.frontier
+      subst := result.val.subst
+      ty := result.val.ty
       nodeTypes := result.val.nodeTypes.toMap
       binderSchemes := result.val.binderSchemes.toMap }
 
@@ -2010,11 +2016,12 @@ def principalType (ctors : CtorEnv) (input : InferInput) : Option Ty :=
 def typecheck (ctors : CtorEnv) (input : InferInput) : Option PolyTy :=
   (principalType ctors input).map (genScheme [] [])
 
-/-- A public artifact result carries the canonical elaboration derivation. -/
+/-- The public artifacts project a certified run. The compatibility tree is
+an existential proof witness, not part of the returned data. -/
 theorem inferWithTypes_infer {ctors : CtorEnv} {input : InferInput} {result : InferenceResult}
     (h : inferWithTypes ctors input = some result) :
-    InferCert (InferRequest.core input.rigidVars input.freshFloor ⟨[], ctors⟩ input)
-      result.toInferResult := by
+    ∃ output, InferCert (InferRequest.core input.rigidVars input.freshFloor ⟨[], ctors⟩ input)
+      { frontier := result.frontier, subst := result.subst, completedExpr := output, ty := result.ty } := by
   unfold inferWithTypes at h
   cases hcore : inferWithTypesCore input.rigidVars input.freshFloor ⟨[], ctors⟩ input with
   | none => simp only [hcore, Option.map_none, reduceCtorEq] at h
@@ -2022,7 +2029,7 @@ theorem inferWithTypes_infer {ctors : CtorEnv} {input : InferInput} {result : In
     rcases r with ⟨coreResult, hi⟩
     simp only [hcore, Option.map_some, Option.some.injEq] at h
     subst result
-    exact hi
+    exact ⟨coreResult.completedExpr, hi⟩
 
 end
 
@@ -9471,21 +9478,11 @@ theorem completes {K : List Nat} {frontier : Nat} {ctx : Ctx} {input : InferInpu
 
 end InferCert
 
-/-- The exact completed Core returned to the runtime is source typed. -/
-theorem inferWithTypes_source_sound {ctors : CtorEnv} {input : InferInput} {result : InferenceResult}
-    (h : inferWithTypes ctors input = some result) :
-    TypeOfHM ⟨[], ctors⟩ result.completedExpr result.ty := by
-  simpa only [InferRequest.core, Subst.onCtx_empty] using
-    InferCert.sourceSound (inferWithTypes_infer h) CtxWF.empty
-
-theorem inferWithTypes_erase {ctors : CtorEnv} {input : InferInput} {result : InferenceResult}
-    (h : inferWithTypes ctors input = some result) : result.completedExpr.erase = input.erase :=
-  InferCert.erase (inferWithTypes_infer h)
-
 theorem inferWithTypes_scoped_sound {ctors : CtorEnv} {input : InferInput} {result : InferenceResult}
     (h : inferWithTypes ctors input = some result) : ScopedTyping input.rigidVars ⟨[], ctors⟩ input result.ty := by
+  obtain ⟨output, hi⟩ := inferWithTypes_infer h
   simpa only [Subst.onCtx_empty] using
-    InferCert.scopedSound (inferWithTypes_infer h) CtxWF.empty
+    InferCert.scopedSound hi CtxWF.empty
 
 /-- Certificate soundness for the declarative source judgment. Protected names
 belong to the inference request, not to this conclusion. -/
@@ -9497,6 +9494,11 @@ theorem InferCert.inputSound {K : List Nat} {frontier : Nat} {ctx : Ctx} {input 
 theorem inferWithTypes_input_sound {ctors : CtorEnv} {input : InferInput} {result : InferenceResult}
     (h : inferWithTypes ctors input = some result) : InputTyping ⟨[], ctors⟩ input result.ty :=
   (inferWithTypes_scoped_sound h).source
+
+/-- Evaluate the original source after erasure; no completed AST is required. -/
+theorem inferWithTypes_runtime_sound {ctors : CtorEnv} {input : InferInput} {result : InferenceResult}
+    (h : inferWithTypes ctors input = some result) : RuntimeTyping.RunWT ⟨[], ctors⟩ input.erase result.ty :=
+  (inferWithTypes_input_sound h).erase
 
 theorem InputTyping.weaken (h : InputTyping ctx input ty)
     (henv : List.Forall₂ PolyTy.Generalizes env' ctx.env) :

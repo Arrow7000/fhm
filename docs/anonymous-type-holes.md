@@ -1,5 +1,9 @@
 # Anonymous type holes
 
+This document records the earlier anonymous-hole implementation. See
+[canonical partial Core](partial-core.md) for the current named-hole syntax,
+declarative judgment, public result shape and remaining migration work.
+
 Anonymous `_` holes are supported throughout expression annotations in the normal
 parser, editor, and execution pipeline. Named holes remain a later feature.
 The canonical worker has checked soundness, annotation-fidelity, principality,

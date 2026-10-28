@@ -149,10 +149,19 @@ The completed syntax is not a second production source language.
 `SourceCompatibility` derives structural source typing for complete syntax;
 it is not a typing constructor or soundness premise.
 
-`InferResult.completedExpr`, `Infer.sourceSound`, and `AnnotationCompletion`
-remain verified compatibility/editor artifacts. Removing these would require
-migrating their existing consumers and certificate indices, independently of
-source acceptance. Direct source/runtime soundness does not go through them.
+Public `InferenceResult` contains type, substitution/frontier, node types and
+binder schemes, with no completed expression. The editor reads binding schemes
+from metadata or complete written declarations. The CLI and example runners
+evaluate the original source's erasure. Hole hovers continue to project the
+solution of each source occurrence from type/scheme facts and provenance.
+
+The internal worker and `InferCert` still retain `InferResult.completedExpr`,
+`Infer.sourceSound`, and `AnnotationCompletion` as compatibility proof artifacts.
+The worker still constructs this internal tree; removing that computation and
+its certificate indices is outstanding. `inferWithTypes_infer` existentially
+hides it in `Prop`, so public results and their runtime/editor consumers no
+longer depend on that representation. Direct source/runtime soundness does not
+go through completed-expression typing.
 The separate named-source prototype and its worker have been removed. So have
 the completed-subtree typing constructor, annotation-only embeddings into a
 second template syntax, the old anonymous-only allocation factoring proof,

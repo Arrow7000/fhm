@@ -875,17 +875,14 @@ private def copiedHoleFallback :=
 #guard ((hoverReport "match (\\(x : _) -> x) True with | True -> 1 | False -> 2\n").map (·.programTy)) == some "Int"
 #guard holeTypes "(\\((a,b) : (_, _)) -> (b,a)) (1, True)\n" == some ["Int", "Bool"]
 
--- Metadata retains only the explicit binder; completed annotation syntax also
--- counts the synthetic hole binder before reaching the next outer scope.
-private def twoDepthScopes : List FHM.Unverified.HMDisplay.Scope := [
-  ⟨[.letRhs], ["outer"], [], [], ["outer", "a"]⟩,
-  ⟨[.letRhs, .letRhs], ["middle"], [], [], ["middle", "b"]⟩ ]
+-- Scheme metadata uses authored outer scopes even when inference adds local
+-- quantifiers; no second completed-tree binder depth is needed.
+private def authoredScopes : List FHM.Unverified.HMDisplay.Scope := [
+  ⟨[.letRhs], ["outer"], [], []⟩,
+  ⟨[.letRhs, .letRhs], ["middle"], [], []⟩ ]
 #guard FHM.Unverified.HMDisplay.pretty
-  (FHM.Unverified.HMDisplay.context twoDepthScopes [.letRhs, .letRhs] (.bvar 1))
+  (FHM.Unverified.HMDisplay.context authoredScopes [.letRhs, .letRhs] (.bvar 1))
   (.bvar 1) == "outer"
-#guard FHM.Unverified.HMDisplay.pretty
-  (FHM.Unverified.HMDisplay.context twoDepthScopes [.letRhs, .letRhs] (.bvar 2) true)
-  (.bvar 2) == "outer"
 
 -- Pattern-let desugaring keeps the annotation token order and nested lambda
 -- owner, while a non-BMP character before a hole preserves UTF-16 columns.
@@ -925,8 +922,8 @@ private def signedNested :=
       s.kind == "val" && s.type_ == "∀ item. item → (element, item)"
   | none => false)
 
--- A completed outer scheme includes synthetic binders that are absent from
--- metadata's authored-name scopes. Both depths must reach the same `outer`.
+-- Solved scheme metadata preserves authored outer binders independently of
+-- inferred local quantifiers. Every nested hole must still display `outer`.
 #guard holeTypes
   ("let outer : {outer} outer -> _ = \\(x : outer) -> " ++
    "let middle : {middle} middle -> _ -> _ = \\(y : middle) z -> " ++
@@ -1088,8 +1085,8 @@ private def recPrefixIndependent :=
 private def canonicalLoweredValue (src : String) : Option String := do
   let (program, _, _) ← (parseProgramWithSpans src).toOption
   let (ctors, input) ← SurfaceBridge.lowerProgram program
-  let result ← inferWithTypes ctors input
-  let value ← SmallStep.evaluate 500 result.completedExpr.erase
+  let _ ← inferWithTypes ctors input
+  let value ← SmallStep.evaluate 500 input.erase
   pure (toString value)
 
 private def headedCompoundHoles :=

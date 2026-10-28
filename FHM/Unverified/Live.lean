@@ -148,7 +148,7 @@ groups emit no Core node; every nonempty top-level group emits one `let` or
 `letRec` wrapper according to whether its SCC is recursive.
 Inferred RHS monotypes are not used to reconstruct generalisation. -/
 private def topBindingTypes (groups : List (List Surface.Binding))
-    (core : Expr) (schemes : BinderSchemeMap) : Option (List (ValName × PolyTy)) :=
+    (core : InferInput) (schemes : BinderSchemeMap) : Option (List (ValName × PolyTy)) :=
   let rec go (groups : List (List Surface.Binding)) (path : CorePath) :
       Option (List (ValName × PolyTy)) := do
     match groups with
@@ -158,8 +158,9 @@ private def topBindingTypes (groups : List (List Surface.Binding))
         | [] => go rest path
         | [binding] =>
           if binding.refersTo binding.name then
-            let declared := match core.atCorePath path with
-              | some (.letRec bindings _) => (bindings[0]?).bind (·.ann)
+            let declared := match SurfaceBridge.Provenance.inputAtCorePath core path with
+              | some (.letRec bindings _) => (bindings[0]?).bind fun b =>
+                  match b.ann with | .complete sig => some sig | _ => none
               | _ => none
             let inferred := (schemes.find? fun (site, _) =>
               site == .letRec path 0).map (·.2)
@@ -167,8 +168,8 @@ private def topBindingTypes (groups : List (List Surface.Binding))
             let later ← go rest (path ++ [.letRecBody])
             pure ((binding.name, scheme) :: later)
           else
-            let declared := match core.atCorePath path with
-              | some (.letIn ann _ _) => ann
+            let declared := match SurfaceBridge.Provenance.inputAtCorePath core path with
+              | some (.letIn (.complete sig) _ _) => some sig
               | _ => none
             let inferred := (schemes.find? fun (site, _) =>
               site == .letIn path).map (·.2)
@@ -180,8 +181,9 @@ private def topBindingTypes (groups : List (List Surface.Binding))
             -- Declared members are validated by inference but intentionally
             -- absent from the inferred-scheme map. Read their actual lowered
             -- declaration, including any head-parameter desugaring.
-            let declared := match core.atCorePath path with
-              | some (.letRec bindings _) => (bindings[member]?).bind (·.ann)
+            let declared := match SurfaceBridge.Provenance.inputAtCorePath core path with
+              | some (.letRec bindings _) => (bindings[member]?).bind fun b =>
+                  match b.ann with | .complete sig => some sig | _ => none
               | _ => none
             let inferred := (schemes.find? fun (site, _) =>
               site == .letRec path member).map (·.2)
@@ -272,7 +274,7 @@ def checkPipeline (src : String) :
         (SurfaceBridge.Provenance.identify tree) (bodyDiagSpan sp.body)))
       "match not exhaustive")
 
-  let e := typed.inference.completedExpr.erase
+  let e := typed.input.erase
 
   return .ok {
     report := report

@@ -10877,7 +10877,7 @@ theorem inferWithTypes_scoped_principal {ctors : CtorEnv} {input : InferInput} {
       ∃ R : Subst, (∀ pair ∈ R, pair.2.IsLC) ∧ target = R.onTy result.ty ∧
         (∀ v ∈ input.rigidVars, R.onTy (.fvar v) = .fvar v) := by
   intro target ht
-  have hi := inferWithTypes_infer h
+  obtain ⟨output, hi⟩ := inferWithTypes_infer h
   have hreq : (InferRequest.core input.rigidVars input.freshFloor ⟨[], ctors⟩ input).WF :=
     { ctxBelow := CtxBelow.empty
       protectedBelow := fun v hv => InferInput.lt_freshFloor hv

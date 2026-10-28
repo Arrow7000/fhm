@@ -298,12 +298,10 @@ def elaborateSafe (p : Surface.Program) : Option (Σ ctors : CtorEnv, Safe ctors
       match hcov : checkExhaustive ctors p.term with
       | false => none
       | true =>
-        some ⟨ctors, ⟨result.completedExpr.erase, by
+        some ⟨ctors, ⟨c.erase, by
           obtain ⟨τ, hty, hexh, _⟩ := program_type_safe hlow
             (coreTypecheck_of_infer hresult) (checkExhaustive_sound p.term hcov)
-          have he := inferOfCore_erase hresult
-          exact ⟨Expr.erase_idem _, ⟨τ, by simpa only [he] using hty⟩,
-            by simpa only [he] using hexh⟩⟩⟩
+          exact ⟨Expr.erase_idem _, ⟨τ, hty⟩, hexh⟩⟩⟩
 /-! ## Demos
 
 Two small end-to-end runs through `elaborateSafe`/`runSafe`: one that's

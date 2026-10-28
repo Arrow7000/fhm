@@ -281,7 +281,7 @@ def hmInfer (ctors : CtorEnv) (term : Surface.Expr) : Option (Expr × Ty) :=
     let lowered ← SurfaceBridge.Provenance.lowerWithProvenance ctors term
       (SurfaceBridge.Provenance.diagnosticSpans term)
     let typed ← SurfaceBridge.Provenance.inferWithProvenance ctors lowered
-    pure (typed.inference.completedExpr, typed.inference.ty)
+    pure (typed.input.erase, typed.inference.ty)
 
 def hmSucceeds (ctors : CtorEnv) (term : Surface.Expr) : Bool :=
   (hmInfer ctors term).isSome
@@ -394,7 +394,8 @@ def collectHover (src : String) (p : Surface.Program) (binders : List BinderSpan
                 fail { diagAtSpan reason.message (some span) with code? := some reason.code }
             | none => fail (locateTypecheckFail ctors ke p binders sp)
           | some typed =>
-            if !typed.lowering.provenanceTotal || !typed.nodeTypesTotal || !typed.sourceTypesTotal ||
+            if !(typed.lowering.mapExpr InferInput.erase).provenanceTotal ||
+                !typed.nodeTypesTotal || !typed.sourceTypesTotal ||
                 !typed.patternBinderTypesTotal then
               fail (diagAtSpan "internal inferred provenance coverage failure" (some scope))
             else

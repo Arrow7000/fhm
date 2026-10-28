@@ -27,8 +27,8 @@ private def showType (e : Expr) : IO Unit := IO.println s!"({e})  :  {typeStr e}
 private def evalStr (e : Expr) : String :=
   match inferWithTypes ((elabDecls preludeDecls).getD []) (InferInput.ofCore e) with
   | none => "ill-typed"
-  | some result =>
-    match SmallStep.evaluate 100 result.completedExpr.erase with
+  | some _ =>
+    match SmallStep.evaluate 100 e.erase with
     | some v => toString v
     | none => "stuck / out of fuel"
 
@@ -782,7 +782,7 @@ private def evalProgram (p : Surface.Program) : String :=
   | some (ctors, c) =>
     match inferWithTypes ctors (InferInput.ofCore c) with
     | none => "ill-typed"
-    | some result => evalStr result.completedExpr.erase
+    | some _ => evalStr c.erase
 
 private def showEval (p : Surface.Program) : IO Unit :=
   IO.println s!"({p.term})  ⟹  {evalProgram p}"
@@ -888,8 +888,8 @@ private def evalProgram (p : Surface.Program) : String :=
   | some (ctors, input) =>
       match inferWithTypes ctors input with
       | none => "ill-typed"
-      | some result =>
-          match SmallStep.evaluate 500 result.completedExpr.erase with
+      | some _ =>
+          match SmallStep.evaluate 500 input.erase with
           | some value => toString value
           | none => "stuck / out of fuel"
 
@@ -1839,7 +1839,7 @@ def unusedHole : InferInput :=
   | _ => false
 
 #print axioms Infer.sourceSound
-#print axioms Infer.inputSound
+#print axioms InferCert.inputSound
 #print axioms Infer.completes
 #print axioms Infer.erase
 

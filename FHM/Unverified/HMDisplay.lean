@@ -60,9 +60,6 @@ structure Scope where
   names : List String
   aliases : List (Nat × String)
   freeIds : List Nat
-  /-- Output annotation bodies close every generalized variable; metadata
-      closes only authored explicit binders. Keep their depths separate. -/
-  completedNames : List String
 
 /- Only bijective variable-to-variable correspondences supply display names.
     Composite specialization and identified independent variables are NOT
@@ -81,17 +78,26 @@ partial def matchNameArgs (names : List String) : List Ty → List Ty → List (
   | _, _ => []
 end
 
-def completedSchemes (typed : TypedLowered) (site : SurfaceBinderSite) : List (CorePath × PolyTy) :=
+/-- Binding schemes come from inference metadata or a complete written
+    declaration. No completed expression is needed for presentation. -/
+def resolvedSchemes (typed : TypedLowered) (site : SurfaceBinderSite) : List (CorePath × PolyTy) :=
   let target : Option BinderOriginTarget := (typed.lowering.binderTargets.find? fun p => p.1 == site).map (·.2)
   match target with
   | some (.present sites) => sites.filterMap fun
       | .letIn path => do
-          let .letIn (some sig) _ _ ← typed.lowering.expr.atCorePath path | none
+          let inferred := (typed.inference.binderSchemes.find? fun p => p.1 == .letIn path).map (·.2)
+          let declared := match inputAtCorePath typed.input path with
+            | some (.letIn (.complete sig) _ _) => some sig
+            | _ => none
+          let sig ← inferred.orElse (fun _ => declared)
           pure (path ++ [.letRhs], sig)
       | .letRec path member => do
-          let .letRec bindings _ ← typed.lowering.expr.atCorePath path | none
-          let binding ← bindings[member]?
-          let sig ← binding.ann
+          let inferred := (typed.inference.binderSchemes.find? fun p => p.1 == .letRec path member).map (·.2)
+          let declared := do
+            let .letRec bindings _ ← inputAtCorePath typed.input path | none
+            let binding ← bindings[member]?
+            match binding.ann with | .complete sig => some sig | _ => none
+          let sig ← inferred.orElse (fun _ => declared)
           pure (path ++ [.letRecRhs member], sig)
       | _ => none
   | _ => []
@@ -130,14 +136,13 @@ def rhsPaths (typed : TypedLowered) (site : SurfaceBinderSite) : List CorePath :
 def rhsPath (typed : TypedLowered) (site : SurfaceBinderSite) : Option CorePath :=
   (rhsPaths typed site).head?
 
-def context (scopes : List Scope) (path : CorePath) (ty : Ty)
-    (completed : Bool := false) : Context :=
+def context (scopes : List Scope) (path : CorePath) (ty : Ty) : Context :=
   let enclosing := (scopes.filter fun s => s.path.isPrefixOf path).mergeSort
     (fun a b => a.path.length ≥ b.path.length)
   let aliases := enclosing.flatMap (·.aliases)
   let freeIds := ((enclosing.head?.map (·.freeIds)).getD [] ++ ty.freeVars).eraseDups
     |>.filter (fun n => !(aliases.any fun p => p.1 == n))
-  ⟨enclosing.flatMap (fun scope => if completed then scope.completedNames else scope.names), aliases, freeIds⟩
+  ⟨enclosing.flatMap (·.names), aliases, freeIds⟩
 
 
 def scopes (typed : TypedLowered) (locations : Locations) : List Scope :=
@@ -145,7 +150,7 @@ def scopes (typed : TypedLowered) (locations : Locations) : List Scope :=
     (rhsPaths typed display.site).filterMap fun path => do
       let rootTy ← nodeTyAtCorePath typed.inference.nodeTypes path
       let signature := (declaredScheme typed display.site).orElse fun _ =>
-        ((completedSchemes typed display.site).find? fun entry => entry.1 == path).map (·.2)
+        ((resolvedSchemes typed display.site).find? fun entry => entry.1 == path).map (·.2)
       let outerCtx := context outer path rootTy
       let reserved := outerCtx.boundNames ++ outerCtx.aliases.map (·.2)
       let names := signature.map (fun sig => bindingNames typed display.site display.names sig reserved)
@@ -159,7 +164,7 @@ def scopes (typed : TypedLowered) (locations : Locations) : List Scope :=
         facts.flatMap fun (p, ty) => if path.isPrefixOf p then ty.freeVars else [])).eraseDups
       -- Metadata closes explicit scoped binders only. Newly generalized hole
       -- variables remain fvars, and receive names through the aliases above.
-      pure ⟨path, display.names, aliases.eraseDups, freeIds, names⟩) []
+      pure ⟨path, display.names, aliases.eraseDups, freeIds⟩) []
 
 
 def sourceType (typed : TypedLowered) (scopes : List Scope) (id : SourceId) : Option String := do
@@ -257,7 +262,7 @@ def headerHoles (refs : List NameReference) (scopes : List Scope)
   (holes.zip parts).map fun (ref, facts) =>
     let types := facts.map fun (path, ty, names, completed) =>
       let ctx := context (if completed then scopes.filter (fun s => s.path != path) else scopes)
-        path ty completed
+        path ty
       pretty { ctx with boundNames := names ++ ctx.boundNames } ty
     { span := ref.span, types := types.eraseDups, name := ref.name, annotation? := ref.annotation? }
 
@@ -273,11 +278,11 @@ def bindingHoleParts (typed : TypedLowered) (scopes : List Scope) (site : Surfac
     | some sig =>
         let finalized := finalizeInputAnn tyParams params ann
         let writtenNames := displayNames finalized
-        let facts := (completedSchemes typed site).filterMap fun (path, scheme) => do
+        let facts := (resolvedSchemes typed site).filterMap fun (path, scheme) => do
           -- The written annotation is the result after every head parameter,
           -- including parameters whose omitted types were inferred.
           let body ← dropDomains params.length scheme.body
-          let outer := context (scopes.filter fun s => s.path != path) path body true
+          let outer := context (scopes.filter fun s => s.path != path) path body
           let names := bindingNames typed site writtenNames scheme
             (outer.boundNames ++ outer.aliases.map (·.2))
           pure (path, body, names, true)

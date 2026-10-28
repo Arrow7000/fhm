@@ -118,7 +118,7 @@ the earlier complete-Core surface-safety façade and demonstration.
 | **Type safety:** a well-typed program never gets stuck. It is either a value or can take another step, and its type is preserved.                  | `TypeOfHM.progress`, `TypeOfHM.preservation`, `TypeOfHM.type_safety_star` |
 | **Complete-Core surface safety:** a well-typed, exhaustive surface program accepted by the Core lowering bridge never gets stuck.                  | `program_type_safe`, `surface_type_safe`                                  |
 | **Surface lowering preserves partial annotations:** the structural lowering relation and executable lowerer agree on canonical `InferInput`, including holes, heads, patterns, and recursive groups. | `lower_sound`/`lower_complete`, `lowerProgram_sound`/`lowerProgram_complete` |
-| **Canonical inference is sound:** successful inference directly proves partial-source typing; erasure gives runtime typing. Completed-expression typing and fidelity are compatibility views. | `InferCert.inputSound_source`, `InferCert.inputSound`, `InputTyping.erase`, `Infer.sound` |
+| **Canonical inference is sound:** successful inference directly proves partial-source typing; erasure of the original source gives runtime typing. | `InferCert.inputSound_source`, `InferCert.inputSound`, `InputTyping.erase`, `inferWithTypes_runtime_sound` |
 | **Canonical inference is complete and principal:** inference accepts exactly independently well-typed partial inputs, and every valid result type factors through the inferred type. | `Infer.principal`, `Infer.complete`, `inferCore_accepts_iff`, `inferWithTypes_accepts_iff` |
 | **Complete Core uses the same inference engine:** `InferInput.ofCore` preserves source typing, acceptance, and residual principality. | `SurfaceBridge.coreTypecheck_accepts_iff`, `SurfaceBridge.inferOfCore_source_sound`, `SurfaceBridge.inferOfCore_principal` |
 | **Pattern compilation is correct:** nested matches compile to decision trees that select the same branch with the same bindings.                   | `PatComp.compile_correct_surface`, `PatComp.lowerMatch_adequate_of_typed` |
@@ -215,8 +215,9 @@ The surface language has names, nested patterns, and syntactic sugar. Core is
 a smaller language with de Bruijn indices and only flat, one-constructor-deep
 matches. `InferInput` is the canonical source syntax declared in `Core`, including
 partial annotations. `InputTyping` judges it directly. The CLI executes an
-erased term; the worker also retains a completed expression for existing
-metadata consumers, with a proof that its erasure equals source erasure.
+erasure of that original source; editor types and schemes come from metadata.
+Public results contain no completed expression. The worker/certificate proof
+implementation still retains an internal completed tree pending its removal.
 The structural lowering proof covers the term produced by production provenance
 lowering. It does not verify the parser, source-span metadata, editor joins, or
 the unbounded CLI evaluator.

@@ -1026,7 +1026,7 @@ structure TypedLowered where
   ctors : CtorEnv
   /-- Authored annotation modes before completion. -/
   input : InferInput
-  lowering : Lowered
+  lowering : InputLowered
   inference : InferenceResult
   sourceTypes : SourceTypeMap
   inferredBinderSchemes : InferredSurfaceBinderSchemes
@@ -1067,7 +1067,7 @@ def TypedLowered.sourceTypesTotal (r : TypedLowered) : Bool :=
     This validates both totality and path uniqueness before editor consumers
     join source provenance against the side map. -/
 def TypedLowered.nodeTypesTotal (r : TypedLowered) : Bool :=
-  exactlyOnce (logicalCorePaths r.lowering.expr) (r.inference.nodeTypes.map Prod.fst)
+  exactlyOnce (logicalCorePaths r.input.erase) (r.inference.nodeTypes.map Prod.fst)
 
 def patternBinderTargets (targets : BinderTargetMap) : BinderTargetMap :=
   targets.filter fun (surface, _target) =>
@@ -1126,14 +1126,14 @@ def patternBinderTypesAt (nodeTypes : NodeTypeMap) (targets : BinderTargetMap) :
     | .patCapture _ _ _, .absent _ => some (surface, [])
     | _, _ => none
 
-/-- Infer and complete the lowered input once, retaining its emitted paths for
-    all type and scheme joins. The completed output is the runtime/Core payload. -/
+/-- Infer the lowered source once, retaining its emitted paths for all type
+    and scheme joins. The original partial source remains the payload. -/
 def inferWithProvenance (ctors : CtorEnv) (lowering : InputLowered) : Option TypedLowered := do
   let inference ← inferWithTypes ctors lowering.expr
   pure {
     ctors
     input := lowering.expr
-    lowering := lowering.mapExpr (fun _ => inference.completedExpr)
+    lowering
     inference
     sourceTypes := lowering.sourceTargets.map fun (id, target) =>
       (id, typesAtTarget inference.nodeTypes target)

@@ -65,12 +65,11 @@ theorem inferOfCore_principal {ctors : CtorEnv} {core : Expr} {result : Inferenc
   exact ⟨R,hR,he,fun v hv => hfix v (((InferInput.ofCore core).toCore_rigidVars
     (InferInput.toCore_ofCore core) v).mpr hv)⟩
 
-/-- Executing completed output preserves the adapter's exact runtime source. -/
+/-- The adapter executes erasure of the original complete source. -/
 theorem inferOfCore_erase {ctors : CtorEnv} {core : Expr} {result : InferenceResult}
-    (h : inferWithTypes ctors (InferInput.ofCore core) = some result) :
-    result.completedExpr.erase = core.erase :=
-  (inferWithTypes_erase h).trans
-    ((InferInput.ofCore core).toCore_erase (InferInput.toCore_ofCore core)).symm
+    (_h : inferWithTypes ctors (InferInput.ofCore core) = some result) :
+    (InferInput.ofCore core).erase = core.erase :=
+  ((InferInput.ofCore core).toCore_erase (InferInput.toCore_ofCore core)).symm
 
 private def oneResidualGroup (bindings : List CoreRecBinding) : List (List Nat) :=
   let members := (List.range bindings.length).filter (RecGroups.unsignedAtB bindings)

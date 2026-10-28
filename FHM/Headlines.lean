@@ -26,8 +26,8 @@ namespace Headlines
 /-! ### Surface lowering into canonical inference input
 
 The lowering theorem starts with a surface syntax tree. It preserves partial
-annotations in `InferInput`; inference then supplies independent input typing,
-annotation fidelity, completed Core typing, and exact runtime erasure. Parsing
+annotations in `InferInput`; inference then supplies source typing and runtime
+typing of the original source's erasure. Parsing
 source text and joining source spans to editor artifacts are separate concerns. -/
 #check @lowerExpr_sound
 #check @lowerExpr_complete
@@ -54,21 +54,15 @@ theorem lower_and_infer_direct {ctors : CtorEnv} {source : Surface.Expr}
   have ht := inferWithTypes_input_sound hinfer
   exact ⟨lower_sound hlow, ht, ht.erase⟩
 
-/-- Compatibility API including completed-Core and fidelity artifacts.
-The verified surface-to-input and input-to-Core stages compose without a
-second lowering or inference pass. -/
+/-- Surface acceptance and runtime typing from the same partial source. -/
 theorem lower_and_infer_sound {ctors : CtorEnv} {source : Surface.Expr}
     {input : InferInput} {result : InferenceResult}
     (hlow : lower ctors source = some input)
     (hinfer : inferWithTypes ctors input = some result) :
     Lowers ctors source input ∧
       InputTyping ⟨[], ctors⟩ input result.ty ∧
-      AnnotationCompletion input.rigidVars input result.completedExpr ∧
-      TypeOfHM ⟨[], ctors⟩ result.completedExpr result.ty ∧
-      result.completedExpr.erase = input.erase := by
-  exact ⟨lower_sound hlow, inferWithTypes_input_sound hinfer,
-    InferCert.completes (inferWithTypes_infer hinfer) CtxWF.empty,
-    inferWithTypes_source_sound hinfer, inferWithTypes_erase hinfer⟩
+      RuntimeTyping.RunWT ⟨[], ctors⟩ input.erase result.ty :=
+  lower_and_infer_direct hlow hinfer
 
 /-! ### Canonical partial-input elaboration: bundled requests, runs, and certificates
 
@@ -79,11 +73,11 @@ the same request to its projected result. Every run supplies a certificate, but
 the converse is deliberately not claimed: the relation permits choices that the
 worker resolves deterministically and does not record artifact metadata.
 
-Production `inferWithTypes` completes an `InferInput` once. The `InferCert`
-interface exposes completed-output typing, independent input typing, annotation
-fidelity, erasure, bounds, and runtime soundness without repeating the relation's
-positional indices. Principality similarly takes the request's complete `WF`
-bundle as one premise. -/
+Production `inferWithTypes` returns types and binder/node metadata, without a
+completed expression. The internal `InferCert` interface still exposes
+compatibility output typing and fidelity alongside direct source typing,
+bounds and runtime soundness. Principality similarly takes the request's
+complete `WF` bundle as one premise. -/
 #check @InferRequest.core
 #check @inferRequestCore
 #check @inferRequest
@@ -268,9 +262,8 @@ example {request : InferRecSignedRequest} {result : RecRunResult} :
   Iff.rfl
 
 #check @inferRecStrataWithTypesCore
-#check @inferWithTypes_source_sound
+#check @inferWithTypes_runtime_sound
 #check @inferWithTypes_scoped_sound
-#check @inferWithTypes_erase
 #check @Infer.principal
 #check @Infer.complete
 #check @inferWithTypesCore_sourceComplete
@@ -314,7 +307,7 @@ example {ctors : CtorEnv} {input : InferInput} :
       ∃ ty, InputTyping ⟨[], ctors⟩ input ty :=
   inferWithTypes_accepts_iff
 
-example (result : InferenceResult) : Expr := result.completedExpr
+example (result : InferenceResult) : Ty := result.ty
 example (result : InferenceResult) : NodeTypeMap := result.nodeTypes
 example (result : InferenceResult) : BinderSchemeMap := result.binderSchemes
 
@@ -556,9 +549,8 @@ guards live in `FHM.Headlines.CompleteCore`. -/
 #print axioms inferCore_accepts_iff_req
 
 -- High-level inference compatibility and executable API.
-#print axioms inferWithTypes_source_sound
+#print axioms inferWithTypes_runtime_sound
 #print axioms inferWithTypes_scoped_sound
-#print axioms inferWithTypes_erase
 #print axioms Infer.principal
 #print axioms Infer.complete
 #print axioms inferWithTypesCore_sourceComplete
