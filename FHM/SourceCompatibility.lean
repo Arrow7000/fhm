@@ -1,4 +1,4 @@
-import FHM.InferInput
+import FHM.SourceTyping
 
 /-! Derived complete-Core compatibility. The source typing relation has only
 structural rules; this optional conversion is not a source typing constructor
@@ -332,10 +332,10 @@ private theorem input_binding_size {bindings : List InputRecBinding}
 
 /-- Conservative completed syntax is derivable using structural source rules.
 This proof never uses the completed-subtree source constructor. -/
-theorem InputTyping.ofComplete {input : InferInput} {K : List Nat} {ctx : Ctx}
+theorem ScopedTyping.ofComplete {input : InferInput} {K : List Nat} {ctx : Ctx}
     {core : Expr} {ty : Ty} (hemb : input.toCore = some core)
     (hscope : ∀ v ∈ core.tyFreeVars, v ∈ K) (ht : TypeOfHM ctx core ty) :
-    InputTyping K ctx input ty := by
+    ScopedTyping K ctx input ty := by
   cases hinput : input <;> simp only [hinput] at hemb
   case primLit p => cases hemb; exact .primLit ht
   case primBinOp op => cases hemb; exact .primBinOp ht
@@ -353,7 +353,7 @@ theorem InputTyping.ofComplete {input : InferInput} {K : List Nat} {ctx : Ctx}
     cases ht with
     | lambda hlc hp hctx ht =>
       subst hctx
-      refine .lambda hlc ?_ ?_ (InputTyping.ofComplete hb ?_ ht)
+      refine .lambda hlc ?_ ?_ (ScopedTyping.ofComplete hb ?_ ht)
       · intro t heq
         subst ann
         simp only [completeLambdaAnn, bind, pure, Option.bind_eq_some_iff, Option.some.injEq] at ha
@@ -371,8 +371,8 @@ theorem InputTyping.ofComplete {input : InferInput} {K : List Nat} {ctx : Ctx}
     obtain ⟨f', hf, arg', hx, rfl⟩ := hemb
     cases ht with
     | app htf htx =>
-      exact .app (InputTyping.ofComplete hf (fun v hv => hscope v (List.mem_append_left _ hv)) htf)
-        (InputTyping.ofComplete hx (fun v hv => hscope v (List.mem_append_right _ hv)) htx)
+      exact .app (ScopedTyping.ofComplete hf (fun v hv => hscope v (List.mem_append_left _ hv)) htf)
+        (ScopedTyping.ofComplete hx (fun v hv => hscope v (List.mem_append_right _ hv)) htx)
   case letIn ann rhs body =>
     simp only [InferInput.toCore, bind, pure, Option.bind_eq_some_iff, Option.some.injEq] at hemb
     obtain ⟨ann', ha, rhs', hr, body', hb, rfl⟩ := hemb
@@ -384,9 +384,9 @@ theorem InputTyping.ofComplete {input : InferInput} {K : List Nat} {ctx : Ctx}
       | @letIn _ _ _ _ _ _ M L hwf _ hcofin heq hbody =>
         subst heq
         refine .letIn (M := M) (L := L) hwf (by intro t ht; cases ht)
-          (PartialCore.Ann.MonoMatches.absent hwf) ?_ (InputTyping.ofComplete hb ?_ hbody)
+          (PartialCore.Ann.MonoMatches.absent hwf) ?_ (ScopedTyping.ofComplete hb ?_ hbody)
         · intro Xs hf
-          exact InputTyping.ofComplete hr
+          exact ScopedTyping.ofComplete hr
             (fun v hv => hscope v (List.mem_append_left _ hv)) (hcofin Xs hf)
         · intro v hv; exact hscope v (List.mem_append_right _ hv)
     | complete scheme =>
@@ -399,14 +399,14 @@ theorem InputTyping.ofComplete {input : InferInput} {K : List Nat} {ctx : Ctx}
         have hrhsScope : ∀ v ∈ rhs'.tyFreeVars, v ∈ K := fun v hv =>
           hscope v (List.mem_append_left _ (List.mem_append_right _ hv))
         refine .letSignature (M := scheme) (L := L) hwf ?_ ?_
-          (PartialCore.Ann.SignatureMatches.complete hwf) ?_ (InputTyping.ofComplete hb ?_ hbody)
+          (PartialCore.Ann.SignatureMatches.complete hwf) ?_ (ScopedTyping.ofComplete hb ?_ hbody)
         · intro v hv
           exact hscope v (List.mem_append_left _ (List.mem_append_left _ hv))
         · intro v hv
           exact hrhsScope v ((InferInput.toCore_rigidVars rhs hr v).mp hv)
         · intro Xs hf
           have htake : Xs.take scheme.paramCount = Xs := List.take_of_length_le hf.length.le
-          refine InputTyping.ofComplete (rhs.toCore_openTyVars hr (Xs.take scheme.paramCount)) ?_ ?_
+          refine ScopedTyping.ofComplete (rhs.toCore_openTyVars hr (Xs.take scheme.paramCount)) ?_ ?_
           · intro v hv
             rcases Expr.tyFreeVars_openTyVars hv with hv | hv
             · exact List.mem_append_left _ (hrhsScope v hv)
@@ -418,7 +418,7 @@ theorem InputTyping.ofComplete {input : InferInput} {K : List Nat} {ctx : Ctx}
     obtain ⟨scrut', hs, branches', hbs, rfl⟩ := hemb
     cases ht with
     | match_ hscrut hne hbranches =>
-      refine .match_ (InputTyping.ofComplete hs
+      refine .match_ (ScopedTyping.ofComplete hs
         (fun v hv => hscope v (List.mem_append_left _ hv)) hscrut) ?_ ?_
       · intro hempty
         subst branches
@@ -434,8 +434,8 @@ theorem InputTyping.ofComplete {input : InferInput} {K : List Nat} {ctx : Ctx}
         cases hbranch with
         | mk hspec hctx hbody =>
           subst hctx
-          exact .named hspec (InputTyping.ofComplete heq hcoreScope hbody)
-        | wildcard hbody => exact .wildcard (InputTyping.ofComplete heq hcoreScope hbody)
+          exact .named hspec (ScopedTyping.ofComplete heq hcoreScope hbody)
+        | wildcard hbody => exact .wildcard (ScopedTyping.ofComplete heq hcoreScope hbody)
 
   case letRec bindings body =>
     have rawScope : ∀ v ∈ (InferInput.letRec bindings body).rigidVars, v ∈ K :=
@@ -553,7 +553,7 @@ theorem InputTyping.ofComplete {input : InferInput} {K : List Nat} {ctx : Ctx}
           have hh : (none : Option (Option PolyTy)) = some none := by
             simpa only [ha, PartialCore.Ann.toCore, PartialCore.Ann.recModeAnn] using hvalid
           cases hh
-      refine InputTyping.letRec (specs := specs') (groups := groups) (prefixes := prefixes')
+      refine ScopedTyping.letRec (specs := specs') (groups := groups) (prefixes := prefixes')
         (G := W) (L := L') (hErased ▸ validResidualGroups_erase_iff.mpr hg)
         hw' hp' ?_ hRows ?_ ?_ ?_ ?_
       · intro w hw hm
@@ -588,7 +588,7 @@ theorem InputTyping.ofComplete {input : InferInput} {K : List Nat} {ctx : Ctx}
             member hm coreBinding ty0 hc ht0
           have ho := binding.rhs.toCore_openTyVars hemb []
           rw [core_openTyVars_nil] at ho
-          change InputTyping (K ++ Xs) (recStageCtx ctx specs' prefixes' (groups.take stage).flatten W Xs)
+          change ScopedTyping (K ++ Xs) (recStageCtx ctx specs' prefixes' (groups.take stage).flatten W Xs)
             (binding.rhs.openTyVars []) (Ty.renameG W Xs (Ty.renameG G W ty0))
           have hsquare := Ty.renameG_subst_fresh_pool (S := []) (hw.mono_lc ty0 (List.mem_of_getElem? ht0)) (by simp)
             hWlen hw.nodup hWnd hGW (hWmono ty0 (List.mem_of_getElem? ht0)) (by simp) (by simp)
@@ -596,7 +596,7 @@ theorem InputTyping.ofComplete {input : InferInput} {K : List Nat} {ctx : Ctx}
           simp only [Subst.onTy_nil] at hsquare
           rw [hstageCtx Xs hf, hsquare]
           have hsz := input_binding_size (List.mem_of_getElem? hbi)
-          refine InputTyping.ofComplete ho ?_ hcTyping
+          refine ScopedTyping.ofComplete ho ?_ hcTyping
           intro v hv
           exact List.mem_append_left _ (hRows binding (List.mem_of_getElem? hbi) v
             (List.mem_append_right _ ((InferInput.toCore_rigidVars _ hemb v).mpr hv)))
@@ -614,14 +614,14 @@ theorem InputTyping.ofComplete {input : InferInput} {K : List Nat} {ctx : Ctx}
             (List.mem_iff_getElem?.mpr ⟨member, List.getElem?_zip_eq_some.mpr ⟨hc, hs0⟩⟩) scheme0 rfl Ys hy0
           rw [hbodyCtx]
           have hsz := input_binding_size (List.mem_of_getElem? hbi)
-          refine InputTyping.ofComplete (binding.rhs.toCore_openTyVars hemb Ys) ?_ hcTyping
+          refine ScopedTyping.ofComplete (binding.rhs.toCore_openTyVars hemb Ys) ?_ hcTyping
           intro v hv
           rcases Expr.tyFreeVars_openTyVars hv with hv | hv
           · exact List.mem_append_left _ (hRows binding (List.mem_of_getElem? hbi) v
               (List.mem_append_right _ ((InferInput.toCore_rigidVars _ hemb v).mpr hv)))
           · exact List.mem_append_right _ hv
       · rw [hbodyCtx]
-        refine InputTyping.ofComplete hb ?_ hbody
+        refine ScopedTyping.ofComplete hb ?_ hbody
         intro v hv
         exact rawScope v (List.mem_append_right _ ((InferInput.toCore_rigidVars _ hb v).mpr hv))
 termination_by input.size
@@ -629,4 +629,4 @@ decreasing_by
   all_goals simp only [hinput, InferInput.size, InferInput.openTyVars, InferInput.size_openTyVarsFrom] at *
   all_goals omega
 
-#print axioms InputTyping.ofComplete
+#print axioms ScopedTyping.ofComplete

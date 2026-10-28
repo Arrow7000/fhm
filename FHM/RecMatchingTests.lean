@@ -105,7 +105,7 @@ component/pool-opening quantifier; inversion preserves those witnesses. -/
 theorem inferred_completions_once (h : inferWithTypes [] program = some result) :
     ∃ (specs : List RecSpec) (prefixes : List (List Nat)) (pool : List Nat),
       RecAnnotationsMatch bindings specs prefixes pool := by
-  obtain ⟨specs, _, prefixes, pool, _, _, _, _, _, _, hm, _, _, _⟩ :=
+  obtain ⟨specs, _, prefixes, pool, _, _, _, _, _, hm, _, _, _⟩ :=
     (inferWithTypes_input_sound h).rec_inv
   exact ⟨specs, prefixes, pool, hm⟩
 
@@ -114,8 +114,8 @@ theorem inferred_completions_once (h : inferWithTypes [] program = some result) 
 #print axioms PartialCore.Ann.RecMatches.onSubst_source
 #print axioms RecAnnotationsMatch.subst_fresh_pool
 #print axioms RecState.InputTrace.annotationMatches
-#print axioms InputTyping.rec_inv
-#print axioms InputTyping.rec_inv_high
+#print axioms ScopedTyping.rec_inv
+#print axioms ScopedTyping.rec_inv_high
 #print axioms inferred_completions_once
 
 end RecMatchingTests

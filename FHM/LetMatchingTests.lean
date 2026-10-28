@@ -91,7 +91,7 @@ theorem inferred_completion_once (h : inferWithTypes [] program = some result) :
 
 #print axioms PartialCore.Ann.MonoMatches.ofCofinite
 #print axioms PartialCore.Ann.MonoMatches.onSubst_source
-#print axioms InputTyping.template_completion
+#print axioms ScopedTyping.template_completion
 #print axioms inferred_completion_once
 
 end LetMatchingTests

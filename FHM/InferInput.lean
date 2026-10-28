@@ -3773,7 +3773,7 @@ inductive CompletedRecBindings (J : List Nat → InferInput → Expr → Prop) :
       CompletedRecBindings J K L (binding :: rest) (completed :: completedRest)
 
 /-- Structural annotation completion. This is distinct from input admissibility
-(`InputTyping` below): it records fixed syntax, individual hole fillings, and the
+(`ScopedTyping` below): it records fixed syntax, individual hole fillings, and the
 type abstraction/specialization performed when an ordinary let is generalized.
 Protected fixed variables cannot be substituted or captured by new binders.
 Scope correctness of the resulting Core is supplied by output typing. -/
@@ -3811,14 +3811,15 @@ inductive AnnotationCompletion : List Nat → InferInput → Expr → Prop
 
 /-- Independent branch semantics reuse the ordinary constructor specification;
 the body relation is a parameter, with no inference state or substitution. -/
-inductive BranchTyping (J : List Nat → Ctx → InferInput → Ty → Prop) :
+inductive ScopedBranchTyping (J : List Nat → Ctx → InferInput → Ty → Prop) :
     List Nat → Ctx → (MatchPattern × InferInput) → Ty → Ty → Prop
   | named : BranchCtorSpec ctx.ctors name count scrutTy ctor args fields →
       J K { ctx with env := fields.map PolyTy.mkTrivial ++ ctx.env } body resultTy →
-      BranchTyping J K ctx (.named name count, body) scrutTy resultTy
-  | wildcard : J K ctx body resultTy → BranchTyping J K ctx (.wildcard, body) scrutTy resultTy
+      ScopedBranchTyping J K ctx (.named name count, body) scrutTy resultTy
+  | wildcard : J K ctx body resultTy → ScopedBranchTyping J K ctx (.wildcard, body) scrutTy resultTy
 
-/-- Main declarative source typing. `K` scopes free type variables in fixed
+/-- Inference-facing scope refinement of `InputTyping` (in `SourceTyping`).
+`K` scopes free type variables in fixed
 authored annotation leaves; other free type variables may occur in context
 monotypes and inferred types. The judgment has no solver state. Ordinary lets
 generalize cofinally. All nonrecursive binding annotations select one completion before
@@ -3829,34 +3830,34 @@ Complete syntax has a derived compatibility conversion. Partial recursive
 signatures remain monomorphic within their
 component; only complete written schemes permit polymorphic recursive use.
 -/
-inductive InputTyping : List Nat → Ctx → InferInput → Ty → Prop
+inductive ScopedTyping : List Nat → Ctx → InferInput → Ty → Prop
   | primLit :
     TypeOfHM ctx (.primLit p) ty →
-    InputTyping K ctx (.primLit p) ty
+    ScopedTyping K ctx (.primLit p) ty
 
   | primBinOp :
     TypeOfHM ctx (.primBinOp op) ty →
-    InputTyping K ctx (.primBinOp op) ty
+    ScopedTyping K ctx (.primBinOp op) ty
 
   | lambda :
     paramTy.IsLC →
     (∀ template, ann = some template → template.Matches paramTy) →
     (∀ template, ann = some template → ∀ v ∈ template.rigidVars, v ∈ K) →
-    InputTyping K { ctx with env := PolyTy.mkTrivial paramTy :: ctx.env } body bodyTy →
-    InputTyping K ctx (.lambda ann body) (.arrow paramTy bodyTy)
+    ScopedTyping K { ctx with env := PolyTy.mkTrivial paramTy :: ctx.env } body bodyTy →
+    ScopedTyping K ctx (.lambda ann body) (.arrow paramTy bodyTy)
 
   | app :
-    InputTyping K ctx f (.arrow argTy retTy) →
-    InputTyping K ctx arg argTy →
-    InputTyping K ctx (.app f arg) retTy
+    ScopedTyping K ctx f (.arrow argTy retTy) →
+    ScopedTyping K ctx arg argTy →
+    ScopedTyping K ctx (.app f arg) retTy
 
   | letIn {M : PolyTy} {L : List Nat} :
     M.WF →
     (∀ template, ann = .template template → ∀ v ∈ template.rigidVars, v ∈ K) →
     ann.MonoMatches M →
-    (∀ Xs, FreshNames L M.paramCount Xs → InputTyping K ctx rhs (M.openVars Xs)) →
-    InputTyping K { ctx with env := M :: ctx.env } body bodyTy →
-    InputTyping K ctx (.letIn ann rhs body) bodyTy
+    (∀ Xs, FreshNames L M.paramCount Xs → ScopedTyping K ctx rhs (M.openVars Xs)) →
+    ScopedTyping K { ctx with env := M :: ctx.env } body bodyTy →
+    ScopedTyping K ctx (.letIn ann rhs body) bodyTy
 
   | letSignature {M : PolyTy} {L : List Nat} :
     M.WF →
@@ -3864,28 +3865,28 @@ inductive InputTyping : List Nat → Ctx → InferInput → Ty → Prop
     (∀ v ∈ rhs.rigidVars, v ∈ K) →
     ann.SignatureMatches M →
     (∀ Xs, FreshNames L M.paramCount Xs →
-      InputTyping (K ++ Xs.take ann.paramCount) ctx
+      ScopedTyping (K ++ Xs.take ann.paramCount) ctx
         (rhs.openTyVars (Xs.take ann.paramCount)) (M.openVars Xs)) →
-    InputTyping K { ctx with env := M :: ctx.env } body bodyTy →
-    InputTyping K ctx (.letIn ann rhs body) bodyTy
+    ScopedTyping K { ctx with env := M :: ctx.env } body bodyTy →
+    ScopedTyping K ctx (.letIn ann rhs body) bodyTy
 
   | var :
     ctx.env[index]? = some scheme →
     (∀ arg ∈ args, arg.IsLC) →
     scheme.InstantiatesTo args ty →
-    InputTyping K ctx (.var index) ty
+    ScopedTyping K ctx (.var index) ty
 
   | ctor :
     LookupList.get? ctx.ctors name = some ctor →
     (∀ arg ∈ args, arg.IsLC) →
     ctor.toTy.InstantiatesTo args ty →
-    InputTyping K ctx (.ctor name) ty
+    ScopedTyping K ctx (.ctor name) ty
 
   | match_ :
-    InputTyping K ctx scrut scrutTy →
+    ScopedTyping K ctx scrut scrutTy →
     branches ≠ [] →
-    (∀ branch ∈ branches, BranchTyping InputTyping K ctx branch scrutTy resultTy) →
-    InputTyping K ctx (.match_ scrut branches) resultTy
+    (∀ branch ∈ branches, ScopedBranchTyping ScopedTyping K ctx branch scrutTy resultTy) →
+    ScopedTyping K ctx (.match_ scrut branches) resultTy
 
   | letRec {specs : List RecSpec} {groups : List (List Nat)}
       {prefixes : List (List Nat)} {G L : List Nat} :
@@ -3902,17 +3903,17 @@ inductive InputTyping : List Nat → Ctx → InferInput → Ty → Prop
         bindings[member]? = some binding →
         prefixes[member]? = some names →
         specs[member]? = some (.mono ty) →
-        InputTyping (K ++ Xs)
+        ScopedTyping (K ++ Xs)
           (recStageCtx ctx specs prefixes (groups.take stage).flatten G Xs)
           (binding.rhs.openTyVars (recRenameNames G Xs names)) (Ty.renameG G Xs ty)) →
     (∀ (member : Nat) (binding : InputRecBinding) (scheme : PolyTy),
       bindings[member]? = some binding →
       specs[member]? = some (.poly scheme) →
       ∀ Ys, FreshNames L scheme.paramCount Ys →
-        InputTyping (K ++ Ys) (recBodyCtx ctx specs prefixes G)
+        ScopedTyping (K ++ Ys) (recBodyCtx ctx specs prefixes G)
           (binding.rhs.openTyVars Ys) (scheme.openVars Ys)) →
-    InputTyping K (recBodyCtx ctx specs prefixes G) body resultTy →
-    InputTyping K ctx (.letRec bindings body) resultTy
+    ScopedTyping K (recBodyCtx ctx specs prefixes G) body resultTy →
+    ScopedTyping K ctx (.letRec bindings body) resultTy
 
 private theorem erasedBranches_eq_map (branches : List (MatchPattern × InferInput)) :
     eraseBranches branches = branches.map (fun branch => (branch.1, branch.2.erase)) := by
@@ -3930,8 +3931,8 @@ private theorem eraseBindings_eq_map_source (bindings : List InputRecBinding) :
 /-- The input specification has the ordinary HM runtime meaning independently
 of elaboration. Annotation matching restricts this meaning; it never grants a
 new runtime typing rule. -/
-theorem InputTyping.erase (h : InputTyping K ctx input ty) : RuntimeTyping.RunWT ctx input.erase ty := by
-  induction h using InputTyping.rec
+theorem ScopedTyping.erase (h : ScopedTyping K ctx input ty) : RuntimeTyping.RunWT ctx input.erase ty := by
+  induction h using ScopedTyping.rec
       (motive_2 := fun K ctx branch scrutTy resultTy _ =>
         RuntimeTyping.RunWTMatchBranch ctx (branch.1, branch.2.erase) scrutTy resultTy) with
 
@@ -4005,7 +4006,7 @@ theorem InputTyping.erase (h : InputTyping K ctx input ty) : RuntimeTyping.RunWT
   | wildcard _ ihbody => exact .wildcard ihbody
 
 /-- Independently typed branch bodies retain ordinary erased branch semantics. -/
-theorem BranchTyping.erase (h : BranchTyping InputTyping K ctx branch scrutTy resultTy) :
+theorem ScopedBranchTyping.erase (h : ScopedBranchTyping ScopedTyping K ctx branch scrutTy resultTy) :
     RuntimeTyping.RunWTMatchBranch ctx (branch.1, branch.2.erase) scrutTy resultTy := by
   cases h with
   | named hspec hbody => exact .mk hspec hbody.erase
@@ -4271,15 +4272,15 @@ theorem PartialCore.Ann.RecFits.onSubst_source {ann : BindingAnn} {names : List 
 
 /-- Source-transforming substitution transports the independent judgment when
 its authored variable images are scoped by the destination protected set. -/
-theorem InputTyping.onSubst_source {K K' : List Nat} {ctx : Ctx} {input : InferInput} {ty : Ty}
-    (h : InputTyping K ctx input ty) (subst : Subst)
+theorem ScopedTyping.onSubst_source {K K' : List Nat} {ctx : Ctx} {input : InferInput} {ty : Ty}
+    (h : ScopedTyping K ctx input ty) (subst : Subst)
     (hlc : ∀ pair ∈ subst, pair.2.IsLC)
     (hscope : ∀ k ∈ K, ∀ v ∈ (subst.onTy (.fvar k)).freeVars, v ∈ K') :
-    InputTyping K' (subst.onCtx ctx) (input.substTyFvars subst) (subst.onTy ty) := by
-  induction h using InputTyping.rec
+    ScopedTyping K' (subst.onCtx ctx) (input.substTyFvars subst) (subst.onTy ty) := by
+  induction h using ScopedTyping.rec
       (motive_2 := fun K ctx branch scrutTy resultTy _ => ∀ {K' : List Nat},
         (∀ k ∈ K, ∀ v ∈ (subst.onTy (.fvar k)).freeVars, v ∈ K') →
-          BranchTyping InputTyping K' (subst.onCtx ctx) (branch.1, branch.2.substTyFvars subst)
+          ScopedBranchTyping ScopedTyping K' (subst.onCtx ctx) (branch.1, branch.2.substTyFvars subst)
             (subst.onTy scrutTy) (subst.onTy resultTy)) generalizing K' with
 
   | primLit htyping =>
@@ -4315,7 +4316,7 @@ theorem InputTyping.onSubst_source {K K' : List Nat} {ctx : Ctx} {input : InferI
     have domFresh : ∀ fresh, FreshNames avoid' scheme.paramCount fresh → ∀ pair ∈ subst, pair.1 ∉ fresh := by
       intro fresh hf pair hp hv
       exact hf.avoid pair.1 hv (List.mem_append_right _ (List.mem_map.mpr ⟨pair, hp, rfl⟩))
-    refine InputTyping.letIn (M := subst.onPolyTy scheme) (L := avoid')
+    refine ScopedTyping.letIn (M := subst.onPolyTy scheme) (L := avoid')
       (Subst.onPolyTy_wf hlc hwf) ?_ ?_ ?_ ?_
     · intro template heq
       cases ann with
@@ -4337,7 +4338,7 @@ theorem InputTyping.onSubst_source {K K' : List Nat} {ctx : Ctx} {input : InferI
     have domFresh : ∀ names, FreshNames avoid' scheme.paramCount names → ∀ pair ∈ subst, pair.1 ∉ names := by
       intro names hf pair hp hv
       exact hf.avoid pair.1 hv (List.mem_append_right _ (List.mem_map.mpr ⟨pair, hp, rfl⟩))
-    refine InputTyping.letSignature (M := subst.onPolyTy scheme) (L := avoid')
+    refine ScopedTyping.letSignature (M := subst.onPolyTy scheme) (L := avoid')
       (Subst.onPolyTy_wf hlc hwf) ?_ ?_ ?_ ?_ ?_
     · intro v hv
       obtain ⟨k, hk, hv⟩ := PartialCore.Ann.rigidVars_substTyFvars hv
@@ -4427,7 +4428,7 @@ theorem InputTyping.onSubst_source {K K' : List Nat} {ctx : Ctx} {input : InferI
         rw [hfix] at hv
         exact List.mem_append_right _ ((List.mem_singleton.mp hv) ▸ hk)
     simp only [InferInput.substTyFvars, substInputBindings_eq_map]
-    refine InputTyping.letRec (specs := specs') (groups := groups) (prefixes := prefixes') (G := W) (L := L')
+    refine ScopedTyping.letRec (specs := specs') (groups := groups) (prefixes := prefixes') (G := W) (L := L')
       ?_ ?_ (by
         simpa only [specs', prefixes', substInputBindings_eq_map] using
           hp.subst_fresh_pool (S := subst) hWlen hWnd) ?_ ?_ ?_ ?_ ?_ ?_
@@ -4464,7 +4465,7 @@ theorem InputTyping.onSubst_source {K K' : List Nat} {ctx : Ctx} {input : InferI
       | poly scheme => cases heq
       | mono ty0 =>
         cases heq
-        change InputTyping (K' ++ Xs)
+        change ScopedTyping (K' ++ Xs)
           (recStageCtx (subst.onCtx ctx_1) specs' prefixes' (groups.take stage).flatten W Xs)
           ((binding0.rhs.substTyFvars subst).openTyVars (recRenameNames W Xs (recRenameNames G W names0)))
           (Ty.renameG W Xs (subst.onTy (Ty.renameG G W ty0)))
@@ -4562,8 +4563,8 @@ private theorem rigidBindingVars_mem_iff {bindings : List InputRecBinding} :
         · exact .inl hv
         · exact .inr ⟨binding, hr, hv⟩
 
-theorem InputTyping.rigidVars (h : InputTyping K ctx input ty) : ∀ v ∈ input.rigidVars, v ∈ K := by
-  induction h using InputTyping.rec
+theorem ScopedTyping.rigidVars (h : ScopedTyping K ctx input ty) : ∀ v ∈ input.rigidVars, v ∈ K := by
+  induction h using ScopedTyping.rec
       (motive_2 := fun K _ branch _ _ _ => ∀ v ∈ branch.2.rigidVars, v ∈ K) with
 
   | primLit _ => intro v hv; cases hv
@@ -4615,11 +4616,11 @@ theorem InputTyping.rigidVars (h : InputTyping K ctx input ty) : ∀ v ∈ input
 
 /-- Fixed-source transport is a corollary of source substitution and intrinsic
 annotation scope; it needs only pointwise protection of the composite. -/
-theorem BranchTyping.onSubst_source
-    (h : BranchTyping InputTyping K ctx branch scrutTy resultTy) (subst : Subst)
+theorem ScopedBranchTyping.onSubst_source
+    (h : ScopedBranchTyping ScopedTyping K ctx branch scrutTy resultTy) (subst : Subst)
     (hlc : ∀ p ∈ subst, p.2.IsLC)
     (hscope : ∀ k ∈ K, ∀ v ∈ (subst.onTy (.fvar k)).freeVars, v ∈ K') :
-    BranchTyping InputTyping K' (subst.onCtx ctx) (branch.1, branch.2.substTyFvars subst)
+    ScopedBranchTyping ScopedTyping K' (subst.onCtx ctx) (branch.1, branch.2.substTyFvars subst)
       (subst.onTy scrutTy) (subst.onTy resultTy) := by
   cases h with
   | named hspec hb =>
@@ -4628,27 +4629,27 @@ theorem BranchTyping.onSubst_source
       Subst.onPolyTy, PolyTy.mkTrivial, Function.comp_def] using hb.onSubst_source subst hlc hscope
   | wildcard hb => exact .wildcard (hb.onSubst_source subst hlc hscope)
 
-theorem InputTyping.scope_mono (h : InputTyping K ctx input ty) (hscope : ∀ k ∈ K, k ∈ K') :
-    InputTyping K' ctx input ty := by
+theorem ScopedTyping.scope_mono (h : ScopedTyping K ctx input ty) (hscope : ∀ k ∈ K, k ∈ K') :
+    ScopedTyping K' ctx input ty := by
   have hinput : input.substTyFvars [] = input := input.substTyFvars_eq_self_of_fixes (fun _ _ => rfl)
   simpa only [Subst.onCtx_nil, Subst.onTy_nil, hinput] using
     h.onSubst_source [] (by simp) (fun k hk v hv => hscope v ((List.mem_singleton.mp hv) ▸ hk))
 
 
-theorem InputTyping.onSubst_fixes (h : InputTyping K ctx input ty) (subst : Subst)
+theorem ScopedTyping.onSubst_fixes (h : ScopedTyping K ctx input ty) (subst : Subst)
     (hlc : ∀ pair ∈ subst, pair.2.IsLC)
     (hprotected : ∀ v ∈ K, subst.onTy (.fvar v) = .fvar v) :
-    InputTyping K (subst.onCtx ctx) input (subst.onTy ty) := by
+    ScopedTyping K (subst.onCtx ctx) input (subst.onTy ty) := by
   have ht := h.onSubst_source (K' := K) subst hlc (fun k hk v hv => by
     rw [hprotected k hk] at hv
     exact (List.mem_singleton.mp hv) ▸ hk)
   rwa [input.substTyFvars_eq_self_of_fixes (fun v hv => hprotected v (h.rigidVars v hv))] at ht
 
 /-- Pointwise-fixed transport for an independently typed match branch. -/
-theorem BranchTyping.onSubst_fixes (h : BranchTyping InputTyping K ctx branch scrutTy resultTy)
+theorem ScopedBranchTyping.onSubst_fixes (h : ScopedBranchTyping ScopedTyping K ctx branch scrutTy resultTy)
     (subst : Subst) (hlc : ∀ pair ∈ subst, pair.2.IsLC)
     (hprotected : ∀ v ∈ K, subst.onTy (.fvar v) = .fvar v) :
-    BranchTyping InputTyping K (subst.onCtx ctx) branch (subst.onTy scrutTy) (subst.onTy resultTy) := by
+    ScopedBranchTyping ScopedTyping K (subst.onCtx ctx) branch (subst.onTy scrutTy) (subst.onTy resultTy) := by
   cases h with
   | named hspec hbody =>
     refine .named (hspec.onSubst subst hlc) ?_
@@ -4656,23 +4657,23 @@ theorem BranchTyping.onSubst_fixes (h : BranchTyping InputTyping K ctx branch sc
       Subst.onPolyTy, PolyTy.mkTrivial, Function.comp_def] using hbody.onSubst_fixes subst hlc hprotected
   | wildcard hbody => exact .wildcard (hbody.onSubst_fixes subst hlc hprotected)
 
-theorem InputTyping.onSubst (h : InputTyping K ctx input ty) (subst : Subst)
+theorem ScopedTyping.onSubst (h : ScopedTyping K ctx input ty) (subst : Subst)
     (hlc : ∀ pair ∈ subst, pair.2.IsLC) (hprotected : ∀ pair ∈ subst, pair.1 ∉ K) :
-    InputTyping K (subst.onCtx ctx) input (subst.onTy ty) :=
+    ScopedTyping K (subst.onCtx ctx) input (subst.onTy ty) :=
   h.onSubst_fixes subst hlc (Subst.fixes_of_dom_avoids hprotected)
 
-theorem InputTyping.regular (h : InputTyping K ctx input ty) : ty.IsLC := h.erase.regular
+theorem ScopedTyping.regular (h : ScopedTyping K ctx input ty) : ty.IsLC := h.erase.regular
 
 
 
-theorem InputTyping.generalise_opened {K Ys G : List Nat} {ctx : Ctx} {input : InferInput} {ty : Ty}
-    (h : InputTyping (K ++ Ys) ctx (input.openTyVars Ys) ty)
+theorem ScopedTyping.generalise_opened {K Ys G : List Nat} {ctx : Ctx} {input : InferInput} {ty : Ty}
+    (h : ScopedTyping (K ++ Ys) ctx (input.openTyVars Ys) ty)
     (hnd : (Ys ++ G).Nodup)
     (hctx : ∀ name ∈ Ys ++ G, name ∉ ctx.env.freeVars)
     (hK : ∀ name ∈ Ys ++ G, name ∉ K)
     (hsource : ∀ v ∈ input.rigidVars, v ∈ K) :
     ∃ L, ∀ Xs, FreshNames L (Ys.length + G.length) Xs →
-      InputTyping (K ++ Xs.take Ys.length) ctx (input.openTyVars (Xs.take Ys.length))
+      ScopedTyping (K ++ Xs.take Ys.length) ctx (input.openTyVars (Xs.take Ys.length))
         (Ty.openVars Xs (Ty.closeOver (Ys ++ G) ty)) := by
   refine ⟨Ys ++ G, ?_⟩
   intro Xs hXs
@@ -4746,7 +4747,7 @@ theorem InputTyping.generalise_opened {K Ys G : List Nat} {ctx : Ctx} {input : I
     exact List.zip_append (by simp only [List.length_map, htake])
   rw [Ty.openVars_closeOver_rename h.regular hnd (by simpa only [List.length_append] using hXs.length) hdisj,
     hzip]
-  change InputTyping (K ++ Xs.take Ys.length) ctx (input.openTyVars (Xs.take Ys.length))
+  change ScopedTyping (K ++ Xs.take Ys.length) ctx (input.openTyVars (Xs.take Ys.length))
     ((RY ++ RG).onTy ty)
   rw [Subst.onTy_append]
   exact hsecond
@@ -4799,14 +4800,14 @@ binders; inferred extra quantifiers specialize only the typing monotype. -/
 theorem PartialCore.Ann.SignatureCompletion.cofinite_typing
     {ann : BindingAnn} {written names K : List Nat} {ty : Ty} {scheme : PolyTy} {ctx : Ctx} {input : InferInput}
     (hcomp : ann.SignatureCompletion written ty scheme names)
-    (ht : InputTyping (K ++ written) ctx (input.openTyVars written) ty)
+    (ht : ScopedTyping (K ++ written) ctx (input.openTyVars written) ty)
     (hwf : scheme.WF) (hnd : names.Nodup)
     (hctx : ∀ name ∈ names, name ∉ ctx.env.freeVars)
     (hK : ∀ name ∈ names, name ∉ K)
     (hann : ∀ v ∈ ann.rigidVars, v ∈ K)
     (hsource : ∀ v ∈ input.rigidVars, v ∈ K) :
     ∃ L, ∀ Xs, FreshNames L scheme.paramCount Xs →
-      InputTyping (K ++ Xs.take ann.paramCount) ctx (input.openTyVars (Xs.take ann.paramCount)) (scheme.openVars Xs) := by
+      ScopedTyping (K ++ Xs.take ann.paramCount) ctx (input.openTyVars (Xs.take ann.paramCount)) (scheme.openVars Xs) := by
   cases hcomp with
   | @complete ty written scheme hlen heq =>
     obtain ⟨L, hgen⟩ := ht.generalise_opened (G := [])
@@ -4830,18 +4831,18 @@ theorem PartialCore.Ann.SignatureCompletion.cofinite_typing
 
 /-- A signed binding's cofinite contract transports under an ambient
 specialization; the newly opened written variables are chosen away from its domain. -/
-theorem InputTyping.signatureBinding_onSubst
+theorem ScopedTyping.signatureBinding_onSubst
     {ann : BindingAnn} {scheme : PolyTy} {avoid : List Nat} {K : List Nat} {ctx : Ctx} {input : InferInput}
     (hfit : ann.SignatureMatches scheme)
     (htyping : ∀ fresh, FreshNames avoid scheme.paramCount fresh →
-      InputTyping (K ++ fresh.take ann.paramCount) ctx (input.openTyVars (fresh.take ann.paramCount)) (scheme.openVars fresh))
+      ScopedTyping (K ++ fresh.take ann.paramCount) ctx (input.openTyVars (fresh.take ann.paramCount)) (scheme.openVars fresh))
     (hrigid : ∀ v ∈ ann.rigidVars, v ∈ K)
     (subst : Subst) (hlc : ∀ pair ∈ subst, pair.2.IsLC)
     (hprotected : ∀ pair ∈ subst, pair.1 ∉ K) :
     ∃ avoid',
       ann.SignatureMatches (subst.onPolyTy scheme) ∧
       (∀ fresh, FreshNames avoid' scheme.paramCount fresh →
-        InputTyping (K ++ fresh.take ann.paramCount) (subst.onCtx ctx)
+        ScopedTyping (K ++ fresh.take ann.paramCount) (subst.onCtx ctx)
           (input.openTyVars (fresh.take ann.paramCount)) ((subst.onPolyTy scheme).openVars fresh)) := by
   let avoid' := avoid ++ subst.map Prod.fst
   have hold : ∀ fresh, FreshNames avoid' scheme.paramCount fresh → FreshNames avoid scheme.paramCount fresh :=
@@ -4862,15 +4863,15 @@ theorem InputTyping.signatureBinding_onSubst
     simpa only [Subst.onPolyTy, PolyTy.openVars, Subst.onTy_openVars hlc (hdom fresh hf)] using ht
 
 /-- Cofinite binding premises transport together with authored source syntax. -/
-theorem InputTyping.binding_onSubst_source {ann : BindingAnn} {scheme : PolyTy} {avoid : List Nat}
+theorem ScopedTyping.binding_onSubst_source {ann : BindingAnn} {scheme : PolyTy} {avoid : List Nat}
     (hfit : ann.MonoMatches scheme)
-    (htyping : ∀ fresh, FreshNames avoid scheme.paramCount fresh → InputTyping K ctx input (scheme.openVars fresh))
+    (htyping : ∀ fresh, FreshNames avoid scheme.paramCount fresh → ScopedTyping K ctx input (scheme.openVars fresh))
     (subst : Subst) (hlc : ∀ pair ∈ subst, pair.2.IsLC)
     (hscope : ∀ k ∈ K, ∀ v ∈ (subst.onTy (.fvar k)).freeVars, v ∈ K') :
     ∃ avoid',
       (ann.substTyFvars subst).MonoMatches (subst.onPolyTy scheme) ∧
       (∀ fresh, FreshNames avoid' scheme.paramCount fresh →
-        InputTyping K' (subst.onCtx ctx) (input.substTyFvars subst) ((subst.onPolyTy scheme).openVars fresh)) := by
+        ScopedTyping K' (subst.onCtx ctx) (input.substTyFvars subst) ((subst.onPolyTy scheme).openVars fresh)) := by
   let avoid' := avoid ++ subst.map Prod.fst
   have hold : ∀ fresh, FreshNames avoid' scheme.paramCount fresh → FreshNames avoid scheme.paramCount fresh :=
     fun fresh hf => ⟨hf.length, hf.nodup, fun v hv ha => hf.avoid v hv (List.mem_append_left _ ha)⟩
@@ -4885,17 +4886,17 @@ theorem InputTyping.binding_onSubst_source {ann : BindingAnn} {scheme : PolyTy} 
 
 /-- Scoped written openings also transport; fresh binders are protected only
 inside the RHS premise. -/
-theorem InputTyping.signatureBinding_onSubst_source
+theorem ScopedTyping.signatureBinding_onSubst_source
     {ann : BindingAnn} {scheme : PolyTy} {avoid : List Nat} {K K' : List Nat} {ctx : Ctx} {input : InferInput}
     (hfit : ann.SignatureMatches scheme)
     (htyping : ∀ fresh, FreshNames avoid scheme.paramCount fresh →
-      InputTyping (K ++ fresh.take ann.paramCount) ctx (input.openTyVars (fresh.take ann.paramCount)) (scheme.openVars fresh))
+      ScopedTyping (K ++ fresh.take ann.paramCount) ctx (input.openTyVars (fresh.take ann.paramCount)) (scheme.openVars fresh))
     (subst : Subst) (hlc : ∀ pair ∈ subst, pair.2.IsLC)
     (hscope : ∀ k ∈ K, ∀ v ∈ (subst.onTy (.fvar k)).freeVars, v ∈ K') :
     ∃ avoid',
       (ann.substTyFvars subst).SignatureMatches (subst.onPolyTy scheme) ∧
       (∀ fresh, FreshNames avoid' scheme.paramCount fresh →
-        InputTyping (K' ++ fresh.take (ann.substTyFvars subst).paramCount) (subst.onCtx ctx)
+        ScopedTyping (K' ++ fresh.take (ann.substTyFvars subst).paramCount) (subst.onCtx ctx)
           ((input.substTyFvars subst).openTyVars (fresh.take (ann.substTyFvars subst).paramCount))
           ((subst.onPolyTy scheme).openVars fresh)) := by
   let avoid' := avoid ++ subst.map Prod.fst
@@ -4925,14 +4926,14 @@ theorem InputTyping.signatureBinding_onSubst_source
 
 /-- Simultaneous fresh opening of an ordinary partial binding's monotype. The
 input syntax stays unchanged because every fixed annotation variable is in K. -/
-theorem InputTyping.generalise {ann : BindingAnn} {names : List Nat} (h : InputTyping K ctx input ty)
+theorem ScopedTyping.generalise {ann : BindingAnn} {names : List Nat} (h : ScopedTyping K ctx input ty)
     (hfit : ann.FitsMono ty)
     (hrigid : ∀ template, ann = .template template → ∀ v ∈ template.rigidVars, v ∈ K)
     (hnames : names.Nodup) (hctx : ∀ name ∈ names, name ∉ ctx.env.freeVars)
     (hprotected : ∀ name ∈ names, name ∉ K) :
     ann.MonoMatches ⟨names.length, ty.closeOver names⟩ ∧
       ∀ fresh, FreshNames names names.length fresh →
-        InputTyping K ctx input (Ty.openVars fresh (Ty.closeOver names ty)) := by
+        ScopedTyping K ctx input (Ty.openVars fresh (Ty.closeOver names ty)) := by
   have hmatches := PartialCore.Ann.FitsMono.generalise_scoped hfit h.regular hrigid hnames hprotected
   refine ⟨hmatches, ?_⟩
   intro fresh hfresh
@@ -4956,15 +4957,15 @@ theorem InputTyping.generalise {ann : BindingAnn} {names : List Nat} (h : InputT
 
 /-- Transport a stored ordinary completion and its cofinite RHS typing.
 Only RHS opening names require freshening away from substitution domains. -/
-theorem InputTyping.binding_onSubst_fixes {ann : BindingAnn} {scheme : PolyTy} {avoid : List Nat}
+theorem ScopedTyping.binding_onSubst_fixes {ann : BindingAnn} {scheme : PolyTy} {avoid : List Nat}
     (hfit : ann.MonoMatches scheme)
-    (htyping : ∀ fresh, FreshNames avoid scheme.paramCount fresh → InputTyping K ctx input (scheme.openVars fresh))
+    (htyping : ∀ fresh, FreshNames avoid scheme.paramCount fresh → ScopedTyping K ctx input (scheme.openVars fresh))
     (hrigid : ∀ template, ann = .template template → ∀ v ∈ template.rigidVars, v ∈ K)
     (subst : Subst) (hlc : ∀ pair ∈ subst, pair.2.IsLC)
     (hprotected : ∀ v ∈ K, subst.onTy (.fvar v) = .fvar v) :
     ∃ avoid', ann.MonoMatches (subst.onPolyTy scheme) ∧
       (∀ fresh, FreshNames avoid' scheme.paramCount fresh →
-        InputTyping K (subst.onCtx ctx) input ((subst.onPolyTy scheme).openVars fresh)) := by
+        ScopedTyping K (subst.onCtx ctx) input ((subst.onPolyTy scheme).openVars fresh)) := by
   let avoid' := avoid ++ subst.map Prod.fst
   refine ⟨avoid', hfit.onSubst_fixes hrigid subst hlc hprotected, ?_⟩
   intro fresh hf
@@ -4976,16 +4977,16 @@ theorem InputTyping.binding_onSubst_fixes {ann : BindingAnn} {scheme : PolyTy} {
   have htyping' := (htyping fresh hold).onSubst_fixes subst hlc hprotected
   simpa only [PolyTy.openVars, Subst.onPolyTy, Subst.onTy_openVars hlc hdom] using htyping'
 
-theorem InputTyping.binding_onSubst {ann : BindingAnn} {scheme : PolyTy} {avoid : List Nat}
+theorem ScopedTyping.binding_onSubst {ann : BindingAnn} {scheme : PolyTy} {avoid : List Nat}
     (hfit : ann.MonoMatches scheme)
-    (htyping : ∀ fresh, FreshNames avoid scheme.paramCount fresh → InputTyping K ctx input (scheme.openVars fresh))
+    (htyping : ∀ fresh, FreshNames avoid scheme.paramCount fresh → ScopedTyping K ctx input (scheme.openVars fresh))
     (hrigid : ∀ template, ann = .template template → ∀ v ∈ template.rigidVars, v ∈ K)
     (subst : Subst) (hlc : ∀ pair ∈ subst, pair.2.IsLC)
     (hprotected : ∀ pair ∈ subst, pair.1 ∉ K) :
     ∃ avoid', ann.MonoMatches (subst.onPolyTy scheme) ∧
       (∀ fresh, FreshNames avoid' scheme.paramCount fresh →
-        InputTyping K (subst.onCtx ctx) input ((subst.onPolyTy scheme).openVars fresh)) :=
-  InputTyping.binding_onSubst_fixes hfit htyping hrigid subst hlc (Subst.fixes_of_dom_avoids hprotected)
+        ScopedTyping K (subst.onCtx ctx) input ((subst.onPolyTy scheme).openVars fresh)) :=
+  ScopedTyping.binding_onSubst_fixes hfit htyping hrigid subst hlc (Subst.fixes_of_dom_avoids hprotected)
 
 
 private theorem Expr.substTyFvars_openTyVars_lc (expr : Expr) {S : Subst} {Xs : List Nat}
@@ -5572,11 +5573,11 @@ private theorem scope_ann_nil_fun : PartialCore.Ann.substTyFvars [] = id := fune
 private theorem scope_poly_nil : Subst.onPolyTy [] = id := funext Subst.onPolyTy_nil
 /-- The independent scope index protects authored source variables only.
 Unused index entries do not constrain candidate types or the context. -/
-theorem InputTyping.scope_restrict {Q P : List Nat} {ctx : Ctx} {input : InferInput} {ty : Ty}
-    (h : InputTyping Q ctx input ty) (hscope : ∀ v ∈ input.rigidVars, v ∈ P) : InputTyping P ctx input ty := by
-  induction h using InputTyping.rec
+theorem ScopedTyping.scope_restrict {Q P : List Nat} {ctx : Ctx} {input : InferInput} {ty : Ty}
+    (h : ScopedTyping Q ctx input ty) (hscope : ∀ v ∈ input.rigidVars, v ∈ P) : ScopedTyping P ctx input ty := by
+  induction h using ScopedTyping.rec
       (motive_2 := fun _ ctx branch st rt _ => ∀ {P : List Nat},
-        (∀ v ∈ branch.2.rigidVars, v ∈ P) → BranchTyping InputTyping P ctx branch st rt) generalizing P with
+        (∀ v ∈ branch.2.rigidVars, v ∈ P) → ScopedBranchTyping ScopedTyping P ctx branch st rt) generalizing P with
 
   | primLit ht => exact .primLit ht
   | primBinOp ht => exact .primBinOp ht
@@ -5651,7 +5652,7 @@ theorem InputTyping.scope_restrict {Q P : List Nat} {ctx : Ctx} {input : InferIn
     have hWXs : ∀ Xs, FreshNames (W ++ L') W.length Xs → ∀ w ∈ W, w ∉ Xs := by
       intro Xs hf w hw hx
       exact hf.avoid w hx (List.mem_append_left _ hw)
-    refine InputTyping.letRec (specs := specs') (groups := groups) (prefixes := prefixes') (G := W) (L := L')
+    refine ScopedTyping.letRec (specs := specs') (groups := groups) (prefixes := prefixes') (G := W) (L := L')
       hgroups ?_ ?_ ?_ hRowsP ?_ ?_ ?_ ?_
     · simpa only [specs', hbindingsNil, scope_ann_nil_fun, List.map_id] using
         RecSpecs.WF.subst_fresh_pool hwf hS hWnd
@@ -5697,7 +5698,7 @@ theorem InputTyping.scope_restrict {Q P : List Nat} {ctx : Ctx} {input : InferIn
           (hWmono ty0 (List.mem_of_getElem? ht0)) hdom hran (hf.length.trans hWlen) (hGXs Xs hf)
           (hWXs Xs hf) (by simp)
         simp only [Subst.onTy_nil] at hrename
-        change InputTyping (P ++ Xs) (recStageCtx ctx_1 specs' prefixes' (groups.take stage).flatten W Xs)
+        change ScopedTyping (P ++ Xs) (recStageCtx ctx_1 specs' prefixes' (groups.take stage).flatten W Xs)
           (binding.rhs.openTyVars (recRenameNames W Xs (recRenameNames G W names0)))
           (Ty.renameG W Xs (Ty.renameG G W ty0))
         rw [hstageCtx, recRenameNames_composition hWlen (hf.length.trans hWlen) hWnd hsub, hrename]
@@ -7772,7 +7773,7 @@ def RecState.InputTrace (Q : List Nat) (ctx : Ctx) (bindings : List InputRecBind
     ∀ (i : Nat) (binding : InputRecBinding) (ty : Ty), i ∈ component →
       bindings[i]? = some binding → state.specs[i]? = some (.mono ty) →
       binding.ann.RecFits (state.prefixes[i]?.getD []) ty ∧
-      InputTyping (Q ++ state.prefixes[i]?.getD [])
+      ScopedTyping (Q ++ state.prefixes[i]?.getD [])
         (state.stageCtx ctx (past.take stage).flatten)
         (binding.rhs.openTyVars (state.prefixes[i]?.getD [])) ty
 

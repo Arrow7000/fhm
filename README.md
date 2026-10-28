@@ -118,7 +118,7 @@ the earlier complete-Core surface-safety façade and demonstration.
 | **Type safety:** a well-typed program never gets stuck. It is either a value or can take another step, and its type is preserved.                  | `TypeOfHM.progress`, `TypeOfHM.preservation`, `TypeOfHM.type_safety_star` |
 | **Complete-Core surface safety:** a well-typed, exhaustive surface program accepted by the Core lowering bridge never gets stuck.                  | `program_type_safe`, `surface_type_safe`                                  |
 | **Surface lowering preserves partial annotations:** the structural lowering relation and executable lowerer agree on canonical `InferInput`, including holes, heads, patterns, and recursive groups. | `lower_sound`/`lower_complete`, `lowerProgram_sound`/`lowerProgram_complete` |
-| **Canonical inference is sound:** successful inference directly proves partial-source typing; erasure gives runtime typing. Completed-expression typing and fidelity are derived compatibility views. | `Infer.inputSound_source`, `Infer.inputSound`, `InputTyping.erase`, `Infer.sound` |
+| **Canonical inference is sound:** successful inference directly proves partial-source typing; erasure gives runtime typing. Completed-expression typing and fidelity are compatibility views. | `InferCert.inputSound_source`, `InferCert.inputSound`, `InputTyping.erase`, `Infer.sound` |
 | **Canonical inference is complete and principal:** inference accepts exactly independently well-typed partial inputs, and every valid result type factors through the inferred type. | `Infer.principal`, `Infer.complete`, `inferCore_accepts_iff`, `inferWithTypes_accepts_iff` |
 | **Complete Core uses the same inference engine:** `InferInput.ofCore` preserves source typing, acceptance, and residual principality. | `SurfaceBridge.coreTypecheck_accepts_iff`, `SurfaceBridge.inferOfCore_source_sound`, `SurfaceBridge.inferOfCore_principal` |
 | **Pattern compilation is correct:** nested matches compile to decision trees that select the same branch with the same bindings.                   | `PatComp.compile_correct_surface`, `PatComp.lowerMatch_adequate_of_typed` |
@@ -250,7 +250,8 @@ The design choices that matter most:
 | [`InferenceSupport.lean`](./FHM/InferenceSupport.lean) | Shared unification, generalization, scheduling, and Core typing lemmas       |
 | [`AnnotationMatching.lean`](./FHM/AnnotationMatching.lean) | Pure local hole assignments, matching, closed completions, substitution and opening |
 | [`AnnotationAllocation.lean`](./FHM/AnnotationAllocation.lean) | Shared certified hole allocation/checking, independent of generalization policy |
-| [`InferInput.lean`](./FHM/InferInput.lean)       | Main source judgment `InputTyping`, source operations, direct erasure, compatibility completion |
+| [`InferInput.lean`](./FHM/InferInput.lean)       | Source operations, scoped inference proof refinement, compatibility completion |
+| [`SourceTyping.lean`](./FHM/SourceTyping.lean)   | Main source judgment `InputTyping`, direct erasure and scope refinement equivalence |
 | [`SourceCompatibility.lean`](./FHM/SourceCompatibility.lean) | Derived complete-Core conversion, outside the source soundness path |
 | [`InferW.lean`](./FHM/InferW.lean)               | The sole inference judgment and worker, bounds, soundness, and fidelity         |
 | [`Completeness.lean`](./FHM/Completeness.lean)   | Principality and executable completeness for that same worker                   |

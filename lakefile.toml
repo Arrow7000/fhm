@@ -18,6 +18,7 @@ roots = [
   "FHM.InferenceSupport",
   "FHM.AnnotationMatching",
   "FHM.InferInput",
+  "FHM.SourceTyping",
   "FHM.SourceCompatibility",
   "FHM.AnnotationAllocation",
   "FHM.AnnotationAllocationTests",

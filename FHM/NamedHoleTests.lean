@@ -93,7 +93,7 @@ theorem conflicting_named_rejected : ¬ repeated.Matches (pair (.prim .int) (.pr
 /-- Actual production inference proves the named source judgment directly. -/
 theorem inferred_repeated_fidelity (h : inferWithTypes [] (identity repeated) = some result) :
     ∃ ty output, result.ty = .arrow (pair ty ty) output := by
-  obtain ⟨param, output, heq, _, hfit, _, _⟩ := (inferWithTypes_input_sound h).lambda_inv
+  obtain ⟨param, output, heq, _, hfit, _⟩ := (inferWithTypes_input_sound h).lambda_inv
   obtain ⟨ty, hparam⟩ := repeated_shape (hfit repeated rfl)
   exact ⟨ty, output, heq.trans (congrArg (fun p => Ty.arrow p output) hparam)⟩
 
@@ -111,7 +111,7 @@ theorem inferred_scoped_once (h : inferWithTypes [] scopedProgram = some result)
 theorem inferred_recursive_once (h : inferWithTypes [] recursive = some result) :
     ∃ (specs : List RecSpec) (prefixes : List (List Nat)) (pool : List Nat),
       RecAnnotationsMatch recBindings specs prefixes pool := by
-  obtain ⟨specs, _, prefixes, pool, _, _, _, _, _, _, hm, _, _, _⟩ :=
+  obtain ⟨specs, _, prefixes, pool, _, _, _, _, _, hm, _, _, _⟩ :=
     (inferWithTypes_input_sound h).rec_inv
   exact ⟨specs, prefixes, pool, hm⟩
 

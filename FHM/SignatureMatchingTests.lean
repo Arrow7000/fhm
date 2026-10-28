@@ -80,7 +80,7 @@ theorem inferred_signature_once (h : inferWithTypes [] signed = some result) :
 
 #print axioms PartialCore.Ann.SignatureMatches.ofCofinite
 #print axioms PartialCore.Ann.SignatureMatches.onSubst_source
-#print axioms InputTyping.partialSignature_completion
+#print axioms ScopedTyping.partialSignature_completion
 #print axioms inferred_signature_once
 
 end SignatureMatchingTests

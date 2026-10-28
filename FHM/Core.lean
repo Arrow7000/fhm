@@ -2961,9 +2961,9 @@ def RecSpecs.PolyTypedFinal (TypeOf : Ctx → Expr → Ty → Prop) (ctx : Ctx)
 /-! ### Historical complete-Core typing `TypeOfHM`.
 
 Rank-one let-polymorphism with complete annotations admitting polymorphic
-recursive uses. The canonical partial-source specification is `InputTyping`;
-this relation retains complete-Core compatibility and supplies its primitive
-leaf rules. A variable use instantiates its environment scheme by
+recursive uses. The canonical partial-source specification is `InputTyping`
+in `SourceTyping.lean`; this relation retains complete-Core compatibility.
+A variable use instantiates its environment scheme by
 existential witness types. Source annotations constrain `lambda`, `letIn`,
 and `letRec`.
 

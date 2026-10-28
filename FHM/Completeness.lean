@@ -180,10 +180,10 @@ theorem InferInput.inferenceSccs_substTyFvars
 
 /-- The independent rules conservatively recover ordinary typing whenever the
 input is already complete. This retains complete annotations and recursion. -/
-theorem InputTyping.toCore (h : InputTyping K ctx input ty) {core : Expr}
+theorem ScopedTyping.toCore (h : ScopedTyping K ctx input ty) {core : Expr}
     (hc : input.toCore = some core) :
     TypeOfHM ctx core ty ∧ (∀ v ∈ core.tyFreeVars, v ∈ K) := by
-  induction h using InputTyping.rec
+  induction h using ScopedTyping.rec
       (motive_2 := fun K ctx branch scrutTy resultTy _ =>
         ∀ {body : Expr}, branch.2.toCore = some body →
           TypeOfMatchBranch ctx (branch.1, body) scrutTy resultTy ∧
@@ -290,7 +290,7 @@ theorem InputTyping.toCore (h : InputTyping K ctx input ty) {core : Expr}
         exact (ihbranches (branch.1, body) hbody heq).2 v hv
   | letRec hgroups hwf hp hG hRows hMatches hMono hPoly hBody ihMono ihPoly ihBody =>
     expose_names
-    have hRaw := (InputTyping.letRec hgroups hwf hp hG hRows hMatches hMono hPoly hBody).rigidVars
+    have hRaw := (ScopedTyping.letRec hgroups hwf hp hG hRows hMatches hMono hPoly hBody).rigidVars
     have hWhole := hc
     simp only [InferInput.toCore, bind, pure, Option.bind_eq_some_iff, Option.some.injEq] at hc
     obtain ⟨coreBindings, hr, coreBody, hb, rfl⟩ := hc
@@ -347,26 +347,26 @@ theorem InputTyping.toCore (h : InputTyping K ctx input ty) {core : Expr}
     exact ⟨.wildcard ht, hs⟩
 
 /-- Lambda inversion follows the structural source rule. -/
-theorem InputTyping.lambda_inv (h : InputTyping K ctx (.lambda ann body) ty) :
+theorem ScopedTyping.lambda_inv (h : ScopedTyping K ctx (.lambda ann body) ty) :
     ∃ param result, ty = .arrow param result ∧ param.IsLC ∧
       (∀ template, ann = some template → template.Matches param) ∧
       (∀ template, ann = some template → ∀ v ∈ template.rigidVars, v ∈ K) ∧
-      InputTyping K { ctx with env := PolyTy.mkTrivial param :: ctx.env } body result := by
+      ScopedTyping K { ctx with env := PolyTy.mkTrivial param :: ctx.env } body result := by
   cases h with
   | lambda hlc hfits hr hb => exact ⟨_, _, rfl, hlc, hfits, hr, hb⟩
 
-theorem InputTyping.app_inv (h : InputTyping K ctx (.app f arg) ty) :
-    ∃ param, InputTyping K ctx f (.arrow param ty) ∧ InputTyping K ctx arg param := by
+theorem ScopedTyping.app_inv (h : ScopedTyping K ctx (.app f arg) ty) :
+    ∃ param, ScopedTyping K ctx f (.arrow param ty) ∧ ScopedTyping K ctx arg param := by
   cases h with
   | app hf hx => exact ⟨_, hf, hx⟩
 
-theorem InputTyping.letMono_inv (h : InputTyping K ctx (.letIn ann rhs body) ty)
+theorem ScopedTyping.letMono_inv (h : ScopedTyping K ctx (.letIn ann rhs body) ty)
     (hmode : ann.isSignature = false) :
     ∃ (M : PolyTy) (L : List Nat), M.WF ∧
       (∀ template, ann = .template template → ∀ v ∈ template.rigidVars, v ∈ K) ∧
       ann.MonoMatches M ∧
-      (∀ Xs, FreshNames L M.paramCount Xs → InputTyping K ctx rhs (M.openVars Xs)) ∧
-      InputTyping K { ctx with env := M :: ctx.env } body ty := by
+      (∀ Xs, FreshNames L M.paramCount Xs → ScopedTyping K ctx rhs (M.openVars Xs)) ∧
+      ScopedTyping K { ctx with env := M :: ctx.env } body ty := by
   cases h with
   | letIn hwf hr hf htr htb => exact ⟨_, _, hwf, hr, hf, htr, htb⟩
   | @letSignature _ _ _ _ _ _ M L _ _ _ hfit _ _ =>
@@ -376,16 +376,16 @@ theorem InputTyping.letMono_inv (h : InputTyping K ctx (.letIn ann rhs body) ty)
 
 /-- An ordinary partial annotation selects one completion before the existing
 implicit-generalization rule checks all fresh openings of its chosen scheme. -/
-theorem InputTyping.template_completion
-    (h : InputTyping K ctx (.letIn (.template template) rhs body) result) :
+theorem ScopedTyping.template_completion
+    (h : ScopedTyping K ctx (.letIn (.template template) rhs body) result) :
     ∃ (scheme : PolyTy) (avoid : List Nat)
       (completion : PartialCore.Completion scheme.paramCount template scheme.body),
       template.WellScoped 0 ∧
       (∀ Xs, FreshNames avoid scheme.paramCount Xs →
         PartialCore.Template.Fits (PartialCore.HoleAssignment.map (Ty.openVars Xs) completion.holes)
           template (scheme.openVars Xs)) ∧
-      (∀ Xs, FreshNames avoid scheme.paramCount Xs → InputTyping K ctx rhs (scheme.openVars Xs)) ∧
-      InputTyping K { ctx with env := scheme :: ctx.env } body result := by
+      (∀ Xs, FreshNames avoid scheme.paramCount Xs → ScopedTyping K ctx rhs (scheme.openVars Xs)) ∧
+      ScopedTyping K { ctx with env := scheme :: ctx.env } body result := by
   obtain ⟨scheme, avoid, _, _, hmatches, hrhs, hbody⟩ := h.letMono_inv rfl
   obtain ⟨hm⟩ := hmatches.completion
   cases hm with
@@ -396,15 +396,15 @@ theorem InputTyping.template_completion
 
 /-- Match inversion preserves each constructor's existential arguments and
 field context. -/
-theorem InputTyping.match_inv (h : InputTyping K ctx (.match_ scrut branches) resultTy) :
-    ∃ scrutTy, InputTyping K ctx scrut scrutTy ∧ branches ≠ [] ∧
-      ∀ branch ∈ branches, BranchTyping InputTyping K ctx branch scrutTy resultTy := by
+theorem ScopedTyping.match_inv (h : ScopedTyping K ctx (.match_ scrut branches) resultTy) :
+    ∃ scrutTy, ScopedTyping K ctx scrut scrutTy ∧ branches ≠ [] ∧
+      ∀ branch ∈ branches, ScopedBranchTyping ScopedTyping K ctx branch scrutTy resultTy := by
   cases h with
   | match_ hs hne hb => exact ⟨_, hs, hne, hb⟩
 
 /-- A whole lambda-parameter hole has exactly omission's independent meaning. -/
-theorem InputTyping.lambda_hole_iff :
-    InputTyping K ctx (.lambda (some .hole) body) ty ↔ InputTyping K ctx (.lambda none body) ty := by
+theorem ScopedTyping.lambda_hole_iff :
+    ScopedTyping K ctx (.lambda (some .hole) body) ty ↔ ScopedTyping K ctx (.lambda none body) ty := by
   constructor
   · intro h
     obtain ⟨param, result, rfl, hlc, _, _, hb⟩ := h.lambda_inv
@@ -417,9 +417,9 @@ theorem InputTyping.lambda_hole_iff :
 
 /-- A whole ordinary-let signature hole has exactly omission's independent
 meaning, including cofinite generalization of its RHS. -/
-theorem InputTyping.let_hole_iff :
-    InputTyping K ctx (.letIn (.template .hole) rhs body) ty ↔
-      InputTyping K ctx (.letIn .absent rhs body) ty := by
+theorem ScopedTyping.let_hole_iff :
+    ScopedTyping K ctx (.letIn (.template .hole) rhs body) ty ↔
+      ScopedTyping K ctx (.letIn .absent rhs body) ty := by
   constructor
   · intro h
     obtain ⟨M, L, hwf, _, _, hr, hb⟩ := h.letMono_inv rfl
@@ -433,14 +433,14 @@ theorem InputTyping.let_hole_iff :
 
 /-- Signed-let inversion retains the full candidate scheme, including any
 additional declarative quantifiers after the authored prefix. -/
-theorem InputTyping.signature_inv (h : InputTyping K ctx (.letIn ann rhs body) ty)
+theorem ScopedTyping.signature_inv (h : ScopedTyping K ctx (.letIn ann rhs body) ty)
     (hmode : ann.isSignature = true) :
     ∃ (M : PolyTy) (L : List Nat), M.WF ∧
       (∀ v ∈ ann.rigidVars, v ∈ K) ∧ (∀ v ∈ rhs.rigidVars, v ∈ K) ∧
       ann.SignatureMatches M ∧
       (∀ Xs, FreshNames L M.paramCount Xs →
-        InputTyping (K ++ Xs.take ann.paramCount) ctx (rhs.openTyVars (Xs.take ann.paramCount)) (M.openVars Xs)) ∧
-      InputTyping K { ctx with env := M :: ctx.env } body ty := by
+        ScopedTyping (K ++ Xs.take ann.paramCount) ctx (rhs.openTyVars (Xs.take ann.paramCount)) (M.openVars Xs)) ∧
+      ScopedTyping K { ctx with env := M :: ctx.env } body ty := by
   cases h with
   | letSignature hwf hann hrhs hfit htr htb => exact ⟨_, _, hwf, hann, hrhs, hfit, htr, htb⟩
   | @letIn _ _ _ _ _ _ M L _ _ hfit _ _ =>
@@ -451,8 +451,8 @@ theorem InputTyping.signature_inv (h : InputTyping K ctx (.letIn ann rhs body) t
 /-- The assignment and scheme are selected before all fresh RHS openings.
 In particular, a syntactic hole cannot select a different scheme body at each
 opening. This is a statement about the production source typing relation. -/
-theorem InputTyping.partialSignature_completion
-    (h : InputTyping K ctx (.letIn (.partialForall count template) rhs body) result) :
+theorem ScopedTyping.partialSignature_completion
+    (h : ScopedTyping K ctx (.letIn (.partialForall count template) rhs body) result) :
     ∃ (scheme : PolyTy) (avoid : List Nat)
       (completion : PartialCore.Completion scheme.paramCount template scheme.body),
       count ≤ scheme.paramCount ∧ template.WellScoped count ∧
@@ -460,8 +460,8 @@ theorem InputTyping.partialSignature_completion
         PartialCore.Template.Fits (PartialCore.HoleAssignment.map (Ty.openVars Xs) completion.holes)
           (template.map (Ty.openVars (Xs.take count))) (scheme.openVars Xs)) ∧
       (∀ Xs, FreshNames avoid scheme.paramCount Xs →
-        InputTyping (K ++ Xs.take count) ctx (rhs.openTyVars (Xs.take count)) (scheme.openVars Xs)) ∧
-      InputTyping K { ctx with env := scheme :: ctx.env } body result := by
+        ScopedTyping (K ++ Xs.take count) ctx (rhs.openTyVars (Xs.take count)) (scheme.openVars Xs)) ∧
+      ScopedTyping K { ctx with env := scheme :: ctx.env } body result := by
   obtain ⟨scheme, avoid, _, _, _, hmatches, hrhs, hbody⟩ := h.signature_inv rfl
   obtain ⟨hm⟩ := hmatches.completion
   cases hm with
@@ -475,7 +475,7 @@ theorem InputTyping.partialSignature_completion
 
 /-- Recursive inversion exposes the exact independent staged premises, even
 with one closed annotation completion before all pool openings. -/
-theorem InputTyping.rec_inv (h : InputTyping K ctx (.letRec bindings body) resultTy) :
+theorem ScopedTyping.rec_inv (h : ScopedTyping K ctx (.letRec bindings body) resultTy) :
     ∃ (specs : List RecSpec) (groups prefixes : List (List Nat)) (G L : List Nat),
     RecGroups.ValidResidualGroups (bindings.map InputRecBinding.recMode) groups ∧
     RecSpecs.WF (bindings.map InputRecBinding.recMode) specs G ∧
@@ -490,14 +490,14 @@ theorem InputTyping.rec_inv (h : InputTyping K ctx (.letRec bindings body) resul
         ∀ (binding : InputRecBinding) (names : List Nat) (ty : Ty),
         bindings[member]? = some binding →
         prefixes[member]? = some names → specs[member]? = some (.mono ty) →
-        InputTyping (K ++ Xs) (recStageCtx ctx specs prefixes (groups.take stage).flatten G Xs)
+        ScopedTyping (K ++ Xs) (recStageCtx ctx specs prefixes (groups.take stage).flatten G Xs)
           (binding.rhs.openTyVars (recRenameNames G Xs names)) (Ty.renameG G Xs ty)) ∧
     (∀ (member : Nat) (binding : InputRecBinding) (scheme : PolyTy),
       bindings[member]? = some binding →
       specs[member]? = some (.poly scheme) → ∀ Ys, FreshNames L scheme.paramCount Ys →
-        InputTyping (K ++ Ys) (recBodyCtx ctx specs prefixes G)
+        ScopedTyping (K ++ Ys) (recBodyCtx ctx specs prefixes G)
           (binding.rhs.openTyVars Ys) (scheme.openVars Ys)) ∧
-    InputTyping K (recBodyCtx ctx specs prefixes G) body resultTy := by
+    ScopedTyping K (recBodyCtx ctx specs prefixes G) body resultTy := by
   cases h with
   | letRec hg hw hp hG hRows hf hm hpoly hb =>
     exact ⟨_, _, _, _, _, hg, hw, hp, hG, hRows, hf, hm, hpoly, hb⟩
@@ -594,21 +594,21 @@ def Infer.SourcePrincipal (_h : Infer K F frontier ctx input next subst output t
     (∀ pair ∈ ambient, pair.2.IsLC) → (∀ p ∈ P, p < frontier) →
     (∀ p ∈ P, ambient.onTy (.fvar p) = .fvar p) →
     (∀ v ∈ input.rigidVars, v ∈ K → v ∉ softVars F → ambient.onTy (.fvar v) = .fvar v) →
-    InputTyping P (ambient.onCtx ctx) (input.substTyFvars ambient) target →
+    ScopedTyping P (ambient.onCtx ctx) (input.substTyFvars ambient) target →
     ∃ residual : Subst, (∀ pair ∈ residual, pair.2.IsLC) ∧
       target = residual.onTy ty ∧
       (∀ p ∈ P, residual.onTy (.fvar p) = .fvar p) ∧
       Subst.AgreesBelow frontier ambient (subst ++ residual)
 
 /-- Residual principality retains an independently quantified protected set.
-`InputTyping P` scopes authored fixed types in precisely that protected set. It does
+`ScopedTyping P` scopes authored fixed types in precisely that protected set. It does
 not claim most-general fillings for every unused annotation hole. -/
 def Infer.Principal (_h : Infer K F frontier ctx input next subst output ty) : Prop :=
   (InferRequest.mk K F frontier ctx input).WF →
   ∀ (ambient : Subst) (target : Ty) (P : List Nat),
     (∀ pair ∈ ambient, pair.2.IsLC) → (∀ p ∈ P, p < frontier) →
     (∀ p ∈ P, ambient.onTy (.fvar p) = .fvar p) →
-    InputTyping P (ambient.onCtx ctx) input target →
+    ScopedTyping P (ambient.onCtx ctx) input target →
     ∃ residual : Subst, (∀ pair ∈ residual, pair.2.IsLC) ∧
       target = residual.onTy ty ∧
       (∀ p ∈ P, residual.onTy (.fvar p) = .fvar p) ∧
@@ -683,7 +683,7 @@ theorem InferRecComponentCert.sourcePrincipal_of_infer
       v ∉ softVars request.soft → ambient.onTy (.fvar v) = .fvar v)
     (hcandidate : ∀ (j : Nat) (binding : InputRecBinding) (target : Ty),
       request.index + j ∈ request.members → request.bindings[j]? = some binding →
-      request.specs[j]? = some (.mono target) → InputTyping P (ambient.onCtx request.ctx)
+      request.specs[j]? = some (.mono target) → ScopedTyping P (ambient.onCtx request.ctx)
         (binding.rhs.substTyFvars ambient) (ambient.onTy target)) :
     ∃ R : Subst,(∀ p ∈ R,p.2.IsLC) ∧ (∀ p ∈ P,R.onTy (.fvar p) = .fvar p) ∧
       Subst.AgreesBelow request.frontier ambient (result.subst ++ R) := by
@@ -1409,9 +1409,9 @@ theorem Infer.source_signature_frame_aligned {rhs body : InferInput} {ann : Bind
     (hM : M.WF) (_hannRigid : ∀ v ∈ (ann.substTyFvars ambient).rigidVars, v ∈ P)
     (hXlen : Xs.length = M.paramCount) (hXnd : Xs.Nodup) (hXtake : Xs.take ann.paramCount = Ys)
     (hannFits : (ann.substTyFvars ambient).SignatureFits M Xs)
-    (hrD : InputTyping (P ++ Ys) (ambient.onCtx ctx)
+    (hrD : ScopedTyping (P ++ Ys) (ambient.onCtx ctx)
       ((rhs.substTyFvars ambient).openTyVars Ys) (M.openVars Xs))
-    (hbD : InputTyping P { ambient.onCtx ctx with env := M :: (ambient.onCtx ctx).env }
+    (hbD : ScopedTyping P { ambient.onCtx ctx with env := M :: (ambient.onCtx ctx).env }
       (body.substTyFvars ambient) target)
     (hXM : ∀ x ∈ Xs, x ∉ M.body.freeVars)
     (hXctx : ∀ x ∈ Xs, x ∉ (ambient.onCtx ctx).env.freeVars)
@@ -1423,7 +1423,7 @@ theorem Infer.source_signature_frame_aligned {rhs body : InferInput} {ann : Bind
     ∃ V : Subst, (∀ pair ∈ V, pair.2.IsLC) ∧
       (∀ p ∈ P ++ Ys, V.onTy (.fvar p) = .fvar p) ∧
       Subst.AgreesBelow (frontier + ann.paramCount) ambient ((s1 ++ sCheck) ++ V) ∧
-      InputTyping P (V.onCtx { checkedCtx with env := scheme :: checkedCtx.env })
+      ScopedTyping P (V.onCtx { checkedCtx with env := scheme :: checkedCtx.env })
         ((body.substTyFvars (s1 ++ sCheck)).substTyFvars V) target ∧
       CtxWF { checkedCtx with env := scheme :: checkedCtx.env } ∧
       CtxBelow checked { checkedCtx with env := scheme :: checkedCtx.env } ∧
@@ -1463,7 +1463,7 @@ theorem Infer.source_signature_frame_aligned {rhs body : InferInput} {ann : Bind
       · have hvK : v ∈ K := (List.mem_append.mp hk).resolve_right hy
         exact hfreeze v (List.mem_append_left _ (List.mem_append_right _ hv)) hvK hn
     · exact hfix v (List.mem_append_right _ hy)
-  have hrD' : InputTyping (P ++ Ys) (ambient.onCtx ctx)
+  have hrD' : ScopedTyping (P ++ Ys) (ambient.onCtx ctx)
       ((rhs.openTyVars Ys).substTyFvars ambient) (M.openVars Xs) := by
     rw [rhs.substTyFvars_openTyVars_of_fixes hS (fun y hy => hfix y (List.mem_append_right _ hy))]
     exact hrD
@@ -1577,14 +1577,14 @@ theorem Infer.source_signature_frame_aligned {rhs body : InferInput} {ann : Bind
     hannSource havoidQ hV hM hXnd hXlen hXM hcheckedTy
     (by simpa only [hctxBridge] using hXctx) hVimages
   rw [← PartialCore.Ann.substTyFvars_append] at hgen
-  have hbodyWeak := InputTyping.weaken_schemes (env := (ambient.onCtx ctx).env) (.cons hgen .nil) hbD
+  have hbodyWeak := ScopedTyping.weaken_schemes (env := (ambient.onCtx ctx).env) (.cons hgen .nil) hbD
   have hbodySource : body.substTyFvars ambient =
       (body.substTyFvars (s1 ++ sCheck)).substTyFvars V := by
     rw [← InferInput.substTyFvars_append]
     exact body.substTyFvars_congr (fun v hv => hagPrefix v (by
       have := hscopeBound v (hscope v (List.mem_append_right _ hv)); omega))
   rw [hbodySource] at hbodyWeak
-  have hbodyD : InputTyping P (V.onCtx
+  have hbodyD : ScopedTyping P (V.onCtx
       { (sCheck.onCtx (s1.onCtx ctx)) with
         env := signatureScheme (ann.substTyFvars (s1 ++ sCheck))
           (K ++ softVars (substSoft (s1 ++ sCheck) F)) Ys
@@ -1622,13 +1622,13 @@ theorem Infer.source_signature_frame_aligned {rhs body : InferInput} {ann : Bind
     · exact hcheckedB scheme hs
   exact ⟨V, hV, hVP, hagPrefix, hbodyD, hbodyWF, hbodyB, hprefixB, hescape⟩
 
-theorem InputTyping.align_partial_prefix_with_fits {P : List Nat} {ctx : Ctx} {rhs : InferInput}
+theorem ScopedTyping.align_partial_prefix_with_fits {P : List Nat} {ctx : Ctx} {rhs : InferInput}
     {scheme : PolyTy} {ann : BindingAnn} {count : Nat} {L Ys : List Nat}
     (hcount : count = ann.paramCount)
     (hFits : ∀ Xs, FreshNames L scheme.paramCount Xs → ann.SignatureFits scheme Xs)
     (hAnn : ∀ v ∈ ann.rigidVars, v ∈ P)
     (hcofinite : ∀ Xs, FreshNames L scheme.paramCount Xs →
-      InputTyping (P ++ Xs.take count) ctx (rhs.openTyVars (Xs.take count)) (scheme.openVars Xs))
+      ScopedTyping (P ++ Xs.take count) ctx (rhs.openTyVars (Xs.take count)) (scheme.openVars Xs))
     (hle : count ≤ scheme.paramCount) (hsource : ∀ v ∈ rhs.rigidVars, v ∈ P)
     (hYsLen : Ys.length = count) (hYsNodup : Ys.Nodup)
     (hYsP : ∀ y ∈ Ys, y ∉ P) (hYsCtx : ∀ y ∈ Ys, y ∉ ctx.env.freeVars)
@@ -1637,7 +1637,7 @@ theorem InputTyping.align_partial_prefix_with_fits {P : List Nat} {ctx : Ctx} {r
       extras.length = scheme.paramCount - count ∧ (Ys ++ extras).Nodup ∧
       (∀ z ∈ extras, z ∉ avoid ++ P ++ Ys ++ ctx.env.freeVars ++ scheme.body.freeVars ++ rhs.rigidVars) ∧
       (∀ z ∈ Ys ++ extras, z ∉ P ∧ z ∉ ctx.env.freeVars ∧ z ∉ scheme.body.freeVars) ∧
-      InputTyping (P ++ Ys) ctx (rhs.openTyVars Ys) (scheme.openVars (Ys ++ extras)) ∧
+      ScopedTyping (P ++ Ys) ctx (rhs.openTyVars Ys) (scheme.openVars (Ys ++ extras)) ∧
       ann.SignatureFits scheme (Ys ++ extras) := by
   obtain ⟨extras, hELen, hENodup, hEAvoid⟩ := exists_fresh_names
     (avoid ++ P ++ Ys ++ ctx.env.freeVars ++ scheme.body.freeVars ++ rhs.rigidVars)
@@ -1786,9 +1786,9 @@ theorem Infer.source_signature_frame {rhs body : InferInput} {ann : BindingAnn}
     (hrhsRigid : ∀ v ∈ (rhs.substTyFvars ambient).rigidVars, v ∈ P)
     (hannFits : ∀ Xs, FreshNames L M.paramCount Xs → (ann.substTyFvars ambient).SignatureFits M Xs)
     (hrD : ∀ Xs, FreshNames L M.paramCount Xs →
-      InputTyping (P ++ Xs.take ann.paramCount) (ambient.onCtx ctx)
+      ScopedTyping (P ++ Xs.take ann.paramCount) (ambient.onCtx ctx)
         ((rhs.substTyFvars ambient).openTyVars (Xs.take ann.paramCount)) (M.openVars Xs))
-    (hbD : InputTyping P { ambient.onCtx ctx with env := M :: (ambient.onCtx ctx).env }
+    (hbD : ScopedTyping P { ambient.onCtx ctx with env := M :: (ambient.onCtx ctx).env }
       (body.substTyFvars ambient) target)
     (hYsM : ∀ y ∈ Ys, y ∉ M.body.freeVars)
     (hYsCtx : ∀ y ∈ Ys, y ∉ (ambient.onCtx ctx).env.freeVars)
@@ -1800,7 +1800,7 @@ theorem Infer.source_signature_frame {rhs body : InferInput} {ann : BindingAnn}
     ∃ V : Subst, (∀ pair ∈ V, pair.2.IsLC) ∧
       (∀ p ∈ P ++ Ys, V.onTy (.fvar p) = .fvar p) ∧
       Subst.AgreesBelow (frontier + ann.paramCount) ambient ((s1 ++ sCheck) ++ V) ∧
-      InputTyping P (V.onCtx { checkedCtx with env := scheme :: checkedCtx.env })
+      ScopedTyping P (V.onCtx { checkedCtx with env := scheme :: checkedCtx.env })
         ((body.substTyFvars (s1 ++ sCheck)).substTyFvars V) target ∧
       CtxWF { checkedCtx with env := scheme :: checkedCtx.env } ∧
       CtxBelow checked { checkedCtx with env := scheme :: checkedCtx.env } ∧
@@ -1818,7 +1818,7 @@ theorem Infer.source_signature_frame {rhs body : InferInput} {ann : BindingAnn}
   simp only [PartialCore.Ann.paramCount_substTyFvars] at hle
   let images := K.flatMap (fun k => (ambient.onTy (.fvar k)).freeVars) ++ softVars (substSoft ambient F)
   obtain ⟨extras, hElen, hXsNd, hExtra, hAll, hAligned, hAlignedFits⟩ :=
-    InputTyping.align_partial_prefix_with_fits (by simp) hannFits hannRigid hrD hle hrhsRigid
+    ScopedTyping.align_partial_prefix_with_fits (by simp) hannFits hannRigid hrD hle hrhsRigid
       hYlen hYnd hYsP hYsCtx hYsM images
   have hXsLen : (Ys ++ extras).length = M.paramCount := by
     simp only [List.length_append, hYlen, hElen]; omega
@@ -1845,10 +1845,10 @@ theorem Infer.source_signature_frame {rhs body : InferInput} {ann : BindingAnn}
 
 /-- Dodge candidate collisions while retaining the source-transformed signed
 contract. Authored candidate leaves lie in P and hence are fixed by the move. -/
-theorem InputTyping.signature_dodge_source
+theorem ScopedTyping.signature_dodge_source
     {K P : List Nat} {F : List Ty} {ambient : Subst} {ctx : Ctx} {ann : BindingAnn}
     {rhs body : InferInput} {target : Ty} {frontier : Nat}
-    (ht : InputTyping P (ambient.onCtx ctx) ((InferInput.letIn ann rhs body).substTyFvars ambient) target)
+    (ht : ScopedTyping P (ambient.onCtx ctx) ((InferInput.letIn ann rhs body).substTyFvars ambient) target)
     (hmode : ann.isSignature = true) (hscope : SourceScope K F (.letIn ann rhs body))
     (hbelow : CtxBelow frontier ctx) (hP : ∀ p ∈ P, p < frontier)
     (hK : ∀ k ∈ K, k < frontier) (hF : ∀ t ∈ F, Ty.BelowFvars frontier t)
@@ -1873,9 +1873,9 @@ theorem InputTyping.signature_dodge_source
       (∀ v ∈ (rhs.substTyFvars moved).rigidVars, v ∈ P) ∧
       (∀ Xs, FreshNames L M.paramCount Xs → (ann.substTyFvars moved).SignatureFits M Xs) ∧
       (∀ Xs, FreshNames L M.paramCount Xs →
-        InputTyping (P ++ Xs.take ann.paramCount) (moved.onCtx ctx)
+        ScopedTyping (P ++ Xs.take ann.paramCount) (moved.onCtx ctx)
           ((rhs.substTyFvars moved).openTyVars (Xs.take ann.paramCount)) (M.openVars Xs)) ∧
-      InputTyping P { moved.onCtx ctx with env := M :: (moved.onCtx ctx).env }
+      ScopedTyping P { moved.onCtx ctx with env := M :: (moved.onCtx ctx).env }
         (body.substTyFvars moved) (forward.onTy target) ∧
       (∀ y ∈ written, y ∉ M.body.freeVars) ∧
       (∀ y ∈ written, y ∉ (moved.onCtx ctx).env.freeVars) ∧
@@ -1924,7 +1924,7 @@ theorem InputTyping.signature_dodge_source
   change InferInput.letIn (ann.substTyFvars moved) (rhs.substTyFvars moved) (body.substTyFvars moved) =
     InferInput.letIn (ann.substTyFvars ambient) (rhs.substTyFvars ambient) (body.substTyFvars ambient) at hsourceeq
   obtain ⟨hannEq, hrhsEq, hbodyEq⟩ := InferInput.letIn.inj hsourceeq
-  obtain ⟨L', hfits', htypes'⟩ := InputTyping.signatureBinding_onSubst hfit htyped hann
+  obtain ⟨L', hfits', htypes'⟩ := ScopedTyping.signatureBinding_onSubst hfit htyped hann
     forward hforwardLC hdomP
   have hbody' := hbody.onSubst_fixes forward hforwardLC hForwardP
   have hbodyctx : forward.onCtx { ambient.onCtx ctx with env := M :: (ambient.onCtx ctx).env } =
@@ -1991,11 +1991,11 @@ theorem Infer.source_let_frame
       (∀ pair ∈ ambient, pair.2.IsLC) → (∀ p ∈ P, p < frontier) →
       (∀ p ∈ P, ambient.onTy (.fvar p) = .fvar p) →
       (∀ v ∈ (InferInput.letIn ann rhs body).rigidVars, v ∈ K → v ∉ softVars F → ambient.onTy (.fvar v) = .fvar v) →
-      InputTyping P (ambient.onCtx ctx) ((InferInput.letIn ann rhs body).substTyFvars ambient) target →
+      ScopedTyping P (ambient.onCtx ctx) ((InferInput.letIn ann rhs body).substTyFvars ambient) target →
       ∃ V : Subst, (∀ pair ∈ V, pair.2.IsLC) ∧
         (∀ p ∈ P, V.onTy (.fvar p) = .fvar p) ∧
         Subst.AgreesBelow frontier ambient (s1 ++ sCheck ++ V) ∧
-        InputTyping P (V.onCtx { (sCheck.onCtx (s1.onCtx ctx)) with
+        ScopedTyping P (V.onCtx { (sCheck.onCtx (s1.onCtx ctx)) with
         env := genScheme (K ++ softVars (substSoft (s1 ++ sCheck) F)) (sCheck.onCtx (s1.onCtx ctx)).env (sCheck.onTy rhsTy) ::
           (sCheck.onCtx (s1.onCtx ctx)).env }) ((body.substTyFvars (s1 ++ sCheck)).substTyFvars V) target ∧
         CtxWF { (sCheck.onCtx (s1.onCtx ctx)) with
@@ -2079,7 +2079,7 @@ theorem Infer.source_let_frame
   have hcheckedLC := Subst.onTy_lc hsCheckLC hrLC
   have hgen := genScheme_generalizes (ctx := sCheck.onCtx (s1.onCtx ctx)) hcheckedLC hV hM hXnd hXlen hXM hcheckedTy
     (by simpa only [hctxBridge] using hXctx) hVimages
-  have hbodyWeak := InputTyping.weaken_schemes (env := (ambient.onCtx ctx).env)
+  have hbodyWeak := ScopedTyping.weaken_schemes (env := (ambient.onCtx ctx).env)
     (.cons hgen .nil) hbD
   have hbodySource : body.substTyFvars ambient =
       (body.substTyFvars (s1 ++ sCheck)).substTyFvars V := by
@@ -2087,7 +2087,7 @@ theorem Infer.source_let_frame
     exact body.substTyFvars_congr (fun v hv => hagPrefix v
       (hscopeBound v (hscope v (List.mem_append_right _ hv))))
   rw [hbodySource] at hbodyWeak
-  have hbodyD : InputTyping P (V.onCtx
+  have hbodyD : ScopedTyping P (V.onCtx
       { (sCheck.onCtx (s1.onCtx ctx)) with
         env := genScheme (K ++ softVars (substSoft (s1 ++ sCheck) F)) (sCheck.onCtx (s1.onCtx ctx)).env (sCheck.onTy rhsTy) ::
           (sCheck.onCtx (s1.onCtx ctx)).env }) ((body.substTyFvars (s1 ++ sCheck)).substTyFvars V) target := by
@@ -2163,14 +2163,14 @@ def InferBranchesCert.SourcePrincipal
       v ∉ softVars request.soft → ambient.onTy (.fvar v) = .fvar v) →
     resultD = ambient.onTy request.resultTy →
     scrutD = ambient.onTy request.scrutineeTy →
-    (∀ b ∈ request.branches, BranchTyping InputTyping P (ambient.onCtx request.ctx)
+    (∀ b ∈ request.branches, ScopedBranchTyping ScopedTyping P (ambient.onCtx request.ctx)
       (b.1, b.2.substTyFvars ambient) scrutD resultD) →
     ∃ residual : Subst, (∀ pair ∈ residual, pair.2.IsLC) ∧
       Subst.AgreesBelow request.frontier ambient (result.subst ++ residual) ∧
       (∀ p ∈ P, residual.onTy (.fvar p) = .fvar p) ∧
       resultD = residual.onTy (result.subst.onTy request.resultTy)
 
-theorem BranchTyping.factor_named
+theorem ScopedBranchTyping.factor_named
     {Φ : Nat} {ctx : Ctx} {c : CtorName} {nbr : Nat} {ctor : Ctor}
     {scrutTy scruT₀ ρe : Ty} {S₀ S₀amb : Subst} {K : List Nat} {body : InferInput}
     (hlook : LookupList.get? ctx.ctors c = some ctor)
@@ -2180,11 +2180,11 @@ theorem BranchTyping.factor_named
     (hS₀amb : ∀ pair ∈ S₀amb, pair.2.IsLC) (hscruLC : scruT₀.IsLC)
     (hKΦ : ∀ k ∈ K, k < Φ) (hKfix : ∀ k ∈ K, S₀amb.onTy (.fvar k) = .fvar k)
     (hIMGscru : scruT₀ = S₀amb.onTy scrutTy)
-    (hdhead : BranchTyping InputTyping K (S₀amb.onCtx ctx) (.named c nbr, body) scruT₀ ρe) :
+    (hdhead : ScopedBranchTyping ScopedTyping K (S₀amb.onCtx ctx) (.named c nbr, body) scruT₀ ρe) :
     ∃ R₀ : Subst, (∀ pair ∈ R₀, pair.2.IsLC) ∧
       (∀ k ∈ K, R₀.onTy (.fvar k) = .fvar k) ∧
       Subst.AgreesBelow Φ S₀amb (S₀ ++ R₀) ∧
-      InputTyping K (R₀.onCtx { S₀.onCtx ctx with
+      ScopedTyping K (R₀.onCtx { S₀.onCtx ctx with
         env := (ctor.contents.map (Ty.openWith
           (((freshVars Φ ctor.paramCount).map Ty.fvar).map S₀.onTy))).map PolyTy.mkTrivial ++
             (S₀.onCtx ctx).env }) body ρe := by
@@ -2251,9 +2251,9 @@ theorem BranchTyping.factor_named
         _ = bodyCtx := by
           rw [hctxdef]
           simp [hinstsE_direct]
-    have hbE : InputTyping K bodyCtx body ( ρe) := by
+    have hbE : ScopedTyping K bodyCtx body ( ρe) := by
       exact hbodyty
-    have hbE' : InputTyping K (R₀.onCtx bodyCtxAlg) body ( ρe) := by
+    have hbE' : ScopedTyping K (R₀.onCtx bodyCtxAlg) body ( ρe) := by
       rwa [← hbodyCtxEq] at hbE
     exact ⟨R₀, hR₀, hR₀K, hAgreeBelow₀, hbE'⟩
 
@@ -2279,10 +2279,10 @@ private theorem principal_branch_candidates_frame {bs : List (MatchPattern × In
     (hbelow : ∀ v ∈ rigidBranchVars bs, v < Φ)
     (hag : Subst.AgreesBelow Φ ambient (solved ++ residual))
     (hctx : residual.onCtx ctx' = ambient.onCtx ctx)
-    (hbr : ∀ b ∈ bs, BranchTyping InputTyping P (ambient.onCtx ctx)
+    (hbr : ∀ b ∈ bs, ScopedBranchTyping ScopedTyping P (ambient.onCtx ctx)
       (b.1, b.2.substTyFvars ambient) st rt) :
     ∀ b ∈ substInputBranches solved bs,
-      BranchTyping InputTyping P (residual.onCtx ctx') (b.1, b.2.substTyFvars residual) st rt := by
+      ScopedBranchTyping ScopedTyping P (residual.onCtx ctx') (b.1, b.2.substTyFvars residual) st rt := by
   intro b hb
   rw [substInputBranches_eq_map] at hb
   obtain ⟨original, horiginal, rfl⟩ := List.mem_map.mp hb
@@ -2331,7 +2331,7 @@ theorem InferBranchesCert.sourcePrincipal_of_body
           have hrestBelow : ∀ v ∈ rigidBranchVars rest, v < Φ :=
             fun v hv => hrawBelow v (List.mem_append_right _ hv)
           obtain ⟨R₀, hR₀, hR₀K, hAgreeBelow₀, hbE'⟩ :=
-            BranchTyping.factor_named hlook h₀ hbelow hbscrut hS₀amb hscruLC hKΦ hKfix hIMGscru
+            ScopedBranchTyping.factor_named hlook h₀ hbelow hbscrut hS₀amb hscruLC hKΦ hKfix hIMGscru
               (hbrs (.named c nbr, body) (List.mem_cons_self ..))
           have hS₀lc : ∀ p ∈ S₀, p.2.IsLC :=
             UnifyRel.lc h₀ hscrutLC (by
@@ -2549,7 +2549,7 @@ theorem InferBranchesCert.sourcePrincipal_of_body
           have hrestBelow : ∀ v ∈ rigidBranchVars rest, v < Φ :=
             fun v hv => hrawBelow v (List.mem_append_right _ hv)
           have hdhead := hbrs (.wildcard, body) (List.mem_cons_self ..)
-          have hbodyD : InputTyping K (S₀amb.onCtx ctx) (body.substTyFvars S₀amb) ρe := by
+          have hbodyD : ScopedTyping K (S₀amb.onCtx ctx) (body.substTyFvars S₀amb) ρe := by
             cases hdhead with
             | wildcard hbodyty => exact hbodyty
           obtain ⟨R_b, hR_b, htyb, hR_bK, hagb⟩ :=
@@ -2887,7 +2887,7 @@ theorem RecResidual.componentMonoTyped
     (hmonoDecl : ∀ stage declComponent, declGroups[stage]? = some declComponent →
       ∀ member ∈ declComponent, ∀ binding declTy,
       declBindings[member]? = some binding → declSpecs[member]? = some (.mono declTy) →
-      InputTyping (P ++ Xs) (recStageCtx declCtx declSpecs declPrefixes
+      ScopedTyping (P ++ Xs) (recStageCtx declCtx declSpecs declPrefixes
         (declGroups.take stage).flatten declPool Xs)
         (binding.rhs.openTyVars (recRenameNames declPool Xs (declPrefixes[member]?.getD [])))
         (Ty.renameG declPool Xs declTy))
@@ -2895,7 +2895,7 @@ theorem RecResidual.componentMonoTyped
     (hrhs : declBindings[member]? = some rawBinding)
     (halgTy : state.specs[member]? = some (.mono algTy)) (hmember : member ∈ component)
     (hscope : ∀ v ∈ rawBinding.rhs.rigidVars, v ∈ P) :
-    InputTyping (P ++ recRenameNames declPool Xs (declPrefixes[member]?.getD []))
+    ScopedTyping (P ++ recRenameNames declPool Xs (declPrefixes[member]?.getD []))
       (R.onCtx (state.rhsCtx ctx))
       (rawBinding.rhs.openTyVars (recRenameNames declPool Xs (declPrefixes[member]?.getD [])))
       (R.onTy algTy) := by
@@ -2933,13 +2933,13 @@ theorem RecResidual.componentMonoTyped
   have hlenEntries : oldEntries.length = newEntries.length := by
     simp only [oldEntries, newEntries, List.length_mapIdx, List.length_map]
     rw [state.entries_length, h.length]
-  have htypedDecl' : InputTyping (P ++ Xs) ⟨oldEntries ++ declCtx.env, declCtx.ctors⟩
+  have htypedDecl' : ScopedTyping (P ++ Xs) ⟨oldEntries ++ declCtx.env, declCtx.ctors⟩
       (rawBinding.rhs.openTyVars (recRenameNames declPool Xs (declPrefixes[member]?.getD [])))
       (Ty.renameG declPool Xs declTy) := htypedDecl
-  have htypedNew : InputTyping (P ++ Xs) ⟨newEntries ++ declCtx.env, declCtx.ctors⟩
+  have htypedNew : ScopedTyping (P ++ Xs) ⟨newEntries ++ declCtx.env, declCtx.ctors⟩
       (rawBinding.rhs.openTyVars (recRenameNames declPool Xs (declPrefixes[member]?.getD [])))
       (Ty.renameG declPool Xs declTy) := by
-    apply InputTyping.weaken_recGroupRefs hlenEntries ?_ htypedDecl'
+    apply ScopedTyping.weaken_recGroupRefs hlenEntries ?_ htypedDecl'
     intro target hold hnew href
     have htargetBound : target < state.specs.length := by
       have : target < declSpecs.length := by simpa only [oldEntries, List.length_mapIdx] using hold
@@ -3051,7 +3051,7 @@ theorem RecResidual.selected_view
       ∀ (member : Nat),member ∈ declComponent →
       ∀ (binding : InputRecBinding) (declTy : Ty),
       declBindings[member]? = some binding → declSpecs[member]? = some (.mono declTy) →
-      InputTyping (P ++ Xs) (recStageCtx declCtx declSpecs declPrefixes
+      ScopedTyping (P ++ Xs) (recStageCtx declCtx declSpecs declPrefixes
         (declGroups.take stage).flatten G Xs)
         (binding.rhs.openTyVars (recRenameNames G Xs (declPrefixes[member]?.getD [])))
         (Ty.renameG G Xs declTy))
@@ -3063,7 +3063,7 @@ theorem RecResidual.selected_view
     let ownNames := recRenameNames G Xs (declPrefixes[member]?.getD [])
     (binding.ann.substTyFvars R).RecFits ownNames (R.onTy algTy) ∧
       ownNames.length = binding.ann.recPrefixCount ∧
-      InputTyping (P ++ ownNames) (R.onCtx (state.rhsCtx ctx))
+      ScopedTyping (P ++ ownNames) (R.onCtx (state.rhsCtx ctx))
         ((binding.rhs.substTyFvars R).openTyVars ownNames) (R.onTy algTy) := by
   have hdeclBinding : declBindings[member]? =
       some (binding.bimap (PartialCore.Ann.substTyFvars R) (InferInput.substTyFvars R)) := by
@@ -3722,15 +3722,15 @@ theorem recRenameNames_images {S : Subst} {G Xs Ys names : List Nat}
   simpa only [List.getElem?_map, List.getElem?_eq_getElem hi, List.getElem?_eq_getElem hj,
     Option.map_some, Option.getD_some, Option.some.injEq] using hh
 
- theorem InputTyping.opened_source_onSubst {S : Subst} {P Xs Ys names newNames : List Nat}
+ theorem ScopedTyping.opened_source_onSubst {S : Subst} {P Xs Ys names newNames : List Nat}
     {ctx : Ctx} {rhs : InferInput} {ty : Ty}
-    (h : InputTyping (P ++ Xs) ctx (rhs.openTyVars names) ty)
+    (h : ScopedTyping (P ++ Xs) ctx (rhs.openTyVars names) ty)
     (hS : ∀ pair ∈ S, pair.2.IsLC)
     (hP : ∀ p ∈ P, S.onTy (.fvar p) = .fvar p)
     (himages : Xs.map (fun x => S.onTy (.fvar x)) = Ys.map Ty.fvar)
     (hNames : names.map (fun x => S.onTy (.fvar x)) = newNames.map Ty.fvar)
     (hRaw : ∀ v ∈ rhs.rigidVars, v ∈ P) :
-    InputTyping (P ++ Ys) (S.onCtx ctx) (rhs.openTyVars newNames) (S.onTy ty) := by
+    ScopedTyping (P ++ Ys) (S.onCtx ctx) (rhs.openTyVars newNames) (S.onTy ty) := by
   have htrans := h.onSubst_source S hS (K' := P ++ Ys) (by
     intro k hk v hv
     rcases List.mem_append.mp hk with hk | hk
@@ -4158,7 +4158,7 @@ theorem RecResidual.fixedCtx_avoids
     (htarget : ∀ i ty, i ∈ members → state.specs[i]? = some (.mono ty) → targets[i]? = some (R.onTy ty))
     (hcandidate : ∀ i raw candidate ty ns, i ∈ members → bindings[i]? = some raw →
       candidates[i]? = some candidate → state.specs[i]? = some (.mono ty) → names[i]? = some ns →
-      InputTyping (P ++ ns) (R.onCtx (state.rhsCtx ctx))
+      ScopedTyping (P ++ ns) (R.onCtx (state.rhsCtx ctx))
         (candidate.rhs.openTyVars ns) (R.onTy ty))
     (hsource : ∀ i raw, i ∈ members → bindings[i]? = some raw →
       ∃ candidate, candidates[i]? = some candidate ∧
@@ -4177,7 +4177,7 @@ theorem RecResidual.fixedCtx_avoids
         ∀ expected, opening.expected = some expected → U.onTy expected = B.onTy target) ∧
       (∀ i binding ty, i ∈ members → (openRecSources openings bindings)[i]? = some binding →
         state.specs[i]? = some (.mono ty) →
-        InputTyping (P ++ reps) (U.onCtx (state.rhsCtx ctx))
+        ScopedTyping (P ++ reps) (U.onCtx (state.rhsCtx ctx))
           (binding.rhs.substTyFvars U) (U.onTy ty)) := by
   dsimp only at hBctx hBpoly hBcompleted hBmono ⊢
   let A := openings.flatMap RecOpening.written
@@ -4430,7 +4430,7 @@ theorem InferRecComponentCert.sourcePrincipal_after_shapes
       v ∉ softVars F → ambient.onTy (.fvar v) = .fvar v)
     (hCandidate : ∀ (j : Nat) (binding : InputRecBinding) (target : Ty),
       index + j ∈ members → bindings[j]? = some binding → specs[j]? = some (.mono target) →
-      InputTyping P (ambient.onCtx ctx) (binding.rhs.substTyFvars ambient) (ambient.onTy target)) :
+      ScopedTyping P (ambient.onCtx ctx) (binding.rhs.substTyFvars ambient) (ambient.onTy target)) :
     ∃ residual : Subst, (∀ pair ∈ residual, pair.2.IsLC) ∧
       (∀ p ∈ P, residual.onTy (.fvar p) = .fvar p) ∧
       Subst.AgreesBelow frontier ambient (pre ++ componentResult.subst ++ residual) := by
@@ -4540,10 +4540,10 @@ theorem RecResidual.weaken_from_body
     (h : RecResidual P declCtx declSpecs declPrefixes declPool Xs ctx state done R)
     (hpoly : ∀ (i : Nat) (scheme : PolyTy), state.specs[i]? = some (.poly scheme) → state.exports[i]? = some (some scheme))
     (hdone : ∀ i monoTy, state.specs[i]? = some (.mono monoTy) → i ∈ done)
-    (ht : InputTyping Q (recBodyCtx declCtx declSpecs declPrefixes declPool) input ty) :
-    InputTyping Q (R.onCtx (state.rhsCtx ctx)) input ty := by
+    (ht : ScopedTyping Q (recBodyCtx declCtx declSpecs declPrefixes declPool) input ty) :
+    ScopedTyping Q (R.onCtx (state.rhsCtx ctx)) input ty := by
   have hg := h.completed_entries_generalize hpoly hdone
-  have ht' := InputTyping.weaken_schemes hg ht
+  have ht' := ScopedTyping.weaken_schemes hg ht
   have hctx : R.onCtx (state.rhsCtx ctx) =
       ⟨state.entries.map R.onPolyTy ++ declCtx.env, declCtx.ctors⟩ := by
     have he := congrArg Ctx.env h.ctx_eq
@@ -4577,7 +4577,7 @@ theorem Infer.signed_check_factor
     (hcandAnn : ∀ v ∈ (R.onPolyTy scheme).body.freeVars, v ∈ P)
     (hcandRhs : ∀ v ∈ (rhs.substTyFvars R).rigidVars, v ∈ P)
     (hcandidate : ∃ L, ∀ Ys, FreshNames L scheme.paramCount Ys →
-      InputTyping (P ++ Ys) (R.onCtx ctx) ((rhs.substTyFvars R).openTyVars Ys)
+      ScopedTyping (P ++ Ys) (R.onCtx ctx) ((rhs.substTyFvars R).openTyVars Ys)
         ((R.onPolyTy scheme).openVars Ys)) :
     ∃ U : Subst, (∀ pair ∈ U, pair.2.IsLC) ∧
       (∀ p ∈ P, U.onTy (.fvar p) = .fvar p) ∧
@@ -4612,9 +4612,9 @@ theorem Infer.signed_check_factor
     Infer.sourcePrincipal_primLitUnit
   have hprincipal := Infer.sourcePrincipal_letSignature hscope rfl havoid hi hcheck hescape hb ih ihb
   obtain ⟨L, htypes⟩ := hcandidate
-  have ht : InputTyping P (R.onCtx ctx)
+  have ht : ScopedTyping P (R.onCtx ctx)
       ((InferInput.letIn (.complete scheme) rhs (.primLit .unit)).substTyFvars R) (.prim .unit) := by
-    refine InputTyping.letSignature (M := R.onPolyTy scheme) (L := L)
+    refine ScopedTyping.letSignature (M := R.onPolyTy scheme) (L := L)
       (Subst.onPolyTy_wf hR hwf) hcandAnn hcandRhs
       (PartialCore.Ann.SignatureMatches.complete (Subst.onPolyTy_wf hR hwf)) ?_
       (.primLit .primLitUnit)
@@ -4693,7 +4693,7 @@ theorem InferRecSignedCert.sourcePrincipal_residual
     (hcandidate : ∀ (j : Nat) (scheme : PolyTy) (rhs : InferInput),
       request.bindings[j]? = some { ann := .complete scheme, rhs := rhs } →
       ∃ L, ∀ Ys, FreshNames L scheme.paramCount Ys →
-        InputTyping (P ++ Ys) (recBodyCtx declCtx declSpecs declPrefixes declPool)
+        ScopedTyping (P ++ Ys) (recBodyCtx declCtx declSpecs declPrefixes declPool)
           ((rhs.substTyFvars R).openTyVars Ys) ((R.onPolyTy scheme).openVars Ys)) :
     ∃ U : Subst, (∀ pair ∈ U, pair.2.IsLC) ∧
       (∀ p ∈ P, U.onTy (.fvar p) = .fvar p) ∧
@@ -4728,7 +4728,7 @@ theorem InferRecSignedCert.sourcePrincipal_residual
       hannScope _ List.mem_cons_self
     obtain ⟨L, htypes⟩ := hcandidate 0 scheme rhs rfl
     have htypes' : ∃ L, ∀ Ys, FreshNames L scheme.paramCount Ys →
-        InputTyping (P ++ Ys) (R.onCtx (state.rhsCtx ctx)) ((rhs.substTyFvars R).openTyVars Ys)
+        ScopedTyping (P ++ Ys) (R.onCtx (state.rhsCtx ctx)) ((rhs.substTyFvars R).openTyVars Ys)
           ((R.onPolyTy scheme).openVars Ys) :=
       ⟨L, fun Ys hy => hres.weaken_from_body hpoly hdone (htypes Ys hy)⟩
     obtain ⟨U, hU, hUP, hag⟩ := Infer.signed_check_factor hwf hheadAnn hraw hi hu
@@ -4877,7 +4877,7 @@ theorem InferRecSignedCert.sourcePrincipal_residual
                 (List.mem_cons_of_mem _ (List.mem_of_getElem? hbo))))).symm
           rw [rhsEq ⟨.complete old, oldRhs⟩
             (List.mem_cons_of_mem _ (List.mem_of_getElem? hbo))]
-          change InputTyping (P ++ Ys) (recBodyCtx declCtx declSpecs declPrefixes declPool)
+          change ScopedTyping (P ++ Ys) (recBodyCtx declCtx declSpecs declPrefixes declPool)
             ((oldRhs.substTyFvars R).openTyVars Ys)
             ((U.onPolyTy ((s1 ++ s2).onPolyTy old)).openVars Ys)
           rw [hσ]
@@ -5039,7 +5039,7 @@ theorem RecResidual.close_aligned_component
       v ∉ softVars (F ++ localF) → R.onTy (.fvar v) = .fvar v)
     (hcandidate : ∀ (i : Nat) (binding : InputRecBinding) (ty : Ty), i ∈ members →
       bindings[i]? = some binding → state.specs[i]? = some (.mono ty) →
-      InputTyping P (R.onCtx (state.rhsCtx ctx))
+      ScopedTyping P (R.onCtx (state.rhsCtx ctx))
         (binding.rhs.substTyFvars R) (R.onTy ty))
     (hdisjoint : ∀ i ∈ members, i ∉ done)
     (hdeclLC : ∀ ty, .mono ty ∈ declSpecs → ty.IsLC)
@@ -5132,7 +5132,7 @@ theorem RecResidual.close_opened_component
       opening.expected = some expected → R.onTy expected = R.onTy ty)
     (hcandidate : ∀ (i : Nat) (binding : InputRecBinding) (ty : Ty), i ∈ members →
       (openRecSources openings bindings)[i]? = some binding →
-      state.specs[i]? = some (.mono ty) → InputTyping P (R.onCtx (state.rhsCtx ctx))
+      state.specs[i]? = some (.mono ty) → ScopedTyping P (R.onCtx (state.rhsCtx ctx))
         (binding.rhs.substTyFvars R) (R.onTy ty))
     (hdisjoint : ∀ i ∈ members, i ∉ done)
     (hdeclLC : ∀ ty, .mono ty ∈ declSpecs → ty.IsLC)
@@ -5464,8 +5464,8 @@ termination_by groups.length
 decreasing_by simp
 
 
-theorem InputTyping.rec_inv_high (floor : Nat)
-    (h : InputTyping K ctx (.letRec bindings body) resultTy) :
+theorem ScopedTyping.rec_inv_high (floor : Nat)
+    (h : ScopedTyping K ctx (.letRec bindings body) resultTy) :
     ∃ (specs : List RecSpec) (groups prefixes : List (List Nat)) (G L : List Nat),
     (∀ g ∈ G, floor ≤ g) ∧
     RecGroups.ValidResidualGroups (bindings.map InputRecBinding.recMode) groups ∧
@@ -5481,14 +5481,14 @@ theorem InputTyping.rec_inv_high (floor : Nat)
         ∀ (binding : InputRecBinding) (names : List Nat) (ty : Ty),
         bindings[member]? = some binding →
         prefixes[member]? = some names → specs[member]? = some (.mono ty) →
-        InputTyping (K ++ Xs) (recStageCtx ctx specs prefixes (groups.take stage).flatten G Xs)
+        ScopedTyping (K ++ Xs) (recStageCtx ctx specs prefixes (groups.take stage).flatten G Xs)
           (binding.rhs.openTyVars (recRenameNames G Xs names)) (Ty.renameG G Xs ty)) ∧
     (∀ (member : Nat) (binding : InputRecBinding) (scheme : PolyTy),
       bindings[member]? = some binding →
       specs[member]? = some (.poly scheme) → ∀ Ys, FreshNames L scheme.paramCount Ys →
-        InputTyping (K ++ Ys) (recBodyCtx ctx specs prefixes G)
+        ScopedTyping (K ++ Ys) (recBodyCtx ctx specs prefixes G)
           (binding.rhs.openTyVars Ys) (scheme.openVars Ys)) ∧
-    InputTyping K (recBodyCtx ctx specs prefixes G) body resultTy := by
+    ScopedTyping K (recBodyCtx ctx specs prefixes G) body resultTy := by
   obtain ⟨specs, groups, prefixes, G, L, hg, hw, hp, hG, hRows,
     hf, hm, hpoly, hb⟩ := h.rec_inv
   let avoid := K ++ ctx.env.freeVars ++ G ++ specs.flatMap RecSpec.freeVars ++ List.range floor
@@ -5630,7 +5630,7 @@ theorem Infer.sourcePrincipal_letRec_of_unsigned
       ∀ (binding : InputRecBinding) (names : List Nat) (ty : Ty),
       declBindings[member]? = some binding →
       declPrefixes[member]? = some names → declSpecs[member]? = some (.mono ty) →
-      InputTyping (P ++ Xs) (recStageCtx declCtx declSpecs declPrefixes (declGroups.take stage).flatten G Xs)
+      ScopedTyping (P ++ Xs) (recStageCtx declCtx declSpecs declPrefixes (declGroups.take stage).flatten G Xs)
         (binding.rhs.openTyVars (recRenameNames G Xs names)) (Ty.renameG G Xs ty)) →
   (∀ g ∈ G, next ≤ g) → (∀ x ∈ Xs, next ≤ x) →
   Xs.length = G.length → Xs.Nodup →
@@ -5679,7 +5679,7 @@ theorem Infer.sourcePrincipal_letRec_of_unsigned
         hscope hann hstrata hsigned hcompleted hbody) := by
   let groups := RecGroup.inferenceSccs (bindings.map InputRecBinding.recMode)
   intro hctxWF hctx hK hF ambient target P hambient hP hfix hfreeze ht
-  change InputTyping P (ambient.onCtx ctx)
+  change ScopedTyping P (ambient.onCtx ctx)
     (.letRec (substInputBindings ambient bindings) (body.substTyFvars ambient)) target at ht
   obtain ⟨declSpecs, declGroups, declPrefixes, G, L, hGhigh, hdeclValid, hdeclWF, hdeclPrefixes,
     hGfresh, hdeclRows, hdeclMatches, hdeclTypes, hdeclPoly, hdeclBody⟩ := ht.rec_inv_high next
@@ -5907,7 +5907,7 @@ theorem Infer.sourcePrincipal_letRec_of_unsigned
       v ∈ K → v ∉ softVars (substSoft (s1 ++ s2) F) → R2.onTy (.fvar v) = .fvar v := by
     apply (show SourceScope K F body from fun v hv => hraw v (List.mem_append_right _ hv)).residual_freeze
       hbodybelow hbothFix (fun v hv => hfreeze v (List.mem_append_right _ hv)) hagOriginal
-  have hcand : InputTyping P (R2.onCtx (state2.rhsCtx ((s1 ++ s2).onCtx ctx)))
+  have hcand : ScopedTyping P (R2.onCtx (state2.rhsCtx ((s1 ++ s2).onCtx ctx)))
       ((body.substTyFvars (s1 ++ s2)).substTyFvars R2) target := by
     rw [hbodySource]
     simpa only [Subst.onCtx_append] using hcandidateBody
@@ -6051,8 +6051,8 @@ theorem RecResidual.refresh_opening
         recStageCtx declCtx specs prefixes prior G Zs) ∧
       (∀ ty, .mono ty ∈ specs → B.onTy (Ty.renameG G Xs ty) = Ty.renameG G Zs ty) ∧
       (∀ (raw : InferInput), (∀ v ∈ raw.rigidVars, v ∈ P) → ∀ (prior : List Nat) (ty : Ty) (names : List Nat),
-        InputTyping (P ++ Xs) (recStageCtx declCtx specs prefixes prior G Xs) (raw.openTyVars names) ty →
-        InputTyping (P ++ Zs) (recStageCtx declCtx specs prefixes prior G Zs)
+        ScopedTyping (P ++ Xs) (recStageCtx declCtx specs prefixes prior G Xs) (raw.openTyVars names) ty →
+        ScopedTyping (P ++ Zs) (recStageCtx declCtx specs prefixes prior G Zs)
           (raw.openTyVars (recRenameNames Xs Zs names)) (B.onTy ty)) ∧
       (∀ laterCtx laterState laterDone T,
         RecResidual P declCtx specs prefixes G Zs laterCtx laterState laterDone T →
@@ -6178,7 +6178,7 @@ structure RecResidual.Prepared
     slot.expected = some expected → subst.onTy expected = subst.onTy ty
   typed : ∀ (i : Nat) (binding : InputRecBinding) (ty : Ty), i ∈ members →
     (openRecSources openings bindings)[i]? = some binding → state.specs[i]? = some (.mono ty) →
-    InputTyping protectedVars (subst.onCtx (state.rhsCtx ctx))
+    ScopedTyping protectedVars (subst.onCtx (state.rhsCtx ctx))
       (binding.rhs.substTyFvars subst) (subst.onTy ty)
   written : ∀ (i : Nat) (slot : RecOpening), i ∈ members → openings[i]? = some slot →
     slot.written.map (fun v => subst.onTy (.fvar v)) =
@@ -6226,7 +6226,7 @@ theorem RecResidual.prepare_component
       ∀ (binding : InputRecBinding) (names : List Nat) (ty : Ty),
       declBindings[member]? = some binding →
       declPrefixes[member]? = some names → declSpecs[member]? = some (.mono ty) →
-      InputTyping (P ++ Xs) (recStageCtx declCtx declSpecs declPrefixes (declGroups.take stage).flatten G Xs)
+      ScopedTyping (P ++ Xs) (recStageCtx declCtx declSpecs declPrefixes (declGroups.take stage).flatten G Xs)
         (binding.rhs.openTyVars (recRenameNames G Xs names)) (Ty.renameG G Xs ty)) →
   (∀ g ∈ G, cutoff ≤ g) → (∀ x ∈ Xs, cutoff ≤ x) →
   Xs.length = G.length → Xs.Nodup →
@@ -6297,7 +6297,7 @@ theorem RecResidual.prepare_component
   have hTypes : ∀ stage co, declGroups[stage]? = some co →
       ∀ member ∈ co, ∀ binding ty, declBindings[member]? = some binding →
       declSpecs[member]? = some (.mono ty) →
-      InputTyping (P ++ Xs) (recStageCtx declCtx declSpecs declPrefixes (declGroups.take stage).flatten G Xs)
+      ScopedTyping (P ++ Xs) (recStageCtx declCtx declSpecs declPrefixes (declGroups.take stage).flatten G Xs)
         (binding.rhs.openTyVars (recRenameNames G Xs (declPrefixes[member]?.getD [])))
         (Ty.renameG G Xs ty) := by
     intro stage co hs member hm binding ty hr ht
@@ -6310,7 +6310,7 @@ theorem RecResidual.prepare_component
       (binding.ann.substTyFvars R).RecFits
         (recRenameNames G Xs (declPrefixes[i]?.getD [])) (R.onTy ty) ∧
       (recRenameNames G Xs (declPrefixes[i]?.getD [])).length = binding.ann.recPrefixCount ∧
-      InputTyping (P ++ recRenameNames G Xs (declPrefixes[i]?.getD [])) (R.onCtx (state.rhsCtx ctx))
+      ScopedTyping (P ++ recRenameNames G Xs (declPrefixes[i]?.getD [])) (R.onCtx (state.rhsCtx ctx))
         ((binding.rhs.substTyFvars R).openTyVars
           (recRenameNames G Xs (declPrefixes[i]?.getD []))) (R.onTy ty) := by
     intro i binding ty hi hb ht
@@ -6518,7 +6518,7 @@ theorem RecResidual.prepare_component
       exact hdeclRows _ (List.mem_of_getElem? he) v (List.mem_append_right _ hv)
   have htypedMoved : ∀ i raw candidate ty ns, i ∈ component → bindings[i]? = some raw →
       declBindings[i]? = some candidate → state.specs[i]? = some (.mono ty) → names[i]? = some ns →
-      InputTyping (P ++ ns) (moved.onCtx (state.rhsCtx ctx))
+      ScopedTyping (P ++ ns) (moved.onCtx (state.rhsCtx ctx))
         (candidate.rhs.openTyVars ns) (moved.onTy ty) := by
     intro i raw candidate ty ns hi hr hc ht hn
     have he : raw.rhs.substTyFvars R = candidate.rhs := by
@@ -6814,7 +6814,7 @@ theorem RecResidual.successful_step
       ∀ (binding : InputRecBinding) (names : List Nat) (ty : Ty),
       declBindings[member]? = some binding →
       declPrefixes[member]? = some names → declSpecs[member]? = some (.mono ty) →
-      InputTyping (P ++ Xs) (recStageCtx declCtx declSpecs declPrefixes (declGroups.take stage).flatten G Xs)
+      ScopedTyping (P ++ Xs) (recStageCtx declCtx declSpecs declPrefixes (declGroups.take stage).flatten G Xs)
         (binding.rhs.openTyVars (recRenameNames G Xs names)) (Ty.renameG G Xs ty)) →
   (∀ g ∈ G, cutoff ≤ g) → (∀ x ∈ Xs, cutoff ≤ x) →
   Xs.length = G.length → Xs.Nodup →
@@ -7060,7 +7060,7 @@ def SourceComplete (request : InferRequest) : Prop :=
     (∀ k ∈ request.protectedVars, ambient.onTy (.fvar k) = .fvar k) →
     (∀ p ∈ P, p < request.frontier) →
     (∀ p ∈ P, ambient.onTy (.fvar p) = .fvar p) →
-    InputTyping P (ambient.onCtx request.ctx)
+    ScopedTyping P (ambient.onCtx request.ctx)
       (request.input.substTyFvars ambient) target →
     request.run.isSome
 
@@ -7086,7 +7086,7 @@ theorem inferRecComponentWithTypesCore_complete
     (hP : ∀ p ∈ P,p < frontier) (hfixP : ∀ p ∈ P,ambient.onTy (.fvar p) = .fvar p)
     (hcandidate : ∀ (j : Nat) (binding : InputRecBinding) (target : Ty),index + j ∈ members →
       bindings[j]? = some binding → specs[j]? = some (.mono target) →
-      InputTyping P (ambient.onCtx ctx) (binding.rhs.substTyFvars ambient) (ambient.onTy target)) :
+      ScopedTyping P (ambient.onCtx ctx) (binding.rhs.substTyFvars ambient) (ambient.onTy target)) :
     (inferRecComponentWithTypesCore K F members index frontier ctx bindings specs).isSome := by
   match bindings,specs with
   | [],[] => simp only [inferRecComponentWithTypesCore,Option.isSome_some]
@@ -7233,7 +7233,7 @@ def InferWithTypesCoreComplete (input : InferInput) : Prop :=
     CtxWF ctx → CtxBelow frontier ctx → (∀ k ∈ K, k < frontier) →
     (∀ pair ∈ ambient, pair.2.IsLC) →
     (∀ k ∈ K, ambient.onTy (.fvar k) = .fvar k) →
-    InputTyping K (ambient.onCtx ctx) input target → (inferWithTypesCore K frontier ctx input).isSome
+    ScopedTyping K (ambient.onCtx ctx) input target → (inferWithTypesCore K frontier ctx input).isSome
 
 private theorem rigid_all {K : List Nat} (h : ∀ k ∈ K, k < frontier) :
     K.all (fun v => decide (v < frontier)) = true :=
@@ -7448,7 +7448,7 @@ theorem inferRequest_sourceComplete_app
   have hsourceeq : arg.substTyFvars ambient = (arg.substTyFvars s1).substTyFvars Rf := by
     rw [← InferInput.substTyFvars_append]
     exact arg.substTyFvars_congr (fun v hv => hagf v (hargBelow v hv))
-  have hargD : InputTyping P (Rf.onCtx (s1.onCtx ctx)) ((arg.substTyFvars s1).substTyFvars Rf) paramD := by
+  have hargD : ScopedTyping P (Rf.onCtx (s1.onCtx ctx)) ((arg.substTyFvars s1).substTyFvars Rf) paramD := by
     rwa [← hctxeq, ← hsourceeq]
   have hargScope := haScope.subst s1 hs1K
   have hargSize : (arg.substTyFvars s1).size ≤ arg.size := by
@@ -7642,7 +7642,7 @@ theorem inferRequest_sourceComplete_signature
   have hCount : ann.paramCount ≤ M.paramCount := by
     simpa only [PartialCore.Ann.paramCount_substTyFvars] using (hfits Ns ⟨hNlen, hNnd, hNavoid⟩).prefix_le
   obtain ⟨extras, hElen, hXsNd, _, hAll, hAligned, hAlignedFits⟩ :=
-    InputTyping.align_partial_prefix_with_fits (by simp) hfits hann htypes hCount hrhs
+    ScopedTyping.align_partial_prefix_with_fits (by simp) hfits hann htypes hCount hrhs
       hYlen hYnd hYsQ hYsCtx hYsM []
   have hFullLen : (written ++ extras).length = M.paramCount := by
     simp only [List.length_append, hYlen, hElen]; omega
@@ -7668,7 +7668,7 @@ theorem inferRequest_sourceComplete_signature
     tauto
   have hFOpen : ∀ t ∈ F, Ty.BelowFvars (frontier + ann.paramCount) t :=
     fun t ht => (hF t ht).mono (Nat.le_add_right _ _)
-  have hAligned' : InputTyping (Q ++ written) (moved.onCtx ctx)
+  have hAligned' : ScopedTyping (Q ++ written) (moved.onCtx ctx)
       ((rhs.openTyVars written).substTyFvars moved) (M.openVars (written ++ extras)) := by
     rwa [InferInput.substTyFvars_openTyVars_of_fixes rhs hMoved (fun w hw => hMovedFix w (List.mem_append_right _ hw))]
   have hrhsReq :
@@ -7801,10 +7801,10 @@ private theorem producer_branch_candidates_frame {bs : List (MatchPattern × Inf
     (hbelow : ∀ v ∈ rigidBranchVars bs, v < Φ)
     (hag : Subst.AgreesBelow Φ ambient (solved ++ residual))
     (hctx : residual.onCtx ctx' = ambient.onCtx ctx)
-    (hbr : ∀ b ∈ bs, BranchTyping InputTyping P (ambient.onCtx ctx)
+    (hbr : ∀ b ∈ bs, ScopedBranchTyping ScopedTyping P (ambient.onCtx ctx)
       (b.1, b.2.substTyFvars ambient) st rt) :
     ∀ b ∈ substInputBranches solved bs,
-      BranchTyping InputTyping P (residual.onCtx ctx') (b.1, b.2.substTyFvars residual) st rt := by
+      ScopedBranchTyping ScopedTyping P (residual.onCtx ctx') (b.1, b.2.substTyFvars residual) st rt := by
   intro b hb
   rw [substInputBranches_eq_map] at hb
   obtain ⟨original, horiginal, rfl⟩ := List.mem_map.mp hb
@@ -7825,7 +7825,7 @@ def InferBranchesWithTypesCoreSourceComplete (branches : List (MatchPattern × I
     (∀ k ∈ K, ambient.onTy (.fvar k) = .fvar k) →
     (∀ p ∈ P, p < frontier) → (∀ p ∈ P, ambient.onTy (.fvar p) = .fvar p) →
     scrutTy.IsLC → resultTy.IsLC → Ty.BelowFvars frontier scrutTy → Ty.BelowFvars frontier resultTy →
-    (∀ b ∈ branches, BranchTyping InputTyping P (ambient.onCtx ctx) (b.1, b.2.substTyFvars ambient)
+    (∀ b ∈ branches, ScopedBranchTyping ScopedTyping P (ambient.onCtx ctx) (b.1, b.2.substTyFvars ambient)
       (ambient.onTy scrutTy) (ambient.onTy resultTy)) →
     (inferBranchesWithTypesCore K frontier ctx scrutTy resultTy branchIndex branches F).isSome
 
@@ -7983,7 +7983,7 @@ theorem inferBranchesWithTypesCore_sourceComplete_named
     obtain ⟨⟨s0, hu0⟩, hu0Result⟩ := Option.isSome_iff_exists.mp
       (unifyCoreK_complete hscrut hcustomLC hU hUni hUK)
     rcases hu0 with ⟨hun0, hav0⟩
-    have hhead : BranchTyping InputTyping P (ambient.onCtx ctx) (.named name count, body.substTyFvars ambient)
+    have hhead : ScopedBranchTyping ScopedTyping P (ambient.onCtx ctx) (.named name count, body.substTyFvars ambient)
         (ambient.onTy scrutTy) (ambient.onTy resultTy) := .named hspec hbodyD
     obtain ⟨V, hV, hVP, hag0, hbD⟩ := hhead.factor_named hlookup hun0 hbelow hscrutB hS
       (Subst.onTy_lc hS hscrut) hP hfixP rfl
@@ -8378,7 +8378,7 @@ theorem inferRecSignedWithTypesCore_complete_one
     (hfix : ∀ k ∈ K,ambient.onTy (.fvar k) = .fvar k)
     (hP : ∀ p ∈ P,p < frontier) (hfixP : ∀ p ∈ P,ambient.onTy (.fvar p) = .fvar p)
     (hscope : SourceScope K F (.letIn (.complete scheme) rhs (.primLit .unit)))
-    (ht : InputTyping P (ambient.onCtx (state.rhsCtx outer))
+    (ht : ScopedTyping P (ambient.onCtx (state.rhsCtx outer))
       ((InferInput.letIn (.complete scheme) rhs (.primLit .unit)).substTyFvars ambient) (.prim .unit)) :
     (inferRecSignedWithTypesCore K F index frontier outer
       [{ ann := .complete scheme, rhs := rhs }] state).isSome := by
@@ -8412,7 +8412,7 @@ theorem inferRecSignedWithTypesCore_complete_one
   have hCount : ann.paramCount ≤ M.paramCount := by
     simpa only [PartialCore.Ann.paramCount_substTyFvars] using (hfits Ns ⟨hNlen, hNnd, hNavoid⟩).prefix_le
   obtain ⟨extras, hElen, hXsNd, _, hAll, hAligned, hAlignedFits⟩ :=
-    InputTyping.align_partial_prefix_with_fits (by simp) hfits hann htypes hCount hrhs
+    ScopedTyping.align_partial_prefix_with_fits (by simp) hfits hann htypes hCount hrhs
       hYlen hYnd hYsQ hYsCtx hYsM []
   change extras.length = M.paramCount - ann.paramCount at hElen
   have hFullLen : (written ++ extras).length = M.paramCount := by
@@ -8439,7 +8439,7 @@ theorem inferRecSignedWithTypesCore_complete_one
     tauto
   have hFOpen : ∀ t ∈ F, Ty.BelowFvars (frontier + ann.paramCount) t :=
     fun t ht => (hF t ht).mono (Nat.le_add_right _ _)
-  have hAligned' : InputTyping (Q ++ written) (moved.onCtx ctx)
+  have hAligned' : ScopedTyping (Q ++ written) (moved.onCtx ctx)
       ((rhs.openTyVars written).substTyFvars moved) (M.openVars (written ++ extras)) := by
     rwa [InferInput.substTyFvars_openTyVars_of_fixes rhs hMoved (fun w hw => hMovedFix w (List.mem_append_right _ hw))]
   have hrhsReq :
@@ -8559,7 +8559,7 @@ theorem inferRecSignedWithTypesCore_complete
     (hcandidate : ∀ (j : Nat) (scheme : PolyTy) (rhs : InferInput),
       bindings[j]? = some { ann := .complete scheme, rhs := rhs } →
       ∃ L, ∀ Ys, FreshNames L scheme.paramCount Ys →
-        InputTyping (P ++ Ys) (recBodyCtx declCtx declSpecs declPrefixes declPool)
+        ScopedTyping (P ++ Ys) (recBodyCtx declCtx declSpecs declPrefixes declPool)
           ((rhs.substTyFvars R).openTyVars Ys) ((R.onPolyTy scheme).openVars Ys)) :
     (inferRecSignedWithTypesCore K F index frontier ctx bindings state).isSome := by
   match bindings with
@@ -8575,7 +8575,7 @@ theorem inferRecSignedWithTypesCore_complete
         ({ ann := .complete scheme, rhs := rhs } : InputRecBinding) List.mem_cons_self
       obtain ⟨L,htypes⟩ := hcandidate 0 scheme rhs rfl
       have htypes' : ∀ Ys, FreshNames L scheme.paramCount Ys →
-          InputTyping (P ++ Ys) (R.onCtx (state.rhsCtx ctx)) ((rhs.substTyFvars R).openTyVars Ys)
+          ScopedTyping (P ++ Ys) (R.onCtx (state.rhsCtx ctx)) ((rhs.substTyFvars R).openTyVars Ys)
             ((R.onPolyTy scheme).openVars Ys) :=
         fun Ys hy => hres.weaken_from_body hpoly hdone (htypes Ys hy)
       obtain ⟨Ns,hNlen,hNnd,hNavoid⟩ := exists_fresh_names L scheme.paramCount
@@ -8584,9 +8584,9 @@ theorem inferRecSignedWithTypesCore_complete
         have hb := Ty.containsBvars_of_openVarsFrom 0 Ns hOpenLC
         simpa only [Nat.zero_add,hNlen,Subst.onPolyTy] using hb
       have hSchemeWF : scheme.WF := ContainsBvarsUpTo.of_substFvars hSchemeRWF
-      have hUnit : InputTyping P (R.onCtx (state.rhsCtx ctx))
+      have hUnit : ScopedTyping P (R.onCtx (state.rhsCtx ctx))
           ((InferInput.letIn (.complete scheme) rhs (.primLit .unit)).substTyFvars R) (.prim .unit) := by
-        refine InputTyping.letSignature (M := R.onPolyTy scheme) (L := L) hSchemeRWF
+        refine ScopedTyping.letSignature (M := R.onPolyTy scheme) (L := L) hSchemeRWF
           (hcandAnn ⟨.complete scheme, rhs⟩ List.mem_cons_self)
           (hcandRhs ⟨.complete scheme, rhs⟩ List.mem_cons_self)
           (PartialCore.Ann.SignatureMatches.complete hSchemeRWF) ?_ (.primLit .primLitUnit)
@@ -8759,7 +8759,7 @@ theorem inferRecSignedWithTypesCore_complete
                           (List.mem_cons_of_mem _ (List.mem_of_getElem? ho))))).symm
                   rw [rhsEq { ann := .complete old, rhs := oldRhs }
                     (List.mem_cons_of_mem _ (List.mem_of_getElem? ho))]
-                  change InputTyping (P ++ Ys) (recBodyCtx declCtx declSpecs declPrefixes declPool)
+                  change ScopedTyping (P ++ Ys) (recBodyCtx declCtx declSpecs declPrefixes declPool)
                     ((oldRhs.substTyFvars R).openTyVars Ys)
                     ((U.onPolyTy ((s1 ++ s2).onPolyTy old)).openVars Ys)
                   rw [hσ]
@@ -9355,7 +9355,7 @@ theorem inferRecStrataWithTypesCore_aligned_singleton
         (recRenameNames G Xs (declPrefixes[i]?.getD [])).map Ty.fvar)
     (hcandidate : ∀ (i : Nat) (binding : InputRecBinding) (ty : Ty), i ∈ members →
       (openRecSources openings bindings)[i]? = some binding → state.specs[i]? = some (.mono ty) →
-      InputTyping P (U.onCtx (state.rhsCtx ctx)) (binding.rhs.substTyFvars U) (U.onTy ty))
+      ScopedTyping P (U.onCtx (state.rhsCtx ctx)) (binding.rhs.substTyFvars U) (U.onTy ty))
     (hdisjoint : ∀ i ∈ members, i ∉ done)
     (hdeclLC : ∀ ty, .mono ty ∈ declSpecs → ty.IsLC) (hG : G.Nodup)
     (hprefix : ∀ (i : Nat) (ty : Ty), declSpecs[i]? = some (.mono ty) →
@@ -9630,7 +9630,7 @@ theorem inferRecStrataWithTypesCore_fresh_local_singleton
       ∀ (binding : InputRecBinding) (names : List Nat) (ty : Ty),
       declBindings[member]? = some binding →
       declPrefixes[member]? = some names → declSpecs[member]? = some (.mono ty) →
-      InputTyping (P ++ Xs) (recStageCtx declCtx declSpecs declPrefixes (declGroups.take stage).flatten G Xs)
+      ScopedTyping (P ++ Xs) (recStageCtx declCtx declSpecs declPrefixes (declGroups.take stage).flatten G Xs)
         (binding.rhs.openTyVars (recRenameNames G Xs names)) (Ty.renameG G Xs ty)) →
   Xs.length = G.length → Xs.Nodup →
   (∀ g ∈ G, g ∉ Xs) →
@@ -9732,7 +9732,7 @@ theorem inferRecStrataWithTypesCore_dynamic_singleton
       ∀ (binding : InputRecBinding) (names : List Nat) (ty : Ty),
       declBindings[member]? = some binding →
       declPrefixes[member]? = some names → declSpecs[member]? = some (.mono ty) →
-      InputTyping (P ++ Xs) (recStageCtx declCtx declSpecs declPrefixes (declGroups.take stage).flatten G Xs)
+      ScopedTyping (P ++ Xs) (recStageCtx declCtx declSpecs declPrefixes (declGroups.take stage).flatten G Xs)
         (binding.rhs.openTyVars (recRenameNames G Xs names)) (Ty.renameG G Xs ty)) →
   Xs.length = G.length → Xs.Nodup →
   (∀ g ∈ G, g ∉ Xs) →
@@ -9890,7 +9890,7 @@ theorem inferRecStrataWithTypesCore_dynamic_singleton
       ∀ (binding : InputRecBinding) (names : List Nat) (ty : Ty),
       declBindings[member]? = some binding →
       prefixes'[member]? = some names → specs'[member]? = some (.mono ty) →
-      InputTyping (P ++ Xs) (recStageCtx declCtx specs' prefixes' (declGroups.take stage).flatten W Xs)
+      ScopedTyping (P ++ Xs) (recStageCtx declCtx specs' prefixes' (declGroups.take stage).flatten W Xs)
         (binding.rhs.openTyVars (recRenameNames W Xs names)) (Ty.renameG W Xs ty) := by
     intro stage component hs member hm binding names ty hb hn ht
     obtain ⟨names0,ty0,hn0,ht0,rfl,rfl⟩ := hGetOld member names ty hn ht
@@ -9952,7 +9952,7 @@ theorem inferRecStrataWithTypesCore_dynamic_singleton
       ∀ (binding : InputRecBinding) (names : List Nat) (ty : Ty),
       declBindings[member]? = some binding →
       prefixes'[member]? = some names → specs'[member]? = some (.mono ty) →
-      InputTyping (P ++ Z) (recStageCtx declCtx specs' prefixes' (declGroups.take stage).flatten W Z)
+      ScopedTyping (P ++ Z) (recStageCtx declCtx specs' prefixes' (declGroups.take stage).flatten W Z)
         (binding.rhs.openTyVars (recRenameNames W Z names)) (Ty.renameG W Z ty) := by
     intro stage component hs member hm binding names ty hb hn ht
     have hh := hBtyped binding.rhs
@@ -10030,7 +10030,7 @@ theorem RecResidual.openRecAnns_complete
       ∀ (binding : InputRecBinding) (names : List Nat) (ty : Ty),
       declBindings[member]? = some binding →
       declPrefixes[member]? = some names → declSpecs[member]? = some (.mono ty) →
-      InputTyping (P ++ Xs) (recStageCtx declCtx declSpecs declPrefixes (declGroups.take stage).flatten G Xs)
+      ScopedTyping (P ++ Xs) (recStageCtx declCtx declSpecs declPrefixes (declGroups.take stage).flatten G Xs)
         (binding.rhs.openTyVars (recRenameNames G Xs names)) (Ty.renameG G Xs ty)) →
   Xs.length = G.length → Xs.Nodup →
   (∀ g ∈ G, g ∉ Xs) →
@@ -10077,7 +10077,7 @@ theorem RecResidual.openRecAnns_complete
   have hTypes : ∀ stage co, declGroups[stage]? = some co →
       ∀ member ∈ co, ∀ binding ty, declBindings[member]? = some binding →
       declSpecs[member]? = some (.mono ty) →
-      InputTyping (P ++ Xs) (recStageCtx declCtx declSpecs declPrefixes (declGroups.take stage).flatten G Xs)
+      ScopedTyping (P ++ Xs) (recStageCtx declCtx declSpecs declPrefixes (declGroups.take stage).flatten G Xs)
         (binding.rhs.openTyVars (recRenameNames G Xs (declPrefixes[member]?.getD [])))
         (Ty.renameG G Xs ty) := by
     intro stage co hs member hm binding ty hb ht
@@ -10090,7 +10090,7 @@ theorem RecResidual.openRecAnns_complete
       (binding.ann.substTyFvars R).RecFits
         (recRenameNames G Xs (declPrefixes[i]?.getD [])) (R.onTy ty) ∧
       (recRenameNames G Xs (declPrefixes[i]?.getD [])).length = binding.ann.recPrefixCount ∧
-      InputTyping (P ++ recRenameNames G Xs (declPrefixes[i]?.getD [])) (R.onCtx (state.rhsCtx ctx))
+      ScopedTyping (P ++ recRenameNames G Xs (declPrefixes[i]?.getD [])) (R.onCtx (state.rhsCtx ctx))
         ((binding.rhs.substTyFvars R).openTyVars
           (recRenameNames G Xs (declPrefixes[i]?.getD []))) (R.onTy ty) := by
     intro i binding ty hi hb ht
@@ -10153,7 +10153,7 @@ private theorem inferRequest_sourceComplete_rec_of_unsigned
         ∀ (binding : InputRecBinding) (names : List Nat) (ty : Ty),
         declBindings[member]? = some binding →
         declPrefixes[member]? = some names → declSpecs[member]? = some (RecSpec.mono ty) →
-        InputTyping (P ++ Xs) (recStageCtx declCtx declSpecs declPrefixes (declGroups.take stage).flatten G Xs)
+        ScopedTyping (P ++ Xs) (recStageCtx declCtx declSpecs declPrefixes (declGroups.take stage).flatten G Xs)
           (binding.rhs.openTyVars (recRenameNames G Xs names)) (Ty.renameG G Xs ty)) →
       (∀ g ∈ G,frontier + bindings.length ≤ g) → (∀ x ∈ Xs,frontier + bindings.length ≤ x) →
       Xs.length = G.length → Xs.Nodup → (∀ g ∈ G,g ∉ Xs) →
@@ -10194,7 +10194,7 @@ private theorem inferRequest_sourceComplete_rec_of_unsigned
   have hctx : CtxBelow frontier ctx := hreq.ctxBelow
   have hK : ∀ k ∈ K, k < frontier := hreq.protectedBelow
   have hF : ∀ t ∈ F, Ty.BelowFvars frontier t := hreq.softBelow
-  change InputTyping P (ambient.onCtx ctx)
+  change ScopedTyping P (ambient.onCtx ctx)
     (.letRec (substInputBindings ambient bindings) (body.substTyFvars ambient)) target at ht
   obtain ⟨declSpecs,declGroups,declPrefixes,G,L,hGhigh,hdeclValid,hdeclWF,hdeclPrefixes,
     hGfresh,hdeclRows,hdeclMatches,hdeclTypes,hdeclPoly,hdeclBody⟩ :=
@@ -10376,7 +10376,7 @@ private theorem inferRequest_sourceComplete_rec_of_unsigned
       (substInputBindings s1 bindings)[j]? =
         some { ann := .complete scheme, rhs := rhs } →
       ∃ L,∀ Ys,FreshNames L scheme.paramCount Ys →
-        InputTyping (P ++ Ys) (recBodyCtx (ambient.onCtx ctx) declSpecs declPrefixes G)
+        ScopedTyping (P ++ Ys) (recBodyCtx (ambient.onCtx ctx) declSpecs declPrefixes G)
           ((rhs.substTyFvars R1).openTyVars Ys) ((R1.onPolyTy scheme).openVars Ys) := by
     intro j scheme rhs hb
     have hj : j < state1.specs.length := by
@@ -10461,7 +10461,7 @@ private theorem inferRequest_sourceComplete_rec_of_unsigned
   have hBodySource : (body.substTyFvars (s1 ++ s2)).substTyFvars R2 = body.substTyFvars ambient := by
     rw [← InferInput.substTyFvars_append]
     exact body.substTyFvars_congr (fun v hv => (hagOriginal v (hbodybelow v hv)).symm)
-  have hTypedBody : InputTyping P (R2.onCtx (state2.rhsCtx ((s1 ++ s2).onCtx ctx)))
+  have hTypedBody : ScopedTyping P (R2.onCtx (state2.rhsCtx ((s1 ++ s2).onCtx ctx)))
       ((body.substTyFvars (s1 ++ s2)).substTyFvars R2) target := by
     rw [hBodySource]
     simpa only [Subst.onCtx_append] using hcandidateBody
@@ -10586,7 +10586,7 @@ private theorem inferRequest_sourceComplete_of_singleton
         ∀ (binding : InputRecBinding) (names : List Nat) (ty : Ty),
         declBindings[member]? = some binding →
         declPrefixes[member]? = some names → declSpecs[member]? = some (RecSpec.mono ty) →
-        InputTyping (P ++ Xs) (recStageCtx declCtx declSpecs declPrefixes (declGroups.take stage).flatten G Xs)
+        ScopedTyping (P ++ Xs) (recStageCtx declCtx declSpecs declPrefixes (declGroups.take stage).flatten G Xs)
           (binding.rhs.openTyVars (recRenameNames G Xs names)) (Ty.renameG G Xs ty)) →
       (∀ g ∈ G,base + declBindings.length ≤ g) → (∀ x ∈ Xs,base + declBindings.length ≤ x) →
       Xs.length = G.length → Xs.Nodup → (∀ g ∈ G,g ∉ Xs) →
@@ -10681,7 +10681,7 @@ def InferWithTypesCoreSourceComplete (input : InferInput) : Prop :=
     (∀ pair ∈ ambient, pair.2.IsLC) →
     (∀ k ∈ K, ambient.onTy (.fvar k) = .fvar k) →
     (∀ p ∈ P, p < frontier) → (∀ p ∈ P, ambient.onTy (.fvar p) = .fvar p) →
-    InputTyping P (ambient.onCtx ctx) (input.substTyFvars ambient) target →
+    ScopedTyping P (ambient.onCtx ctx) (input.substTyFvars ambient) target →
     (inferWithTypesCore K frontier ctx input F).isSome
 
 /-- A legacy positional proof specializes to the corresponding bundled
@@ -10734,7 +10734,7 @@ def InferCoreCompleteReq (input : InferInput) : Prop :=
     (InferRequest.core K frontier ctx input).WF →
     (∀ pair ∈ ambient, pair.2.IsLC) →
     (∀ k ∈ K, ambient.onTy (.fvar k) = .fvar k) →
-    InputTyping K (ambient.onCtx ctx) input target →
+    ScopedTyping K (ambient.onCtx ctx) input target →
     (inferCore K frontier ctx input).isSome
 
 theorem inferCore_complete_req (input : InferInput) : InferCoreCompleteReq input := by
@@ -10750,7 +10750,7 @@ def InferCoreComplete (input : InferInput) : Prop :=
     CtxWF ctx → CtxBelow frontier ctx → (∀ k ∈ K, k < frontier) →
     (∀ pair ∈ ambient, pair.2.IsLC) →
     (∀ k ∈ K, ambient.onTy (.fvar k) = .fvar k) →
-    InputTyping K (ambient.onCtx ctx) input target → (inferCore K frontier ctx input).isSome
+    ScopedTyping K (ambient.onCtx ctx) input target → (inferCore K frontier ctx input).isSome
 
 theorem inferCore_complete (input : InferInput) : InferCoreComplete input := by
   intro K frontier ctx ambient target hwf hbelow hK hS hfix ht
@@ -10768,7 +10768,7 @@ theorem Infer.complete_req {input : InferInput} {ctx : Ctx} {K : List Nat}
     (hreq : (InferRequest.core K frontier ctx input).WF)
     (hS : ∀ pair ∈ ambient, pair.2.IsLC)
     (hfix : ∀ k ∈ K, ambient.onTy (.fvar k) = .fvar k)
-    (ht : InputTyping K (ambient.onCtx ctx) input target) :
+    (ht : ScopedTyping K (ambient.onCtx ctx) input target) :
     ∃ result : InferResult, ∃ residual,
       InferCert (InferRequest.core K frontier ctx input) result ∧
       (∀ pair ∈ residual, pair.2.IsLC) ∧ target = residual.onTy result.ty ∧
@@ -10786,7 +10786,7 @@ theorem Infer.complete {input : InferInput} {ctx : Ctx} {K : List Nat}
     (hwf : CtxWF ctx) (hbelow : CtxBelow frontier ctx) (hK : ∀ k ∈ K, k < frontier)
     (hS : ∀ pair ∈ ambient, pair.2.IsLC)
     (hfix : ∀ k ∈ K, ambient.onTy (.fvar k) = .fvar k)
-    (ht : InputTyping K (ambient.onCtx ctx) input target) :
+    (ht : ScopedTyping K (ambient.onCtx ctx) input target) :
     ∃ next subst output ty residual,
       Infer K [] frontier ctx input next subst output ty ∧
       (∀ pair ∈ residual, pair.2.IsLC) ∧ target = residual.onTy ty ∧
@@ -10808,12 +10808,12 @@ theorem inferCore_accepts_iff_req {K : List Nat} {frontier : Nat} {ctx : Ctx}
     (inferCore K frontier ctx input).isSome ↔
       ∃ (ambient : Subst) (target : Ty), (∀ pair ∈ ambient, pair.2.IsLC) ∧
         (∀ k ∈ K, ambient.onTy (.fvar k) = .fvar k) ∧
-        InputTyping K (ambient.onCtx ctx) input target := by
+        ScopedTyping K (ambient.onCtx ctx) input target := by
   constructor
   · intro hsome
     obtain ⟨⟨⟨next, subst, output, ty⟩, hi⟩, _⟩ := Option.isSome_iff_exists.mp hsome
     exact ⟨subst, ty, (hi.lc hreq.ctxWF).2, Subst.fixes_of_dom_avoids hi.dom_avoids,
-      hi.inputSound hreq.ctxWF⟩
+      hi.scopedSound hreq.ctxWF⟩
   · rintro ⟨ambient, target, hS, hfix, ht⟩
     exact inferCore_complete_req input K frontier ctx ambient target hreq hS hfix ht
 
@@ -10823,7 +10823,7 @@ theorem inferCore_accepts_iff {K : List Nat} {frontier : Nat} {ctx : Ctx} {input
     (inferCore K frontier ctx input).isSome ↔
       ∃ (ambient : Subst) (target : Ty), (∀ pair ∈ ambient, pair.2.IsLC) ∧
         (∀ k ∈ K, ambient.onTy (.fvar k) = .fvar k) ∧
-        InputTyping K (ambient.onCtx ctx) input target :=
+        ScopedTyping K (ambient.onCtx ctx) input target :=
   inferCore_accepts_iff_req
     { ctxBelow := hbelow
       protectedBelow := hK
@@ -10834,11 +10834,11 @@ theorem inferCore_accepts_iff {K : List Nat} {frontier : Nat} {ctx : Ctx} {input
 precisely those admitted by the independent declarative fragment. -/
 theorem inferCore_empty_accepts_iff {K : List Nat} {frontier : Nat} {ctors : CtorEnv} {input : InferInput}
     (hK : ∀ k ∈ K, k < frontier) :
-    (inferCore K frontier ⟨[], ctors⟩ input).isSome ↔ ∃ ty, InputTyping K ⟨[], ctors⟩ input ty := by
+    (inferCore K frontier ⟨[], ctors⟩ input).isSome ↔ ∃ ty, ScopedTyping K ⟨[], ctors⟩ input ty := by
   constructor
   · intro hsome
     obtain ⟨⟨⟨next, subst, output, ty⟩, hi⟩, _⟩ := Option.isSome_iff_exists.mp hsome
-    exact ⟨ty, by simpa only [Subst.onCtx, Subst.onEnv, List.map_nil] using hi.inputSound CtxWF.empty⟩
+    exact ⟨ty, by simpa only [Subst.onCtx, Subst.onEnv, List.map_nil] using hi.scopedSound CtxWF.empty⟩
   · rintro ⟨ty, ht⟩
     exact inferCore_complete_req input K frontier ⟨[], ctors⟩ [] ty
       { ctxBelow := CtxBelow.empty
@@ -10849,8 +10849,8 @@ theorem inferCore_empty_accepts_iff {K : List Nat} {frontier : Nat} {ctors : Cto
       (by simpa only [Subst.onCtx, Subst.onEnv, List.map_nil] using ht)
 
 /-- Public artifact inference is complete for independent input typing. -/
-theorem inferWithTypes_complete {ctors : CtorEnv} {input : InferInput} {ty : Ty}
-    (ht : InputTyping input.rigidVars ⟨[], ctors⟩ input ty) : (inferWithTypes ctors input).isSome := by
+theorem inferWithTypes_scoped_complete {ctors : CtorEnv} {input : InferInput} {ty : Ty}
+    (ht : ScopedTyping input.rigidVars ⟨[], ctors⟩ input ty) : (inferWithTypes ctors input).isSome := by
   unfold inferWithTypes
   rw [Option.isSome_map]
   rw [← inferCore_isSome]
@@ -10862,18 +10862,18 @@ theorem inferWithTypes_complete {ctors : CtorEnv} {input : InferInput} {ty : Ty}
     (by simp) (by simp)
     (by simpa only [Subst.onCtx_empty] using ht)
 
-theorem inferWithTypes_accepts_iff {ctors : CtorEnv} {input : InferInput} :
-    (inferWithTypes ctors input).isSome ↔ ∃ ty, InputTyping input.rigidVars ⟨[], ctors⟩ input ty := by
+theorem inferWithTypes_scoped_accepts_iff {ctors : CtorEnv} {input : InferInput} :
+    (inferWithTypes ctors input).isSome ↔ ∃ ty, ScopedTyping input.rigidVars ⟨[], ctors⟩ input ty := by
   constructor
   · intro hsome
     obtain ⟨result, hresult⟩ := Option.isSome_iff_exists.mp hsome
-    exact ⟨result.ty, inferWithTypes_input_sound hresult⟩
-  · rintro ⟨ty, ht⟩; exact inferWithTypes_complete ht
+    exact ⟨result.ty, inferWithTypes_scoped_sound hresult⟩
+  · rintro ⟨ty, ht⟩; exact inferWithTypes_scoped_complete ht
 
 /-- The public result retains protected-variable residual principality. -/
-theorem inferWithTypes_principal {ctors : CtorEnv} {input : InferInput} {result : InferenceResult}
+theorem inferWithTypes_scoped_principal {ctors : CtorEnv} {input : InferInput} {result : InferenceResult}
     (h : inferWithTypes ctors input = some result) :
-    ∀ target, InputTyping input.rigidVars ⟨[], ctors⟩ input target →
+    ∀ target, ScopedTyping input.rigidVars ⟨[], ctors⟩ input target →
       ∃ R : Subst, (∀ pair ∈ R, pair.2.IsLC) ∧ target = R.onTy result.ty ∧
         (∀ v ∈ input.rigidVars, R.onTy (.fvar v) = .fvar v) := by
   intro target ht
@@ -10887,6 +10887,28 @@ theorem inferWithTypes_principal {ctors : CtorEnv} {input : InferInput} {result 
     (fun v hv => InferInput.lt_freshFloor hv) (by simp)
     (by simpa only [Subst.onCtx_empty] using ht)
   exact ⟨R, hR, hty, hfix⟩
+
+/-- The executable accepts exactly the declaratively typable partial sources. -/
+theorem inferWithTypes_complete {ctors : CtorEnv} {input : InferInput} {ty : Ty}
+    (ht : InputTyping ⟨[], ctors⟩ input ty) : (inferWithTypes ctors input).isSome :=
+  inferWithTypes_scoped_complete ht.scoped
+
+theorem inferWithTypes_accepts_iff {ctors : CtorEnv} {input : InferInput} :
+    (inferWithTypes ctors input).isSome ↔ ∃ ty, InputTyping ⟨[], ctors⟩ input ty := by
+  constructor
+  · intro h
+    obtain ⟨result, hr⟩ := Option.isSome_iff_exists.mp h
+    exact ⟨result.ty, inferWithTypes_input_sound hr⟩
+  · rintro ⟨ty, ht⟩
+    exact inferWithTypes_complete ht
+
+/-- Principality concerns the expression type, not a unique hole completion. -/
+theorem inferWithTypes_principal {ctors : CtorEnv} {input : InferInput} {result : InferenceResult}
+    (h : inferWithTypes ctors input = some result) :
+    ∀ target, InputTyping ⟨[], ctors⟩ input target →
+      ∃ R : Subst, (∀ pair ∈ R, pair.2.IsLC) ∧ target = R.onTy result.ty ∧
+        (∀ v ∈ input.rigidVars, R.onTy (.fvar v) = .fvar v) :=
+  fun target ht => inferWithTypes_scoped_principal h target ht.scoped
 
 #print axioms inferCore_complete
 #print axioms Infer.complete

@@ -49,7 +49,7 @@ theorem lower_and_infer_direct {ctors : CtorEnv} {source : Surface.Expr}
     (hlow : lower ctors source = some input)
     (hinfer : inferWithTypes ctors input = some result) :
     Lowers ctors source input ∧
-      InputTyping input.rigidVars ⟨[], ctors⟩ input result.ty ∧
+      InputTyping ⟨[], ctors⟩ input result.ty ∧
       RuntimeTyping.RunWT ⟨[], ctors⟩ input.erase result.ty := by
   have ht := inferWithTypes_input_sound hinfer
   exact ⟨lower_sound hlow, ht, ht.erase⟩
@@ -62,7 +62,7 @@ theorem lower_and_infer_sound {ctors : CtorEnv} {source : Surface.Expr}
     (hlow : lower ctors source = some input)
     (hinfer : inferWithTypes ctors input = some result) :
     Lowers ctors source input ∧
-      InputTyping input.rigidVars ⟨[], ctors⟩ input result.ty ∧
+      InputTyping ⟨[], ctors⟩ input result.ty ∧
       AnnotationCompletion input.rigidVars input result.completedExpr ∧
       TypeOfHM ⟨[], ctors⟩ result.completedExpr result.ty ∧
       result.completedExpr.erase = input.erase := by
@@ -122,8 +122,8 @@ bundle as one premise. -/
 #check @InferRun
 #check @InferRun.cert
 #check @InferCert.sourceSound
-#check @InferCert.inputSound_source
-#check @InferCert.inputSound
+#check @InferCert.scopedSound_source
+#check @InferCert.scopedSound
 #check @InferCert.completes_source
 #check @InferCert.completes
 #check @InferCert.erase
@@ -139,7 +139,7 @@ bundle as one premise. -/
 #check @InferRecComponentCert.belowFvars_of_infer
 #check @InferRecComponentCert.sourceLocality_of_infer
 #check @InferRecComponentCert.sourceSound_of_infer
-#check @InferRecComponentCert.inputSound_of_infer
+#check @InferRecComponentCert.scopedSound_of_infer
 #check @InferRecComponentCert.completes_of_infer
 #check @InferRecComponentCert.erase_of_infer
 #check @InferRecComponentCert.sourcePrincipal_of_infer
@@ -165,7 +165,7 @@ bundle as one premise. -/
 #check @InferRecSignedCert.memberStates_length
 #check @InferRecSignedCert.sourceSound_of_infer
 #check @InferRecSignedCert.frame_of_infer
-#check @InferRecSignedCert.inputSound_of_infer
+#check @InferRecSignedCert.scopedSound_of_infer
 #check @InferRecSignedCert.type_fields
 #check @InferRecSignedCert.completes_of_infer
 #check @InferRecSignedCert.erase_of_infer
@@ -198,7 +198,7 @@ example {request : InferRequest} {result : InferResult}
 request-native completeness contract and engine. They cover arbitrary
 soft/provisional requests and conclude that the exact metadata run exists.
 Ordinary core completeness specializes to `InferRequest.core`; its acceptance
-theorem characterizes executable success by independent `InputTyping`. -/
+theorem characterizes executable success by independent `ScopedTyping`. -/
 #check @InferRequest.SourceComplete
 #check @inferRequest_sourceComplete
 #check @InferCoreCompleteReq
@@ -214,7 +214,7 @@ example {request : InferRequest} {ambient : Subst} {target : Ty} {P : List Nat}
     (hfix : ∀ k ∈ request.protectedVars, ambient.onTy (.fvar k) = .fvar k)
     (hP : ∀ p ∈ P, p < request.frontier)
     (hfixP : ∀ p ∈ P, ambient.onTy (.fvar p) = .fvar p)
-    (ht : InputTyping P (ambient.onCtx request.ctx)
+    (ht : ScopedTyping P (ambient.onCtx request.ctx)
       (request.input.substTyFvars ambient) target) :
     request.run.isSome :=
   inferRequest_sourceComplete request ambient target P hreq hambient hfix hP hfixP ht
@@ -227,7 +227,7 @@ example {K : List Nat} {frontier : Nat} {ctx : Ctx} {input : InferInput}
     (inferCore K frontier ctx input).isSome ↔
       ∃ (ambient : Subst) (target : Ty), (∀ pair ∈ ambient, pair.2.IsLC) ∧
         (∀ k ∈ K, ambient.onTy (.fvar k) = .fvar k) ∧
-        InputTyping K (ambient.onCtx ctx) input target :=
+        ScopedTyping K (ambient.onCtx ctx) input target :=
   inferCore_accepts_iff_req hreq
 
 /-! The positional relation and premise-by-premise theorems remain supported
@@ -269,7 +269,7 @@ example {request : InferRecSignedRequest} {result : RecRunResult} :
 
 #check @inferRecStrataWithTypesCore
 #check @inferWithTypes_source_sound
-#check @inferWithTypes_input_sound
+#check @inferWithTypes_scoped_sound
 #check @inferWithTypes_erase
 #check @Infer.principal
 #check @Infer.complete
@@ -299,7 +299,7 @@ example {K : List Nat} {F : List Ty} {frontier : Nat} {ctx : Ctx}
     (hfix : ∀ k ∈ K, ambient.onTy (.fvar k) = .fvar k)
     (hP : ∀ p ∈ P, p < frontier)
     (hfixP : ∀ p ∈ P, ambient.onTy (.fvar p) = .fvar p)
-    (ht : InputTyping P (ambient.onCtx ctx) (input.substTyFvars ambient) target) :
+    (ht : ScopedTyping P (ambient.onCtx ctx) (input.substTyFvars ambient) target) :
     (inferWithTypesCore K frontier ctx input F).isSome :=
   hc K F frontier ctx ambient target P hscope hwf hbelow hK hF
     hambient hfix hP hfixP ht
@@ -311,7 +311,7 @@ example (input : InferInput) : InferCoreComplete input := inferCore_complete inp
 
 example {ctors : CtorEnv} {input : InferInput} :
     (inferWithTypes ctors input).isSome ↔
-      ∃ ty, InputTyping input.rigidVars ⟨[], ctors⟩ input ty :=
+      ∃ ty, InputTyping ⟨[], ctors⟩ input ty :=
   inferWithTypes_accepts_iff
 
 example (result : InferenceResult) : Expr := result.completedExpr
@@ -540,13 +540,13 @@ guards live in `FHM.Headlines.CompleteCore`. -/
 #print axioms lower_and_infer_direct
 #print axioms InferRun.cert
 #print axioms InferCert.sourceSound
-#print axioms InferCert.inputSound
+#print axioms InferCert.scopedSound
 #print axioms PartialCore.Ann.SignatureMatches.ofCofinite
 #print axioms PartialCore.Ann.SignatureMatches.onSubst_source
 #print axioms PartialCore.Ann.MonoMatches.ofCofinite
 #print axioms PartialCore.Ann.MonoMatches.onSubst_source
-#print axioms InputTyping.template_completion
-#print axioms InputTyping.partialSignature_completion
+#print axioms ScopedTyping.template_completion
+#print axioms ScopedTyping.partialSignature_completion
 #print axioms InferCert.completes
 #print axioms InferCert.erase
 #print axioms InferCert.sound
@@ -557,7 +557,7 @@ guards live in `FHM.Headlines.CompleteCore`. -/
 
 -- High-level inference compatibility and executable API.
 #print axioms inferWithTypes_source_sound
-#print axioms inferWithTypes_input_sound
+#print axioms inferWithTypes_scoped_sound
 #print axioms inferWithTypes_erase
 #print axioms Infer.principal
 #print axioms Infer.complete

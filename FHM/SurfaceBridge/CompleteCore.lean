@@ -31,7 +31,7 @@ theorem coreTypecheck_isSome_iff {ctors : CtorEnv} {core : Expr} :
 theorem inferOfCore_source_sound {ctors : CtorEnv} {core : Expr} {result : InferenceResult}
     (h : inferWithTypes ctors (InferInput.ofCore core) = some result) :
     TypeOfHM ⟨[], ctors⟩ core result.ty :=
-  ((inferWithTypes_input_sound h).toCore (InferInput.toCore_ofCore core)).1
+  ((inferWithTypes_input_sound h).scoped.toCore (InferInput.toCore_ofCore core)).1
 
 /-- Complete Core acceptance is exactly the existing declarative source relation. -/
 theorem coreTypecheck_accepts_iff {ctors : CtorEnv} {core : Expr} :
@@ -43,9 +43,9 @@ theorem coreTypecheck_accepts_iff {ctors : CtorEnv} {core : Expr} :
   · rintro ⟨ty,ht⟩
     apply coreTypecheck_isSome_iff.mpr
     apply inferWithTypes_complete
-    exact InputTyping.ofComplete (InferInput.toCore_ofCore core)
+    exact (ScopedTyping.ofComplete (InferInput.toCore_ofCore core)
       (fun v hv => ((InferInput.ofCore core).toCore_rigidVars
-        (InferInput.toCore_ofCore core) v).mpr hv) ht
+        (InferInput.toCore_ofCore core) v).mpr hv) ht).source
 
 theorem coreTypecheck_of_infer {ctors : CtorEnv} {core : Expr} {result : InferenceResult}
     (h : inferWithTypes ctors (InferInput.ofCore core) = some result) :
@@ -59,9 +59,9 @@ theorem inferOfCore_principal {ctors : CtorEnv} {core : Expr} {result : Inferenc
     ∃ R : Subst,(∀ pair ∈ R,pair.2.IsLC) ∧ target = R.onTy result.ty ∧
       ∀ v ∈ core.tyFreeVars,R.onTy (.fvar v) = .fvar v := by
   obtain ⟨R,hR,he,hfix⟩ := inferWithTypes_principal h target
-    (InputTyping.ofComplete (InferInput.toCore_ofCore core)
+    (ScopedTyping.ofComplete (InferInput.toCore_ofCore core)
       (fun v hv => ((InferInput.ofCore core).toCore_rigidVars
-        (InferInput.toCore_ofCore core) v).mpr hv) ht)
+        (InferInput.toCore_ofCore core) v).mpr hv) ht).source
   exact ⟨R,hR,he,fun v hv => hfix v (((InferInput.ofCore core).toCore_rigidVars
     (InferInput.toCore_ofCore core) v).mpr hv)⟩
 

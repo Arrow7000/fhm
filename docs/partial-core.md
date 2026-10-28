@@ -22,9 +22,10 @@ Core                       Ty, PolyTy, Ctx, source/annotation/runtime syntax
   → InferenceSupport       neutral substitution, unification and runtime facts
     → AnnotationMatching   pure matching, local assignments and completions
       → AnnotationAllocation
-      → InferInput         source operations, InputTyping, direct erasure
-        → SourceCompatibility
-        → InferW
+      → InferInput         source operations and scoped proof refinement
+        → SourceTyping     InputTyping, direct erasure, refinement equivalence
+          → SourceCompatibility
+          → InferW
           → Completeness
 ```
 
@@ -53,8 +54,16 @@ unused hole solutions. Expression-type principality remains the public claim.
 `Completion.onSubst`, `Completion.open`, and `Completion.close` transport the
 type and the same local assignment together. Matching regularity, bound-variable
 scope, authored-variable avoidance, and opening compatibility are proved in
-`AnnotationMatching`. Source substitution, weakening, scope restriction, and
-environment agreement transport these witnesses in `InferInput`.
+`AnnotationMatching`. Source substitution, weakening and environment agreement
+transport these witnesses. `InputTyping : Ctx → InferInput → Ty → Prop` has no
+protected-variable index. Fresh scheme openings are abstract type parameters;
+inference's protected metavariables belong to `InferRequest`.
+
+`ScopedTyping` retains the old scope-indexed induction machinery as an internal
+proof refinement. `ScopedTyping.source`, `InputTyping.scoped`, and
+`scopedTyping_iff` prove its equivalence with source typing whenever the index
+covers authored free variables. Public executable soundness, completeness and
+principality now quantify over the unindexed `InputTyping`.
 
 ## Scope and quantifier order
 
@@ -120,7 +129,7 @@ fallback where the diagnostic probe cannot locate a more precise explanation.
 
 `InferCert.inputSound_source` constructs source typing by induction on
 inference; it does not assume typing of a completed expression.
-`Infer.inputSound` preserves authored annotations when there are no live
+`InferCert.inputSound` preserves authored annotations when there are no live
 provisional slots. `Infer.sound` now follows directly from source soundness
 and `InputTyping.erase`. Runtime terms have no named-hole representation or
 effect.
@@ -129,14 +138,14 @@ effect.
 
 The historical `Expr` and `TypeOfHM` support completed-Core clients, neutral
 runtime/typing facts, and the opt-in `FHMCompatibility` façade. `InputTyping`
-also currently reuses `TypeOfHM` for literal and primitive-operator leaves.
-This retains every primitive side condition, including the `True`/`False`
-constructor premises for comparison operators, but leaves a dependency on
-the historical relation. Restoring explicit primitive constructors would
-remove that coupling without changing source acceptance.
+has its own explicit primitive rules. Comparison rules require source typings
+for `True` and `False` at `Bool`, just as the historical rules did. Recursive
+rules use `SourceRec.MonoTyped` and `SourceRec.PolyTyped` to expose the existing
+staged policy without expanding it inside the main rule. Matching remains
+separate from that policy.
 
 The completed syntax is not a second production source language.
-`InputTyping.ofComplete` in
+`ScopedTyping.ofComplete` in
 `SourceCompatibility` derives structural source typing for complete syntax;
 it is not a typing constructor or soundness premise.
 
