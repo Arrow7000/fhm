@@ -20,7 +20,7 @@ def MonoTyped (J : Ctx → InferInput → Ty → Prop) (ctx : Ctx)
       prefixes[member]? = some names →
       specs[member]? = some (.mono ty) →
       J (recStageCtx ctx specs prefixes (groups.take stage).flatten G Xs)
-        (binding.rhs.openTyVars (recRenameNames G Xs names)) (Ty.renameG G Xs ty)
+        (binding.rhs.openSourceTyVars (recRenameNames G Xs names)) (Ty.renameG G Xs ty)
 
 /-- Signed recursive RHSs are checked under the final scheme environment. -/
 def PolyTyped (J : Ctx → InferInput → Ty → Prop) (ctx : Ctx)
@@ -31,7 +31,7 @@ def PolyTyped (J : Ctx → InferInput → Ty → Prop) (ctx : Ctx)
     specs[member]? = some (.poly scheme) →
     ∀ Ys, FreshNames L scheme.paramCount Ys →
       J (recBodyCtx ctx specs prefixes G)
-        (binding.rhs.openTyVars Ys) (scheme.openVars Ys)
+        (binding.rhs.openSourceTyVars Ys) (scheme.openVars Ys)
 
 end SourceRec
 
@@ -93,18 +93,20 @@ inductive InputTyping : Ctx → InferInput → Ty → Prop
     InputTyping ctx arg argTy →
     InputTyping ctx (.app f arg) retTy
 
-  | letIn {M : PolyTy} {L : List Nat} :
+  | letIn {ctx : Ctx} {rhs body : InferInput} {bodyTy : Ty}
+      {ann : BindingAnn} {M : PolyTy} {L : List Nat} :
     M.WF →
     ann.MonoMatches M →
     (∀ Xs, FreshNames L M.paramCount Xs → InputTyping ctx rhs (M.openVars Xs)) →
     InputTyping { ctx with env := M :: ctx.env } body bodyTy →
     InputTyping ctx (.letIn ann rhs body) bodyTy
 
-  | letSignature {M : PolyTy} {L : List Nat} :
+  | letSignature {ctx : Ctx} {body : InferInput} {bodyTy : Ty}
+      {ann : BindingAnn} {rhs : InferInput} {M : PolyTy} {L : List Nat} :
     M.WF →
     ann.SignatureMatches M →
     (∀ Xs, FreshNames L M.paramCount Xs →
-      InputTyping ctx (rhs.openTyVars (Xs.take ann.paramCount)) (M.openVars Xs)) →
+      InputTyping ctx (rhs.openSourceTyVars (Xs.take ann.paramCount)) (M.openVars Xs)) →
     InputTyping { ctx with env := M :: ctx.env } body bodyTy →
     InputTyping ctx (.letIn ann rhs body) bodyTy
 
@@ -131,7 +133,7 @@ inductive InputTyping : Ctx → InferInput → Ty → Prop
     RecGroups.ValidResidualGroups (bindings.map InputRecBinding.recMode) groups →
     RecSpecs.WF (bindings.map InputRecBinding.recMode) specs G →
     RecPrefixesWF bindings specs prefixes G →
-    (∀ name ∈ G, name ∉ ctx.env.freeVars ++ (InferInput.letRec bindings body).rigidVars) →
+    (∀ name ∈ G, name ∉ ctx.env.freeVars ++ (Expr.letRec bindings body).rigidVars) →
     RecAnnotationsMatch bindings specs prefixes G →
     SourceRec.MonoTyped InputTyping ctx bindings specs groups prefixes G L →
     SourceRec.PolyTyped InputTyping ctx bindings specs prefixes G L →
@@ -216,19 +218,20 @@ theorem InputTyping.scoped (h : InputTyping ctx input ty) :
   | @letIn ctx rhs body bt ann M L hw hm _ _ ihr ihb =>
     refine .letIn (L := L) hw ?_ hm ?_ (ihb.scope_restrict (fun v hv => List.mem_append_right _ hv))
     · intro t he v hv
-      subst_vars
-      exact List.mem_append_left _ (List.mem_append_left _ hv)
+      have hv' : v ∈ ann.rigidVars := (Option.mem_annotationView_rigidVars ann v).mp
+        (by simpa [he, PartialCore.Ann.rigidVars] using hv)
+      exact List.mem_append_left _ (List.mem_append_left _ hv')
     · intro Xs hf
       exact (ihr Xs hf).scope_restrict (fun v hv => List.mem_append_left _ (List.mem_append_right _ hv))
   | @letSignature ctx body bt ann rhs M L hw hm _ _ ihr ihb =>
-    have ha : ∀ v ∈ ann.rigidVars, v ∈ (InferInput.letIn ann rhs body).rigidVars :=
+    have ha : ∀ v ∈ ann.rigidVars, v ∈ (Expr.letIn ann rhs body).rigidVars :=
       fun v hv => List.mem_append_left _ (List.mem_append_left _ hv)
-    have hr : ∀ v ∈ rhs.rigidVars, v ∈ (InferInput.letIn ann rhs body).rigidVars :=
+    have hr : ∀ v ∈ rhs.rigidVars, v ∈ (Expr.letIn ann rhs body).rigidVars :=
       fun v hv => List.mem_append_left _ (List.mem_append_right _ hv)
     refine .letSignature (L := L) hw ha hr hm ?_
       (ihb.scope_restrict (fun v hv => List.mem_append_right _ hv))
     intro Xs hf
-    exact (ihr Xs hf).scope_restrict (rhs.openTyVars_scope hr (Xs.take ann.paramCount))
+    exact (ihr Xs hf).scope_restrict (rhs.source_openTyVars_scope hr (Xs.take ann.paramCount))
   | var hl ha hi => exact .var hl ha hi
   | ctor hl ha hi => exact .ctor hl ha hi
   | match_ _ hn _ ihs ihb =>
@@ -245,7 +248,7 @@ theorem InputTyping.scoped (h : InputTyping ctx input ty) :
       exact List.mem_append_right _ (source_branch_mem hb hv)
   | @letRec bindings body ctx rt specs groups prefixes G L hg hw hp hf hm _ _ _ ihm ihp ihb =>
     have hr : ∀ b ∈ bindings, ∀ v ∈ b.ann.rigidVars ++ b.rhs.rigidVars,
-        v ∈ (InferInput.letRec bindings body).rigidVars :=
+        v ∈ (Expr.letRec bindings body).rigidVars :=
       fun b hb v hv => List.mem_append_left _ (binding_scope hb v hv)
     refine .letRec (L := L) hg hw hp hf hr hm ?_ ?_
       (ihb.scope_restrict (fun v hv => List.mem_append_right _ hv))
@@ -253,7 +256,7 @@ theorem InputTyping.scoped (h : InputTyping ctx input ty) :
       exact (ihm stage component hc Xs hx member hmem b names t hb hn ht).scope_restrict
         (by
           intro v hv
-          rcases List.mem_append.mp (b.rhs.openTyVars_scope
+          rcases List.mem_append.mp (b.rhs.source_openTyVars_scope
             (fun v hv => hr b (List.mem_of_getElem? hb) v (List.mem_append_right _ hv))
             (recRenameNames G Xs names) v hv) with hv | hv
           · exact List.mem_append_left _ hv
@@ -262,7 +265,7 @@ theorem InputTyping.scoped (h : InputTyping ctx input ty) :
                 exact (hp.member member b names hb hn).2.2) v hv))
     · intro member b scheme hb hs Ys hy
       exact (ihp member b scheme hb hs Ys hy).scope_restrict
-        (b.rhs.openTyVars_scope
+        (b.rhs.source_openTyVars_scope
           (fun v hv => hr b (List.mem_of_getElem? hb) v (List.mem_append_right _ hv)) Ys)
   | named hs _ ih => exact .named hs ih
   | wildcard _ ih => exact .wildcard ih
@@ -298,7 +301,7 @@ theorem InputTyping.rec_inv (h : InputTyping ctx (.letRec bindings body) resultT
       RecGroups.ValidResidualGroups (bindings.map InputRecBinding.recMode) groups ∧
       RecSpecs.WF (bindings.map InputRecBinding.recMode) specs G ∧
       RecPrefixesWF bindings specs prefixes G ∧
-      (∀ name ∈ G, name ∉ ctx.env.freeVars ++ (InferInput.letRec bindings body).rigidVars) ∧
+      (∀ name ∈ G, name ∉ ctx.env.freeVars ++ (Expr.letRec bindings body).rigidVars) ∧
       RecAnnotationsMatch bindings specs prefixes G ∧
       SourceRec.MonoTyped InputTyping ctx bindings specs groups prefixes G L ∧
       SourceRec.PolyTyped InputTyping ctx bindings specs prefixes G L ∧
@@ -307,7 +310,8 @@ theorem InputTyping.rec_inv (h : InputTyping ctx (.letRec bindings body) resultT
   | letRec hg hw hp hf hm hmono hpoly hb => exact ⟨_, _, _, _, _, hg, hw, hp, hf, hm, hmono, hpoly, hb⟩
 
 theorem InputTyping.template_completion
-    (h : InputTyping ctx (.letIn (.template template) rhs body) result) :
+    (h : InputTyping ctx (.letIn ann rhs body) result)
+    (hann : ann.annotationView = .template template) :
     ∃ (scheme : PolyTy) (avoid : List Nat)
       (completion : PartialCore.Completion scheme.paramCount template scheme.body),
       template.WellScoped 0 ∧
@@ -319,16 +323,20 @@ theorem InputTyping.template_completion
   cases h with
   | @letIn _ _ _ _ _ M L hw hm hr hb =>
     obtain ⟨hc⟩ := hm.completion
+    rw [hann] at hc
     cases hc with
     | template hs hc =>
       refine ⟨M, L, hc, hs, ?_, hr, hb⟩
       intro Xs hf
       simpa only [hs.open_lc Xs] using (hc.open Xs hf.length.ge).fits
-  | letSignature _ hm _ _ => cases hm.isSignature
+  | letSignature _ hm _ _ =>
+    have hs := hm.isSignature
+    simp [hann, PartialCore.Ann.isSignature] at hs
 
 /-- A closed completion is chosen once, outside every fresh scheme opening. -/
 theorem InputTyping.partialSignature_completion
-    (h : InputTyping ctx (.letIn (.partialForall count template) rhs body) result) :
+    (h : InputTyping ctx (.letIn ann rhs body) result)
+    (hann : ann.annotationView = .partialForall count template) :
     ∃ (scheme : PolyTy) (avoid : List Nat)
       (completion : PartialCore.Completion scheme.paramCount template scheme.body),
       count ≤ scheme.paramCount ∧ template.WellScoped count ∧
@@ -336,23 +344,28 @@ theorem InputTyping.partialSignature_completion
         PartialCore.Template.Fits (PartialCore.HoleAssignment.map (Ty.openVars Xs) completion.holes)
           (template.map (Ty.openVars (Xs.take count))) (scheme.openVars Xs)) ∧
       (∀ Xs, FreshNames avoid scheme.paramCount Xs →
-        InputTyping ctx (rhs.openTyVars (Xs.take count)) (scheme.openVars Xs)) ∧
+        InputTyping ctx (rhs.openSourceTyVars (Xs.take count)) (scheme.openVars Xs)) ∧
       InputTyping { ctx with env := scheme :: ctx.env } body result := by
   cases h with
-  | letIn _ hm _ _ => cases hm.isSignature
+  | letIn _ hm _ _ =>
+    have hs := hm.isSignature
+    simp [hann, PartialCore.Ann.isSignature] at hs
   | @letSignature _ _ _ _ _ M L hw hm hr hb =>
     obtain ⟨hc⟩ := hm.completion
+    rw [hann] at hc
     cases hc with
     | partialForall hle hs hc =>
-      refine ⟨M, L, hc, hle, hs, ?_, hr, hb⟩
-      intro Xs hf
-      rw [hs.open_prefix]
-      exact (hc.open Xs hf.length.ge).fits
+      refine ⟨M, L, hc, hle, hs, ?_, ?_, hb⟩
+      · intro Xs hf
+        rw [hs.open_prefix]
+        exact (hc.open Xs hf.length.ge).fits
+      · intro Xs hf
+        simpa only [← Option.annotationView_paramCount ann, hann, PartialCore.Ann.paramCount] using hr Xs hf
 
 /-- Source substitution transports the annotation-local hole witnesses too. -/
 theorem InputTyping.onSubst_source (h : InputTyping ctx input ty) (subst : Subst)
     (hlc : ∀ p ∈ subst, p.2.IsLC) :
-    InputTyping (subst.onCtx ctx) (input.substTyFvars subst) (subst.onTy ty) :=
+    InputTyping (subst.onCtx ctx) (input.substSourceTyFvars subst) (subst.onTy ty) :=
   (h.scoped.onSubst_source (K' := input.rigidVars.flatMap
     (fun v => (subst.onTy (.fvar v)).freeVars)) subst hlc
     (fun k hk _ hv => List.mem_flatMap.mpr ⟨k, hk, hv⟩)).source
@@ -361,4 +374,4 @@ theorem InputTyping.onSubst_fixes (h : InputTyping ctx input ty) (subst : Subst)
     (hlc : ∀ p ∈ subst, p.2.IsLC)
     (hfix : ∀ v ∈ input.rigidVars, subst.onTy (.fvar v) = .fvar v) :
     InputTyping (subst.onCtx ctx) input (subst.onTy ty) := by
-  simpa only [input.substTyFvars_eq_self_of_fixes hfix] using h.onSubst_source subst hlc
+  simpa only [input.source_substTyFvars_eq_self_of_fixes hfix] using h.onSubst_source subst hlc

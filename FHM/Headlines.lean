@@ -196,7 +196,7 @@ example {request : InferRequest} {ambient : Subst} {target : Ty} {P : List Nat}
     (hP : ∀ p ∈ P, p < request.frontier)
     (hfixP : ∀ p ∈ P, ambient.onTy (.fvar p) = .fvar p)
     (ht : ScopedTyping P (ambient.onCtx request.ctx)
-      (request.input.substTyFvars ambient) target) :
+      (request.input.substSourceTyFvars ambient) target) :
     request.run.isSome :=
   inferRequest_sourceComplete request ambient target P hreq hambient hfix hP hfixP ht
 
@@ -279,7 +279,7 @@ example {K : List Nat} {F : List Ty} {frontier : Nat} {ctx : Ctx}
     (hfix : ∀ k ∈ K, ambient.onTy (.fvar k) = .fvar k)
     (hP : ∀ p ∈ P, p < frontier)
     (hfixP : ∀ p ∈ P, ambient.onTy (.fvar p) = .fvar p)
-    (ht : ScopedTyping P (ambient.onCtx ctx) (input.substTyFvars ambient) target) :
+    (ht : ScopedTyping P (ambient.onCtx ctx) (input.substSourceTyFvars ambient) target) :
     (inferWithTypesCore K frontier ctx input F).isSome :=
   hc K F frontier ctx ambient target P hscope hwf hbelow hK hF
     hambient hfix hP hfixP ht

@@ -277,8 +277,9 @@ def MatchPattern.matchesCtor : MatchPattern → CtorName → Nat → Bool
   | .wildcard,  _,    _     => true
 
 
-/-- Completed compatibility syntax and operational terms. Canonical source
-annotations, including holes, live in `InferInput` below. -/
+/-- One expression family, parameterized by the type syntax in annotations.
+Parameters carry `Option T`; bindings carry `Option (Scheme T)`. Canonical source
+uses `TyTemplate`; complete-Core compatibility and runtime terms use `Ty`. -/
 inductive Expr (T : Type := Ty)
   | primLit (prim : PrimLitExpr)
   /-- A primitive binary operator (e.g. `intAdd`). A leaf naming a built-in,
@@ -314,16 +315,16 @@ inductive Expr (T : Type := Ty)
       An UNANNOTATED member (`none`) has one shared monotype within its residual
       dependency SCC (Damas–Milner monomorphic recursion). Residual SCCs are
       inferred dependency-first and each is generalised before later SCCs are
-      inferred. An ANNOTATED member (`some σ`) contributes a complete
-      dependency-cut contract. Signed RHSs and the body are checked under the
-      resulting final scheme environment. -/
+      inferred. A complete written scheme contributes a dependency-cut
+      contract and permits polymorphic recursive use. Annotation checking
+      identifies that case; partial templates remain monomorphic within their
+      residual component. Signed RHSs and the body use the final scheme environment. -/
   | letRec (bindings : List (RecBinding (Option (Scheme T)) (Expr T))) (body : Expr T)
 
 abbrev CoreRecBinding := RecBinding (Option PolyTy) Expr
 
-/-! Source syntax lives below inference. `Expr` above is the historical
-completed/operational representation. The default `InferInput` is the canonical
-source spine; no inference state occurs in its annotation syntax. -/
+/-! Source annotations live below inference. `InferInput` below specializes
+this same expression family; its syntax contains no inference state. -/
 
 namespace PartialCore
 
@@ -336,6 +337,8 @@ inductive Template where
   | custom (name : TyName) (args : List Template)
   deriving Repr
 
+/-- Derived checking cases, computed from a raw source scheme. Expressions
+never store this tag; it isolates the existing annotation-checking policy. -/
 inductive Ann where
   | absent
   | complete (scheme : PolyTy)
@@ -344,54 +347,23 @@ inductive Ann where
 
 end PartialCore
 
-/-- Compatibility aliases for the same canonical annotation types. -/
+/-- Shared partial type syntax and its derived checking view. -/
 abbrev TyTemplate := PartialCore.Template
-abbrev BindingAnn := PartialCore.Ann
+abbrev CheckAnn := PartialCore.Ann
 
-/-- Annotation-parametric Core source. In particular, changing annotation
-syntax does not introduce another language of terms or another universe of
-types, schemes, environments, or constructors. -/
-inductive InferInput (ParamAnn : Type := Option TyTemplate) (BindAnn : Type := BindingAnn) where
-  | primLit (value : PrimLitExpr)
-  | primBinOp (op : PrimBinOp)
-  | lambda (ann : ParamAnn) (body : InferInput ParamAnn BindAnn)
-  | app (fn arg : InferInput ParamAnn BindAnn)
-  | letIn (ann : BindAnn) (rhs body : InferInput ParamAnn BindAnn)
-  | var (index : Nat)
-  | ctor (name : CtorName)
-  | match_ (scrutinee : InferInput ParamAnn BindAnn)
-      (branches : List (MatchPattern × InferInput ParamAnn BindAnn))
-  | letRec (bindings : List (RecBinding BindAnn (InferInput ParamAnn BindAnn)))
-      (body : InferInput ParamAnn BindAnn)
+/-- A source binding has an optional scheme of partial type syntax. -/
+abbrev BindingAnn := Option (Scheme TyTemplate)
+
+/-- Canonical partial Core is an instance of the shared expression family. -/
+abbrev InferInput := Expr TyTemplate
 
 abbrev InputRecBinding := RecBinding BindingAnn InferInput
 
-mutual
-/-- All source annotation policies erase to the same operational Core. -/
-def InferInput.erase {P B : Type} : InferInput P B → Expr
-  | .primLit p => .primLit p
-  | .primBinOp op => .primBinOp op
-  | .lambda _ body => .lambda none body.erase
-  | .app f x => .app f.erase x.erase
-  | .letIn _ rhs body => .letIn none rhs.erase body.erase
-  | .var i => .var i
-  | .ctor c => .ctor c
-  | .match_ scrut branches => .match_ scrut.erase (eraseBranches branches)
-  | .letRec bindings body => .letRec (eraseBindings bindings) body.erase
-def eraseBranches {P B : Type} :
-    List (MatchPattern × InferInput P B) → List (MatchPattern × Expr)
-  | [] => []
-  | (pat, body) :: rest => (pat, body.erase) :: eraseBranches rest
-def eraseBindings {P B : Type} :
-    List (RecBinding B (InferInput P B)) → List CoreRecBinding
-  | [] => []
-  | ⟨_, rhs⟩ :: rest => { ann := none, rhs := rhs.erase } :: eraseBindings rest
-end
 
 namespace PartialCore
 
 /-- Alias for the canonical Core source, with annotation-local named holes. -/
-abbrev Source := InferInput (Option Template) Ann
+abbrev Source := Expr Template
 
 end PartialCore
 
@@ -2384,6 +2356,15 @@ decreasing_by
        have : sizeOf pe.2 < sizeOf pe := by
          cases pe; simp only [Prod.mk.sizeOf_spec]; omega
        omega)
+
+mutual
+def eraseBranches : List (MatchPattern × InferInput) → List (MatchPattern × Expr)
+  | [] => []
+  | (pat, body) :: rest => (pat, body.erase) :: eraseBranches rest
+def eraseBindings : List InputRecBinding → List CoreRecBinding
+  | [] => []
+  | ⟨_, rhs⟩ :: rest => { ann := none, rhs := rhs.erase } :: eraseBindings rest
+end
 
 @[simp] theorem Expr.erase_lambda (ann : Option Ty) (body : Expr) :
     (Expr.lambda ann body).erase = Expr.lambda none body.erase := by

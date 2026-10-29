@@ -1750,7 +1750,7 @@ def parseProgram (src : String) : Except ParseError Program :=
 #guard (match parseProgram "let id {item} (x : item) : _ = x\nid\n" with
   | .ok p =>
       match SurfaceBridge.lowerProgram p with
-      | some (_, input@(.letIn (.partialForall 1 (.arrow (.fixed (.bvar 0)) .hole)) _ _)) =>
+      | some (_, input@(.letIn (some ⟨1, (.arrow (.fixed (.bvar 0)) .hole)⟩) _ _)) =>
           input.toCore.isNone
       | _ => false
   | _ => false)

@@ -700,7 +700,7 @@ theorem wrapParamsWithProvenance_project {ke : KindEnv} {tvs : List ValName}
     change (do
       let annotation ← lowerTemplateAnn ke tvs ann
       let body ← wrapInputParams ke tvs params rhs.expr
-      pure (InferInput.lambda annotation body)) = some (InferInput.lambda ann' inner.expr)
+      pure (Expr.lambda annotation body)) = some (Expr.lambda ann' inner.expr)
     simp only [hann, hp, bind, pure, Option.bind_some]
 
 theorem lowerListWithProvenance_project {owner : SourceNode} {index : Nat} {isRoot : Bool}
@@ -714,7 +714,7 @@ theorem lowerListWithProvenance_project {owner : SourceNode} {index : Nat} {isRo
     obtain ⟨tail, htail, rfl⟩ := h
     have hp := ih htail
     simpa only [mkInputList, LoweringOps.mkList, inputLoweringOps, List.map_cons] using
-      congrArg (fun tail => InferInput.app (.app (.ctor cCons) item.expr) tail) hp
+      congrArg (fun tail => Expr.app (.app (.ctor cCons) item.expr) tail) hp
 
 private theorem lowerRec_nil (ke) (tvs vs) (owner) (index) : lowerIdentifiedRecBinds ke tvs vs owner index [] [] = some [] := by rfl
 private theorem lowerRec_cons (ke) (tvs vs) (owner) (index) (b : Surface.Binding) (rest) (srhs) (srest) :
@@ -810,7 +810,7 @@ theorem lowerIdentifiedExpr_project {ke : KindEnv} {tvs vs : List ValName}
       simp only [lowerInputExpr, lowerExprWith, inputLoweringOps, inputEmissionOps, ha, hp,
         bind, pure, Option.bind_some, LoweringOps.patternLambda, LoweringOps.match_,
         combineAuthored, inputEmissionOps]
-      exact congrArg (fun e => some (InferInput.lambda ann' e)) he.symm
+      exact congrArg (fun e => some (Expr.lambda ann' e)) he.symm
     | ctor name pats =>
       simp only [bind, pure, Option.bind_eq_some_iff, Option.some.injEq] at h
       obtain ⟨ann', ha, body', hb, matched, hm, rfl⟩ := h
@@ -821,7 +821,7 @@ theorem lowerIdentifiedExpr_project {ke : KindEnv} {tvs vs : List ValName}
       simp only [lowerInputExpr, lowerExprWith, inputLoweringOps, inputEmissionOps, ha, hp,
         bind, pure, Option.bind_some, LoweringOps.patternLambda, LoweringOps.match_,
         combineAuthored, inputEmissionOps]
-      exact congrArg (fun e => some (InferInput.lambda ann' e)) he.symm
+      exact congrArg (fun e => some (Expr.lambda ann' e)) he.symm
     | cons head tail =>
       simp only [bind, pure, Option.bind_eq_some_iff, Option.some.injEq] at h
       obtain ⟨ann', ha, body', hb, matched, hm, rfl⟩ := h
@@ -832,7 +832,7 @@ theorem lowerIdentifiedExpr_project {ke : KindEnv} {tvs vs : List ValName}
       simp only [lowerInputExpr, lowerExprWith, inputLoweringOps, inputEmissionOps, ha, hp,
         bind, pure, Option.bind_some, LoweringOps.patternLambda, LoweringOps.match_,
         combineAuthored, inputEmissionOps]
-      exact congrArg (fun e => some (InferInput.lambda ann' e)) he.symm
+      exact congrArg (fun e => some (Expr.lambda ann' e)) he.symm
     | list items =>
       simp only [bind, pure, Option.bind_eq_some_iff, Option.some.injEq] at h
       obtain ⟨ann', ha, body', hb, matched, hm, rfl⟩ := h
@@ -843,7 +843,7 @@ theorem lowerIdentifiedExpr_project {ke : KindEnv} {tvs vs : List ValName}
       simp only [lowerInputExpr, lowerExprWith, inputLoweringOps, inputEmissionOps, ha, hp,
         bind, pure, Option.bind_some, LoweringOps.patternLambda, LoweringOps.match_,
         combineAuthored, inputEmissionOps]
-      exact congrArg (fun e => some (InferInput.lambda ann' e)) he.symm
+      exact congrArg (fun e => some (Expr.lambda ann' e)) he.symm
   | letIn name tyParams params ann rhs body =>
     cases identified <;> simp only [hs, lowerIdentifiedExpr, reduceCtorEq] at h
     simp only [bind, pure, Option.bind_eq_some_iff, Option.some.injEq] at h

@@ -23,7 +23,7 @@ theorem pairMatches : (PartialCore.Ann.template pairTemplate).MonoMatches pairSc
 example : (PartialCore.Ann.template pairTemplate).FitsMono
     (.customTy ⟨"Pair"⟩ [.fvar 20, .fvar 21]) := pairMatches.open [20, 21] (by decide)
 
-example {ann : BindingAnn} {scheme : PolyTy} {avoid : List Nat} (hwf : scheme.WF) :
+example {ann : CheckAnn} {scheme : PolyTy} {avoid : List Nat} (hwf : scheme.WF) :
     ann.MonoMatches scheme ↔
       ∀ Xs, FreshNames avoid scheme.paramCount Xs → ann.FitsMono (scheme.openVars Xs) :=
   PartialCore.Ann.MonoMatches.iff_cofinite hwf avoid
@@ -44,7 +44,7 @@ theorem fixedConstraint_retained :
   cases hm with
   | template _ hc => cases hc.fits
 
-def outerAnn : BindingAnn := .template (.arrow (.fixed (.fvar 7)) .hole)
+def outerAnn : CheckAnn := .template (.arrow (.fixed (.fvar 7)) .hole)
 def outerScheme : PolyTy := ⟨1, .arrow (.fvar 7) (.bvar 0)⟩
 
 theorem outerMatches : outerAnn.MonoMatches outerScheme := by
@@ -53,7 +53,7 @@ theorem outerMatches : outerAnn.MonoMatches outerScheme := by
     by simp [PartialCore.HoleAssignment.Scoped], .arrow .fixed .hole,
     .arrow .fvar (.bvar (by decide))⟩
 
-example : (outerAnn.substTyFvars [(7, .prim .int)]).MonoMatches
+example : (outerAnn.substSourceTyFvars [(7, .prim .int)]).MonoMatches
     (Subst.onPolyTy [(7, .prim .int)] outerScheme) :=
   outerMatches.onSubst_source _ (by
     intro pair hp
@@ -62,10 +62,10 @@ example : (outerAnn.substTyFvars [(7, .prim .int)]).MonoMatches
     exact .prim)
 
 def identityTemplate : TyTemplate := .arrow .hole .hole
-def body : InferInput := .letIn .absent (.app (.var 0) (.primLit (.int 1)))
+def body : InferInput := .letIn none (.app (.var 0) (.primLit (.int 1)))
   (.app (.var 1) (.primLit (.char 'x')))
-def program : InferInput := .letIn (.template identityTemplate) (.lambda none (.var 0)) body
-def omitted : InferInput := .letIn .absent (.lambda none (.var 0)) body
+def program : InferInput := .letIn (some ⟨0, identityTemplate⟩) (.lambda none (.var 0)) body
+def omitted : InferInput := .letIn none (.lambda none (.var 0)) body
 
 -- Both uses of id are checked: the ordinary let still generalizes implicitly.
 #guard match inferWithTypes [] program with
@@ -86,7 +86,7 @@ theorem inferred_completion_once (h : inferWithTypes [] program = some result) :
         PartialCore.Template.Fits (PartialCore.HoleAssignment.map (Ty.openVars Xs) completion.holes)
           identityTemplate (scheme.openVars Xs) := by
   obtain ⟨scheme, avoid, completion, _, hopen, _, _⟩ :=
-    (inferWithTypes_input_sound h).template_completion
+    (inferWithTypes_input_sound h).template_completion rfl
   exact ⟨scheme, avoid, completion, hopen⟩
 
 #print axioms PartialCore.Ann.MonoMatches.ofCofinite

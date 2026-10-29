@@ -11,7 +11,7 @@ the program and the inferred type with the `Pretty` printers. -/
 
 /-- Hand-built Core uses the same elaborating engine as authored Input. -/
 private def checkCore (ctors : CtorEnv) (expr : Expr) : Option PolyTy :=
-  typecheck ctors (InferInput.ofCore expr)
+  typecheck ctors (Expr.ofCore expr)
 
 namespace Core.Demo
 
@@ -25,7 +25,7 @@ private def showType (e : Expr) : IO Unit := IO.println s!"({e})  :  {typeStr e}
 /-- Run the small-step evaluator (fuel 100) and pretty-print the resulting value
     (`Expr` has no `DecidableEq`, so we compare the printed form in `#guard`s). -/
 private def evalStr (e : Expr) : String :=
-  match inferWithTypes ((elabDecls preludeDecls).getD []) (InferInput.ofCore e) with
+  match inferWithTypes ((elabDecls preludeDecls).getD []) (Expr.ofCore e) with
   | none => "ill-typed"
   | some _ =>
     match SmallStep.evaluate 100 e.erase with
@@ -780,7 +780,7 @@ private def evalProgram (p : Surface.Program) : String :=
   match lowerCoreProgram p with
   | none => "lower failed"
   | some (ctors, c) =>
-    match inferWithTypes ctors (InferInput.ofCore c) with
+    match inferWithTypes ctors (Expr.ofCore c) with
     | none => "ill-typed"
     | some _ => evalStr c.erase
 
@@ -912,7 +912,7 @@ private def partialHead : Surface.Program :=
 
 #guard evalProgram partialHead = "7"
 #guard match lowerProgram partialHead with
-  | some (_, .letIn (.partialForall 1 (.arrow (.fixed (.bvar 0)) (.arrow .hole .hole)))
+  | some (_, .letIn (some ⟨1, (.arrow (.fixed (.bvar 0)) (.arrow .hole .hole))⟩)
       (.lambda (some (.fixed (.bvar 0))) (.lambda none _)) _) => true
   | _ => false
 
@@ -966,7 +966,7 @@ namespace AuditCapstone
 
 /-- Complete Core uses the canonical engine through a syntax adapter. -/
 private def corePrincipalType (ctors : CtorEnv) (expr : Expr) : Option Ty :=
-  principalType ctors (InferInput.ofCore expr)
+  principalType ctors (Expr.ofCore expr)
 
 /-- The public certificate projection computes the same type as the metadata-rich
     worker. Keep the wrapper boundary out of the concrete reduction proofs below. -/
@@ -1060,7 +1060,7 @@ set_option maxRecDepth 100_000 in
 theorem polyId_principalType : corePrincipalType [] polyId = some (.arrow (.fvar 0) (.fvar 0)) := by
   change (inferCore [] 0 ⟨[], []⟩ (.lambda none (.var 0))).map (·.val.ty) = _
   rw [inferCore_map_ty_eq_worker]
-  simp [inferWithTypesCore, seed, InferInput.rigidVars,
+  simp [inferWithTypesCore, seed, Expr.rigidVars,
     softVars, TyList.freeVars, Env.freeVars, Ty.freeVars, List.getElem?_cons_zero,
     PolyTy.mkTrivial, PolyTy.openVars, Ty.openVars, freshVars, Subst.onTy, Ty.substFvars]
   rfl
@@ -1248,13 +1248,17 @@ theorem idid_principalType : corePrincipalType [] idid = some (.arrow (.fvar 3) 
       have hs : S = [(2,.arrow (.fvar 3) (.fvar 3)),(4,.arrow (.fvar 3) (.fvar 3))] := by
         simpa only [heApp,Option.map_some,Option.some.injEq] using hApp
       subst S
-      simp (config := {maxSteps := 1000000}) [heSig,heApp,idid,inferWithTypesCore,seed,InferInput.ofCore,
-        InferInput.rigidVars,InferInput.freshFloor,tyVarCeil,PartialCore.Ann.rigidVars,PartialCore.Ann.ofCore,
+      simp (config := {maxSteps := 1000000}) [heSig,heApp,idid,inferWithTypesCore,seed,Expr.ofCore,
+        Option.ofCore,Scheme.map,Option.rigidVars,Option.isSignature,Option.annotationView,
+        Option.paramCount,Option.substSourceTyFvars,
+        PartialCore.Template.toCore,PartialCore.Template.rigidVars,
+        PartialCore.Template.substSourceTyFvars,
+        Expr.rigidVars,Expr.source_freshFloor,tyVarCeil,
         softVars,TyList.freeVars,Env.freeVars,Ty.freeVars,List.getElem?_cons_zero,
         PolyTy.mkTrivial,PolyTy.openVars,Ty.openVars,freshVars,Subst.onTy,Ty.substFvars,Ty.substFvar,
-        Ty.instantiate,checkSignature,PartialCore.Ann.isSignature,PartialCore.Ann.paramCount,PartialCore.Ann.substTyFvars,
-        InferInput.openTyVars,InferInput.openTyVarsFrom,InferInput.substTyFvars,Subst.onCtx,Subst.onEnv,
-        substSoft,signatureScheme,signatureNames,Ty.bvarsBelow]
+        Ty.instantiate,checkSignature,PartialCore.Ann.isSignature,
+        Expr.openSourceTyVars,Expr.openTyVarsFrom,Expr.substSourceTyFvars,Subst.onCtx,Subst.onEnv,
+        substSoft,signatureScheme,Ty.bvarsBelow]
 
 /-- `idid_typeable` at the computed principal variable `3`. Each `var` rule
     supplies the appropriate existential instantiation witness. -/
@@ -1372,10 +1376,10 @@ theorem matchWild_principalType :
     rcases result with ⟨S,hun,havoid⟩
     have hs : S = [(1,.prim .int)] := by simpa only [he,Option.map_some,Option.some.injEq] using huni
     subst S
-    simp (config := {maxSteps := 1000000}) [he, inferWithTypesCore, inferBranchesWithTypesCore, seed, InferInput.rigidVars,
+    simp (config := {maxSteps := 1000000}) [he, inferWithTypesCore, inferBranchesWithTypesCore, seed, Expr.rigidVars,
       softVars, TyList.freeVars, Env.freeVars, Ty.freeVars, List.getElem?_cons_zero,
       PolyTy.mkTrivial, PolyTy.openVars, Ty.openVars,
-      Subst.onTy, Ty.substFvars, Subst.onCtx, Subst.onEnv, InferInput.substTyFvars,
+      Subst.onTy, Ty.substFvars, Subst.onCtx, Subst.onEnv, Expr.substSourceTyFvars,
       substInputBranches, substSoft, rigidBranchVars]
     exact ⟨rfl,rfl⟩
 
@@ -1552,7 +1556,7 @@ private def literalResult : InferCoreResult :=
 /-- A successful run records the exact executable result and exposes its certificate. -/
 theorem literalRequest_run : InferRun literalRequest literalResult := by
   simp [InferRun, InferRequest.run, inferRequestCore, literalRequest, literalResult,
-    inferWithTypesCore, InferInput.rigidVars, softVars, TyList.freeVars, Env.freeVars,
+    inferWithTypesCore, Expr.rigidVars, softVars, TyList.freeVars, Env.freeVars,
     InferredNodeTypes.root]
 
 theorem literalRequest_cert : InferCert literalRequest literalResult.toInferResult :=
@@ -1607,58 +1611,58 @@ private def pair (left right : InferInput) : InferInput :=
 
 /-- `let id = \(x : _) -> x in (id 1, id True)`. -/
 def polymorphicId : InferInput :=
-  .letIn .absent (.lambda (some .hole) (.var 0))
+  .letIn none (.lambda (some .hole) (.var 0))
     (pair (.app (.var 0) (.primLit (.int 1))) (.app (.var 0) (.ctor ⟨"True"⟩)))
 
 /-- Both occurrences of `_` are independently flexible. -/
 def independentHoles : InferInput :=
-  .letIn (.template (.arrow .hole .hole))
+  .letIn (some ⟨0, (.arrow .hole .hole)⟩)
     (.lambda none (.primLit (.int 1)))
     (pair (.app (.var 0) (.ctor ⟨"True"⟩)) (.app (.var 0) (.primLit (.int 1))))
 
 def structuredId : InferInput :=
-  .letIn (.template (.arrow .hole .hole)) (.lambda none (.var 0))
+  .letIn (some ⟨0, (.arrow .hole .hole)⟩) (.lambda none (.var 0))
     (pair (.app (.var 0) (.primLit (.int 1))) (.app (.var 0) (.ctor ⟨"True"⟩)))
 
 /-- Variables reachable through the outer context cannot be generalized. -/
 def outerMonomorphic : InferInput :=
   .lambda none
-    (.letIn (.template .hole) (.var 0)
+    (.letIn (some ⟨0, .hole⟩) (.var 0)
       (pair (.app (.var 0) (.primLit (.int 1))) (.app (.var 0) (.ctor ⟨"True"⟩))))
 
 def occursCheck : InferInput :=
   .lambda (some .hole) (.app (.var 0) (.var 0))
 
 def fixedDomainAccepted : InferInput :=
-  .letIn (.template (.arrow (.fixed (.prim .int)) .hole)) (.lambda none (.var 0))
+  .letIn (some ⟨0, (.arrow (.fixed (.prim .int)) .hole)⟩) (.lambda none (.var 0))
     (.app (.var 0) (.primLit (.int 1)))
 
 def fixedDomainRejected : InferInput :=
-  .letIn (.template (.arrow (.fixed (.prim .int)) .hole)) (.lambda none (.var 0))
+  .letIn (some ⟨0, (.arrow (.fixed (.prim .int)) .hole)⟩) (.lambda none (.var 0))
     (.app (.var 0) (.ctor ⟨"True"⟩))
 
 def quantifiedId : InferInput :=
-  .letIn (.partialForall 1 (.arrow (.fixed (.bvar 0)) .hole))
+  .letIn (some ⟨1, (.arrow (.fixed (.bvar 0)) .hole)⟩)
     (.lambda none (.var 0)) (.var 0)
 
 def quantifiedExtras : InferInput :=
-  .letIn (.partialForall 1 (.arrow (.fixed (.bvar 0)) .hole))
+  .letIn (some ⟨1, (.arrow (.fixed (.bvar 0)) .hole)⟩)
     (.lambda none (.lambda none (.var 1))) (.var 0)
 
 def vacuousWritten : InferInput :=
-  .letIn (.partialForall 1 .hole) (.primLit (.int 1)) (.var 0)
+  .letIn (some ⟨1, .hole⟩) (.primLit (.int 1)) (.var 0)
 
 def quantifiedRigidRejected : InferInput :=
-  .letIn (.partialForall 1 (.arrow .hole (.fixed (.bvar 0))))
+  .letIn (some ⟨1, (.arrow .hole (.fixed (.bvar 0)))⟩)
     (.lambda none (.primLit (.int 0))) (.var 0)
 
 def signedRhsHole : InferInput :=
-  .letIn (.complete ⟨1, .arrow (.bvar 0) (.bvar 0)⟩)
+  .letIn (Option.ofCore (some ⟨1, .arrow (.bvar 0) (.bvar 0)⟩))
     (.lambda (some .hole) (.var 0))
     (pair (.app (.var 0) (.primLit (.int 1))) (.app (.var 0) (.ctor ⟨"True"⟩)))
 
 def signedBodyHole : InferInput :=
-  .letIn (.complete ⟨1, .arrow (.bvar 0) (.bvar 0)⟩)
+  .letIn (Option.ofCore (some ⟨1, .arrow (.bvar 0) (.bvar 0)⟩))
     (.lambda none (.var 0)) (.lambda (some .hole) (.app (.var 1) (.var 0)))
 
 #guard (inferCore [] 0 ctx quantifiedExtras).isSome
@@ -1679,13 +1683,13 @@ def signedBodyHole : InferInput :=
 
 def partialRecursion : InferInput :=
   .letRec
-    [{ ann := .template (.arrow .hole (.fixed (.prim .int))),
+    [{ ann := (some ⟨0, (.arrow .hole (.fixed (.prim .int)))⟩),
        rhs := .lambda none (.primLit (.int 0)) }]
     (.var 0)
 
 def partialRecursionCodomainRejected : InferInput :=
   .letRec
-    [{ ann := .template (.arrow .hole (.fixed (.prim .int))),
+    [{ ann := (some ⟨0, (.arrow .hole (.fixed (.prim .int)))⟩),
        rhs := .lambda none (.primLit .unit) }]
     (.var 0)
 
@@ -1762,15 +1766,15 @@ def incompatiblePartialBranches : InferInput :=
 
 -- Equivalent normal lowering shape: the match scrutinee is bound once first.
 def loweredPartialScrutinee : InferInput :=
-  .letIn .absent (.app idHole (.ctor ⟨"True"⟩))
+  .letIn none (.app idHole (.ctor ⟨"True"⟩))
     (.match_ (.var 0) (branches (.primLit (.int 1)) (.primLit (.int 0))))
 #guard (inferCore [] 0 ctx loweredPartialScrutinee).isSome
 
 -- Nested complete match is an argument to the partial scrutinee expression.
 def nestedScrutinee : InferInput :=
-  .letIn .absent
+  .letIn none
     (.app idHole
-      (.letIn .absent (.ctor ⟨"False"⟩)
+      (.letIn none (.ctor ⟨"False"⟩)
         (.match_ (.var 0) (branches (.ctor ⟨"False"⟩) (.ctor ⟨"True"⟩)))))
     (.match_ (.var 0) (branches (.primLit (.int 1)) (.primLit (.int 0))))
 #guard (inferCore [] 0 ctx nestedScrutinee).isSome
@@ -1778,8 +1782,8 @@ def nestedScrutinee : InferInput :=
 -- Lowering an irrefutable named pattern makes another ordinary let. This
 -- checks the existing lowering/generalization policy, independently of copying.
 def irrefutableCapture : InferInput :=
-  .letIn .absent idHole
-    (.letIn .absent (.var 0)
+  .letIn none idHole
+    (.letIn none (.var 0)
       (pair (.app (.var 0) (.primLit (.int 1)))
         (.app (.var 0) (.ctor ⟨"True"⟩))))
 #guard (inferCore [] 0 ctx irrefutableCapture).isSome
@@ -1790,9 +1794,9 @@ private def rigidIdentity : InferInput := .lambda (some rigidArrow) (.var 0)
 private def violatesRigid : InferInput :=
   .lambda (some rigidArrow) (.app (.var 0) (.primLit (.int 1)))
 private def rigidLet : InferInput :=
-  .letIn (.template rigidArrow) (.lambda none (.var 0)) (.var 0)
+  .letIn (some ⟨0, rigidArrow⟩) (.lambda none (.var 0)) (.var 0)
 private def violatesRigidLet : InferInput :=
-  .letIn (.template rigidArrow) (.lambda none (.var 0))
+  .letIn (some ⟨0, rigidArrow⟩) (.lambda none (.var 0))
     (.app (.var 0) (.primLit (.int 1)))
 
 #guard (inferCore [7] 8 ctx rigidIdentity).isSome
@@ -1808,25 +1812,25 @@ private def violatesRigidLet : InferInput :=
 
 private def polyrec : InferInput :=
   .letRec
-    [{ ann := .complete ⟨1, .arrow (.bvar 0) (.prim .int)⟩,
+    [{ ann := (Option.ofCore (some ⟨1, .arrow (.bvar 0) (.prim .int)⟩)),
        rhs := .lambda none
          (.app (.var 1) (.app (.app (.ctor ⟨"Pair"⟩) (.var 0)) (.var 0))) }]
     (.app (.var 0) (.ctor ⟨"True"⟩))
 #guard (inferCore [] 0 ctx polyrec).isSome
 #guard (inferCore [] 0 ctx
-  (.letIn .absent (.lambda (some .hole) (.var 0)) polyrec)).isSome
-#guard !(principalType ctx.ctors (InferInput.ofCore polyrec.erase)).isSome
+  (.letIn none (.lambda (some .hole) (.var 0)) polyrec)).isSome
+#guard !(principalType ctx.ctors (Expr.ofCore polyrec.erase)).isSome
 
 -- Complete signatures protect their authored skolems while filling RHS holes.
 def completeForallWithPartialRhs : InferInput :=
-  .letIn (.complete ⟨1, .arrow (.bvar 0) (.bvar 0)⟩)
+  .letIn (Option.ofCore (some ⟨1, .arrow (.bvar 0) (.bvar 0)⟩))
     (.lambda (some .hole) (.var 0)) (.var 0)
 #guard (inferCore [] 0 ctx completeForallWithPartialRhs).isSome
 
 -- An unused hole still generalizes at its own binding even when it is absent
 -- from the whole-program result type.
 def unusedHole : InferInput :=
-  .letIn (.template .hole) (.ctor ⟨"Nil"⟩) (.primLit (.int 1))
+  .letIn (some ⟨0, .hole⟩) (.ctor ⟨"Nil"⟩) (.primLit (.int 1))
 #guard match inferWithTypes ctors unusedHole with
   | some result => match schemeAt result (.letIn []), result.ty with
     | some ⟨1, .customTy ⟨"List"⟩ [.bvar 0]⟩, .prim .int => true

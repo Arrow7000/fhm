@@ -34,7 +34,7 @@ def conflictCtx : Ctx := ⟨[PolyTy.mkTrivial (pair (.prim .int) (.prim .char))]
 #guard (inferWithTypesCore [] 10 conflictCtx (.app (identity repeated) (.var 0))).isNone
 #guard (inferWithTypesCore [] 10 conflictCtx (.app (identity independent) (.var 0))).isSome
 
-def separate : InferInput := .letIn .absent
+def separate : InferInput := .letIn none
   (.app (identity (.named "a")) (.primLit (.int 1)))
   (.app (identity (.named "a")) (.primLit (.char 'x')))
 #guard match inferWithTypes [] separate with
@@ -45,7 +45,7 @@ def separate : InferInput := .letIn .absent
   | _ => false
 
 def scopedTemplate : TyTemplate := .arrow (.fixed (.bvar 0)) (.named "item")
-def scopedProgram : InferInput := .letIn (.partialForall 1 scopedTemplate)
+def scopedProgram : InferInput := .letIn (some ⟨1, scopedTemplate⟩)
   (.lambda (some (.fixed (.bvar 0))) (.var 0))
   (.app (.var 0) (.primLit (.int 42)))
 #guard match inferWithTypes [] scopedProgram with
@@ -56,10 +56,10 @@ def scopedProgram : InferInput := .letIn (.partialForall 1 scopedTemplate)
   | _ => false
 
 def recBindings : List InputRecBinding :=
-  [{ ann := .partialForall 1 scopedTemplate,
+  [{ ann := (some ⟨1, scopedTemplate⟩),
      rhs := .lambda (some (.fixed (.bvar 0))) (.var 0) }]
 def recursive : InferInput := .letRec recBindings
-  (.letIn .absent (.app (.var 0) (.primLit (.int 1)))
+  (.letIn none (.app (.var 0) (.primLit (.int 1)))
     (.app (.var 1) (.primLit (.char 'x'))))
 #guard match inferWithTypes [] recursive with
   | some r => match r.ty with | .prim .char => true | _ => false
@@ -105,7 +105,7 @@ theorem inferred_scoped_once (h : inferWithTypes [] scopedProgram = some result)
         PartialCore.Template.Fits (PartialCore.HoleAssignment.map (Ty.openVars Xs) completion.holes)
           (scopedTemplate.map (Ty.openVars (Xs.take 1))) (scheme.openVars Xs) := by
   obtain ⟨scheme, avoid, completion, _, _, hopen, _, _⟩ :=
-    (inferWithTypes_input_sound h).partialSignature_completion
+    (inferWithTypes_input_sound h).partialSignature_completion rfl
   exact ⟨scheme, avoid, completion, hopen⟩
 
 theorem inferred_recursive_once (h : inferWithTypes [] recursive = some result) :

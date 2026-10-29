@@ -3087,27 +3087,23 @@ example : finalizeInputAnn [.mk "a"] [(.mk "x", none)]
     (some ⟨[.mk "b"], .tvar (.mk "b")⟩) =
   some ⟨[.mk "a", .mk "b"], .arrow .hole (.tvar (.mk "b"))⟩ := rfl
 
-/-- Classify a finalized binding signature by whether its lowered template is
-complete. The caller applies `finalizeInputAnn` before this adapter. -/
+/-- Lower a written scheme without storing a checking-mode tag. The checker
+classifies its body when it needs the complete/partial distinction. -/
 def lowerInputLetAnn (ke : KindEnv) (tvs : List ValName) :
     Option Surface.PolyTy → Option BindingAnn
-  | none => some .absent
+  | none => some none
   | some scheme => do
       let names := scheme.foralls.eraseDups
       let template ← lowerTemplate ke (names ++ tvs) scheme.body
-      match template.toCore with
-      | some body => some (.complete ⟨names.length, body⟩)
-      | none =>
-          if names.isEmpty then some (.template template)
-          else some (.partialForall names.length template)
+      pure (some ⟨names.length, template⟩)
 
 /-- Preserve input annotations while using the single generic pattern emitter. -/
 def inputEmissionOps : PatComp.EmissionOps InferInput :=
-  { var := InferInput.var
-    ctor := InferInput.ctor
-    letIn := InferInput.letIn .absent
-    match_ := InferInput.match_
-    shiftFrom := InferInput.shiftFrom }
+  { var := Expr.var
+    ctor := Expr.ctor
+    letIn := Expr.letIn none
+    match_ := Expr.match_
+    shiftFrom := Expr.sourceShiftFrom }
 
 def lowerInputMatch (scrut : InferInput) (pats : List Surface.Pattern) (bodies : Nat → InferInput) : InferInput :=
   PatComp.lowerMatchWith inputEmissionOps scrut pats bodies
@@ -3505,12 +3501,12 @@ end
 /-- Production annotation policy: preserve holes and scoped partial signatures. -/
 def inputLoweringOps : LoweringOps InferInput (Option TyTemplate) BindingAnn :=
   { emission := inputEmissionOps
-    primLit := InferInput.primLit
-    primBinOp := InferInput.primBinOp
-    app := InferInput.app
-    lambda := InferInput.lambda
-    letIn := InferInput.letIn
-    letRec := InferInput.letRec
+    primLit := Expr.primLit
+    primBinOp := Expr.primBinOp
+    app := Expr.app
+    lambda := Expr.lambda
+    letIn := Expr.letIn
+    letRec := Expr.letRec
     lowerParamAnn := lowerTemplateAnn
     finalize := finalizeInputAnn
     lowerBindAnn := lowerInputLetAnn }
@@ -4456,28 +4452,28 @@ Holes remain syntax until inference visits each generated occurrence. -/
 
 mutual
 /-- Erasure commutes with term shifting, including recursive group binders. -/
-theorem InferInput.erase_shiftFrom (input : InferInput) (threshold count : Nat) :
-    (input.shiftFrom threshold count).erase = input.erase.shiftFrom threshold count := by
+theorem Expr.source_erase_shiftFrom (input : InferInput) (threshold count : Nat) :
+    (input.sourceShiftFrom threshold count).erase = input.erase.shiftFrom threshold count := by
   cases input with
-  | primLit p => rfl
-  | primBinOp op => rfl
-  | var i => simp only [InferInput.shiftFrom, InferInput.erase, Expr.shiftFrom]; split <;> rfl
-  | ctor name => rfl
+  | primLit p => simp only [Expr.sourceShiftFrom, Expr.erase, ← sourceEraseBranches_eq_map, ← sourceEraseBindings_eq_map, Expr.shiftFrom]
+  | primBinOp op => simp only [Expr.sourceShiftFrom, Expr.erase, ← sourceEraseBranches_eq_map, ← sourceEraseBindings_eq_map, Expr.shiftFrom]
+  | var i => simp only [Expr.sourceShiftFrom, Expr.erase, ← sourceEraseBranches_eq_map, ← sourceEraseBindings_eq_map, Expr.shiftFrom]; split <;> simp only [Expr.erase]
+  | ctor name => simp only [Expr.sourceShiftFrom, Expr.erase, ← sourceEraseBranches_eq_map, ← sourceEraseBindings_eq_map, Expr.shiftFrom]
   | lambda ann body =>
-    simp only [InferInput.shiftFrom, InferInput.erase, Expr.shiftFrom, body.erase_shiftFrom]
+    simp only [Expr.sourceShiftFrom, Expr.erase, ← sourceEraseBranches_eq_map, ← sourceEraseBindings_eq_map, Expr.shiftFrom, body.source_erase_shiftFrom]
   | app f arg =>
-    simp only [InferInput.shiftFrom, InferInput.erase, Expr.shiftFrom, f.erase_shiftFrom, arg.erase_shiftFrom]
+    simp only [Expr.sourceShiftFrom, Expr.erase, ← sourceEraseBranches_eq_map, ← sourceEraseBindings_eq_map, Expr.shiftFrom, f.source_erase_shiftFrom, arg.source_erase_shiftFrom]
   | letIn ann rhs body =>
-    simp only [InferInput.shiftFrom, InferInput.erase, Expr.shiftFrom, rhs.erase_shiftFrom, body.erase_shiftFrom]
+    simp only [Expr.sourceShiftFrom, Expr.erase, ← sourceEraseBranches_eq_map, ← sourceEraseBindings_eq_map, Expr.shiftFrom, rhs.source_erase_shiftFrom, body.source_erase_shiftFrom]
   | match_ scrut branches =>
-    simp only [InferInput.shiftFrom, InferInput.erase, scrut.erase_shiftFrom]
+    simp only [Expr.sourceShiftFrom, Expr.erase, ← sourceEraseBranches_eq_map, ← sourceEraseBindings_eq_map, scrut.source_erase_shiftFrom]
     change Expr.match_ (scrut.erase.shiftFrom threshold count) (eraseBranches (shiftBranches threshold count branches)) =
       Expr.match_ (scrut.erase.shiftFrom threshold count)
         (((Expr.match_ (.primLit .unit) (eraseBranches branches)).shiftFrom threshold count).matchBranchesOf)
     rw [eraseBranches_shiftFrom]
   | letRec bindings body =>
     have hbindings := eraseBindings_shiftFrom bindings (threshold + bindings.length) count
-    simp only [InferInput.shiftFrom, InferInput.erase, Expr.shiftFrom, body.erase_shiftFrom,
+    simp only [Expr.sourceShiftFrom, Expr.erase, ← sourceEraseBranches_eq_map, ← sourceEraseBindings_eq_map, Expr.shiftFrom, body.source_erase_shiftFrom,
       hbindings, eraseBindings_length]
 termination_by sizeOf input
 decreasing_by
@@ -4490,11 +4486,11 @@ private theorem eraseBranches_shiftFrom (branches : List (MatchPattern × InferI
   | nil => rfl
   | cons head rest =>
     rcases head with ⟨pat, body⟩
-    change (pat, (body.shiftFrom (threshold + pat.bindCount) count).erase) ::
+    change (pat, (body.sourceShiftFrom (threshold + pat.bindCount) count).erase) ::
       eraseBranches (shiftBranches threshold count rest) =
       (pat, body.erase.shiftFrom (threshold + pat.bindCount) count) ::
         (((Expr.match_ (.primLit .unit) (eraseBranches rest)).shiftFrom threshold count).matchBranchesOf)
-    rw [body.erase_shiftFrom, eraseBranches_shiftFrom]
+    rw [body.source_erase_shiftFrom, eraseBranches_shiftFrom]
 termination_by sizeOf branches
 decreasing_by
   all_goals simp_wf
@@ -4507,7 +4503,7 @@ private theorem eraseBindings_shiftFrom (bindings : List InputRecBinding) (thres
   | cons binding rest =>
     rcases binding with ⟨ann, rhs⟩
     have hrest := eraseBindings_shiftFrom rest threshold count
-    simp only [shiftBindings, eraseBindings, RecGroup.shiftFrom, rhs.erase_shiftFrom, hrest]
+    simp only [shiftBindings, eraseBindings, RecGroup.shiftFrom, rhs.source_erase_shiftFrom, hrest]
 termination_by sizeOf bindings
 decreasing_by
   all_goals simp_wf
@@ -4528,12 +4524,13 @@ private theorem erase_emitLetsInput (env binds : List PatComp.Occ) (body : Infer
         PatComp.emitLets.go env binds body.erase rest depth := by
     intro rest
     induction rest with
-    | nil => intro depth; exact body.erase_shiftFrom _ _
+    | nil => intro depth; exact body.source_erase_shiftFrom _ _
     | cons head rest ih =>
       intro depth
+      simp only [PatComp.emitLetsWith.go, inputEmissionOps, Expr.erase]
       change Expr.letIn none (.var _) _ = Expr.letIn none (.var _) _
-      rw [ih]
-      rfl
+      congr 1
+      simpa only [inputEmissionOps, PatComp.coreEmissionOps, PatComp.emitLets.go] using ih (depth + 1)
   exact hgo binds.reverse 0
 
 mutual
@@ -4542,24 +4539,29 @@ theorem erase_emitInput (env : List PatComp.Occ) (bodies : Nat → InferInput) (
     (PatComp.emitWith inputEmissionOps env bodies tree).erase =
       PatComp.emit env (fun i => (bodies i).erase) tree := by
   cases tree with
-  | fail => rfl
+  | fail => simp only [PatComp.emitWith, PatComp.emit, inputEmissionOps, PatComp.coreEmissionOps, Expr.erase, List.map_nil]
   | leaf act binds => exact erase_emitLetsInput env binds (bodies act)
   | switch occ cases dflt =>
     by_cases hd : dflt = .fail
     · subst dflt
       rw [PatComp.emitWith.eq_3, PatComp.emit, PatComp.emitWith.eq_3]
+      simp only [inputEmissionOps, PatComp.coreEmissionOps, Expr.erase, ← sourceEraseBranches_eq_map]
       change Expr.match_ (.var _) (eraseBranches (_ ++ [])) = Expr.match_ (.var _) (_ ++ [])
       simp only [List.append_nil]
-      rw [erase_emitCasesInput env bodies occ cases]
-      rfl
+      congr 1
+      simpa only [inputEmissionOps, PatComp.coreEmissionOps] using erase_emitCasesInput env bodies occ cases
     · rw [PatComp.emitWith.eq_4 _ _ _ _ _ _ hd, PatComp.emit,
         PatComp.emitWith.eq_4 _ _ _ _ _ _ hd]
+      simp only [inputEmissionOps, PatComp.coreEmissionOps, Expr.erase, ← sourceEraseBranches_eq_map]
       change Expr.match_ (.var _) (eraseBranches (_ ++ [(.wildcard,
         PatComp.emitWith inputEmissionOps env bodies dflt)])) = Expr.match_ (.var _) (_ ++ _)
-      rw [eraseBranches_append, erase_emitCasesInput env bodies occ cases]
-      simp only [eraseBranches]
-      rw [erase_emitInput env bodies dflt]
-      rfl
+      have hc := erase_emitCasesInput env bodies occ cases
+      have hdflt := erase_emitInput env bodies dflt
+      simp only [inputEmissionOps, PatComp.coreEmissionOps] at hc hdflt
+      rw [eraseBranches_append, hc]
+      simp only [eraseBranches, inputEmissionOps, PatComp.coreEmissionOps,
+        PatComp.emit, PatComp.emitCases] at hdflt ⊢
+      rw [hdflt]
 
 termination_by sizeOf tree
 decreasing_by
@@ -4588,8 +4590,10 @@ end
     (bodies : Nat → InferInput) :
     (lowerInputMatch scrut pats bodies).erase =
       PatComp.lowerMatch scrut.erase pats (fun i => (bodies i).erase) := by
+  simp only [lowerInputMatch, PatComp.lowerMatchWith, inputEmissionOps, Expr.erase]
   change Expr.letIn none scrut.erase _ = Expr.letIn none scrut.erase _
-  rw [erase_emitInput]
-  rfl
+  congr 1
+  simpa only [inputEmissionOps, PatComp.coreEmissionOps, PatComp.emit] using
+    erase_emitInput [[]] bodies (PatComp.compile [[]] (PatComp.initMatrix pats))
 
 end

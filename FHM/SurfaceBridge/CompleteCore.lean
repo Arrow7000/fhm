@@ -1,5 +1,6 @@
 import FHM.SurfaceBridge
 import FHM.Completeness
+import FHM.SourceCompatibility
 
 /-! # Complete-Core surface lowering compatibility
 
@@ -18,20 +19,20 @@ private def bA : Surface.Binding :=
 
 /-- Complete Core is an input adapter to the canonical inference engine. -/
 def coreTypecheck (ctors : CtorEnv) (core : Expr) : Option PolyTy :=
-  typecheck ctors (InferInput.ofCore core)
+  typecheck ctors (Expr.ofCore core)
 
 /-- The artifact and scheme APIs project the same canonical worker run. -/
 theorem coreTypecheck_isSome_iff {ctors : CtorEnv} {core : Expr} :
     (coreTypecheck ctors core).isSome ↔
-      (inferWithTypes ctors (InferInput.ofCore core)).isSome := by
+      (inferWithTypes ctors (Expr.ofCore core)).isSome := by
   simp only [coreTypecheck, typecheck, principalType, Option.isSome_map, inferCore_isSome,
     inferWithTypes]
 
 /-- Canonical inference conserves the original complete-Core typing contract. -/
 theorem inferOfCore_source_sound {ctors : CtorEnv} {core : Expr} {result : InferenceResult}
-    (h : inferWithTypes ctors (InferInput.ofCore core) = some result) :
+    (h : inferWithTypes ctors (Expr.ofCore core) = some result) :
     TypeOfHM ⟨[], ctors⟩ core result.ty :=
-  ((inferWithTypes_input_sound h).scoped.toCore (InferInput.toCore_ofCore core)).1
+  ((inferWithTypes_input_sound h).scoped.toCore (Expr.source_toCore_ofCore core)).1
 
 /-- Complete Core acceptance is exactly the existing declarative source relation. -/
 theorem coreTypecheck_accepts_iff {ctors : CtorEnv} {core : Expr} :
@@ -43,33 +44,33 @@ theorem coreTypecheck_accepts_iff {ctors : CtorEnv} {core : Expr} :
   · rintro ⟨ty,ht⟩
     apply coreTypecheck_isSome_iff.mpr
     apply inferWithTypes_complete
-    exact (ScopedTyping.ofComplete (InferInput.toCore_ofCore core)
-      (fun v hv => ((InferInput.ofCore core).toCore_rigidVars
-        (InferInput.toCore_ofCore core) v).mpr hv) ht).source
+    exact (ScopedTyping.ofComplete (Expr.source_toCore_ofCore core)
+      (fun v hv => ((Expr.ofCore core).source_toCore_rigidVars
+        (Expr.source_toCore_ofCore core) v).mpr hv) ht).source
 
 theorem coreTypecheck_of_infer {ctors : CtorEnv} {core : Expr} {result : InferenceResult}
-    (h : inferWithTypes ctors (InferInput.ofCore core) = some result) :
+    (h : inferWithTypes ctors (Expr.ofCore core) = some result) :
     (coreTypecheck ctors core).isSome :=
   coreTypecheck_isSome_iff.mpr (Option.isSome_iff_exists.mpr ⟨result,h⟩)
 
 /-- Complete Core candidates factor through the same canonical inferred type. -/
 theorem inferOfCore_principal {ctors : CtorEnv} {core : Expr} {result : InferenceResult}
-    (h : inferWithTypes ctors (InferInput.ofCore core) = some result)
+    (h : inferWithTypes ctors (Expr.ofCore core) = some result)
     (ht : TypeOfHM ⟨[], ctors⟩ core target) :
     ∃ R : Subst,(∀ pair ∈ R,pair.2.IsLC) ∧ target = R.onTy result.ty ∧
       ∀ v ∈ core.tyFreeVars,R.onTy (.fvar v) = .fvar v := by
   obtain ⟨R,hR,he,hfix⟩ := inferWithTypes_principal h target
-    (ScopedTyping.ofComplete (InferInput.toCore_ofCore core)
-      (fun v hv => ((InferInput.ofCore core).toCore_rigidVars
-        (InferInput.toCore_ofCore core) v).mpr hv) ht).source
-  exact ⟨R,hR,he,fun v hv => hfix v (((InferInput.ofCore core).toCore_rigidVars
-    (InferInput.toCore_ofCore core) v).mpr hv)⟩
+    (ScopedTyping.ofComplete (Expr.source_toCore_ofCore core)
+      (fun v hv => ((Expr.ofCore core).source_toCore_rigidVars
+        (Expr.source_toCore_ofCore core) v).mpr hv) ht).source
+  exact ⟨R,hR,he,fun v hv => hfix v (((Expr.ofCore core).source_toCore_rigidVars
+    (Expr.source_toCore_ofCore core) v).mpr hv)⟩
 
 /-- The adapter executes erasure of the original complete source. -/
 theorem inferOfCore_erase {ctors : CtorEnv} {core : Expr} {result : InferenceResult}
-    (_h : inferWithTypes ctors (InferInput.ofCore core) = some result) :
-    (InferInput.ofCore core).erase = core.erase :=
-  ((InferInput.ofCore core).toCore_erase (InferInput.toCore_ofCore core)).symm
+    (_h : inferWithTypes ctors (Expr.ofCore core) = some result) :
+    (Expr.ofCore core).erase = core.erase :=
+  ((Expr.ofCore core).source_toCore_erase (Expr.source_toCore_ofCore core)).symm
 
 private def oneResidualGroup (bindings : List CoreRecBinding) : List (List Nat) :=
   let members := (List.range bindings.length).filter (RecGroups.unsignedAtB bindings)
@@ -7588,7 +7589,7 @@ theorem lowerCore_tyClosed {ctors : CtorEnv} {s : Surface.Expr} {c : Expr}
 /-- Typechecking exposes the same canonical artifact run used for execution. -/
 theorem infer_of_typecheck {ctors : CtorEnv} {c : Expr}
     (_hclosed : c.tyFreeVars = []) (htc : (coreTypecheck ctors c).isSome) :
-    ∃ result, inferWithTypes ctors (InferInput.ofCore c) = some result :=
+    ∃ result, inferWithTypes ctors (Expr.ofCore c) = some result :=
   Option.isSome_iff_exists.mp (coreTypecheck_isSome_iff.mp htc)
 
 /-! ### Exhaustiveness-transfer helpers

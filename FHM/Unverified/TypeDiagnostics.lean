@@ -44,11 +44,11 @@ def probeCore (K : List Nat) (Φ : Nat) (ctx : Ctx) : Expr → Option Error
       (probeCore K next { ctx with env := PolyTy.mkTrivial T :: ctx.env } body).map
         (Error.below .lambdaBody)
   | .app f arg =>
-      match inferCore K Φ ctx (InferInput.ofCore f) with
+      match inferCore K Φ ctx (Expr.ofCore f) with
       | none => (probeCore K Φ ctx f).map (Error.below .appFun)
       | some result =>
         let ⟨Φ₁, S₁, τf⟩ := result.val
-        match inferCore K Φ₁ (S₁.onCtx ctx) (InferInput.ofCore arg) with
+        match inferCore K Φ₁ (S₁.onCtx ctx) (Expr.ofCore arg) with
         | none => (probeCore K Φ₁ (S₁.onCtx ctx) arg).map (Error.below .appArg)
         | some result =>
           let ⟨Φ₂, S₂, τa⟩ := result.val
@@ -62,7 +62,7 @@ def probeCore (K : List Nat) (Φ : Nat) (ctx : Ctx) : Expr → Option Error
                 else some ⟨[], .incompatibleApplication fnTy τa⟩
             | _ => some ⟨[.appFun], .notFunction fnTy⟩
   | .letIn none rhs body =>
-      match inferCore K Φ ctx (InferInput.ofCore rhs) with
+      match inferCore K Φ ctx (Expr.ofCore rhs) with
       | none => (probeCore K Φ ctx rhs).map (Error.below .letRhs)
       | some result =>
           let ⟨Φ₁, S₁, τ₁⟩ := result.val
@@ -74,7 +74,7 @@ def probeCore (K : List Nat) (Φ : Nat) (ctx : Ctx) : Expr → Option Error
       let Ys := freshVars Φ σ.paramCount
       let rigid := K ++ Ys
       let opened := rhs.openTyVars Ys
-      match inferCore rigid (Φ + σ.paramCount) ctx (InferInput.ofCore opened) with
+      match inferCore rigid (Φ + σ.paramCount) ctx (Expr.ofCore opened) with
       | none => (probeCore rigid (Φ + σ.paramCount) ctx opened).map (Error.below .letRhs)
       | some result =>
         let ⟨Φ₁, S₁, τ₁⟩ := result.val
@@ -132,13 +132,13 @@ partial def probe (K : List Nat) (Φ : Nat) (ctx : Ctx)
               | _ => some ⟨[.appFun], .notFunction fnTy⟩
     -- A signed RHS has to be opened in the worker's scoped context. Until a
     -- canonical failure result is available, retain the binding-level fallback.
-    | .letIn (.complete _) _ _ | .letIn (.partialForall _ _) _ _ => none
     | .letIn ann rhs body =>
-        match inferCore K Φ ctx rhs with
+        if ann.isSignature then none
+        else match inferCore K Φ ctx rhs with
         | none => (probe K Φ ctx rhs).map (Error.below .letRhs)
         | some result => do
             let ⟨Φ₁, S₁, τ₁⟩ := result.val
-            let checked ← checkLet K [] Φ₁ ann τ₁
+            let checked ← checkLet K [] Φ₁ ann.annotationView τ₁
             let ctx₁ := checked.val.2.onCtx (S₁.onCtx ctx)
             let σ := genScheme K ctx₁.env (checked.val.2.onTy τ₁)
             (probe K checked.val.1 { ctx₁ with env := σ :: ctx₁.env } body).map
@@ -171,9 +171,9 @@ def Reason.message (reason : Reason) : String :=
     Generated lowering nodes may share an owner's span, so unsupported origins
     fall back to the existing binding-level error. -/
 def explain (ctors : CtorEnv) (lowered : InputLowered) : Option (Reason × Span) := do
-  if (inferCore lowered.expr.rigidVars lowered.expr.freshFloor ⟨[], ctors⟩ lowered.expr).isSome then none
+  if (inferCore lowered.expr.rigidVars lowered.expr.source_freshFloor ⟨[], ctors⟩ lowered.expr).isSome then none
   else do
-    let error ← probe lowered.expr.rigidVars lowered.expr.freshFloor ⟨[], ctors⟩ lowered.expr
+    let error ← probe lowered.expr.rigidVars lowered.expr.source_freshFloor ⟨[], ctors⟩ lowered.expr
     let origin ← (lowered.coreOrigins.find? fun p => p.1 == error.path).map (·.2)
     if origin.kind == .authored then some (error.reason, origin.source.span) else none
 

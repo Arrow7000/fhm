@@ -160,7 +160,7 @@ private def topBindingTypes (groups : List (List Surface.Binding))
           if binding.refersTo binding.name then
             let declared := match SurfaceBridge.Provenance.inputAtCorePath core path with
               | some (.letRec bindings _) => (bindings[0]?).bind fun b =>
-                  match b.ann with | .complete sig => some sig | _ => none
+                  b.ann.recModeAnn
               | _ => none
             let inferred := (schemes.find? fun (site, _) =>
               site == .letRec path 0).map (·.2)
@@ -169,7 +169,7 @@ private def topBindingTypes (groups : List (List Surface.Binding))
             pure ((binding.name, scheme) :: later)
           else
             let declared := match SurfaceBridge.Provenance.inputAtCorePath core path with
-              | some (.letIn (.complete sig) _ _) => some sig
+              | some (.letIn ann _ _) => ann.recModeAnn
               | _ => none
             let inferred := (schemes.find? fun (site, _) =>
               site == .letIn path).map (·.2)
@@ -183,7 +183,7 @@ private def topBindingTypes (groups : List (List Surface.Binding))
             -- declaration, including any head-parameter desugaring.
             let declared := match SurfaceBridge.Provenance.inputAtCorePath core path with
               | some (.letRec bindings _) => (bindings[member]?).bind fun b =>
-                  match b.ann with | .complete sig => some sig | _ => none
+                  b.ann.recModeAnn
               | _ => none
             let inferred := (schemes.find? fun (site, _) =>
               site == .letRec path member).map (·.2)

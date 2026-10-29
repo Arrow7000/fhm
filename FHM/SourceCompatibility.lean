@@ -234,16 +234,19 @@ theorem completeBindings_data {inputs : List InputRecBinding}
       Option.some.injEq] at h
     obtain ⟨coreAnn, ha, coreRhs, hr, cores, ht, rfl⟩ := h
     obtain ⟨heq, hall⟩ := ih ht
-    cases ann with
-    | template | partialForall => cases ha
-    | absent | complete =>
-      cases ha
-      refine ⟨by simp only [List.map_cons, eraseRecRhs, InputRecBinding.recMode,
-        PartialCore.Ann.recModeAnn, rhs.toCore_erase hr, heq], ?_⟩
-      intro binding hm
-      rcases List.mem_cons.mp hm with rfl | hm
-      · exact ⟨rfl, rfl⟩
-      · exact hall binding hm
+    have hview := ann.annotationView_toCore ha
+    have hmode : ann.recModeAnn = coreAnn := by
+      simp only [Option.recModeAnn, hview]
+      cases coreAnn <;> rfl
+    have hprefix : ann.recPrefixCount = 0 := by
+      simp only [Option.recPrefixCount, hview]
+      cases coreAnn <;> rfl
+    refine ⟨by simp only [List.map_cons, eraseRecRhs, InputRecBinding.recMode,
+      hmode, rhs.source_toCore_erase hr, heq], ?_⟩
+    intro binding hm
+    rcases List.mem_cons.mp hm with rfl | hm
+    · exact ⟨by simpa only [hmode] using ha, hprefix⟩
+    · exact hall binding hm
 
 theorem recScheme_empty (G : List Nat) (ty : Ty) : recScheme [] G ty = PolyTy.genGroup G ty := by
   simp [recScheme, recNames, PolyTy.genGroup, Ty.genFilter]
@@ -305,7 +308,7 @@ private theorem rigidBindingVars_mem_iff {bindings : List InputRecBinding} :
         · exact .inr ⟨binding, hr, hv⟩
 
 private theorem input_branch_size {branches : List (MatchPattern × InferInput)}
-    (h : (pat, body) ∈ branches) : body.size < sizeBranches branches := by
+    (h : (pat, body) ∈ branches) : body.sourceSize < sizeBranches branches := by
   induction branches with
   | nil => cases h
   | cons head rest ih =>
@@ -319,7 +322,7 @@ private theorem input_branch_size {branches : List (MatchPattern × InferInput)}
       omega
 
 private theorem input_binding_size {bindings : List InputRecBinding}
-    (h : binding ∈ bindings) : binding.rhs.size < sizeBindings bindings := by
+    (h : binding ∈ bindings) : binding.rhs.sourceSize < sizeBindings bindings := by
   induction bindings with
   | nil => cases h
   | cons head rest ih =>
@@ -348,7 +351,7 @@ theorem ScopedTyping.ofComplete {input : InferInput} {K : List Nat} {ctx : Ctx}
     cases ht with
     | ctor hlook hlc hinst => exact .ctor hlook hlc hinst
   case lambda ann body =>
-    simp only [InferInput.toCore, bind, pure, Option.bind_eq_some_iff, Option.some.injEq] at hemb
+    simp only [Expr.toCore, bind, pure, Option.bind_eq_some_iff, Option.some.injEq] at hemb
     obtain ⟨ann', ha, body', hb, rfl⟩ := hemb
     cases ht with
     | lambda hlc hp hctx ht =>
@@ -364,33 +367,31 @@ theorem ScopedTyping.ofComplete {input : InferInput} {K : List Nat} {ctx : Ctx}
         subst ann
         simp only [completeLambdaAnn, bind, pure, Option.bind_eq_some_iff, Option.some.injEq] at ha
         obtain ⟨a, hta, rfl⟩ := ha
-        exact hscope v (List.mem_append_left _ ((PartialCore.Template.toCore_rigidVars hta v).mp hv))
+        exact hscope v (List.mem_append_left _ ((PartialCore.Template.source_toCore_rigidVars hta v).mp hv))
       · intro v hv; exact hscope v (List.mem_append_right _ hv)
   case app f arg =>
-    simp only [InferInput.toCore, bind, pure, Option.bind_eq_some_iff, Option.some.injEq] at hemb
+    simp only [Expr.toCore, bind, pure, Option.bind_eq_some_iff, Option.some.injEq] at hemb
     obtain ⟨f', hf, arg', hx, rfl⟩ := hemb
     cases ht with
     | app htf htx =>
       exact .app (ScopedTyping.ofComplete hf (fun v hv => hscope v (List.mem_append_left _ hv)) htf)
         (ScopedTyping.ofComplete hx (fun v hv => hscope v (List.mem_append_right _ hv)) htx)
   case letIn ann rhs body =>
-    simp only [InferInput.toCore, bind, pure, Option.bind_eq_some_iff, Option.some.injEq] at hemb
+    simp only [Expr.toCore, bind, pure, Option.bind_eq_some_iff, Option.some.injEq] at hemb
     obtain ⟨ann', ha, rhs', hr, body', hb, rfl⟩ := hemb
-    cases ann with
-    | template | partialForall => cases ha
-    | absent =>
-      cases ha
+    have hview := ann.annotationView_toCore ha
+    cases ann' with
+    | none =>
       cases ht with
       | @letIn _ _ _ _ _ _ M L hwf _ hcofin heq hbody =>
         subst heq
-        refine .letIn (M := M) (L := L) hwf (by intro t ht; cases ht)
-          (PartialCore.Ann.MonoMatches.absent hwf) ?_ (ScopedTyping.ofComplete hb ?_ hbody)
+        refine .letIn (M := M) (L := L) hwf (by intro t ht; simp [hview, PartialCore.Ann.ofCore] at ht)
+          (by simpa only [Option.MonoMatches, hview, PartialCore.Ann.ofCore] using PartialCore.Ann.MonoMatches.absent hwf) ?_ (ScopedTyping.ofComplete hb ?_ hbody)
         · intro Xs hf
           exact ScopedTyping.ofComplete hr
             (fun v hv => hscope v (List.mem_append_left _ hv)) (hcofin Xs hf)
         · intro v hv; exact hscope v (List.mem_append_right _ hv)
-    | complete scheme =>
-      cases ha
+    | some scheme =>
       cases ht with
       | @letIn _ _ _ _ _ _ M L hwf hpin hgen hctx hbody =>
         subst hctx
@@ -399,14 +400,19 @@ theorem ScopedTyping.ofComplete {input : InferInput} {K : List Nat} {ctx : Ctx}
         have hrhsScope : ∀ v ∈ rhs'.tyFreeVars, v ∈ K := fun v hv =>
           hscope v (List.mem_append_left _ (List.mem_append_right _ hv))
         refine .letSignature (M := scheme) (L := L) hwf ?_ ?_
-          (PartialCore.Ann.SignatureMatches.complete hwf) ?_ (ScopedTyping.ofComplete hb ?_ hbody)
+          (by simpa only [Option.SignatureMatches, hview, PartialCore.Ann.ofCore] using PartialCore.Ann.SignatureMatches.complete hwf) ?_ (ScopedTyping.ofComplete hb ?_ hbody)
         · intro v hv
-          exact hscope v (List.mem_append_left _ (List.mem_append_left _ hv))
+          have hv' : v ∈ scheme.body.freeVars := by
+            simpa only [← Option.mem_annotationView_rigidVars, hview,
+              PartialCore.Ann.ofCore, PartialCore.Ann.rigidVars] using hv
+          exact hscope v (List.mem_append_left _ (List.mem_append_left _ hv'))
         · intro v hv
-          exact hrhsScope v ((InferInput.toCore_rigidVars rhs hr v).mp hv)
+          exact hrhsScope v ((Expr.source_toCore_rigidVars rhs hr v).mp hv)
         · intro Xs hf
+          have hcount : ann.paramCount = scheme.paramCount := ann.paramCount_toCore ha
+          simp only [hcount]
           have htake : Xs.take scheme.paramCount = Xs := List.take_of_length_le hf.length.le
-          refine ScopedTyping.ofComplete (rhs.toCore_openTyVars hr (Xs.take scheme.paramCount)) ?_ ?_
+          refine ScopedTyping.ofComplete (rhs.source_toCore_openTyVars hr (Xs.take scheme.paramCount)) ?_ ?_
           · intro v hv
             rcases Expr.tyFreeVars_openTyVars hv with hv | hv
             · exact List.mem_append_left _ (hrhsScope v hv)
@@ -414,7 +420,7 @@ theorem ScopedTyping.ofComplete {input : InferInput} {K : List Nat} {ctx : Ctx}
           · simpa only [htake, Expr.openBoundTyVars] using hgen Xs hf
         · intro v hv; exact hscope v (List.mem_append_right _ hv)
   case match_ scrut branches =>
-    simp only [InferInput.toCore, bind, pure, Option.bind_eq_some_iff, Option.some.injEq] at hemb
+    simp only [Expr.toCore, bind, pure, Option.bind_eq_some_iff, Option.some.injEq] at hemb
     obtain ⟨scrut', hs, branches', hbs, rfl⟩ := hemb
     cases ht with
     | match_ hscrut hne hbranches =>
@@ -438,14 +444,14 @@ theorem ScopedTyping.ofComplete {input : InferInput} {K : List Nat} {ctx : Ctx}
         | wildcard hbody => exact .wildcard (ScopedTyping.ofComplete heq hcoreScope hbody)
 
   case letRec bindings body =>
-    have rawScope : ∀ v ∈ (InferInput.letRec bindings body).rigidVars, v ∈ K :=
-      fun v hv => hscope v ((InferInput.toCore_rigidVars _ hemb v).mp hv)
+    have rawScope : ∀ v ∈ (Expr.letRec bindings body).rigidVars, v ∈ K :=
+      fun v hv => hscope v ((Expr.source_toCore_rigidVars _ hemb v).mp hv)
     have hRows : ∀ binding ∈ bindings,
         ∀ v ∈ binding.ann.rigidVars ++ binding.rhs.rigidVars, v ∈ K := by
       intro binding hb v hv
       exact rawScope v (List.mem_append_left _
         (rigidBindingVars_mem_iff.mpr ⟨binding, hb, (List.mem_append.mp hv)⟩))
-    simp only [InferInput.toCore, bind, pure, Option.bind_eq_some_iff, Option.some.injEq] at hemb
+    simp only [Expr.toCore, bind, pure, Option.bind_eq_some_iff, Option.some.injEq] at hemb
     obtain ⟨coreBindings, hr, coreBody, hb, rfl⟩ := hemb
     obtain ⟨hErased, hBindingData⟩ := completeBindings_data hr
     cases ht with
@@ -533,26 +539,15 @@ theorem ScopedTyping.ofComplete {input : InferInput} {K : List Nat} {ctx : Ctx}
         exact recStage_empty_prefixes ctx specs prefixes0 done G Xs hp0Nil
       have annMonoAbsent : ∀ (member : Nat) (binding : InputRecBinding) (ty : Ty),
           bindings[member]? = some binding → specs[member]? = some (.mono ty) →
-          binding.ann = .absent := by
+          binding.ann.annotationView = .absent := by
         intro member binding ty hbi hti
         have heq := congrArg (fun xs => xs[member]?) hw0.anns_eq
         simp only [List.getElem?_map, hti, hbi, Option.map_some, RecSpec.ann,
           InputRecBinding.recMode, Option.some.injEq] at heq
         have hvalid := (hBindingData binding (List.mem_of_getElem? hbi)).1
-        cases ha : binding.ann with
-        | absent => rfl
-        | complete scheme =>
-          have hh : (none : Option PolyTy) = some scheme := by
-            simpa only [ha, PartialCore.Ann.recModeAnn] using heq
-          cases hh
-        | template template =>
-          have hh : (none : Option (Option PolyTy)) = some none := by
-            simpa only [ha, PartialCore.Ann.toCore, PartialCore.Ann.recModeAnn] using hvalid
-          cases hh
-        | partialForall n template =>
-          have hh : (none : Option (Option PolyTy)) = some none := by
-            simpa only [ha, PartialCore.Ann.toCore, PartialCore.Ann.recModeAnn] using hvalid
-          cases hh
+        have hview := binding.ann.annotationView_toCore hvalid
+        have hnone : binding.ann.recModeAnn = none := heq.symm
+        simpa only [hnone, PartialCore.Ann.ofCore] using hview
       refine ScopedTyping.letRec (specs := specs') (groups := groups) (prefixes := prefixes')
         (G := W) (L := L') (hErased ▸ validResidualGroups_erase_iff.mpr hg)
         hw' hp' ?_ hRows ?_ ?_ ?_ ?_
@@ -570,7 +565,7 @@ theorem ScopedTyping.ofComplete {input : InferInput} {K : List Nat} {ctx : Ctx}
         | poly scheme => cases heq
         | mono ty0 =>
           cases heq
-          rw [annMonoAbsent member binding ty0 hbi ht0]
+          simp only [Option.RecMatches, annMonoAbsent member binding ty0 hbi ht0]
           exact ⟨rfl, rfl, ⟨.absent (Ty.closeOver_preserves_bvars hlc)⟩⟩
       · intro stage component hs Xs hf member hm binding names ty hbi hni hti
         have hn := hp'Nil member
@@ -586,10 +581,10 @@ theorem ScopedTyping.ofComplete {input : InferInput} {K : List Nat} {ctx : Ctx}
           obtain ⟨coreBinding, hc, _, hemb⟩ := completeBindings_lookup hr hbi
           have hcTyping := hMonoCore stage component hs Xs (oldFresh Xs hf)
             member hm coreBinding ty0 hc ht0
-          have ho := binding.rhs.toCore_openTyVars hemb []
+          have ho := binding.rhs.source_toCore_openTyVars hemb []
           rw [core_openTyVars_nil] at ho
           change ScopedTyping (K ++ Xs) (recStageCtx ctx specs' prefixes' (groups.take stage).flatten W Xs)
-            (binding.rhs.openTyVars []) (Ty.renameG W Xs (Ty.renameG G W ty0))
+            (binding.rhs.openSourceTyVars []) (Ty.renameG W Xs (Ty.renameG G W ty0))
           have hsquare := Ty.renameG_subst_fresh_pool (S := []) (hw.mono_lc ty0 (List.mem_of_getElem? ht0)) (by simp)
             hWlen hw.nodup hWnd hGW (hWmono ty0 (List.mem_of_getElem? ht0)) (by simp) (by simp)
             (hf.length.trans hWlen) (hGXs Xs hf) (hWXs Xs hf) (by simp)
@@ -599,7 +594,7 @@ theorem ScopedTyping.ofComplete {input : InferInput} {K : List Nat} {ctx : Ctx}
           refine ScopedTyping.ofComplete ho ?_ hcTyping
           intro v hv
           exact List.mem_append_left _ (hRows binding (List.mem_of_getElem? hbi) v
-            (List.mem_append_right _ ((InferInput.toCore_rigidVars _ hemb v).mpr hv)))
+            (List.mem_append_right _ ((Expr.source_toCore_rigidVars _ hemb v).mpr hv)))
       · intro member binding scheme hbi hsi Ys hy
         rw [List.getElem?_map] at hsi
         obtain ⟨spec, hs0, heq⟩ := Option.map_eq_some_iff.mp hsi
@@ -614,19 +609,190 @@ theorem ScopedTyping.ofComplete {input : InferInput} {K : List Nat} {ctx : Ctx}
             (List.mem_iff_getElem?.mpr ⟨member, List.getElem?_zip_eq_some.mpr ⟨hc, hs0⟩⟩) scheme0 rfl Ys hy0
           rw [hbodyCtx]
           have hsz := input_binding_size (List.mem_of_getElem? hbi)
-          refine ScopedTyping.ofComplete (binding.rhs.toCore_openTyVars hemb Ys) ?_ hcTyping
+          refine ScopedTyping.ofComplete (binding.rhs.source_toCore_openTyVars hemb Ys) ?_ hcTyping
           intro v hv
           rcases Expr.tyFreeVars_openTyVars hv with hv | hv
           · exact List.mem_append_left _ (hRows binding (List.mem_of_getElem? hbi) v
-              (List.mem_append_right _ ((InferInput.toCore_rigidVars _ hemb v).mpr hv)))
+              (List.mem_append_right _ ((Expr.source_toCore_rigidVars _ hemb v).mpr hv)))
           · exact List.mem_append_right _ hv
       · rw [hbodyCtx]
         refine ScopedTyping.ofComplete hb ?_ hbody
         intro v hv
-        exact rawScope v (List.mem_append_right _ ((InferInput.toCore_rigidVars _ hb v).mpr hv))
-termination_by input.size
+        exact rawScope v (List.mem_append_right _ ((Expr.source_toCore_rigidVars _ hb v).mpr hv))
+termination_by input.sourceSize
 decreasing_by
-  all_goals simp only [hinput, InferInput.size, InferInput.openTyVars, InferInput.size_openTyVarsFrom] at *
+  all_goals simp only [hinput, Expr.sourceSize, Expr.openSourceTyVars, Expr.source_size_openTyVarsFrom] at *
   all_goals omega
 
 #print axioms ScopedTyping.ofComplete
+
+/-- The independent rules conservatively recover ordinary typing whenever the
+input is already complete. This retains complete annotations and recursion. -/
+theorem ScopedTyping.toCore (h : ScopedTyping K ctx input ty) {core : Expr}
+    (hc : input.toCore = some core) :
+    TypeOfHM ctx core ty ∧ (∀ v ∈ core.tyFreeVars, v ∈ K) := by
+  induction h using ScopedTyping.rec
+      (motive_2 := fun K ctx branch scrutTy resultTy _ =>
+        ∀ {body : Expr}, branch.2.toCore = some body →
+          TypeOfMatchBranch ctx (branch.1, body) scrutTy resultTy ∧
+            (∀ v ∈ body.tyFreeVars, v ∈ K)) generalizing core with
+
+  | primLit ht => cases hc; exact ⟨ht, by simp [Expr.tyFreeVars]⟩
+  | primBinOp ht => cases hc; exact ⟨ht, by simp [Expr.tyFreeVars]⟩
+  | @lambda ann _ _ body _ param hlc hfits hrigid _ ih =>
+    simp only [Expr.toCore, bind, pure, Option.bind_eq_some_iff, Option.some.injEq] at hc
+    obtain ⟨ann', ha, body', hb, rfl⟩ := hc
+    obtain ⟨ht, hs⟩ := ih hb
+    have hpin : ann'.Pins param := by
+      cases ann with
+      | none => cases ha; intro a h; cases h
+      | some template =>
+        simp only [completeLambdaAnn, bind, pure, Option.bind_eq_some_iff,
+          Option.some.injEq] at ha
+        obtain ⟨t, ht, rfl⟩ := ha
+        intro a ha
+        cases ha
+        exact (hfits template rfl).toCore_eq ht
+    refine ⟨.lambda hlc hpin rfl ht, ?_⟩
+    intro v hv
+    rcases List.mem_append.mp hv with hv | hv
+    · cases ann with
+      | none => cases ha; cases hv
+      | some template =>
+        simp only [completeLambdaAnn, bind, pure, Option.bind_eq_some_iff,
+          Option.some.injEq] at ha
+        obtain ⟨t, ht, rfl⟩ := ha
+        exact hrigid template rfl v ((PartialCore.Template.source_toCore_rigidVars ht v).mpr hv)
+    · exact hs v hv
+  | app _ _ ihf ihx =>
+    simp only [Expr.toCore, bind, pure, Option.bind_eq_some_iff, Option.some.injEq] at hc
+    obtain ⟨f, hf, x, hx, rfl⟩ := hc
+    obtain ⟨htf, hsf⟩ := ihf hf
+    obtain ⟨htx, hsx⟩ := ihx hx
+    exact ⟨.app htf htx, fun v hv => (List.mem_append.mp hv).elim (hsf v) (hsx v)⟩
+  | @letIn ann _ _ rhs body _ M L hwf _ hfits _ _ ihr ihb =>
+    simp only [Expr.toCore, bind, pure, Option.bind_eq_some_iff, Option.some.injEq] at hc
+    obtain ⟨ann', ha, rhs', hr, body', hb, rfl⟩ := hc
+    obtain ⟨Xs, hlen, hnd, hav⟩ := exists_fresh_names L M.paramCount
+    have hXs : FreshNames L M.paramCount Xs := ⟨hlen, hnd, hav⟩
+    have hfit := hfits.open Xs hXs.length.ge
+    have hview := ann.annotationView_toCore ha
+    cases ann' with
+    | some scheme =>
+      have hmode := hfits.isSignature
+      simp [hview, PartialCore.Ann.ofCore, PartialCore.Ann.isSignature] at hmode
+    | none =>
+      obtain ⟨htb, hsb⟩ := ihb hb
+      refine ⟨.letIn hwf (by intro a h; cases h) (fun Ys hYs => (ihr Ys hYs hr).1) rfl htb, ?_⟩
+      intro v hv
+      rcases List.mem_append.mp hv with hv | hv
+      · exact (ihr Xs hXs hr).2 v hv
+      · exact hsb v hv
+  | @letSignature K ctx body bodyTy ann rhs M L hwf hann hrhs hfits _ _ ihr ihb =>
+    simp only [Expr.toCore, bind, pure, Option.bind_eq_some_iff, Option.some.injEq] at hc
+    obtain ⟨ann', ha, rhs', hr, body', hb, rfl⟩ := hc
+    obtain ⟨Xs, hlen, hnd, hav⟩ := exists_fresh_names L M.paramCount
+    have hXs : FreshNames L M.paramCount Xs := ⟨hlen, hnd, hav⟩
+    have hfit := hfits.open Xs hXs.length.ge
+    have hview := ann.annotationView_toCore ha
+    cases ann' with
+    | none =>
+      have hmode := hfits.isSignature
+      simp [hview, PartialCore.Ann.ofCore, PartialCore.Ann.isSignature] at hmode
+    | some scheme =>
+      have hcount : ann.paramCount = scheme.paramCount := ann.paramCount_toCore ha
+      simp only [Option.SignatureFits, hview, PartialCore.Ann.ofCore] at hfit
+      cases hfit
+      obtain ⟨htb, hsb⟩ := ihb hb
+      refine ⟨.letIn (L := L) hwf (fun _ heq => Option.some.inj heq) ?_ rfl htb, ?_⟩
+      · intro fresh hf
+        have htake : fresh.take M.paramCount = fresh := by
+          exact List.take_of_length_le hf.length.le
+        have hemb := rhs.source_toCore_openTyVars hr (fresh.take M.paramCount)
+        have ht := (ihr fresh hf (by simpa only [hcount] using hemb)).1
+        simpa only [hcount, htake, Expr.openBoundTyVars] using ht
+      · intro v hv
+        rcases List.mem_append.mp hv with hprefix | hv
+        · rcases List.mem_append.mp hprefix with hv | hv
+          · exact hann v ((Option.mem_annotationView_rigidVars ann v).mp
+              (by simpa only [hview, PartialCore.Ann.ofCore, PartialCore.Ann.rigidVars] using hv))
+          · exact hrhs v ((Expr.source_toCore_rigidVars rhs hr v).mpr hv)
+        · exact hsb v hv
+  | var hlook hlc hinst => cases hc; exact ⟨.var hlook hlc hinst, by simp [Expr.tyFreeVars]⟩
+  | ctor hlook hlc hinst => cases hc; exact ⟨.ctor hlook hlc hinst, by simp [Expr.tyFreeVars]⟩
+
+  | match_ _ hne _ ihs ihbranches =>
+    simp only [Expr.toCore, bind, pure, Option.bind_eq_some_iff, Option.some.injEq] at hc
+    obtain ⟨scrut', hs, branches', hbs, rfl⟩ := hc
+    obtain ⟨hts, hscopes⟩ := ihs hs
+    refine ⟨.match_ hts ?_ ?_, ?_⟩
+    · intro hempty
+      have hlen := completeBranches_length hbs
+      rw [hempty, List.length_nil] at hlen
+      exact hne (List.length_eq_zero_iff.mp hlen)
+    · intro branch hb
+      obtain ⟨body, hbody, heq⟩ := completeBranches_backward hbs hb
+      exact (ihbranches (branch.1, body) hbody heq).1
+    · intro v hv
+      rcases List.mem_append.mp hv with hv | hv
+      · exact hscopes v hv
+      · obtain ⟨branch, hb, hv⟩ := branchFreeVars_iff.mp hv
+        obtain ⟨body, hbody, heq⟩ := completeBranches_backward hbs hb
+        exact (ihbranches (branch.1, body) hbody heq).2 v hv
+  | letRec hgroups hwf hp hG hRows hMatches hMono hPoly hBody ihMono ihPoly ihBody =>
+    expose_names
+    have hRaw := (ScopedTyping.letRec hgroups hwf hp hG hRows hMatches hMono hPoly hBody).rigidVars
+    have hWhole := hc
+    simp only [Expr.toCore, bind, pure, Option.bind_eq_some_iff, Option.some.injEq] at hc
+    obtain ⟨coreBindings, hr, coreBody, hb, rfl⟩ := hc
+    obtain ⟨hErased, hBindingData⟩ := completeBindings_data hr
+    have hpNil := complete_prefixes_empty hp
+      (by simpa only [List.length_map] using hwf.length)
+      (fun binding hm => (hBindingData binding hm).2)
+    have hCoreAnns : coreBindings.map RecBinding.ann =
+        (bindings.map InputRecBinding.recMode).map RecBinding.ann := by
+      have := congrArg (List.map RecBinding.ann) hErased
+      simpa only [List.map_map, Function.comp_def, eraseRecRhs,
+        InputRecBinding.recMode] using this
+    have hbodyCtx : recBodyCtx ctx_1 specs prefixes G = RecSpecs.bodyCtx ctx_1 specs G := by
+      unfold recBodyCtx RecSpecs.bodyCtx
+      rw [recCompleted_empty_prefixes specs prefixes G hpNil]
+    refine ⟨TypeOfHM.letRec (groups := groups) (G := G) (L := G ++ L)
+      (validResidualGroups_erase_iff.mp (hErased ▸ hgroups))
+      ⟨hwf.anns_eq.trans hCoreAnns.symm, hwf.nodup, hwf.mono_lc, hwf.poly_wf⟩
+      ?_ ?_ rfl ?_, ?_⟩
+    · intro stage component hs Xs hf member hm coreBinding ty hcore ht
+      obtain ⟨binding, hr0, _, hemb⟩ := completeBindings_lookup_back hr hcore
+      have hi : member < specs.length := (List.getElem?_eq_some_iff.mp ht).1
+      have hip : member < prefixes.length := by rw [hp.length]; exact hi
+      have hn : prefixes[member]? = some [] := by
+        have hh := hpNil member
+        rw [List.getElem?_eq_getElem hip] at hh
+        rw [List.getElem?_eq_getElem hip]
+        simpa only [Option.getD_some] using congrArg some hh
+      have ho := binding.rhs.source_toCore_openTyVars hemb []
+      rw [core_openTyVars_nil] at ho
+      have hh := (ihMono stage component hs Xs hf member hm binding [] ty
+        hr0 hn ht ho).1
+      simpa only [recRenameNames, List.map_nil, recStage_empty_prefixes _ _ _ _ _ _ hpNil] using hh
+    · intro pair hpair scheme heq Ys hy
+      obtain ⟨member, hzip⟩ := List.mem_iff_getElem?.mp hpair
+      obtain ⟨hcore, ht⟩ := List.getElem?_zip_eq_some.mp hzip
+      rw [heq] at ht
+      obtain ⟨binding, hr0, _, hemb⟩ := completeBindings_lookup_back hr hcore
+      have hy0 : FreshNames L scheme.paramCount Ys :=
+        ⟨hy.length, hy.nodup, fun y hy' hl => hy.avoid y hy' (List.mem_append_right _ hl)⟩
+      have hh := (ihPoly member binding scheme hr0 ht Ys hy0
+        (binding.rhs.source_toCore_openTyVars hemb Ys)).1
+      simpa only [hbodyCtx] using hh
+    · simpa only [hbodyCtx] using (ihBody hb).1
+    · intro v hv
+      exact hRaw v ((Expr.source_toCore_rigidVars _ hWhole v).mpr hv)
+  | named hspec _ ih =>
+    rename_i body heq
+    obtain ⟨ht, hs⟩ := ih heq
+    exact ⟨.mk hspec rfl ht, hs⟩
+  | wildcard _ ih =>
+    rename_i body heq
+    obtain ⟨ht, hs⟩ := ih heq
+    exact ⟨.wildcard ht, hs⟩

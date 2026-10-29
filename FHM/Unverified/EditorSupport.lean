@@ -394,7 +394,7 @@ def collectHover (src : String) (p : Surface.Program) (binders : List BinderSpan
                 fail { diagAtSpan reason.message (some span) with code? := some reason.code }
             | none => fail (locateTypecheckFail ctors ke p binders sp)
           | some typed =>
-            if !(typed.lowering.mapExpr InferInput.erase).provenanceTotal ||
+            if !(typed.lowering.mapExpr Expr.erase).provenanceTotal ||
                 !typed.nodeTypesTotal || !typed.sourceTypesTotal ||
                 !typed.patternBinderTypesTotal then
               fail (diagAtSpan "internal inferred provenance coverage failure" (some scope))

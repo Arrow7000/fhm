@@ -216,8 +216,8 @@ def bindingAnn (typed : TypedLowered) (site : SurfaceBinderSite) : Option Bindin
 /-- Authored complete schemes passed the HM ceiling check. Partial modes keep
     their authored templates until presentation joins them to completed types. -/
 def declaredScheme (typed : TypedLowered) (site : SurfaceBinderSite) : Option PolyTy := do
-  let .complete scheme ← bindingAnn typed site | none
-  pure scheme
+  let ann ← bindingAnn typed site
+  ann.recModeAnn
 
 def binderType (typed : TypedLowered) (site : SurfaceBinderSite) : Option String :=
   match typed.inferredBinderSchemes.find? (fun p => p.1 == site) with

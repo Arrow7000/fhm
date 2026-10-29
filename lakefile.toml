@@ -17,9 +17,9 @@ roots = [
   "FHM.Pretty",
   "FHM.InferenceSupport",
   "FHM.AnnotationMatching",
+  "FHM.SourceAnnotations",
   "FHM.InferInput",
   "FHM.SourceTyping",
-  "FHM.SourceCompatibility",
   "FHM.AnnotationAllocation",
   "FHM.AnnotationAllocationTests",
   "FHM.NamedHoleTests",
@@ -43,7 +43,7 @@ roots = ["FHM.Examples"]
 name = "FHMCompatibility"
 # Historical complete-Core lowering, surface typing, and safety façade.
 # The production/default path uses `FHM.SurfaceBridge` and `FHM.Headlines`.
-roots = ["FHM.SurfaceBridge.CompleteCore", "FHM.Headlines.CompleteCore"]
+roots = ["FHM.SourceCompatibility", "FHM.SurfaceBridge.CompleteCore", "FHM.Headlines.CompleteCore"]
 
 [[lean_lib]]
 name = "FHMHistorical"

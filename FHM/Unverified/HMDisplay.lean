@@ -87,7 +87,7 @@ def resolvedSchemes (typed : TypedLowered) (site : SurfaceBinderSite) : List (Co
       | .letIn path => do
           let inferred := (typed.inference.binderSchemes.find? fun p => p.1 == .letIn path).map (·.2)
           let declared := match inputAtCorePath typed.input path with
-            | some (.letIn (.complete sig) _ _) => some sig
+            | some (.letIn ann _ _) => ann.recModeAnn
             | _ => none
           let sig ← inferred.orElse (fun _ => declared)
           pure (path ++ [.letRhs], sig)
@@ -96,7 +96,7 @@ def resolvedSchemes (typed : TypedLowered) (site : SurfaceBinderSite) : List (Co
           let declared := do
             let .letRec bindings _ ← inputAtCorePath typed.input path | none
             let binding ← bindings[member]?
-            match binding.ann with | .complete sig => some sig | _ => none
+            binding.ann.recModeAnn
           let sig ← inferred.orElse (fun _ => declared)
           pure (path ++ [.letRecRhs member], sig)
       | _ => none
@@ -112,7 +112,7 @@ def extendNames (written : List String) (count : Nat) (reserved : List String :=
 
 /-- Completion preserves the explicit forall prefix, including unused
 binders. Only newly generalized holes receive synthesized display names. -/
-def annotationNames (ann : BindingAnn) (written : List String) (sig : PolyTy)
+def annotationNames (ann : CheckAnn) (written : List String) (sig : PolyTy)
     (reserved : List String := []) : List String :=
   match ann with
   | .complete _ => written
@@ -122,7 +122,7 @@ def annotationNames (ann : BindingAnn) (written : List String) (sig : PolyTy)
 
 def bindingNames (typed : TypedLowered) (site : SurfaceBinderSite)
     (written : List String) (sig : PolyTy) (reserved : List String := []) : List String :=
-  (bindingAnn typed site).map (fun ann => annotationNames ann written sig reserved) |>.getD []
+  (bindingAnn typed site).map (fun ann => annotationNames ann.annotationView written sig reserved) |>.getD []
 
 def rhsPaths (typed : TypedLowered) (site : SurfaceBinderSite) : List CorePath :=
   let target : Option BinderOriginTarget := (typed.lowering.binderTargets.find? fun p => p.1 == site).map (·.2)

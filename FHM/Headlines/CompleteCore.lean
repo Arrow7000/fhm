@@ -292,7 +292,7 @@ def elaborateSafe (p : Surface.Program) : Option (Σ ctors : CtorEnv, Safe ctors
   match hlow : lowerCoreProgram p with
   | none => none
   | some (ctors, c) =>
-    match hresult : inferWithTypes ctors (InferInput.ofCore c) with
+    match hresult : inferWithTypes ctors (Expr.ofCore c) with
     | none => none
     | some result =>
       match hcov : checkExhaustive ctors p.term with

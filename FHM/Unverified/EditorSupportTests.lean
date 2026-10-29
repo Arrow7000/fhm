@@ -833,7 +833,7 @@ private def copiedHoleFallback :=
       | none => false
       | some lowered =>
           (sp.references.filter fun r => r.kind == .typeHole).length == 1 &&
-          (lowered.mapExpr InferInput.erase).provenanceTotal &&
+          (lowered.mapExpr Expr.erase).provenanceTotal &&
           lowered.sourceTargets.any fun (_, target) => match target with
             | .absent _ => false
             | .present paths => paths.length == 3 && paths.all fun path =>
@@ -943,7 +943,7 @@ private def lowersWith (src : String) (check : InferInput → Bool) : Bool :=
         SurfaceBridge.Provenance.lowerWithProvenance ctors p.term tree
       match result with
       | none => false
-      | some lowered => (lowered.mapExpr InferInput.erase).provenanceTotal && check lowered.expr
+      | some lowered => (lowered.mapExpr Expr.erase).provenanceTotal && check lowered.expr
 
 private def nestedRecCapture :=
   "let f : {a} _ = \\x -> let g : {b} b -> _ = \\(y : a) -> " ++
@@ -956,12 +956,12 @@ private def nestedRecIndependent :=
 -- and the independently declared `b` has index0. Outer `a` is absent from f's
 -- template, so only the provisional-forall frame can prevent its capture.
 #guard lowersWith nestedRecCapture fun
-  | .letRec [⟨.partialForall 1 .hole,
-      .lambda none (.letRec [⟨.partialForall 1 _, .lambda (some (.fixed (.bvar 1))) _⟩] _)⟩] _ => true
+  | .letRec [⟨some ⟨1, .hole⟩,
+      .lambda none (.letRec [⟨some ⟨1, _⟩, .lambda (some (.fixed (.bvar 1))) _⟩] _)⟩] _ => true
   | _ => false
 #guard lowersWith nestedRecIndependent fun
-  | .letRec [⟨.partialForall 1 .hole,
-      .lambda none (.letRec [⟨.partialForall 1 _, .lambda (some (.fixed (.bvar 0))) _⟩] _)⟩] _ => true
+  | .letRec [⟨some ⟨1, .hole⟩,
+      .lambda none (.letRec [⟨some ⟨1, _⟩, .lambda (some (.fixed (.bvar 0))) _⟩] _)⟩] _ => true
   | _ => false
 
 private def recCompleteLambda :=
@@ -978,12 +978,12 @@ private def recCompleteNestedSpecialized :=
 -- A complete subtree can still mention an outer provisional variable. Its
 -- successful `toCore` conversion must not force an ineligible compatibility path.
 #guard lowersWith recCompleteLambda fun
-  | .letRec [⟨.partialForall 1 _, rhs@(.lambda (some (.fixed (.bvar 0))) _)⟩] _ =>
-      rhs.toCore.isSome && (rhs.openTyVars [1000]).rigidVars.contains 1000
+  | .letRec [⟨some ⟨1, _⟩, rhs@(.lambda (some (.fixed (.bvar 0))) _)⟩] _ =>
+      rhs.toCore.isSome && (rhs.openSourceTyVars [1000]).rigidVars.contains 1000
   | _ => false
 #guard lowersWith recCompleteNested fun
-  | .letRec [⟨.partialForall 1 _, rhs@(.lambda none (.letIn (.complete scheme) _ _))⟩] _ =>
-      scheme.paramCount == 0 && rhs.toCore.isSome && (rhs.openTyVars [1000]).rigidVars.contains 1000
+  | .letRec [⟨some ⟨1, _⟩, rhs@(.lambda none (.letIn (some scheme) _ _))⟩] _ =>
+      scheme.paramCount == 0 && rhs.toCore.isSome && (rhs.openSourceTyVars [1000]).rigidVars.contains 1000
   | _ => false
 #guard lowersWith recCompleteLambdaSpecialized (fun _ => true)
 #guard lowersWith recCompleteNestedSpecialized (fun _ => true)
@@ -997,12 +997,12 @@ private def ordinaryRecProtected :=
   "let f : {a} a -> _ = \\x -> let id = \\(y : a) -> y " ++
   "in if True then id x else f x\n(f 1, f True)\n"
 #guard lowersWith ordinaryRecCapture fun
-  | .letRec [⟨.partialForall 1 .hole,
-      .lambda none (.letIn .absent (.lambda (some (.fixed (.bvar 0))) _) _)⟩] _ => true
+  | .letRec [⟨some ⟨1, .hole⟩,
+      .lambda none (.letIn none (.lambda (some (.fixed (.bvar 0))) _) _)⟩] _ => true
   | _ => false
 #guard lowersWith ordinaryRecProtected fun
-  | .letRec [⟨.partialForall 1 _,
-      .lambda none (.letIn .absent (.lambda (some (.fixed (.bvar 0))) _) _)⟩] _ => true
+  | .letRec [⟨some ⟨1, _⟩,
+      .lambda none (.letIn none (.lambda (some (.fixed (.bvar 0))) _) _)⟩] _ => true
   | _ => false
 
 -- These sources exercise distinct member prefixes over shared/permuted roots.
@@ -1011,21 +1011,21 @@ private def ordinaryRecProtected :=
 #guard lowersWith
   ("let f : {left} left -> _ = \\(x : left) -> if True then x else g x\n" ++
    "let g : {right} right -> _ = \\(y : right) -> f y\n(f 1, g True)\n") fun
-  | .letRec [⟨.partialForall 1 _, _⟩, ⟨.partialForall 1 _, _⟩] _ => true
+  | .letRec [⟨some ⟨1, _⟩, _⟩, ⟨some ⟨1, _⟩, _⟩] _ => true
   | _ => false
 #guard lowersWith
   ("let f : {alpha beta} alpha -> beta -> _ = \\(x : alpha) (y : beta) -> " ++
    "if True then (x, y) else g y x\n" ++
    "let g : {gamma delta} gamma -> delta -> _ = \\(u : gamma) (v : delta) -> f v u\n" ++
    "(f 1 True, g False 2)\n") fun
-  | .letRec [⟨.partialForall 2 _, _⟩, ⟨.partialForall 2 _, _⟩] _ => true
+  | .letRec [⟨some ⟨2, _⟩, _⟩, ⟨some ⟨2, _⟩, _⟩] _ => true
   | _ => false
 #guard lowersWith
   ("let f : {unused left} left -> _ -> _ = \\(x : left) z -> " ++
    "if True then (x, z) else g x z\n" ++
    "let g : {right spare} right -> _ -> _ = \\(y : right) w -> f y w\n" ++
    "(f 1 True, g False 2)\n") fun
-  | .letRec [⟨.partialForall 2 _, _⟩, ⟨.partialForall 2 _, _⟩] _ => true
+  | .letRec [⟨some ⟨2, _⟩, _⟩, ⟨some ⟨2, _⟩, _⟩] _ => true
   | _ => false
 
 -- Keep the same-member injectivity canary on the partial-opening path: a
@@ -1037,11 +1037,11 @@ private def recPrefixIndependent :=
   "let f : {a b} a -> b -> _ = \\x y -> " ++
   "if True then x else f x y\n(f 1 True, f False 2)\n"
 #guard lowersWith recPrefixCollapse fun
-  | .letRec [⟨.partialForall 2 (.arrow (.fixed (.bvar 0)) (.arrow (.fixed (.bvar 1)) .hole)),
+  | .letRec [⟨some ⟨2, (.arrow (.fixed (.bvar 0)) (.arrow (.fixed (.bvar 1)) .hole))⟩,
       .lambda none (.lambda none _)⟩] _ => true
   | _ => false
 #guard lowersWith recPrefixIndependent fun
-  | .letRec [⟨.partialForall 2 (.arrow (.fixed (.bvar 0)) (.arrow (.fixed (.bvar 1)) .hole)),
+  | .letRec [⟨some ⟨2, (.arrow (.fixed (.bvar 0)) (.arrow (.fixed (.bvar 1)) .hole))⟩,
       .lambda none (.lambda none _)⟩] _ => true
   | _ => false
 
@@ -1053,8 +1053,8 @@ private def recPrefixIndependent :=
   ("let h : {z} z -> z = \\x -> f x\n" ++
    "let g = \\x -> h x\n" ++
    "let f : {a} a -> _ = \\x -> g x\nf\n") fun
-  | input@(.letRec [⟨.partialForall 1 (.arrow (.fixed (.bvar 0)) .hole), _⟩,
-      ⟨.absent, _⟩, ⟨.complete h, _⟩] _) =>
+  | input@(.letRec [⟨some ⟨1, (.arrow (.fixed (.bvar 0)) .hole)⟩, _⟩,
+      ⟨none, _⟩, ⟨some h, _⟩] _) =>
       h.paramCount == 1 && input.toCore.isNone
   | _ => false
 
@@ -1066,8 +1066,8 @@ private def recPrefixIndependent :=
    "let g = \\x -> h x\n" ++
    "let f : {a} (a,a) -> _ = \\x -> g x\n" ++
    "(f (1,2), f (True,False))\n") fun
-  | input@(.letRec [⟨.partialForall 1 (.arrow (.custom _ [.fixed (.bvar 0), .fixed (.bvar 0)]) .hole), _⟩,
-      ⟨.absent, _⟩, ⟨.complete h, _⟩] _) =>
+  | input@(.letRec [⟨some ⟨1, (.arrow (.custom _ [.fixed (.bvar 0), .fixed (.bvar 0)]) .hole)⟩, _⟩,
+      ⟨none, _⟩, ⟨some h, _⟩] _) =>
       h.paramCount == 1 && input.toCore.isNone
   | _ => false
 

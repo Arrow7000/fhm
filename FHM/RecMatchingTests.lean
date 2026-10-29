@@ -5,7 +5,7 @@ retain the existing dependency cuts, written prefixes, and implicit polymorphism
 
 namespace RecMatchingTests
 
-def ann : BindingAnn := .partialForall 1 (.arrow (.fixed (.bvar 0)) .hole)
+def ann : CheckAnn := .partialForall 1 (.arrow (.fixed (.bvar 0)) .hole)
 def checked : Ty := .arrow (.fvar 5) (.fvar 6)
 
 theorem checkedMatches : ann.RecMatches [5] [5, 6] checked := by
@@ -50,7 +50,7 @@ theorem conflictingFixed_rejected :
   cases hc with
   | template _ hc => cases hc.fits
 
-def outerAnn : BindingAnn := .partialForall 1 (.arrow (.fixed (.fvar 7)) .hole)
+def outerAnn : CheckAnn := .partialForall 1 (.arrow (.fixed (.fvar 7)) .hole)
 def outerTy : Ty := .arrow (.fvar 7) (.fvar 6)
 
 theorem outerMatches : outerAnn.RecMatches [5] [5, 6] outerTy := by
@@ -64,7 +64,7 @@ theorem outerMatches : outerAnn.RecMatches [5] [5, 6] outerTy := by
   · simp [outerAnn, PartialCore.Ann.rigidVars, PartialCore.Template.rigidVars, Ty.freeVars]
   · simp
 
-example : (outerAnn.substTyFvars [(7, .prim .int)]).RecMatches [5] [5, 6]
+example : (outerAnn.substSourceTyFvars [(7, .prim .int)]).RecMatches [5] [5, 6]
     (Subst.onTy [(7, .prim .int)] outerTy) := by
   apply outerMatches.onSubst_source
   · intro p hp
@@ -76,11 +76,12 @@ example : (outerAnn.substTyFvars [(7, .prim .int)]).RecMatches [5] [5, 6]
   · simp
 
 def bindings : List InputRecBinding :=
-  [{ ann := ann, rhs := .lambda (some (.fixed (.bvar 0))) (.var 0) }]
-def body : InferInput := .letIn .absent (.app (.var 0) (.primLit (.int 1)))
+  [{ ann := some ⟨1, .arrow (.fixed (.bvar 0)) .hole⟩,
+     rhs := .lambda (some (.fixed (.bvar 0))) (.var 0) }]
+def body : InferInput := .letIn none (.app (.var 0) (.primLit (.int 1)))
   (.app (.var 1) (.primLit (.char 'x')))
 def program : InferInput := .letRec bindings body
-def omitted : InferInput := .letRec [{ ann := .absent, rhs := .lambda none (.var 0) }] body
+def omitted : InferInput := .letRec [{ ann := none, rhs := .lambda none (.var 0) }] body
 
 #guard match inferWithTypes [] program with
   | some r => match r.ty with | .prim .char => true | _ => false
@@ -94,10 +95,28 @@ def omitted : InferInput := .letRec [{ ann := .absent, rhs := .lambda none (.var
 
 -- Complete recursive signatures retain their previous polymorphic recursion mode.
 def complete : InferInput := .letRec
-  [{ ann := .complete ⟨1, .arrow (.bvar 0) (.bvar 0)⟩,
+  [{ ann := (Option.ofCore (some ⟨1, .arrow (.bvar 0) (.bvar 0)⟩)),
      rhs := .lambda (some (.fixed (.bvar 0))) (.var 0) }] body
 #guard match inferWithTypes [] complete with
   | some r => match r.ty with | .prim .char => true | _ => false
+  | none => false
+
+-- Hole-free structured templates select the same complete contract as their
+-- fixed-type spelling. This is the parser's existing polymorphic recursion policy.
+def structuredAnn : BindingAnn :=
+  some ⟨1, .arrow (.fixed (.bvar 0)) (.fixed (.prim .int))⟩
+
+example : structuredAnn.annotationView = .complete ⟨1, .arrow (.bvar 0) (.prim .int)⟩ := rfl
+
+def structuredPolyrec : InferInput := .letRec
+  [{ ann := structuredAnn,
+     rhs := .lambda (some (.fixed (.bvar 0)))
+       (.letIn none (.app (.var 1) (.primLit (.int 1)))
+         (.app (.var 2) (.primLit (.char 'x')))) }]
+  (.app (.var 0) (.primLit (.int 0)))
+
+#guard match inferWithTypes [] structuredPolyrec with
+  | some r => match r.ty with | .prim .int => true | _ => false
   | none => false
 
 /-- Production inference exposes one closed witness per annotation, before any
