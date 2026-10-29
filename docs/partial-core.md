@@ -1,10 +1,18 @@
 # Canonical partial Core and annotation-local named holes
 
-The production source language is `InferInput`, declared in `Core.lean`, with
-`TyTemplate` and `BindingAnn` as aliases for the shared `PartialCore.Template`
-and `PartialCore.Ann` types. `PartialCore.Source` is an alias for that same
-source type. The namespace name is historical; there is no separate prototype
-source language or prototype inference worker.
+There is one `Expr T` inductive family and one `Scheme T` wrapper. Parameters
+store `Option T`; ordinary and recursive bindings store `Option (Scheme T)`.
+Canonical source is `InferInput := Expr TyTemplate`, and `PolyTy := Scheme Ty`.
+`PartialCore.Source` names that same source instance; it is not another AST.
+There is one universe of types, contexts, schemes and constructors.
+
+A source binding stores only an optional written binder count and template.
+`Option.annotationView` derives the checking cases (`CheckAnn`) from that
+content: absent, partial monotype, partial written forall, or hole-free scheme.
+No complete/partial tag is stored in the source. Every hole-free annotation
+follows the parser's existing complete-signature policy, including polymorphic
+recursive use. This also normalizes hand-built Core nodes whose old tags
+previously disagreed with their hole-free contents.
 
 `InputTyping` is the main declarative source judgment. It has structural rules
 for every source form, including ordinary and signed lets and recursive groups.
@@ -17,16 +25,17 @@ completed subtree. Inference proves `InputTyping` directly, and
 The syntax is below inference and has no solver state:
 
 ```text
-Core                       Ty, PolyTy, Ctx, source/annotation/runtime syntax
+Core                       Ty, Scheme T, Expr T, Ctx, partial type syntax
   → RuntimeTyping
   → InferenceSupport       neutral substitution, unification and runtime facts
     → AnnotationMatching   pure matching, local assignments and completions
       → AnnotationAllocation
+      → SourceAnnotations  written schemes, checking views, transport
       → InferInput         source operations and scoped proof refinement
         → SourceTyping     InputTyping, direct erasure, refinement equivalence
-          → SourceCompatibility
           → InferW
-          → Completeness
+            → Completeness
+          → SourceCompatibility  optional complete-Core conversions
 ```
 
 `AnnotationAllocation` imports only `AnnotationMatching`; it does not depend on
@@ -78,8 +87,8 @@ before that combination, so desugaring cannot accidentally extend their scope.
 The qualification separator is not a source identifier character. Original
 token names and annotation spans remain available to the editor.
 
-Ordinary lets store `Ann.MonoMatches`; signed lets store
-`Ann.SignatureMatches`; recursive groups store `RecAnnotationsMatch` for each
+Ordinary lets require `MonoMatches` of the derived checking view; signed lets
+require `SignatureMatches`; recursive groups store `RecAnnotationsMatch` for each
 monomorphic member. These contain one closed `SchemeMatches` witness before
 any cofinite RHS or recursive-pool-opening premise. Thus the order is:
 
@@ -136,18 +145,19 @@ effect.
 
 ## Retained compatibility
 
-The historical `Expr` and `TypeOfHM` support completed-Core clients, neutral
-runtime/typing facts, and the opt-in `FHMCompatibility` façade. `InputTyping`
+The `Expr Ty` instance and historical `TypeOfHM` relation support complete-Core
+clients, neutral runtime/typing facts, and the opt-in `FHMCompatibility` façade. `InputTyping`
 has its own explicit primitive rules. Comparison rules require source typings
 for `True` and `False` at `Bool`, just as the historical rules did. Recursive
 rules use `SourceRec.MonoTyped` and `SourceRec.PolyTyped` to expose the existing
 staged policy without expanding it inside the main rule. Matching remains
 separate from that policy.
 
-The completed syntax is not a second production source language.
-`ScopedTyping.ofComplete` in
-`SourceCompatibility` derives structural source typing for complete syntax;
-it is not a typing constructor or soundness premise.
+Complete and partial annotations use instances of the same syntax family.
+`ScopedTyping.ofComplete` and `ScopedTyping.toCore` live in the optional
+`SourceCompatibility` module. Production completeness no longer imports it:
+primitive, variable and constructor cases use direct leaf inversions. These
+compatibility theorems are neither typing constructors nor soundness premises.
 
 Public `InferenceResult` contains type, substitution/frontier, node types and
 binder schemes, with no completed expression. The editor reads binding schemes
@@ -191,11 +201,11 @@ Required final gates are `lake build`, the CLI/editor/compatibility/example and
 grammar targets, `scripts/scratch-hm-audit.mjs`, `scripts/hm-editor-smoke.mjs`,
 the web tests and `scripts/check-unverified-boundary.sh`.
 
-Final results in the main worktree on 2026-10-27:
+Verification of the shared-source migration on 2026-10-29:
 
-- `lake build`: passed (736 jobs).
+- `lake build`: passed.
 - `lake build fhm FHMEditorTests FHMCompatibility FHMExamples fhm_grammar`:
-  passed (1653 jobs).
+  passed.
 - `node scripts/scratch-hm-audit.mjs`: 17 files; 13 accepted, four expected
   rejections, no failures. The existing anonymous-hole playground is included.
 - `node scripts/hm-editor-smoke.mjs`: 84/84 passed, including all 75 prior checks.
@@ -203,18 +213,22 @@ Final results in the main worktree on 2026-10-27:
   three hover snapshots and the grammar/token-export tests.
 - `bash scripts/check-unverified-boundary.sh` and `git diff --check`: passed.
 
-The 19 changed modules in the default trusted import closure contain no
+The modified modules in the trusted production import closure contain no
 `sorry`, `admit`, `axiom` declarations or `native_decide` proof escapes.
 The public production soundness, runtime erasure, completeness and principality
 theorems, together with assignment matching, substitution, opening, closing and
 allocation fidelity, were checked explicitly. They use only `propext`,
 `Classical.choice` and `Quot.sound`; repeated-name equality needs none.
 The optional `FHMExamples` library retains its pre-existing native concrete
-demo canaries; its only edits are annotation-namespace references. No new
-production proof depends on those canaries.
+demo canaries; its source fixtures now use optional schemes and inspect returned
+type facts. No new production proof depends on those canaries.
 
 The parser, diagnostic wording and editor provenance joins remain unverified,
 as before. Their operational regressions are covered by the executable tests.
-The remaining compatibility artifacts are described above. The planned shared
-`Expr T`/`Scheme T` syntax migration is still outstanding; implicit polymorphism
-and the recursive SCC/generalization policy remain unchanged.
+`InferCert` certifies the semantic inference result. Local matching and allocation
+fidelity are proved, but there is no array-wide theorem certifying every returned
+node/binder metadata entry or its projection into an editor hover.
+The remaining compatibility artifacts are described above. The shared
+`Expr T`/`Scheme T` migration removes the separate `InferInput` inductive and its
+two annotation parameters. Implicit polymorphism and recursive SCC/generalization
+policy remain unchanged; annotation matching stays separate from that policy.

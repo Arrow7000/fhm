@@ -10,8 +10,8 @@ type safety. See the [feature details](./docs/anonymous-type-holes.md).
 The [partial Core architecture](./docs/partial-core.md) judges source annotations
 directly. Inference proves that judgment, and runtime soundness follows by
 erasure. Ordinary, signed, and recursive annotations retain one local completion
-before fresh scheme openings; completed expressions remain compatibility and
-editor artifacts.
+before fresh scheme openings. The editor uses inferred node types, binder
+schemes and source provenance; inference returns no completed expression.
 
 ## A taste of the language
 
@@ -120,7 +120,7 @@ the earlier complete-Core surface-safety façade and demonstration.
 | **Surface lowering preserves partial annotations:** the structural lowering relation and executable lowerer agree on canonical `InferInput`, including holes, heads, patterns, and recursive groups. | `lower_sound`/`lower_complete`, `lowerProgram_sound`/`lowerProgram_complete` |
 | **Canonical inference is sound:** successful inference directly proves partial-source typing; erasure of the original source gives runtime typing. | `InferCert.inputSound_source`, `InferCert.inputSound`, `InputTyping.erase`, `inferWithTypes_runtime_sound` |
 | **Canonical inference is complete and principal:** inference accepts exactly independently well-typed partial inputs, and every valid result type factors through the inferred type. | `Infer.principal`, `Infer.complete`, `inferCore_accepts_iff`, `inferWithTypes_accepts_iff` |
-| **Complete Core uses the same inference engine:** `InferInput.ofCore` preserves source typing, acceptance, and residual principality. | `SurfaceBridge.coreTypecheck_accepts_iff`, `SurfaceBridge.inferOfCore_source_sound`, `SurfaceBridge.inferOfCore_principal` |
+| **Complete Core uses the same inference engine:** `Expr.ofCore` preserves source typing, acceptance, and residual principality. | `SurfaceBridge.coreTypecheck_accepts_iff`, `SurfaceBridge.inferOfCore_source_sound`, `SurfaceBridge.inferOfCore_principal` |
 | **Pattern compilation is correct:** nested matches compile to decision trees that select the same branch with the same bindings.                   | `PatComp.compile_correct_surface`, `PatComp.lowerMatch_adequate_of_typed` |
 | **Exhaustiveness checking is sound:** if the checker accepts a match, the match is exhaustive.                                                     | `checkExhaustive_sound`                                                   |
 | **Recursive grouping is correct:** dependency analysis splits definitions into exactly their strongly connected components.                        | `sccGroups_sound`, `sccGroups_complete`, `kosaraju_sound`                 |
@@ -130,8 +130,8 @@ the earlier complete-Core surface-safety façade and demonstration.
 unbounded evaluator used by `fhm run`. These live under
 [`FHM/Unverified/`](./FHM/Unverified/README.md) and are kept out of the
 verified build. Verified lowering starts at the surface syntax tree and returns
-canonical `InferInput`; inference completes that input into typed Core. Successful
-production provenance lowering is proved to return that same input term. Its
+canonical `InferInput := Expr TyTemplate`; inference returns type and editor
+facts. Successful production provenance lowering is proved to return that same input term. Its
 source-span tables and editor joins remain operational code. The
 verified evaluator (`runSafe` in `Headlines.lean`) is fuel-bounded, because the
 language allows non-terminating programs.
@@ -213,8 +213,9 @@ source text
 
 The surface language has names, nested patterns, and syntactic sugar. Core is
 a smaller language with de Bruijn indices and only flat, one-constructor-deep
-matches. `InferInput` is the canonical source syntax declared in `Core`, including
-partial annotations. `InputTyping` judges it directly. The CLI executes an
+matches. `Expr T` is the single Core syntax family. `InferInput := Expr TyTemplate`
+is its canonical source instance, including partial annotations; bindings use
+`Option (Scheme T)`. `InputTyping` judges it directly. The CLI executes an
 erasure of that original source; editor types and schemes come from metadata.
 Neither results nor the worker/certificate retain a completed expression.
 Recursive state stores schemes, metadata and checked flags.
@@ -234,7 +235,7 @@ The design choices that matter most:
 - **Declarative and algorithmic typing are kept separate.** `InputTyping`
   specifies canonical partial source using pure annotation matching. Named-hole
   assignments are existential and local to each annotation. Only inference
-  allocates metavariables. `TypeOfHM` and `InferInput.ofCore` support historical
+  allocates metavariables. `TypeOfHM` and `Expr.ofCore` support historical
   complete-Core clients; they use the same inference worker.
 - **Type variables use a locally nameless representation** with cofinite
   quantification, following
@@ -247,11 +248,12 @@ The design choices that matter most:
 
 | Module                                           | Contents                                                                         |
 | ------------------------------------------------ | -------------------------------------------------------------------------------- |
-| [`Core.lean`](./FHM/Core.lean)                   | Types, canonical source and annotations, completed/runtime syntax and semantics |
+| [`Core.lean`](./FHM/Core.lean)                   | Types, Scheme T, Expr T, partial annotations and runtime semantics |
 | [`InferenceSupport.lean`](./FHM/InferenceSupport.lean) | Shared unification, generalization, scheduling, and Core typing lemmas       |
 | [`AnnotationMatching.lean`](./FHM/AnnotationMatching.lean) | Pure local hole assignments, matching, closed completions, substitution and opening |
 | [`AnnotationAllocation.lean`](./FHM/AnnotationAllocation.lean) | Shared certified hole allocation/checking, independent of generalization policy |
-| [`InferInput.lean`](./FHM/InferInput.lean)       | Source operations, scoped inference proof refinement, compatibility completion |
+| [`SourceAnnotations.lean`](./FHM/SourceAnnotations.lean) | Written schemes, derived checking views, substitution and opening |
+| [`InferInput.lean`](./FHM/InferInput.lean)       | Source operations, scoped inference proof refinement, optional complete projection |
 | [`SourceTyping.lean`](./FHM/SourceTyping.lean)   | Main source judgment `InputTyping`, direct erasure and scope refinement equivalence |
 | [`SourceCompatibility.lean`](./FHM/SourceCompatibility.lean) | Derived complete-Core conversion, outside the source soundness path |
 | [`InferW.lean`](./FHM/InferW.lean)               | The sole inference judgment and worker, bounds, soundness, and fidelity         |
