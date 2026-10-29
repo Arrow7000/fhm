@@ -6,8 +6,8 @@ import FHM.SourceTyping
 
 section
 
-/-! Canonical inference elaborates partial annotations while returning completed
-Core. Every input form follows the same recursive inference judgment, including
+/-! Canonical inference checks partial annotations and returns type facts.
+Every input form follows the same recursive inference judgment, including
 literals, complete annotations, and partial annotations.
 -/
 
@@ -89,13 +89,10 @@ structure Admissible (request : InferRequest) : Prop extends WF request where
 
 end InferRequest
 
-/-- Internal compatibility result used by the worker/certificate proofs.
-The public `InferenceResult` below returns types and metadata only.
-Removing this internal tree computation is a separate migration step. -/
+/-- Semantic result shared by the worker, certificate and public artifacts. -/
 structure InferResult where
   frontier : Nat
   subst : Subst
-  completedExpr : Expr
   ty : Ty
 
 /-- The parameter type and advanced frontier produced while seeding a lambda
@@ -110,13 +107,11 @@ structure CheckResult where
   frontier : Nat
   subst : Subst
 
-/-- The semantic output of inferring all branches of a match. Kept separate
-from `InferResult` because a branch traversal completes a list, not one term,
-and its result type is fixed by the enclosing match. -/
+/-- Branch inference returns a substitution/frontier. The enclosing match fixes
+its result type; branch traversal emits metadata separately. -/
 structure InferBranchesResult where
   frontier : Nat
   subst : Subst
-  completedBranches : List (MatchPattern × Expr)
 
 /-- All semantic inputs to inference over the remaining match branches. -/
 structure InferBranchesRequest where
@@ -269,15 +264,11 @@ def signatureScheme (ann : BindingAnn) (K written : List Nat) (ctx : Ctx) (ty : 
   | _ => let names := signatureNames ann K written ctx ty
          ⟨names.length, Ty.closeOver names ty⟩
 
-def lambdaOutput (ann : Option TyTemplate) (param : Ty) (subst : Subst) (body : Expr) : Expr :=
-  .lambda (ann.map fun _ => subst.onTy param) body
-
 /-- Assemble a lambda result from its seeded parameter and inferred body. -/
-def lambdaResult (ann : Option TyTemplate) (seeded : SeedResult)
+def lambdaResult (seeded : SeedResult)
     (bodyResult : InferResult) : InferResult :=
   { frontier := bodyResult.frontier
     subst := bodyResult.subst
-    completedExpr := lambdaOutput ann seeded.param bodyResult.subst bodyResult.completedExpr
     ty := .arrow (bodyResult.subst.onTy seeded.param) bodyResult.ty }
 
 /-- Assemble the semantic result of sequential function/argument inference and
@@ -285,23 +276,14 @@ the final application unifier. -/
 def appResult (functionResult argumentResult : InferResult) (unifier : Subst) : InferResult :=
   { frontier := argumentResult.frontier + 1
     subst := functionResult.subst ++ argumentResult.subst ++ unifier
-    completedExpr := .app
-      (functionResult.completedExpr.substTyFvars (argumentResult.subst ++ unifier))
-      (argumentResult.completedExpr.substTyFvars unifier)
     ty := unifier.onTy (.fvar argumentResult.frontier) }
 
-def letOutput (scheme : PolyTy) (names : List Nat) (rhs body : Expr) (subst : Subst) : Expr :=
-  .letIn (some (subst.onPolyTy scheme)) ((rhs.closeTyVars names).substTyFvars subst) body
-
-/-- Assemble either form of let result from its chosen scheme and binder names,
-RHS inference, annotation check, and body inference. -/
-def letResult (scheme : PolyTy) (names : List Nat) (rhsResult : InferResult)
+/-- Assemble either form of let result. The checking rule selects the scheme;
+the result itself needs only the substitutions and body's type. -/
+def letResult (rhsResult : InferResult)
     (checkResult : CheckResult) (bodyResult : InferResult) : InferResult :=
   { frontier := bodyResult.frontier
     subst := rhsResult.subst ++ checkResult.subst ++ bodyResult.subst
-    completedExpr := letOutput scheme names
-      (rhsResult.completedExpr.substTyFvars checkResult.subst)
-      bodyResult.completedExpr bodyResult.subst
     ty := bodyResult.ty }
 
 /-- Assemble a match result from the inferred scrutinee and the positional
@@ -310,9 +292,6 @@ def matchResult (scrutineeResult : InferResult)
     (branchesResult : InferBranchesResult) : InferResult :=
   { frontier := branchesResult.frontier
     subst := scrutineeResult.subst ++ branchesResult.subst
-    completedExpr := .match_
-      (scrutineeResult.completedExpr.substTyFvars branchesResult.subst)
-      branchesResult.completedBranches
     ty := branchesResult.subst.onTy (.fvar scrutineeResult.frontier) }
 
 /-- Assemble the result of a wildcard branch followed by the remaining
@@ -320,22 +299,17 @@ branches. -/
 def wildcardBranchesResult (bodyResult : InferResult) (unifier : Subst)
     (tailResult : InferBranchesResult) : InferBranchesResult :=
   { frontier := tailResult.frontier
-    subst := bodyResult.subst ++ unifier ++ tailResult.subst
-    completedBranches :=
-      (.wildcard, bodyResult.completedExpr.substTyFvars (unifier ++ tailResult.subst)) ::
-        tailResult.completedBranches }
+    subst := bodyResult.subst ++ unifier ++ tailResult.subst }
+
 
 /-- Assemble the result of a named constructor branch followed by the
 remaining branches. -/
-def namedBranchesResult (name : CtorName) (count : Nat) (scrutineeUnifier : Subst)
+def namedBranchesResult (scrutineeUnifier : Subst)
     (bodyResult : InferResult) (bodyUnifier : Subst)
     (tailResult : InferBranchesResult) : InferBranchesResult :=
   { frontier := tailResult.frontier
-    subst := scrutineeUnifier ++ bodyResult.subst ++ bodyUnifier ++ tailResult.subst
-    completedBranches :=
-      (.named name count,
-        bodyResult.completedExpr.substTyFvars (bodyUnifier ++ tailResult.subst)) ::
-        tailResult.completedBranches }
+    subst := scrutineeUnifier ++ bodyResult.subst ++ bodyUnifier ++ tailResult.subst }
+
 
 /-- Preserve a skipped recursive member's position in the component result. -/
 def skippedRecComponentResult (tailResult : RecComponentResult) : RecComponentResult :=
@@ -349,7 +323,7 @@ def selectedRecComponentResult (bodyResult : InferResult) (bodyFacts : RecFacts)
   { frontier := tailResult.frontier
     subst := bodyResult.subst ++ unifier ++ tailResult.subst
     artifacts :=
-      some ((RecComponentArtifact.mk bodyResult.completedExpr bodyFacts).onSubst
+      some ((RecComponentArtifact.mk bodyFacts).onSubst
         (unifier ++ tailResult.subst)) :: tailResult.artifacts }
 
 /-- Assemble the result of checking one completely written recursive contract
@@ -367,15 +341,10 @@ def recStrataResult (pre : Subst) (componentResult : RecComponentResult)
     subst := pre ++ componentResult.subst ++ tailResult.subst
     state := tailResult.state }
 
-/-- Assemble a recursive-let result from the two recursive phases, the
-completed member evidence, and body inference. -/
-def letRecResult (completed : List CompletedRecMember)
-    (strataResult signedResult : RecRunResult) (bodyResult : InferResult) : InferResult :=
+/-- Assemble a recursive-let result from the two recursive phases and body. -/
+def letRecResult (strataResult signedResult : RecRunResult) (bodyResult : InferResult) : InferResult :=
   { frontier := bodyResult.frontier
     subst := strataResult.subst ++ signedResult.subst ++ bodyResult.subst
-    completedExpr := .letRec (completed.map fun member =>
-      { ann := some (bodyResult.subst.onPolyTy member.scheme)
-        rhs := member.output.substTyFvars bodyResult.subst }) bodyResult.completedExpr
     ty := bodyResult.ty }
 
 mutual
@@ -383,36 +352,36 @@ mutual
 provisional forall slots. Sequential calls transform both F and source syntax. -/
 inductive InferCert : InferRequest → InferResult → Prop
   | primLitUnit : InferCert ⟨K, F, frontier, ctx, .primLit .unit⟩
-      ⟨frontier, [], .primLit .unit, .prim .unit⟩
+      ⟨frontier, [], .prim .unit⟩
   | primLitInt : InferCert ⟨K, F, frontier, ctx, .primLit (.int n)⟩
-      ⟨frontier, [], .primLit (.int n), .prim .int⟩
+      ⟨frontier, [], .prim .int⟩
   | primLitNat : InferCert ⟨K, F, frontier, ctx, .primLit (.nat n)⟩
-      ⟨frontier, [], .primLit (.nat n), .prim .nat⟩
+      ⟨frontier, [], .prim .nat⟩
   | primLitChar : InferCert ⟨K, F, frontier, ctx, .primLit (.char c)⟩
-      ⟨frontier, [], .primLit (.char c), .prim .char⟩
+      ⟨frontier, [], .prim .char⟩
   | primBinOpIntAdd : InferCert ⟨K, F, frontier, ctx, .primBinOp .intAdd⟩
-      ⟨frontier, [], .primBinOp .intAdd, .arrow (.prim .int) (.arrow (.prim .int) (.prim .int))⟩
+      ⟨frontier, [], .arrow (.prim .int) (.arrow (.prim .int) (.prim .int))⟩
   | primBinOpIntSub : InferCert ⟨K, F, frontier, ctx, .primBinOp .intSub⟩
-      ⟨frontier, [], .primBinOp .intSub, .arrow (.prim .int) (.arrow (.prim .int) (.prim .int))⟩
+      ⟨frontier, [], .arrow (.prim .int) (.arrow (.prim .int) (.prim .int))⟩
   | primBinOpIntLt :
       LookupList.get? ctx.ctors ⟨"True"⟩ = some trueC → trueC.IsBoolCtor →
       LookupList.get? ctx.ctors ⟨"False"⟩ = some falseC → falseC.IsBoolCtor →
       InferCert ⟨K, F, frontier, ctx, .primBinOp .intLt⟩
-        ⟨frontier, [], .primBinOp .intLt,
+        ⟨frontier, [],
           .arrow (.prim .int) (.arrow (.prim .int) (.customTy ⟨"Bool"⟩ []))⟩
   | primBinOpCharLt :
       LookupList.get? ctx.ctors ⟨"True"⟩ = some trueC → trueC.IsBoolCtor →
       LookupList.get? ctx.ctors ⟨"False"⟩ = some falseC → falseC.IsBoolCtor →
       InferCert ⟨K, F, frontier, ctx, .primBinOp .charLt⟩
-        ⟨frontier, [], .primBinOp .charLt,
+        ⟨frontier, [],
           .arrow (.prim .char) (.arrow (.prim .char) (.customTy ⟨"Bool"⟩ []))⟩
   | var : ctx.env[index]? = some scheme →
       InferCert ⟨K, F, frontier, ctx, .var index⟩
-        ⟨frontier + scheme.paramCount, [], .var index,
+        ⟨frontier + scheme.paramCount, [],
           scheme.openVars (freshVars frontier scheme.paramCount)⟩
   | ctor : LookupList.get? ctx.ctors name = some ctor →
       InferCert ⟨K, F, frontier, ctx, .ctor name⟩
-        ⟨frontier + ctor.paramCount, [], .ctor name,
+        ⟨frontier + ctor.paramCount, [],
           ctor.toTy.openVars (freshVars frontier ctor.paramCount)⟩
   | lambda {K : List Nat} {F : List Ty} {ann : Option TyTemplate} {body : InferInput}
       {frontier : Nat} {ctx : Ctx} {seeded : SeedResult} {bodyResult : InferResult} :
@@ -423,7 +392,7 @@ inductive InferCert : InferRequest → InferResult → Prop
           { ctx with env := PolyTy.mkTrivial seeded.param :: ctx.env }, body⟩
         bodyResult →
       InferCert ⟨K, F, frontier, ctx, .lambda ann body⟩
-        (lambdaResult ann seeded bodyResult)
+        (lambdaResult seeded bodyResult)
   | app {K : List Nat} {F : List Ty} {f arg : InferInput} {frontier : Nat} {ctx : Ctx}
       {functionResult argumentResult : InferResult} {unifier : Subst} :
       SourceScope K F (.app f arg) →
@@ -454,14 +423,7 @@ inductive InferCert : InferRequest → InferResult → Prop
            body.substTyFvars checkedSubst⟩
          bodyResult) →
       InferCert ⟨K, F, frontier, ctx, .letIn ann rhs body⟩
-        (let checkedSubst := rhsResult.subst ++ checkResult.subst
-         let checkedSoft := substSoft checkedSubst F
-         let checkedCtx := checkResult.subst.onCtx (rhsResult.subst.onCtx ctx)
-         let generalized := genScheme (K ++ softVars checkedSoft) checkedCtx.env
-           (checkResult.subst.onTy rhsResult.ty)
-         let generalizedNames := genVars (K ++ softVars checkedSoft) checkedCtx.env
-           (checkResult.subst.onTy rhsResult.ty)
-         letResult generalized generalizedNames rhsResult checkResult bodyResult)
+        (letResult rhsResult checkResult bodyResult)
   | letSignature {K : List Nat} {F : List Ty} {ann : BindingAnn}
       {rhs body : InferInput} {written : List Nat} {frontier : Nat} {ctx : Ctx}
       {rhsResult : InferResult} {checkResult : CheckResult} {bodyResult : InferResult} :
@@ -488,15 +450,7 @@ inductive InferCert : InferRequest → InferResult → Prop
            body.substTyFvars checkedSubst⟩
          bodyResult) →
       InferCert ⟨K, F, frontier, ctx, .letIn ann rhs body⟩
-        (let checkedSubst := rhsResult.subst ++ checkResult.subst
-         let checkedSoft := substSoft checkedSubst F
-         let checkedCtx := checkResult.subst.onCtx (rhsResult.subst.onCtx ctx)
-         let checkedAnn := ann.substTyFvars checkedSubst
-         let bodyScheme := signatureScheme checkedAnn (K ++ softVars checkedSoft) written
-           checkedCtx (checkResult.subst.onTy rhsResult.ty)
-         let bodyNames := signatureNames checkedAnn (K ++ softVars checkedSoft) written
-           checkedCtx (checkResult.subst.onTy rhsResult.ty)
-         letResult bodyScheme bodyNames rhsResult checkResult bodyResult)
+        (letResult rhsResult checkResult bodyResult)
   | match_ {K : List Nat} {F : List Ty} {scrut : InferInput}
       {branches : List (MatchPattern × InferInput)} {frontier : Nat} {ctx : Ctx}
       {scrutineeResult : InferResult} {branchesResult : InferBranchesResult} :
@@ -540,11 +494,11 @@ inductive InferCert : InferRequest → InferResult → Prop
            body.substTyFvars recSubst⟩
          bodyResult) →
       InferCert ⟨K, F, frontier, ctx, .letRec bindings body⟩
-        (letRecResult completed strataResult signedResult bodyResult)
+        (letRecResult strataResult signedResult bodyResult)
 
 inductive InferBranchesCert : InferBranchesRequest → InferBranchesResult → Prop
   | nil : InferBranchesCert ⟨K, F, frontier, ctx, scrutTy, resultTy, []⟩
-      ⟨frontier, [], []⟩
+      ⟨frontier, []⟩
   | consWild {body : InferInput} {rest : List (MatchPattern × InferInput)}
       {K : List Nat} {F : List Ty} {frontier : Nat} {ctx : Ctx}
       {scrutTy resultTy : Ty} {bodyResult : InferResult} {unifier : Subst}
@@ -594,7 +548,7 @@ inductive InferBranchesCert : InferBranchesRequest → InferBranchesResult → P
         tailResult →
       InferBranchesCert ⟨K, F, frontier, ctx, scrutTy, resultTy,
         (.named name count, body) :: rest⟩
-        (namedBranchesResult name count scrutineeUnifier bodyResult bodyUnifier tailResult)
+        (namedBranchesResult scrutineeUnifier bodyResult bodyUnifier tailResult)
 /-- Infer one selected SCC in the original full group coordinates. Sources have
 already been opened at flexible written roots and transformed by shape solving. -/
 inductive InferRecComponentCert : InferRecComponentRequest → RecComponentResult → Prop
@@ -700,7 +654,7 @@ inductive InferRecSignedCert : InferRecSignedRequest → RecRunResult → Prop
           substInputBindings (bodyResult.subst ++ unifier) bindings,
           (state.onSubst (bodyResult.subst ++ unifier)).setSigned index
             (freshVars frontier scheme.paramCount)
-            (bodyResult.completedExpr.substTyFvars unifier) (bodyFacts.onSubst unifier)⟩
+             (bodyFacts.onSubst unifier)⟩
         tailResult →
       InferRecSignedCert
         ⟨K, F, index, frontier, ctx,
@@ -713,10 +667,10 @@ end
 `InferBranchesCert` with bundled request and result values. -/
 abbrev InferBranches (K : List Nat) (F : List Ty) (frontier : Nat) (ctx : Ctx)
     (scrutTy resultTy : Ty) (branches : List (MatchPattern × InferInput))
-    (next : Nat) (subst : Subst) (completed : List (MatchPattern × Expr)) : Prop :=
+    (next : Nat) (subst : Subst) : Prop :=
   InferBranchesCert
     ⟨K, F, frontier, ctx, scrutTy, resultTy, branches⟩
-    ⟨next, subst, completed⟩
+    ⟨next, subst⟩
 
 /-- Positional compatibility view of recursive-component inference. New code
 should use `InferRecComponentCert` with bundled request and result values. -/
@@ -748,8 +702,8 @@ abbrev InferRecStrata (K : List Nat) (F : List Ty) (frontier : Nat) (ctx : Ctx)
 New proofs should state their contracts with `InferCert`; this alias keeps the
 established internal theorem surface definitionally equal during migration. -/
 abbrev Infer (K : List Nat) (F : List Ty) (frontier : Nat) (ctx : Ctx)
-    (input : InferInput) (next : Nat) (subst : Subst) (output : Expr) (ty : Ty) : Prop :=
-  InferCert (InferRequest.mk K F frontier ctx input) (InferResult.mk next subst output ty)
+    (input : InferInput) (next : Nat) (subst : Subst) (ty : Ty) : Prop :=
+  InferCert (InferRequest.mk K F frontier ctx input) (InferResult.mk next subst ty)
 
 theorem Seed.lc (h : Seed K frontier ann param initial) : param.IsLC := by
   cases h with
@@ -931,7 +885,7 @@ theorem InferCert.sourceScope {request : InferRequest} {result : InferResult}
   | .match_ hs _ _ _ => exact hs
   | .letRec hs _ _ _ _ _ => exact hs.1
 
-theorem Infer.sourceScope (h : Infer K F frontier ctx input next subst output ty) :
+theorem Infer.sourceScope (h : Infer K F frontier ctx input next subst ty) :
     SourceScope K F input :=
   InferCert.sourceScope h
 
@@ -1031,15 +985,15 @@ theorem InferRecStrataCert.dom_avoids
   cases result
   exact InferRecStrataCert.dom_avoids_raw h
 
-theorem Infer.dom_avoids (h : Infer K F frontier ctx input next subst output ty) :
+theorem Infer.dom_avoids (h : Infer K F frontier ctx input next subst ty) :
     ∀ pair ∈ subst, pair.1 ∉ K :=
   InferCert.dom_avoids h
 
 theorem InferRecComponentCert.lc_of_infer
     {request : InferRecComponentRequest} {result : RecComponentResult}
     (h : InferRecComponentCert request result)
-    (hInfer : ∀ {κ F' Ψ c e Ψ' T output ty}, e.size ≤ sizeBindings request.bindings →
-      Infer κ F' Ψ c e Ψ' T output ty → CtxWF c → ty.IsLC ∧ ∀ p ∈ T, p.2.IsLC)
+    (hInfer : ∀ {κ F' Ψ c e Ψ' T ty}, e.size ≤ sizeBindings request.bindings →
+      Infer κ F' Ψ c e Ψ' T ty → CtxWF c → ty.IsLC ∧ ∀ p ∈ T, p.2.IsLC)
     (hctx : CtxWF request.ctx) (hspec : ∀ spec ∈ request.specs, spec.LC) :
     ∀ p ∈ result.subst, p.2.IsLC := by
   match h with
@@ -1049,7 +1003,7 @@ theorem InferRecComponentCert.lc_of_infer
       exact hr.lc_of_infer (fun he h => hInfer (by simp only at he; simp only [sizeBindings]; omega) h)
         hctx (fun spec hm => hspec spec (List.mem_cons_of_mem _ hm))
   | @consSelected K F members index frontier ctx binding rest expected specs
-      ⟨first, s1, output, ty⟩ bodyFacts s2 ⟨next, s3, artifacts⟩ _ hi hu hr =>
+      ⟨first, s1, ty⟩ bodyFacts s2 ⟨next, s3, artifacts⟩ _ hi hu hr =>
       simp only [selectedRecComponentResult] at ⊢
       obtain ⟨hiTy, hiS⟩ := hInfer (by simp only [sizeBindings]; omega) hi hctx
       have huS := hu.unifies.lc hiTy (Subst.onTy_lc hiS (hspec _ List.mem_cons_self))
@@ -1088,8 +1042,8 @@ theorem InferRecComponentCert.lc_of_infer
 theorem InferRecStrataCert.lc_of_infer
     {request : InferRecStrataRequest} {result : RecRunResult}
     (h : InferRecStrataCert request result)
-    (hInfer : ∀ {κ F' Ψ c e Ψ' T output ty}, e.size ≤ sizeBindings request.bindings →
-      Infer κ F' Ψ c e Ψ' T output ty → CtxWF c → ty.IsLC ∧ ∀ p ∈ T, p.2.IsLC)
+    (hInfer : ∀ {κ F' Ψ c e Ψ' T ty}, e.size ≤ sizeBindings request.bindings →
+      Infer κ F' Ψ c e Ψ' T ty → CtxWF c → ty.IsLC ∧ ∀ p ∈ T, p.2.IsLC)
     (hctx : CtxWF request.ctx) (hstate : request.state.LC) :
     (∀ p ∈ result.subst, p.2.IsLC) ∧ result.state.LC := by
   match h with
@@ -1115,8 +1069,8 @@ theorem InferRecStrataCert.lc_of_infer
 theorem InferRecSignedCert.lc_of_infer
     {request : InferRecSignedRequest} {result : RecRunResult}
     (h : InferRecSignedCert request result)
-    (hInfer : ∀ {κ F' Ψ c e Ψ' T output ty}, e.size ≤ sizeBindings request.bindings →
-      Infer κ F' Ψ c e Ψ' T output ty → CtxWF c → ty.IsLC ∧ ∀ p ∈ T, p.2.IsLC)
+    (hInfer : ∀ {κ F' Ψ c e Ψ' T ty}, e.size ≤ sizeBindings request.bindings →
+      Infer κ F' Ψ c e Ψ' T ty → CtxWF c → ty.IsLC ∧ ∀ p ∈ T, p.2.IsLC)
     (hctx : CtxWF request.ctx) (hstate : request.state.LC) :
     (∀ p ∈ result.subst, p.2.IsLC) ∧ result.state.LC := by
   match h with
@@ -1125,7 +1079,7 @@ theorem InferRecSignedCert.lc_of_infer
       exact hr.lc_of_infer
         (fun he h => hInfer (by simp only at he; simp only [sizeBindings]; omega) h) hctx hstate
   | @cons K F index frontier ctx scheme rhs bindings state
-      ⟨first, s1, output, ty⟩ bodyFacts s2 ⟨next, tail, final⟩ hscheme _ hi hu _ hr =>
+      ⟨first, s1, ty⟩ bodyFacts s2 ⟨next, tail, final⟩ hscheme _ hi hu _ hr =>
       simp only [signedRecResult] at ⊢
       obtain ⟨hiTy, hiS⟩ := hInfer (by simp only [InferInput.size_openTyVars, sizeBindings]; omega) hi
         (hstate.rhsCtx hctx)
@@ -1281,7 +1235,7 @@ decreasing_by
   all_goals (simp only [sizeBranches, InferInput.size_substTyFvars, sizeBranches_substInputBranches]; omega)
 end
 
-theorem Infer.lc (h : Infer K F frontier ctx input next subst output ty) :
+theorem Infer.lc (h : Infer K F frontier ctx input next subst ty) :
     CtxWF ctx → ty.IsLC ∧ ∀ pair ∈ subst, pair.2.IsLC :=
   InferCert.lc h
 
@@ -1366,7 +1320,7 @@ mutual
 monomorphic until their component is solved and its ordered prefix is validated. -/
 def inferWithTypesCore (K : List Nat) (frontier : Nat) (ctx : Ctx) (input : InferInput) (F : List Ty := []) :
     Option { result : InferCoreResult //
-      Infer K F frontier ctx input result.frontier result.subst result.completedExpr result.ty } :=
+      Infer K F frontier ctx input result.frontier result.subst  result.ty } :=
   if hK : K.all (fun v => decide (v < frontier)) = true then
     if hctx : ctx.env.freeVars.all (fun v => decide (v < frontier)) = true then
       if hF : (softVars F).all (fun v => decide (v < frontier)) = true then
@@ -1377,28 +1331,24 @@ def inferWithTypesCore (K : List Nat) (frontier : Nat) (ctx : Ctx) (input : Infe
           | .primLit .unit => some ⟨{
               frontier := frontier
               subst := []
-              completedExpr := .primLit .unit
               ty := .prim .unit
               nodeTypes := .root (.prim .unit)
               binderSchemes := [] }, .primLitUnit⟩
           | .primLit (.int n) => some ⟨{
               frontier := frontier
               subst := []
-              completedExpr := .primLit (.int n)
               ty := .prim .int
               nodeTypes := .root (.prim .int)
               binderSchemes := [] }, .primLitInt⟩
           | .primLit (.nat n) => some ⟨{
               frontier := frontier
               subst := []
-              completedExpr := .primLit (.nat n)
               ty := .prim .nat
               nodeTypes := .root (.prim .nat)
               binderSchemes := [] }, .primLitNat⟩
           | .primLit (.char c) => some ⟨{
               frontier := frontier
               subst := []
-              completedExpr := .primLit (.char c)
               ty := .prim .char
               nodeTypes := .root (.prim .char)
               binderSchemes := [] }, .primLitChar⟩
@@ -1407,7 +1357,6 @@ def inferWithTypesCore (K : List Nat) (frontier : Nat) (ctx : Ctx) (input : Infe
               some ⟨{
                 frontier := frontier
                 subst := []
-                completedExpr := .primBinOp .intAdd
                 ty := ty
                 nodeTypes := .root ty
                 binderSchemes := [] }, .primBinOpIntAdd⟩
@@ -1416,7 +1365,6 @@ def inferWithTypesCore (K : List Nat) (frontier : Nat) (ctx : Ctx) (input : Infe
               some ⟨{
                 frontier := frontier
                 subst := []
-                completedExpr := .primBinOp .intSub
                 ty := ty
                 nodeTypes := .root ty
                 binderSchemes := [] }, .primBinOpIntSub⟩
@@ -1433,7 +1381,6 @@ def inferWithTypesCore (K : List Nat) (frontier : Nat) (ctx : Ctx) (input : Infe
                       some ⟨{
                             frontier := frontier
                             subst := []
-                            completedExpr := .primBinOp .intLt
                             ty := ty
                             nodeTypes := .root ty
                             binderSchemes := [] },
@@ -1453,7 +1400,6 @@ def inferWithTypesCore (K : List Nat) (frontier : Nat) (ctx : Ctx) (input : Infe
                       some ⟨{
                             frontier := frontier
                             subst := []
-                            completedExpr := .primBinOp .charLt
                             ty := ty
                             nodeTypes := .root ty
                             binderSchemes := [] },
@@ -1468,7 +1414,6 @@ def inferWithTypesCore (K : List Nat) (frontier : Nat) (ctx : Ctx) (input : Infe
                   some ⟨{
                     frontier := frontier + scheme.paramCount
                     subst := []
-                    completedExpr := .var index
                     ty := ty
                     nodeTypes := .root ty
                     binderSchemes := [] }, .var hlook⟩
@@ -1480,7 +1425,6 @@ def inferWithTypesCore (K : List Nat) (frontier : Nat) (ctx : Ctx) (input : Infe
                   some ⟨{
                     frontier := frontier + ctor.paramCount
                     subst := []
-                    completedExpr := .ctor name
                     ty := ty
                     nodeTypes := .root ty
                     binderSchemes := [] }, .ctor hlook⟩
@@ -1495,7 +1439,6 @@ def inferWithTypesCore (K : List Nat) (frontier : Nat) (ctx : Ctx) (input : Infe
                       some ⟨{
                         frontier := bodyResult.frontier
                         subst := bodyResult.subst
-                        completedExpr := lambdaOutput ann param bodyResult.subst bodyResult.completedExpr
                         ty := ty
                         nodeTypes := .root ty ++ bodyResult.nodeTypes.below .lambdaBody
                         binderSchemes := bodyResult.binderSchemes.below .lambdaBody }, by
@@ -1518,9 +1461,6 @@ def inferWithTypesCore (K : List Nat) (frontier : Nat) (ctx : Ctx) (input : Infe
                           some ⟨{
                             frontier := argResult.frontier + 1
                             subst := fResult.subst ++ argResult.subst ++ s3
-                            completedExpr := .app
-                              (fResult.completedExpr.substTyFvars (argResult.subst ++ s3))
-                              (argResult.completedExpr.substTyFvars s3)
                             ty := ty
                             nodeTypes := .root ty ++
                               (fResult.nodeTypes.onSubst (argResult.subst ++ s3)).below .appFun ++
@@ -1541,7 +1481,6 @@ def inferWithTypesCore (K : List Nat) (frontier : Nat) (ctx : Ctx) (input : Infe
                   | some ⟨(checked, sCheck), hc⟩ =>
                     let checkedCtx := sCheck.onCtx (rhsResult.subst.onCtx ctx)
                     let checkedTy := sCheck.onTy rhsResult.ty
-                    let checkedOut := rhsResult.completedExpr.substTyFvars sCheck
                     let scheme := signatureScheme (ann.substTyFvars (rhsResult.subst ++ sCheck))
                       (K ++ softVars (substSoft (rhsResult.subst ++ sCheck) F)) written checkedCtx checkedTy
                     let names := signatureNames (ann.substTyFvars (rhsResult.subst ++ sCheck))
@@ -1568,7 +1507,6 @@ def inferWithTypesCore (K : List Nat) (frontier : Nat) (ctx : Ctx) (input : Infe
                         some ⟨{
                           frontier := bodyResult.frontier
                           subst := rhsResult.subst ++ sCheck ++ bodyResult.subst
-                          completedExpr := letOutput scheme names checkedOut bodyResult.completedExpr bodyResult.subst
                           ty := bodyResult.ty
                           nodeTypes := .root bodyResult.ty ++ rhsFinalTypes ++
                             bodyResult.nodeTypes.below .letBody
@@ -1599,7 +1537,6 @@ def inferWithTypesCore (K : List Nat) (frontier : Nat) (ctx : Ctx) (input : Infe
                       | some ⟨(checked, sCheck), hc⟩ =>
                           let checkedCtx := sCheck.onCtx (rhsResult.subst.onCtx ctx)
                           let checkedTy := sCheck.onTy rhsResult.ty
-                          let checkedOut := rhsResult.completedExpr.substTyFvars sCheck
                           let scheme := genScheme (K ++ softVars (substSoft (rhsResult.subst ++ sCheck) F))
                             checkedCtx.env checkedTy
                           let names := genVars (K ++ softVars (substSoft (rhsResult.subst ++ sCheck) F))
@@ -1614,8 +1551,6 @@ def inferWithTypesCore (K : List Nat) (frontier : Nat) (ctx : Ctx) (input : Infe
                               some ⟨{
                                 frontier := bodyResult.frontier
                                 subst := rhsResult.subst ++ sCheck ++ bodyResult.subst
-                                completedExpr := letOutput scheme names checkedOut bodyResult.completedExpr
-                                  bodyResult.subst
                                 ty := bodyResult.ty
                                 nodeTypes := .root bodyResult.ty ++
                                   (rhsResult.nodeTypes.onSubst (sCheck ++ bodyResult.subst)).below .letRhs ++
@@ -1640,12 +1575,11 @@ def inferWithTypesCore (K : List Nat) (frontier : Nat) (ctx : Ctx) (input : Infe
                       (scrutResult.subst.onCtx ctx) scrutResult.ty (.fvar scrutResult.frontier) 0
                       (substInputBranches scrutResult.subst branches) (substSoft scrutResult.subst F) with
                   | none => none
-                  | some ⟨(next, s2, branchOut, branchTypes, branchSchemes), hb⟩ =>
+                  | some ⟨(next, s2, branchTypes, branchSchemes), hb⟩ =>
                     let ty := s2.onTy (.fvar scrutResult.frontier)
                     some ⟨{
                       frontier := next
                       subst := scrutResult.subst ++ s2
-                      completedExpr := .match_ (scrutResult.completedExpr.substTyFvars s2) branchOut
                       ty := ty
                       nodeTypes := .root ty ++ (scrutResult.nodeTypes.onSubst s2).below .matchScrut ++
                         branchTypes
@@ -1654,7 +1588,7 @@ def inferWithTypesCore (K : List Nat) (frontier : Nat) (ctx : Ctx) (input : Infe
                       simpa only [matchResult] using
                         (InferCert.match_
                           (scrutineeResult := scrutResult.toInferResult)
-                          (branchesResult := ⟨next, s2, branchOut⟩)
+                          (branchesResult := ⟨next, s2⟩)
                           hrawScope hs (by intro heq; rw [heq] at hh; simp at hh) hb)⟩
           | .letRec bindings body =>
               if hwf : (bindings.map (·.ann)).all (fun ann => match ann with
@@ -1681,10 +1615,6 @@ def inferWithTypesCore (K : List Nat) (frontier : Nat) (ctx : Ctx) (input : Infe
                           some ⟨{
                             frontier := bodyResult.frontier
                             subst := strata.subst ++ signed.subst ++ bodyResult.subst
-                            completedExpr := .letRec (completed.map fun member =>
-                              { ann := some (bodyResult.subst.onPolyTy member.scheme),
-                                rhs := member.output.substTyFvars bodyResult.subst })
-                              bodyResult.completedExpr
                             ty := bodyResult.ty
                             nodeTypes := .root bodyResult.ty ++ finalRecNodeTypes final ++
                               bodyResult.nodeTypes.below .letRecBody
@@ -1716,13 +1646,13 @@ decreasing_by all_goals (simp only [InferInput.size, InferInput.size_openTyVars,
 
 def inferBranchesWithTypesCore (K : List Nat) (Φ : Nat) (ctx : Ctx) (scrutTy : Ty) (ρ : Ty)
     (branchIndex : Nat) (branches : List (MatchPattern × InferInput)) (F : List Ty := []) :
-    Option { r : Nat × Subst × List (MatchPattern × Expr) × InferredNodeTypes × InferredBinderSchemes //
-      InferBranches K F Φ ctx scrutTy ρ branches r.1 r.2.1 r.2.2.1 } :=
+    Option { r : Nat × Subst × InferredNodeTypes × InferredBinderSchemes //
+      InferBranches K F Φ ctx scrutTy ρ branches r.1 r.2.1  } :=
   if hsource : (rigidBranchVars branches).all (fun v => decide (v ∈ K ++ softVars F)) = true then
     have hrawScope : ∀ v ∈ rigidBranchVars branches, v ∈ K ++ softVars F := fun v hv =>
       of_decide_eq_true (List.all_eq_true.mp hsource v hv)
     match branches with
-    | [] => some ⟨(Φ, [], [], [], []), .nil⟩
+    | [] => some ⟨(Φ, [], [], []), .nil⟩
     | (.wildcard, body) :: rest =>
         match inferWithTypesCore K Φ ctx body F with
         | none => none
@@ -1737,13 +1667,13 @@ def inferBranchesWithTypesCore (K : List Nat) (Φ : Nat) (ctx : Ctx) (scrutTy : 
                 (substInputBranches (bodyResult.subst ++ S₂) rest)
                 (substSoft (bodyResult.subst ++ S₂) F) with
             | none => none
-            | some ⟨(Φ₂, S₃, restOut, restTypes, restSchemes), hrest⟩ =>
+            | some ⟨(Φ₂, S₃, restTypes, restSchemes), hrest⟩ =>
               let schemes := (bodyResult.binderSchemes.onSubst (S₂ ++ S₃)).below
                 (.matchBranch branchIndex) ++ restSchemes
               let nodeTypes := (bodyResult.nodeTypes.onSubst (S₂ ++ S₃)).below
                 (.matchBranch branchIndex) ++ restTypes
               some ⟨(Φ₂, bodyResult.subst ++ S₂ ++ S₃,
-                  (.wildcard, bodyResult.completedExpr.substTyFvars (S₂ ++ S₃)) :: restOut,
+
                   nodeTypes, schemes),
                   .consWild hrawScope hbody ⟨huni, hav₂⟩ hrest⟩
     | (.named c n, body) :: rest =>
@@ -1773,13 +1703,13 @@ def inferBranchesWithTypesCore (K : List Nat) (Φ : Nat) (ctx : Ctx) (scrutTy : 
                       (branchIndex + 1) (substInputBranches (S₀ ++ bodyResult.subst ++ S₂) rest)
                       (substSoft (S₀ ++ bodyResult.subst ++ S₂) F) with
                   | none => none
-                  | some ⟨(Φ₂, S₃, restOut, restTypes, restSchemes), hrest⟩ =>
+                  | some ⟨(Φ₂, S₃, restTypes, restSchemes), hrest⟩ =>
                     let schemes := (bodyResult.binderSchemes.onSubst (S₂ ++ S₃)).below
                       (.matchBranch branchIndex) ++ restSchemes
                     let nodeTypes := (bodyResult.nodeTypes.onSubst (S₂ ++ S₃)).below
                       (.matchBranch branchIndex) ++ restTypes
                     some ⟨(Φ₂, S₀ ++ bodyResult.subst ++ S₂ ++ S₃,
-                        (.named c n, bodyResult.completedExpr.substTyFvars (S₂ ++ S₃)) :: restOut,
+
                         nodeTypes, schemes),
                         .cons hrawScope hget hcont ⟨huni0, hav0⟩ hbody ⟨huni, hav₂⟩ hrest⟩
           else none
@@ -1810,8 +1740,7 @@ def inferRecComponentWithTypesCore (K : List Nat) (F : List Ty) (members : List 
             | none => none
             | some ⟨tail, ht⟩ =>
               some ⟨⟨tail.frontier, rhsResult.subst ++ s2 ++ tail.subst,
-                some ((RecComponentArtifact.mk rhsResult.completedExpr
-                  (RecFacts.mk rhsResult.nodeTypes rhsResult.binderSchemes)).onSubst
+                some ((RecComponentArtifact.mk (RecFacts.mk rhsResult.nodeTypes rhsResult.binderSchemes)).onSubst
                     (s2 ++ tail.subst)) :: tail.artifacts⟩,
                 .consSelected hm hi ⟨hu, hav⟩ ht⟩
       else
@@ -1897,7 +1826,7 @@ def inferRecSignedWithTypesCore (K : List Nat) (F : List Ty) (index frontier : N
                 match inferRecSignedWithTypesCore K (substSoft solved F) (index + 1)
                     rhsResult.frontier (solved.onCtx ctx)
                     (substInputBindings solved rest)
-                    (checked.setSigned index written (rhsResult.completedExpr.substTyFvars s2)
+                    (checked.setSigned index written
                       ((RecFacts.mk rhsResult.nodeTypes rhsResult.binderSchemes).onSubst s2)) with
                 | none => none
                 | some ⟨tail, ht⟩ =>
@@ -1977,7 +1906,7 @@ theorem InferRequest.run_isSome_iff_exists (request : InferRequest) :
 /-- The plain certificate API projects the one metadata-producing run. -/
 def inferCore (K : List Nat) (frontier : Nat) (ctx : Ctx) (input : InferInput) :
     Option { result : InferResult //
-      Infer K [] frontier ctx input result.frontier result.subst result.completedExpr result.ty } :=
+      Infer K [] frontier ctx input result.frontier result.subst  result.ty } :=
   inferRequest (InferRequest.core K frontier ctx input)
 
 @[simp] theorem inferCore_isSome (K : List Nat) (frontier : Nat) (ctx : Ctx) (input : InferInput) :
@@ -1989,10 +1918,7 @@ def inferCore (K : List Nat) (frontier : Nat) (ctx : Ctx) (input : InferInput) :
 
 /-- Public semantic and editor artifacts. The source expression stays with
 the caller; inference does not return a second annotated copy of it. -/
-structure InferenceResult where
-  frontier : Nat
-  subst : Subst
-  ty : Ty
+structure InferenceResult extends InferResult where
   nodeTypes : NodeTypeMap
   binderSchemes : BinderSchemeMap
 
@@ -2004,9 +1930,7 @@ theorem InferInput.lt_freshFloor {input : InferInput} {v : Nat} (h : v ∈ input
 def inferWithTypes (ctors : CtorEnv) (input : InferInput) : Option InferenceResult :=
   (inferWithTypesCore input.rigidVars input.freshFloor ⟨[], ctors⟩ input).map fun result =>
     {
-      frontier := result.val.frontier
-      subst := result.val.subst
-      ty := result.val.ty
+      toInferResult := result.val.toInferResult
       nodeTypes := result.val.nodeTypes.toMap
       binderSchemes := result.val.binderSchemes.toMap }
 
@@ -2016,12 +1940,11 @@ def principalType (ctors : CtorEnv) (input : InferInput) : Option Ty :=
 def typecheck (ctors : CtorEnv) (input : InferInput) : Option PolyTy :=
   (principalType ctors input).map (genScheme [] [])
 
-/-- The public artifacts project a certified run. The compatibility tree is
-an existential proof witness, not part of the returned data. -/
+/-- Public artifacts project the exact semantic result of a certified run. -/
 theorem inferWithTypes_infer {ctors : CtorEnv} {input : InferInput} {result : InferenceResult}
     (h : inferWithTypes ctors input = some result) :
-    ∃ output, InferCert (InferRequest.core input.rigidVars input.freshFloor ⟨[], ctors⟩ input)
-      { frontier := result.frontier, subst := result.subst, completedExpr := output, ty := result.ty } := by
+    InferCert (InferRequest.core input.rigidVars input.freshFloor ⟨[], ctors⟩ input)
+      result.toInferResult := by
   unfold inferWithTypes at h
   cases hcore : inferWithTypesCore input.rigidVars input.freshFloor ⟨[], ctors⟩ input with
   | none => simp only [hcore, Option.map_none, reduceCtorEq] at h
@@ -2029,7 +1952,7 @@ theorem inferWithTypes_infer {ctors : CtorEnv} {input : InferInput} {result : In
     rcases r with ⟨coreResult, hi⟩
     simp only [hcore, Option.map_some, Option.some.injEq] at h
     subst result
-    exact ⟨coreResult.completedExpr, hi⟩
+    exact hi
 
 end
 
@@ -2222,7 +2145,7 @@ theorem InferRecStrataCert.frontier_le
   cases result
   exact InferRecStrataCert.frontier_le_raw h
 
-theorem Infer.frontier_le (h : Infer K F frontier ctx input next subst output ty) : frontier ≤ next :=
+theorem Infer.frontier_le (h : Infer K F frontier ctx input next subst ty) : frontier ≤ next :=
   InferCert.frontier_le h
 
 
@@ -2272,8 +2195,8 @@ private theorem specs_below_subst {specs : List RecSpec}
 theorem InferRecComponentCert.belowFvars_of_infer
     {request : InferRecComponentRequest} {result : RecComponentResult}
     (h : InferRecComponentCert request result)
-    (hInfer : ∀ {κ F' Ψ c e Ψ' T output ty}, e.size ≤ sizeBindings request.bindings →
-      Infer κ F' Ψ c e Ψ' T output ty → CtxBelow Ψ c → (∀ k ∈ κ, k < Ψ) →
+    (hInfer : ∀ {κ F' Ψ c e Ψ' T ty}, e.size ≤ sizeBindings request.bindings →
+      Infer κ F' Ψ c e Ψ' T ty → CtxBelow Ψ c → (∀ k ∈ κ, k < Ψ) →
       (∀ t ∈ F', Ty.BelowFvars Ψ t) → Ty.BelowFvars Ψ' ty ∧ ∀ p ∈ T, Ty.BelowFvars Ψ' p.2)
     (hctx : CtxBelow request.frontier request.ctx)
     (hK : ∀ k ∈ request.protectedVars, k < request.frontier)
@@ -2288,7 +2211,7 @@ theorem InferRecComponentCert.belowFvars_of_infer
         (fun he h => hInfer (by simp only at he; simp only [sizeBindings]; omega) h)
         hctx hK hF (fun spec hm => hspec spec (List.mem_cons_of_mem _ hm))
   | @consSelected K F members index frontier ctx binding rest expected specs
-      ⟨first, s1, output, ty⟩ bodyFacts s2 ⟨next, s3, artifacts⟩ _ hi hu hr =>
+      ⟨first, s1, ty⟩ bodyFacts s2 ⟨next, s3, artifacts⟩ _ hi hu hr =>
       simp only [selectedRecComponentResult] at ⊢
       have hle := Infer.frontier_le hi
       have hrle := hr.frontier_le
@@ -2309,8 +2232,8 @@ theorem InferRecComponentCert.belowFvars_of_infer
 theorem InferRecStrataCert.belowFvars_of_infer
     {request : InferRecStrataRequest} {result : RecRunResult}
     (h : InferRecStrataCert request result)
-    (hInfer : ∀ {κ F' Ψ c e Ψ' T output ty}, e.size ≤ sizeBindings request.bindings →
-      Infer κ F' Ψ c e Ψ' T output ty → CtxBelow Ψ c → (∀ k ∈ κ, k < Ψ) →
+    (hInfer : ∀ {κ F' Ψ c e Ψ' T ty}, e.size ≤ sizeBindings request.bindings →
+      Infer κ F' Ψ c e Ψ' T ty → CtxBelow Ψ c → (∀ k ∈ κ, k < Ψ) →
       (∀ t ∈ F', Ty.BelowFvars Ψ t) → Ty.BelowFvars Ψ' ty ∧ ∀ p ∈ T, Ty.BelowFvars Ψ' p.2)
     (hctx : CtxBelow request.frontier request.ctx)
     (hK : ∀ k ∈ request.protectedVars, k < request.frontier)
@@ -2358,8 +2281,8 @@ theorem InferRecStrataCert.belowFvars_of_infer
 theorem InferRecSignedCert.belowFvars_of_infer
     {request : InferRecSignedRequest} {result : RecRunResult}
     (h : InferRecSignedCert request result)
-    (hInfer : ∀ {κ F' Ψ c e Ψ' T output ty}, e.size ≤ sizeBindings request.bindings →
-      Infer κ F' Ψ c e Ψ' T output ty → CtxBelow Ψ c → (∀ k ∈ κ, k < Ψ) →
+    (hInfer : ∀ {κ F' Ψ c e Ψ' T ty}, e.size ≤ sizeBindings request.bindings →
+      Infer κ F' Ψ c e Ψ' T ty → CtxBelow Ψ c → (∀ k ∈ κ, k < Ψ) →
       (∀ t ∈ F', Ty.BelowFvars Ψ t) → Ty.BelowFvars Ψ' ty ∧ ∀ p ∈ T, Ty.BelowFvars Ψ' p.2)
     (hctx : CtxBelow request.frontier request.ctx)
     (hK : ∀ k ∈ request.protectedVars, k < request.frontier)
@@ -2376,7 +2299,7 @@ theorem InferRecSignedCert.belowFvars_of_infer
         (fun he h => hInfer (by simp only at he; simp only [sizeBindings]; omega) h)
         hctx hK hF hstate (fun binding hb => hbindings binding (List.mem_cons_of_mem _ hb))
   | @cons K F index frontier ctx scheme rhs bindings state
-      ⟨first, s1, output, ty⟩ bodyFacts s2 ⟨next, tail, final⟩ _ _ hi hu _ hr =>
+      ⟨first, s1, ty⟩ bodyFacts s2 ⟨next, tail, final⟩ _ _ hi hu _ hr =>
       simp only [signedRecResult] at ⊢
       simp only at hctx hK hF hstate hbindings
       have hle := Infer.frontier_le hi
@@ -2470,7 +2393,7 @@ theorem InferCert.belowFvars {request : InferRequest} {result : InferResult}
       · exact (haSubst p hp).mono (Nat.le_succ _)
     · exact huni p hp
   | @InferCert.letIn K F ann rhs body frontier ctx
-      ⟨first, s1, rhsOut, rhsTy⟩ ⟨checked, sCheck⟩ ⟨next, s2, bodyOut, bodyTy⟩
+      ⟨first, s1, rhsTy⟩ ⟨checked, sCheck⟩ ⟨next, s2, bodyTy⟩
       _ hr hc hb =>
     dsimp only at hctx hK hF
     have hrLe := Infer.frontier_le hr
@@ -2500,7 +2423,7 @@ theorem InferCert.belowFvars {request : InferRequest} {result : InferResult}
     · exact hbSubst p hp
 
   | @InferCert.letSignature K F ann rhs body written frontier ctx
-      ⟨first, s1, rhsOut, rhsTy⟩ ⟨checked, sCheck⟩ ⟨next, s2, bodyOut, bodyTy⟩
+      ⟨first, s1, rhsTy⟩ ⟨checked, sCheck⟩ ⟨next, s2, bodyTy⟩
       _ hprefix _ hr hc _ hb =>
     dsimp only at hctx hK hF
     dsimp only at hr hc hb
@@ -2565,7 +2488,7 @@ theorem InferCert.belowFvars {request : InferRequest} {result : InferResult}
     · exact (hS1 p hp).mono ((Nat.le_succ _).trans hb.frontier_le)
     · exact hS2 p hp
   | @InferCert.letRec K F bindings body frontier ctx completed
-      ⟨first, s1, state1⟩ ⟨second, s2, state2⟩ ⟨next, s3, bodyOut, bodyTy⟩
+      ⟨first, s1, state1⟩ ⟨second, s2, state2⟩ ⟨next, s3, bodyTy⟩
       hscope _ hstrata hsigned _ hbody =>
     dsimp only at hctx hK hF
     dsimp only at hstrata hsigned hbody
@@ -2623,7 +2546,7 @@ theorem InferBranchesCert.belowFvars
   match h with
   | .nil => exact ⟨by simpa using hρ, by simp⟩
   | @InferBranchesCert.cons name count body rest κ F ctor scrutTy Φ S₀ ctx
-      ⟨Φ₁, S₁, bodyOut, bodyTy⟩ ρ S₂ ⟨Φ', S₃, restOut⟩
+      ⟨Φ₁, S₁, bodyTy⟩ ρ S₂ ⟨Φ', S₃⟩
       _ hlook hn huni0Rigid hbody huniRigid hrest =>
     simp only at hctx hscrutTy hρ hK hF
     have huni0 := huni0Rigid.unifies
@@ -2702,7 +2625,7 @@ decreasing_by
   all_goals (try subst_vars; try simp only [sizeBranches, InferInput.size_substTyFvars, sizeBranches_substInputBranches]; omega)
 end
 
-theorem Infer.belowFvars (h : Infer K F frontier ctx input next subst output ty) :
+theorem Infer.belowFvars (h : Infer K F frontier ctx input next subst ty) :
     CtxBelow frontier ctx → (∀ k ∈ K, k < frontier) →
     (∀ soft ∈ F, Ty.BelowFvars frontier soft) →
     Ty.BelowFvars next ty ∧ ∀ pair ∈ subst, Ty.BelowFvars next pair.2 :=
@@ -3024,8 +2947,8 @@ private theorem branches_refs_subst {brs : List (MatchPattern × InferInput)} {c
 theorem InferRecComponentCert.sourceLocality_of_infer
     {request : InferRecComponentRequest} {result : RecComponentResult}
     (h : InferRecComponentCert request result)
-    (hInfer : ∀ {κ F' Ψ c e Ψ' T output ty}, e.size ≤ sizeBindings request.bindings →
-      Infer κ F' Ψ c e Ψ' T output ty →
+    (hInfer : ∀ {κ F' Ψ c e Ψ' T ty}, e.size ≤ sizeBindings request.bindings →
+      Infer κ F' Ψ c e Ψ' T ty →
       ∀ {w}, w < Ψ →
       e.erase.ForallOuter (fun i => ∀ M, c.env[i]? = some M → w ∉ M.body.freeVars) 0 →
       w ∉ e.rigidVars →
@@ -3041,7 +2964,7 @@ theorem InferRecComponentCert.sourceLocality_of_infer
   match h with
   | .nil => intro w _ _ _; exact ⟨by simp, by simp⟩
   | @consSelected K F members index frontier ctx binding rest expected specs
-      ⟨first, s1, output, ty⟩ bodyFacts s2 ⟨next, s3, artifacts⟩ hsel hi hu hrest =>
+      ⟨first, s1, ty⟩ bodyFacts s2 ⟨next, s3, artifacts⟩ hsel hi hu hrest =>
     simp only [selectedRecComponentResult] at ⊢
     intro w hw hrefs htargets
     have hrhs := hrefs 0 binding (by simpa using hsel) rfl
@@ -3182,9 +3105,9 @@ theorem RecState.Avoids.installOpenings {state : RecState} (h : state.Avoids w) 
   simpa only [RecState.Avoids, RecState.specs_installOpenings,
     RecState.exports_installOpenings] using h
 
-theorem RecState.Avoids.setSigned {state : RecState} {member : Nat} {names : List Nat}
-    {output : Expr} {facts : RecFacts} (h : state.Avoids w) :
-    (state.setSigned member names output facts).Avoids w := by
+theorem RecState.Avoids.setSigned {state : RecState} {member : Nat}
+    {facts : RecFacts} (h : state.Avoids w) :
+    (state.setSigned member names  facts).Avoids w := by
   simpa only [RecState.Avoids, RecState.specs_setSigned,
     RecState.exports_setSigned] using h
 
@@ -3331,8 +3254,8 @@ private theorem FinishRecComponent.memberStates_length
 theorem InferRecStrataCert.sourceLocality_of_infer
     {request : InferRecStrataRequest} {result : RecRunResult}
     (h : InferRecStrataCert request result)
-    (hInfer : ∀ {κ F' Ψ c e Ψ' T output ty}, e.size ≤ sizeBindings request.bindings →
-      Infer κ F' Ψ c e Ψ' T output ty →
+    (hInfer : ∀ {κ F' Ψ c e Ψ' T ty}, e.size ≤ sizeBindings request.bindings →
+      Infer κ F' Ψ c e Ψ' T ty →
       ∀ {w}, w < Ψ →
       e.erase.ForallOuter (fun i => ∀ M, c.env[i]? = some M → w ∉ M.body.freeVars) 0 →
       w ∉ e.rigidVars →
@@ -3407,8 +3330,8 @@ theorem InferRecStrataCert.sourceLocality_of_infer
 theorem InferRecSignedCert.sourceLocality_of_infer
     {request : InferRecSignedRequest} {result : RecRunResult}
     (h : InferRecSignedCert request result)
-    (hInfer : ∀ {κ F' Ψ c e Ψ' T output ty}, e.size ≤ sizeBindings request.bindings →
-      Infer κ F' Ψ c e Ψ' T output ty →
+    (hInfer : ∀ {κ F' Ψ c e Ψ' T ty}, e.size ≤ sizeBindings request.bindings →
+      Infer κ F' Ψ c e Ψ' T ty →
       ∀ {w}, w < Ψ →
       e.erase.ForallOuter (fun i => ∀ M, c.env[i]? = some M → w ∉ M.body.freeVars) 0 →
       w ∉ e.rigidVars →
@@ -3430,7 +3353,7 @@ theorem InferRecSignedCert.sourceLocality_of_infer
       (fun binding hm => hbindings binding (List.mem_cons_of_mem _ hm))
       (fun binding hm => hrhs binding (List.mem_cons_of_mem _ hm))
   | @cons K F index frontier ctx scheme rhs bindings state
-      ⟨first, s1, output, ty⟩ bodyFacts s2 ⟨next, tail, final⟩ _ _ hi hu _ hr =>
+      ⟨first, s1, ty⟩ bodyFacts s2 ⟨next, tail, final⟩ _ _ hi hu _ hr =>
     simp only [signedRecResult] at ⊢
     simp only at hw ha hlen hbindings hrhs
     have hy : w ∉ freshVars frontier scheme.paramCount := fun hm => by
@@ -3459,7 +3382,7 @@ theorem InferRecSignedCert.sourceLocality_of_infer
     have hboth : ∀ p ∈ s1 ++ s2, w ∉ p.2.freeVars :=
       fun p hm => (List.mem_append.mp hm).elim (hfirstS p) (hsecondS p)
     have hanext : ((state.onSubst (s1 ++ s2)).setSigned index (freshVars frontier scheme.paramCount)
-        (output.substTyFvars s2) (bodyFacts.onSubst s2)).Avoids w :=
+         (bodyFacts.onSubst s2)).Avoids w :=
       (ha.onSubst hboth).setSigned
     obtain ⟨htS, htD, htA⟩ := hr.sourceLocality_of_infer
       (fun he hh => hInfer (by
@@ -3527,7 +3450,7 @@ theorem InferRecSignedCert.memberStates_length
  termination_by structural h
 
 mutual
- private theorem InferCert.sourceLocality_raw (h : Infer K F frontier ctx input next subst output ty) :
+ private theorem InferCert.sourceLocality_raw (h : Infer K F frontier ctx input next subst ty) :
     ∀ {w}, w < frontier →
     input.erase.ForallOuter (fun i => ∀ M, ctx.env[i]? = some M → w ∉ M.body.freeVars) 0 →
     w ∉ input.rigidVars →
@@ -3579,7 +3502,7 @@ mutual
     have hA := Subst.sourceAvoid_append_local (Subst.sourceAvoid_append_local ⟨hfS, hfD⟩ ⟨haS, haD⟩) huA
     exact ⟨hA.1, Subst.notMemOnTy huA.1 hnew, hA.2⟩
   | @InferCert.letIn K F ann rhs body frontier ctx
-      ⟨first, s1, rhsOut, rhsTy⟩ ⟨checked, sCheck⟩ ⟨next, s2, bodyOut, bodyTy⟩
+      ⟨first, s1, rhsTy⟩ ⟨checked, sCheck⟩ ⟨next, s2, bodyTy⟩
       _ hr hc hb =>
     intro w hw hrefs hwe
     expose_names
@@ -3602,7 +3525,7 @@ mutual
     have hAll := Subst.sourceAvoid_append_local hA ⟨hbS, hbD⟩
     exact ⟨hAll.1, hbTy, hAll.2⟩
   | @InferCert.letSignature K F ann rhs body written frontier ctx
-      ⟨first, s1, rhsOut, rhsTy⟩ ⟨checked, sCheck⟩ ⟨next, s2, bodyOut, bodyTy⟩
+      ⟨first, s1, rhsTy⟩ ⟨checked, sCheck⟩ ⟨next, s2, bodyTy⟩
       _ heq _ hr hc _ hb =>
     intro w hw hrefs hwe
     expose_names
@@ -3637,7 +3560,7 @@ mutual
     have hAll := Subst.sourceAvoid_append_local hA ⟨hbS, hbD⟩
     exact ⟨hAll.1, hbTy, hAll.2⟩
   | @InferCert.letRec K F bindings body frontier ctx completed
-      ⟨first, s1, state1⟩ ⟨second, s2, state2⟩ ⟨next, s3, bodyOut, bodyTy⟩
+      ⟨first, s1, state1⟩ ⟨second, s2, state2⟩ ⟨next, s3, bodyTy⟩
       _ _ hs hp _ hb =>
     intro w hw hrefs hwe
     dsimp only at hs hp hb
@@ -3694,7 +3617,7 @@ mutual
     have hAll := Subst.sourceAvoid_append_local hpre ⟨hbS, hbD⟩
     exact ⟨hAll.1, hbTy, hAll.2⟩
   | @InferCert.match_ K F scrut branches frontier ctx
-      ⟨first, s1, scrutOut, scrutTy⟩ ⟨next, s2, branchesOut⟩ _ hs _ hb =>
+      ⟨first, s1, scrutTy⟩ ⟨next, s2⟩ _ hs _ hb =>
     intro w hw hrefs hwe
     dsimp only at hs hb
     expose_names
@@ -3805,7 +3728,7 @@ theorem InferCert.sourceLocality {request : InferRequest} {result : InferResult}
   cases result
   exact InferCert.sourceLocality_raw h hw hrefs hrigid
 
-theorem Infer.sourceLocality (h : Infer K F frontier ctx input next subst output ty) :
+theorem Infer.sourceLocality (h : Infer K F frontier ctx input next subst ty) :
     ∀ {w}, w < frontier →
     input.erase.ForallOuter
       (fun i => ∀ M, ctx.env[i]? = some M → w ∉ M.body.freeVars) 0 →
@@ -4204,8 +4127,8 @@ end
 section
 
 @[simp] theorem RecState.entries_setSigned (state : RecState) (member : Nat)
-    (names : List Nat) (output : Expr) (facts : RecFacts) :
-    (state.setSigned member names output facts).entries = state.entries := by
+    (names : List Nat) (facts : RecFacts) :
+    (state.setSigned member names  facts).entries = state.entries := by
   apply List.ext_getElem?
   intro i
   simp only [RecState.entries, RecState.setSigned, List.getElem?_map,
@@ -4231,49 +4154,9 @@ section
   simp [RecState.rhsCtx]
 
 @[simp] theorem RecState.rhsCtx_setSigned (state : RecState) (member : Nat)
-    (names : List Nat) (output : Expr) (facts : RecFacts) (ctx : Ctx) :
-    (state.setSigned member names output facts).rhsCtx ctx = state.rhsCtx ctx := by
+    (names : List Nat) (facts : RecFacts) (ctx : Ctx) :
+    (state.setSigned member names  facts).rhsCtx ctx = state.rhsCtx ctx := by
   simp [RecState.rhsCtx]
-
-theorem RecState.getElem?_outputs_setSigned_self (state : RecState) (member : Nat)
-    (names : List Nat) (output : Expr) (facts : RecFacts)
-    (hmember : member < state.outputs.length) :
-    (state.setSigned member names output facts).outputs[member]? =
-      some (some (output.closeTyVars names)) := by
-  have hi : member < state.memberStates.length := by
-    simpa only [RecState.outputs_length] using hmember
-  simp only [RecState.outputs, RecState.setSigned, List.getElem?_map,
-    List.getElem?_mapIdx]
-  rw [List.getElem?_eq_getElem hi]
-  simp
-
-theorem RecState.getElem?_outputs_setSigned_of_ne (state : RecState) (member i : Nat)
-    (names : List Nat) (output : Expr) (facts : RecFacts) (hi : i ≠ member) :
-    (state.setSigned member names output facts).outputs[i]? = state.outputs[i]? := by
-  simp only [RecState.outputs, RecState.setSigned, List.getElem?_map,
-    List.getElem?_mapIdx]
-  cases state.memberStates[i]? <;> simp [hi]
-
-theorem RecState.getElem?_outputs_exportComponent (state : RecState) (members : List Nat)
-    (written : List (List Nat)) (pool : List Nat)
-    (artifacts : List (Option RecComponentArtifact)) (i : Nat) :
-    (state.exportComponent members written pool artifacts).outputs[i]? =
-      state.memberStates[i]?.map (fun member =>
-        if i ∈ members then do
-          let ty ← member.spec.monoTy?
-          let rhs ← recComponentOutputAt artifacts i
-          pure (rhs.closeTyVars (recNames (written[i]?.getD []) pool ty))
-        else member.output) := by
-  simp only [RecState.outputs, RecState.exportComponent, List.getElem?_map,
-    List.getElem?_mapIdx]
-  cases state.memberStates[i]? with
-  | none => rfl
-  | some member => split <;> rfl
-
-@[simp] theorem RecState.pool_exportComponent (state : RecState) (members : List Nat)
-    (written : List (List Nat)) (pool : List Nat)
-    (artifacts : List (Option RecComponentArtifact)) :
-    (state.exportComponent members written pool artifacts).pool = pool := rfl
 
 @[simp] theorem RecState.pool_onSubst (state : RecState) (S : Subst) :
     (state.onSubst S).pool = state.pool := rfl
@@ -4484,8 +4367,8 @@ theorem openRecSources_getElem? {openings : List RecOpening} {bindings : List In
       component 0 opened (((state.installOpenings component openings).onSubst pre).rhsCtx (pre.onCtx ctx))
       (substInputBindings pre (openRecSources openings bindings))
       ((state.installOpenings component openings).onSubst pre).specs first current artifacts)
-    (hInfer : ∀ {κ F' Ψ c e Ψ' T output ty}, e.size ≤ sizeBindings bindings →
-      Infer κ F' Ψ c e Ψ' T output ty →
+    (hInfer : ∀ {κ F' Ψ c e Ψ' T ty}, e.size ≤ sizeBindings bindings →
+      Infer κ F' Ψ c e Ψ' T ty →
       ∀ {w}, w < Ψ →
       e.erase.ForallOuter (fun i => ∀ M, c.env[i]? = some M → w ∉ M.body.freeVars) 0 →
       w ∉ e.rigidVars →
@@ -4546,8 +4429,8 @@ theorem openRecSources_getElem? {openings : List RecOpening} {bindings : List In
       component 0 opened (((state.installOpenings component openings).onSubst pre).rhsCtx (pre.onCtx ctx))
       (substInputBindings pre (openRecSources openings bindings))
       ((state.installOpenings component openings).onSubst pre).specs first current artifacts)
-    (hInfer : ∀ {κ F' Ψ c e Ψ' T output ty}, e.size ≤ sizeBindings bindings →
-      Infer κ F' Ψ c e Ψ' T output ty →
+    (hInfer : ∀ {κ F' Ψ c e Ψ' T ty}, e.size ≤ sizeBindings bindings →
+      Infer κ F' Ψ c e Ψ' T ty →
       ∀ {w}, w < Ψ →
       e.erase.ForallOuter (fun i => ∀ M, c.env[i]? = some M → w ∉ M.body.freeVars) 0 →
       w ∉ e.rigidVars →
@@ -5030,8 +4913,8 @@ private theorem installed_subst_slot_value {state : RecState} {S : Subst} {i : N
     (hf : FinishRecComponent K (softVars (substSoft (pre ++ current) F)) component
       ((pre ++ current).onCtx ctx) ((state.installOpenings component openings).onSubst (pre ++ current))
       artifacts exported)
-    (hInfer : ∀ {κ F' Ψ c e Ψ' T output ty}, e.size ≤ sizeBindings bindings →
-      Infer κ F' Ψ c e Ψ' T output ty →
+    (hInfer : ∀ {κ F' Ψ c e Ψ' T ty}, e.size ≤ sizeBindings bindings →
+      Infer κ F' Ψ c e Ψ' T ty →
       ∀ {w}, w < Ψ →
       e.erase.ForallOuter (fun i => ∀ M, c.env[i]? = some M → w ∉ M.body.freeVars) 0 →
       w ∉ e.rigidVars →
@@ -5141,8 +5024,8 @@ private theorem FinishRecComponent.pool_extends
 theorem InferRecStrataCert.frame_of_infer
     {request : InferRecStrataRequest} {result : RecRunResult}
     (h : InferRecStrataCert request result)
-    (hInfer : ∀ {κ F' Ψ c e Ψ' T output ty}, e.size ≤ sizeBindings request.bindings →
-      Infer κ F' Ψ c e Ψ' T output ty →
+    (hInfer : ∀ {κ F' Ψ c e Ψ' T ty}, e.size ≤ sizeBindings request.bindings →
+      Infer κ F' Ψ c e Ψ' T ty →
       ∀ {w}, w < Ψ →
       e.erase.ForallOuter (fun i => ∀ M, c.env[i]? = some M → w ∉ M.body.freeVars) 0 →
       w ∉ e.rigidVars →
@@ -5230,9 +5113,9 @@ theorem InferRecStrataCert.frame_of_infer
  termination_by structural h
 
 
-theorem RecState.Frame.setSigned {state : RecState} {member : Nat} {names : List Nat}
-    {output : Expr} {facts : RecFacts} (h : state.Frame base K F ctx bindings done) :
-    (state.setSigned member names output facts).Frame base K F ctx bindings done := by
+theorem RecState.Frame.setSigned {state : RecState} {member : Nat}
+    {facts : RecFacts} (h : state.Frame base K F ctx bindings done) :
+    (state.setSigned member names  facts).Frame base K F ctx bindings done := by
   exact {
     modes := by simpa only [RecState.specs_setSigned] using h.modes
     annInfo := by simpa only [RecState.annInfo_setSigned] using h.annInfo
@@ -5269,8 +5152,8 @@ private theorem RecState.Frame.poly_of_complete {state : RecState} {i : Nat} {sc
 theorem InferRecSignedCert.frame_of_infer
     {request : InferRecSignedRequest} {result : RecRunResult}
     (h : InferRecSignedCert request result)
-    (hInfer : ∀ {κ F' Ψ c e Ψ' T output ty}, e.size ≤ sizeBindings request.bindings →
-      Infer κ F' Ψ c e Ψ' T output ty →
+    (hInfer : ∀ {κ F' Ψ c e Ψ' T ty}, e.size ≤ sizeBindings request.bindings →
+      Infer κ F' Ψ c e Ψ' T ty →
       ∀ {w}, w < Ψ →
       e.erase.ForallOuter (fun i => ∀ M, c.env[i]? = some M → w ∉ M.body.freeVars) 0 →
       w ∉ e.rigidVars →
@@ -5295,7 +5178,7 @@ theorem InferRecSignedCert.frame_of_infer
       (fun he hi => hInfer (by simp only at he; simp only [sizeBindings]; omega) hi) hframe
       (by simp only [List.drop_add_one_eq_tail_drop, hremaining, List.tail_cons]) hmono hpoolBelow
   | @cons K F index frontier ctx scheme rhs bindings state
-      ⟨first, s1, output, ty⟩ bodyFacts s2 ⟨next, tail, final⟩ _ hscope hi hu _ hr =>
+      ⟨first, s1, ty⟩ bodyFacts s2 ⟨next, tail, final⟩ _ hscope hi hu _ hr =>
     simp only [signedRecResult] at ⊢
     simp only at hframe hremaining hmono hpoolBelow
     have hBinding : fullBindings[index]? = some { ann := .complete scheme, rhs := rhs } := by
@@ -5341,10 +5224,10 @@ theorem InferRecSignedCert.frame_of_infer
     have hnextFrame := (hframe.onSubst havoid
       (fun i ty hs hn => False.elim (hn (hmono i ty hs)))).setSigned
       (member := index) (names := freshVars frontier scheme.paramCount)
-      (output := output.substTyFvars s2) (facts := bodyFacts.onSubst s2)
+       (facts := bodyFacts.onSubst s2)
     have hnextMono : ∀ i ty,
         ((state.onSubst (s1 ++ s2)).setSigned index (freshVars frontier scheme.paramCount)
-          (output.substTyFvars s2) (bodyFacts.onSubst s2)).specs[i]? = some (.mono ty) → i ∈ done := by
+           (bodyFacts.onSubst s2)).specs[i]? = some (.mono ty) → i ∈ done := by
       intro i ty hs
       have hs' : (state.specs.map (RecSpec.onSubstSource (s1 ++ s2)))[i]? = some (.mono ty) := by
         simpa only [RecState.specs_setSigned, RecState.specs_onSubst] using hs
@@ -5661,8 +5544,8 @@ private theorem trace_prefix_lookup {state : RecState} {i : Nat} {ty : Ty} {name
 theorem InferRecComponentCert.scopedSound_of_infer
     {request : InferRecComponentRequest} {result : RecComponentResult}
     (h : InferRecComponentCert request result)
-    (hInfer : ∀ {κ F' Ψ c e Ψ' T output ty}, e.size ≤ sizeBindings request.bindings →
-      Infer κ F' Ψ c e Ψ' T output ty → CtxWF c →
+    (hInfer : ∀ {κ F' Ψ c e Ψ' T ty}, e.size ≤ sizeBindings request.bindings →
+      Infer κ F' Ψ c e Ψ' T ty → CtxWF c →
       ScopedTyping (κ ++ softVars (substSoft T F')) (T.onCtx c) (e.substTyFvars T) ty)
     (hctx : CtxWF request.ctx) (hspec : ∀ spec ∈ request.specs, spec.LC) :
     ∀ (j : Nat) (binding : InputRecBinding) (target : Ty),
@@ -5695,7 +5578,7 @@ theorem InferRecComponentCert.scopedSound_of_infer
         hctx (fun spec hm => hspec spec (List.mem_cons_of_mem _ hm)) j binding target
         (by simpa [Nat.add_assoc, Nat.add_comm, Nat.add_left_comm] using hj) hb ht
   | @consSelected K F members index frontier ctx head rest expected specs
-      ⟨first, s1, bodyOutput, ty⟩ bodyFacts s2 ⟨next, s3, artifacts⟩ hm hi hu hr =>
+      ⟨first, s1, ty⟩ bodyFacts s2 ⟨next, s3, artifacts⟩ hm hi hu hr =>
     simp only [selectedRecComponentResult] at ⊢
     obtain ⟨hiTy, hiS⟩ := hi.lc hctx
     have huS := hu.unifies.lc hiTy (Subst.onTy_lc hiS (hspec _ List.mem_cons_self))
@@ -5784,7 +5667,7 @@ def RecState.CompleteInput (Q : List Nat) (ctx : Ctx)
       PolyTy.openVars, Subst.onPolyTy, Subst.onTy_openVars hS hdom] using ht
 
 
-/-- Completed members retain exact authored-prefix/full-output openings. -/
+/-- Signed RHS evidence checks all fresh authored-prefix openings. -/
 private theorem trace_stage_export {state : RecState}
     (hdisj : ∀ i ∈ earlier, i ∉ members) :
     (state.exportComponent members written pool artifacts).stageCtx ctx earlier = state.stageCtx ctx earlier := by
@@ -5889,8 +5772,8 @@ theorem openRecSources_lookup {i : Nat} {binding : InputRecBinding}
     (hf : FinishRecComponent K (softVars (substSoft (pre ++ current) F)) component
       ((pre ++ current).onCtx ctx) ((state.installOpenings component openings).onSubst (pre ++ current))
       artifacts exported)
-    (hInfer : ∀ {κ F' Ψ c e Ψ' T output ty}, e.size ≤ sizeBindings bindings →
-      Infer κ F' Ψ c e Ψ' T output ty →
+    (hInfer : ∀ {κ F' Ψ c e Ψ' T ty}, e.size ≤ sizeBindings bindings →
+      Infer κ F' Ψ c e Ψ' T ty →
       ∀ {w}, w < Ψ →
       e.erase.ForallOuter (fun i => ∀ M, c.env[i]? = some M → w ∉ M.body.freeVars) 0 →
       w ∉ e.rigidVars →
@@ -5902,8 +5785,8 @@ theorem openRecSources_lookup {i : Nat} {binding : InputRecBinding}
     (hbelow : state.Below frontier) (hbase : base + bindings.length ≤ frontier)
     (hbindings : ∀ binding ∈ bindings,
       ∀ v ∈ binding.ann.rigidVars ++ binding.rhs.rigidVars, v ∈ K ++ softVars F)
-    (hInput : ∀ {κ F' Ψ c e Ψ' T output ty}, e.size ≤ sizeBindings bindings →
-      Infer κ F' Ψ c e Ψ' T output ty → CtxWF c →
+    (hInput : ∀ {κ F' Ψ c e Ψ' T ty}, e.size ≤ sizeBindings bindings →
+      Infer κ F' Ψ c e Ψ' T ty → CtxWF c →
       ScopedTyping (κ ++ softVars (substSoft T F')) (T.onCtx c) (e.substTyFvars T) ty)
     (hTrace : state.InputTrace (K ++ softVars F) ctx bindings past) :
     exported.InputTrace (K ++ softVars (substSoft (pre ++ current) F)) ((pre ++ current).onCtx ctx)
@@ -6041,8 +5924,8 @@ theorem openRecSources_lookup {i : Nat} {binding : InputRecBinding}
 theorem InferRecStrataCert.inputTrace_of_infer
     {request : InferRecStrataRequest} {result : RecRunResult}
     (h : InferRecStrataCert request result)
-    (hInfer : ∀ {κ F' Ψ c e Ψ' T output ty}, e.size ≤ sizeBindings request.bindings →
-      Infer κ F' Ψ c e Ψ' T output ty →
+    (hInfer : ∀ {κ F' Ψ c e Ψ' T ty}, e.size ≤ sizeBindings request.bindings →
+      Infer κ F' Ψ c e Ψ' T ty →
       ∀ {w}, w < Ψ →
       e.erase.ForallOuter (fun i => ∀ M, c.env[i]? = some M → w ∉ M.body.freeVars) 0 →
       w ∉ e.rigidVars →
@@ -6059,8 +5942,8 @@ theorem InferRecStrataCert.inputTrace_of_infer
     (hbindings : ∀ binding ∈ request.bindings,
       ∀ v ∈ binding.ann.rigidVars ++ binding.rhs.rigidVars,
         v ∈ request.protectedVars ++ softVars request.soft)
-    (hInput : ∀ {κ F' Ψ c e Ψ' T output ty}, e.size ≤ sizeBindings request.bindings →
-      Infer κ F' Ψ c e Ψ' T output ty → CtxWF c →
+    (hInput : ∀ {κ F' Ψ c e Ψ' T ty}, e.size ≤ sizeBindings request.bindings →
+      Infer κ F' Ψ c e Ψ' T ty → CtxWF c →
       ScopedTyping (κ ++ softVars (substSoft T F')) (T.onCtx c) (e.substTyFvars T) ty)
     (hTrace : request.state.InputTrace (request.protectedVars ++ softVars request.soft)
       request.ctx request.bindings past) :
@@ -6170,9 +6053,9 @@ private theorem RecState.CompleteInput.advance_complete {state : RecState}
     cases PartialCore.Ann.complete.inj (ha.symm.trans hann)
     exact hhead Xs ⟨hXs.length, hXs.nodup, fun v hv hm => hXs.avoid v hv (List.mem_append_right _ hm)⟩
 
-private theorem RecState.CompleteInput.setSigned {state : RecState} {member : Nat} {names : List Nat}
-    {output : Expr} {facts : RecFacts} (h : state.CompleteInput Q ctx bindings checked) :
-    (state.setSigned member names output facts).CompleteInput Q ctx bindings checked := by
+private theorem RecState.CompleteInput.setSigned {state : RecState} {member : Nat}
+    {facts : RecFacts} (h : state.CompleteInput Q ctx bindings checked) :
+    (state.setSigned member names  facts).CompleteInput Q ctx bindings checked := by
   obtain ⟨L, hh⟩ := h
   refine ⟨L, ?_⟩
   intro i binding scheme hi hb ha Xs hXs
@@ -6182,8 +6065,8 @@ private theorem RecState.CompleteInput.setSigned {state : RecState} {member : Na
 theorem InferRecSignedCert.scopedSound_of_infer
     {request : InferRecSignedRequest} {result : RecRunResult}
     (h : InferRecSignedCert request result)
-    (hInfer : ∀ {κ F' Ψ c e Ψ' T output ty}, e.size ≤ sizeBindings request.bindings →
-      Infer κ F' Ψ c e Ψ' T output ty → CtxWF c →
+    (hInfer : ∀ {κ F' Ψ c e Ψ' T ty}, e.size ≤ sizeBindings request.bindings →
+      Infer κ F' Ψ c e Ψ' T ty → CtxWF c →
       ScopedTyping (κ ++ softVars (substSoft T F')) (T.onCtx c) (e.substTyFvars T) ty)
     (hctx : CtxWF request.ctx) (hstate : request.state.LC)
     (hK : ∀ k ∈ request.protectedVars, k < request.frontier)
@@ -6221,7 +6104,7 @@ theorem InferRecSignedCert.scopedSound_of_infer
       (by simp only [List.drop_add_one_eq_tail_drop, hBindings, List.tail_cons]) hscope
       (hchecked.advance_skip hb hnone)
   | @cons K F index frontier ctx scheme rhs bindings state
-      ⟨first, s1, output, ty⟩ bodyFacts s2 ⟨next, tail, final⟩ hWF hraw hi hu hescape hr =>
+      ⟨first, s1, ty⟩ bodyFacts s2 ⟨next, tail, final⟩ hWF hraw hi hu hescape hr =>
     simp only [signedRecResult] at ⊢
     simp only at hctx hstate hK hBindings hscope hchecked
     have hCtxRhs := hstate.rhsCtx hctx
@@ -6277,7 +6160,7 @@ theorem InferRecSignedCert.scopedSound_of_infer
     have hprevious := (hchecked.onSubst (s1 ++ s2) hSLC
       (fun k hk v hv => scope_image hfixK hk hv)).setSigned
       (member := index) (names := freshVars frontier scheme.paramCount)
-      (output := output.substTyFvars s2) (facts := bodyFacts.onSubst s2)
+       (facts := bodyFacts.onSubst s2)
     let nextBinding : InputRecBinding :=
       ⟨(PartialCore.Ann.complete scheme).substTyFvars (s1 ++ s2),
         rhs.substTyFvars (s1 ++ s2)⟩
@@ -6520,7 +6403,7 @@ theorem InferCert.scopedSound_source {request : InferRequest} {result : InferRes
       simpa only [appResult, Subst.onCtx_append, InferInput.substTyFvars,
         List.append_assoc] using ScopedTyping.app hfTyped haTyped
   | @InferCert.letIn K F ann rhs body frontier ctx
-      ⟨first, s1, rhsOut, rhsTy⟩ ⟨checked, sCheck⟩ ⟨next, s2, bodyOut, bodyTy⟩
+      ⟨first, s1, rhsTy⟩ ⟨checked, sCheck⟩ ⟨next, s2, bodyTy⟩
       hraw hr hc hb =>
       have hs1 := (hr.lc hctx).2
       have hrTy := (hr.lc hctx).1
@@ -6588,7 +6471,7 @@ theorem InferCert.scopedSound_source {request : InferRequest} {result : InferRes
       simpa only [← Subst.onCtx_append, List.append_assoc] using hgeneral fresh hfresh
 
   | @InferCert.letSignature K F ann rhs body written frontier ctx
-      ⟨first, s1, rhsOut, rhsTy⟩ ⟨checked, sCheck⟩ ⟨next, s2, bodyOut, bodyTy⟩
+      ⟨first, s1, rhsTy⟩ ⟨checked, sCheck⟩ ⟨next, s2, bodyTy⟩
       hscope hprefix havoid hr hc hescape hb =>
     have hlen : written.length = ann.paramCount := by simpa only [freshVars_length] using congrArg List.length hprefix
     have hnd : written.Nodup := hprefix ▸ freshVars_nodup
@@ -6689,7 +6572,7 @@ theorem InferCert.scopedSound_source {request : InferRequest} {result : InferRes
     simpa only [← Subst.onCtx_append, List.append_assoc] using htypesFinal fresh hfresh
 
   | @InferCert.letRec K F bindings body frontier ctx completed
-      ⟨first, s1, state1⟩ ⟨second, s2, state2⟩ ⟨next, s3, bodyOut, bodyTy⟩
+      ⟨first, s1, state1⟩ ⟨second, s2, state2⟩ ⟨next, s3, bodyTy⟩
       hscope hann hstrata hsigned hcompleted hbody =>
     have hctxWF := hctx
     let groups := RecGroup.inferenceSccs (bindings.map InputRecBinding.recMode)
@@ -6910,7 +6793,7 @@ theorem InferBranchesCert.scopedSound_source
   match h with
   | .nil => intro branch hb; cases hb
   | @InferBranchesCert.consWild body rest K F frontier ctx scrutTy resultTy
-      ⟨first, s1, bodyOut, bodyTy⟩ s2 ⟨next, s3, restOut⟩
+      ⟨first, s1, bodyTy⟩ s2 ⟨next, s3⟩
       _ hb hu hr =>
     simp only [wildcardBranchesResult] at ⊢
     obtain ⟨hbTy, hs1⟩ := hb.lc hctx
@@ -6937,7 +6820,7 @@ theorem InferBranchesCert.scopedSound_source
       simpa only [Subst.onCtx_append, Subst.onTy_append, ← substSoft_append,
         ← InferInput.substTyFvars_append] using ht
   | @InferBranchesCert.cons name count body rest K F ctor scrutTy frontier s0 ctx
-      ⟨first, s1, bodyOut, bodyTy⟩ resultTy s2 ⟨next, s3, restOut⟩
+      ⟨first, s1, bodyTy⟩ resultTy s2 ⟨next, s3⟩
       _ hlookup hcount hu0 hb hu hr =>
     simp only [namedBranchesResult] at ⊢
     have hs0 := hu0.unifies.lc hscrut
@@ -6988,7 +6871,7 @@ termination_by (sizeBranches request.branches, 0)
 decreasing_by all_goals (simp only [sizeBranches, InferInput.size_substTyFvars, sizeBranches_substInputBranches]; omega)
 end
 
-theorem Infer.scopedSound_source (h : Infer K F frontier ctx input next subst output ty) :
+theorem Infer.scopedSound_source (h : Infer K F frontier ctx input next subst ty) :
     CtxWF ctx →
       ScopedTyping (K ++ softVars (substSoft subst F)) (subst.onCtx ctx)
         (input.substTyFvars subst) ty :=
@@ -6997,12 +6880,12 @@ theorem Infer.scopedSound_source (h : Infer K F frontier ctx input next subst ou
 /-- Runtime soundness follows directly from partial-source typing. Completed
 Core and structural annotation completion are compatibility artifacts, not the
 semantic bridge used by this theorem. -/
-theorem Infer.sound (h : Infer K F frontier ctx input next subst output ty) (hctx : CtxWF ctx) :
+theorem Infer.sound (h : Infer K F frontier ctx input next subst ty) (hctx : CtxWF ctx) :
     RuntimeTyping.RunWT (subst.onCtx ctx) input.erase ty := by
   simpa only [InferInput.erase_substTyFvars] using (h.scopedSound_source hctx).erase
 
 /-- With no provisional slots, actual inference preserves authored annotations. -/
-theorem Infer.scopedSound (h : Infer K [] frontier ctx input next subst output ty)
+theorem Infer.scopedSound (h : Infer K [] frontier ctx input next subst ty)
     (hctx : CtxWF ctx) : ScopedTyping K (subst.onCtx ctx) input ty := by
   have hscope : ∀ v ∈ input.rigidVars, v ∈ K := by
     simpa only [SourceScope, softVars, TyList.freeVars, List.append_nil] using h.sourceScope
@@ -7032,7 +6915,7 @@ end InferCert
 
 theorem inferWithTypes_scoped_sound {ctors : CtorEnv} {input : InferInput} {result : InferenceResult}
     (h : inferWithTypes ctors input = some result) : ScopedTyping input.rigidVars ⟨[], ctors⟩ input result.ty := by
-  obtain ⟨output, hi⟩ := inferWithTypes_infer h
+  have hi := inferWithTypes_infer h
   simpa only [Subst.onCtx_empty] using
     InferCert.scopedSound hi CtxWF.empty
 

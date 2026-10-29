@@ -74,9 +74,9 @@ the converse is deliberately not claimed: the relation permits choices that the
 worker resolves deterministically and does not record artifact metadata.
 
 Production `inferWithTypes` returns types and binder/node metadata, without a
-completed expression. The internal `InferCert` interface still exposes
-compatibility output typing and fidelity alongside direct source typing,
-bounds and runtime soundness. Principality similarly takes the request's
+completed expression. `InferCert` relates requests to type/substitution results
+and proves direct source typing, bounds and runtime soundness.
+Principality similarly takes the request's
 complete `WF` bundle as one premise. -/
 #check @InferRequest.core
 #check @inferRequestCore
@@ -131,7 +131,7 @@ complete `WF` bundle as one premise. -/
 #check @InferRecComponentCert.scopedSound_of_infer
 #check @InferRecComponentCert.sourcePrincipal_of_infer
 #check @InferRecComponentCert.sourcePrincipal_after_shapes
-#check @InferRecComponentCert.outputs_selected
+#check @InferRecComponentCert.ready_selected
 #check @InferRecStrataCert.dom_avoids
 #check @InferRecStrataCert.lc_of_infer
 #check @InferRecStrataCert.frontier_le
@@ -140,7 +140,7 @@ complete `WF` bundle as one premise. -/
 #check @InferRecStrataCert.memberStates_length
 #check @InferRecStrataCert.frame_of_infer
 #check @InferRecStrataCert.inputTrace_of_infer
-#check @InferRecStrataCert.outputs_present
+#check @InferRecStrataCert.checked
 #check @InferRecSignedCert.dom_avoids
 #check @InferRecSignedCert.lc_of_infer
 #check @InferRecSignedCert.frontier_le
@@ -151,7 +151,7 @@ complete `WF` bundle as one premise. -/
 #check @InferRecSignedCert.scopedSound_of_infer
 #check @InferRecSignedCert.type_fields
 #check @InferRecSignedCert.sourcePrincipal_residual
-#check @InferRecSignedCert.outputs_present
+#check @InferRecSignedCert.checked
 #check @InferRecSignedCert.completed_members_of_strata
 
 example (K : List Nat) (frontier : Nat) (ctx : Ctx) (input : InferInput) : InferRequest :=
@@ -218,14 +218,14 @@ canonical request-native engine. -/
 example {request : InferRequest} {result : InferResult} :
     InferCert request result ↔
       Infer request.protectedVars request.soft request.frontier request.ctx request.input
-        result.frontier result.subst result.completedExpr result.ty :=
+        result.frontier result.subst  result.ty :=
   Iff.rfl
 
 example {request : InferBranchesRequest} {result : InferBranchesResult} :
     InferBranchesCert request result ↔
       InferBranches request.protectedVars request.soft request.frontier request.ctx
         request.scrutineeTy request.resultTy request.branches
-        result.frontier result.subst result.completedBranches :=
+        result.frontier result.subst  :=
   Iff.rfl
 
 example {request : InferRecComponentRequest} {result : RecComponentResult} :
@@ -263,7 +263,7 @@ example {request : InferRecSignedRequest} {result : RecRunResult} :
 #check @inferWithTypes_principal
 #check @inferWithTypes_infer
 
-example (h : Infer K F frontier ctx input next subst output ty) : Infer.Principal h :=
+example (h : Infer K F frontier ctx input next subst  ty) : Infer.Principal h :=
   Infer.principal h
 
 example (input : InferInput) : InferWithTypesCoreSourceComplete input :=

@@ -1530,6 +1530,12 @@ namespace InferenceExamples
 private def ctors : CtorEnv := (elabDecls preludeDecls).getD []
 private def ctx : Ctx := ⟨[], ctors⟩
 
+private def schemeAt (result : InferenceResult) (site : CoreBinderSite) : Option PolyTy :=
+  (result.binderSchemes.find? (fun p => p.1 == site)).map Prod.snd
+
+private def typeAt (result : InferenceResult) (path : CorePath) : Option Ty :=
+  (result.nodeTypes.find? (fun p => p.1 == path)).map Prod.snd
+
 /-! ### Bundled request/run canaries -/
 
 private def literalRequest : InferRequest :=
@@ -1539,7 +1545,6 @@ private def literalRequest : InferRequest :=
 private def literalResult : InferCoreResult :=
   { frontier := 0
     subst := []
-    completedExpr := .primLit (.int 7)
     ty := .prim .int
     nodeTypes := .root (.prim .int)
     binderSchemes := [] }
@@ -1558,7 +1563,7 @@ private def invalidGuardRequest : InferRequest :=
     input := .primLit .unit }
 
 private def invalidGuardResult : InferResult :=
-  { frontier := 0, subst := [], completedExpr := .primLit .unit, ty := .prim .unit }
+  { frontier := 0, subst := [], ty := .prim .unit }
 
 /-- Guard failure is operational: the underlying inference certificate still exists. -/
 theorem invalidGuardRequest_rejected : invalidGuardRequest.run = none := by
@@ -1661,14 +1666,14 @@ def signedBodyHole : InferInput :=
 #guard !(inferCore [] 0 ctx quantifiedRigidRejected).isSome
 #guard (inferCore [] 0 ctx signedRhsHole).isSome
 #guard (inferCore [] 0 ctx signedBodyHole).isSome
-#guard match inferCore [] 0 ctx quantifiedExtras with
-  | some result => match result.val.completedExpr with
-    | .letIn (some ⟨2, .arrow (.bvar 0) (.arrow (.bvar 1) (.bvar 0))⟩) _ _ => true
+#guard match inferWithTypes ctors quantifiedExtras with
+  | some result => match schemeAt result (.letIn []) with
+    | some ⟨2, .arrow (.bvar 0) (.arrow (.bvar 1) (.bvar 0))⟩ => true
     | _ => false
   | _ => false
-#guard match inferCore [] 0 ctx vacuousWritten with
-  | some result => match result.val.completedExpr with
-    | .letIn (some scheme) _ _ => scheme.paramCount == 1
+#guard match inferWithTypes ctors vacuousWritten with
+  | some result => match schemeAt result (.letIn []) with
+    | some scheme => scheme.paramCount == 1
     | _ => false
   | _ => false
 
@@ -1692,22 +1697,22 @@ def partialRecursionCodomainRejected : InferInput :=
 #guard (inferCore [] 0 ctx fixedDomainAccepted).isSome
 #guard !(inferCore [] 0 ctx fixedDomainRejected).isSome
 #guard (inferCore [] 0 ctx quantifiedId).isSome
-#guard match inferCore [] 0 ctx partialRecursion with
-  | some result => match result.val.completedExpr, result.val.ty with
-    | .letRec
-        [{ ann := some ⟨1, .arrow (.bvar 0) (.prim .int)⟩,
-           rhs := .lambda none (.primLit (.int 0)) }]
-        (.var 0), .arrow (.fvar _) (.prim .int) => true
+#guard match inferWithTypes ctors partialRecursion with
+  | some result => match
+      schemeAt result (.letRec [] 0), result.ty with
+    | some ⟨1, .arrow (.bvar 0) (.prim .int)⟩, .arrow (.fvar _) (.prim .int) => true
     | _, _ => false
   | _ => false
 #guard !(inferCore [] 0 ctx partialRecursionCodomainRejected).isSome
 
-/- The id canary really introduces a scheme binder and closes the lambda
-annotation underneath that same binder. -/
-#guard match inferCore [] 0 ctx polymorphicId with
-  | some result => match result.val.completedExpr with
-    | .letIn (some scheme) (.lambda (some (.bvar 0)) _) _ => scheme.paramCount == 1
-    | _ => false
+/- The id canary exports one quantified binder while its RHS metadata retains
+the same inferred variable in the lambda's domain and codomain. -/
+#guard match inferWithTypes ctors polymorphicId with
+  | some result => match
+      schemeAt result (.letIn []),
+      typeAt result [.letRhs] with
+    | some ⟨1, .arrow (.bvar 0) (.bvar 0)⟩, some (.arrow (.fvar a) (.fvar b)) => a == b
+    | _, _ => false
   | _ => false
 
 private def idHole : InferInput := .lambda (some .hole) (.var 0)
@@ -1795,9 +1800,9 @@ private def violatesRigidLet : InferInput :=
 #guard !(inferCore [] 8 ctx rigidIdentity).isSome
 #guard (inferCore [7] 8 ctx rigidLet).isSome
 #guard !(inferCore [7] 8 ctx violatesRigidLet).isSome
-#guard match inferCore [7] 8 ctx rigidLet with
-  | some result => match result.val.completedExpr, result.val.ty with
-    | .letIn (some scheme) _ _, .arrow (.fvar 7) (.fvar 7) => scheme.paramCount == 0
+#guard match inferWithTypes ctors rigidLet with
+  | some result => match schemeAt result (.letIn []), result.ty with
+    | some scheme, .arrow (.fvar 7) (.fvar 7) => scheme.paramCount == 0
     | _, _ => false
   | _ => false
 
@@ -1822,13 +1827,13 @@ def completeForallWithPartialRhs : InferInput :=
 -- from the whole-program result type.
 def unusedHole : InferInput :=
   .letIn (.template .hole) (.ctor ⟨"Nil"⟩) (.primLit (.int 1))
-#guard match inferCore [] 0 ctx unusedHole with
-  | some result => match result.val.completedExpr, result.val.ty with
-    | .letIn (some ⟨1, .customTy ⟨"List"⟩ [.bvar 0]⟩) _ _, .prim .int => true
+#guard match inferWithTypes ctors unusedHole with
+  | some result => match schemeAt result (.letIn []), result.ty with
+    | some ⟨1, .customTy ⟨"List"⟩ [.bvar 0]⟩, .prim .int => true
     | _, _ => false
   | _ => false
 
--- Public artifacts and completed output come from the same run. Synthetic
+-- Public type and scheme artifacts come from the same run. Synthetic
 -- scheme binders do not turn source hover monotypes into dangling bvars.
 #guard match inferWithTypes ctors polymorphicId with
   | some result => result.binderSchemes.any (fun fact => fact.2.paramCount == 1)

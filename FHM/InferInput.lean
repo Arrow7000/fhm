@@ -3752,63 +3752,6 @@ theorem RecAnnotationsMatch.subst_fresh_pool {bindings : List InputRecBinding}
     exact hr.onSubst_source S hS hdom hran (recRenameNames_mem hlen hsub)
 
 
-inductive CompletedBranches (J : List Nat → InferInput → Expr → Prop) :
-    List Nat → List (MatchPattern × InferInput) → List (MatchPattern × Expr) → Prop
-  | nil : CompletedBranches J K [] []
-  | cons {source : InferInput} {output : Expr} {K : List Nat} :
-      J K source output → CompletedBranches J K rest restOut →
-      CompletedBranches J K ((pat, source) :: rest) ((pat, output) :: restOut)
-
-inductive CompletedRecBindings (J : List Nat → InferInput → Expr → Prop) :
-    List Nat → List Nat → List InputRecBinding → List (RecBinding PolyTy Expr) → Prop
-  | nil : CompletedRecBindings J K L [] []
-  | cons {K L : List Nat} :
-      (∀ Xs, FreshNames L completed.ann.paramCount Xs →
-        binding.ann.BindingFits completed.ann Xs) →
-      (∀ Xs, FreshNames L completed.ann.paramCount Xs →
-        J (K ++ Xs.take binding.ann.paramCount)
-          (binding.rhs.openTyVars (Xs.take binding.ann.paramCount))
-          (completed.rhs.openTyVars Xs)) →
-      CompletedRecBindings J K L rest completedRest →
-      CompletedRecBindings J K L (binding :: rest) (completed :: completedRest)
-
-/-- Structural annotation completion. This is distinct from input admissibility
-(`ScopedTyping` below): it records fixed syntax, individual hole fillings, and the
-type abstraction/specialization performed when an ordinary let is generalized.
-Protected fixed variables cannot be substituted or captured by new binders.
-Scope correctness of the resulting Core is supplied by output typing. -/
-inductive AnnotationCompletion : List Nat → InferInput → Expr → Prop
-  | complete : input.toCore = some core → (∀ v ∈ core.tyFreeVars, v ∈ K) → AnnotationCompletion K input core
-  | lambda :
-      (∀ template, ann = some template → template.Matches param) →
-      (∀ template, ann = some template → ∀ v ∈ template.rigidVars, v ∈ K) →
-      AnnotationCompletion K body completed →
-      AnnotationCompletion K (.lambda ann body) (.lambda (ann.map fun _ => param) completed)
-  | app : AnnotationCompletion K f fOut → AnnotationCompletion K arg argOut → AnnotationCompletion K (.app f arg) (.app fOut argOut)
-  | letIn {M : PolyTy} {L : List Nat} :
-      (∀ template, ann = .template template → ∀ v ∈ template.rigidVars, v ∈ K) →
-      (∀ Xs, FreshNames L M.paramCount Xs → ann.FitsMono (M.openVars Xs)) →
-      (∀ Xs, FreshNames L M.paramCount Xs → AnnotationCompletion K rhs (rhsOut.openTyVars Xs)) →
-      AnnotationCompletion K body bodyOut →
-      AnnotationCompletion K (.letIn ann rhs body) (.letIn (some M) rhsOut bodyOut)
-  | letSignature {M : PolyTy} {L : List Nat} :
-      (∀ v ∈ ann.rigidVars, v ∈ K) → (∀ v ∈ rhs.rigidVars, v ∈ K) →
-      (∀ Xs, FreshNames L M.paramCount Xs → ann.SignatureFits M Xs) →
-      (∀ Xs, FreshNames L M.paramCount Xs →
-        AnnotationCompletion (K ++ Xs.take ann.paramCount) (rhs.openTyVars (Xs.take ann.paramCount))
-          (rhsOut.openTyVars Xs)) →
-      AnnotationCompletion K body bodyOut →
-      AnnotationCompletion K (.letIn ann rhs body) (.letIn (some M) rhsOut bodyOut)
-  | match_ : AnnotationCompletion K scrut scrutOut → CompletedBranches AnnotationCompletion K branches branchesOut →
-      AnnotationCompletion K (.match_ scrut branches) (.match_ scrutOut branchesOut)
-
-  | letRec {completed : List (RecBinding PolyTy Expr)} {L : List Nat} :
-    (∀ binding ∈ bindings, ∀ v ∈ binding.ann.rigidVars ++ binding.rhs.rigidVars, v ∈ K) →
-    CompletedRecBindings AnnotationCompletion K L bindings completed →
-    AnnotationCompletion K body bodyOut →
-    AnnotationCompletion K (.letRec bindings body)
-      (.letRec (completed.map fun binding => { ann := some binding.ann, rhs := binding.rhs }) bodyOut)
-
 /-- Independent branch semantics reuse the ordinary constructor specification;
 the body relation is a parameter, with no inference state or substitution. -/
 inductive ScopedBranchTyping (J : List Nat → Ctx → InferInput → Ty → Prop) :
@@ -4989,424 +4932,6 @@ theorem ScopedTyping.binding_onSubst {ann : BindingAnn} {scheme : PolyTy} {avoid
   ScopedTyping.binding_onSubst_fixes hfit htyping hrigid subst hlc (Subst.fixes_of_dom_avoids hprotected)
 
 
-private theorem Expr.substTyFvars_openTyVars_lc (expr : Expr) {S : Subst} {Xs : List Nat}
-    (hlc : ∀ p ∈ S, p.2.IsLC) (hfresh : ∀ p ∈ S, p.1 ∉ Xs) :
-    (expr.openTyVars Xs).substTyFvars S = (expr.substTyFvars S).openTyVars Xs := by
-  induction S generalizing expr with
-  | nil => rfl
-  | cons p rest ih =>
-    rcases p with ⟨v, ty⟩
-    simp only [Expr.substTyFvars]
-    rw [Expr.substTyFvar_openTyVars (hlc _ List.mem_cons_self) (hfresh _ List.mem_cons_self)]
-    exact ih _ (fun p hp => hlc p (List.mem_cons_of_mem _ hp))
-      (fun p hp => hfresh p (List.mem_cons_of_mem _ hp))
-
-
-/-- Global LC transport is a paired cofinite induction; no closing algebra or
-choice of renamed internal witnesses is needed. -/
-
-theorem PartialCore.Ann.BindingFits.onSubst_source {ann : BindingAnn} {scheme : PolyTy} {Xs : List Nat}
-    (h : ann.BindingFits scheme Xs) (S : Subst)
-    (hlc : ∀ p ∈ S, p.2.IsLC) (hdom : ∀ p ∈ S, p.1 ∉ Xs) :
-    (ann.substTyFvars S).BindingFits (S.onPolyTy scheme) Xs := by
-  unfold PartialCore.Ann.BindingFits at h ⊢
-  rw [PartialCore.Ann.isSignature_substTyFvars]
-  cases hm : ann.isSignature with
-  | false =>
-    simp only [hm, Bool.false_eq_true, if_false] at h ⊢
-    have hh := fitsMono_sourceSubst h S
-    simpa only [PolyTy.openVars, Subst.onPolyTy, Subst.onTy_openVars hlc hdom] using hh
-  | true =>
-    simp only [hm, if_true] at h ⊢
-    exact h.onSubst_source S hlc hdom
-
-theorem AnnotationCompletion.onSubst_source (h : AnnotationCompletion K input output) (S : Subst)
-    (hlc : ∀ p ∈ S, p.2.IsLC)
-    (hscope : ∀ k ∈ K, ∀ v ∈ (S.onTy (.fvar k)).freeVars, v ∈ K') :
-    AnnotationCompletion K' (input.substTyFvars S) (output.substTyFvars S) := by
-  induction h using AnnotationCompletion.rec
-      (motive_2 := fun K branches branchesOut _ => ∀ {K'},
-        (∀ k ∈ K, ∀ v ∈ (S.onTy (.fvar k)).freeVars, v ∈ K') →
-        CompletedBranches AnnotationCompletion K' (substInputBranches S branches)
-          (branchesOut.map fun (pat, body) => (pat, body.substTyFvars S)))
-      (motive_3 := fun K L bindings completed _ => ∀ {K'},
-        (∀ k ∈ K, ∀ v ∈ (S.onTy (.fvar k)).freeVars, v ∈ K') →
-        CompletedRecBindings AnnotationCompletion K' (L ++ S.map Prod.fst)
-          (substInputBindings S bindings)
-          (completed.map fun binding => {
-            ann := S.onPolyTy binding.ann
-            rhs := binding.rhs.substTyFvars S }))
-      generalizing K' with
-  | @complete core K input hemb hr =>
-    refine .complete (input.toCore_substTyFvars hemb S) ?_
-    intro v hv
-    obtain ⟨k, hk, hv⟩ := Expr.mem_tyFreeVars_substTyFvars_image hv
-    exact hscope k (hr k hk) v hv
-  | @lambda ann K body completed param hfit hr _ ih =>
-    rw [Expr.substTyFvars_lambda]
-    cases ann with
-    | none =>
-      simpa only [InferInput.substTyFvars, Option.map_none] using
-        (AnnotationCompletion.lambda (ann := none) (param := S.onTy param)
-          (fun _ h => by cases h) (fun _ h => by cases h) (ih hscope))
-    | some original =>
-      simp only [InferInput.substTyFvars, Option.map_some]
-      refine .lambda ?_ ?_ (ih hscope)
-      · intro template heq
-        cases heq
-        exact (hfit original rfl).substTyFvars S
-      · intro template heq
-        cases heq
-        exact template_scope_sourceSubst (hr original rfl) hscope
-
-  | app _ _ ihf ihx =>
-    rw [Expr.substTyFvars_app]
-    exact .app (ihf hscope) (ihx hscope)
-  | @letIn ann K rhs body bodyOut rhsOut M L hr hfit _ _ ihr ihb =>
-    let L' := L ++ S.map Prod.fst
-    have oldFresh : ∀ Xs, FreshNames L' M.paramCount Xs → FreshNames L M.paramCount Xs :=
-      fun Xs hf => ⟨hf.length, hf.nodup, fun v hv hm => hf.avoid v hv (List.mem_append_left _ hm)⟩
-    have domFresh : ∀ Xs, FreshNames L' M.paramCount Xs → ∀ p ∈ S, p.1 ∉ Xs := by
-      intro Xs hf p hp hv
-      exact hf.avoid p.1 hv (List.mem_append_right _ (List.mem_map.mpr ⟨p, hp, rfl⟩))
-    rw [Expr.substTyFvars_letIn]
-    refine AnnotationCompletion.letIn (M := S.onPolyTy M) (L := L') ?_ ?_ ?_ (ihb hscope)
-    · intro template heq
-      cases ann with
-      | absent | complete _ | partialForall _ _ => cases heq
-      | template original =>
-        cases heq
-        exact template_scope_sourceSubst (hr original rfl) hscope
-    · intro Xs hf
-      have hfit' := fitsMono_sourceSubst (hfit Xs (oldFresh Xs hf)) S
-      simpa only [PolyTy.openVars, Subst.onPolyTy, Subst.onTy_openVars hlc (domFresh Xs hf)] using hfit'
-    · intro Xs hf
-      have hc := ihr Xs (oldFresh Xs hf) hscope
-      simpa only [Expr.substTyFvars_openTyVars_lc _ hlc (domFresh Xs hf)] using hc
-  | @letSignature K body bodyOut ann rhs rhsOut M L hann hrhs hfit _ _ ihr ihb =>
-    let L' := L ++ S.map Prod.fst
-    have oldFresh : ∀ Xs, FreshNames L' M.paramCount Xs → FreshNames L M.paramCount Xs :=
-      fun Xs hf => ⟨hf.length, hf.nodup, fun v hv hm => hf.avoid v hv (List.mem_append_left _ hm)⟩
-    have domFresh : ∀ Xs, FreshNames L' M.paramCount Xs → ∀ p ∈ S, p.1 ∉ Xs := by
-      intro Xs hf p hp hv
-      exact hf.avoid p.1 hv (List.mem_append_right _ (List.mem_map.mpr ⟨p, hp, rfl⟩))
-    rw [Expr.substTyFvars_letIn]
-    refine AnnotationCompletion.letSignature (M := S.onPolyTy M) (L := L') ?_ ?_ ?_ ?_ (ihb hscope)
-    · intro v hv
-      obtain ⟨k, hk, hv⟩ := PartialCore.Ann.rigidVars_substTyFvars hv
-      exact hscope k (hann k hk) v hv
-    · intro v hv
-      obtain ⟨k, hk, hv⟩ := InferInput.rigidVars_substTyFvars hv
-      exact hscope k (hrhs k hk) v hv
-    · intro Xs hf
-      exact (hfit Xs (oldFresh Xs hf)).onSubst_source S hlc (domFresh Xs hf)
-    · intro Xs hf
-      have hsmall : ∀ p ∈ S, p.1 ∉ Xs.take ann.paramCount :=
-        fun p hp hv => domFresh Xs hf p hp (List.mem_of_mem_take hv)
-      have hc := ihr Xs (oldFresh Xs hf) (K' := K' ++ Xs.take ann.paramCount) (fun k hk v hv => by
-        rcases List.mem_append.mp hk with hk | hk
-        · exact List.mem_append_left _ (hscope k hk v hv)
-        · rw [Subst.fixes_of_dom_avoids hsmall k hk] at hv
-          exact List.mem_append_right _ ((List.mem_singleton.mp hv) ▸ hk))
-      simpa only [PartialCore.Ann.paramCount_substTyFvars, InferInput.substTyFvars_openTyVars _ hlc hsmall,
-        Expr.substTyFvars_openTyVars_lc _ hlc (domFresh Xs hf)] using hc
-  | match_ _ _ ihs ihbs =>
-    rw [Expr.substTyFvars_match]
-    exact .match_ (ihs hscope) (ihbs hscope)
-  | letRec hRows _ _ ihCompleted ihBody =>
-    expose_names
-    simp only [InferInput.substTyFvars, Expr.substTyFvars_letRec,
-      List.map_map, Function.comp_def]
-    have hRows' : ∀ binding ∈ substInputBindings S bindings, ∀ v ∈
-        binding.ann.rigidVars ++ binding.rhs.rigidVars, v ∈ K' := by
-      intro binding hb v hv
-      rw [substInputBindings_eq_map] at hb
-      obtain ⟨binding0, hb0, rfl⟩ := List.mem_map.mp hb
-      rcases List.mem_append.mp hv with hv | hv
-      · obtain ⟨k, hk, himage⟩ := PartialCore.Ann.rigidVars_substTyFvars hv
-        exact hscope k (hRows binding0 hb0 k (List.mem_append_left _ hk)) v himage
-      · obtain ⟨k, hk, himage⟩ := InferInput.rigidVars_substTyFvars hv
-        exact hscope k (hRows binding0 hb0 k (List.mem_append_right _ hk)) v himage
-    simpa only [RecAnn.substFvars_some, PolyTy.substFvars_eq,
-      Subst.onPolyTy, Subst.onTy, List.map_map, Function.comp_def] using
-      AnnotationCompletion.letRec hRows' (ihCompleted hscope) (ihBody hscope)
-  | nil => exact .nil
-  | cons _ _ ih ihs hscope => exact .cons (ih hscope) (ihs hscope)
-  | _ =>
-    first
-    | (intro; exact .nil)
-    | (rename_i rest completedRest binding completed K0 L hfit hchild hrest ihChild ihRest Ktarget
-       intro hscope
-       let L' := L ++ S.map Prod.fst
-       have oldFresh : ∀ Xs, FreshNames L' completed.ann.paramCount Xs →
-           FreshNames L completed.ann.paramCount Xs :=
-         fun Xs hf => ⟨hf.length, hf.nodup,
-           fun v hv hm => hf.avoid v hv (List.mem_append_left _ hm)⟩
-       have domFresh : ∀ Xs, FreshNames L' completed.ann.paramCount Xs →
-           ∀ p ∈ S, p.1 ∉ Xs := by
-         intro Xs hf p hp hv
-         exact hf.avoid p.1 hv
-           (List.mem_append_right _ (List.mem_map.mpr ⟨p, hp, rfl⟩))
-       simp only [substInputBindings, List.map_cons]
-       refine .cons ?_ ?_ (ihRest hscope)
-       · intro Xs hf
-         exact (hfit Xs (oldFresh Xs hf)).onSubst_source S hlc (domFresh Xs hf)
-       · intro Xs hf
-         have hsmall : ∀ p ∈ S, p.1 ∉ Xs.take binding.ann.paramCount :=
-           fun p hp hv => domFresh Xs hf p hp (List.mem_of_mem_take hv)
-         have hc := ihChild Xs (oldFresh Xs hf)
-           (K' := Ktarget ++ Xs.take binding.ann.paramCount) (fun k hk v hv => by
-             rcases List.mem_append.mp hk with hk | hk
-             · exact List.mem_append_left _ (hscope k hk v hv)
-             · rw [Subst.fixes_of_dom_avoids hsmall k hk] at hv
-               exact List.mem_append_right _ ((List.mem_singleton.mp hv) ▸ hk))
-         simpa only [PartialCore.Ann.paramCount_substTyFvars,
-           InferInput.substTyFvars_openTyVars _ hlc hsmall,
-           Expr.substTyFvars_openTyVars_lc _ hlc (domFresh Xs hf)] using hc)
-
-theorem AnnotationCompletion.rigidVars (h : AnnotationCompletion K input output) :
-    ∀ v ∈ input.rigidVars, v ∈ K := by
-  refine AnnotationCompletion.rec
-    (motive_1 := fun K input _ _ => ∀ v ∈ input.rigidVars, v ∈ K)
-    (motive_2 := fun K branches _ _ => ∀ v ∈ rigidBranchVars branches, v ∈ K)
-    (motive_3 := fun _ _ _ _ _ => True)
-    ?_ ?_ ?_ ?_ ?_ ?_ ?_ ?_ ?_ ?_ ?_ h
-  · intro core K input hemb hr v hv
-    exact hr v ((InferInput.toCore_rigidVars _ hemb v).mp hv)
-  · intro ann K body completed param hfit hr hbody ih v hv
-    rcases List.mem_append.mp hv with hv | hv
-    · cases ann with
-      | none => cases hv
-      | some t => exact hr t rfl v hv
-    · exact ih v hv
-  · intro K f fOut arg argOut hf hx ihf ihx v hv
-    exact (List.mem_append.mp hv).elim (ihf v) (ihx v)
-  · intro ann K rhs body bodyOut rhsOut M L hr hfit hrhs hbody ihr ihb
-    obtain ⟨Xs, hlen, hnd, hav⟩ := exists_fresh_names L M.paramCount
-    have hFresh : FreshNames L M.paramCount Xs := ⟨hlen, hnd, hav⟩
-    intro v hv
-    rcases List.mem_append.mp hv with hv | hv
-    · rcases List.mem_append.mp hv with hv | hv
-      · cases ann with
-        | absent => cases hv
-        | template t => exact hr t rfl v hv
-        | complete _ => cases hfit Xs hFresh
-        | partialForall _ _ => cases hfit Xs hFresh
-      · exact ihr Xs hFresh v hv
-    · exact ihb v hv
-  · intro K body bodyOut ann rhs rhsOut M L hann hrhs hfit hchild hbody ihchild ihbody v hv
-    rcases List.mem_append.mp hv with hv | hv
-    · exact (List.mem_append.mp hv).elim (hann v) (hrhs v)
-    · exact ihbody v hv
-  · intro K scrut scrutOut branches branchesOut hscrut hbranches ihscrut ihbranches v hv
-    exact (List.mem_append.mp hv).elim (ihscrut v) (ihbranches v)
-  · intro bindings K body bodyOut completed L hBindings hcompleted hbody ihcompleted ihbody v hv
-    rcases List.mem_append.mp hv with hv | hv
-    · obtain ⟨binding, hb, hv⟩ := rigidBindingVars_mem_iff.mp hv
-      exact hBindings binding hb v (List.mem_append.mpr hv)
-    · exact ihbody v hv
-  · intro K v hv
-    cases hv
-  · intro rest restOut pat source output K hbody hrest ihbody ihrest v hv
-    exact (List.mem_append.mp hv).elim (ihbody v) (ihrest v)
-  · intro K L
-    exact True.intro
-  · intro rest completedRest binding completed K L hfit hchild hrest ihchild ihrest
-    exact True.intro
-
-/-- LC specialization is derived, rather than an unrestricted constructor. -/
-theorem AnnotationCompletion.scope_mono (h : AnnotationCompletion K input output) (hscope : ∀ k ∈ K, k ∈ K') :
-    AnnotationCompletion K' input output := by
-  have hinput : input.substTyFvars [] = input := input.substTyFvars_eq_self_of_fixes (fun _ _ => rfl)
-  simpa only [hinput, Expr.substTyFvars] using
-    h.onSubst_source [] (by simp) (fun k hk v hv => hscope v ((List.mem_singleton.mp hv) ▸ hk))
-
-theorem AnnotationCompletion.onSubst_fixes (h : AnnotationCompletion K input output) (S : Subst)
-    (hlc : ∀ p ∈ S, p.2.IsLC) (hfix : ∀ k ∈ K, S.onTy (.fvar k) = .fvar k) :
-    AnnotationCompletion K input (output.substTyFvars S) := by
-  have ht := h.onSubst_source S hlc (fun k hk v hv => by
-    rw [hfix k hk] at hv
-    exact (List.mem_singleton.mp hv) ▸ hk)
-  rwa [input.substTyFvars_eq_self_of_fixes (fun v hv => hfix v (h.rigidVars v hv))] at ht
-
-theorem AnnotationCompletion.specialise (h : AnnotationCompletion K input output) (S : Subst)
-    (hlc : ∀ p ∈ S, p.2.IsLC) (hdom : ∀ p ∈ S, p.1 ∉ K) :
-    AnnotationCompletion K input (output.substTyFvars S) :=
-  h.onSubst_fixes S hlc (Subst.fixes_of_dom_avoids hdom)
-
-/-- Generated closing witnesses yield exact cofinite output openings. This uses
-only the already established scope of the completed RHS. -/
-theorem AnnotationCompletion.generalise_closed (h : AnnotationCompletion K input output) {names : List Nat}
-    (hnd : names.Nodup) (hK : ∀ name ∈ names, name ∉ K)
-    (hb : output.TyBvarBounded 0) :
-    ∀ Xs, FreshNames names names.length Xs →
-      AnnotationCompletion K input ((output.closeTyVars names).openTyVars Xs) := by
-  intro Xs hf
-  rw [Expr.open_closeTyVars_rename hnd hf.length
-    (fun name hn hx => hf.avoid name hx hn) hb]
-  apply h.specialise
-  · intro p hp
-    obtain ⟨_, _, heq⟩ := List.mem_map.mp (List.of_mem_zip hp).2
-    rw [← heq]
-    exact .fvar
-  · intro p hp
-    exact hK p.1 (List.of_mem_zip hp).1
-
-/-- A generated signed prefix is renamed together with the full output binder
-block. Only the authored prefix enters the child's protected source scope. -/
-theorem AnnotationCompletion.generalise_opened {K Ys G : List Nat} {input : InferInput} {output : Expr}
-    (h : AnnotationCompletion (K ++ Ys) (input.openTyVars Ys) output)
-    (hnd : (Ys ++ G).Nodup) (hK : ∀ name ∈ Ys ++ G, name ∉ K)
-    (hsource : ∀ v ∈ input.rigidVars, v ∈ K) (hbound : output.TyBvarBounded 0) :
-    ∃ L, ∀ Xs, FreshNames L (Ys.length + G.length) Xs →
-      AnnotationCompletion (K ++ Xs.take Ys.length) (input.openTyVars (Xs.take Ys.length))
-        ((output.closeTyVars (Ys ++ G)).openTyVars Xs) := by
-  refine ⟨Ys ++ G, ?_⟩
-  intro Xs hXs
-  have htake : (Xs.take Ys.length).length = Ys.length := by
-    rw [List.length_take, hXs.length]; omega
-  have hdisj : ∀ name ∈ Ys ++ G, name ∉ Xs := fun name hn hx => hXs.avoid name hx hn
-  have hYtake : ∀ name ∈ Ys, name ∉ Xs.take Ys.length :=
-    fun name hn hx => hdisj name (List.mem_append_left _ hn) (List.mem_of_mem_take hx)
-  let RY : Subst := Ys.zip ((Xs.take Ys.length).map Ty.fvar)
-  let RG : Subst := G.zip ((Xs.drop Ys.length).map Ty.fvar)
-  have hRYlc : ∀ p ∈ RY, p.2.IsLC := by
-    intro p hp
-    obtain ⟨_, _, heq⟩ := List.mem_map.mp (List.of_mem_zip hp).2
-    rw [← heq]; exact .fvar
-  have hRGlc : ∀ p ∈ RG, p.2.IsLC := by
-    intro p hp
-    obtain ⟨_, _, heq⟩ := List.mem_map.mp (List.of_mem_zip hp).2
-    rw [← heq]; exact .fvar
-  have hRYK : ∀ k ∈ K, RY.onTy (.fvar k) = .fvar k := by
-    intro k hk
-    apply Ty.substFvars_eq_self_of_no_key
-    intro p hp hc
-    simp only [Ty.freeVars, List.mem_singleton] at hc
-    exact hK p.1 (List.mem_append_left _ (List.of_mem_zip hp).1) (hc ▸ hk)
-  have hRYscope : ∀ k ∈ K ++ Ys, ∀ v ∈ (RY.onTy (.fvar k)).freeVars, v ∈ K ++ Xs.take Ys.length := by
-    intro k hk v hv
-    rcases List.mem_append.mp hk with hk | hk
-    · rw [hRYK k hk] at hv
-      simp only [Ty.freeVars, List.mem_singleton] at hv
-      exact List.mem_append_left _ (hv ▸ hk)
-    · obtain ⟨i, hi⟩ := List.mem_iff_getElem?.mp hk
-      have hilt : i < Ys.length := (List.getElem?_eq_some_iff.mp hi).choose
-      have hit : i < (Xs.take Ys.length).length := by omega
-      have himg : RY.onTy (.fvar k) = .fvar ((Xs.take Ys.length)[i]) := by
-        apply Ty.substFvars_zip_fvar_eq' hnd.of_append_left hi
-        · simp only [List.getElem?_map, List.getElem?_eq_getElem hit, Option.map_some]
-        · intro y hy hc
-          simp only [Ty.freeVars, List.mem_singleton] at hc
-          apply hYtake y hy
-          rw [hc]
-          exact List.getElem_mem hit
-      rw [himg] at hv
-      simp only [Ty.freeVars, List.mem_singleton] at hv
-      exact List.mem_append_right _ (hv ▸ List.getElem_mem hit)
-  have hRYsource : (input.openTyVars Ys).substTyFvars RY = input.openTyVars (Xs.take Ys.length) := by
-    exact input.substTyFvars_zip_openTyVars htake.symm hnd.of_append_left
-      (fun y hy hv => hK y (List.mem_append_left _ hy) (hsource y hv)) hYtake
-  have hfirst := h.onSubst_source RY hRYlc hRYscope
-  rw [hRYsource] at hfirst
-  have hRGavoid : ∀ p ∈ RG, p.1 ∉ K ++ Xs.take Ys.length := by
-    intro p hp hc
-    have hpG := (List.of_mem_zip hp).1
-    rcases List.mem_append.mp hc with hk | hx
-    · exact hK p.1 (List.mem_append_right _ hpG) hk
-    · exact hdisj p.1 (List.mem_append_right _ hpG) (List.mem_of_mem_take hx)
-  have hsecond := hfirst.specialise RG hRGlc hRGavoid
-  have hzip : (Ys ++ G).zip (Xs.map Ty.fvar) = RY ++ RG := by
-    have hmap : Xs.map Ty.fvar = (Xs.take Ys.length).map Ty.fvar ++ (Xs.drop Ys.length).map Ty.fvar := by
-      rw [← List.map_append, List.take_append_drop]
-    rw [hmap]
-    exact List.zip_append (by simp only [List.length_map, htake])
-  rw [Expr.open_closeTyVars_rename hnd
-    (by simpa only [List.length_append] using hXs.length) hdisj hbound, hzip,
-    Expr.substTyFvars_append]
-  exact hsecond
-
-/-- Closing generated names and then changing the source needs no pointwise
-fixing of the old protected set. Only the new opening avoids S's domain. -/
-theorem AnnotationCompletion.generalise_closed_after_source (h : AnnotationCompletion Q input output) {names : List Nat}
-    (hnd : names.Nodup) (hQ : ∀ name ∈ names, name ∉ Q)
-    (hb : output.TyBvarBounded 0) (S : Subst)
-    (hlc : ∀ p ∈ S, p.2.IsLC)
-    (hscope : ∀ q ∈ Q, ∀ v ∈ (S.onTy (.fvar q)).freeVars, v ∈ Q') :
-    ∃ L, ∀ Xs, FreshNames L names.length Xs →
-      AnnotationCompletion Q' (input.substTyFvars S)
-        (((output.closeTyVars names).substTyFvars S).openTyVars Xs) := by
-  refine ⟨names ++ S.map Prod.fst, ?_⟩
-  intro Xs hf
-  have hXs : FreshNames names names.length Xs :=
-    ⟨hf.length, hf.nodup, fun x hx hm => hf.avoid x hx (List.mem_append_left _ hm)⟩
-  have hS : ∀ p ∈ S, p.1 ∉ Xs := by
-    intro p hp hv
-    exact hf.avoid p.1 hv (List.mem_append_right _ (List.mem_map.mpr ⟨p, hp, rfl⟩))
-  have ht := (h.generalise_closed hnd hQ hb Xs hXs).onSubst_source S hlc hscope
-  simpa only [Expr.substTyFvars_openTyVars_lc _ hlc hS] using ht
-
-
-/-- A cofinite signed completion transports without fixing the old scope. Only
-new opening names, chosen outside S's domain, stay fixed in the child scope. -/
-theorem AnnotationCompletion.signatureBinding_onSubst_source
-    {Q Q' : List Nat} {input : InferInput} {rhsOut : Expr} {ann : BindingAnn} {M : PolyTy} {avoid : List Nat}
-    (h : ∀ Xs, FreshNames avoid M.paramCount Xs →
-      AnnotationCompletion (Q ++ Xs.take ann.paramCount) (input.openTyVars (Xs.take ann.paramCount))
-        (rhsOut.openTyVars Xs))
-    (S : Subst) (hlc : ∀ p ∈ S, p.2.IsLC)
-    (hscope : ∀ q ∈ Q, ∀ v ∈ (S.onTy (.fvar q)).freeVars, v ∈ Q') :
-    ∃ avoid', ∀ Xs, FreshNames avoid' M.paramCount Xs →
-      AnnotationCompletion (Q' ++ Xs.take ann.paramCount)
-        ((input.substTyFvars S).openTyVars (Xs.take ann.paramCount))
-        ((rhsOut.substTyFvars S).openTyVars Xs) := by
-  refine ⟨avoid ++ S.map Prod.fst, ?_⟩
-  intro Xs hf
-  have hXs : FreshNames avoid M.paramCount Xs :=
-    ⟨hf.length, hf.nodup, fun x hx hm => hf.avoid x hx (List.mem_append_left _ hm)⟩
-  have hS : ∀ p ∈ S, p.1 ∉ Xs := by
-    intro p hp hv
-    exact hf.avoid p.1 hv (List.mem_append_right _ (List.mem_map.mpr ⟨p, hp, rfl⟩))
-  have hsmall : ∀ p ∈ S, p.1 ∉ Xs.take ann.paramCount :=
-    fun p hp hv => hS p hp (List.mem_of_mem_take hv)
-  have ht := (h Xs hXs).onSubst_source S hlc
-    (K' := Q' ++ Xs.take ann.paramCount) (fun q hq v hv => by
-      rcases List.mem_append.mp hq with hq | hq
-      · exact List.mem_append_left _ (hscope q hq v hv)
-      · rw [Subst.fixes_of_dom_avoids hsmall q hq] at hv
-        exact List.mem_append_right _ ((List.mem_singleton.mp hv) ▸ hq))
-  simpa only [InferInput.substTyFvars_openTyVars _ hlc hsmall,
-    Expr.substTyFvars_openTyVars_lc _ hlc hS] using ht
-
-/-- The generated signature certificate supplies exactly the prefix/full-block
-length correspondence needed by the cofinite completion constructor. -/
-theorem PartialCore.Ann.SignatureCompletion.cofinite_completes
-    {ann : BindingAnn} {written names Q : List Nat} {ty : Ty} {M : PolyTy}
-    {input : InferInput} {output : Expr}
-    (hcomp : ann.SignatureCompletion written ty M names)
-    (h : AnnotationCompletion (Q ++ written) (input.openTyVars written) output)
-    (hnd : names.Nodup) (hQ : ∀ name ∈ names, name ∉ Q)
-    (hsource : ∀ v ∈ input.rigidVars, v ∈ Q) (hb : output.TyBvarBounded 0) :
-    ∃ L, ∀ Xs, FreshNames L M.paramCount Xs →
-      AnnotationCompletion (Q ++ Xs.take ann.paramCount) (input.openTyVars (Xs.take ann.paramCount))
-        ((output.closeTyVars names).openTyVars Xs) := by
-  cases hcomp with
-  | complete hlen _ =>
-    obtain ⟨L, hgen⟩ := h.generalise_opened (G := []) (by simpa using hnd)
-      (by simpa using hQ) hsource hb
-    refine ⟨L, ?_⟩
-    intro Xs hf
-    simpa only [List.append_nil, PartialCore.Ann.paramCount, hlen] using
-      hgen Xs (by simpa only [List.length_nil, Nat.add_zero, hlen] using hf)
-  | partialSignature hlen _ =>
-    obtain ⟨L, hgen⟩ := h.generalise_opened hnd hQ hsource hb
-    refine ⟨L, ?_⟩
-    intro Xs hf
-    simpa only [PartialCore.Ann.paramCount, hlen] using
-      hgen Xs (by simpa only [List.length_append] using hf)
-
-/-- Opening follows the pointwise images of its provisional roots. No
-freshness, injectivity, or literal domain avoidance is required. -/
 theorem Subst.onTy_openVarsFrom_of_images {S : Subst} {roots resolved : List Nat}
     (hlc : ∀ p ∈ S, p.2.IsLC)
     (himages : roots.map (fun x => S.onTy (.fvar x)) = resolved.map Ty.fvar)
@@ -5733,76 +5258,6 @@ theorem ScopedTyping.scope_restrict {Q P : List Nat} {ctx : Ctx} {input : InferI
     rename_i P hscope
     exact .wildcard (ih hscope)
 
-/-- Completion scopes only authored input leaves, independently of output holes. -/
-theorem AnnotationCompletion.scope_restrict {Q P : List Nat} {input : InferInput} {output : Expr}
-    (h : AnnotationCompletion Q input output) (hscope : ∀ v ∈ input.rigidVars, v ∈ P) :
-    AnnotationCompletion P input output := by
-  induction h using AnnotationCompletion.rec
-      (motive_2 := fun _ branches outputs _ => ∀ {P : List Nat},
-        (∀ v ∈ rigidBranchVars branches, v ∈ P) → CompletedBranches AnnotationCompletion P branches outputs)
-      (motive_3 := fun _ L bindings completed _ => ∀ {P : List Nat},
-        (∀ v ∈ rigidBindingVars bindings, v ∈ P) →
-          CompletedRecBindings AnnotationCompletion P L bindings completed)
-      generalizing P with
-  | complete hemb _ =>
-    exact .complete hemb (fun v hv => hscope v ((InferInput.toCore_rigidVars _ hemb v).mpr hv))
-  | @lambda ann Q body completed param hfit _ _ ih =>
-    refine .lambda hfit ?_ (ih (fun v hv => hscope v (List.mem_append_right _ hv)))
-    intro t heq v hv
-    subst ann
-    exact hscope v (List.mem_append_left _ hv)
-  | app _ _ ihf ihx =>
-    exact .app (ihf (fun v hv => hscope v (List.mem_append_left _ hv)))
-      (ihx (fun v hv => hscope v (List.mem_append_right _ hv)))
-  | @letIn ann Q rhs body bodyOut rhsOut M L _ hfit _ _ ihr ihb =>
-    refine .letIn (L := L) ?_ hfit ?_ (ihb (fun v hv => hscope v (List.mem_append_right _ hv)))
-    · intro t heq v hv
-      subst ann
-      exact hscope v (List.mem_append_left _ (List.mem_append_left _ hv))
-    · intro Xs hf
-      exact ihr Xs hf (fun v hv => hscope v (List.mem_append_left _ (List.mem_append_right _ hv)))
-  | @letSignature Q body bodyOut ann rhs rhsOut M L _ _ hfit _ _ ihr ihb =>
-    have ha : ∀ v ∈ ann.rigidVars, v ∈ P :=
-      fun v hv => hscope v (List.mem_append_left _ (List.mem_append_left _ hv))
-    have hr : ∀ v ∈ rhs.rigidVars, v ∈ P :=
-      fun v hv => hscope v (List.mem_append_left _ (List.mem_append_right _ hv))
-    refine .letSignature (L := L) ha hr hfit ?_
-      (ihb (fun v hv => hscope v (List.mem_append_right _ hv)))
-    intro Xs hf
-    exact ihr Xs hf (rhs.openTyVars_scope hr (Xs.take ann.paramCount))
-  | match_ _ _ ihs ihbs =>
-    exact .match_ (ihs (fun v hv => hscope v (List.mem_append_left _ hv)))
-      (ihbs (fun v hv => hscope v (List.mem_append_right _ hv)))
-  | letRec hRows _ _ ihCompleted ihBody =>
-    expose_names
-    have hgroup : ∀ v ∈ rigidBindingVars bindings, v ∈ P :=
-      fun v hv => hscope v (List.mem_append_left _ hv)
-    refine .letRec ?_ (ihCompleted hgroup)
-      (ihBody (fun v hv => hscope v (List.mem_append_right _ hv)))
-    intro binding hb v hv
-    exact hgroup v (scope_binding_rigid_mem hb (List.mem_append.mp hv))
-  | nil => exact .nil
-  | cons _ _ ihb iht =>
-    rename_i P hscope
-    exact .cons (ihb (fun v hv => hscope v (List.mem_append_left _ hv)))
-      (iht (fun v hv => hscope v (List.mem_append_right _ hv)))
-  | _ =>
-    first
-    | (intro; exact .nil)
-    | (rename_i rest completedRest binding completed K0 L hfit hchild hrest ihChild ihRest Ptarget
-       intro hscope
-       have hrhs : ∀ v ∈ binding.rhs.rigidVars, v ∈ Ptarget := by
-         intro v hv
-         exact hscope v (scope_binding_rigid_mem (b := binding) List.mem_cons_self (Or.inr hv))
-       have htail : ∀ v ∈ rigidBindingVars rest, v ∈ Ptarget := by
-         intro v hv
-         obtain ⟨tailBinding, hb, hv⟩ := rigidBindingVars_mem_iff.mp hv
-         exact hscope v (scope_binding_rigid_mem (b := tailBinding)
-           (List.mem_cons_of_mem _ hb) hv)
-       refine .cons hfit ?_ (ihRest htail)
-       intro Xs hf
-       exact ihChild Xs hf (binding.rhs.openTyVars_scope hrhs
-         (Xs.take binding.ann.paramCount)))
 
 end
 
@@ -6428,21 +5883,17 @@ def RecFacts.empty : RecFacts := ⟨[], []⟩
 def RecFacts.onSubst (S : Subst) (facts : RecFacts) : RecFacts :=
   ⟨facts.nodeTypes.onSubst S, facts.binderSchemes.onSubst S⟩
 
-/-- Output and source-indexed metadata produced for one selected recursive
-component member. Skipped positions are represented by `none` in the enclosing
-artifact list, so metadata cannot exist without its corresponding output. -/
+/-- Source-indexed metadata for one checked recursive member. -/
 structure RecComponentArtifact where
-  output : Expr
   facts : RecFacts
 
 @[simp] def RecComponentArtifact.onSubst (S : Subst)
     (artifact : RecComponentArtifact) : RecComponentArtifact :=
-  { output := artifact.output.substTyFvars S
-    facts := artifact.facts.onSubst S }
+  { facts := artifact.facts.onSubst S }
 
-@[simp] def recComponentOutputAt (artifacts : List (Option RecComponentArtifact))
-    (i : Nat) : Option Expr :=
-  (artifacts[i]?).join.map RecComponentArtifact.output
+@[simp] def recComponentReadyAt (artifacts : List (Option RecComponentArtifact))
+    (i : Nat) : Bool :=
+  ((artifacts[i]?).join).isSome
 
 /-- The authored annotation facts still needed after recursive inference.
 Complete contracts suppress an inferred-binder artifact; partial foralls also
@@ -6477,7 +5928,7 @@ structure RecMemberState where
   spec : RecSpec
   slotImages : List Ty
   exported : Option PolyTy
-  output : Option Expr
+  checked : Bool
   facts : RecFacts
   annInfo : RecMemberAnnInfo
 
@@ -6485,7 +5936,6 @@ structure RecMemberState where
 of a completed recursive member. -/
 structure CompletedRecMember where
   scheme : PolyTy
-  output : Expr
   annInfo : RecMemberAnnInfo
 
 def RecMemberState.init (frontier : Nat) (ann : BindingAnn) : RecMemberState :=
@@ -6494,14 +5944,14 @@ def RecMemberState.init (frontier : Nat) (ann : BindingAnn) : RecMemberState :=
       { spec := .mono (.fvar frontier)
         slotImages := []
         exported := none
-        output := none
+        checked := false
         facts := .empty
         annInfo := ann.recMemberAnnInfo }
   | some scheme =>
       { spec := .poly scheme
         slotImages := []
         exported := some scheme
-        output := none
+        checked := false
         facts := .empty
         annInfo := ann.recMemberAnnInfo }
 
@@ -6517,7 +5967,7 @@ def RecMemberState.onSubst (S : Subst) (member : RecMemberState) : RecMemberStat
   { spec := member.spec.onSubstSource S
     slotImages := member.slotImages.map S.onTy
     exported := member.exported.map S.onPolyTy
-    output := member.output.map (Expr.substTyFvars S)
+    checked := member.checked
     facts := member.facts.onSubst S
     annInfo := member.annInfo }
 
@@ -6539,15 +5989,14 @@ def RecState.slots (state : RecState) : List (List Ty) :=
 def RecState.exports (state : RecState) : List (Option PolyTy) :=
   state.memberStates.map RecMemberState.exported
 
-def RecState.outputs (state : RecState) : List (Option Expr) :=
-  state.memberStates.map RecMemberState.output
+def RecState.checkedRhs (state : RecState) : List Bool :=
+  state.memberStates.map RecMemberState.checked
 
 structure CompletedRecMembers (members : List RecMemberState)
     (completed : List CompletedRecMember) : Prop where
   exports : members.map RecMemberState.exported =
     (completed.map CompletedRecMember.scheme).map some
-  outputs : members.map RecMemberState.output =
-    (completed.map CompletedRecMember.output).map some
+  checked : ∀ member ∈ members, member.checked = true
   annInfo : members.map RecMemberState.annInfo =
     completed.map CompletedRecMember.annInfo
 
@@ -6565,9 +6014,9 @@ abbrev RecState.Completed (state : RecState) := CompletedRecMembers state.member
     state.exports[i]? = state.memberStates[i]?.map RecMemberState.exported := by
   simp [RecState.exports]
 
-@[simp] theorem RecState.getElem?_outputs (state : RecState) (i : Nat) :
-    state.outputs[i]? = state.memberStates[i]?.map RecMemberState.output := by
-  simp [RecState.outputs]
+@[simp] theorem RecState.getElem?_checkedRhs (state : RecState) (i : Nat) :
+    state.checkedRhs[i]? = state.memberStates[i]?.map RecMemberState.checked := by
+  simp [RecState.checkedRhs]
 
 def RecState.init (frontier : Nat) (bindings : List InputRecBinding) : RecState :=
   { memberStates := RecMemberState.initAll frontier bindings
@@ -6629,9 +6078,9 @@ def RecState.recPrefixCountAt (state : RecState) (i : Nat) : Option Nat :=
       cases ann <;> simp [RecMemberState.initAll, RecMemberState.init,
         PartialCore.Ann.recModeAnn, ih]
 
-@[simp] theorem RecMemberState.initAll_outputs (frontier : Nat) (bindings : List InputRecBinding) :
-    (RecMemberState.initAll frontier bindings).map RecMemberState.output =
-      bindings.map (fun _ => none) := by
+@[simp] theorem RecMemberState.initAll_checkedRhs (frontier : Nat) (bindings : List InputRecBinding) :
+    (RecMemberState.initAll frontier bindings).map RecMemberState.checked =
+      bindings.map (fun _ => false) := by
   induction bindings generalizing frontier with
   | nil => rfl
   | cons binding bindings ih =>
@@ -6651,9 +6100,9 @@ def RecState.recPrefixCountAt (state : RecState) (i : Nat) : Option Nat :=
     state.exports.length = state.memberStates.length := by
   simp [RecState.exports]
 
-@[simp] theorem RecState.outputs_length (state : RecState) :
-    state.outputs.length = state.memberStates.length := by
-  simp [RecState.outputs]
+@[simp] theorem RecState.checkedRhs_length (state : RecState) :
+    state.checkedRhs.length = state.memberStates.length := by
+  simp [RecState.checkedRhs]
 
 @[simp] theorem RecState.init_specs (frontier : Nat) (bindings : List InputRecBinding) :
     (RecState.init frontier bindings).specs =
@@ -6669,9 +6118,9 @@ def RecState.recPrefixCountAt (state : RecState) (i : Nat) : Option Nat :=
       bindings.map (fun binding => binding.ann.recModeAnn) := by
   simp [RecState.init, RecState.exports]
 
-@[simp] theorem RecState.init_outputs (frontier : Nat) (bindings : List InputRecBinding) :
-    (RecState.init frontier bindings).outputs = bindings.map (fun _ => none) := by
-  simp [RecState.init, RecState.outputs]
+@[simp] theorem RecState.init_checkedRhs (frontier : Nat) (bindings : List InputRecBinding) :
+    (RecState.init frontier bindings).checkedRhs = bindings.map (fun _ => false) := by
+  simp [RecState.init, RecState.checkedRhs]
 
 @[simp] theorem RecState.specs_onSubst (state : RecState) (S : Subst) :
     (state.onSubst S).specs = state.specs.map (RecSpec.onSubstSource S) := by
@@ -6688,9 +6137,9 @@ def RecState.recPrefixCountAt (state : RecState) (i : Nat) : Option Nat :=
   simp [RecState.onSubst, RecState.exports, RecMemberState.onSubst, List.map_map,
     Function.comp_def]
 
-@[simp] theorem RecState.outputs_onSubst (state : RecState) (S : Subst) :
-    (state.onSubst S).outputs = state.outputs.map (Option.map (Expr.substTyFvars S)) := by
-  simp [RecState.onSubst, RecState.outputs, RecMemberState.onSubst, List.map_map,
+@[simp] theorem RecState.checkedRhs_onSubst (state : RecState) (S : Subst) :
+    (state.onSubst S).checkedRhs = state.checkedRhs := by
+  simp [RecState.onSubst, RecState.checkedRhs, RecMemberState.onSubst, List.map_map,
     Function.comp_def]
 
 @[simp] theorem RecState.annInfo_onSubst (state : RecState) (S : Subst) :
@@ -6767,8 +6216,8 @@ def RecState.shapes (state : RecState) (members : List Nat)
     let opening ← openings[i]?
     pure (ty, opening.expected))
 
-/-- Closed unsigned outputs use the member's own prefix order and the shared
-pool. Metadata remains open until all later component substitutions are known. -/
+/-- Export schemes in the member's prefix order and mark inferred members as
+checked. Metadata remains open until later component substitutions are known. -/
 def RecState.exportComponent (state : RecState) (members : List Nat)
     (written : List (List Nat)) (pool : List Nat)
     (artifacts : List (Option RecComponentArtifact)) : RecState :=
@@ -6777,13 +6226,15 @@ def RecState.exportComponent (state : RecState) (members : List Nat)
       if i ∈ members then
         { member with
           exported := some (member.spec.completedScheme (written[i]?.getD []) pool)
-          output := do
-            let ty ← member.spec.monoTy?
-            let rhs ← recComponentOutputAt artifacts i
-            pure (rhs.closeTyVars (recNames (written[i]?.getD []) pool ty))
+          checked := member.spec.monoTy?.isSome && recComponentReadyAt artifacts i
           facts := ((artifacts[i]?).join.map RecComponentArtifact.facts).getD .empty }
       else member)
     pool := pool }
+
+@[simp] theorem RecState.pool_exportComponent (state : RecState) (members : List Nat)
+    (written : List (List Nat)) (pool : List Nat)
+    (artifacts : List (Option RecComponentArtifact)) :
+    (state.exportComponent members written pool artifacts).pool = pool := rfl
 
 /-- Validate ordered slot images only for the component being exported. -/
 inductive ResolveRecSlots (members : List Nat) (forbidden : List Nat) :
@@ -6843,12 +6294,12 @@ def RecFacts.closeWritten (names : List Nat) (facts : RecFacts) : RecFacts :=
 /-- Complete-signature RHSs close their rigid opening before leaving its scope.
 Partial prefixes stay open in the stored metadata until final normalization. -/
 def RecState.setSigned (state : RecState) (member : Nat) (names : List Nat)
-    (output : Expr) (facts : RecFacts) : RecState :=
+    (facts : RecFacts) : RecState :=
   { state with
     memberStates := state.memberStates.mapIdx (fun i old =>
       if i = member then
         { old with
-          output := some (output.closeTyVars names)
+          checked := true
           facts := facts.closeWritten names }
       else old) }
 
@@ -6874,12 +6325,12 @@ def RecState.setSigned (state : RecState) (member : Nat) (names : List Nat)
   | none => rfl
   | some member => simp only [Option.map_some]; split <;> rfl
 
-@[simp] theorem RecState.outputs_installOpenings (state : RecState) (members : List Nat)
+@[simp] theorem RecState.checkedRhs_installOpenings (state : RecState) (members : List Nat)
     (openings : List RecOpening) :
-    (state.installOpenings members openings).outputs = state.outputs := by
+    (state.installOpenings members openings).checkedRhs = state.checkedRhs := by
   apply List.ext_getElem?
   intro i
-  simp only [RecState.outputs, RecState.installOpenings, List.getElem?_map,
+  simp only [RecState.checkedRhs, RecState.installOpenings, List.getElem?_map,
     List.getElem?_mapIdx]
   cases h : state.memberStates[i]? with
   | none => rfl
@@ -6905,8 +6356,8 @@ def RecState.setSigned (state : RecState) (member : Nat) (names : List Nat)
   | some member => split <;> rfl
 
 @[simp] theorem RecState.specs_setSigned (state : RecState) (member : Nat)
-    (names : List Nat) (output : Expr) (facts : RecFacts) :
-    (state.setSigned member names output facts).specs = state.specs := by
+    (names : List Nat) (facts : RecFacts) :
+    (state.setSigned member names facts).specs = state.specs := by
   apply List.ext_getElem?
   intro i
   simp only [RecState.specs, RecState.setSigned, List.getElem?_map,
@@ -6916,8 +6367,8 @@ def RecState.setSigned (state : RecState) (member : Nat) (names : List Nat)
   | some old => simp only [Option.map_some]; split <;> rfl
 
 @[simp] theorem RecState.slots_setSigned (state : RecState) (member : Nat)
-    (names : List Nat) (output : Expr) (facts : RecFacts) :
-    (state.setSigned member names output facts).slots = state.slots := by
+    (names : List Nat) (facts : RecFacts) :
+    (state.setSigned member names facts).slots = state.slots := by
   apply List.ext_getElem?
   intro i
   simp only [RecState.slots, RecState.setSigned, List.getElem?_map,
@@ -6927,8 +6378,8 @@ def RecState.setSigned (state : RecState) (member : Nat) (names : List Nat)
   | some old => simp only [Option.map_some]; split <;> rfl
 
 @[simp] theorem RecState.exports_setSigned (state : RecState) (member : Nat)
-    (names : List Nat) (output : Expr) (facts : RecFacts) :
-    (state.setSigned member names output facts).exports = state.exports := by
+    (names : List Nat) (facts : RecFacts) :
+    (state.setSigned member names facts).exports = state.exports := by
   apply List.ext_getElem?
   intro i
   simp only [RecState.exports, RecState.setSigned, List.getElem?_map,
@@ -6938,8 +6389,8 @@ def RecState.setSigned (state : RecState) (member : Nat) (names : List Nat)
   | some old => simp only [Option.map_some]; split <;> rfl
 
 @[simp] theorem RecState.annInfo_setSigned (state : RecState) (member : Nat)
-    (names : List Nat) (output : Expr) (facts : RecFacts) :
-    (state.setSigned member names output facts).memberStates.map RecMemberState.annInfo =
+    (names : List Nat) (facts : RecFacts) :
+    (state.setSigned member names facts).memberStates.map RecMemberState.annInfo =
       state.memberStates.map RecMemberState.annInfo := by
   apply List.ext_getElem?
   intro i
@@ -6949,8 +6400,8 @@ def RecState.setSigned (state : RecState) (member : Nat) (names : List Nat)
   | some old => simp only [Option.map_some]; split <;> rfl
 
 @[simp] theorem RecState.recPrefixCountAt_setSigned (state : RecState) (member : Nat)
-    (names : List Nat) (output : Expr) (facts : RecFacts) (i : Nat) :
-    (state.setSigned member names output facts).recPrefixCountAt i = state.recPrefixCountAt i := by
+    (names : List Nat) (facts : RecFacts) (i : Nat) :
+    (state.setSigned member names facts).recPrefixCountAt i = state.recPrefixCountAt i := by
   simp only [RecState.recPrefixCountAt, RecState.setSigned, List.getElem?_mapIdx]
   cases state.memberStates[i]? with
   | none => rfl
@@ -7039,26 +6490,30 @@ theorem RecState.getElem?_exports_exportComponent (state : RecState) (members : 
     (state.installOpenings members openings).pool = state.pool := rfl
 
 @[simp] theorem RecState.pool_setSigned (state : RecState) (member : Nat)
-    (names : List Nat) (output : Expr) (facts : RecFacts) :
-    (state.setSigned member names output facts).pool = state.pool := rfl
+    (names : List Nat) (facts : RecFacts) :
+    (state.setSigned member names facts).pool = state.pool := rfl
 
 
-/-- Collect completed members once, pairing each exported scheme with its RHS. -/
+/-- Collect exported schemes once every member has been checked. -/
 def collectCompletedRecMembers : (members : List RecMemberState) →
     Option { result : List CompletedRecMember // CompletedRecMembers members result }
-  | [] => some ⟨[], ⟨rfl, rfl, rfl⟩⟩
+  | [] => some ⟨[], ⟨rfl, by simp, rfl⟩⟩
   | member :: rest =>
-      match he : member.exported, ho : member.output with
-      | some scheme, some output =>
+      match he : member.exported with
+      | none => none
+      | some scheme =>
+        if hc : member.checked = true then
           match collectCompletedRecMembers rest with
           | some ⟨completed, hcompleted⟩ =>
-              some ⟨{ scheme, output, annInfo := member.annInfo } :: completed, {
+              some ⟨{ scheme, annInfo := member.annInfo } :: completed, {
                 exports := by simp only [List.map_cons, he, hcompleted.exports]
-                outputs := by simp only [List.map_cons, ho, hcompleted.outputs]
+                checked := by
+                  intro m hm
+                  exact (List.mem_cons.mp hm).elim (fun h => h ▸ hc) (hcompleted.checked m)
                 annInfo := by simp only [List.map_cons, hcompleted.annInfo]
               }⟩
           | none => none
-      | _, _ => none
+        else none
 
 theorem CompletedRecMembers.length_eq {members : List RecMemberState}
     {completed : List CompletedRecMember} (h : CompletedRecMembers members completed) :
@@ -7228,7 +6683,7 @@ def RecState.LC (state : RecState) : Prop :=
     RecState.exports_installOpenings] using h
 
  theorem RecState.LC.setSigned {state : RecState} (h : state.LC) {facts : RecFacts} :
-    (state.setSigned member names output facts).LC := by
+    (state.setSigned member names facts).LC := by
   simpa only [RecState.LC, RecState.specs_setSigned, RecState.exports_setSigned] using h
 
  theorem RecState.LC.rhsCtx {state : RecState} (h : state.LC) (hctx : CtxWF ctx) :
@@ -7343,7 +6798,7 @@ def RecState.Below (frontier : Nat) (state : RecState) : Prop :=
     exact Subst.onTy_belowFvars hS ((h.2.2.1 original (ho ▸ hold)).mono hle)
 
  theorem RecState.Below.setSigned {state : RecState} (h : state.Below frontier) {facts : RecFacts} :
-    (state.setSigned member names output facts).Below frontier := by
+    (state.setSigned member names facts).Below frontier := by
   simpa only [RecState.Below, RecState.specs_setSigned, RecState.slots_setSigned,
     RecState.exports_setSigned, RecState.pool_setSigned] using h
 

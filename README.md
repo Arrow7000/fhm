@@ -216,8 +216,8 @@ a smaller language with de Bruijn indices and only flat, one-constructor-deep
 matches. `InferInput` is the canonical source syntax declared in `Core`, including
 partial annotations. `InputTyping` judges it directly. The CLI executes an
 erasure of that original source; editor types and schemes come from metadata.
-Public results contain no completed expression. The worker/certificate proof
-implementation still retains an internal completed tree pending its removal.
+Neither results nor the worker/certificate retain a completed expression.
+Recursive state stores schemes, metadata and checked flags.
 The structural lowering proof covers the term produced by production provenance
 lowering. It does not verify the parser, source-span metadata, editor joins, or
 the unbounded CLI evaluator.

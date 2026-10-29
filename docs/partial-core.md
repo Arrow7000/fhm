@@ -155,13 +155,18 @@ from metadata or complete written declarations. The CLI and example runners
 evaluate the original source's erasure. Hole hovers continue to project the
 solution of each source occurrence from type/scheme facts and provenance.
 
-The internal worker and `InferCert` still retain `InferResult.completedExpr`,
-`Infer.sourceSound`, and `AnnotationCompletion` as compatibility proof artifacts.
-The worker still constructs this internal tree; removing that computation and
-its certificate indices is outstanding. `inferWithTypes_infer` existentially
-hides it in `Prop`, so public results and their runtime/editor consumers no
-longer depend on that representation. Direct source/runtime soundness does not
-go through completed-expression typing.
+`InferResult` now contains only `frontier`, `subst` and `ty`, and
+`InferenceResult` extends it with editor facts. Neither the worker nor
+`InferCert` constructs or retains a completed annotated expression. Branch
+results retain no branch ASTs; recursive state stores schemes, metadata and a
+checked flag per member. Completeness proves those flags are set before scheme
+collection. `inferWithTypes_infer` relates the exact public semantic result to
+`InferCert` without a hidden expression witness.
+
+The completed-output typing, AST-fidelity and erasure-comparison proof paths
+have been deleted. Local annotation fidelity still follows from direct source
+typing and its closed matching witnesses. `AnnotationCompletion`, its recursive
+AST relations and their transport/generalization proofs have also been deleted.
 The separate named-source prototype and its worker have been removed. So have
 the completed-subtree typing constructor, annotation-only embeddings into a
 second template syntax, the old anonymous-only allocation factoring proof,
@@ -210,5 +215,6 @@ production proof depends on those canaries.
 
 The parser, diagnostic wording and editor provenance joins remain unverified,
 as before. Their operational regressions are covered by the executable tests.
-The remaining compatibility artifacts are described above; there is no
-unfinished production-source migration or change to implicit polymorphism.
+The remaining compatibility artifacts are described above. The planned shared
+`Expr T`/`Scheme T` syntax migration is still outstanding; implicit polymorphism
+and the recursive SCC/generalization policy remain unchanged.
