@@ -69,12 +69,14 @@ end
 def Ty.pretty (t : Ty) : String := Ty.prettyAux 0 t
 
 /-- `∀ a b. body`, or just `body` when there are no params. -/
-def PolyTy.pretty (σ : PolyTy) : String :=
+def Scheme.pretty (σ : PolyTy) : String :=
   if σ.paramCount = 0 then σ.body.pretty
   else "∀ " ++ String.intercalate " " ((List.range σ.paramCount).map prettyTyVarName)
         ++ ". " ++ σ.body.pretty
 
 instance : ToString Ty := ⟨Ty.pretty⟩
+abbrev PolyTy.pretty (scheme : PolyTy) : String := Scheme.pretty scheme
+
 instance : ToString PolyTy := ⟨PolyTy.pretty⟩
 
 /-! ## Expressions
@@ -188,24 +190,24 @@ section Examples
 #eval toString (Ty.arrow (.arrow (.prim .int) (.prim .int)) (.prim .int))
 
 -- `λx. x`
-#eval toString (Expr.lambda none (.var 0))
+#eval Expr.pretty (Expr.lambda none (.var 0))
 -- `λx. λy. x`
-#eval toString (Expr.lambda none (.lambda none (.var 1)))
+#eval Expr.pretty (Expr.lambda none (.lambda none (.var 1)))
 -- `(λx. x) 5`
-#eval toString (Expr.app (.lambda none (.var 0)) (.primLit (.int 5)))
+#eval Expr.pretty (Expr.app (.lambda none (.var 0)) (.primLit (.int 5)))
 -- `let x : ∀ a. a → a = λy. y in x x`
-#eval toString (Expr.letIn (some ⟨1, .arrow (.bvar 0) (.bvar 0)⟩)
+#eval Expr.pretty (Expr.letIn (some ⟨1, .arrow (.bvar 0) (.bvar 0)⟩)
   (.lambda none (.var 0)) (.app (.var 0) (.var 0)))
 -- `λx. match x with | Cons y z => y | Nil => x | _ => x`
-#eval toString (Expr.lambda none (.match_ (.var 0)
+#eval Expr.pretty (Expr.lambda none (.match_ (.var 0)
   [(.named (.mk "Cons") 2, .var 1), (.named (.mk "Nil") 0, .var 0), (.wildcard, .var 0)]))
 
 -- List/pair sugar: `[1, 2]`, `1 :: x`, `(1, 2)`
-#guard toString (Expr.app (.app (.ctor (.mk "Cons")) (.primLit (.int 1)))
+#guard Expr.pretty (Expr.app (.app (.ctor (.mk "Cons")) (.primLit (.int 1)))
   (.app (.app (.ctor (.mk "Cons")) (.primLit (.int 2))) (.ctor (.mk "Nil")))) = "[1, 2]"
-#guard toString (Expr.ctor (.mk "Nil")) = "[]"
-#guard toString (Expr.app (.app (.ctor (.mk "Cons")) (.primLit (.int 1))) (.var 0)) = "1 :: #0"
-#guard toString (Expr.app (.app (.ctor (.mk "Pair")) (.primLit (.int 1))) (.primLit (.int 2))) = "(1, 2)"
+#guard Expr.pretty (Expr.ctor (.mk "Nil")) = "[]"
+#guard Expr.pretty (Expr.app (.app (.ctor (.mk "Cons")) (.primLit (.int 1))) (.var 0)) = "1 :: #0"
+#guard Expr.pretty (Expr.app (.app (.ctor (.mk "Pair")) (.primLit (.int 1))) (.primLit (.int 2))) = "(1, 2)"
 #guard toString (Ty.customTy (.mk "Pair") [.prim .int, .customTy (.mk "List") [.prim .int]])
   = "(Int, List Int)"
 
