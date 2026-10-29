@@ -96,10 +96,25 @@ inductive Ty
   | customTy : TyName → List Ty → Ty
   deriving Repr
 
-structure PolyTy where
+/-- A scheme wraps one annotation body with its number of bound variables.
+The body representation is independent of term syntax and checking policy. -/
+structure Scheme (T : Type) where
   paramCount : Nat
   /-- May reference params by `.bvar`s in range of `paramCount`  -/
-  body : Ty
+  body : T
+
+/-- Semantic schemes use the same wrapper as source annotation schemes. -/
+abbrev PolyTy := Scheme Ty
+
+def Scheme.map (f : T → U) (scheme : Scheme T) : Scheme U :=
+  ⟨scheme.paramCount, f scheme.body⟩
+
+@[simp] theorem Scheme.map_id (scheme : Scheme T) : scheme.map id = scheme := by
+  cases scheme
+  rfl
+
+@[simp] theorem Scheme.map_map (f : T → U) (g : U → V) (scheme : Scheme T) :
+    (scheme.map f).map g = scheme.map (g ∘ f) := rfl
 
 /-- Make a polytype with no type vars -/
 def PolyTy.mkTrivial (bodyTy : Ty) : PolyTy :=
@@ -264,7 +279,7 @@ def MatchPattern.matchesCtor : MatchPattern → CtorName → Nat → Bool
 
 /-- Completed compatibility syntax and operational terms. Canonical source
 annotations, including holes, live in `InferInput` below. -/
-inductive Expr
+inductive Expr (T : Type := Ty)
   | primLit (prim : PrimLitExpr)
   /-- A primitive binary operator (e.g. `intAdd`). A leaf naming a built-in,
       curried, monomorphic 2-argument function, applied via ordinary `app`. Its
@@ -275,12 +290,12 @@ inductive Expr
   | primBinOp (op : PrimBinOp)
   /-- A lambda. `paramAnn` is an optional type ascription on the parameter
       (surface `λ(x : T). body`); `none` means the param type is inferred. -/
-  | lambda (paramAnn : Option Ty) (body : Expr)
-  | app (f input : Expr)
+  | lambda (paramAnn : Option T) (body : Expr T)
+  | app (f input : Expr T)
   /-- A let binding. `ann` is an optional scheme ascription on the bound
       expression (surface `let x : σ = e in body`); `none` means the scheme is
       generalised by inference. -/
-  | letIn (ann : Option PolyTy) (bindingExpr body : Expr)
+  | letIn (ann : Option (Scheme T)) (bindingExpr body : Expr T)
   /-- A variable use (de Bruijn index into the term-variable environment).
       Type-erased: no type arguments are stored — the machine relation
       (`TypeOfHM.var`) instantiates the bound scheme existentially, so reduction
@@ -288,7 +303,7 @@ inductive Expr
   | var (deBruijnIndex : Nat)
   /-- A type constructor -/
   | ctor (name : CtorName)
-  | match_ (scrutinee : Expr) (branches : List (MatchPattern × Expr))
+  | match_ (scrutinee : Expr T) (branches : List (MatchPattern × Expr T))
   /-- A (mutually) recursive binding group with **per-binding optional scheme
       annotations** (mirroring `letIn`'s `ann`). The binding RHSs
       `e₀ … e_{n-1}` AND `body` are all in scope of the `n = bindings.length`
@@ -302,7 +317,7 @@ inductive Expr
       inferred. An ANNOTATED member (`some σ`) contributes a complete
       dependency-cut contract. Signed RHSs and the body are checked under the
       resulting final scheme environment. -/
-  | letRec (bindings : List (RecBinding (Option PolyTy) Expr)) (body : Expr)
+  | letRec (bindings : List (RecBinding (Option (Scheme T)) (Expr T))) (body : Expr T)
 
 abbrev CoreRecBinding := RecBinding (Option PolyTy) Expr
 
@@ -663,7 +678,7 @@ theorem some_property : ∀ e : Expr, P e := by
 ```
 -/
 @[elab_as_elim]
-def Expr.rec_strong.{u} {motive : Expr → Sort u}
+def Expr.rec_strong.{u} {T : Type} {motive : Expr T → Sort u}
     (primLit    : ∀ p, motive (.primLit p))
     (primBinOp  : ∀ op, motive (.primBinOp op))
     (lambda     : ∀ paramAnn body, motive body → motive (.lambda paramAnn body))
@@ -681,7 +696,7 @@ def Expr.rec_strong.{u} {motive : Expr → Sort u}
                     (∀ binding ∈ bindings, motive binding.rhs) →
                     motive body →
                     motive (.letRec bindings body)) :
-    (e : Expr) → motive e
+    (e : Expr T) → motive e
   | .primLit p          => primLit p
   | .primBinOp op       => primBinOp op
   | .lambda paramAnn body        =>
@@ -2344,7 +2359,7 @@ Type erasure drops all source annotations:
 `letIn none`, and every `letRec` row annotation becomes `none`.
 Structural elsewhere. `erase e` is the term the machine (`SmallStep.Step`) runs,
 typed by `TypeOfHM`; inference soundness against it is `Infer.sound`. -/
-def Expr.erase : Expr → Expr
+def Expr.erase {T : Type} : Expr T → Expr
   | .primLit p          => .primLit p
   | .primBinOp op       => .primBinOp op
   | .lambda _ body      => .lambda none body.erase
@@ -2382,8 +2397,8 @@ decreasing_by
     (Expr.letIn ann rhs body).erase = Expr.letIn none rhs.erase body.erase := by
   simp only [Expr.erase]
 
-@[simp] theorem Expr.erase_var (i : Nat) :
-    (Expr.var i).erase = Expr.var i := by
+@[simp] theorem Expr.erase_var {T : Type} (i : Nat) :
+    (Expr.var (T := T) i).erase = Expr.var i := by
   simp only [Expr.erase]
 
 @[simp] theorem Expr.erase_match (scrut : Expr) (branches : List (MatchPattern × Expr)) :
@@ -2613,7 +2628,7 @@ def PolyTy.WF (M : PolyTy) : Prop :=
   ContainsBvarsUpTo M.paramCount M.body
 
 /-- Total number of bound type variables across a group of schemes. -/
-def PolyTy.totalParams (Ms : List PolyTy) : Nat := (Ms.map PolyTy.paramCount).sum
+def PolyTy.totalParams (Ms : List PolyTy) : Nat := (Ms.map Scheme.paramCount).sum
 
 /-- Open a group of schemes at consecutive slices of `Xs` (slice sizes = each
     scheme's `paramCount`). The cofinite `letRec` premise types the recursive group
@@ -5189,7 +5204,7 @@ theorem Expr.substTyFvars_zip_openTyVarsAux {Ys Xs : List Nat}
       | none => simp only [Option.map_none, RecAnn.substFvars_none]
       | some σ =>
         simp only [Option.map_some, RecAnn.substFvars_some, Option.some.injEq,
-          PolyTy.substFvars_eq, PolyTy.mk.injEq, true_and]
+          PolyTy.substFvars_eq, Scheme.mk.injEq, true_and]
         exact Ty.substFvars_zip_openVarsFrom h_len h_Ys_nodup
           (fun y hy hc => hfresh y hy (by
             simp only [Expr.tyFreeVars, List.mem_append]
@@ -5296,7 +5311,7 @@ theorem Expr.substTyFvars_zip_openTyVarsAux_concrete {Ys : List Nat} {Vs : List 
       | none => simp only [Option.map_none, RecAnn.substFvars_none]
       | some σ =>
         simp only [Option.map_some, RecAnn.substFvars_some, Option.some.injEq,
-          PolyTy.substFvars_eq, PolyTy.mk.injEq, true_and]
+          PolyTy.substFvars_eq, Scheme.mk.injEq, true_and]
         exact Ty.substFvars_zip_openVarsFrom_concrete h_len h_Ys_nodup
           (fun y hy hc => hfresh y hy (by
             simp only [Expr.tyFreeVars, List.mem_append]

@@ -1886,7 +1886,7 @@ theorem ScopedTyping.signature_dodge_source
   obtain ⟨M, L, hM, hann, hrhs, hfit, htyped, hbody⟩ := ht.signature_inv hmode'
   let scopeVars := K ++ softVars F
   let images := scopeVars.map (fun k => ambient.onTy (.fvar k))
-  let contextTypes := (ambient.onCtx ctx).env.map PolyTy.body
+  let contextTypes := (ambient.onCtx ctx).env.map Scheme.body
   let targets := M.body :: target :: (contextTypes ++ images)
   obtain ⟨W, hW, _, hMoved, hWritten, hBelow, hForward, hBackward, hTargets⟩ :=
     signed_candidate_dodge ambient hS frontier ann.paramCount targets []
@@ -3171,7 +3171,7 @@ theorem RecResidual.onSubst
       (state.onSubst S) done U := by
   have hpoly : ∀ scheme : PolyTy, R.onPolyTy scheme = U.onPolyTy (S.onPolyTy scheme) := by
     intro scheme
-    exact congrArg (PolyTy.mk scheme.paramCount) (hfactor scheme.body)
+    exact congrArg (Scheme.mk scheme.paramCount) (hfactor scheme.body)
   apply h.onSubst_fields hU hUfix ?_ (fun ty _ => hfactor ty)
     (fun scheme _ => hpoly scheme) (fun scheme _ => hpoly scheme)
   apply congrArg₂ Ctx.mk
@@ -3195,7 +3195,7 @@ theorem RecResidual.onSubst_of_agreesBelow
   have hpoly : ∀ scheme : PolyTy, Ty.BelowFvars frontier scheme.body →
       R.onPolyTy scheme = U.onPolyTy (S.onPolyTy scheme) := by
     intro scheme hb
-    exact congrArg (PolyTy.mk scheme.paramCount) (hty scheme.body hb)
+    exact congrArg (Scheme.mk scheme.paramCount) (hty scheme.body hb)
   apply h.onSubst_fields hU hUfix ?_ (fun ty hm => hty ty (hbelow.1 (.mono ty) hm))
     (fun scheme hm => hpoly scheme (hbelow.1 (.poly scheme) hm))
     (fun scheme hm => hpoly scheme (hbelow.2.2.1 scheme hm))
@@ -3225,7 +3225,7 @@ theorem RecResidual.rename_decl_pool
     intro scheme hs
     cases scheme with
     | mk count body =>
-      apply congrArg (PolyTy.mk count)
+      apply congrArg (Scheme.mk count)
       apply Ty.substFvars_eq_self_of_no_key
       intro pair hp hv
       exact hPoly _ hs pair.1 (List.of_mem_zip hp).1 hv
@@ -3289,7 +3289,7 @@ theorem RecResidual.change_opening
   have hpoly : ∀ scheme : PolyTy, Ty.BelowFvars frontier scheme.body →
       U.onPolyTy scheme = B.onPolyTy (R.onPolyTy scheme) := by
     intro scheme hb
-    exact congrArg (PolyTy.mk scheme.paramCount) (hty scheme.body hb)
+    exact congrArg (Scheme.mk scheme.paramCount) (hty scheme.body hb)
   refine ⟨hU, hUfix, ?_, h.length, h.mono, ?_, ?_, ?_⟩
   · have he := (Subst.onCtx_congr hagrees hctxBelow).symm
     simpa only [Subst.onCtx_append, h.ctx_eq, hBctx] using he
@@ -3408,7 +3408,7 @@ theorem RecResidual.onSubst_decl
     simpa only [Subst.onTy_append] using Subst.onTy_congr hAgree hb
   have hpoly : ∀ M,Ty.BelowFvars N M.body → moved.onPolyTy M = D.onPolyTy (R.onPolyTy M) := by
     intro M hb
-    exact congrArg (PolyTy.mk M.paramCount) (hty M.body hb)
+    exact congrArg (Scheme.mk M.paramCount) (hty M.body hb)
   refine ⟨hMoved,?_,?_,?_,?_,?_,?_,?_⟩
   · intro p hp
     rw [hty (.fvar p) (.fvar (hP p hp)),h.fixes p hp,hDP p hp]
@@ -3509,9 +3509,9 @@ theorem RecResidual.dodge
       let forward := blockList N W count
       let backward := blockListBack N W count
       let moved := Subst.conj (blockSwap N W count) R
-      let allTargets := declCtx.env.map PolyTy.body ++
+      let allTargets := declCtx.env.map Scheme.body ++
         declSpecs.map (fun spec => spec.monoEntry.body) ++
-        (recCompletedSchemes declSpecs declPrefixes G).map PolyTy.body ++ targets
+        (recCompletedSchemes declSpecs declPrefixes G).map Scheme.body ++ targets
       RecResidual P (forward.onCtx declCtx) (declSpecs.map (RecSpec.onSubstSource forward))
         declPrefixes G Xs ctx state done moved ∧
       (∀ p ∈ P ++ freshVars N count,moved.onTy (.fvar p) = .fvar p) ∧
@@ -3525,8 +3525,8 @@ theorem RecResidual.dodge
         RecResidual P (forward.onCtx declCtx) (declSpecs.map (RecSpec.onSubstSource forward))
           declPrefixes G Xs laterCtx laterState laterDone laterR →
         RecResidual P declCtx declSpecs declPrefixes G Xs laterCtx laterState laterDone (laterR ++ backward)) := by
-  let allTargets := declCtx.env.map PolyTy.body ++ declSpecs.map (fun spec => spec.monoEntry.body) ++
-    (recCompletedSchemes declSpecs declPrefixes G).map PolyTy.body ++ targets
+  let allTargets := declCtx.env.map Scheme.body ++ declSpecs.map (fun spec => spec.monoEntry.body) ++
+    (recCompletedSchemes declSpecs declPrefixes G).map Scheme.body ++ targets
   obtain ⟨W,hW,hAvoid,hMoved,hBlock,hBelow,hForward,hBackward,hTargets⟩ :=
     signed_candidate_dodge R h.lc N count allTargets (G ++ Xs ++ avoid)
   let forward := blockList N W count
@@ -3574,7 +3574,7 @@ theorem RecResidual.dodge
       calc
         _ = declCtx.env.map id := List.map_congr_left (by
           intro M hm
-          apply congrArg (PolyTy.mk M.paramCount)
+          apply congrArg (Scheme.mk M.paramCount)
           exact (hTargets M.body (by
             dsimp only [allTargets]
             exact List.mem_append_left _ (List.mem_append_left _ (List.mem_append_left _
@@ -3589,7 +3589,7 @@ theorem RecResidual.dodge
         (List.mem_map.mpr ⟨.mono ty,ht,rfl⟩))))).1
   have hPolyRound : ∀ M,.poly M ∈ declSpecs → backward.onPolyTy (forward.onPolyTy M) = M := by
     intro M ht
-    apply congrArg (PolyTy.mk M.paramCount)
+    apply congrArg (Scheme.mk M.paramCount)
     exact (hTargets M.body (by
       dsimp only [allTargets]
       exact List.mem_append_left _ (List.mem_append_left _ (List.mem_append_right _
@@ -4323,14 +4323,14 @@ theorem RecResidual.restore_prefixRepresentatives
       exact hRepCtx pair.1 (List.of_mem_zip hp).1 hv
     · rfl
   · intro scheme hs
-    apply congrArg (PolyTy.mk scheme.paramCount)
+    apply congrArg (Scheme.mk scheme.paramCount)
     apply Subst.onTy_eq_self_of_fixes
     intro v hv
     exact zip_fvars_fixes (fun hr => hRepPoly scheme hs v hr hv)
   · intro i ty hd _
     exact recScheme_wf (hMonoLC ty (List.mem_of_getElem? hd))
   · intro i ty hd _
-    apply congrArg (PolyTy.mk _)
+    apply congrArg (Scheme.mk _)
     apply Subst.onTy_eq_self_of_fixes
     intro v hv
     exact zip_fvars_fixes (fun hr => hRepMono ty (List.mem_of_getElem? hd) v hr (Ty.freeVars_closeOver_subset hv))
@@ -4445,7 +4445,7 @@ theorem InferRecComponentCert.sourcePrincipal_after_shapes
     · simp only [Subst.onCtx, Subst.onEnv, List.map_map]
       apply List.map_congr_left
       intro M _
-      exact congrArg (PolyTy.mk M.paramCount) (hFactor M.body).symm
+      exact congrArg (Scheme.mk M.paramCount) (hFactor M.body).symm
     · rfl
   have hRawBelow : ∀ binding ∈ bindings, ∀ v ∈ binding.rhs.rigidVars, v < frontier := by
     intro binding hb v hv
@@ -4870,7 +4870,7 @@ theorem InferRecSignedCert.sourcePrincipal_residual
           refine ⟨L, ?_⟩
           intro Ys hy
           have hσ : U.onPolyTy ((s1 ++ s2).onPolyTy old) = R.onPolyTy old := by
-            apply congrArg (PolyTy.mk old.paramCount)
+            apply congrArg (Scheme.mk old.paramCount)
             change U.onTy ((s1 ++ s2).onTy old.body) = R.onTy old.body
             simpa only [Subst.onTy_append] using (Subst.onTy_congr hag
               (Ty.BelowFvars.of_freeVars_lt (hannBelow ⟨.complete old, oldRhs⟩
@@ -4990,7 +4990,7 @@ theorem RecResidual.init
     have hm := modeOf i _ hi
     have hd := declPoly i algScheme hm
     refine ⟨ambient.onPolyTy algScheme, hd, ?_⟩
-    apply congrArg (PolyTy.mk algScheme.paramCount)
+    apply congrArg (Scheme.mk algScheme.paramCount)
     exact (Subst.onTy_congr hag (rawPolyBelow algScheme (List.mem_of_getElem? hm))).symm
   · intro i algTy declTy hi hd hnot
     have hm := modeOf i _ hi
@@ -5952,7 +5952,7 @@ theorem RecResidual.repool
   have hmonoLC : ∀ ty, .mono ty ∈ specs → ty.IsLC := fun ty ht => hLC _ ht
   have hPolyFix : ∀ scheme, .poly scheme ∈ specs → A.onPolyTy scheme = scheme := by
     intro scheme hs
-    apply congrArg (PolyTy.mk scheme.paramCount)
+    apply congrArg (Scheme.mk scheme.paramCount)
     apply Subst.onTy_eq_self_of_fixes
     intro v hv
     exact zip_fvars_fixes (fun hg => hPoly scheme hs v hg hv)
@@ -6080,20 +6080,20 @@ theorem RecResidual.refresh_opening
     · rfl
   have hBSpec : ∀ scheme, .poly scheme ∈ specs → B.onPolyTy scheme = scheme := by
     intro scheme hs
-    apply congrArg (PolyTy.mk scheme.paramCount)
+    apply congrArg (Scheme.mk scheme.paramCount)
     apply Subst.onTy_eq_self_of_fixes
     intro v hv
     exact zip_fvars_fixes (fun hx => hXsSpec v hx (.poly scheme) hs hv)
   have hBackSpec : ∀ scheme, .poly scheme ∈ specs → back.onPolyTy scheme = scheme := by
     intro scheme hs
-    apply congrArg (PolyTy.mk scheme.paramCount)
+    apply congrArg (Scheme.mk scheme.paramCount)
     apply Subst.onTy_eq_self_of_fixes
     intro v hv
     exact zip_fvars_fixes (fun hz => hZSpec v hz (.poly scheme) hs hv)
   have hBClose : ∀ (i : Nat) (ty : Ty), specs[i]? = some (.mono ty) →
       B.onPolyTy (recScheme (prefixes[i]?.getD []) G ty) = recScheme (prefixes[i]?.getD []) G ty := by
     intro i ty hs
-    apply congrArg (PolyTy.mk _)
+    apply congrArg (Scheme.mk _)
     apply Subst.onTy_eq_self_of_fixes
     intro v hv
     exact zip_fvars_fixes (fun hx => hXsSpec v hx (.mono ty) (List.mem_of_getElem? hs)
@@ -6101,7 +6101,7 @@ theorem RecResidual.refresh_opening
   have hBackClose : ∀ (i : Nat) (ty : Ty), specs[i]? = some (.mono ty) →
       back.onPolyTy (recScheme (prefixes[i]?.getD []) G ty) = recScheme (prefixes[i]?.getD []) G ty := by
     intro i ty hs
-    apply congrArg (PolyTy.mk _)
+    apply congrArg (Scheme.mk _)
     apply Subst.onTy_eq_self_of_fixes
     intro v hv
     exact zip_fvars_fixes (fun hz => hZSpec v hz (.mono ty) (List.mem_of_getElem? hs)
@@ -6381,14 +6381,14 @@ theorem RecResidual.prepare_component
     obtain ⟨hlo, hhi⟩ := ho.written_range a ha
     unfold freshVars
     exact List.mem_map.mpr ⟨a - frontier, List.mem_range.mpr (by omega), by omega⟩
-  let allTargets := declCtx.env.map PolyTy.body ++ declSpecs.map (fun spec => spec.monoEntry.body) ++
-    (recCompletedSchemes declSpecs declPrefixes G).map PolyTy.body ++ extras
+  let allTargets := declCtx.env.map Scheme.body ++ declSpecs.map (fun spec => spec.monoEntry.body) ++
+    (recCompletedSchemes declSpecs declPrefixes G).map Scheme.body ++ extras
   have hTarget : ∀ ty ∈ allTargets, backD.onTy (D.onTy ty) = ty ∧ ∀ a ∈ A, a ∉ (D.onTy ty).freeVars := by
     intro ty ht
     exact ⟨(hTargets ty ht).1, fun a ha => (hTargets ty ht).2 a (hAblock a ha)⟩
   have hCtxT : ∀ M ∈ declCtx.env, M.body ∈ allTargets := by
     intro M hm
-    have hh : M.body ∈ declCtx.env.map PolyTy.body := List.mem_map.mpr ⟨M, hm, rfl⟩
+    have hh : M.body ∈ declCtx.env.map Scheme.body := List.mem_map.mpr ⟨M, hm, rfl⟩
     simp only [allTargets, List.mem_append]
     tauto
   have hSpecT : ∀ spec ∈ declSpecs, spec.monoEntry.body ∈ allTargets := by
@@ -6398,7 +6398,7 @@ theorem RecResidual.prepare_component
     tauto
   have hCompleteT : ∀ M ∈ recCompletedSchemes declSpecs declPrefixes G, M.body ∈ allTargets := by
     intro M hm
-    have hh : M.body ∈ (recCompletedSchemes declSpecs declPrefixes G).map PolyTy.body := List.mem_map.mpr ⟨M, hm, rfl⟩
+    have hh : M.body ∈ (recCompletedSchemes declSpecs declPrefixes G).map Scheme.body := List.mem_map.mpr ⟨M, hm, rfl⟩
     simp only [allTargets, List.mem_append]
     tauto
   have hExtraT : ∀ ty ∈ extras, ty ∈ allTargets := by
@@ -6575,7 +6575,7 @@ theorem RecResidual.prepare_component
       rw [List.map_map]
       apply List.map_congr_left
       intro M hm
-      exact congrArg (PolyTy.mk M.paramCount) (hFinite M.body (hCtxT M hm)
+      exact congrArg (Scheme.mk M.paramCount) (hFinite M.body (hCtxT M hm)
         (fun x hx hv => hXctxP x hx (List.mem_append_left _ (Env.mem_freeVars_iff.mpr ⟨M, hm, hv⟩)))).1
     · rfl
   have hBpoly : ∀ scheme, .poly scheme ∈ declSpecs.map (RecSpec.onSubstSource D) → B.onPolyTy scheme = scheme := by
@@ -6585,7 +6585,7 @@ theorem RecResidual.prepare_component
     | mono ty => cases he
     | poly original =>
       cases he
-      exact congrArg (PolyTy.mk original.paramCount) (hFinite original.body (hSpecT _ ho) (hXpoly original ho)).1
+      exact congrArg (Scheme.mk original.paramCount) (hFinite original.body (hSpecT _ ho) (hXpoly original ho)).1
   have hCompletedWF : ∀ i ty, (declSpecs.map (RecSpec.onSubstSource D))[i]? = some (.mono ty) → i ∈ past.flatten →
       (recScheme (declPrefixes[i]?.getD []) G ty).WF := by
     intro i ty hi _
@@ -6594,7 +6594,7 @@ theorem RecResidual.prepare_component
       B.onPolyTy (recScheme (declPrefixes[i]?.getD []) G ty) = recScheme (declPrefixes[i]?.getD []) G ty := by
     intro i ty hi _
     obtain ⟨original, ho, rfl⟩ := RecSpec.mono_getElem?_map_onSubstSource hi
-    apply congrArg (PolyTy.mk _)
+    apply congrArg (Scheme.mk _)
     apply Subst.onTy_eq_self_of_fixes
     intro v hv
     apply zip_fvars_fixes
@@ -8751,7 +8751,7 @@ theorem inferRecSignedWithTypesCore_complete
                   refine ⟨L,?_⟩
                   intro Ys hy
                   have hσ : U.onPolyTy ((s1 ++ s2).onPolyTy old) = R.onPolyTy old := by
-                    apply congrArg (PolyTy.mk old.paramCount)
+                    apply congrArg (Scheme.mk old.paramCount)
                     change U.onTy ((s1 ++ s2).onTy old.body) = R.onTy old.body
                     simpa only [Subst.onTy_append] using (Subst.onTy_congr hag
                       (Ty.BelowFvars.of_freeVars_lt
@@ -9416,7 +9416,7 @@ theorem inferRecStrataWithTypesCore_aligned_singleton
       · simp only [Subst.onCtx,Subst.onEnv,List.map_map]
         apply List.map_congr_left
         intro M hm
-        exact congrArg (PolyTy.mk M.paramCount) (hfactor M.body).symm
+        exact congrArg (Scheme.mk M.paramCount) (hfactor M.body).symm
       · rfl
     have hRawFactor : ∀ rhs : InferInput, (rhs.substTyFvars pre).substTyFvars Z = rhs.substTyFvars U := by
       intro rhs
@@ -9794,7 +9794,7 @@ theorem inferRecStrataWithTypesCore_dynamic_singleton
   let prefixes' := declPrefixes.map (recRenameNames G W)
   have hPolyFix : ∀ sigma,.poly sigma ∈ declSpecs → A.onPolyTy sigma = sigma := by
     intro sigma hs
-    apply congrArg (PolyTy.mk sigma.paramCount)
+    apply congrArg (Scheme.mk sigma.paramCount)
     apply Subst.onTy_eq_self_of_fixes
     intro v hv
     exact zip_fvars_fixes (fun hg => hPolyG sigma hs v hg hv)

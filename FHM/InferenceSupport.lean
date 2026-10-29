@@ -1209,7 +1209,7 @@ theorem Ctor.isBoolCtor_of_typeOfHM {ctx : Ctx} {name : CtorName}
 theorem Subst.onPolyTy_eq_self_of_dom_avoids {S : Subst} {σ : PolyTy}
     (hdom : ∀ p ∈ S, p.1 ∉ σ.body.freeVars) : S.onPolyTy σ = σ := by
   obtain ⟨pc, body⟩ := σ
-  simp only [Subst.onPolyTy, PolyTy.mk.injEq, true_and]
+  simp only [Subst.onPolyTy, Scheme.mk.injEq, true_and]
   exact Ty.substFvars_eq_self_of_no_key hdom
 
 
@@ -1972,7 +1972,7 @@ end
 theorem Subst.onPolyTy_eq_self_of_closed {S : Subst} {σ : PolyTy}
     (h : NoFreeVars σ.body) : S.onPolyTy σ = σ := by
   obtain ⟨pc, b⟩ := σ
-  simp only [Subst.onPolyTy, Subst.onTy, PolyTy.mk.injEq, true_and]
+  simp only [Subst.onPolyTy, Subst.onTy, Scheme.mk.injEq, true_and]
   exact Ty.substFvars_eq_self_of_no_key (fun p _ => h.not_mem_freeVars p.1)
 
 /-- All free type vars of `τ` are below `Φ`. The `fvar` analogue of
@@ -8288,7 +8288,7 @@ theorem Subst.Factors.genGroup_stable {U Sc : Subst} {G : List Nat} {τ : Ty}
      (U.onPolyTy (PolyTy.genGroup G (Sc.onTy τ))) =
        (U.onPolyTy (PolyTy.genGroup G τ)) := by
   rw [← Subst.onPolyTy_genGroup hdom hran]
-  apply congrArg₂ PolyTy.mk rfl
+  apply congrArg₂ Scheme.mk rfl
   exact (hfac (PolyTy.genGroup G τ).body).symm
 
 /-! A `UnifyRel` trace supplies pointwise satisfaction of each raw binding,

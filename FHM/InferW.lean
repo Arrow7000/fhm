@@ -868,7 +868,7 @@ theorem SignatureCheck.scheme_eq_close (h : SignatureCheck K F written frontier 
         (by simpa only [hl] using hwf)
         (fun name hn hv => havoid name hn (hrigid name hv))]
       cases scheme
-      simp only [PolyTy.mk.injEq]
+      simp only [Scheme.mk.injEq]
       exact ⟨hl.symm, True.intro⟩
   | partialSignature _ _ _ _ => rfl
 

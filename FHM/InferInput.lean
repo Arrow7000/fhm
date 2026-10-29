@@ -2092,7 +2092,7 @@ theorem recScheme_rename_pool {G W names : List Nat} {ty : Ty}
   rw [← renameG_restrict_pool hlen hG (recNames_nodup hnd hG) hGW hsub
     (fun v hv hg => mem_recNames_of_mem_pool hg hv)] at hclose
   simp only [recRenameNames_length]
-  exact congrArg (PolyTy.mk (recNames names G ty).length) hclose
+  exact congrArg (Scheme.mk (recNames names G ty).length) hclose
 
  theorem recScheme_subst_pool_avoid {S : Subst} {W names : List Nat} {ty : Ty}
     (hdom : ∀ p ∈ S, p.1 ∉ W)
@@ -2311,7 +2311,7 @@ theorem recScheme_generalizes_genGroup_of_renameG
       PolyTy.genGroup Xs (Ty.renameG declPool Xs declTy) :=
     PolyTy.genGroup_renameG hDecl hLen hPool hXs hDisjoint hFreshTy
   have hselectedLen : selected.length = (Ty.genFilter declPool declTy).length := by
-    have hh := congrArg PolyTy.paramCount hscheme
+    have hh := congrArg Scheme.paramCount hscheme
     exact hh.symm
   have hselectedND : selected.Nodup := hXs.filter _
   have hselectedSub : ∀ x ∈ selected, x ∈ Xs := fun _ hx => Ty.mem_of_mem_genFilter hx
@@ -2607,7 +2607,7 @@ theorem Expr.open_closeTyVarsAux_rename {names fresh : List Nat}
                 Option.map_some, RecAnn.params]
               apply congrArg₂ List.cons
               · apply RecBinding.ext
-                · simp only [Option.some.injEq, PolyTy.mk.injEq, true_and,
+                · simp only [Option.some.injEq, Scheme.mk.injEq, true_and,
                     RecAnn.substFvars_some, PolyTy.substFvars_eq]
                   exact Ty.open_closeVarsFrom_rename hnames hlen hdisj scheme.body
                     (depth + scheme.paramCount) (hbindings.1 scheme rfl)

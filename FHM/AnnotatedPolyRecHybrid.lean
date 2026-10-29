@@ -653,7 +653,7 @@ theorem HybridHasScheme.ofMonoRecMember {env : Env}
     HybridWT.rec_rewrap_at hwf hmono hpoly hXs htyped
   set Xs' := Ty.genFilter Xs (Ty.renameG G Xs ty) with hXsDef
   have hXsLen' : Xs'.length = (Ty.genFilter G ty).length := by
-    have h := congrArg PolyTy.paramCount
+    have h := congrArg Scheme.paramCount
       (PolyTy.genGroup_renameG htyLC hXsLen hwf.nodup hXsNodup
         hdisj hXsTy)
     simp only [PolyTy.genGroup] at h
