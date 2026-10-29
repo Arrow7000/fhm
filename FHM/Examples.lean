@@ -1159,7 +1159,7 @@ theorem idid_typeable : TypeOfHM ⟨[], []⟩ idid (.arrow (.fvar 0) (.fvar 0)) 
     · simp at hlen
     · have hterm : Expr.openBoundTyVars (some (⟨1, .arrow (.bvar 0) (.bvar 0)⟩ : PolyTy)) [X]
             (.lambda none (.var 0)) = .lambda none (.var 0) := rfl
-      have htype : (⟨1, .arrow (.bvar 0) (.bvar 0)⟩ : PolyTy).openVars [X]
+      have htype : PolyTy.openVars [X] (⟨1, .arrow (.bvar 0) (.bvar 0)⟩ : PolyTy)
             = .arrow (.fvar X) (.fvar X) := rfl
       rw [hterm, htype]
       exact TypeOfHM.lambda .fvar (fun _ h => Option.noConfusion h) rfl
@@ -1269,7 +1269,7 @@ theorem idid_typeable_fvar3 : TypeOfHM ⟨[], []⟩ idid (.arrow (.fvar 3) (.fva
     · simp at hlen
     · have hterm : Expr.openBoundTyVars (some (⟨1, .arrow (.bvar 0) (.bvar 0)⟩ : PolyTy)) [X]
             (.lambda none (.var 0)) = .lambda none (.var 0) := rfl
-      have htype : (⟨1, .arrow (.bvar 0) (.bvar 0)⟩ : PolyTy).openVars [X]
+      have htype : PolyTy.openVars [X] (⟨1, .arrow (.bvar 0) (.bvar 0)⟩ : PolyTy)
             = .arrow (.fvar X) (.fvar X) := rfl
       rw [hterm, htype]
       exact TypeOfHM.lambda .fvar (fun _ h => Option.noConfusion h) rfl

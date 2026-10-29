@@ -78,7 +78,7 @@ def probeCore (K : List Nat) (Φ : Nat) (ctx : Ctx) : Expr → Option Error
       | none => (probeCore rigid (Φ + σ.paramCount) ctx opened).map (Error.below .letRhs)
       | some result =>
         let ⟨Φ₁, S₁, τ₁⟩ := result.val
-        match unifyCoreK rigid τ₁ (σ.openVars Ys) with
+        match unifyCoreK rigid τ₁ (PolyTy.openVars Ys σ) with
         | none => none -- Existing annotation diagnostics handle this case.
         | some ⟨Schk, _⟩ =>
           if ∀ y ∈ Ys, y ∉ (Schk.onCtx (S₁.onCtx ctx)).env.freeVars then
