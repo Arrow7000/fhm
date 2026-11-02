@@ -8249,13 +8249,11 @@ theorem surface_type_safe {ctors : CtorEnv} {s : Surface.Expr} {c : Expr}
   have hty : RuntimeTyping.RunWT ⟨[], ctors⟩ c.erase result.ty := hsource.erase_preserves_typing
   have hexh : AllMatchesExhaustive ctors c.erase :=
     SmallStep.AllMatchesExhaustive.erase (lowerCore_exhaustive hcov hlow)
-  have hexhSource : AllMatchesExhaustive ctors c := lowerCore_exhaustive hcov hlow
-  -- Check first, erase second: the source derivation launches the erased
-  -- runtime safety chain under `RunWT`.
+  -- Launch the runtime safety chain from the erased derivation.
   have hsafe : ∀ e', Relation.ReflTransGen Step (c.erase) e' →
       IsValue e' ∨ ∃ e'', Step e' e'' := by
     intro e' hrtc
-    exact (TypeOfHM.erased_type_safety_star hsource hexhSource e' hrtc).2
+    exact (RuntimeTyping.RunWT.type_safety_star hty c.erase_idem hexh e' hrtc).2
   exact ⟨result.ty, hty, hexh, hsafe⟩
 
 /-- **Well-typed surface programs don't go wrong** (program-level).

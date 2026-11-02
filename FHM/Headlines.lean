@@ -23,6 +23,7 @@ namespace Headlines
 
 #check @RuntimeTyping.RunWT.progress
 #check @RuntimeTyping.RunWT.preservation
+#check @RuntimeTyping.RunWT.type_safety_star
 
 /-! ### Surface lowering into canonical inference input
 

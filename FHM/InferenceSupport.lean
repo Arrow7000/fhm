@@ -4214,6 +4214,26 @@ theorem SmallStep.Step.preserves_erased {e e' : Expr}
       exact expr_substN_erase 0
         (bindings.map (fun binding => Expr.letRec bindings binding.rhs))
         body h_bd hvs_erased
+/-- Every finite execution of a closed, typed, erased, exhaustive term retains
+its type and reaches either a value or a term that can take another step. -/
+theorem RuntimeTyping.RunWT.type_safety_star {ctors : CtorEnv} {e : Expr} {τ : Ty}
+    (hty : RuntimeTyping.RunWT ⟨[], ctors⟩ e τ)
+    (herased : e.erase = e) (hexh : SmallStep.AllMatchesExhaustive ctors e) :
+    ∀ e', Relation.ReflTransGen SmallStep.Step e e' →
+      RuntimeTyping.RunWT ⟨[], ctors⟩ e' τ ∧
+        (SmallStep.IsValue e' ∨ ∃ e'', SmallStep.Step e' e'') := by
+  intro e' hrtc
+  have H : RuntimeTyping.RunWT ⟨[], ctors⟩ e' τ ∧ e'.erase = e' ∧
+      SmallStep.AllMatchesExhaustive ctors e' := by
+    induction hrtc with
+    | refl => exact ⟨hty, herased, hexh⟩
+    | tail _ hstep ih =>
+        obtain ⟨htyped, herased', hexh'⟩ := ih
+        exact ⟨RuntimeTyping.RunWT.preservation hstep htyped,
+          SmallStep.Step.preserves_erased herased' hstep,
+          SmallStep.Step.preserves_exhaustive hexh' hstep⟩
+  exact ⟨H.1, RuntimeTyping.RunWT.progress H.1 rfl H.2.2 H.2.1⟩
+
 /-- Term-variable shifting preserves `TyBvarBounded`: it renames term variables
     without changing type annotations. -/
 theorem Expr.shiftFrom_tyBvarBounded (n : Nat) {e : Expr} :

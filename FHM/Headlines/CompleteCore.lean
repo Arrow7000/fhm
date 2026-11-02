@@ -12,9 +12,7 @@ open SurfaceBridge SmallStep PatComp
 
 namespace Headlines
 
-#check @TypeOfHM.type_safety_star
 #print axioms TypeOfHM.erase_preserves_typing
-#print axioms TypeOfHM.type_safety_star
 
 /-! ## Universal properties: inversion / canonical-forms lemmas
 
@@ -63,20 +61,6 @@ theorem TypeOfHM_letIn_inv {ctx : Ctx} {ann : Option PolyTy} {boundExpr body : E
       TypeOfHM { ctx with env := M :: ctx.env } body τ := by
   cases h with
   | letIn hwf hpins hgen heq hbody => exact ⟨_, _, hwf, hpins, hgen, heq ▸ hbody⟩
-
-/-! ### Canonical forms (re-exported)
-
-The dual of inversion at the VALUE level: a well-typed *value* of a known type
-shape must have one of a small enumerable set of head forms.
-`TypeOfHM.canonical_arrow` says an arrow-typed value is a lambda, a
-constructor chain, a bare primop, or a partially-applied primop.
-`TypeOfHM.ctor_chain_inversion` is the keystone both progress and
-preservation's `match_` case lean on: a well-typed constructor chain
-decomposes into its head constructor applied to well-typed, correctly
-instantiated arguments. -/
-#check @TypeOfHM.canonical_arrow
-#check @TypeOfHM.ctor_chain_inversion
-
 
 -- Clean: this file's own inversion lemmas.
 #print axioms TypeOfHM_app_inv           -- expect {propext, Quot.sound}

@@ -16,7 +16,8 @@ run_cmd do
       `inferWithTypes_typing_iff, `principalType_sound, `typecheck_sound,
       `InputTyping.erase, `elabDecls_sound, `elabDecls_eq_some_iff,
       `PatComp.compile_correct_surface, `PatComp.lowerMatch_adequate_of_typed,
-      `RuntimeTyping.RunWT.varsBelow, `Headlines.lower_and_infer_direct,
+      `RuntimeTyping.RunWT.varsBelow, `RuntimeTyping.RunWT.type_safety_star,
+      `Headlines.lower_and_infer_direct,
       `Headlines.runSafe] do
     let (_, state) := ((CollectAxioms.collect root).run env).run {}
     for entry in env.constants.toList do
