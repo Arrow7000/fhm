@@ -23,6 +23,10 @@ check_module() {
       echo "error: default verified library imports $module" >&2
       exit 1
       ;;
+    FHM.Compatibility.*)
+      echo "error: default verified library imports historical compatibility module $module" >&2
+      exit 1
+      ;;
   esac
   local module_file="${module//.//}.lean"
   [[ -f "$module_file" ]] || return
@@ -53,5 +57,8 @@ done < <(awk '
 for module in "${roots[@]}"; do
   check_module "$module"
 done
+
+# Canonical examples are opt-in, but must use the same source/runtime stack.
+check_module FHM.Examples
 
 echo 'Unverified boundary checks passed.'

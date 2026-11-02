@@ -1,4 +1,4 @@
-import FHM.RuntimeTyping
+import FHM.Compatibility.Erasure
 
 namespace RuntimeTyping
 

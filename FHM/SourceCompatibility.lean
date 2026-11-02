@@ -1,4 +1,5 @@
 import FHM.SourceTyping
+import FHM.Compatibility.Metatheory
 
 /-! Derived complete-Core compatibility. The source typing relation has only
 structural rules; this optional conversion is not a source typing constructor

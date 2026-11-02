@@ -13,6 +13,8 @@ open SurfaceBridge SmallStep PatComp
 namespace Headlines
 
 #check @TypeOfHM.type_safety_star
+#print axioms TypeOfHM.erase_preserves_typing
+#print axioms TypeOfHM.type_safety_star
 
 /-! ## Universal properties: inversion / canonical-forms lemmas
 

@@ -10,7 +10,7 @@ dependency SCCs, compiles patterns, checks pattern coverage, and lowers surface
 expressions to `InferInput`.
 
 `LowersExpr` and `lowerExpr` describe the production pipeline. Partial
-annotations remain templates until inference returns completed Core. The
+annotations remain templates while inference returns type and editor facts. The
 structural relation and executable lowerer share one target-parametric syntax
 traversal, with soundness and completeness proved once.
 

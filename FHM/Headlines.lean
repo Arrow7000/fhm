@@ -476,10 +476,11 @@ inversions, and the erased-term runner are checked here. Complete-Core adapter
 guards live in `FHM.Headlines.CompleteCore`. -/
 
 -- Closed and clean: source-to-runtime bridge and erased-term dynamics.
-#print axioms TypeOfHM.erase_preserves_typing -- expect {propext, Classical.choice, Quot.sound}
+#print axioms InputTyping.erase
 #print axioms RuntimeTyping.RunWT.progress    -- expect {propext, Classical.choice, Quot.sound}
 #print axioms RuntimeTyping.RunWT.preservation -- expect {propext, Classical.choice, Quot.sound}
-#print axioms TypeOfHM.type_safety_star       -- expect {propext, Classical.choice, Quot.sound}
+#print axioms RuntimeTyping.RunWT.progress
+#print axioms RuntimeTyping.RunWT.preservation
 
 -- Checked for all canonical constructors, including partial recursive signatures.
 #print axioms lower_and_infer_sound
