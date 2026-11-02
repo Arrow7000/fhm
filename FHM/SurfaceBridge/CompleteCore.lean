@@ -8095,8 +8095,7 @@ theorem Program.term_no_groups (p : Surface.Program) (h : p.groups = []) :
 inductive CoreLowersProgram : Surface.Program → CtorEnv → Expr → Prop
   | mk {p : Surface.Program} {ctors : CtorEnv} {c : Expr} {userCore : List DataDecl} :
       LowersDataDeclsIn preludeKindEnv p.decls userCore →
-      DataDecls.WF (preludeDecls ++ userCore) →
-      elabDecls (preludeDecls ++ userCore) = some ctors →
+      DataDecls.ElaboratesTo (preludeDecls ++ userCore) ctors →
       CoreLowers ctors p.term c →
       CoreLowersProgram p ctors c
 
@@ -8121,7 +8120,7 @@ theorem lowerCoreProgram_sound {p : Surface.Program} {ctors : CtorEnv} {c : Expr
   obtain ⟨c', hBody, hPure⟩ := option_bind_eq_some hb'
   simp at hPure
   obtain ⟨rfl, rfl⟩ := hPure
-  refine CoreLowersProgram.mk (lowerDataDeclsIn_sound hUser) (elabDecls_sound hElab) hElab
+  refine CoreLowersProgram.mk (lowerDataDeclsIn_sound hUser) (elabDecls_sound hElab)
     (lowerCore_sound hBody)
 
 /-- Completeness: declarative `CoreLowersProgram` ⇒ executable `lowerCoreProgram` returns
@@ -8131,8 +8130,9 @@ theorem lowerCoreProgram_complete {p : Surface.Program} {ctors : CtorEnv} {c : E
     CoreLowersProgram p ctors c → lowerCoreProgram p = some (ctors, c) := by
   intro h
   cases h with
-  | mk hUser _hWF hElab hBody =>
-    simp [lowerCoreProgram, lowerDataDeclsIn_complete hUser, hElab, lowerCore_complete hBody]
+  | mk hUser hElab hBody =>
+    simp [lowerCoreProgram, lowerDataDeclsIn_complete hUser,
+      elabDecls_eq_some_iff.mpr hElab, lowerCore_complete hBody]
 
 -- Program-level `#guard`s
 private def pPreludeIf : Surface.Program :=

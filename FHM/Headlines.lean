@@ -335,6 +335,12 @@ built by hand. -/
 #check @lowerDataDecls_complete
 #check @elabDecls_sound
 #check @elabDecls_complete
+#check @elabDecls_eq_some_iff
+#check @DataDecls.ElaboratesTo.unique
+
+example {decls : List DataDecl} {env : CtorEnv} :
+    elabDecls decls = some env ↔ DataDecls.ElaboratesTo decls env :=
+  elabDecls_eq_some_iff
 
 
 /-! ## Universal properties: inversion / canonical-forms lemmas

@@ -3555,8 +3555,7 @@ def lowerInputProgram (p : Surface.Program) : Option (CtorEnv × InferInput) := 
 inductive InputLowersProgram : Surface.Program → CtorEnv → InferInput → Prop where
   | mk {p userCore ctors input} :
       LowersDataDeclsIn preludeKindEnv p.decls userCore →
-      DataDecls.WF (preludeDecls ++ userCore) →
-      elabDecls (preludeDecls ++ userCore) = some ctors →
+      DataDecls.ElaboratesTo (preludeDecls ++ userCore) ctors →
       InputLowers ctors p.term input → InputLowersProgram p ctors input
 
 theorem lowerInputProgram_sound {p ctors input} (h : lowerInputProgram p = some (ctors,input)) :
@@ -3566,12 +3565,14 @@ theorem lowerInputProgram_sound {p ctors input} (h : lowerInputProgram p = some 
   obtain ⟨input', hi, h⟩ := lowering_bind_eq_some h
   simp only [pure, Option.some.injEq, Prod.mk.injEq] at h
   rcases h with ⟨rfl,rfl⟩
-  exact .mk (lowerDataDeclsIn_sound huser) (elabDecls_sound helab) helab (lowerInput_sound hi)
+  exact .mk (lowerDataDeclsIn_sound huser) (elabDecls_sound helab) (lowerInput_sound hi)
 
 theorem lowerInputProgram_complete {p ctors input} (h : InputLowersProgram p ctors input) :
     lowerInputProgram p = some (ctors,input) := by
   cases h with
-  | mk hd _hwf he hl => simp [lowerInputProgram, lowerDataDeclsIn_complete hd, he, lowerInput_complete hl]
+  | mk hd he hl =>
+    simp [lowerInputProgram, lowerDataDeclsIn_complete hd,
+      elabDecls_eq_some_iff.mpr he, lowerInput_complete hl]
 
 /-- Canonical surface lowering preserves partial annotations for inference. -/
 abbrev lowerExpr := lowerInputExpr

@@ -124,7 +124,7 @@ the earlier complete-Core surface-safety façade and demonstration.
 | **Pattern compilation is correct:** nested matches compile to decision trees that select the same branch with the same bindings.                   | `PatComp.compile_correct_surface`, `PatComp.lowerMatch_adequate_of_typed` |
 | **Exhaustiveness checking is sound:** if the checker accepts a match, the match is exhaustive.                                                     | `checkExhaustive_sound`                                                   |
 | **Recursive grouping is correct:** dependency analysis splits definitions into exactly their strongly connected components.                        | `sccGroups_sound`, `sccGroups_complete`, `kosaraju_sound`                 |
-| **Data declarations elaborate correctly**, matching their declarative spec.                                                                        | `lowerDataDecls_sound`/`_complete`, `elabDecls_sound`/`_complete`         |
+| **Data declarations elaborate faithfully:** the returned environment contains exactly the written constructors, with their names, parameter counts, parent types, fields and declaration order. | `DataDecls.ElaboratesTo`, `elabDecls_eq_some_iff`, `lowerProgram_sound`/`_complete` |
 
 **What is not verified:** the lexer, parser, CLI, editor tooling, and the
 unbounded evaluator used by `fhm run`. These live under

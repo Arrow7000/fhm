@@ -104,6 +104,52 @@ structure DataDecls.WF (decls : List DataDecl) : Prop where
   ctorNamesNodup : (decls.flatMap (fun d => d.ctors.map Prod.fst)).Nodup
 
 
+/-- The semantic fields of a constructor, independent of its proof fields. -/
+def Ctor.signature (ctor : Ctor) : Nat × TyName × List Ty :=
+  (ctor.paramCount, ctor.tyName, ctor.contents)
+
+def CtorEnv.signatures (env : CtorEnv) : List (CtorName × (Nat × TyName × List Ty)) :=
+  env.map fun entry => (entry.1, entry.2.signature)
+
+/-- Written constructors in declaration order, including all their type data. -/
+def DataDecls.constructorSignatures (decls : List DataDecl) :
+    List (CtorName × (Nat × TyName × List Ty)) :=
+  (decls.map fun decl => decl.ctors.map fun ctor =>
+    (ctor.1, (decl.paramCount, decl.name, ctor.2))).flatten
+
+/-- Declaration elaboration preserves every constructor and all its fields.
+The equality also excludes missing, extra, duplicated or reordered entries. -/
+structure DataDecls.ElaboratesTo (decls : List DataDecl) (env : CtorEnv) : Prop where
+  wellFormed : DataDecls.WF decls
+  constructors : env.signatures = DataDecls.constructorSignatures decls
+
+theorem Ctor.signature_injective : Function.Injective Ctor.signature := by
+  rintro ⟨ap, an, ac, ab, af⟩ ⟨bp, bn, bc, bb, bf⟩ h
+  simp only [Ctor.signature, Prod.mk.injEq] at h
+  rcases h with ⟨rfl, rfl, rfl⟩
+  rfl
+
+theorem CtorEnv.signatures_injective : Function.Injective CtorEnv.signatures := by
+  intro a b h
+  induction a generalizing b with
+  | nil => cases b <;> simp_all [CtorEnv.signatures]
+  | cons x xs ih =>
+    cases b with
+    | nil => simp [CtorEnv.signatures] at h
+    | cons y ys =>
+      simp only [CtorEnv.signatures, List.map_cons, List.cons.injEq] at h
+      have hname : x.1 = y.1 := congrArg
+        (fun entry : CtorName × (Nat × TyName × List Ty) => entry.1) h.1
+      have hsignature : x.2.signature = y.2.signature := congrArg
+        (fun entry : CtorName × (Nat × TyName × List Ty) => entry.2) h.1
+      have hxy : x = y := Prod.ext hname (Ctor.signature_injective hsignature)
+      exact congrArg₂ List.cons hxy (ih h.2)
+
+theorem DataDecls.ElaboratesTo.unique
+    (ha : DataDecls.ElaboratesTo decls a) (hb : DataDecls.ElaboratesTo decls b) : a = b :=
+  CtorEnv.signatures_injective (ha.constructors.trans hb.constructors.symm)
+
+
 /-! ## The executable side (checker, elaborator, prelude)
 
 Everything below turns the spec above into running code with proofs — no `Core`
@@ -235,6 +281,14 @@ theorem mkCtorFromFields_wellKinded {ke : KindEnv} {pc : Nat} {tn : TyName}
   · assumption
   · exact absurd h (by simp)
 
+theorem mkCtorFromFields_signature {ke : KindEnv} {pc : Nat} {tn : TyName}
+    {fields : List Ty} {ctor : Ctor} (h : mkCtorFromFields ke pc tn fields = some ctor) :
+    ctor.signature = (pc, tn, fields) := by
+  unfold mkCtorFromFields at h
+  split at h
+  · cases h; rfl
+  · cases h
+
 
 /-! ### 5. The two-pass elaborator into a `CtorEnv`. -/
 
@@ -292,7 +346,7 @@ def elabDecls (decls : List DataDecl) : Option CtorEnv := do
     well-formed (`DataDecls.WF`): the two `guard`s give the `Nodup` conditions,
     and each constructor's successful `mkCtorFromFields` gives its fields'
     well-kindedness via `TyList.wellKindedB_iff`. -/
-theorem elabDecls_sound {decls : List DataDecl} {env : CtorEnv}
+theorem elabDecls_wellFormed {decls : List DataDecl} {env : CtorEnv}
     (h : elabDecls decls = some env) : DataDecls.WF decls := by
   unfold elabDecls at h
   simp only [] at h
@@ -306,6 +360,49 @@ theorem elabDecls_sound {decls : List DataDecl} {env : CtorEnv}
   obtain ⟨ct, hct, _⟩ := Option.map_eq_some_iff.mp hpair
   exact (TyList.wellKindedB_iff c.2).mp (mkCtorFromFields_wellKinded hct) ty hty
 
+
+private theorem mapM_option_projection {f : α → Option β} {project : β → γ}
+    {expected : α → γ} {xs : List α} {ys : List β}
+    (h : xs.mapM f = some ys)
+    (hf : ∀ x y, f x = some y → project y = expected x) :
+    ys.map project = xs.map expected := by
+  induction xs generalizing ys with
+  | nil => simp only [List.mapM_nil, pure, Option.some.injEq] at h; subst ys; rfl
+  | cons x xs ih =>
+    rw [List.mapM_cons] at h
+    cases hx : f x with
+    | none => simp [hx] at h
+    | some y =>
+      cases ht : xs.mapM f with
+      | none => simp [hx, ht] at h
+      | some rest =>
+        simp [hx, ht] at h
+        subst ys
+        simp only [List.map_cons, hf x y hx, ih ht]
+
+/-- Successful elaboration relates the actual returned environment to the
+written declarations, including constructor names, arities, parents and fields. -/
+theorem elabDecls_sound {decls : List DataDecl} {env : CtorEnv}
+    (h : elabDecls decls = some env) : DataDecls.ElaboratesTo decls env := by
+  refine ⟨elabDecls_wellFormed h, ?_⟩
+  unfold elabDecls at h
+  simp only [] at h
+  obtain ⟨_, h⟩ := option_guard_bind h
+  obtain ⟨_, h⟩ := option_guard_bind h
+  obtain ⟨nested, hmap, hreturn⟩ := Option.bind_eq_some_iff.mp h
+  simp only [pure, Option.some.injEq] at hreturn
+  subst env
+  have hsignatures : nested.map CtorEnv.signatures =
+      decls.map (fun decl => decl.ctors.map fun ctor =>
+        (ctor.1, (decl.paramCount, decl.name, ctor.2))) := by
+    apply mapM_option_projection hmap
+    intro decl entries hentries
+    apply mapM_option_projection hentries
+    intro ctor entry hentry
+    obtain ⟨core, hc, rfl⟩ := Option.map_eq_some_iff.mp hentry
+    exact congrArg (fun signature => (ctor.1, signature)) (mkCtorFromFields_signature hc)
+  simpa only [CtorEnv.signatures, DataDecls.constructorSignatures, List.map_flatten]
+    using congrArg List.flatten hsignatures
 
 /-! ### 6b. Completeness: a well-formed declaration group elaborates. -/
 
@@ -367,6 +464,16 @@ theorem elabDecls_complete {decls : List DataDecl} (h : DataDecls.WF decls) :
   obtain ⟨nested, hnested⟩ := Option.isSome_iff_exists.mp hOuter
   rw [hnested]
   rfl
+
+
+/-- The elaborator's complete result graph is exactly the declarative contract. -/
+theorem elabDecls_eq_some_iff {decls : List DataDecl} {env : CtorEnv} :
+    elabDecls decls = some env ↔ DataDecls.ElaboratesTo decls env := by
+  constructor
+  · exact elabDecls_sound
+  · intro h
+    obtain ⟨actual, ha⟩ := Option.isSome_iff_exists.mp (elabDecls_complete h.wellFormed)
+    exact (elabDecls_sound ha).unique h ▸ ha
 
 
 /-! ### 7. A fixed prelude, elaborated through the checker. -/

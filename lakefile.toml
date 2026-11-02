@@ -9,6 +9,7 @@ roots = [
   "FHM.Core",
   "FHM.CorePath",
   "FHM.Decls",
+  "FHM.DeclsTests",
   "FHM.SurfaceLang",
   "FHM.Surface.Token",
   "FHM.Surface.Span",
