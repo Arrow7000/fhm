@@ -21,7 +21,8 @@ namespace Headlines
 
 /-! ## Core runtime type safety -/
 
-#check @TypeOfHM.type_safety_star
+#check @RuntimeTyping.RunWT.progress
+#check @RuntimeTyping.RunWT.preservation
 
 /-! ### Surface lowering into canonical inference input
 
@@ -349,67 +350,20 @@ example {decls : List DataDecl} {env : CtorEnv} :
   elabDecls_eq_some_iff
 
 
-/-! ## Universal properties: inversion / canonical-forms lemmas
+/-! ## Source inversion and runtime canonical forms -/
 
-A typing relation earns its keep partly through its INVERSIONS: given a typed
-term of a known shape, what must be true of its subterms? These read as the
-"reverse" of the typing rules and are the everyday workhorses of any proof
-that inducts over a typed term (progress, preservation, the pattern-compiler
-bridge). Most are `intro; cases` — the relation was DESIGNED to make them
-free, so their triviality is a feature, not a shortcut. -/
+/-- Application typing records the argument type shared by its two premises. -/
+theorem InputTyping_app_inv {ctx : Ctx} {fn arg : InferInput} {ty : Ty}
+    (h : InputTyping ctx (.app fn arg) ty) :
+    ∃ param, InputTyping ctx fn (.arrow param ty) ∧ InputTyping ctx arg param := by
+  cases h with | app hf ha => exact ⟨_, hf, ha⟩
 
-/-- Inverting `.app`: if `f x` types at `τ`, `f` types at some `argTy → τ` and
-    `x` types at that same `argTy`. -/
-theorem TypeOfHM_app_inv {ctx : Ctx} {f x : Expr} {τ : Ty}
-    (h : TypeOfHM ctx (.app f x) τ) :
-    ∃ argTy, TypeOfHM ctx f (.arrow argTy τ) ∧ TypeOfHM ctx x argTy := by
-  cases h with | app hf hx => exact ⟨_, hf, hx⟩
-
-/-- Inverting `.lambda`: a typed lambda's type MUST be an arrow, its param
-    annotation (if present) MUST pin the arrow's domain, and the body types at
-    the codomain under the extended context. -/
-theorem TypeOfHM_lambda_inv {ctx : Ctx} {ann : Option Ty} {body : Expr} {τ : Ty}
-    (h : TypeOfHM ctx (.lambda ann body) τ) :
-    ∃ paramTy bodyTy, τ = .arrow paramTy bodyTy ∧ paramTy.IsLC ∧ ann.Pins paramTy ∧
-      TypeOfHM { ctx with env := PolyTy.mkTrivial paramTy :: ctx.env } body bodyTy := by
-  cases h with
-  | lambda hlc hpins heq hbody => exact ⟨_, _, rfl, hlc, hpins, heq ▸ hbody⟩
-
-/-- Inverting the Core-level pair `.app (.app (.ctor cPair) a) b`: unfolds to
-    the pairing constructor applied to well-typed `a`/`b`. Two `TypeOfHM_app_inv`
-    steps, peeling one `.app` at a time. -/
-theorem TypeOfHM_pair_inv {ctx : Ctx} {a b : Expr} {τ : Ty}
-    (h : TypeOfHM ctx (.app (.app (.ctor cPair) a) b) τ) :
-    ∃ τa τb, TypeOfHM ctx (.ctor cPair) (.arrow τa (.arrow τb τ)) ∧
-      TypeOfHM ctx a τa ∧ TypeOfHM ctx b τb := by
-  obtain ⟨τb, hf, hb⟩ := TypeOfHM_app_inv h
-  obtain ⟨τa, hc, ha⟩ := TypeOfHM_app_inv hf
-  exact ⟨τa, τb, hc, ha, hb⟩
-
-/-- Inverting `.letIn`: a typed `let` MUST come from a generalised scheme `M`
-    that is well-formed, matches the (optional) annotation, generalises the
-    bound expression cofinitely, and whose opened form types the body. -/
-theorem TypeOfHM_letIn_inv {ctx : Ctx} {ann : Option PolyTy} {boundExpr body : Expr}
-    {τ : Ty} (h : TypeOfHM ctx (.letIn ann boundExpr body) τ) :
-    ∃ (M : PolyTy) (L : List Nat),
-      PolyTy.WF M ∧ ann.Pins M ∧ GeneralisesTo TypeOfHM ctx ann boundExpr M L ∧
-      TypeOfHM { ctx with env := M :: ctx.env } body τ := by
-  cases h with
-  | letIn hwf hpins hgen heq hbody => exact ⟨_, _, hwf, hpins, hgen, heq ▸ hbody⟩
-
-/-! ### Canonical forms (re-exported)
-
-The dual of inversion at the VALUE level: a well-typed *value* of a known type
-shape must have one of a small enumerable set of head forms.
-`TypeOfHM.canonical_arrow` says an arrow-typed value is a lambda, a
-constructor chain, a bare primop, or a partially-applied primop.
-`TypeOfHM.ctor_chain_inversion` is the keystone both progress and
-preservation's `match_` case lean on: a well-typed constructor chain
-decomposes into its head constructor applied to well-typed, correctly
-instantiated arguments. -/
-#check @TypeOfHM.canonical_arrow
-#check @TypeOfHM.ctor_chain_inversion
-
+#check @InputTyping.lambda_inv
+#check @InputTyping.rec_inv
+#check @InputTyping.template_completion
+#check @InputTyping.partialSignature_completion
+#check @RuntimeTyping.RunWT.canonical_arrow
+#check @RuntimeTyping.RunWT.ctor_chain_inversion
 
 /-! ## The composable safe pipeline
 
@@ -558,11 +512,10 @@ guards live in `FHM.Headlines.CompleteCore`. -/
 #print axioms inferWithTypes_accepts_iff
 #print axioms inferWithTypes_principal
 
--- Clean: this file's own inversion lemmas.
-#print axioms TypeOfHM_app_inv           -- expect {propext, Quot.sound}
-#print axioms TypeOfHM_lambda_inv        -- expect {propext, Quot.sound}
-#print axioms TypeOfHM_pair_inv          -- expect {propext, Quot.sound}
-#print axioms TypeOfHM_letIn_inv         -- expect {propext, Quot.sound}
+-- Source inversion and annotation-local completion witnesses.
+#print axioms InputTyping_app_inv
+#print axioms InputTyping.lambda_inv
+#print axioms InputTyping.rec_inv
 
 -- Closed: operational bridge (erased-dynamics lemmas proved in FHM.InferW).
 #print axioms runSafe                    -- expect {propext, Classical.choice, Quot.sound}

@@ -1045,6 +1045,79 @@ theorem RunWT.regular {ctx : Ctx} {e : Expr} {ty : Ty}
   | wildcard _ ihbody => exact ihbody
 
 /-- A term typed at a monotype inhabits its trivial scheme. -/
+private theorem mem_zip_left_runtime {α β : Type _} {left : List α} {right : List β}
+    (hlen : left.length = right.length) {a : α} (ha : a ∈ left) :
+    ∃ b, (a, b) ∈ left.zip right := by
+  induction left generalizing right with
+  | nil => cases ha
+  | cons x xs ih =>
+    cases right with
+    | nil => simp at hlen
+    | cons y ys =>
+      simp only [List.length_cons, Nat.add_right_cancel_iff] at hlen
+      rcases List.mem_cons.mp ha with rfl | ha
+      · exact ⟨y, List.mem_cons_self⟩
+      · obtain ⟨b, hb⟩ := ih hlen ha
+        exact ⟨b, List.mem_cons_of_mem _ hb⟩
+
+/-- Runtime typing scopes every term variable by its actual environment. -/
+theorem RunWT.varsBelow {ctx : Ctx} {e : Expr} {ty : Ty}
+    (h : RunWT ctx e ty) : e.varsBelow ctx.env.length = true := by
+  induction h using RunWT.rec
+      (motive_2 := fun ctx branch _ _ _ =>
+        branch.2.varsBelow (ctx.env.length + branch.1.bindCount) = true) with
+  | primLitUnit | primLitInt | primLitNat | primLitChar
+  | primBinOpIntAdd | primBinOpIntSub | primBinOpIntLt | primBinOpCharLt | ctor => rfl
+  | var hlook _ _ =>
+    exact decide_eq_true (List.getElem?_eq_some_iff.mp hlook).1
+  | lambda _ _ ih => simpa only [Expr.varsBelow, List.length_cons] using ih
+  | app _ _ ihf iha => exact (Bool.and_eq_true _ _).mpr ⟨ihf, iha⟩
+  | letIn _ _ _ ihr ihb =>
+    expose_names
+    obtain ⟨names, hl, hn, hf⟩ := exists_fresh_names avoid scheme.paramCount
+    exact (Bool.and_eq_true _ _).mpr ⟨ihr names ⟨hl, hn, hf⟩, ihb⟩
+  | match_ _ _ _ ihs ihbs =>
+    refine (Bool.and_eq_true _ _).mpr ⟨ihs, ?_⟩
+    expose_names
+    have assemble : ∀ (depth : Nat) (brs : List (MatchPattern × Expr)),
+        (∀ branch ∈ brs, branch.2.varsBelow (depth + branch.1.bindCount) = true) →
+        BranchListClosed.varsBelow depth brs = true := by
+      intro depth brs
+      induction brs with
+      | nil => intro _; rfl
+      | cons branch rest ih =>
+        intro hbrs
+        exact (Bool.and_eq_true _ _).mpr ⟨hbrs branch List.mem_cons_self,
+          ih (fun b hb => hbrs b (List.mem_cons_of_mem _ hb))⟩
+    exact assemble _ branches ihbs
+  | @letRec bindings ctx body resultTy specs pool avoid hwf _ _ _ ihm ihp ihb =>
+    refine (Bool.and_eq_true _ _).mpr ⟨?_, ?_⟩
+    · apply RecGroupClosed.varsBelow_of_forall
+      intro binding hb
+      obtain ⟨spec, hs⟩ := mem_zip_left_runtime hwf.length hb
+      cases spec with
+      | mono ty =>
+        obtain ⟨names, hl, hn, hf⟩ := exists_fresh_names avoid pool.length
+        have ht := ihm names ⟨hl, hn, hf⟩ (binding, .mono ty) hs ty rfl
+        simpa only [RecSpecs.bodyCtx, List.length_append, List.length_map,
+          ← hwf.length, Nat.add_comm] using ht
+      | poly scheme =>
+        obtain ⟨names, hl, hn, hf⟩ := exists_fresh_names avoid scheme.paramCount
+        have ht := ihp (binding, .poly scheme) hs scheme rfl names ⟨hl, hn, hf⟩
+        simpa only [RecSpecs.bodyCtx, List.length_append, List.length_map,
+          ← hwf.length, Nat.add_comm] using ht
+    · simpa only [RecSpecs.bodyCtx, List.length_append, List.length_map,
+        ← hwf.length, Nat.add_comm] using ihb
+  | mk hs _ ih =>
+    expose_names
+    have hlen : instContents.length = n := hs.fields.length_eq.symm.trans hs.bind_count.symm
+    simpa only [List.length_append, List.length_map, MatchPattern.bindCount,
+      hlen, Nat.add_comm] using ih
+  | wildcard _ ih => simpa only [MatchPattern.bindCount, Nat.add_zero] using ih
+
+theorem RunWT.closed {ctors : CtorEnv} {e : Expr} {ty : Ty}
+    (h : RunWT ⟨[], ctors⟩ e ty) : e.varsBelow 0 = true := h.varsBelow
+
 theorem RunHasScheme.ofTrivial {ctx : Ctx} {value : Expr} {ty : Ty}
     (h : RunWT ctx value ty) :
     RunHasScheme ctx value (PolyTy.mkTrivial ty) := by
