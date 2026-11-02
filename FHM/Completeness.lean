@@ -846,7 +846,7 @@ theorem Infer.sourcePrincipal_primLitUnit :
     Infer.SourcePrincipal (K := K) (F := F) (frontier := frontier) (ctx := ctx)
       (input := (.primLit .unit)) (.primLitUnit) := by
   intro _ _ _ _ ambient target P hAmbient _ hFix _ ht
-  have hc := ht.primLit_core
+  have hc := ht.primLit_runtime
   cases hc
   refine ⟨ambient, hAmbient, ?_, hFix, fun _ _ => rfl⟩
   simp only [Subst.onTy_prim]
@@ -855,7 +855,7 @@ theorem Infer.sourcePrincipal_primLitInt :
     Infer.SourcePrincipal (K := K) (F := F) (frontier := frontier) (ctx := ctx)
       (input := (.primLit (.int value))) (.primLitInt) := by
   intro _ _ _ _ ambient target P hAmbient _ hFix _ ht
-  have hc := ht.primLit_core
+  have hc := ht.primLit_runtime
   cases hc
   refine ⟨ambient, hAmbient, ?_, hFix, fun _ _ => rfl⟩
   simp only [Subst.onTy_prim]
@@ -864,7 +864,7 @@ theorem Infer.sourcePrincipal_primLitNat :
     Infer.SourcePrincipal (K := K) (F := F) (frontier := frontier) (ctx := ctx)
       (input := (.primLit (.nat value))) (.primLitNat) := by
   intro _ _ _ _ ambient target P hAmbient _ hFix _ ht
-  have hc := ht.primLit_core
+  have hc := ht.primLit_runtime
   cases hc
   refine ⟨ambient, hAmbient, ?_, hFix, fun _ _ => rfl⟩
   simp only [Subst.onTy_prim]
@@ -873,7 +873,7 @@ theorem Infer.sourcePrincipal_primLitChar :
     Infer.SourcePrincipal (K := K) (F := F) (frontier := frontier) (ctx := ctx)
       (input := (.primLit (.char value))) (.primLitChar) := by
   intro _ _ _ _ ambient target P hAmbient _ hFix _ ht
-  have hc := ht.primLit_core
+  have hc := ht.primLit_runtime
   cases hc
   refine ⟨ambient, hAmbient, ?_, hFix, fun _ _ => rfl⟩
   simp only [Subst.onTy_prim]
@@ -882,7 +882,7 @@ theorem Infer.sourcePrincipal_primBinOpIntAdd :
     Infer.SourcePrincipal (K := K) (F := F) (frontier := frontier) (ctx := ctx)
       (input := (.primBinOp .intAdd)) (.primBinOpIntAdd) := by
   intro _ _ _ _ ambient target P hAmbient _ hFix _ ht
-  have hc := ht.primBinOp_core
+  have hc := ht.primBinOp_runtime
   cases hc
   refine ⟨ambient, hAmbient, ?_, hFix, fun _ _ => rfl⟩
   simp only [Subst.onTy_prim, Subst.onTy_arrow]
@@ -891,7 +891,7 @@ theorem Infer.sourcePrincipal_primBinOpIntSub :
     Infer.SourcePrincipal (K := K) (F := F) (frontier := frontier) (ctx := ctx)
       (input := (.primBinOp .intSub)) (.primBinOpIntSub) := by
   intro _ _ _ _ ambient target P hAmbient _ hFix _ ht
-  have hc := ht.primBinOp_core
+  have hc := ht.primBinOp_runtime
   cases hc
   refine ⟨ambient, hAmbient, ?_, hFix, fun _ _ => rfl⟩
   simp only [Subst.onTy_prim, Subst.onTy_arrow]
@@ -902,7 +902,7 @@ theorem Infer.sourcePrincipal_primBinOpIntLt
     Infer.SourcePrincipal (K := K) (F := F) (frontier := frontier) (ctx := ctx)
       (input := (.primBinOp .intLt)) (.primBinOpIntLt hTrue hTrueBool hFalse hFalseBool) := by
   intro _ _ _ _ ambient target P hAmbient _ hFix _ ht
-  have hc := ht.primBinOp_core
+  have hc := ht.primBinOp_runtime
   cases hc
   refine ⟨ambient, hAmbient, ?_, hFix, fun _ _ => rfl⟩
   simp only [Subst.onTy_prim, Subst.onTy_arrow, Subst.onTy_customTy, List.map_nil]
@@ -913,7 +913,7 @@ theorem Infer.sourcePrincipal_primBinOpCharLt
     Infer.SourcePrincipal (K := K) (F := F) (frontier := frontier) (ctx := ctx)
       (input := (.primBinOp .charLt)) (.primBinOpCharLt hTrue hTrueBool hFalse hFalseBool) := by
   intro _ _ _ _ ambient target P hAmbient _ hFix _ ht
-  have hc := ht.primBinOp_core
+  have hc := ht.primBinOp_runtime
   cases hc
   refine ⟨ambient, hAmbient, ?_, hFix, fun _ _ => rfl⟩
   simp only [Subst.onTy_prim, Subst.onTy_arrow, Subst.onTy_customTy, List.map_nil]
@@ -922,7 +922,7 @@ theorem Infer.sourcePrincipal_var {ctx : Ctx}
     (hlook : ctx.env[index]? = some scheme) :
     Infer.SourcePrincipal (K := K) (F := F) (frontier := frontier) (.var hlook) := by
   intro hwf hbelow _ _ ambient target P hAmbient hP hFix _ ht
-  have hc := ht.var_core
+  have hc := ht.var_runtime
   cases hc with
   | @var _ candidate args _ _ hCandidate hArgs hInst =>
     have hLookup : (ambient.onCtx ctx).env[index]? = some (ambient.onPolyTy scheme) := by
@@ -937,7 +937,7 @@ theorem Infer.sourcePrincipal_ctor {ctx : Ctx} {ctor : Ctor}
     (hlook : LookupList.get? ctx.ctors name = some ctor) :
     Infer.SourcePrincipal (K := K) (F := F) (frontier := frontier) (.ctor hlook) := by
   intro _ _ _ _ ambient target P hAmbient hP hFix _ ht
-  have hc := ht.ctor_core
+  have hc := ht.ctor_runtime
   cases hc with
   | @ctor _ candidate args _ _ hCandidate hArgs hInst =>
     change LookupList.get? ctx.ctors name = some candidate at hCandidate
@@ -7135,15 +7135,15 @@ theorem inferRequest_sourceComplete_primBinOp (op : PrimBinOp)
     (InferRequest.mk K F frontier ctx (.primBinOp op)).SourceComplete := by
   intro ambient target P hreq _ _ _ _ ht
   rw [InferRequest.run_isSome_worker]
-  have hc := ht.primBinOp_core
+  have hc := ht.primBinOp_runtime
   cases hc with
   | primBinOpIntAdd | primBinOpIntSub =>
     simp only [inferWithTypesCore, dif_pos (rigid_all hreq.protectedBelow),
       dif_pos (ctx_all hreq.ctxBelow), dif_pos (soft_all hreq.softBelow),
       dif_pos (source_all hreq.sourceScope), Option.isSome_some]
   | primBinOpIntLt hTrue hFalse | primBinOpCharLt hTrue hFalse =>
-    obtain ⟨trueC, hTrueLook, hTrueBool⟩ := Ctor.isBoolCtor_of_typeOfHM hTrue
-    obtain ⟨falseC, hFalseLook, hFalseBool⟩ := Ctor.isBoolCtor_of_typeOfHM hFalse
+    obtain ⟨trueC, hTrueLook, hTrueBool⟩ := Ctor.isBoolCtor_of_runtimeTyping hTrue
+    obtain ⟨falseC, hFalseLook, hFalseBool⟩ := Ctor.isBoolCtor_of_runtimeTyping hFalse
     change LookupList.get? ctx.ctors _ = _ at hTrueLook hFalseLook
     rw [inferWithTypesCore, dif_pos (rigid_all hreq.protectedBelow),
       dif_pos (ctx_all hreq.ctxBelow), dif_pos (soft_all hreq.softBelow),
@@ -7164,7 +7164,7 @@ theorem inferRequest_sourceComplete_var (index : Nat)
     (InferRequest.mk K F frontier ctx (.var index)).SourceComplete := by
   intro ambient target P hreq _ _ _ _ ht
   rw [InferRequest.run_isSome_worker]
-  have hc := ht.var_core
+  have hc := ht.var_runtime
   cases hc with
   | var hCandidate _ _ =>
     cases hlook : ctx.env[index]? with
@@ -7182,7 +7182,7 @@ theorem inferRequest_sourceComplete_ctor (name : CtorName)
     (InferRequest.mk K F frontier ctx (.ctor name)).SourceComplete := by
   intro ambient target P hreq _ _ _ _ ht
   rw [InferRequest.run_isSome_worker]
-  have hc := ht.ctor_core
+  have hc := ht.ctor_runtime
   cases hc with
   | ctor hlook _ _ =>
     change LookupList.get? ctx.ctors name = _ at hlook

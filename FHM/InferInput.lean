@@ -2280,113 +2280,7 @@ end
 
 section
 
-/-- Every declaratively typed Core expression has correctly scoped type annotations. -/
-theorem TypeOfHM.tyBvarBounded {ctx : Ctx} {expr : Expr} {ty : Ty}
-    (h : TypeOfHM ctx expr ty) : expr.TyBvarBounded 0 := by
-  induction h using TypeOfHM.rec
-      (motive_2 := fun _ branch _ _ _ => branch.2.TyBvarBounded 0) with
-  | primLitUnit => trivial
-  | primLitInt => trivial
-  | primLitNat => trivial
-  | primLitChar => trivial
-  | primBinOpIntAdd => trivial
-  | primBinOpIntSub => trivial
-  | primBinOpIntLt _ _ _ _ => trivial
-  | primBinOpCharLt _ _ _ _ => trivial
-  | var _ _ _ => trivial
-  | ctor _ _ _ => trivial
-  | lambda hpc hann _ _ ihbody =>
-    exact ⟨fun t ht => (hann t ht) ▸ hpc, ihbody⟩
-  | app _ _ ihf iharg => exact ⟨ihf, iharg⟩
-  | letIn hwf hann _ _ _ ihcofin ihbody =>
-    expose_names
-    obtain ⟨Xs, hlen, hnodup, havoid⟩ := exists_fresh_names L M.paramCount
-    have hrhs := ihcofin Xs ⟨hlen, hnodup, havoid⟩
-    cases ann with
-    | none => exact ⟨hrhs, ihbody⟩
-    | some σ =>
-      have hM : M = σ := hann σ rfl
-      subst M
-      refine ⟨by simpa only [Nat.zero_add] using hwf, ?_, ihbody⟩
-      have hb := Expr.tyBvarBounded_of_openTyVarsAux Xs boundExpr 0 hrhs
-      simpa only [Nat.zero_add, hlen] using hb
-  | match_ _ _ _ ihscrut ihbranches =>
-    refine ⟨ihscrut, Expr.TyBvarBounded.BranchList_iff.mpr ?_⟩
-    intro p b hb
-    exact ihbranches (p, b) hb
-  | mk _ _ _ ihbody => exact ihbody
-  | wildcard _ ihbody => exact ihbody
-  | letRec hvalid hwf _ _ _ _ ihmono ihpoly ihbody =>
-    expose_names
-    have hbound : ∀ pair ∈ bindings.zip specs,
-        pair.1.rhs.TyBvarBounded (RecAnn.params pair.2.ann) := by
-      rintro ⟨binding, spec⟩ hpair
-      cases spec with
-      | mono τ =>
-        obtain ⟨member, hlookup⟩ := List.mem_iff_getElem?.mp hpair
-        rw [List.getElem?_zip_eq_some] at hlookup
-        obtain ⟨hrhs, hspec⟩ := hlookup
-        have hmember : member < bindings.length :=
-          (List.getElem?_eq_some_iff.mp hrhs).choose
-        have hunsigned : RecGroups.UnsignedAt bindings member := by
-          rw [RecGroups.UnsignedAt]
-          have hlookup := congrArg (fun xs => xs[member]?) hwf.anns_eq
-          simpa only [List.getElem?_map, hspec, hrhs] using hlookup.symm
-        obtain ⟨component, hc, hm⟩ := List.mem_flatten.mp
-          ((hvalid.covers_unsigned member hmember).mpr hunsigned)
-        obtain ⟨stage, hstage⟩ := List.mem_iff_getElem?.mp hc
-        obtain ⟨Xs, hlen, hnodup, havoid⟩ := exists_fresh_names L G.length
-        exact ihmono stage component hstage Xs ⟨hlen, hnodup, havoid⟩
-          member hm binding τ hrhs hspec
-      | poly σ =>
-        obtain ⟨Ys, hlen, hnodup, havoid⟩ := exists_fresh_names L σ.paramCount
-        have hopen := ihpoly (binding, .poly σ) hpair σ rfl Ys ⟨hlen, hnodup, havoid⟩
-        have hb := Expr.tyBvarBounded_of_openTyVarsAux Ys binding.rhs 0 hopen
-        simpa only [Nat.zero_add, hlen, RecSpec.ann, RecAnn.params] using hb
-    refine ⟨?_, ihbody⟩
-    have hannBound : ∀ binding ∈ bindings, ∀ σ, binding.ann = some σ →
-        ContainsBvarsUpTo σ.paramCount σ.body := by
-      intro binding hbinding σ hann
-      have hmem : some σ ∈ bindings.map RecBinding.ann :=
-        List.mem_map.mpr ⟨binding, hbinding, hann⟩
-      rw [← hwf.anns_eq] at hmem
-      obtain ⟨spec, hspec, heq⟩ := List.mem_map.mp hmem
-      have : spec = .poly σ := RecSpec.ann_eq_some heq
-      subst spec
-      exact hwf.poly_wf σ hspec
-    have hgroup : ∀ (bs : List CoreRecBinding) (ss : List RecSpec),
-        ss.map RecSpec.ann = bs.map RecBinding.ann →
-        (∀ binding ∈ bs, ∀ σ, binding.ann = some σ →
-          ContainsBvarsUpTo σ.paramCount σ.body) →
-        (∀ pair ∈ bs.zip ss, pair.1.rhs.TyBvarBounded (RecAnn.params pair.2.ann)) →
-        Expr.TyBvarBounded.RecGroup 0 bs := by
-      intro bs
-      induction bs with
-      | nil => intro ss _ _ _; trivial
-      | cons binding rest ih =>
-          intro ss hanns hann hbs
-          cases ss with
-          | nil => simp at hanns
-          | cons spec specsTail =>
-              rcases binding with ⟨ann, rhs⟩
-              simp only [List.map_cons, List.cons.injEq] at hanns
-              simp only [Expr.TyBvarBounded.RecGroup]
-              refine ⟨?_, ?_, ih specsTail hanns.2 ?_ ?_⟩
-              · intro σ ha
-                simpa only [Nat.zero_add] using
-                  hann ⟨ann, rhs⟩ List.mem_cons_self σ ha
-              · have hb := hbs (⟨ann, rhs⟩, spec) List.mem_cons_self
-                simpa only [hanns.1, Nat.zero_add] using hb
-              · intro binding hbinding
-                exact hann binding (List.mem_cons_of_mem _ hbinding)
-              · intro pair hp
-                exact hbs pair (List.mem_cons_of_mem _ hp)
-    exact hgroup bindings specs hwf.anns_eq hannBound hbound
-
-/-! Closing elaborated RHS annotations under a newly synthesized scheme must
-reopen the term as well as its type. Existing inner scheme binders are shielded.
-The freshness condition below is needed because `substTyFvars` is sequential.
--/
+/-! Neutral type-closing and erased-term substitution facts. -/
 
 private theorem TyList.closeVarsFrom_map (depth : Nat) (names : List Nat)
     (types : List Ty) :
@@ -3538,11 +3432,11 @@ component; only complete written schemes permit polymorphic recursive use.
 -/
 inductive ScopedTyping : List Nat → Ctx → InferInput → Ty → Prop
   | primLit :
-    TypeOfHM ctx (.primLit p) ty →
+    RuntimeTyping.RunWT ctx (.primLit p) ty →
     ScopedTyping K ctx (.primLit p) ty
 
   | primBinOp :
-    TypeOfHM ctx (.primBinOp op) ty →
+    RuntimeTyping.RunWT ctx (.primBinOp op) ty →
     ScopedTyping K ctx (.primBinOp op) ty
 
   | lambda :
@@ -3624,17 +3518,17 @@ inductive ScopedTyping : List Nat → Ctx → InferInput → Ty → Prop
     ScopedTyping K ctx (.letRec bindings body) resultTy
 
 /-- Neutral leaf inversions do not inspect or complete source annotations. -/
-theorem ScopedTyping.primLit_core (h : ScopedTyping K ctx (.primLit p) ty) :
-    TypeOfHM ctx (.primLit p) ty := by cases h with | primLit h => exact h
+theorem ScopedTyping.primLit_runtime (h : ScopedTyping K ctx (.primLit p) ty) :
+    RuntimeTyping.RunWT ctx (.primLit p) ty := by cases h with | primLit h => exact h
 
-theorem ScopedTyping.primBinOp_core (h : ScopedTyping K ctx (.primBinOp op) ty) :
-    TypeOfHM ctx (.primBinOp op) ty := by cases h with | primBinOp h => exact h
+theorem ScopedTyping.primBinOp_runtime (h : ScopedTyping K ctx (.primBinOp op) ty) :
+    RuntimeTyping.RunWT ctx (.primBinOp op) ty := by cases h with | primBinOp h => exact h
 
-theorem ScopedTyping.var_core (h : ScopedTyping K ctx (.var i) ty) :
-    TypeOfHM ctx (.var i) ty := by cases h with | var a b c => exact .var a b c
+theorem ScopedTyping.var_runtime (h : ScopedTyping K ctx (.var i) ty) :
+    RuntimeTyping.RunWT ctx (.var i) ty := by cases h with | var a b c => exact .var a b c
 
-theorem ScopedTyping.ctor_core (h : ScopedTyping K ctx (.ctor name) ty) :
-    TypeOfHM ctx (.ctor name) ty := by cases h with | ctor a b c => exact .ctor a b c
+theorem ScopedTyping.ctor_runtime (h : ScopedTyping K ctx (.ctor name) ty) :
+    RuntimeTyping.RunWT ctx (.ctor name) ty := by cases h with | ctor a b c => exact .ctor a b c
 
 private theorem erasedBranches_eq_map (branches : List (MatchPattern × InferInput)) :
     eraseBranches branches = branches.map (fun branch => (branch.1, branch.2.erase)) := by
@@ -3657,8 +3551,8 @@ theorem ScopedTyping.erase (h : ScopedTyping K ctx input ty) : RuntimeTyping.Run
       (motive_2 := fun K ctx branch scrutTy resultTy _ =>
         RuntimeTyping.RunWTMatchBranch ctx (branch.1, branch.2.erase) scrutTy resultTy) with
 
-  | primLit h => simpa only [Expr.erase] using h.erase_preserves_typing
-  | primBinOp h => simpa only [Expr.erase] using h.erase_preserves_typing
+  | primLit h => simpa only [Expr.erase] using h
+  | primBinOp h => simpa only [Expr.erase] using h
   | lambda hlc _ _ _ ih =>
       simpa only [Expr.erase] using RuntimeTyping.RunWT.lambda hlc ih
   | app _ _ ihf ihx => simpa only [Expr.erase] using RuntimeTyping.RunWT.app ihf ihx
@@ -4010,11 +3904,9 @@ theorem ScopedTyping.onSubst_source {K K' : List Nat} {ctx : Ctx} {input : Infer
             (subst.onTy scrutTy) (subst.onTy resultTy)) generalizing K' with
 
   | primLit htyping =>
-    exact .primLit (TypeOfHM.onSubst_fixed subst hlc
-      (Expr.substTyFvars_eq_self_of_tyFreeVars_nil _ rfl) htyping)
+    exact .primLit (RuntimeTyping.RunWT.onSubst subst hlc htyping)
   | primBinOp htyping =>
-    exact .primBinOp (TypeOfHM.onSubst_fixed subst hlc
-      (Expr.substTyFvars_eq_self_of_tyFreeVars_nil _ rfl) htyping)
+    exact .primBinOp (RuntimeTyping.RunWT.onSubst subst hlc htyping)
   | @lambda ann K ctx body bodyTy paramTy hparam hfit hrigid _ ihbody =>
     simp only [Expr.substSourceTyFvars, Subst.onTy_arrow]
     refine .lambda (Subst.onTy_lc hlc hparam) ?_ ?_ ?_
@@ -4239,13 +4131,11 @@ theorem ScopedTyping.onSubst_source {K K' : List Nat} {ctx : Ctx} {input : Infer
     · rw [hbodyCtx]
       exact ihBody hscope
   | var hlookup hargs hinst =>
-    have ht := TypeOfHM.onSubst_fixed subst hlc
-      (Expr.substTyFvars_eq_self_of_tyFreeVars_nil _ rfl) (.var hlookup hargs hinst)
+    have ht := RuntimeTyping.RunWT.onSubst subst hlc (.var hlookup hargs hinst)
     cases ht with
     | var hl ha hi => exact .var hl ha hi
   | ctor hlookup hargs hinst =>
-    have ht := TypeOfHM.onSubst_fixed subst hlc
-      (Expr.substTyFvars_eq_self_of_tyFreeVars_nil _ rfl) (.ctor hlookup hargs hinst)
+    have ht := RuntimeTyping.RunWT.onSubst subst hlc (.ctor hlookup hargs hinst)
     cases ht with
     | ctor hl ha hi => exact .ctor hl ha hi
   | match_ _ hne _ ihscrut ihbranches =>

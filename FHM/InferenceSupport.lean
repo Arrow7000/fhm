@@ -178,6 +178,23 @@ theorem Subst.onCtx_append (S T : Subst) (ctx : Ctx) :
     (S ++ T).onCtx ctx = T.onCtx (S.onCtx ctx) := by
   simp only [Subst.onCtx, Subst.onEnv_append]
 
+/-- Runtime type substitution keeps the erased term fixed. Source annotation
+substitution and the historical complete-source typing relation are unnecessary. -/
+theorem RuntimeTyping.RunWT.onSubst {ctx : Ctx} {e : Expr} {ty : Ty}
+    (S : Subst) (hlc : ∀ pair ∈ S, pair.2.IsLC) (h : RuntimeTyping.RunWT ctx e ty) :
+    RuntimeTyping.RunWT (S.onCtx ctx) e (S.onTy ty) := by
+  induction S generalizing ctx ty with
+  | nil => simpa only [Subst.onCtx_nil] using h
+  | cons pair rest ih =>
+    rcases pair with ⟨name, replacement⟩
+    have step : RuntimeTyping.RunWT (Subst.onCtx [(name, replacement)] ctx) e
+        (Subst.onTy [(name, replacement)] ty) :=
+      h.substFvar (hlc _ List.mem_cons_self)
+    have remaining := ih (fun pair hp => hlc pair (List.mem_cons_of_mem _ hp)) step
+    rw [show (name, replacement) :: rest = [(name, replacement)] ++ rest from rfl,
+      Subst.onCtx_append, Subst.onTy_append]
+    exact remaining
+
 /-- Iterated annotation substitution composes in the same left-to-right order
     as the substitution threaded by inference. -/
 theorem Expr.substTyFvars_append (S T : Subst) (e : Expr) :
@@ -1169,6 +1186,11 @@ theorem Ctor.IsBoolCtor.typeOfHM {ctx : Ctx} {name : CtorName} {c : Ctor}
     TypeOfHM ctx (.ctor name) (.customTy ⟨"Bool"⟩ []) :=
   .ctor hlook (by simp) hb.instantiatesTo
 
+theorem Ctor.IsBoolCtor.runtimeTyping {ctx : Ctx} {name : CtorName} {c : Ctor}
+    (hlook : LookupList.get? ctx.ctors name = some c) (hb : c.IsBoolCtor) :
+    RuntimeTyping.RunWT ctx (.ctor name) (.customTy ⟨"Bool"⟩ []) :=
+  .ctor hlook (by simp) hb.instantiatesTo
+
 /-- Inversion of a `customTy`-to-`customTy` instantiation: the head name is
     preserved and the argument lists instantiate pointwise. -/
 theorem InstantiatesBy.customTy_inv {tyArgs : List Ty} {n₁ n₂ : TyName} {ts₁ ts₂ : List Ty}
@@ -1199,6 +1221,12 @@ theorem Ctor.IsBoolCtor.of_instantiatesTo {c : Ctor} {tyArgs : List Ty}
     together with its `IsBoolCtor` shape. -/
 theorem Ctor.isBoolCtor_of_typeOfHM {ctx : Ctx} {name : CtorName}
     (h : TypeOfHM ctx (.ctor name) (.customTy ⟨"Bool"⟩ [])) :
+    ∃ c, LookupList.get? ctx.ctors name = some c ∧ c.IsBoolCtor := by
+  cases h with
+  | ctor hlook _ hinst => exact ⟨_, hlook, Ctor.IsBoolCtor.of_instantiatesTo hinst⟩
+
+theorem Ctor.isBoolCtor_of_runtimeTyping {ctx : Ctx} {name : CtorName}
+    (h : RuntimeTyping.RunWT ctx (.ctor name) (.customTy ⟨"Bool"⟩ [])) :
     ∃ c, LookupList.get? ctx.ctors name = some c ∧ c.IsBoolCtor := by
   cases h with
   | ctor hlook _ hinst => exact ⟨_, hlook, Ctor.IsBoolCtor.of_instantiatesTo hinst⟩

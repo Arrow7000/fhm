@@ -140,7 +140,7 @@ inductive InputTyping : Ctx → InferInput → Ty → Prop
     InputTyping (recBodyCtx ctx specs prefixes G) body resultTy →
     InputTyping ctx (.letRec bindings body) resultTy
 
-private theorem source_ctor (h : TypeOfHM ctx (.ctor name) ty) :
+private theorem source_ctor (h : RuntimeTyping.RunWT ctx (.ctor name) ty) :
     InputTyping ctx (.ctor name) ty := by
   cases h with
   | ctor hl ha hi => exact .ctor hl ha hi

@@ -3,8 +3,8 @@ import FHM.Core
 /-!
 # Typing for fully erased runtime terms
 
-`TypeOfHM` specifies which annotated source programs the checker accepts.
-`RunWT` instead types machine terms after every annotation has disappeared.
+`InputTyping` (in `SourceTyping`) specifies canonical source acceptance.
+`RunWT` types machine terms after every annotation has disappeared.
 Its recursive schemes are proof-only witnesses: they are not recoverable from,
 and do not occur in, the `Expr` being evaluated.
 
@@ -14,7 +14,8 @@ runtime rule records the resulting, simpler fact: every row's RHS and the body
 are typed under those final schemes. Stored annotations are operationally inert;
 source erasure replaces them with `none`.
 
-Source typing erases into this judgment. Its substitution and preservation
+Source typing erases into this judgment. The historical `TypeOfHM` erasure
+bridge is retained below for complete-Core compatibility. Substitution and preservation
 theorems then show that evaluation keeps the source program's type, including
 when annotated recursive members instantiate their own schemes differently.
 -/

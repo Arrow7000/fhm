@@ -2683,12 +2683,12 @@ theorem ScopedTyping.weaken {K : List Nat} {ctx : Ctx} {input : InferInput} {ty 
     intro env' hgen
     apply ScopedTyping.primLit
     simpa only [List.append_nil] using
-      TypeOfHM.weaken_schemes (env := []) hgen (by simpa only [List.append_nil] using hcore)
+      RuntimeTyping.RunWT.weaken_schemes (env := []) hgen (by simpa only [List.append_nil] using hcore)
   | primBinOp hcore =>
     intro env' hgen
     apply ScopedTyping.primBinOp
     simpa only [List.append_nil] using
-      TypeOfHM.weaken_schemes (env := []) hgen (by simpa only [List.append_nil] using hcore)
+      RuntimeTyping.RunWT.weaken_schemes (env := []) hgen (by simpa only [List.append_nil] using hcore)
   | lambda hlc hfit hprotected _ ih =>
     intro env' hgen
     refine .lambda hlc hfit hprotected ?_
@@ -2836,7 +2836,7 @@ theorem ScopedTyping.weaken {K : List Nat} {ctx : Ctx} {input : InferInput} {ty 
     rename_i env' hgen
     exact .wildcard (ih hgen)
 
-/-- Segment form matching the existing `TypeOfHM.weaken_schemes` contract. -/
+/-- Segment form matching the existing `RuntimeTyping.RunWT.weaken_schemes` contract. -/
 theorem ScopedTyping.weaken_schemes {K : List Nat} {ctors : CtorEnv} {env : Env}
     {Ms Ms' : List PolyTy} {input : InferInput} {ty : Ty}
     (hgen : List.Forall₂ PolyTy.Generalizes Ms' Ms)
@@ -3950,10 +3950,20 @@ private theorem mem_eraseBindings_local {bindings : List InputRecBinding}
 
   | primLit hcore =>
     intro env' hag
-    exact .primLit (hcore.env_agreement env' (by simpa only [Expr.erase] using hag))
+    cases hcore <;> exact .primLit (by constructor)
   | primBinOp hcore =>
     intro env' hag
-    exact .primBinOp (hcore.env_agreement env' (by simpa only [Expr.erase] using hag))
+    cases hcore with
+    | primBinOpIntAdd => exact .primBinOp .primBinOpIntAdd
+    | primBinOpIntSub => exact .primBinOp .primBinOpIntSub
+    | primBinOpIntLt ht hf =>
+      cases ht with | ctor ht ha hi =>
+        cases hf with | ctor hf hfa hfi =>
+          exact .primBinOp (.primBinOpIntLt (.ctor ht ha hi) (.ctor hf hfa hfi))
+    | primBinOpCharLt ht hf =>
+      cases ht with | ctor ht ha hi =>
+        cases hf with | ctor hf hfa hfi =>
+          exact .primBinOp (.primBinOpCharLt (.ctor ht ha hi) (.ctor hf hfa hfi))
   | lambda hlc hfit hprotected _ ih =>
     intro env' hag
     simp only [Expr.erase, Expr.ForallOuter, Expr.rec_strong, Nat.zero_add, List.length_map] at hag
@@ -6375,18 +6385,18 @@ theorem InferCert.scopedSound_source {request : InferRequest} {result : InferRes
       (request.protectedVars ++ softVars (substSoft result.subst request.soft))
       (result.subst.onCtx request.ctx) (request.input.substSourceTyFvars result.subst) result.ty := by
   match h with
-  | .primLitUnit => simpa only [Subst.onCtx_nil] using (ScopedTyping.primLit (TypeOfHM.primLitUnit (ctx := _)))
-  | .primLitInt => simpa only [Subst.onCtx_nil] using (ScopedTyping.primLit (TypeOfHM.primLitInt (ctx := _)))
-  | .primLitNat => simpa only [Subst.onCtx_nil] using (ScopedTyping.primLit (TypeOfHM.primLitNat (ctx := _)))
-  | .primLitChar => simpa only [Subst.onCtx_nil] using (ScopedTyping.primLit (TypeOfHM.primLitChar (ctx := _)))
-  | .primBinOpIntAdd => simpa only [Subst.onCtx_nil] using (ScopedTyping.primBinOp (TypeOfHM.primBinOpIntAdd (ctx := _)))
-  | .primBinOpIntSub => simpa only [Subst.onCtx_nil] using (ScopedTyping.primBinOp (TypeOfHM.primBinOpIntSub (ctx := _)))
+  | .primLitUnit => simpa only [Subst.onCtx_nil] using (ScopedTyping.primLit (RuntimeTyping.RunWT.primLitUnit (ctx := _)))
+  | .primLitInt => simpa only [Subst.onCtx_nil] using (ScopedTyping.primLit (RuntimeTyping.RunWT.primLitInt (ctx := _)))
+  | .primLitNat => simpa only [Subst.onCtx_nil] using (ScopedTyping.primLit (RuntimeTyping.RunWT.primLitNat (ctx := _)))
+  | .primLitChar => simpa only [Subst.onCtx_nil] using (ScopedTyping.primLit (RuntimeTyping.RunWT.primLitChar (ctx := _)))
+  | .primBinOpIntAdd => simpa only [Subst.onCtx_nil] using (ScopedTyping.primBinOp (RuntimeTyping.RunWT.primBinOpIntAdd (ctx := _)))
+  | .primBinOpIntSub => simpa only [Subst.onCtx_nil] using (ScopedTyping.primBinOp (RuntimeTyping.RunWT.primBinOpIntSub (ctx := _)))
   | .primBinOpIntLt hT ht hF hf =>
-      simpa only [Subst.onCtx_nil] using (ScopedTyping.primBinOp (TypeOfHM.primBinOpIntLt
-        (Ctor.IsBoolCtor.typeOfHM hT ht) (Ctor.IsBoolCtor.typeOfHM hF hf)))
+      simpa only [Subst.onCtx_nil] using (ScopedTyping.primBinOp (RuntimeTyping.RunWT.primBinOpIntLt
+        (Ctor.IsBoolCtor.runtimeTyping hT ht) (Ctor.IsBoolCtor.runtimeTyping hF hf)))
   | .primBinOpCharLt hT ht hF hf =>
-      simpa only [Subst.onCtx_nil] using (ScopedTyping.primBinOp (TypeOfHM.primBinOpCharLt
-        (Ctor.IsBoolCtor.typeOfHM hT ht) (Ctor.IsBoolCtor.typeOfHM hF hf)))
+      simpa only [Subst.onCtx_nil] using (ScopedTyping.primBinOp (RuntimeTyping.RunWT.primBinOpCharLt
+        (Ctor.IsBoolCtor.runtimeTyping hT ht) (Ctor.IsBoolCtor.runtimeTyping hF hf)))
   | .var (scheme := scheme) (frontier := frontier) hlook =>
       simp only [Subst.onCtx_nil]
       refine ScopedTyping.var (scheme := scheme)

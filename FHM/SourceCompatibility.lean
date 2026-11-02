@@ -4,6 +4,23 @@ import FHM.SourceTyping
 structural rules; this optional conversion is not a source typing constructor
 or an inference soundness premise. -/
 
+private theorem complete_ctor_of_runtime (h : RuntimeTyping.RunWT ctx (.ctor name) ty) :
+    TypeOfHM ctx (.ctor name) ty := by
+  cases h with
+  | ctor hl ha hi => exact .ctor hl ha hi
+
+private theorem complete_primLit_of_runtime (h : RuntimeTyping.RunWT ctx (.primLit p) ty) :
+    TypeOfHM ctx (.primLit p) ty := by
+  cases h <;> constructor
+
+private theorem complete_primBinOp_of_runtime (h : RuntimeTyping.RunWT ctx (.primBinOp op) ty) :
+    TypeOfHM ctx (.primBinOp op) ty := by
+  cases h with
+  | primBinOpIntAdd => exact .primBinOpIntAdd
+  | primBinOpIntSub => exact .primBinOpIntSub
+  | primBinOpIntLt ht hf => exact .primBinOpIntLt (complete_ctor_of_runtime ht) (complete_ctor_of_runtime hf)
+  | primBinOpCharLt ht hf => exact .primBinOpCharLt (complete_ctor_of_runtime ht) (complete_ctor_of_runtime hf)
+
 mutual
 theorem PartialCore.Template.toCore_fits_any {template : TyTemplate} {ty : Ty}
     (h : template.toCore = some ty) (holes : PartialCore.HoleAssignment) :
@@ -340,8 +357,12 @@ theorem ScopedTyping.ofComplete {input : InferInput} {K : List Nat} {ctx : Ctx}
     (hscope : ∀ v ∈ core.tyFreeVars, v ∈ K) (ht : TypeOfHM ctx core ty) :
     ScopedTyping K ctx input ty := by
   cases hinput : input <;> simp only [hinput] at hemb
-  case primLit p => cases hemb; exact .primLit ht
-  case primBinOp op => cases hemb; exact .primBinOp ht
+  case primLit p =>
+    cases hemb
+    exact .primLit (by simpa only [Expr.erase] using ht.erase_preserves_typing)
+  case primBinOp op =>
+    cases hemb
+    exact .primBinOp (by simpa only [Expr.erase] using ht.erase_preserves_typing)
   case var i =>
     cases hemb
     cases ht with
@@ -637,8 +658,8 @@ theorem ScopedTyping.toCore (h : ScopedTyping K ctx input ty) {core : Expr}
           TypeOfMatchBranch ctx (branch.1, body) scrutTy resultTy ∧
             (∀ v ∈ body.tyFreeVars, v ∈ K)) generalizing core with
 
-  | primLit ht => cases hc; exact ⟨ht, by simp [Expr.tyFreeVars]⟩
-  | primBinOp ht => cases hc; exact ⟨ht, by simp [Expr.tyFreeVars]⟩
+  | primLit ht => cases hc; exact ⟨complete_primLit_of_runtime ht, by simp [Expr.tyFreeVars]⟩
+  | primBinOp ht => cases hc; exact ⟨complete_primBinOp_of_runtime ht, by simp [Expr.tyFreeVars]⟩
   | @lambda ann _ _ body _ param hlc hfits hrigid _ ih =>
     simp only [Expr.toCore, bind, pure, Option.bind_eq_some_iff, Option.some.injEq] at hc
     obtain ⟨ann', ha, body', hb, rfl⟩ := hc
