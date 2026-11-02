@@ -109,15 +109,14 @@ FHM's recursion rules with GHC, OCaml, F#, Elm and Standard ML.
 
 All of the following are machine-checked, with no `sorry` and only Lean's
 standard axioms. [`FHM/Headlines.lean`](./FHM/Headlines.lean) gathers the
-canonical production theorems. The opt-in
-[`FHM/Headlines/CompleteCore.lean`](./FHM/Headlines/CompleteCore.lean) preserves
-the earlier complete-Core surface-safety façade and demonstration.
+canonical production theorems.
 
 | Claim                                                                                                                                              | Main theorems                                                             |
 | -------------------------------------------------------------------------------------------------------------------------------------------------- | ------------------------------------------------------------------------- |
 | **Runtime type safety:** a closed, well-typed, erased term with exhaustive matches is a value or can step; steps preserve its type. | `RuntimeTyping.RunWT.progress`, `RuntimeTyping.RunWT.preservation`, `InputTyping.erase` |
 | **Complete-Core surface safety:** a well-typed, exhaustive surface program accepted by the Core lowering bridge never gets stuck.                  | `program_type_safe`, `surface_type_safe`                                  |
 | **Surface lowering preserves partial annotations:** the structural lowering relation and executable lowerer agree on canonical `InferInput`, including holes, heads, patterns, and recursive groups. | `lower_sound`/`lower_complete`, `lowerProgram_sound`/`lowerProgram_complete` |
+| **Surface program safety:** an accepted, exhaustive partial-source program retains the actual returned type and makes progress throughout finite execution. | `SurfaceBridge.program_type_safe` |
 | **Canonical inference is sound:** successful inference directly proves partial-source typing; erasure of the original source gives runtime typing. | `InferCert.inputSound_source`, `InferCert.inputSound`, `InputTyping.erase`, `inferWithTypes_runtime_sound` |
 | **Canonical inference is complete and principal:** inference accepts exactly independently well-typed partial inputs, and every valid result type factors through the inferred type. | `Infer.principal`, `Infer.complete`, `inferCore_accepts_iff`, `inferWithTypes_accepts_iff` |
 | **Complete Core uses the same inference engine:** `Expr.ofCore` preserves source typing, acceptance, and residual principality. | `SurfaceBridge.coreTypecheck_accepts_iff`, `SurfaceBridge.inferOfCore_source_sound`, `SurfaceBridge.inferOfCore_principal` |
@@ -144,7 +143,7 @@ is in [`lean-toolchain`](./lean-toolchain).
 ```bash
 lake exe cache get   # download prebuilt Mathlib (avoids compiling it locally)
 lake build           # check the production verified library
-lake build FHMCompatibility FHMExamples FHMHistorical  # opt-in compatibility, examples, artifacts
+lake build FHMExamples FHMHistorical  # executable examples and independent historical prototypes
 lake build fhm       # build the fhm executable
 ```
 
@@ -225,8 +224,8 @@ the unbounded CLI evaluator.
 
 `SurfaceBridge` contains the shared structural traversal and its production
 specialization, which preserves partial annotations in `InferInput`.
-`FHM.SurfaceBridge.CompleteCore` is an explicit opt-in compatibility module for
-the older complete-Core specialization and its source-typing and safety theory.
+The former complete-Core lowering and `TypeOfHM` compatibility API have been
+removed. Source typing, inference and runtime safety use the canonical path.
 
 The design choices that matter most:
 
@@ -235,9 +234,8 @@ The design choices that matter most:
 - **Declarative and algorithmic typing are kept separate.** `InputTyping`
   specifies canonical partial source using pure annotation matching. Named-hole
   assignments are existential and local to each annotation. Only inference
-  allocates metavariables. `TypeOfHM` supports historical complete-Core clients
-  behind optional compatibility imports; they reuse inference via `Expr.ofCore`.
-  The default verified environment contains no `TypeOfHM` declaration.
+  allocates metavariables. There is no completed annotated AST in the inference
+  result or semantic proof chain.
 - **Type variables use a locally nameless representation** with cofinite
   quantification, following
   [Charguéraud's formalisation of mini-ML](https://github.com/charguer/formalmetacoq).
@@ -250,27 +248,25 @@ The design choices that matter most:
 | Module                                           | Contents                                                                         |
 | ------------------------------------------------ | -------------------------------------------------------------------------------- |
 | [`Core.lean`](./FHM/Core.lean)                   | Types, Scheme T, Expr T, partial annotations and runtime semantics |
-| [`InferenceSupport.lean`](./FHM/InferenceSupport.lean) | Shared unification, generalization, scheduling, and runtime safety lemmas       |
+| [`InferenceFoundations.lean`](./FHM/InferenceFoundations.lean) | Shared unification, generalization, scheduling, and runtime safety lemmas       |
 | [`AnnotationMatching.lean`](./FHM/AnnotationMatching.lean) | Pure local hole assignments, matching, closed completions, substitution and opening |
 | [`AnnotationAllocation.lean`](./FHM/AnnotationAllocation.lean) | Shared certified hole allocation/checking, independent of generalization policy |
 | [`SourceAnnotations.lean`](./FHM/SourceAnnotations.lean) | Written schemes, derived checking views, substitution and opening |
-| [`InferInput.lean`](./FHM/InferInput.lean)       | Source operations, scoped inference proof refinement, optional complete projection |
+| [`SourceSupport.lean`](./FHM/SourceSupport.lean)       | Source operations, annotation premises, scoped proof refinement and recursive inference state |
 | [`SourceTyping.lean`](./FHM/SourceTyping.lean)   | Main source judgment `InputTyping`, direct erasure and scope refinement equivalence |
-| [`SourceCompatibility.lean`](./FHM/SourceCompatibility.lean) | Derived complete-Core conversion, outside the source soundness path |
-| [`Compatibility/`](./FHM/Compatibility/) | Opt-in historical typing definition, erasure bridge, regularity and term weakening |
 | [`InferW.lean`](./FHM/InferW.lean)               | The sole inference judgment and worker, bounds, soundness, and fidelity         |
 | [`Completeness.lean`](./FHM/Completeness.lean)   | Principality and executable completeness for that same worker                   |
 | [`RuntimeTyping.lean`](./FHM/RuntimeTyping.lean) | Typing for erased runtime terms, used to prove progress and preservation         |
 | [`SurfaceLang.lean`](./FHM/SurfaceLang.lean)     | Surface syntax tree                                                              |
 | [`SurfaceBridge.lean`](./FHM/SurfaceBridge.lean) | Head normalization, annotation-preserving `InferInput` lowering, SCCs, and coverage |
-| [`SurfaceBridge/CompleteCore.lean`](./FHM/SurfaceBridge/CompleteCore.lean) | Opt-in complete-Core lowering, structural surface typing, and safety theory |
+| [`SurfaceSafety.lean`](./FHM/SurfaceSafety.lean) | Coverage transfer to source erasure and runtime safety of the actual inferred program |
 | [`PatComp.lean`](./FHM/PatComp.lean)             | Pattern-match compiler and its correctness proofs                                |
 | [`Scc/Kosaraju.lean`](./FHM/Scc/Kosaraju.lean)   | Verified strongly connected components                                           |
 | [`Decls.lean`](./FHM/Decls.lean)                 | Data declaration checking                                                        |
 | [`Headlines.lean`](./FHM/Headlines.lean)         | Canonical production theorems and the proof-carrying erased-term runner |
-| [`Headlines/CompleteCore.lean`](./FHM/Headlines/CompleteCore.lean) | Opt-in structural witnesses and complete-Core `elaborateSafe` demo |
-| [`Examples.lean`](./FHM/Examples.lean)           | Canonical source typing, inference and runtime examples        |
-| [`Examples/CompleteCore.lean`](./FHM/Examples/CompleteCore.lean) | Preserved opt-in complete-Core demonstrations |
+| [`Examples.lean`](./FHM/Examples.lean)           | Canonical source derivations, inference certificates and semantic canaries |
+| [`Examples/Programs.lean`](./FHM/Examples/Programs.lean) | Executable combinators, recursion, pattern lowering and partial-annotation regressions |
+| [`RuntimeTyping/PolyRecCanary.lean`](./FHM/RuntimeTyping/PolyRecCanary.lean) | Direct erased-recursion typing and preservation witness |
 | [`Unverified/`](./FHM/Unverified/README.md)      | Lexer, parser, CLI, editor support, unbounded evaluator                          |
 
 ## Roadmap

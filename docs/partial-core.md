@@ -27,28 +27,26 @@ The syntax is below inference and has no solver state:
 ```text
 Core                       Ty, Scheme T, Expr T, Ctx, partial type syntax
   → RuntimeTyping
-  → InferenceSupport       neutral substitution, unification and runtime facts
+  → InferenceFoundations    neutral substitution, unification and runtime facts
     → AnnotationMatching   pure matching, local assignments and completions
       → AnnotationAllocation
       → SourceAnnotations  written schemes, checking views, transport
-      → InferInput         source operations and scoped proof refinement
+      → SourceSupport      source operations and scoped proof refinement
         → SourceTyping     InputTyping, direct erasure, refinement equivalence
           → InferW
             → Completeness
 ```
 
-Historical complete-Core support is an optional branch of this graph:
+`SourceSupport.lean` was formerly named `InferInput.lean`; the source alias
+itself lives in `Core`. `InferenceFoundations.lean` was formerly named
+`InferenceSupport.lean`. The main reading path is `Core` → `SourceTyping` →
+`InferW` → `Completeness`; open the annotation modules to inspect their helper
+premises. There is no compatibility branch or compatibility build target.
 
-```text
-Core → Compatibility/Typing
-RuntimeTyping + Compatibility/Typing → Compatibility/Erasure
-InferenceSupport + Compatibility/Erasure → Compatibility/Metatheory
-SourceTyping + Compatibility/Metatheory → SourceCompatibility
-  → SurfaceBridge/CompleteCore → Headlines/CompleteCore
-                              → Examples/CompleteCore
-```
+`SurfaceBridge` lowers to canonical source. `SurfaceSafety` proves coverage
+transfer by induction on that lowering, then composes it with direct inference
+soundness and runtime safety. `Headlines` gathers the public theorems.
 
-The default roots, CLI and canonical `Examples` do not import that branch.
 `AnnotationAllocation` imports only `AnnotationMatching`; it does not depend on
 expression inference, generalization or SCC scheduling. There is one universe
 of types, schemes, contexts and constructors.
@@ -154,44 +152,49 @@ provisional slots. `Infer.sound` now follows directly from source soundness
 and `InputTyping.erase`. Runtime terms have no named-hole representation or
 effect.
 
-## Retained compatibility
+## Retired architecture and runtime boundary
 
-The `Expr Ty` instance also represents erased runtime terms. Historical
-`TypeOfHM` lives in `Compatibility/Typing`, alongside `TypeOfMatchBranch`,
-`Option.Pins` and complete-annotation `GeneralisesTo`. None of these declarations
-is present in the default verified environment. They support complete-Core
-clients and the opt-in `FHMCompatibility` façade. `InputTyping`
-has its own explicit primitive rules. Comparison rules require source typings
-for `True` and `False` at `Bool`, just as the historical rules did. Recursive
-rules use `SourceRec.MonoTyped` and `SourceRec.PolyTyped` to expose the existing
-staged policy without expanding it inside the main rule. Matching remains
-separate from that policy.
+`TypeOfHM`, `TypeOfMatchBranch`, `Option.Pins` and the old source
+`GeneralisesTo` have been deleted, together with their compatibility modules,
+complete-Core surface lowering, conversions, proofs and demonstrations.
+`InputTyping` has its own explicit primitive rules. Comparison rules require
+source typings for `True` and `False` at `Bool`. Recursive rules use
+`SourceRec.MonoTyped` and `SourceRec.PolyTyped` to expose the existing staged
+policy; annotation matching remains separate.
 
-Complete and partial annotations use instances of the same syntax family.
-`ScopedTyping.ofComplete` and `ScopedTyping.toCore` live in the optional
-`SourceCompatibility` module. Production completeness no longer imports it:
-primitive, variable and constructor cases use direct leaf inversions. These
-compatibility theorems are neither typing constructors nor soundness premises.
+There is no `Expr.toCore` or `Expr.ofCore` conversion. The editor diagnostic
+probe now inspects partial source directly, including hole-free signed lets;
+partial written foralls retain the binding-level fallback. `Template.toTy`
+recognizes hole-free type templates for the annotation checking view; it does
+not rewrite an expression. `Option.fromScheme` merely wraps a concrete written
+scheme in fixed template leaves.
 
-The internal `ScopedTyping` refinement now uses `RuntimeTyping.RunWT` for its
-primitive leaf facts, substitution and weakening. Public source soundness,
-completeness, principality and erasure have no transitive proof dependency on
-`TypeOfHM` or `TypeOfMatchBranch`. The import-boundary script rejects historical
-compatibility imports in every default root and canonical examples. Run
-`lake env lean scripts/check-source-proof-boundary.lean` to check that the old
-declarations are absent from the default environment, inspect actual public
-proof dependencies, and check the standard-axiom boundary.
+Useful old executable programs were ported to `Examples/Programs`. They cover
+primitive operations, combinators, rejection cases, ordinary and annotated
+recursive groups, nested data, surface patterns and partial annotations.
+`Examples` contains direct canonical source derivations, including polymorphic
+`id id` and the untypable `5 5`, plus the inference/certificate canaries.
+`RuntimeTyping/PolyRecCanary` constructs the erased recursive typing derivation
+directly under `RunWT` and proves its unfolded term retains that type. The old
+native-decision demo proofs were retired; none is needed by these modules.
+Both standalone recursive scratch drivers now lower and check canonical source.
 
-Default `Headlines` inversions and `Examples` use `InputTyping`; typed pattern
-adequacy uses `RuntimeTyping.RunWT` directly. Runtime closure and finite-execution
-safety are proved under `RunWT`, independently of either source relation.
-Complete-Core inversion witnesses and demonstrations moved to optional modules.
-About 1,200 lines of unused historical substitution, generalization, closure,
-canonical-form and safety proofs were deleted rather than moved. Only the
-induction and term-weakening proofs used by the remaining historical clients
-survive in `Compatibility/Metatheory`; regularity is a runtime-erasure corollary.
-The old erasure bridge lives in
-`Compatibility/Erasure`, outside `RuntimeTyping`.
+The old surface-to-runtime coverage guarantee is retained in `SurfaceSafety`.
+Only neutral decision-tree emission lemmas were reused; the source proof is a
+direct induction on canonical lowering. `program_type_safe` specifies the exact
+returned type throughout every finite execution of the original source erasure,
+including programs with partial annotations. Erasure idempotence now holds for
+every annotation instance of `Expr T`.
+
+`Expr Ty` remains the runtime representation used by erasure. `RuntimeTyping`
+and the neutral type, scheme, context, unification and recursive-policy facts
+remain shared foundations. The internal `ScopedTyping` refinement uses `RunWT`
+for primitive facts, substitution and weakening.
+
+The import-boundary script rejects retired module imports in every default
+root and all canonical example roots. The proof-boundary script checks that
+the old typing, expression-conversion and lowering declarations are absent,
+and audits public proof dependencies and their standard axioms.
 
 Public `InferenceResult` contains type, substitution/frontier, node types and
 binder schemes, with no completed expression. The editor reads binding schemes
@@ -216,7 +219,7 @@ the completed-subtree typing constructor, annotation-only embeddings into a
 second template syntax, the old anonymous-only allocation factoring proof,
 and matching-only transport through arbitrary completed ASTs.
 
-## Result-contract audit and remaining retirement boundary
+## Result-contract audit
 
 The audit on 2026-11-02 distinguishes successful execution from correctness of
 the returned data. `inferWithTypes_typing_iff` characterizes every valid source
@@ -245,23 +248,10 @@ selected branch and captures; SCC soundness specifies the returned partition
 and ordering. Their completeness or totality corollaries legitimately mention
 only successful execution. None of those corollaries alone certifies an output.
 
-The semantic source migration is implemented, but complete retirement of the
-historical architecture and verification of every editor artifact are not done.
-The remaining deletion boundary is:
-
-| Region | Retirement condition |
-| --- | --- |
-| `SourceCompatibility`, `SurfaceBridge/CompleteCore`, `Headlines/CompleteCore`, `Examples/CompleteCore` | Migrate or retire the opt-in complete-Core API and its demonstrations. |
-| `Compatibility/Typing` | Remove the remaining complete-Core clients of `TypeOfHM`, `TypeOfMatchBranch`, complete-annotation `GeneralisesTo` and `Option.Pins`. |
-| `Compatibility/Metatheory` | Retire the historical surface bridge's regularity and term-weakening uses; the other old metatheory has been deleted. |
-| `Compatibility/Erasure` | Retire the historical clients of `TypeOfHM.erase_preserves_typing`. |
-| Complete-source projections and annotation operations | Check compatibility, examples and diagnostic probes before deletion. |
-
-Keep `Expr Ty` for erased terms, `RuntimeTyping.RunWT` and its operational
-metatheory, and neutral `Ty`/scheme/context/unification/recursive-policy lemmas.
-Deleting entire support modules would also delete foundations the canonical
-path still uses. The unused complete-Core annotation-boundedness proof formerly
-in `InferInput` has been removed; the opt-in compatibility proof remains.
+The compatibility API has now been retired completely. This does not change
+implicit let-polymorphism, recursive SCC scheduling, generalization policy or
+runtime semantics. The two independently scoped historical polymorphic-recursion
+prototypes remain in `FHMHistorical`; neither imports the retired API.
 
 ## Verification
 
@@ -279,24 +269,30 @@ hover snapshots cover surface syntax, annotation provenance, function heads,
 Unicode token ranges and runtime regression. Generated TextMate syntax includes
 the dedicated named-hole token.
 
-Required final gates are `lake build`, the CLI/editor/compatibility/example and
+Required final gates are `lake build`, the CLI/editor/example/historical and
 grammar targets, `scripts/scratch-hm-audit.mjs`, `scripts/hm-editor-smoke.mjs`,
 the web tests, `scripts/check-unverified-boundary.sh`, and
 `lake env lean scripts/check-source-proof-boundary.lean`.
 
 Latest full verification on 2026-11-02:
 
+- `lake clean FHM`: removed this package's outputs before the final builds,
+  including stale compiled compatibility and renamed modules.
 - `lake build`: passed.
-- `lake build fhm FHMEditorTests FHMCompatibility FHMExamples FHMHistorical fhm_grammar`:
+- `lake build fhm FHMEditorTests FHMExamples FHMHistorical fhm_grammar`:
   passed.
 - `node scripts/scratch-hm-audit.mjs`: 17 files; 13 accepted, four expected
   rejections, no failures. The existing anonymous-hole playground is included.
 - `node scripts/hm-editor-smoke.mjs`: 84/84 passed, including all 75 prior checks.
 - `node --test editors/web/tests/*.test.mjs`: 35/35 passed, no skips, including
   three hover snapshots and the grammar/token-export tests.
+- `node editors/vscode/test/anonymous-holes-integration.cjs`: 11 real-backend
+  provider scenarios passed; `lifecycle-regression.cjs` passed too.
+- `lake env lean --run scratch/PolyRecTest.lean`: 11/11 passed.
+- `lake env lean --run scratch/ContractStratifiedRecursionTest.lean`: 5/5 passed.
 - `bash scripts/check-unverified-boundary.sh` and `git diff --check`: passed.
 - `lake env lean scripts/check-source-proof-boundary.lean`: historical typing
-  declarations are absent from the default environment; all seventeen checked
+  declarations are absent from the default environment; all twenty checked
   public proofs have no historical source-typing dependencies and use standard
   axioms only.
 
@@ -306,17 +302,16 @@ The public production soundness, runtime erasure, completeness and principality
 theorems, together with assignment matching, substitution, opening, closing and
 allocation fidelity, were checked explicitly. They use only `propext`,
 `Classical.choice` and `Quot.sound`; repeated-name equality needs none.
-The optional `FHM.Examples.CompleteCore` module retains its pre-existing native
-concrete demo canaries. Canonical `FHMExamples` uses source derivations and
-executable guards without native proof escapes. No production proof depends on
-the historical canaries.
+All current canonical examples and the runtime recursion witness avoid native
+proof escapes. Executable guards remain regression tests, not kernel proofs.
 
 The parser, diagnostic wording and editor provenance joins remain unverified,
 as before. Their operational regressions are covered by the executable tests.
 `InferCert` certifies the semantic inference result. Local matching and allocation
 fidelity are proved, but there is no array-wide theorem certifying every returned
 node/binder metadata entry or its projection into an editor hover.
-The remaining compatibility artifacts are described above. The shared
+This is the established editor-verification boundary, not a lost guarantee or
+an outstanding obligation of this refactor. The shared
 `Expr T`/`Scheme T` migration removes the separate `InferInput` inductive and its
 two annotation parameters. Implicit polymorphism and recursive SCC/generalization
 policy remain unchanged; annotation matching stays separate from that policy.
