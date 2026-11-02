@@ -35,9 +35,20 @@ Core                       Ty, Scheme T, Expr T, Ctx, partial type syntax
         → SourceTyping     InputTyping, direct erasure, refinement equivalence
           → InferW
             → Completeness
-          → SourceCompatibility  optional complete-Core conversions
 ```
 
+Historical complete-Core support is an optional branch of this graph:
+
+```text
+Core → Compatibility/Typing
+RuntimeTyping + Compatibility/Typing → Compatibility/Erasure
+InferenceSupport + Compatibility/Erasure → Compatibility/Metatheory
+SourceTyping + Compatibility/Metatheory → SourceCompatibility
+  → SurfaceBridge/CompleteCore → Headlines/CompleteCore
+                              → Examples/CompleteCore
+```
+
+The default roots, CLI and canonical `Examples` do not import that branch.
 `AnnotationAllocation` imports only `AnnotationMatching`; it does not depend on
 expression inference, generalization or SCC scheduling. There is one universe
 of types, schemes, contexts and constructors.
@@ -145,7 +156,10 @@ effect.
 
 ## Retained compatibility
 
-The `Expr Ty` instance and historical `TypeOfHM` relation support complete-Core
+The `Expr Ty` instance also represents erased runtime terms. Historical
+`TypeOfHM` lives in `Compatibility/Typing`, alongside `TypeOfMatchBranch`,
+`Option.Pins` and complete-annotation `GeneralisesTo`. None of these declarations
+is present in the default verified environment. They support complete-Core
 clients and the opt-in `FHMCompatibility` façade. `InputTyping`
 has its own explicit primitive rules. Comparison rules require source typings
 for `True` and `False` at `Bool`, just as the historical rules did. Recursive
@@ -162,10 +176,22 @@ compatibility theorems are neither typing constructors nor soundness premises.
 The internal `ScopedTyping` refinement now uses `RuntimeTyping.RunWT` for its
 primitive leaf facts, substitution and weakening. Public source soundness,
 completeness, principality and erasure have no transitive proof dependency on
-`TypeOfHM` or `TypeOfMatchBranch`. Run
-`lake env lean scripts/check-source-proof-boundary.lean` to check those proof
-dependencies and the standard-axiom boundary. This is stronger than checking
-that a module's import list omits a compatibility module.
+`TypeOfHM` or `TypeOfMatchBranch`. The import-boundary script rejects historical
+compatibility imports in every default root and canonical examples. Run
+`lake env lean scripts/check-source-proof-boundary.lean` to check that the old
+declarations are absent from the default environment, inspect actual public
+proof dependencies, and check the standard-axiom boundary.
+
+Default `Headlines` inversions and `Examples` use `InputTyping`; typed pattern
+adequacy uses `RuntimeTyping.RunWT` directly. Runtime closure and finite-execution
+safety are proved under `RunWT`, independently of either source relation.
+Complete-Core inversion witnesses and demonstrations moved to optional modules.
+About 1,200 lines of unused historical substitution, generalization, closure,
+canonical-form and safety proofs were deleted rather than moved. Only the
+induction and term-weakening proofs used by the remaining historical clients
+survive in `Compatibility/Metatheory`; regularity is a runtime-erasure corollary.
+The old erasure bridge lives in
+`Compatibility/Erasure`, outside `RuntimeTyping`.
 
 Public `InferenceResult` contains type, substitution/frontier, node types and
 binder schemes, with no completed expression. The editor reads binding schemes
@@ -225,10 +251,10 @@ The remaining deletion boundary is:
 
 | Region | Retirement condition |
 | --- | --- |
-| `SourceCompatibility`, `SurfaceBridge/CompleteCore`, `Headlines/CompleteCore` | Migrate or retire the opt-in complete-Core API and its examples. |
-| `TypeOfHM`, `TypeOfMatchBranch`, complete-annotation `GeneralisesTo` and `Option.Pins` | Remove the remaining complete-Core clients; canonical source proofs no longer need them. |
-| Historical `TypeOfHM` substitution, weakening, inversion and safety proofs in `InferenceSupport` and `Headlines` | Move their clients to the source/runtime theorems, then isolate or delete these regions. |
-| `TypeOfHM.erase_preserves_typing` in `RuntimeTyping` | Retire the historical clients of this compatibility bridge. |
+| `SourceCompatibility`, `SurfaceBridge/CompleteCore`, `Headlines/CompleteCore`, `Examples/CompleteCore` | Migrate or retire the opt-in complete-Core API and its demonstrations. |
+| `Compatibility/Typing` | Remove the remaining complete-Core clients of `TypeOfHM`, `TypeOfMatchBranch`, complete-annotation `GeneralisesTo` and `Option.Pins`. |
+| `Compatibility/Metatheory` | Retire the historical surface bridge's regularity and term-weakening uses; the other old metatheory has been deleted. |
+| `Compatibility/Erasure` | Retire the historical clients of `TypeOfHM.erase_preserves_typing`. |
 | Complete-source projections and annotation operations | Check compatibility, examples and diagnostic probes before deletion. |
 
 Keep `Expr Ty` for erased terms, `RuntimeTyping.RunWT` and its operational
@@ -269,8 +295,9 @@ Latest full verification on 2026-11-02:
 - `node --test editors/web/tests/*.test.mjs`: 35/35 passed, no skips, including
   three hover snapshots and the grammar/token-export tests.
 - `bash scripts/check-unverified-boundary.sh` and `git diff --check`: passed.
-- `lake env lean scripts/check-source-proof-boundary.lean`: all eleven public
-  contracts have no historical source-typing dependencies and use standard
+- `lake env lean scripts/check-source-proof-boundary.lean`: historical typing
+  declarations are absent from the default environment; all seventeen checked
+  public proofs have no historical source-typing dependencies and use standard
   axioms only.
 
 The modified modules in the trusted production import closure contain no
@@ -279,9 +306,10 @@ The public production soundness, runtime erasure, completeness and principality
 theorems, together with assignment matching, substitution, opening, closing and
 allocation fidelity, were checked explicitly. They use only `propext`,
 `Classical.choice` and `Quot.sound`; repeated-name equality needs none.
-The optional `FHMExamples` library retains its pre-existing native concrete
-demo canaries; its source fixtures now use optional schemes and inspect returned
-type facts. No new production proof depends on those canaries.
+The optional `FHM.Examples.CompleteCore` module retains its pre-existing native
+concrete demo canaries. Canonical `FHMExamples` uses source derivations and
+executable guards without native proof escapes. No production proof depends on
+the historical canaries.
 
 The parser, diagnostic wording and editor provenance joins remain unverified,
 as before. Their operational regressions are covered by the executable tests.

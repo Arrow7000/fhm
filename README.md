@@ -235,8 +235,9 @@ The design choices that matter most:
 - **Declarative and algorithmic typing are kept separate.** `InputTyping`
   specifies canonical partial source using pure annotation matching. Named-hole
   assignments are existential and local to each annotation. Only inference
-  allocates metavariables. `TypeOfHM` and `Expr.ofCore` support historical
-  complete-Core clients; they use the same inference worker.
+  allocates metavariables. `TypeOfHM` supports historical complete-Core clients
+  behind optional compatibility imports; they reuse inference via `Expr.ofCore`.
+  The default verified environment contains no `TypeOfHM` declaration.
 - **Type variables use a locally nameless representation** with cofinite
   quantification, following
   [Charguéraud's formalisation of mini-ML](https://github.com/charguer/formalmetacoq).
@@ -249,13 +250,14 @@ The design choices that matter most:
 | Module                                           | Contents                                                                         |
 | ------------------------------------------------ | -------------------------------------------------------------------------------- |
 | [`Core.lean`](./FHM/Core.lean)                   | Types, Scheme T, Expr T, partial annotations and runtime semantics |
-| [`InferenceSupport.lean`](./FHM/InferenceSupport.lean) | Shared unification, generalization, scheduling, and Core typing lemmas       |
+| [`InferenceSupport.lean`](./FHM/InferenceSupport.lean) | Shared unification, generalization, scheduling, and runtime safety lemmas       |
 | [`AnnotationMatching.lean`](./FHM/AnnotationMatching.lean) | Pure local hole assignments, matching, closed completions, substitution and opening |
 | [`AnnotationAllocation.lean`](./FHM/AnnotationAllocation.lean) | Shared certified hole allocation/checking, independent of generalization policy |
 | [`SourceAnnotations.lean`](./FHM/SourceAnnotations.lean) | Written schemes, derived checking views, substitution and opening |
 | [`InferInput.lean`](./FHM/InferInput.lean)       | Source operations, scoped inference proof refinement, optional complete projection |
 | [`SourceTyping.lean`](./FHM/SourceTyping.lean)   | Main source judgment `InputTyping`, direct erasure and scope refinement equivalence |
 | [`SourceCompatibility.lean`](./FHM/SourceCompatibility.lean) | Derived complete-Core conversion, outside the source soundness path |
+| [`Compatibility/`](./FHM/Compatibility/) | Opt-in historical typing definition, erasure bridge, regularity and term weakening |
 | [`InferW.lean`](./FHM/InferW.lean)               | The sole inference judgment and worker, bounds, soundness, and fidelity         |
 | [`Completeness.lean`](./FHM/Completeness.lean)   | Principality and executable completeness for that same worker                   |
 | [`RuntimeTyping.lean`](./FHM/RuntimeTyping.lean) | Typing for erased runtime terms, used to prove progress and preservation         |
@@ -267,7 +269,8 @@ The design choices that matter most:
 | [`Decls.lean`](./FHM/Decls.lean)                 | Data declaration checking                                                        |
 | [`Headlines.lean`](./FHM/Headlines.lean)         | Canonical production theorems and the proof-carrying erased-term runner |
 | [`Headlines/CompleteCore.lean`](./FHM/Headlines/CompleteCore.lean) | Opt-in structural witnesses and complete-Core `elaborateSafe` demo |
-| [`Examples.lean`](./FHM/Examples.lean)           | Worked examples of programs that typecheck and programs that are rejected        |
+| [`Examples.lean`](./FHM/Examples.lean)           | Canonical source typing, inference and runtime examples        |
+| [`Examples/CompleteCore.lean`](./FHM/Examples/CompleteCore.lean) | Preserved opt-in complete-Core demonstrations |
 | [`Unverified/`](./FHM/Unverified/README.md)      | Lexer, parser, CLI, editor support, unbounded evaluator                          |
 
 ## Roadmap
