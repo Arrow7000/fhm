@@ -10793,6 +10793,11 @@ theorem inferWithTypes_complete {ctors : CtorEnv} {input : InferInput} {ty : Ty}
     (ht : InputTyping ⟨[], ctors⟩ input ty) : (inferWithTypes ctors input).isSome :=
   inferWithTypes_scoped_complete ht.scoped
 
+theorem typecheck_complete {ctors : CtorEnv} {input : InferInput} {ty : Ty}
+    (ht : InputTyping ⟨[], ctors⟩ input ty) : (typecheck ctors input).isSome := by
+  simpa only [typecheck, principalType_eq_inferWithTypes, Option.isSome_map] using
+    inferWithTypes_complete ht
+
 theorem inferWithTypes_accepts_iff {ctors : CtorEnv} {input : InferInput} :
     (inferWithTypes ctors input).isSome ↔ ∃ ty, InputTyping ⟨[], ctors⟩ input ty := by
   constructor
@@ -10809,6 +10814,25 @@ theorem inferWithTypes_principal {ctors : CtorEnv} {input : InferInput} {result 
       ∃ R : Subst, (∀ pair ∈ R, pair.2.IsLC) ∧ target = R.onTy result.ty ∧
         (∀ v ∈ input.rigidVars, R.onTy (.fvar v) = .fvar v) :=
   fun target ht => inferWithTypes_scoped_principal h target ht.scoped
+
+/-- The valid source types are exactly the admissible instances of the actual
+returned type. Acceptance alone is a corollary of this value-level contract. -/
+theorem inferWithTypes_typing_iff {ctors : CtorEnv} {input : InferInput} {ty : Ty} :
+    InputTyping ⟨[], ctors⟩ input ty ↔
+      ∃ (result : InferenceResult) (R : Subst),
+        inferWithTypes ctors input = some result ∧
+        (∀ pair ∈ R, pair.2.IsLC) ∧
+        (∀ v ∈ input.rigidVars, R.onTy (.fvar v) = .fvar v) ∧
+        ty = R.onTy result.ty := by
+  constructor
+  · intro ht
+    obtain ⟨result, hr⟩ := Option.isSome_iff_exists.mp (inferWithTypes_complete ht)
+    obtain ⟨R, hlc, heq, hfix⟩ := inferWithTypes_principal hr ty ht
+    exact ⟨result, R, hr, hlc, hfix, heq⟩
+  · rintro ⟨result, R, hr, hlc, hfix, heq⟩
+    rw [heq]
+    simpa only [Subst.onCtx_empty] using
+      (inferWithTypes_input_sound hr).onSubst_fixes R hlc hfix
 
 #print axioms inferCore_complete
 #print axioms Infer.complete

@@ -1942,7 +1942,19 @@ def principalType (ctors : CtorEnv) (input : InferInput) : Option Ty :=
   (inferCore input.rigidVars input.source_freshFloor ⟨[], ctors⟩ input).map (·.val.ty)
 
 def typecheck (ctors : CtorEnv) (input : InferInput) : Option PolyTy :=
-  (principalType ctors input).map (genScheme [] [])
+  (principalType ctors input).map (genScheme input.rigidVars [])
+
+/-- The type-only API projects the actual result of the same certified run. -/
+theorem principalType_eq_inferWithTypes (ctors : CtorEnv) (input : InferInput) :
+    principalType ctors input = (inferWithTypes ctors input).map (fun result => result.ty) := by
+  unfold principalType inferCore inferRequest inferRequestCore InferRequest.core inferWithTypes
+  cases inferWithTypesCore input.rigidVars input.source_freshFloor ⟨[], ctors⟩ input <;> rfl
+
+theorem typecheck_eq_inferWithTypes (ctors : CtorEnv) (input : InferInput) :
+    typecheck ctors input = (inferWithTypes ctors input).map
+      (fun result => genScheme input.rigidVars [] result.ty) := by
+  rw [typecheck, principalType_eq_inferWithTypes, Option.map_map]
+  rfl
 
 /-- Public artifacts project the exact semantic result of a certified run. -/
 theorem inferWithTypes_infer {ctors : CtorEnv} {input : InferInput} {result : InferenceResult}
@@ -6969,6 +6981,26 @@ theorem InferCert.inputSound {K : List Nat} {frontier : Nat} {ctx : Ctx} {input 
 theorem inferWithTypes_input_sound {ctors : CtorEnv} {input : InferInput} {result : InferenceResult}
     (h : inferWithTypes ctors input = some result) : InputTyping ⟨[], ctors⟩ input result.ty :=
   (inferWithTypes_scoped_sound h).source
+
+theorem principalType_sound {ctors : CtorEnv} {input : InferInput} {ty : Ty}
+    (h : principalType ctors input = some ty) : InputTyping ⟨[], ctors⟩ input ty := by
+  rw [principalType_eq_inferWithTypes] at h
+  obtain ⟨result, hr, rfl⟩ := Option.map_eq_some_iff.mp h
+  exact inferWithTypes_input_sound hr
+
+/-- Every fresh opening of the returned scheme types the original source.
+Authored fixed variables are preserved rather than generalized. -/
+theorem typecheck_sound {ctors : CtorEnv} {input : InferInput} {scheme : PolyTy}
+    (h : typecheck ctors input = some scheme) :
+    scheme.WF ∧ ∃ avoid, ∀ names, FreshNames avoid scheme.paramCount names →
+      InputTyping ⟨[], ctors⟩ input (scheme.openVars names) := by
+  obtain ⟨ty, ht, rfl⟩ := Option.map_eq_some_iff.mp h
+  have htyping := (principalType_sound ht).scoped
+  have hgeneral := htyping.generalise (ann := .absent)
+    (names := genVars input.rigidVars [] ty) trivial (by intro t ht; cases ht)
+    genVars_nodup (by simp [Env.freeVars]) (fun _ hv => genVars_not_mem_rigid hv)
+  exact ⟨genScheme_wf htyping.regular, genVars input.rigidVars [] ty,
+    fun names hf => (hgeneral.2 names hf).source⟩
 
 /-- Evaluate the original source after erasure; no completed AST is required. -/
 theorem inferWithTypes_runtime_sound {ctors : CtorEnv} {input : InferInput} {result : InferenceResult}

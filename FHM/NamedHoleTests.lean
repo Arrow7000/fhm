@@ -12,6 +12,26 @@ def mixed : TyTemplate := .custom ⟨"Pair"⟩
   [.named "a", .custom ⟨"Pair"⟩ [.hole, .named "a"]]
 def identity (annotation : TyTemplate) : InferInput := .lambda (some annotation) (.var 0)
 
+-- Scheme output must not quantify an authored fixed free type variable.
+def fixedIdentity : InferInput := identity (.fixed (.fvar 7))
+#guard match typecheck [] fixedIdentity with
+  | some ⟨0, .arrow (.fvar 7) (.fvar 7)⟩ => true
+  | _ => false
+#guard match typecheck [] (identity .hole) with
+  | some ⟨1, .arrow (.bvar 0) (.bvar 0)⟩ => true
+  | _ => false
+
+theorem fixedIdentity_type (h : InputTyping ⟨[], []⟩ fixedIdentity ty) :
+    ty = .arrow (.fvar 7) (.fvar 7) := by
+  obtain ⟨param, output, heq, _, hfit, hbody⟩ := h.lambda_inv
+  obtain ⟨_, _, hmatch⟩ := hfit (.fixed (.fvar 7)) rfl
+  cases hmatch
+  cases hbody with
+  | var hlook hlc hinst =>
+    cases hlook
+    cases hinst
+    exact heq
+
 #guard match inferWithTypes [] (identity .hole) with
   | some r => match r.ty with | .arrow (.fvar x) (.fvar y) => x == y | _ => false
   | none => false

@@ -260,6 +260,12 @@ example {request : InferRecSignedRequest} {result : RecRunResult} :
 #check @inferCore_empty_accepts_iff
 #check @inferWithTypes_complete
 #check @inferWithTypes_accepts_iff
+#check @inferWithTypes_typing_iff
+#check @principalType_eq_inferWithTypes
+#check @principalType_sound
+#check @typecheck_eq_inferWithTypes
+#check @typecheck_sound
+#check @typecheck_complete
 #check @inferWithTypes_principal
 #check @inferWithTypes_infer
 
