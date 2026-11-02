@@ -1,7 +1,9 @@
 import FHM.AnnotationAllocation
 import FHM.SourceAnnotations
 
-/-! Annotated inference input, independent typing, annotation fidelity and recursive state. -/
+/-! Source operations, annotation-checking premises, the internal scope refinement
+`ScopedTyping`, and recursive inference state. Source syntax lives in `Core`;
+the public declarative judgment lives in `SourceTyping`. -/
 
 /-! ## Input -/
 

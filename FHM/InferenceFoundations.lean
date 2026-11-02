@@ -3,7 +3,7 @@ import FHM.RuntimeTyping
 import FHM.Scc.Kosaraju
 
 /-!
-# Shared foundations for inference
+# Inference foundations
 
 Substitution algebra, rigid unification and its executable implementation,
 fresh-variable allocation and generalization, recursive dependency scheduling,

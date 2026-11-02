@@ -1,4 +1,4 @@
-import FHM.InferInput
+import FHM.SourceSupport
 
 /-! Declarative typing for partial Core source. Scope bookkeeping for the
 inference implementation lives in `ScopedTyping`, a conservative refinement

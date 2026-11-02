@@ -1,7 +1,7 @@
 import FHM.PatComp.Trace
 import FHM.Decls
 import FHM.PatComp
-import FHM.InferInput
+import FHM.SourceSupport
 
 /-! # The canonical surface → inference-input bridge
 

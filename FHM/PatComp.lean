@@ -1,5 +1,5 @@
 import FHM.SurfaceLang
-import FHM.InferenceSupport
+import FHM.InferenceFoundations
 
 /-! # Verified pattern-match compilation
 

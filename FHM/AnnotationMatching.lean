@@ -1,4 +1,4 @@
-import FHM.InferenceSupport
+import FHM.InferenceFoundations
 
 theorem Ty.openVarsFrom_zero (Xs : List Nat) (ty : Ty) :
     Ty.openVarsFrom 0 Xs ty = Ty.openVars Xs ty := by

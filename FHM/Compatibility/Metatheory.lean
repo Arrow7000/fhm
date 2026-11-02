@@ -1,4 +1,4 @@
-import FHM.InferenceSupport
+import FHM.InferenceFoundations
 import FHM.Compatibility.Erasure
 
 /-! Only the historical complete-Core metatheory still used by the opt-in
