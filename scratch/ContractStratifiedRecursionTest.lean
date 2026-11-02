@@ -1,5 +1,5 @@
 import FHM.Unverified.Surface.Parse
-import FHM.SurfaceBridge.CompleteCore
+import FHM.SurfaceBridge
 import FHM.InferW
 import FHM.Pretty
 
@@ -44,10 +44,10 @@ def inferSource (source : String) : Except String Ty := do
   let parsed <- match parseProgram source with
     | .error e => throw s!"parse failure: {e.msg} (line {e.line}, col {e.col})"
     | .ok program => pure program
-  let (ctors, core) <- match lowerCoreProgram parsed with
+  let (ctors, core) <- match lowerProgram parsed with
     | none => throw "lowering failure"
     | some lowered => pure lowered
-  match inferWithTypes ctors (InferInput.ofCore core) with
+  match inferWithTypes ctors core with
   | none => throw "inference rejection"
   | some result => pure result.ty
 

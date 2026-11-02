@@ -1,5 +1,4 @@
-import FHM.SurfaceBridge
-import FHM.InferW
+import FHM.SurfaceSafety
 import FHM.Completeness
 import FHM.Pretty
 
@@ -8,10 +7,6 @@ import FHM.Pretty
 This compact façade presents the production surface-to-`InferInput` lowering
 pipeline, canonical inference guarantees, pattern compilation and coverage,
 Core inversion/canonical-forms lemmas, and the proof-carrying erased-term runner.
-
-The historical surface-to-complete-Core lowering, structural `SurfaceWTExpr`
-witnesses, and its `elaborateSafe` demonstration remain available from the
-opt-in `FHM.Headlines.CompleteCore` module.
 
 This module is part of the default verified build. -/
 
@@ -24,6 +19,9 @@ namespace Headlines
 #check @RuntimeTyping.RunWT.progress
 #check @RuntimeTyping.RunWT.preservation
 #check @RuntimeTyping.RunWT.type_safety_star
+#check @SurfaceBridge.lowerExpr_exhaustive
+#check @SurfaceBridge.lowerProgram_exhaustive
+#check @SurfaceBridge.program_type_safe
 
 /-! ### Surface lowering into canonical inference input
 
@@ -473,11 +471,11 @@ def runSafe (ctors : CtorEnv) (fuel : Nat) (t : Safe ctors) : Value ctors ⊕ Ru
 /-! ## Living axiom-budget guard
 
 Canonical lowering, inference, erasure, principality, completeness, Core
-inversions, and the erased-term runner are checked here. Complete-Core adapter
-guards live in `FHM.Headlines.CompleteCore`. -/
+inversions, and the erased-term runner are checked here. -/
 
 -- Closed and clean: source-to-runtime bridge and erased-term dynamics.
 #print axioms InputTyping.erase
+#print axioms SurfaceBridge.program_type_safe
 #print axioms RuntimeTyping.RunWT.progress    -- expect {propext, Classical.choice, Quot.sound}
 #print axioms RuntimeTyping.RunWT.preservation -- expect {propext, Classical.choice, Quot.sound}
 #print axioms RuntimeTyping.RunWT.progress

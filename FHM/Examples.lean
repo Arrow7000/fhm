@@ -1,7 +1,7 @@
 import FHM.Headlines
 
-/-! Canonical source examples. Historical complete-Core demonstrations live in
-`FHM.Examples.CompleteCore`, built only with the compatibility target. -/
+/-! Canonical source derivations and inference certificates. Executable program
+regressions live in `FHM.Examples.Programs`. -/
 
 namespace Source.Demo
 
@@ -18,6 +18,47 @@ def partialSignature : InferInput := .letIn
   (some ⟨1, .arrow (.fixed (.bvar 0)) (.named "item")⟩)
   (.lambda (some (.fixed (.bvar 0))) (.var 0))
   (.app (.var 0) (.primLit (.int 42)))
+
+/-- The canonical judgment admits the identity at every locally closed type. -/
+theorem identity_typed (hty : ty.IsLC) :
+    InputTyping ctx identity (.arrow ty ty) :=
+  .lambda hty (by intro template h; cases h)
+    (.var (args := []) rfl (by simp) (InstantiatesBy.refl_of_closed hty))
+
+theorem anonymous_typed (hty : ty.IsLC) :
+    InputTyping ctx anonymous (.arrow ty ty) :=
+  .lambda hty (by intro template h; cases h; exact .hole)
+    (.var (args := []) rfl (by simp) (InstantiatesBy.refl_of_closed hty))
+
+def idid : InferInput := .letIn none identity (.app (.var 0) (.var 0))
+
+/-- Ordinary implicit let-polymorphism is unchanged: the two uses of `id`
+instantiate one scheme independently. No inference run is assumed. -/
+theorem idid_typed (hty : ty.IsLC) : InputTyping ctx idid (.arrow ty ty) := by
+  let scheme : PolyTy := ⟨1, .arrow (.bvar 0) (.bvar 0)⟩
+  have hwf : scheme.WF := by
+    change ContainsBvarsUpTo 1 (.arrow (.bvar 0) (.bvar 0))
+    exact .arrow (.bvar (by decide)) (.bvar (by decide))
+  refine .letIn (M := scheme) (L := []) hwf ?_ ?_ ?_
+  · exact PartialCore.Ann.MonoMatches.absent hwf
+  · intro names hfresh
+    obtain ⟨name, rfl⟩ := List.length_eq_one_iff.mp hfresh.length
+    exact identity_typed .fvar
+  · exact .app
+      (.var (args := [.arrow ty ty]) rfl (by simp; exact .arrow hty hty)
+        (.arrow (.bvar rfl) (.bvar rfl)))
+      (.var (args := [ty]) rfl (by simp; exact hty)
+        (.arrow (.bvar rfl) (.bvar rfl)))
+
+def appFiveFive : InferInput := .app (.primLit (.int 5)) (.primLit (.int 5))
+
+theorem appFiveFive_untypable : ¬ InputTyping ctx appFiveFive ty := by
+  intro h
+  cases h with
+  | app hf _ => cases hf
+
+theorem idid_accepted : (inferWithTypes [] idid).isSome :=
+  inferWithTypes_complete (idid_typed (ctx := ⟨[], []⟩) (ty := .fvar 0) .fvar)
 
 private def showType (label : String) (input : InferInput) : IO Unit :=
   IO.println s!"{label}: {match typecheck [] input with
@@ -189,12 +230,12 @@ def quantifiedRigidRejected : InferInput :=
     (.lambda none (.primLit (.int 0))) (.var 0)
 
 def signedRhsHole : InferInput :=
-  .letIn (Option.ofCore (some ⟨1, .arrow (.bvar 0) (.bvar 0)⟩))
+  .letIn (Option.fromScheme (some ⟨1, .arrow (.bvar 0) (.bvar 0)⟩))
     (.lambda (some .hole) (.var 0))
     (pair (.app (.var 0) (.primLit (.int 1))) (.app (.var 0) (.ctor ⟨"True"⟩)))
 
 def signedBodyHole : InferInput :=
-  .letIn (Option.ofCore (some ⟨1, .arrow (.bvar 0) (.bvar 0)⟩))
+  .letIn (Option.fromScheme (some ⟨1, .arrow (.bvar 0) (.bvar 0)⟩))
     (.lambda none (.var 0)) (.lambda (some .hole) (.app (.var 1) (.var 0)))
 
 #guard (inferCore [] 0 ctx quantifiedExtras).isSome
@@ -344,18 +385,22 @@ private def violatesRigidLet : InferInput :=
 
 private def polyrec : InferInput :=
   .letRec
-    [{ ann := (Option.ofCore (some ⟨1, .arrow (.bvar 0) (.prim .int)⟩)),
+    [{ ann := (Option.fromScheme (some ⟨1, .arrow (.bvar 0) (.prim .int)⟩)),
        rhs := .lambda none
          (.app (.var 1) (.app (.app (.ctor ⟨"Pair"⟩) (.var 0)) (.var 0))) }]
     (.app (.var 0) (.ctor ⟨"True"⟩))
 #guard (inferCore [] 0 ctx polyrec).isSome
 #guard (inferCore [] 0 ctx
   (.letIn none (.lambda (some .hole) (.var 0)) polyrec)).isSome
-#guard !(principalType ctx.ctors (Expr.ofCore polyrec.erase)).isSome
+private def unsignedPolyrec : InferInput :=
+  match polyrec with
+  | .letRec bindings body => .letRec (bindings.map fun binding => { binding with ann := none }) body
+  | other => other
+#guard !(principalType ctx.ctors unsignedPolyrec).isSome
 
 -- Complete signatures protect their authored skolems while filling RHS holes.
 def completeForallWithPartialRhs : InferInput :=
-  .letIn (Option.ofCore (some ⟨1, .arrow (.bvar 0) (.bvar 0)⟩))
+  .letIn (Option.fromScheme (some ⟨1, .arrow (.bvar 0) (.bvar 0)⟩))
     (.lambda (some .hole) (.var 0)) (.var 0)
 #guard (inferCore [] 0 ctx completeForallWithPartialRhs).isSome
 

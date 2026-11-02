@@ -1,5 +1,5 @@
 import FHM.Unverified.Surface.Parse
-import FHM.SurfaceBridge.CompleteCore
+import FHM.SurfaceBridge
 import FHM.InferW
 import FHM.Pretty
 import FHM.Unverified.EvaluateUnsafe
@@ -53,16 +53,16 @@ def checkPipelineDM (src : String) : Except PipelineError CheckedProgram := do
         throw ⟨.parse, s!"{e.msg} (line {e.line}, col {e.col})"⟩
     | .ok p => pure p
   let program := parsed
-  let (ctors, core) <- match lowerCoreProgram program with
+  let (ctors, core) <- match lowerProgram program with
     | none => throw ⟨.lower,
         "lowering failed (unbound name, bad declaration, or rejected sugar)"⟩
     | some x => pure x
-  let checked <- match inferWithTypes ctors (InferInput.ofCore core) with
+  let checked <- match inferWithTypes ctors core with
     | none => throw ⟨.infer, "typechecking failed"⟩
     | some checked => pure checked
   if !(checkExhaustive ctors program.term) then
     throw ⟨.exhaustiveness, "match not exhaustive"⟩
-  let erased := checked.completedExpr.erase
+  let erased := core.erase
   let value <- match SmallStep.evaluateUnsafe erased with
     | none => throw ⟨.evaluation,
         "erased term got stuck (or evaluation diverged)"⟩

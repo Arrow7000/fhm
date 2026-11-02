@@ -19,9 +19,10 @@ attribute [simp] Ty.openVars_arrow Ty.openVars_customTy
 
 /-! ## Algorithmic phase, step 1: substitution algebra
 
-Declarative source typing treats authored `.fvar`s as rigid/abstract type variables.
-The algorithm reinterprets them as *unification variables* and solves equality
-constraints between monotypes by computing a most-general unifier (MGU).
+Declarative source typing treats authored `.fvar`s as abstract type variables.
+Inference also uses `.fvar`s for fresh metavariables; its protected set keeps
+authored and freshly opened rigid variables distinct from flexible ones. The
+unifier solves constraints on flexible variables by computing an MGU.
 
 A unification substitution maps `.fvar` names to types. We reuse the proven
 `Ty.substFvars` machinery: a substitution is a `List (Nat × Ty)` applied

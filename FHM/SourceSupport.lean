@@ -5,7 +5,7 @@ import FHM.SourceAnnotations
 `ScopedTyping`, and recursive inference state. Source syntax lives in `Core`;
 the public declarative judgment lives in `SourceTyping`. -/
 
-/-! ## Input -/
+/-! ## Source operations -/
 
 section
 
@@ -20,35 +20,6 @@ theorem PartialCore.Template.Matches.hole : PartialCore.Template.Matches .hole t
 
 abbrev rigidVarsList := PartialCore.templateRigidVars
 
-def completeLambdaAnn : Option TyTemplate → Option (Option Ty)
-  | none => some none
-  | some template => return some (← template.toCore)
-
-mutual
-/-- Project source syntax whose annotations are already hole-free. This
-optional complete-Core compatibility operation never fills a hole. -/
-def Expr.toCore : InferInput → Option Expr
-  | .primLit p => some (.primLit p)
-  | .primBinOp op => some (.primBinOp op)
-  | .lambda ann body => return .lambda (← completeLambdaAnn ann) (← body.toCore)
-  | .app f x => return .app (← f.toCore) (← x.toCore)
-  | .letIn ann rhs body => return .letIn (← ann.toCore) (← rhs.toCore) (← body.toCore)
-  | .var i => some (.var i)
-  | .ctor name => some (.ctor name)
-  | .match_ scrut branches => return .match_ (← scrut.toCore) (← completeBranches branches)
-  | .letRec bindings body => return .letRec (← completeBindings bindings) (← body.toCore)
-def completeBranches : List (MatchPattern × InferInput) → Option (List (MatchPattern × Expr))
-  | [] => some []
-  | (pat, body) :: rest => return (pat, ← body.toCore) :: (← completeBranches rest)
-def completeBindings : List InputRecBinding → Option (List CoreRecBinding)
-  | [] => some []
-  | ⟨ann, rhs⟩ :: rest => do
-      let coreAnn ← ann.toCore
-      let coreRhs ← rhs.toCore
-      let completedRest ← completeBindings rest
-      pure ({ ann := coreAnn, rhs := coreRhs } :: completedRest)
-end
-
 theorem sourceEraseBranches_eq_map (branches : List (MatchPattern × InferInput)) :
     eraseBranches branches = branches.map (fun pair => (pair.1, pair.2.erase)) := by
   induction branches with
@@ -61,65 +32,6 @@ theorem sourceEraseBindings_eq_map (bindings : List InputRecBinding) :
   induction bindings with
   | nil => rfl
   | cons binding rest ih => cases binding; simp only [eraseBindings, List.map_cons, ih]
-
-mutual
-theorem Expr.source_toCore_erase (input : InferInput) {core : Expr}
-    (h : input.toCore = some core) : core.erase = input.erase := by
-  cases input with
-  | primLit p => cases h; simp only [Expr.erase]
-  | primBinOp op => cases h; simp only [Expr.erase]
-  | var i => cases h; simp only [Expr.erase]
-  | ctor c => cases h; simp only [Expr.erase]
-  | lambda ann body =>
-      simp only [Expr.toCore, bind, pure, Option.bind_eq_some_iff,
-        Option.some.injEq] at h
-      obtain ⟨ann', _, body', hb, rfl⟩ := h
-      simp only [Expr.erase, body.source_toCore_erase hb]
-  | app f x =>
-      simp only [Expr.toCore, bind, pure, Option.bind_eq_some_iff,
-        Option.some.injEq] at h
-      obtain ⟨f', hf, x', hx, rfl⟩ := h
-      simp only [Expr.erase, f.source_toCore_erase hf, x.source_toCore_erase hx]
-  | letIn ann rhs body =>
-      simp only [Expr.toCore, bind, pure, Option.bind_eq_some_iff,
-        Option.some.injEq] at h
-      obtain ⟨ann', _, rhs', hr, body', hb, rfl⟩ := h
-      simp only [Expr.erase, rhs.source_toCore_erase hr, body.source_toCore_erase hb]
-  | match_ scrut branches =>
-      simp only [Expr.toCore, bind, pure, Option.bind_eq_some_iff,
-        Option.some.injEq] at h
-      obtain ⟨scrut', hs, branches', hb, rfl⟩ := h
-      simp only [Expr.erase, ← sourceEraseBranches_eq_map, scrut.source_toCore_erase hs, completeBranches_erase branches hb]
-  | letRec bindings body =>
-      simp only [Expr.toCore, bind, pure, Option.bind_eq_some_iff,
-        Option.some.injEq] at h
-      obtain ⟨bindings', hr, body', hb, rfl⟩ := h
-      have hbindings := completeBindings_erase bindings hr
-      simp only [Expr.erase, ← sourceEraseBindings_eq_map, body.source_toCore_erase hb, hbindings]
-theorem completeBranches_erase (inputs : List (MatchPattern × InferInput))
-    {cores : List (MatchPattern × Expr)} (h : completeBranches inputs = some cores) :
-    cores.map (fun pe => (pe.1, pe.2.erase)) = eraseBranches inputs := by
-  cases inputs with
-  | nil => cases h; rfl
-  | cons head rest =>
-      rcases head with ⟨pat, body⟩
-      simp only [completeBranches, bind, pure, Option.bind_eq_some_iff,
-        Option.some.injEq] at h
-      obtain ⟨body', hb, rest', hr, rfl⟩ := h
-      simp only [List.map_cons, eraseBranches, body.source_toCore_erase hb, completeBranches_erase rest hr]
-theorem completeBindings_erase (inputs : List InputRecBinding) {cores : List CoreRecBinding}
-    (h : completeBindings inputs = some cores) :
-    cores.map (fun binding =>
-      { ann := none, rhs := binding.rhs.erase }) = eraseBindings inputs := by
-  cases inputs with
-  | nil => cases h; rfl
-  | cons binding rest =>
-      simp only [completeBindings, bind, pure, Option.bind_eq_some_iff,
-        Option.some.injEq] at h
-      obtain ⟨ann', _, rhs', hb, rest', hr, rfl⟩ := h
-      simp only [List.map_cons, eraseBindings, binding.rhs.source_toCore_erase hb,
-        completeBindings_erase rest hr]
-end
 
 /-- A partial ordinary signature constrains the inferred monotype before that
 monotype is generalised. It is not an existential complete Core signature. -/
@@ -168,65 +80,6 @@ def rigidBranchVars : List (MatchPattern × InferInput) → List Nat
 def rigidBindingVars : List InputRecBinding → List Nat
   | [] => []
   | ⟨ann, rhs⟩ :: rest => ann.rigidVars ++ rhs.rigidVars ++ rigidBindingVars rest
-end
-
-/- Embed complete Core using fixed leaves in the same expression family. -/
-
-mutual
-def Expr.ofCore : Expr → InferInput
-  | .primLit p => .primLit p
-  | .primBinOp op => .primBinOp op
-  | .lambda ann body => .lambda (ann.map PartialCore.Template.fixed) (Expr.ofCore body)
-  | .app f arg => .app (Expr.ofCore f) (Expr.ofCore arg)
-  | .letIn ann rhs body => .letIn (Option.ofCore ann) (Expr.ofCore rhs) (Expr.ofCore body)
-  | .var i => .var i
-  | .ctor name => .ctor name
-  | .match_ scrut branches => .match_ (Expr.ofCore scrut) (ofCoreBranches branches)
-  | .letRec bindings body => .letRec (ofCoreBindings bindings) (Expr.ofCore body)
-def ofCoreBranches : List (MatchPattern × Expr) → List (MatchPattern × InferInput)
-  | [] => []
-  | (pat, body) :: rest => (pat, (Expr.ofCore body)) :: ofCoreBranches rest
-def ofCoreBindings : List CoreRecBinding → List InputRecBinding
-  | [] => []
-  | ⟨ann, rhs⟩ :: rest =>
-      { ann := Option.ofCore ann, rhs := Expr.ofCore rhs } ::
-        ofCoreBindings rest
-end
-
-
-mutual
-@[simp] theorem Expr.source_toCore_ofCore (expr : Expr) : (Expr.ofCore expr).toCore = some expr := by
-  cases expr with
-  | primLit => rfl
-  | primBinOp => rfl
-  | var => rfl
-  | ctor => rfl
-  | lambda ann body =>
-    have ha : completeLambdaAnn (ann.map PartialCore.Template.fixed) = some ann := by cases ann <;> rfl
-    simp only [Expr.ofCore, Expr.toCore, ha, Expr.source_toCore_ofCore body]; rfl
-  | app f arg => simp only [Expr.ofCore, Expr.toCore, Expr.source_toCore_ofCore f, Expr.source_toCore_ofCore arg]; rfl
-  | letIn ann rhs body =>
-    simp only [Expr.ofCore, Expr.toCore, Option.toCore_ofCore, Expr.source_toCore_ofCore rhs, Expr.source_toCore_ofCore body]; rfl
-  | match_ scrut branches =>
-    simp only [Expr.ofCore, Expr.toCore, Expr.source_toCore_ofCore scrut, completeBranches_ofCore branches]; rfl
-  | letRec bindings body =>
-    simp only [Expr.ofCore, Expr.toCore, completeBindings_ofCore bindings,
-      Expr.source_toCore_ofCore body]; rfl
-theorem completeBranches_ofCore (branches : List (MatchPattern × Expr)) :
-    completeBranches (ofCoreBranches branches) = some branches := by
-  cases branches with
-  | nil => rfl
-  | cons pair rest =>
-    rcases pair with ⟨pat, body⟩
-    simp only [ofCoreBranches, completeBranches, Expr.source_toCore_ofCore body, completeBranches_ofCore rest]; rfl
-theorem completeBindings_ofCore (bindings : List CoreRecBinding) :
-    completeBindings (ofCoreBindings bindings) = some bindings := by
-  cases bindings with
-  | nil => rfl
-  | cons binding rest =>
-    simp only [ofCoreBindings, completeBindings, Option.toCore_ofCore,
-      Expr.source_toCore_ofCore binding.rhs, completeBindings_ofCore rest]
-    rfl
 end
 
 mutual
@@ -369,163 +222,6 @@ end
     (input.openSourceTyVars Xs).erase = input.erase := input.source_erase_openTyVarsFrom 0 Xs
 
 
-mutual
-theorem PartialCore.Template.source_toCore_openTyVarsFrom (template : TyTemplate) {ty : Ty}
-    (h : template.toCore = some ty) (d : Nat) (Xs : List Nat) :
-    (template.openTyVarsFrom d Xs).toCore = some (ty.openVarsFrom d Xs) := by
-  cases template with
-  | fixed t => cases h; rfl
-  | hole | named => cases h
-  | arrow a b =>
-      simp only [PartialCore.Template.toCore, bind, pure, Option.bind_eq_some_iff, Option.some.injEq] at h
-      obtain ⟨ta, ha, tb, hb, rfl⟩ := h
-      simp only [PartialCore.Template.openTyVarsFrom, PartialCore.Template.toCore, a.source_toCore_openTyVarsFrom ha d Xs,
-        b.source_toCore_openTyVarsFrom hb d Xs]
-      rfl
-  | custom name args =>
-      simp only [PartialCore.Template.toCore, bind, pure, Option.bind_eq_some_iff, Option.some.injEq] at h
-      obtain ⟨tys, ht, rfl⟩ := h
-      simp only [PartialCore.Template.openTyVarsFrom, PartialCore.Template.toCore, completeTypes_openTemplateList args ht d Xs,
-        Ty.openVarsFrom_customTy]
-      rfl
-theorem completeTypes_openTemplateList (templates : List TyTemplate) {tys : List Ty}
-    (h : completeTypes templates = some tys) (d : Nat) (Xs : List Nat) :
-    completeTypes (openTemplateList d Xs templates) = some (tys.map (Ty.openVarsFrom d Xs)) := by
-  cases templates with
-  | nil => cases h; rfl
-  | cons t ts =>
-      simp only [completeTypes, bind, pure, Option.bind_eq_some_iff, Option.some.injEq] at h
-      obtain ⟨ty, ht, tys, hts, rfl⟩ := h
-      simp only [openTemplateList, completeTypes, t.source_toCore_openTyVarsFrom ht d Xs,
-        completeTypes_openTemplateList ts hts d Xs]
-      rfl
-end
-
-theorem completeLambdaAnn_openTyVarsFrom (ann : Option TyTemplate) {core : Option Ty}
-    (h : completeLambdaAnn ann = some core) (d : Nat) (Xs : List Nat) :
-    completeLambdaAnn (ann.map (PartialCore.Template.openTyVarsFrom d Xs)) =
-      some (core.map (Ty.openVarsFrom d Xs)) := by
-  cases ann with
-  | none => cases h; rfl
-  | some template =>
-      simp only [completeLambdaAnn, bind, pure, Option.bind_eq_some_iff, Option.some.injEq] at h
-      obtain ⟨ty, ht, rfl⟩ := h
-      simp only [Option.map_some, completeLambdaAnn, template.source_toCore_openTyVarsFrom ht d Xs]
-      rfl
-
-theorem Option.source_toCore_openTyVarsFrom (ann : BindingAnn) {core : Option PolyTy}
-    (h : ann.toCore = some core) (d : Nat) (Xs : List Nat) :
-    (ann.openTyVarsFrom d Xs).toCore = some (core.map (fun scheme =>
-      { scheme with body := scheme.body.openVarsFrom (d + scheme.paramCount) Xs })) := by
-  cases ann with
-  | none => cases h; rfl
-  | some scheme =>
-    rcases scheme with ⟨count, template⟩
-    simp only [Option.toCore, bind, pure, Option.bind_eq_some_iff, Option.some.injEq] at h
-    obtain ⟨ty, ht, rfl⟩ := h
-    simp only [Option.openTyVarsFrom, Option.map_some, Option.toCore,
-      template.source_toCore_openTyVarsFrom ht (d + count) Xs]
-    rfl
-
-theorem Option.paramCount_toCore (ann : BindingAnn) {core : Option PolyTy}
-    (h : ann.toCore = some core) : ann.paramCount = RecAnn.params core := by
-  cases ann with
-  | none => cases h; rfl
-  | some scheme =>
-    rcases scheme with ⟨count, template⟩
-    simp only [Option.toCore, bind, pure, Option.bind_eq_some_iff, Option.some.injEq] at h
-    obtain ⟨ty, ht, rfl⟩ := h
-    rfl
-
-mutual
-/-- Successful conservative embedding commutes with opening an outer signature;
-all nested complete signatures retain the shielding used by ordinary Core. -/
-theorem Expr.source_toCore_openTyVarsFrom (input : InferInput) {core : Expr}
-    (h : input.toCore = some core) (d : Nat) (Xs : List Nat) :
-    (input.openTyVarsFrom d Xs).toCore = some (core.openTyVarsAux d Xs) := by
-  cases input with
-  | primLit p => cases h; rfl
-  | primBinOp op => cases h; rfl
-  | var i => cases h; rfl
-  | ctor name => cases h; rfl
-  | lambda ann body =>
-      simp only [Expr.toCore, bind, pure, Option.bind_eq_some_iff, Option.some.injEq] at h
-      obtain ⟨ann', ha, body', hb, rfl⟩ := h
-      simp only [Expr.openTyVarsFrom, Expr.toCore, completeLambdaAnn_openTyVarsFrom ann ha d Xs,
-        body.source_toCore_openTyVarsFrom hb d Xs]
-      rfl
-  | app f arg =>
-      simp only [Expr.toCore, bind, pure, Option.bind_eq_some_iff, Option.some.injEq] at h
-      obtain ⟨f', hf, arg', ha, rfl⟩ := h
-      simp only [Expr.openTyVarsFrom, Expr.toCore, f.source_toCore_openTyVarsFrom hf d Xs,
-        arg.source_toCore_openTyVarsFrom ha d Xs]
-      rfl
-  | letIn ann rhs body =>
-      simp only [Expr.toCore, bind, pure, Option.bind_eq_some_iff, Option.some.injEq] at h
-      obtain ⟨ann', ha, rhs', hr, body', hb, rfl⟩ := h
-      simp only [Expr.openTyVarsFrom, Expr.toCore, ann.source_toCore_openTyVarsFrom ha d Xs,
-        rhs.source_toCore_openTyVarsFrom hr (d + ann.paramCount) Xs, body.source_toCore_openTyVarsFrom hb d Xs]
-      rw [ann.paramCount_toCore ha]
-      cases ann' <;> rfl
-  | match_ scrut branches =>
-      simp only [Expr.toCore, bind, pure, Option.bind_eq_some_iff, Option.some.injEq] at h
-      obtain ⟨scrut', hs, branches', hbs, rfl⟩ := h
-      simp only [Expr.openTyVarsFrom, Expr.toCore, scrut.source_toCore_openTyVarsFrom hs d Xs,
-        completeBranches_openTyVarsFrom branches hbs d Xs]
-      rfl
-  | letRec bindings body =>
-      simp only [Expr.toCore, bind, pure, Option.bind_eq_some_iff, Option.some.injEq] at h
-      obtain ⟨bindings', hbs, body', hb, rfl⟩ := h
-      simp only [Expr.openTyVarsFrom, Expr.toCore,
-        completeBindings_openTyVarsFrom bindings hbs d Xs,
-        body.source_toCore_openTyVarsFrom hb d Xs]
-      rfl
-termination_by sizeOf input
-decreasing_by all_goals (subst_vars; simp_wf <;> omega)
-
-theorem completeBranches_openTyVarsFrom (branches : List (MatchPattern × InferInput))
-    {cores : List (MatchPattern × Expr)} (h : completeBranches branches = some cores)
-    (d : Nat) (Xs : List Nat) :
-    completeBranches (openInputBranches d Xs branches) = some (BranchList.openTyVarsAux d Xs cores) := by
-  cases branches with
-  | nil => cases h; rfl
-  | cons pair rest =>
-      simp only [completeBranches, bind, pure, Option.bind_eq_some_iff, Option.some.injEq] at h
-      obtain ⟨body', hb, rest', hr, rfl⟩ := h
-      simp only [openInputBranches, completeBranches, pair.2.source_toCore_openTyVarsFrom hb d Xs,
-        completeBranches_openTyVarsFrom rest hr d Xs]
-      rfl
-termination_by sizeOf branches
-decreasing_by all_goals (subst_vars; cases pair; simp_wf <;> omega)
-
-theorem completeBindings_openTyVarsFrom (bindings : List InputRecBinding)
-    {cores : List CoreRecBinding} (h : completeBindings bindings = some cores)
-    (d : Nat) (Xs : List Nat) :
-    completeBindings (openInputBindings d Xs bindings) =
-      some (RecGroup.openTyVarsAux d Xs cores) := by
-  cases bindings with
-  | nil => cases h; rfl
-  | cons binding rest =>
-      simp only [completeBindings, bind, pure, Option.bind_eq_some_iff, Option.some.injEq] at h
-      obtain ⟨coreAnn, ha, rhs, hb, rest', hr, rfl⟩ := h
-      simp only [openInputBindings, completeBindings,
-        binding.ann.source_toCore_openTyVarsFrom ha d Xs,
-        binding.rhs.source_toCore_openTyVarsFrom hb (d + binding.ann.paramCount) Xs,
-        completeBindings_openTyVarsFrom rest hr d Xs, RecGroup.openTyVarsAux]
-      rw [binding.ann.paramCount_toCore ha]
-      rfl
-termination_by sizeOf bindings
-decreasing_by
-  all_goals (subst_vars; simp_wf)
-  all_goals first | omega | (have hrhs := RecBinding.rhs_sizeOf_lt binding; omega)
-end
-
-theorem Expr.source_toCore_openTyVars (input : InferInput) {core : Expr}
-    (h : input.toCore = some core) (Xs : List Nat) :
-    (input.openSourceTyVars Xs).toCore = some (core.openTyVars Xs) :=
-  input.source_toCore_openTyVarsFrom h 0 Xs
-
-
 /- Free type substitution preserves annotation modes and written binders. -/
 
 mutual
@@ -651,57 +347,6 @@ decreasing_by
   all_goals (subst_vars; simp_wf)
   all_goals first | omega | (have hrhs := RecBinding.rhs_sizeOf_lt binding; omega)
 end
-
-mutual
-theorem PartialCore.Template.source_toCore_substTyFvars (template : TyTemplate) {ty : Ty}
-    (h : template.toCore = some ty) (subst : List (Nat × Ty)) :
-    (template.substSourceTyFvars subst).toCore = some (ty.substFvars subst) := by
-  cases template with
-  | fixed t => cases h; rfl
-  | hole | named => cases h
-  | arrow a b =>
-      simp only [PartialCore.Template.toCore, bind, pure, Option.bind_eq_some_iff, Option.some.injEq] at h
-      obtain ⟨ta, ha, tb, hb, rfl⟩ := h
-      simp only [PartialCore.Template.substSourceTyFvars, PartialCore.Template.toCore, a.source_toCore_substTyFvars ha subst,
-        b.source_toCore_substTyFvars hb subst, Ty.substFvars_arrow]
-      rfl
-  | custom name args =>
-      simp only [PartialCore.Template.toCore, bind, pure, Option.bind_eq_some_iff, Option.some.injEq] at h
-      obtain ⟨tys, ht, rfl⟩ := h
-      simp only [PartialCore.Template.substSourceTyFvars, PartialCore.Template.toCore, completeTypes_substTemplateList args ht subst,
-        Ty.substFvars_customTy]
-      rfl
-theorem completeTypes_substTemplateList (templates : List TyTemplate) {tys : List Ty}
-    (h : completeTypes templates = some tys) (subst : List (Nat × Ty)) :
-    completeTypes (substTemplateList subst templates) = some (tys.map (Ty.substFvars subst)) := by
-  cases templates with
-  | nil => cases h; rfl
-  | cons t ts =>
-      simp only [completeTypes, bind, pure, Option.bind_eq_some_iff, Option.some.injEq] at h
-      obtain ⟨ty, ht, tys, hts, rfl⟩ := h
-      simp only [substTemplateList, completeTypes, t.source_toCore_substTyFvars ht subst,
-        completeTypes_substTemplateList ts hts subst]
-      rfl
-end
-
-theorem completeLambdaAnn_substTyFvars (ann : Option TyTemplate) {core : Option Ty}
-    (h : completeLambdaAnn ann = some core) (subst : List (Nat × Ty)) :
-    completeLambdaAnn (ann.map (PartialCore.Template.substSourceTyFvars subst)) =
-      some (core.map (Ty.substFvars subst)) := by
-  cases ann with
-  | none => cases h; rfl
-  | some template =>
-      simp only [completeLambdaAnn, bind, pure, Option.bind_eq_some_iff, Option.some.injEq] at h
-      obtain ⟨ty, ht, rfl⟩ := h
-      simp only [Option.map_some, completeLambdaAnn, template.source_toCore_substTyFvars ht subst]
-      rfl
-
-theorem PartialCore.Ann.source_toCore_substTyFvars (ann : CheckAnn) {core : Option PolyTy}
-    (h : ann.toCore = some core) (subst : List (Nat × Ty)) :
-    (ann.substSourceTyFvars subst).toCore = some (core.map (fun scheme =>
-      { scheme with body := scheme.body.substFvars subst })) := by
-  cases ann <;> cases h <;> rfl
-
 
 mutual
 theorem PartialCore.Template.source_substTyFvars_zip_openTyVarsFrom (template : TyTemplate) {Ys Xs : List Nat}
@@ -2351,7 +1996,7 @@ theorem Expr.erase_substTyFvars (expr : Expr) (subst : Subst) :
 
 end
 
-/-! ## Typing -/
+/-! ## Annotation matching and scope refinement -/
 
 section
 
@@ -2744,18 +2389,18 @@ theorem Expr.source_substTyFvars_openTyVars_of_fixes (input : InferInput) {subst
 
 
 mutual
-theorem PartialCore.Template.source_toCore_rigidVars {template : TyTemplate} {ty : Ty}
-    (h : template.toCore = some ty) (v : Nat) : v ∈ template.rigidVars ↔ v ∈ ty.freeVars := by
+theorem PartialCore.Template.toTy_rigidVars {template : TyTemplate} {ty : Ty}
+    (h : template.toTy = some ty) (v : Nat) : v ∈ template.rigidVars ↔ v ∈ ty.freeVars := by
   cases template with
   | fixed => cases h; rfl
   | hole | named => cases h
   | arrow a b =>
-    simp only [PartialCore.Template.toCore, bind, pure, Option.bind_eq_some_iff, Option.some.injEq] at h
+    simp only [PartialCore.Template.toTy, bind, pure, Option.bind_eq_some_iff, Option.some.injEq] at h
     obtain ⟨ta, ha, tb, hb, rfl⟩ := h
     simp only [PartialCore.Template.rigidVars, Ty.freeVars, List.mem_append, List.mem_dedup,
-      PartialCore.Template.source_toCore_rigidVars ha, PartialCore.Template.source_toCore_rigidVars hb]
+      PartialCore.Template.toTy_rigidVars ha, PartialCore.Template.toTy_rigidVars hb]
   | custom name args =>
-    simp only [PartialCore.Template.toCore, bind, pure, Option.bind_eq_some_iff, Option.some.injEq] at h
+    simp only [PartialCore.Template.toTy, bind, pure, Option.bind_eq_some_iff, Option.some.injEq] at h
     obtain ⟨tys, ht, rfl⟩ := h
     simpa only [PartialCore.Template.rigidVars, Ty.freeVars, TyList.mem_freeVars_iff, List.mem_flatMap] using completeTypes_rigidVars ht v
 theorem completeTypes_rigidVars {templates : List TyTemplate} {tys : List Ty}
@@ -2767,30 +2412,9 @@ theorem completeTypes_rigidVars {templates : List TyTemplate} {tys : List Ty}
     simp only [completeTypes, bind, pure, Option.bind_eq_some_iff, Option.some.injEq] at h
     obtain ⟨ty, ht, tys, hts, rfl⟩ := h
     simp only [rigidVarsList, PartialCore.templateRigidVars, List.flatMap_cons, List.mem_append,
-      PartialCore.Template.source_toCore_rigidVars ht, completeTypes_rigidVars hts]
+      PartialCore.Template.toTy_rigidVars ht, completeTypes_rigidVars hts]
 end
 
-
-private theorem completeLambdaAnn_rigidVars {ann : Option TyTemplate} {core : Option Ty}
-    (h : completeLambdaAnn ann = some core) (v : Nat) :
-    v ∈ ann.elim [] PartialCore.Template.rigidVars ↔ v ∈ core.elim [] Ty.freeVars := by
-  cases ann with
-  | none => cases h; rfl
-  | some template =>
-    simp only [completeLambdaAnn, bind, pure, Option.bind_eq_some_iff, Option.some.injEq] at h
-    obtain ⟨ty, ht, rfl⟩ := h
-    exact PartialCore.Template.source_toCore_rigidVars ht v
-
-private theorem Option.source_toCore_rigidVars {ann : BindingAnn} {core : Option PolyTy}
-    (h : ann.toCore = some core) (v : Nat) :
-    v ∈ ann.rigidVars ↔ v ∈ core.elim [] (fun scheme => scheme.body.freeVars) := by
-  cases ann with
-  | none => cases h; rfl
-  | some scheme =>
-    rcases scheme with ⟨count, template⟩
-    simp only [Option.toCore, bind, pure, Option.bind_eq_some_iff, Option.some.injEq] at h
-    obtain ⟨ty, ht, rfl⟩ := h
-    exact PartialCore.Template.source_toCore_rigidVars ht v
 
 @[simp] theorem Option.mem_annotationView_rigidVars (ann : BindingAnn) (v : Nat) :
     v ∈ ann.annotationView.rigidVars ↔ v ∈ ann.rigidVars := by
@@ -2798,77 +2422,13 @@ private theorem Option.source_toCore_rigidVars {ann : BindingAnn} {core : Option
   | none => rfl
   | some scheme =>
     rcases scheme with ⟨count, template⟩
-    cases ht : template.toCore with
+    cases ht : template.toTy with
     | some ty =>
       simpa only [Option.annotationView, ht, Option.rigidVars, Option.elim_some,
-        PartialCore.Ann.rigidVars] using (PartialCore.Template.source_toCore_rigidVars ht v).symm
+        PartialCore.Ann.rigidVars] using (PartialCore.Template.toTy_rigidVars ht v).symm
     | none =>
       by_cases hc : count = 0 <;>
         simp [Option.annotationView, ht, hc, Option.rigidVars, PartialCore.Ann.rigidVars]
-
-mutual
-/-- Conservative embedding preserves exactly the authored free type variables,
-including all complete signature binders, branches, and recursive RHSs. -/
-theorem Expr.source_toCore_rigidVars (input : InferInput) {core : Expr}
-    (h : input.toCore = some core) (v : Nat) : v ∈ input.rigidVars ↔ v ∈ core.tyFreeVars := by
-  cases input with
-  | primLit p => cases h; rfl
-  | primBinOp op => cases h; rfl
-  | var index => cases h; rfl
-  | ctor name => cases h; rfl
-  | lambda ann body =>
-    simp only [Expr.toCore, bind, pure, Option.bind_eq_some_iff, Option.some.injEq] at h
-    obtain ⟨ann', ha, body', hb, rfl⟩ := h
-    simp only [Expr.rigidVars, Expr.tyFreeVars, List.mem_append,
-      completeLambdaAnn_rigidVars ha v, body.source_toCore_rigidVars hb v]
-  | app f arg =>
-    simp only [Expr.toCore, bind, pure, Option.bind_eq_some_iff, Option.some.injEq] at h
-    obtain ⟨f', hf, arg', ha, rfl⟩ := h
-    simp only [Expr.rigidVars, Expr.tyFreeVars, List.mem_append,
-      f.source_toCore_rigidVars hf v, arg.source_toCore_rigidVars ha v]
-  | letIn ann rhs body =>
-    simp only [Expr.toCore, bind, pure, Option.bind_eq_some_iff, Option.some.injEq] at h
-    obtain ⟨ann', ha, rhs', hr, body', hb, rfl⟩ := h
-    simp only [Expr.rigidVars, Expr.tyFreeVars, List.mem_append,
-      Option.source_toCore_rigidVars ha v, rhs.source_toCore_rigidVars hr v, body.source_toCore_rigidVars hb v]
-  | match_ scrut branches =>
-    simp only [Expr.toCore, bind, pure, Option.bind_eq_some_iff, Option.some.injEq] at h
-    obtain ⟨scrut', hs, branches', hb, rfl⟩ := h
-    simp only [Expr.rigidVars, Expr.tyFreeVars, List.mem_append,
-      scrut.source_toCore_rigidVars hs v, completeBranches_rigidVars branches hb v]
-  | letRec bindings body =>
-    simp only [Expr.toCore, bind, pure, Option.bind_eq_some_iff, Option.some.injEq] at h
-    obtain ⟨bindings', hr, body', hb, rfl⟩ := h
-    simp only [Expr.rigidVars, Expr.tyFreeVars, List.mem_append,
-      completeBindings_rigidVars bindings hr v,
-      body.source_toCore_rigidVars hb v]
-
-theorem completeBranches_rigidVars (branches : List (MatchPattern × InferInput))
-    {cores : List (MatchPattern × Expr)} (h : completeBranches branches = some cores) (v : Nat) :
-    v ∈ rigidBranchVars branches ↔ v ∈ Expr.tyFreeVars.BranchList.tyFreeVars cores := by
-  cases branches with
-  | nil => cases h; rfl
-  | cons head rest =>
-    rcases head with ⟨pat, body⟩
-    simp only [completeBranches, bind, pure, Option.bind_eq_some_iff, Option.some.injEq] at h
-    obtain ⟨body', hb, rest', hr, rfl⟩ := h
-    simp only [rigidBranchVars, Expr.tyFreeVars.BranchList.tyFreeVars, List.mem_append,
-      body.source_toCore_rigidVars hb v, completeBranches_rigidVars rest hr v]
-
-theorem completeBindings_rigidVars (bindings : List InputRecBinding)
-    {cores : List CoreRecBinding}
-    (h : completeBindings bindings = some cores) (v : Nat) :
-    v ∈ rigidBindingVars bindings ↔ v ∈ Expr.tyFreeVars.RecGroup.tyFreeVars cores := by
-  cases bindings with
-  | nil => cases h; rfl
-  | cons binding rest =>
-    simp only [completeBindings, bind, pure, Option.bind_eq_some_iff, Option.some.injEq] at h
-    obtain ⟨ann, ha, rhs, hb, rest', hr, rfl⟩ := h
-    simp only [rigidBindingVars, Expr.tyFreeVars.RecGroup.tyFreeVars, List.mem_append,
-      Option.source_toCore_rigidVars ha v, binding.rhs.source_toCore_rigidVars hb v,
-      completeBindings_rigidVars rest hr v]
-end
-
 
 /-- A signed completion preserves the written forall prefix. Partial signatures
 may additionally quantify independent inferred variables after that prefix. -/
@@ -3428,9 +2988,8 @@ generalize cofinally. All nonrecursive binding annotations select one completion
 those openings. Signed lets preserve the written forall prefix, with any
 additional hole variables quantified after that prefix.
 
-Complete syntax has a derived compatibility conversion. Partial recursive
-signatures remain monomorphic within their
-component; only complete written schemes permit polymorphic recursive use.
+Partial recursive signatures remain monomorphic within their component; only
+complete written schemes permit polymorphic recursive use.
 -/
 inductive ScopedTyping : List Nat → Ctx → InferInput → Ty → Prop
   | primLit :

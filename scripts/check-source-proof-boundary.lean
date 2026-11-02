@@ -8,7 +8,10 @@ open Lean in
 run_cmd do
   let env ← getEnv
   for historical in #[`TypeOfHM, `TypeOfMatchBranch, `Option.Pins,
-      `GeneralisesTo, `RecSpecs.StratifiedMonoTyped, `RecSpecs.PolyTypedFinal] do
+      `GeneralisesTo, `RecSpecs.StratifiedMonoTyped, `RecSpecs.PolyTypedFinal,
+      `Expr.toCore, `Expr.ofCore, `SurfaceBridge.lowerCore,
+      `SurfaceBridge.lowerCoreProgram, `SurfaceBridge.SurfaceWTExpr,
+      `SurfaceBridge.coreTypecheck] do
     if env.contains historical then
       throwError "The default verified import closure still contains {historical}"
   for root in #[`inferWithTypes_infer, `inferWithTypes_input_sound,
@@ -17,8 +20,12 @@ run_cmd do
       `InputTyping.erase, `elabDecls_sound, `elabDecls_eq_some_iff,
       `PatComp.compile_correct_surface, `PatComp.lowerMatch_adequate_of_typed,
       `RuntimeTyping.RunWT.varsBelow, `RuntimeTyping.RunWT.type_safety_star,
+      `SurfaceBridge.lowerExpr_exhaustive, `SurfaceBridge.lowerProgram_exhaustive,
+      `SurfaceBridge.program_type_safe,
       `Headlines.lower_and_infer_direct,
       `Headlines.runSafe] do
+    unless env.contains root do
+      throwError "The public proof audit refers to a missing declaration: {root}"
     let (_, state) := ((CollectAxioms.collect root).run env).run {}
     for entry in env.constants.toList do
       if state.visited.contains entry.1 &&

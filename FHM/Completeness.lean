@@ -4419,7 +4419,7 @@ theorem Infer.signed_check_factor
     (hK : ∀ k ∈ K, k < frontier) (hF : ∀ soft ∈ F, Ty.BelowFvars frontier soft)
     (hR : ∀ pair ∈ R, pair.2.IsLC) (hP : ∀ p ∈ P, p < frontier)
     (hRP : ∀ p ∈ P, R.onTy (.fvar p) = .fvar p)
-    (hfreeze : ∀ v ∈ (Expr.letIn (Option.ofCore (some scheme)) rhs (.primLit .unit)).rigidVars,
+    (hfreeze : ∀ v ∈ (Expr.letIn (Option.fromScheme (some scheme)) rhs (.primLit .unit)).rigidVars,
       v ∈ K → v ∉ softVars F → R.onTy (.fvar v) = .fvar v)
     (hcandAnn : ∀ v ∈ (R.onPolyTy scheme).body.freeVars, v ∈ P)
     (hcandRhs : ∀ v ∈ (rhs.substSourceTyFvars R).rigidVars, v ∈ P)
@@ -4429,7 +4429,7 @@ theorem Infer.signed_check_factor
     ∃ U : Subst, (∀ pair ∈ U, pair.2.IsLC) ∧
       (∀ p ∈ P, U.onTy (.fvar p) = .fvar p) ∧
       Subst.AgreesBelow frontier R ((s1 ++ s2) ++ U) := by
-  have hscope : SourceScope K F (.letIn (Option.ofCore (some scheme)) rhs (.primLit .unit)) := by
+  have hscope : SourceScope K F (.letIn (Option.fromScheme (some scheme)) rhs (.primLit .unit)) := by
     intro v hv
     simp only [Expr.rigidVars, PartialCore.Ann.rigidVars, List.mem_append, List.not_mem_nil, or_false] at hv
     exact hv.elim (hann v) (hraw v)
@@ -4460,7 +4460,7 @@ theorem Infer.signed_check_factor
   have hprincipal := Infer.sourcePrincipal_letSignature hscope rfl havoid hi hcheck hescape hb ih ihb
   obtain ⟨L, htypes⟩ := hcandidate
   have ht : ScopedTyping P (R.onCtx ctx)
-      ((Expr.letIn (Option.ofCore (some scheme)) rhs (.primLit .unit)).substSourceTyFvars R) (.prim .unit) := by
+      ((Expr.letIn (Option.fromScheme (some scheme)) rhs (.primLit .unit)).substSourceTyFvars R) (.prim .unit) := by
     refine ScopedTyping.letSignature (M := R.onPolyTy scheme) (L := L)
       (Subst.onPolyTy_wf hR hwf) hcandAnn hcandRhs
       (PartialCore.Ann.SignatureMatches.complete (Subst.onPolyTy_wf hR hwf)) ?_
@@ -4468,7 +4468,7 @@ theorem Infer.signed_check_factor
     intro Ys hy
     have hlen : Ys.length = scheme.paramCount := hy.length
     have htake : Ys.take scheme.paramCount = Ys := List.take_of_length_le (by omega)
-    simpa only [PartialCore.Ann.paramCount, PartialCore.Ann.substSourceTyFvars, Option.paramCount_substSourceTyFvars, Option.paramCount_ofCore, RecAnn.params, Subst.onPolyTy, htake] using htypes Ys
+    simpa only [PartialCore.Ann.paramCount, PartialCore.Ann.substSourceTyFvars, Option.paramCount_substSourceTyFvars, Option.paramCount_fromScheme, RecAnn.params, Subst.onPolyTy, htake] using htypes Ys
       ⟨hlen, hy.nodup, hy.avoid⟩
   obtain ⟨U, hU, _, hUP, hag⟩ := hprincipal hctxWF hctx hK hF R (.prim .unit) P hR hP hRP hfreeze ht
   exact ⟨U, hU, hUP, by simpa only [List.append_nil] using hag⟩
@@ -4592,7 +4592,7 @@ theorem InferRecSignedCert.sourcePrincipal_residual
         intro v hv hk hn
         simp only [Expr.rigidVars, PartialCore.Ann.rigidVars, List.mem_append, List.not_mem_nil, or_false] at hv
         exact hv.elim (fun hv => hannFreeze _ List.mem_cons_self v
-          ((Option.mem_annotationView_rigidVars ann v).mp (by simpa [hAnn, PartialCore.Ann.rigidVars, Option.ofCore, Option.rigidVars, Scheme.map, PartialCore.Template.rigidVars] using hv)) hk hn)
+          ((Option.mem_annotationView_rigidVars ann v).mp (by simpa [hAnn, PartialCore.Ann.rigidVars, Option.fromScheme, Option.rigidVars, Scheme.map, PartialCore.Template.rigidVars] using hv)) hk hn)
           (fun hv => hrhsFreeze _ List.mem_cons_self v hv hk hn))
       (by
         intro v hv

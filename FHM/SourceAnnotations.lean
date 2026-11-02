@@ -5,14 +5,14 @@ stored in the source syntax. Hole-free annotations are complete signatures,
 matching surface lowering; partial written foralls retain their written prefix. -/
 
 mutual
-def PartialCore.Template.toCore : TyTemplate → Option Ty
+def PartialCore.Template.toTy : TyTemplate → Option Ty
   | .fixed ty => some ty
   | .hole | .named _ => none
-  | .arrow a b => return .arrow (← a.toCore) (← b.toCore)
+  | .arrow a b => return .arrow (← a.toTy) (← b.toTy)
   | .custom name args => return .customTy name (← completeTypes args)
 def completeTypes : List TyTemplate → Option (List Ty)
   | [] => some []
-  | template :: rest => return (← template.toCore) :: (← completeTypes rest)
+  | template :: rest => return (← template.toTy) :: (← completeTypes rest)
 end
 
 mutual
@@ -39,11 +39,6 @@ def substTemplateList (subst : List (Nat × Ty)) : List TyTemplate → List TyTe
   | t :: ts => t.substSourceTyFvars subst :: substTemplateList subst ts
 end
 
-def PartialCore.Ann.toCore : CheckAnn → Option (Option PolyTy)
-  | .absent => some none
-  | .complete scheme => some (some scheme)
-  | .template _ | .partialForall _ _ => none
-
 def PartialCore.Ann.isSignature : CheckAnn → Bool
   | .complete _ | .partialForall _ _ => true
   | .absent | .template _ => false
@@ -54,7 +49,7 @@ def PartialCore.Ann.rigidVars : CheckAnn → List Nat
   | .template t => t.rigidVars
   | .partialForall _ t => t.rigidVars
 
-def PartialCore.Ann.ofCore : Option PolyTy → CheckAnn
+def PartialCore.Ann.ofScheme : Option PolyTy → CheckAnn
   | none => .absent
   | some scheme => .complete scheme
 
@@ -86,7 +81,7 @@ def Option.paramCount (ann : Option (Scheme T)) : Nat :=
 def Option.annotationView : BindingAnn → CheckAnn
   | none => .absent
   | some ⟨count, template⟩ =>
-      match template.toCore with
+      match template.toTy with
       | some ty => .complete ⟨count, ty⟩
       | none => if count = 0 then .template template else .partialForall count template
 
@@ -102,11 +97,7 @@ def Option.recModeAnn (ann : BindingAnn) : Option PolyTy := ann.annotationView.r
 
 def Option.recPrefixCount (ann : BindingAnn) : Nat := ann.annotationView.recPrefixCount
 
-def Option.toCore : BindingAnn → Option (Option PolyTy)
-  | none => some none
-  | some ⟨count, template⟩ => return some ⟨count, ← template.toCore⟩
-
-def Option.ofCore (ann : Option PolyTy) : BindingAnn :=
+def Option.fromScheme (ann : Option PolyTy) : BindingAnn :=
   ann.map (Scheme.map PartialCore.Template.fixed)
 
 def Option.openTyVarsFrom (depth : Nat) (names : List Nat) : BindingAnn → BindingAnn :=
@@ -117,30 +108,16 @@ def Option.substSourceTyFvars (subst : List (Nat × Ty)) : BindingAnn → Bindin
   Option.map (Scheme.map (PartialCore.Template.substSourceTyFvars subst))
 
 theorem Option.annotationView_complete (template : TyTemplate)
-    (h : template.toCore = some ty) (count : Nat) :
+    (h : template.toTy = some ty) (count : Nat) :
     (some (Scheme.mk count template)).annotationView = .complete ⟨count, ty⟩ := by
   simp only [Option.annotationView, h]
 
-@[simp] theorem Option.annotationView_ofCore (ann : Option PolyTy) :
-    (Option.ofCore ann).annotationView = PartialCore.Ann.ofCore ann := by
+@[simp] theorem Option.annotationView_fromScheme (ann : Option PolyTy) :
+    (Option.fromScheme ann).annotationView = PartialCore.Ann.ofScheme ann := by
   cases ann <;> rfl
 
-theorem Option.annotationView_toCore (ann : BindingAnn) {core : Option PolyTy}
-    (h : ann.toCore = some core) : ann.annotationView = PartialCore.Ann.ofCore core := by
-  cases ann with
-  | none => cases h; rfl
-  | some scheme =>
-    rcases scheme with ⟨count, template⟩
-    simp only [Option.toCore, bind, pure, Option.bind_eq_some_iff, Option.some.injEq] at h
-    obtain ⟨ty, ht, rfl⟩ := h
-    exact Option.annotationView_complete template ht count
-
-@[simp] theorem Option.paramCount_ofCore (ann : Option PolyTy) :
-    (Option.ofCore ann).paramCount = RecAnn.params ann := by
-  cases ann <;> rfl
-
-@[simp] theorem Option.toCore_ofCore (ann : Option PolyTy) :
-    (Option.ofCore ann).toCore = some ann := by
+@[simp] theorem Option.paramCount_fromScheme (ann : Option PolyTy) :
+    (Option.fromScheme ann).paramCount = RecAnn.params ann := by
   cases ann <;> rfl
 
 @[simp] theorem Option.paramCount_substSourceTyFvars (ann : BindingAnn) (subst) :
@@ -157,24 +134,24 @@ theorem Option.annotationView_toCore (ann : BindingAnn) {core : Option PolyTy}
   | none => rfl
   | some scheme =>
     rcases scheme with ⟨count, template⟩
-    cases ht : template.toCore with
+    cases ht : template.toTy with
     | some ty => simp [Option.annotationView, ht, Option.paramCount, PartialCore.Ann.paramCount]
     | none =>
       by_cases hc : count = 0 <;>
         simp [Option.annotationView, ht, hc, Option.paramCount, PartialCore.Ann.paramCount]
 
 mutual
-theorem PartialCore.Template.toCore_subst (t : TyTemplate) (S : Subst) :
-    (t.substSourceTyFvars S).toCore = t.toCore.map S.onTy := by
+theorem PartialCore.Template.toTy_subst (t : TyTemplate) (S : Subst) :
+    (t.substSourceTyFvars S).toTy = t.toTy.map S.onTy := by
   cases t with
   | fixed ty => rfl
   | hole | named => rfl
   | arrow a b =>
-    simp only [PartialCore.Template.substSourceTyFvars, PartialCore.Template.toCore,
-      a.toCore_subst S, b.toCore_subst S]
-    cases a.toCore <;> cases b.toCore <;> simp [Subst.onTy_arrow]
+    simp only [PartialCore.Template.substSourceTyFvars, PartialCore.Template.toTy,
+      a.toTy_subst S, b.toTy_subst S]
+    cases a.toTy <;> cases b.toTy <;> simp [Subst.onTy_arrow]
   | custom name args =>
-    simp only [PartialCore.Template.substSourceTyFvars, PartialCore.Template.toCore,
+    simp only [PartialCore.Template.substSourceTyFvars, PartialCore.Template.toTy,
       completeTypes_subst args S]
     cases completeTypes args <;> simp [Subst.onTy_customTy]
 theorem completeTypes_subst (ts : List TyTemplate) (S : Subst) :
@@ -182,22 +159,22 @@ theorem completeTypes_subst (ts : List TyTemplate) (S : Subst) :
   cases ts with
   | nil => rfl
   | cons t ts =>
-    simp only [substTemplateList, completeTypes, t.toCore_subst S, completeTypes_subst ts S]
-    cases t.toCore <;> cases completeTypes ts <;> rfl
+    simp only [substTemplateList, completeTypes, t.toTy_subst S, completeTypes_subst ts S]
+    cases t.toTy <;> cases completeTypes ts <;> rfl
 end
 
 mutual
-theorem PartialCore.Template.toCore_open (t : TyTemplate) (d : Nat) (Xs : List Nat) :
-    (t.openTyVarsFrom d Xs).toCore = t.toCore.map (Ty.openVarsFrom d Xs) := by
+theorem PartialCore.Template.toTy_open (t : TyTemplate) (d : Nat) (Xs : List Nat) :
+    (t.openTyVarsFrom d Xs).toTy = t.toTy.map (Ty.openVarsFrom d Xs) := by
   cases t with
   | fixed ty => rfl
   | hole | named => rfl
   | arrow a b =>
-    simp only [PartialCore.Template.openTyVarsFrom, PartialCore.Template.toCore,
-      a.toCore_open d Xs, b.toCore_open d Xs]
-    cases a.toCore <;> cases b.toCore <;> simp [Ty.openVarsFrom_arrow]
+    simp only [PartialCore.Template.openTyVarsFrom, PartialCore.Template.toTy,
+      a.toTy_open d Xs, b.toTy_open d Xs]
+    cases a.toTy <;> cases b.toTy <;> simp [Ty.openVarsFrom_arrow]
   | custom name args =>
-    simp only [PartialCore.Template.openTyVarsFrom, PartialCore.Template.toCore,
+    simp only [PartialCore.Template.openTyVarsFrom, PartialCore.Template.toTy,
       completeTypes_open args d Xs]
     cases completeTypes args <;> simp [Ty.openVarsFrom_customTy]
 theorem completeTypes_open (ts : List TyTemplate) (d : Nat) (Xs : List Nat) :
@@ -206,8 +183,8 @@ theorem completeTypes_open (ts : List TyTemplate) (d : Nat) (Xs : List Nat) :
   cases ts with
   | nil => rfl
   | cons t ts =>
-    simp only [openTemplateList, completeTypes, t.toCore_open d Xs, completeTypes_open ts d Xs]
-    cases t.toCore <;> cases completeTypes ts <;> rfl
+    simp only [openTemplateList, completeTypes, t.toTy_open d Xs, completeTypes_open ts d Xs]
+    cases t.toTy <;> cases completeTypes ts <;> rfl
 end
 
 theorem Option.annotationView_subst (ann : BindingAnn) (S : Subst) :
@@ -217,8 +194,8 @@ theorem Option.annotationView_subst (ann : BindingAnn) (S : Subst) :
   | some scheme =>
     rcases scheme with ⟨count, t⟩
     simp only [Option.substSourceTyFvars, Option.map_some, Scheme.map,
-      Option.annotationView, t.toCore_subst]
-    cases ht : t.toCore with
+      Option.annotationView, t.toTy_subst]
+    cases ht : t.toTy with
     | some ty => rfl
     | none => by_cases hc : count = 0 <;> simp [hc, PartialCore.Ann.substSourceTyFvars]
 
@@ -228,8 +205,8 @@ theorem Option.annotationView_open (ann : BindingAnn) (d : Nat) (Xs : List Nat) 
   | none => rfl
   | some scheme =>
     rcases scheme with ⟨count, t⟩
-    simp only [Option.openTyVarsFrom, Option.map_some, Option.annotationView, t.toCore_open]
-    cases ht : t.toCore with
+    simp only [Option.openTyVarsFrom, Option.map_some, Option.annotationView, t.toTy_open]
+    cases ht : t.toTy with
     | some ty => rfl
     | none => by_cases hc : count = 0 <;> simp [hc, PartialCore.Ann.openTyVarsFrom]
 

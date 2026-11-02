@@ -14,9 +14,7 @@ annotations remain templates while inference returns type and editor facts. The
 structural relation and executable lowerer share one target-parametric syntax
 traversal, with soundness and completeness proved once.
 
-The former surface-to-complete-Core policy and its structural surface typing and
-runtime-safety theory remain available from the opt-in
-`FHM.SurfaceBridge.CompleteCore` compatibility module. -/
+Runtime typing and safety follow by erasing the canonical source judgment. -/
 
 open SmallStep
 open PatComp
@@ -3709,8 +3707,8 @@ inductive DTreeExhaustive (ctors : CtorEnv) : OccCtx → DTree → Prop
 /-- **Syntactic exhaustiveness of one match's branch patterns** at scrutinee type
     `customTy T tyArgs`: the compiled decision tree is tree-exhaustive, starting
     from the root occurrence `[]` typed at the scrutinee's ADT type. This is the
-    decidable, honest coverage condition. The opt-in complete-Core compatibility
-    proof connects it to Core's `AllMatchesExhaustive`. A flat "top-level ctors
+    decidable coverage condition. `SurfaceSafety` connects it directly to
+    `AllMatchesExhaustive` of canonical source erasure. A flat "top-level ctors
     covered" check is UNSOUND (misses
     nested gaps: `Cons (Just x) t | Nil` leaves `Cons Nothing Nil` — the `Cons`
     sub-switch omits `Nothing`, so `DTreeExhaustive` fails there, correctly). -/

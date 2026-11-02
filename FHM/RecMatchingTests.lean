@@ -95,7 +95,7 @@ def omitted : InferInput := .letRec [{ ann := none, rhs := .lambda none (.var 0)
 
 -- Complete recursive signatures retain their previous polymorphic recursion mode.
 def complete : InferInput := .letRec
-  [{ ann := (Option.ofCore (some ⟨1, .arrow (.bvar 0) (.bvar 0)⟩)),
+  [{ ann := (Option.fromScheme (some ⟨1, .arrow (.bvar 0) (.bvar 0)⟩)),
      rhs := .lambda (some (.fixed (.bvar 0))) (.var 0) }] body
 #guard match inferWithTypes [] complete with
   | some r => match r.ty with | .prim .char => true | _ => false

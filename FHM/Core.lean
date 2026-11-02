@@ -279,7 +279,7 @@ def MatchPattern.matchesCtor : MatchPattern → CtorName → Nat → Bool
 
 /-- One expression family, parameterized by the type syntax in annotations.
 Parameters carry `Option T`; bindings carry `Option (Scheme T)`. Canonical source
-uses `TyTemplate`; complete-Core compatibility and runtime terms use `Ty`. -/
+uses `TyTemplate`; erased runtime terms use `Ty`. -/
 inductive Expr (T : Type := Ty)
   | primLit (prim : PrimLitExpr)
   /-- A primitive binary operator (e.g. `intAdd`). A leaf naming a built-in,
@@ -2562,24 +2562,24 @@ theorem Expr.openTyVars_eq_self_of_erase_image (e : Expr) (Xs : List Nat) :
   simpa [Expr.openTyVars] using Expr.openTyVarsAux_eq_self_of_erase_image e 0 Xs
 
 /-- `Expr.erase` is idempotent (an erased term is a fixed point of `erase`). -/
-theorem Expr.erase_idem (e : Expr) : e.erase.erase = e.erase := by
+theorem Expr.erase_idem {T : Type} (e : Expr T) : e.erase.erase = e.erase := by
   induction e using Expr.rec_strong with
   | primLit p => simp [Expr.erase]
   | primBinOp op => simp [Expr.erase]
   | ctor nm => simp [Expr.erase]
   | var n => simp [Expr.erase_var]
-  | lambda ann body ih => simp [Expr.erase_lambda, ih]
-  | app f arg ihf iharg => simp [Expr.erase_app, ihf, iharg]
-  | letIn ann rhs body ihr ihb => simp [Expr.erase_letIn, ihr, ihb]
+  | lambda ann body ih => simp only [Expr.erase, ih]
+  | app f arg ihf iharg => simp only [Expr.erase, ihf, iharg]
+  | letIn ann rhs body ihr ihb => simp only [Expr.erase, ihr, ihb]
   | match_ scrut branches ihs ihbs =>
-      simp only [Expr.erase_match, ihs]
+      simp only [Expr.erase, ihs]
       congr 1
       rw [List.map_map]
       exact List.map_congr_left (fun pe hpe => by
         cases pe with
         | mk p b => simp [ihbs p b hpe])
   | letRec bindings body ihbs ihb =>
-      simp only [Expr.erase_letRec, ihb]
+      simp only [Expr.erase, ihb]
       congr 1
       rw [List.map_map]
       exact List.map_congr_left (fun binding hb => by

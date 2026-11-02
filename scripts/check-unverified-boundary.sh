@@ -23,8 +23,8 @@ check_module() {
       echo "error: default verified library imports $module" >&2
       exit 1
       ;;
-    FHM.Compatibility.*)
-      echo "error: default verified library imports historical compatibility module $module" >&2
+    FHM.Compatibility.*|FHM.SourceCompatibility|FHM.SurfaceBridge.CompleteCore|FHM.Headlines.CompleteCore|FHM.Examples.CompleteCore|FHM.InferInput|FHM.InferenceSupport)
+      echo "error: verified library imports retired module $module" >&2
       exit 1
       ;;
   esac
@@ -60,5 +60,7 @@ done
 
 # Canonical examples are opt-in, but must use the same source/runtime stack.
 check_module FHM.Examples
+check_module FHM.Examples.Programs
+check_module FHM.RuntimeTyping.PolyRecCanary
 
 echo 'Unverified boundary checks passed.'

@@ -497,6 +497,17 @@ def typeBodySrc : String :=
           d.col == 5 && d.endCol == 9  -- `True`
       | _ => false)
 
+-- Direct source diagnostics traverse written schemes without converting the AST,
+-- including when a continuation contains partial annotations.
+#guard (match hoverReport
+    "(let id : {a} a -> a = \\(x : a) -> x in 1 True)\n" with
+  | some r => r.diagnostics.any (fun d => d.code? == some "type.notFunction")
+  | none => false)
+#guard (match hoverReport
+    "(let id : {a} a -> a = \\(x : a) -> x in (\\(z : _) -> id z 1) True)\n" with
+  | some r => r.diagnostics.any (fun d => d.code? == some "type.argumentMismatch")
+  | none => false)
+
 -- E11. Unbound multi-char name underlines the whole identifier.
 def unboundLongSrc : String :=
   "let x = missingName\nx\n"
@@ -975,15 +986,15 @@ private def recCompleteNestedSpecialized :=
   "let f : {a} a -> _ = \\x -> let id : Int -> Int = \\y -> y " ++
   "in if True then id x else f x\n(f 1, f True)\n"
 
--- A complete subtree can still mention an outer provisional variable. Its
--- successful `toCore` conversion must not force an ineligible compatibility path.
+-- A hole-free subtree can still mention an outer provisional variable;
+-- opening it must preserve that source scope.
 #guard lowersWith recCompleteLambda fun
   | .letRec [⟨some ⟨1, _⟩, rhs@(.lambda (some (.fixed (.bvar 0))) _)⟩] _ =>
-      rhs.toCore.isSome && (rhs.openSourceTyVars [1000]).rigidVars.contains 1000
+      (rhs.openSourceTyVars [1000]).rigidVars.contains 1000
   | _ => false
 #guard lowersWith recCompleteNested fun
   | .letRec [⟨some ⟨1, _⟩, rhs@(.lambda none (.letIn (some scheme) _ _))⟩] _ =>
-      scheme.paramCount == 0 && rhs.toCore.isSome && (rhs.openSourceTyVars [1000]).rigidVars.contains 1000
+      scheme.paramCount == 0 && (rhs.openSourceTyVars [1000]).rigidVars.contains 1000
   | _ => false
 #guard lowersWith recCompleteLambdaSpecialized (fun _ => true)
 #guard lowersWith recCompleteNestedSpecialized (fun _ => true)
@@ -1053,9 +1064,9 @@ private def recPrefixIndependent :=
   ("let h : {z} z -> z = \\x -> f x\n" ++
    "let g = \\x -> h x\n" ++
    "let f : {a} a -> _ = \\x -> g x\nf\n") fun
-  | input@(.letRec [⟨some ⟨1, (.arrow (.fixed (.bvar 0)) .hole)⟩, _⟩,
+  | (.letRec [⟨some ⟨1, (.arrow (.fixed (.bvar 0)) .hole)⟩, _⟩,
       ⟨none, _⟩, ⟨some h, _⟩] _) =>
-      h.paramCount == 1 && input.toCore.isNone
+      h.paramCount == 1
   | _ => false
 
 
@@ -1066,9 +1077,9 @@ private def recPrefixIndependent :=
    "let g = \\x -> h x\n" ++
    "let f : {a} (a,a) -> _ = \\x -> g x\n" ++
    "(f (1,2), f (True,False))\n") fun
-  | input@(.letRec [⟨some ⟨1, (.arrow (.custom _ [.fixed (.bvar 0), .fixed (.bvar 0)]) .hole)⟩, _⟩,
+  | (.letRec [⟨some ⟨1, (.arrow (.custom _ [.fixed (.bvar 0), .fixed (.bvar 0)]) .hole)⟩, _⟩,
       ⟨none, _⟩, ⟨some h, _⟩] _) =>
-      h.paramCount == 1 && input.toCore.isNone
+      h.paramCount == 1
   | _ => false
 
 
