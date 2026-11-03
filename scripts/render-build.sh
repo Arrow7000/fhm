@@ -31,7 +31,8 @@ fi
 # Fetch only the mathlib modules used by FHM and their transitive dependencies.
 mapfile -t mathlib_modules < <(git grep -h '^import Mathlib' -- FHM | awk '{print $2}' | sort -u)
 lake exe cache get "${mathlib_modules[@]}"
-lake build fhm
+# The web grammar tests also execute the Lean grammar exporter.
+lake build fhm fhm_grammar
 .lake/build/bin/fhm --help
 
 npm --prefix editors/web ci --include=dev
@@ -39,13 +40,15 @@ npm --prefix editors/web test
 npm --prefix editors/web run build
 
 if [[ -n "$cache_dir" ]]; then
-  # UI-only deploys restore the same executable. Keep that archive instead of
+  # UI-only deploys restore the same executables. Keep that archive instead of
   # spending minutes recompressing an unchanged toolchain and native build.
-  if [[ ! -f "$cache_dir/$cache_key.tar.gz" || ".lake/build/bin/fhm" -nt "$cache_dir/$cache_key.tar.gz" ]]; then
+  if [[ ! -f "$cache_dir/$cache_key.tar.gz" ||
+        ".lake/build/bin/fhm" -nt "$cache_dir/$cache_key.tar.gz" ||
+        ".lake/build/bin/fhm_grammar" -nt "$cache_dir/$cache_key.tar.gz" ]]; then
     echo "==> Saving Lean toolchain and native Lake artifacts for future deploys"
     tar -czf "$cache_dir/$cache_key.tar.gz.tmp" .elan .lake
     mv "$cache_dir/$cache_key.tar.gz.tmp" "$cache_dir/$cache_key.tar.gz"
   else
-    echo "==> Native executable unchanged; retaining the existing Lake cache"
+    echo "==> Native executables unchanged; retaining the existing Lake cache"
   fi
 fi
