@@ -262,9 +262,6 @@ theorem Ty.WellKinded.toNoFreeVars {ke : KindEnv} {pc : Nat} {ty : Ty}
 
 /-! ### 4. Building one `Ctor` from a constructor's checked field list. -/
 
-/-- Build a `Ctor` for the type `tn` (arity `pc`) from `fields`, discharging the
-    `bound`/`closed` obligations from a successful kind-check. `none` if the
-    fields don't kind-check. -/
 /-- Native declaration validation failures, before source lookup or wording. -/
 inductive DeclError where
   | duplicateTypes (names : List TyName)
@@ -273,6 +270,9 @@ inductive DeclError where
   | inConstructor (name : CtorName) (error : DeclError)
   deriving Repr
 
+/-- Build a `Ctor` for the type `tn` (arity `pc`) from `fields`, discharging the
+    `bound`/`closed` obligations from a successful kind-check. `none` if the
+    fields don't kind-check. -/
 def mkCtorFromFieldsResult (ke : KindEnv) (pc : Nat) (tn : TyName) (fields : List Ty) : Except DeclError Ctor :=
   if h : TyList.wellKindedB ke pc fields = true then
     .ok { paramCount := pc, tyName := tn, contents := fields,
@@ -364,9 +364,9 @@ def elabDeclsResult (decls : List DataDecl) : Except DeclError CtorEnv := do
     (.duplicateConstructors (constructors.filter (fun name => 1 < constructors.count name)).dedup)
     constructors.Nodup
   let nested ← decls.mapM fun d =>
-    d.ctors.mapM fun c => do
-      let ctor ← (mkCtorFromFieldsResult ke d.paramCount d.name c.2).mapError (.inConstructor c.1)
-      pure (c.1, ctor)
+    d.ctors.mapM fun c =>
+      ((mkCtorFromFieldsResult ke d.paramCount d.name c.2).mapError (.inConstructor c.1)).map
+        (fun ctor => (c.1, ctor))
   pure nested.flatten
 
 def elabDecls (decls : List DataDecl) : Option CtorEnv := (elabDeclsResult decls).toOption
@@ -384,7 +384,7 @@ theorem elabDecls_eq (decls : List DataDecl) : elabDecls decls = (show Option Ct
   pure nested.flatten) := by
   unfold elabDecls elabDeclsResult
   simp only [TypedResult.toOption_bind, TypedResult.toOption_ensure, TypedResult.toOption_mapM,
-    TypedResult.toOption_mapError, mkCtorFromFieldsResult_toOption, TypedResult.toOption_pure]
+    TypedResult.toOption_mapError, TypedResult.toOption_map, mkCtorFromFieldsResult_toOption, TypedResult.toOption_pure]
   rfl
 
 /-! ### 6. Soundness: a produced env came from a well-formed declaration group. -/
@@ -522,6 +522,28 @@ theorem elabDecls_eq_some_iff {decls : List DataDecl} {env : CtorEnv} :
     obtain ⟨actual, ha⟩ := Option.isSome_iff_exists.mp (elabDecls_complete h.wellFormed)
     exact (elabDecls_sound ha).unique h ▸ ha
 
+
+/-- Native success has exactly the declarative elaboration graph. -/
+theorem elabDeclsResult_eq_ok_iff {decls : List DataDecl} {env : CtorEnv} :
+    elabDeclsResult decls = .ok env ↔ DataDecls.ElaboratesTo decls env := by
+  rw [← TypedResult.toOption_eq_some, elabDeclsResult_toOption, elabDecls_eq_some_iff]
+
+theorem elabDeclsResult_sound {decls : List DataDecl} {env : CtorEnv}
+    (h : elabDeclsResult decls = .ok env) : DataDecls.ElaboratesTo decls env :=
+  elabDeclsResult_eq_ok_iff.mp h
+
+theorem elabDeclsResult_complete {decls : List DataDecl} {env : CtorEnv}
+    (h : DataDecls.ElaboratesTo decls env) : elabDeclsResult decls = .ok env :=
+  elabDeclsResult_eq_ok_iff.mpr h
+
+theorem elabDeclsResult_error_not_wellFormed {decls : List DataDecl} {error : DeclError}
+    (h : elabDeclsResult decls = .error error) : ¬ DataDecls.WF decls := by
+  intro hwf
+  obtain ⟨env, henv⟩ := Option.isSome_iff_exists.mp (elabDecls_complete hwf)
+  have native : elabDeclsResult decls = .ok env :=
+    TypedResult.toOption_eq_some.mp henv
+  rw [h] at native
+  cases native
 
 /-! ### 7. A fixed prelude, elaborated through the checker. -/
 

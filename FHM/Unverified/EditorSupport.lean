@@ -1,5 +1,5 @@
 import FHM.Unverified.HMDisplay
-import FHM.Unverified.TypeDiagnostics
+import FHM.Unverified.Diagnostics
 import FHM.Unverified.CoverageDiagnostics
 import FHM.Unverified.Surface.Parse
 
@@ -205,30 +205,6 @@ def collectLitOpSymbols (src : String) (ctors : CtorEnv) : List RangedSymbol :=
         | _ => i := i + 1
       return out
 
-structure HoverDiag where
-  message : String
-  code? : Option String := none
-  missingPatterns : List String := []
-  moreMissing : Bool := false
-  line : Nat := 1
-  col : Nat := 1
-  endLine : Nat := 1
-  endCol : Nat := 2
-  deriving Repr
-
-def HoverDiag.toJson (d : HoverDiag) : Lean.Json :=
-  Lean.Json.mkObj <| [
-    ("severity", Lean.Json.str "error"),
-    ("message", Lean.Json.str d.message),
-    ("line", Lean.Json.num d.line),
-    ("col", Lean.Json.num d.col),
-    ("endLine", Lean.Json.num d.endLine),
-    ("endCol", Lean.Json.num d.endCol)
-  ] ++ (d.code?.map fun code => ("code", Lean.Json.str code)).toList ++
-    (if d.missingPatterns.isEmpty then [] else [
-      ("missingPatterns", Lean.Json.arr (d.missingPatterns.map Lean.Json.str).toArray),
-      ("moreMissing", Lean.Json.bool d.moreMissing)])
-
 structure HoverReport where
   symbols : List RangedSymbol
   programTy : String
@@ -240,114 +216,6 @@ def bodyDiagSpan (body : SpannedExpr) : Span :=
   | .match_ s _ _ => s
   | _ => body.span
 
-def topRhsSpan (p : Surface.Program) (sp : SpannedProgram) (n : ValName) : Option SpannedExpr :=
-  let flatB := p.groups.flatMap id
-  let flatS := sp.groups.flatMap id
-  (flatB.zip flatS).find? (fun pair => pair.1.name == n) |>.map (·.2)
-
-def valBinderSpan (binders : List BinderSpan) (n : String) : Option Span :=
-  (binders.find? fun b => b.kind == .val && b.name == n).map (·.span)
-
-def bindingExtentSpan (binders : List BinderSpan) (p : Surface.Program)
-    (sp : SpannedProgram) (n : String) : Option Span :=
-  match (topRhsSpan p sp (.mk n)).map (·.span) with
-  | some s => some s
-  | none => valBinderSpan binders n
-
-def firstIdentSpan (src : String) (name : String) : Option Span :=
-  match Surface.Lex.lex src with
-  | .error _ => none
-  | .ok toks =>
-    Id.run do
-      for t in toks do
-        match t.token with
-        | .ident raw _ => if raw == name then return some (Span.ofTok t)
-        | _ => pure ()
-      return none
-
-def diagAtSpan (msg : String) (s? : Option Span) : HoverDiag :=
-  match s? with
-  | some s => {
-      message := msg
-      line := s.startLine
-      col := s.startCol
-      endLine := s.endLine
-      endCol := s.endCol
-    }
-  | none => { message := msg }
-
-def hmInfer (ctors : CtorEnv) (term : Surface.Expr) : Option (Expr × Ty) :=
-  do
-    let lowered ← SurfaceBridge.Provenance.lowerWithProvenance ctors term
-      (SurfaceBridge.Provenance.diagnosticSpans term)
-    let typed ← SurfaceBridge.Provenance.inferWithProvenance ctors lowered
-    pure (typed.input.erase, typed.inference.ty)
-
-def hmSucceeds (ctors : CtorEnv) (term : Surface.Expr) : Bool :=
-  (hmInfer ctors term).isSome
-
-def prettySurfaceName : ValName → String
-  | .mk s => s
-
-def stripBindingAnn (b : Surface.Binding) : Surface.Binding :=
-  { b with ann := none }
-
-def explainTypeMismatch (ctors : CtorEnv) (ke : KindEnv)
-    (acc : List (List Surface.Binding)) (g : List Surface.Binding)
-    (b : Surface.Binding) : String :=
-  let target := if Surface.internalBindingName b.name then "pattern binding"
-    else s!"`{prettySurfaceName b.name}`"
-  match b.ann with
-  | none => s!"typechecking failed in {target}"
-  | some σs =>
-      let σs := (finalizeInputAnn b.tyParams b.params (some σs)).getD σs
-      let wantStr :=
-        match lowerPoly ke σs with
-        | some σ => FHM.Unverified.HMDisplay.scheme {} (σs.foralls.map prettyValName) σ
-        | none => Surface.PolyTy.pretty σs
-      let g' := g.map fun b' => if b'.name == b.name then stripBindingAnn b' else b'
-      let probe := Surface.desugarGroups (acc ++ [g']) (.var b.name)
-      match hmInfer ctors probe with
-      | none => s!"typechecking failed in {target} (ascribed {wantStr}; RHS also fails without ascription)"
-      | some (_, ty) =>
-          let got := genScheme [] [] ty
-          s!"type mismatch in {target}: expected {wantStr}, got {FHM.Unverified.HMDisplay.scheme {} [] got}"
-
-def locateTypecheckFail (ctors : CtorEnv) (ke : KindEnv) (p : Surface.Program)
-    (binders : List BinderSpan) (sp : SpannedProgram) : HoverDiag :=
-  let rec go (acc : List (List Surface.Binding))
-      (rest : List (List Surface.Binding)) : HoverDiag :=
-    match rest with
-    | [] => diagAtSpan "typechecking failed" (some (bodyDiagSpan sp.body))
-    | g :: gs =>
-      match g with
-      | [] => go (acc ++ [g]) gs
-      | b :: _ =>
-        let acc' := acc ++ [g]
-        let probe := Surface.desugarGroups acc' (.var b.name)
-        if hmSucceeds ctors probe then go acc' gs
-        else
-          let nm := prettySurfaceName b.name
-          let msg := explainTypeMismatch ctors ke acc g b
-          match bindingExtentSpan binders p sp nm with
-          | some s => diagAtSpan msg (some s)
-          | none => diagAtSpan msg (some (bodyDiagSpan sp.body))
-  go [] p.groups
-
-def locateLowerFail (src : String) (p : Surface.Program) (sp : SpannedProgram) : HoverDiag :=
-  match freeNamesD [] p.term with
-  | n :: _ =>
-      let nm := prettySurfaceName n
-      let msg := s!"unbound name `{nm}`"
-      match firstIdentSpan src nm with
-      | some s => diagAtSpan msg (some s)
-      | none => diagAtSpan msg (some (bodyDiagSpan sp.body))
-  | [] => diagAtSpan
-      "expression lowering failed (unbound name, rejected sugar, or bad annotation)"
-      (some (bodyDiagSpan sp.body))
-
-/-- Exhaustiveness wording and structured missing-pattern examples shared by
-    the CLI and editor. Unknown witness shapes keep the generic message. -/
 def exhaustivenessDiag (typed : SurfaceBridge.Provenance.TypedLowered)
     (term : Surface.Expr) (tree : SurfaceBridge.Provenance.IdentifiedExpr)
     (fallback : Span) : HoverDiag :=
@@ -363,36 +231,26 @@ def exhaustivenessDiag (typed : SurfaceBridge.Provenance.TypedLowered)
     missingPatterns := patterns
     moreMissing := more }
 
-def locateDeclFail (sp : SpannedProgram) (msg : String) : HoverDiag :=
-  match sp.declSpans with
-  | s :: _ => diagAtSpan msg (some s)
-  | [] => diagAtSpan msg none
-
 def collectHover (src : String) (p : Surface.Program) (binders : List BinderSpan)
     (sp : SpannedProgram) : HoverReport :=
   let fail (d : HoverDiag) : HoverReport :=
     { symbols := [], programTy := "", diagnostics := [d] }
-  match lowerDataDeclsIn preludeKindEnv p.decls with
-  | none => fail (locateDeclFail sp
-      "declaration lowering failed (duplicate type/ctor, bad field, or unknown type)")
-  | some userCore =>
-    match elabDecls (preludeDecls ++ userCore) with
-    | none => fail (locateDeclFail sp "declaration elaboration failed (ill-formed data decls)")
-    | some ctors =>
-      let ke := DataDecls.kindEnv (preludeDecls ++ userCore)
+  match lowerDataDeclsInResult preludeKindEnv p.decls with
+  | .error error => fail (FHM.Unverified.Diagnostics.loweringDiag error p sp binders sp.body.span)
+  | .ok userCore =>
+    match elabDeclsResult (preludeDecls ++ userCore) with
+    | .error error => fail (FHM.Unverified.Diagnostics.declarationDiag error p sp binders)
+    | .ok ctors =>
       let scope := programWideScope binders sp
-      match FHM.Unverified.HMArtifacts.programSpanned p sp scope with
-      | none => fail (diagAtSpan "internal parser provenance shape mismatch" (some scope))
-      | some tree =>
-        match SurfaceBridge.Provenance.lowerWithProvenance ctors p.term tree with
-        | none => fail (locateLowerFail src p sp)
-        | some lowered =>
+      match FHM.Unverified.HMArtifacts.programSpannedResult p sp scope with
+      | .error error => fail (FHM.Unverified.Diagnostics.provenanceDiag error p sp binders scope)
+      | .ok tree =>
+        match SurfaceBridge.Provenance.lowerWithProvenanceResult ctors p.term tree with
+        | .error error => fail (FHM.Unverified.Diagnostics.provenanceDiag error p sp binders scope)
+        | .ok lowered =>
           match SurfaceBridge.Provenance.inferWithProvenanceResult ctors lowered with
-          | .error failure =>
-            match FHM.Unverified.TypeDiagnostics.explain failure lowered with
-            | some (reason, span) =>
-                fail { diagAtSpan reason.message (some span) with code? := some reason.code }
-            | none => fail (locateTypecheckFail ctors ke p binders sp)
+          | .error error =>
+            fail (FHM.Unverified.Diagnostics.inferenceDiag error lowered p sp binders tree)
           | .ok typed =>
             if !(typed.lowering.mapExpr Expr.erase).provenanceTotal ||
                 !typed.nodeTypesTotal || !typed.sourceTypesTotal ||

@@ -3,6 +3,7 @@ import FHM.SourceAnnotations
 import FHM.TypedResult
 
 attribute [typed_result_projection] TypedResult.toOption_ok TypedResult.toOption_pure
+  TypedResult.toOption_ensure TypedResult.toOption_mapM
   TypedResult.toOption_error TypedResult.toOption_bind TypedResult.toOption_mapError
   TypedResult.toOption_map TypedResult.toOption_ite TypedResult.toOption_dite
   unifyResultK_toOption unifyListResultK_toOption Option.bind Option.bind_some Option.bind_none

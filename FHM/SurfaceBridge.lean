@@ -171,10 +171,26 @@ theorem lowerTy_eq (ke : KindEnv) (tvs : List ValName) (ty : Surface.Ty) :
       | some args' =>
           if LookupList.get? ke T = some args'.length then some (.customTy T args') else none
       | none => none) := by
-  rw [lowerTy, lowerTyResult]
-  cases ty <;> simp only [typed_result_projection, checkedCustomTypeResult_toOption,
-    resolveTypeVarResult_toOption, List.length_cons, List.length_nil]
-  all_goals repeat first | split | (solve | rfl)
+  cases ty with
+  | hole | namedHole => rw [lowerTy, lowerTyResult.eq_def]; rfl
+  | prim primitive =>
+      cases primitive <;> rw [lowerTy, lowerTyResult.eq_def] <;>
+        simp only [typed_result_projection, checkedCustomTypeResult_toOption, List.length_nil] <;> rfl
+  | arrow a b =>
+      rw [lowerTy, lowerTyResult.eq_def]
+      simp only [typed_result_projection]
+      cases ha : lowerTy ke tvs a <;> cases hb : lowerTy ke tvs b <;> simp [ha, hb]
+  | pair a b =>
+      rw [lowerTy, lowerTyResult.eq_def]
+      simp only [typed_result_projection, checkedCustomTypeResult_toOption]
+      cases ha : lowerTy ke tvs a <;> cases hb : lowerTy ke tvs b <;> simp [ha, hb]
+  | tvar name =>
+      rw [lowerTy, lowerTyResult.eq_def, resolveTypeVarResult_toOption]
+      cases h : tvarIndex tvs name <;> simp [h]
+  | customTy name args =>
+      rw [lowerTy, lowerTyResult.eq_def]
+      simp only [typed_result_projection, checkedCustomTypeResult_toOption]
+      cases h : lowerTyList ke tvs args <;> simp [h]
 
 theorem lowerTyList_eq (ke : KindEnv) (tvs : List ValName) (types : List Surface.Ty) :
     lowerTyList ke tvs types = (match types with
@@ -183,9 +199,12 @@ theorem lowerTyList_eq (ke : KindEnv) (tvs : List ValName) (types : List Surface
       match lowerTy ke tvs t, lowerTyList ke tvs ts with
       | some t', some ts' => some (t' :: ts')
       | _, _ => none) := by
-  rw [lowerTyList, lowerTyListResult]
-  cases types <;> simp only [typed_result_projection]
-  all_goals repeat first | split | (solve | rfl)
+  cases types with
+  | nil => rw [lowerTyList, lowerTyListResult.eq_def]; rfl
+  | cons ty rest =>
+      rw [lowerTyList, lowerTyListResult.eq_def]
+      simp only [typed_result_projection]
+      cases ht : lowerTy ke tvs ty <;> cases hr : lowerTyList ke tvs rest <;> simp [ht, hr]
 
 /-- A resolved tyvar index is in range (feeds `Ty.WellKinded.bvar`). -/
 theorem tvarIndex_lt {tvs : List ValName} {n : ValName} {i : Nat}
@@ -210,10 +229,10 @@ theorem lowerTyList_wellKinded {ke : KindEnv} {tvs : List ValName}
     ∀ c ∈ cs, Ty.WellKinded ke tvs.length c := by
   cases ss with
   | nil =>
-    simp only [lowerTyList_eq, Option.some.injEq] at h; subst h
+    (rw [lowerTyList_eq] at h; try simp only [Option.some.injEq] at h); subst h
     intro c hc; cases hc
   | cons s ss =>
-    simp only [lowerTyList_eq] at h
+    (rw [lowerTyList_eq] at h; skip)
     cases ht : lowerTy ke tvs s with
     | none => simp [ht] at h
     | some t' =>
@@ -236,19 +255,19 @@ theorem lowerTyList_wellKinded {ke : KindEnv} {tvs : List ValName}
 theorem lowerTy_wellKinded {ke : KindEnv} {tvs : List ValName} {s : Surface.Ty} {c : Ty}
     (h : lowerTy ke tvs s = some c) : Ty.WellKinded ke tvs.length c := by
   cases s with
-  | hole | namedHole => cases h
+  | hole | namedHole => rw [lowerTy_eq] at h; cases h
   | prim p =>
     cases p with
     | unit | int | nat | char =>
-      simp only [lowerTy_eq, Option.some.injEq] at h; subst h; exact .prim
+      (rw [lowerTy_eq] at h; try simp only [Option.some.injEq] at h); subst h; exact .prim
     | bool =>
-      simp only [lowerTy_eq] at h
+      (rw [lowerTy_eq] at h; dsimp only at h)
       split at h
       · rename_i hg; simp only [Option.some.injEq] at h; subst h
         exact .customTy hg (by intro _ hmem; simp at hmem)
       · cases h
   | arrow a b =>
-    simp only [lowerTy_eq] at h
+    (rw [lowerTy_eq] at h; dsimp only at h)
     cases ha : lowerTy ke tvs a with
     | none => simp [ha] at h
     | some a' =>
@@ -258,7 +277,7 @@ theorem lowerTy_wellKinded {ke : KindEnv} {tvs : List ValName} {s : Surface.Ty} 
         simp only [ha, hb, Option.some.injEq] at h; subst h
         exact .arrow (lowerTy_wellKinded ha) (lowerTy_wellKinded hb)
   | pair a b =>
-    simp only [lowerTy_eq] at h
+    (rw [lowerTy_eq] at h; dsimp only at h)
     cases ha : lowerTy ke tvs a with
     | none => simp [ha] at h
     | some a' =>
@@ -276,14 +295,14 @@ theorem lowerTy_wellKinded {ke : KindEnv} {tvs : List ValName} {s : Surface.Ty} 
             · exact lowerTy_wellKinded hb)
         · cases h
   | tvar name =>
-    simp only [lowerTy_eq] at h
+    (rw [lowerTy_eq] at h; dsimp only at h)
     cases hi : tvarIndex tvs name with
     | none => simp [hi] at h
     | some i =>
       simp only [hi, Option.some.injEq] at h; subst h
       exact .bvar (tvarIndex_lt hi)
   | customTy T args =>
-    simp only [lowerTy_eq] at h
+    (rw [lowerTy_eq] at h; dsimp only at h)
     cases hargs : lowerTyList ke tvs args with
     | none => simp [hargs] at h
     | some args' =>
@@ -387,10 +406,9 @@ def lowerDataDeclResult (ke : KindEnv) (decl : Surface.DataDecl) : Except Loweri
     ((LoweringError.root (.duplicateTypeParameters decl.name
       (decl.params.filter (fun name => 1 < decl.params.count name)).dedup)).atSite (.declaration decl.name))
     decl.params.Nodup
-  let constructors ← decl.ctors.mapM fun (name, fields) => do
-    let fields' ← (lowerTyListResult ke decl.params fields).mapError
-      (.atSite (.constructorFields decl.name name))
-    pure (name, fields')
+  let constructors ← decl.ctors.mapM fun (name, fields) =>
+    ((lowerTyListResult ke decl.params fields).mapError
+      (.atSite (.constructorFields decl.name name))).map (fun fields' => (name, fields'))
   pure ⟨decl.name, decl.params.length, constructors⟩
 
 def lowerDataDeclsInResult (ambient : KindEnv) (decls : List Surface.DataDecl) :
@@ -512,10 +530,10 @@ theorem LowersFields.of_lowerTyList {ke : KindEnv} {tvs : List ValName}
     (h : lowerTyList ke tvs ss = some cs) : LowersFields ke tvs ss cs := by
   cases ss with
   | nil =>
-    simp only [lowerTyList_eq, Option.some.injEq] at h; subst h
+    (rw [lowerTyList_eq] at h; try simp only [Option.some.injEq] at h); subst h
     exact .nil
   | cons s ss =>
-    simp only [lowerTyList_eq] at h
+    (rw [lowerTyList_eq] at h; skip)
     cases ht : lowerTy ke tvs s with
     | none => simp [ht] at h
     | some c =>
@@ -532,7 +550,7 @@ theorem LowersFields.to_lowerTyList {ke : KindEnv} {tvs : List ValName}
   induction h with
   | nil => rfl
   | cons ht htl ih =>
-    simp only [lowerTyList_eq, ht, ih]
+    (rw [lowerTyList_eq]; try simp only [ht, ih])
 end
 
 private theorem LowersFields.mem_lowerTy {ke : KindEnv} {tvs : List ValName}
@@ -3384,8 +3402,8 @@ theorem LoweringOps.wrapParams_eq (ops : LoweringOps Term ParamAnn BindAnn)
           let ann' ← ops.lowerParamAnn ke tvs ann
           let inner ← ops.wrapParams ke tvs rest body
           pure (ops.lambda ann' inner)) := by
-  rw [LoweringOps.wrapParams, LoweringOps.wrapParamsResult]
-  cases params <;> simp only [typed_result_projection]
+  cases params <;> rw [LoweringOps.wrapParams, LoweringOps.wrapParamsResult.eq_def] <;>
+    simp only [typed_result_projection] <;> rfl
 
 def LoweringOps.match_ (ops : LoweringOps Term ParamAnn BindAnn)
     (scrut : Term) (pats : List Surface.Pattern) (bodies : List Term) : Term :=
@@ -3569,9 +3587,20 @@ theorem lowerExprWith_eq (ops : LoweringOps Term ParamAnn BindAnn) (ke : KindEnv
        let bodies' ← lowerBranchesWith ops ke tvs vs brs
        pure (ops.match_ scrut' (brs.map Prod.fst) bodies')
 ) := by
-  rw [lowerExprWith, lowerExprWithResult]
-  cases expr <;> simp only [typed_result_projection]
-  all_goals repeat first | split | (solve | rfl)
+  cases expr with
+  | primLit literal => cases literal <;> (rw [lowerExprWith, lowerExprWithResult.eq_def]; try simp only [typed_result_projection] <;> rfl)
+  | lambda pattern ann body => cases pattern <;> (rw [lowerExprWith, lowerExprWithResult.eq_def]; try simp only [typed_result_projection] <;> rfl)
+  | primBinOp op => rw [lowerExprWith, lowerExprWithResult.eq_def]; simp only [typed_result_projection] <;> rfl
+  | pair a b => rw [lowerExprWith, lowerExprWithResult.eq_def]; simp only [typed_result_projection] <;> rfl
+  | cons a b => rw [lowerExprWith, lowerExprWithResult.eq_def]; simp only [typed_result_projection] <;> rfl
+  | list items => rw [lowerExprWith, lowerExprWithResult.eq_def]; simp only [typed_result_projection] <;> rfl
+  | app fn arg => rw [lowerExprWith, lowerExprWithResult.eq_def]; simp only [typed_result_projection] <;> rfl
+  | letIn name tyParams params ann rhs body => rw [lowerExprWith, lowerExprWithResult.eq_def]; simp only [typed_result_projection] <;> rfl
+  | letRecIn bindings body => rw [lowerExprWith, lowerExprWithResult.eq_def]; simp only [typed_result_projection] <;> rfl
+  | var name => rw [lowerExprWith, lowerExprWithResult.eq_def]; simp only [typed_result_projection] <;> rfl
+  | ctor name => rw [lowerExprWith, lowerExprWithResult.eq_def]; simp only [typed_result_projection] <;> rfl
+  | ife condition yes no => rw [lowerExprWith, lowerExprWithResult.eq_def]; simp only [typed_result_projection] <;> rfl
+  | match_ scrutinee branches => rw [lowerExprWith, lowerExprWithResult.eq_def]; simp only [typed_result_projection] <;> rfl
 
 theorem lowerExprListWith_eq (ops : LoweringOps Term ParamAnn BindAnn) (ke : KindEnv)
     (tvs vs : List ValName) (exprs : List Surface.Expr) :
@@ -3579,9 +3608,8 @@ theorem lowerExprListWith_eq (ops : LoweringOps Term ParamAnn BindAnn) (ke : Kin
    | [] => some []
    | e :: es => return (← lowerExprWith ops ke tvs vs e) :: (← lowerExprListWith ops ke tvs vs es)
 ) := by
-  rw [lowerExprListWith, lowerExprListWithResult]
-  cases exprs <;> simp only [typed_result_projection]
-  all_goals repeat first | split | (solve | rfl)
+  cases exprs <;> rw [lowerExprListWith, lowerExprListWithResult.eq_def] <;>
+    simp only [typed_result_projection] <;> rfl
 
 theorem lowerBranchesWith_eq (ops : LoweringOps Term ParamAnn BindAnn) (ke : KindEnv)
     (tvs vs : List ValName) (branches : List (Surface.Pattern × Surface.Expr)) :
@@ -3589,9 +3617,8 @@ theorem lowerBranchesWith_eq (ops : LoweringOps Term ParamAnn BindAnn) (ke : Kin
    | [] => some []
    | (p,b) :: rest => return (← lowerExprWith ops ke tvs (patVars p ++ vs) b) :: (← lowerBranchesWith ops ke tvs vs rest)
 ) := by
-  rw [lowerBranchesWith, lowerBranchesWithResult]
-  cases branches <;> simp only [typed_result_projection]
-  all_goals repeat first | split | (solve | rfl)
+  cases branches <;> rw [lowerBranchesWith, lowerBranchesWithResult.eq_def] <;>
+    simp only [typed_result_projection] <;> rfl
 
 theorem lowerRecBindsWith_eq (ops : LoweringOps Term ParamAnn BindAnn) (ke : KindEnv)
     (tvs vs : List ValName) (bindings : List Surface.Binding) :
@@ -3605,9 +3632,8 @@ theorem lowerRecBindsWith_eq (ops : LoweringOps Term ParamAnn BindAnn) (ke : Kin
        let rhs' ← ops.wrapParams ke tvs' b.params rhsCore
        return { ann := ann', rhs := rhs' } :: (← lowerRecBindsWith ops ke tvs vs rest)
 ) := by
-  rw [lowerRecBindsWith, lowerRecBindsWithResult]
-  cases bindings <;> simp only [typed_result_projection]
-  all_goals repeat first | split | (solve | rfl)
+  cases bindings <;> rw [lowerRecBindsWith, lowerRecBindsWithResult.eq_def] <;>
+    simp only [typed_result_projection] <;> rfl
 
 
 mutual
@@ -3697,40 +3723,40 @@ theorem lowerExprWith_complete {ops : LoweringOps Term ParamAnn BindAnn}
     {ctors ke tvs vs s c} (h : LowersExprWith ops ctors ke tvs vs s c) :
     lowerExprWith ops ke tvs vs s = some c := by
   cases h with
-  | primLitUnit | primLitInt | primLitNat | primLitChar | primLitBool | primBinOp | ctor => simp [lowerExprWith_eq]
-  | pair ha hb => simp [lowerExprWith_eq, lowerExprWith_complete ha, lowerExprWith_complete hb]
-  | cons ha hb => simp [lowerExprWith_eq, lowerExprWith_complete ha, lowerExprWith_complete hb]
-  | list hs => simp [lowerExprWith_eq, lowerExprListWith_complete hs]
-  | lambda_name ha hb => simp [lowerExprWith_eq, ha, lowerExprWith_complete hb]
-  | lambda_wild ha hb => simp [lowerExprWith_eq, ha, lowerExprWith_complete hb]
+  | primLitUnit | primLitInt | primLitNat | primLitChar | primLitBool | primBinOp | ctor => (rw [lowerExprWith_eq]; skip)
+  | pair ha hb => (rw [lowerExprWith_eq]; try simp [lowerExprWith_complete ha, lowerExprWith_complete hb])
+  | cons ha hb => (rw [lowerExprWith_eq]; try simp [lowerExprWith_complete ha, lowerExprWith_complete hb])
+  | list hs => (rw [lowerExprWith_eq]; try simp [lowerExprListWith_complete hs])
+  | lambda_name ha hb => (rw [lowerExprWith_eq]; try simp [ha, lowerExprWith_complete hb])
+  | lambda_wild ha hb => (rw [lowerExprWith_eq]; try simp [ha, lowerExprWith_complete hb])
   | @lambda_pattern tvs vs param ann ann' body body' hp ha hb =>
-      cases param <;> simp_all [compoundLambdaPattern,lowerExprWith_eq, lowerExprWith_complete hb]
-  | app ha hb => simp [lowerExprWith_eq, lowerExprWith_complete ha, lowerExprWith_complete hb]
-  | letIn ha hr hw hb => simp [lowerExprWith_eq, ha, lowerExprWith_complete hr, hw, lowerExprWith_complete hb]
-  | letRecIn hr hb => simp [lowerExprWith_eq, lowerRecBindsWith_complete hr, lowerExprWith_complete hb]
-  | var hi => simp [lowerExprWith_eq, hi]
-  | ife hc ht hf => simp [lowerExprWith_eq, lowerExprWith_complete hc, lowerExprWith_complete ht, lowerExprWith_complete hf]
-  | match_ hs hb => simp [lowerExprWith_eq, lowerExprWith_complete hs, lowerBranchesWith_complete hb]
+      cases param <;> (try rw [lowerExprWith_eq]; simp_all [compoundLambdaPattern, lowerExprWith_complete hb])
+  | app ha hb => (rw [lowerExprWith_eq]; try simp [lowerExprWith_complete ha, lowerExprWith_complete hb])
+  | letIn ha hr hw hb => (rw [lowerExprWith_eq]; try simp [ha, lowerExprWith_complete hr, hw, lowerExprWith_complete hb])
+  | letRecIn hr hb => (rw [lowerExprWith_eq]; try simp [lowerRecBindsWith_complete hr, lowerExprWith_complete hb])
+  | var hi => (rw [lowerExprWith_eq]; try simp [hi])
+  | ife hc ht hf => (rw [lowerExprWith_eq]; try simp [lowerExprWith_complete hc, lowerExprWith_complete ht, lowerExprWith_complete hf])
+  | match_ hs hb => (rw [lowerExprWith_eq]; try simp [lowerExprWith_complete hs, lowerBranchesWith_complete hb])
 theorem lowerExprListWith_complete {ops : LoweringOps Term ParamAnn BindAnn}
     {ctors ke tvs vs es cs} (h : LowersExprListWith ops ctors ke tvs vs es cs) :
     lowerExprListWith ops ke tvs vs es = some cs := by
   cases h with
-  | nil => simp [lowerExprListWith_eq]
-  | cons he hr => simp [lowerExprListWith_eq, lowerExprWith_complete he, lowerExprListWith_complete hr]
+  | nil => (rw [lowerExprListWith_eq]; skip)
+  | cons he hr => (rw [lowerExprListWith_eq]; try simp [lowerExprWith_complete he, lowerExprListWith_complete hr])
 theorem lowerRecBindsWith_complete {ops : LoweringOps Term ParamAnn BindAnn}
     {ctors ke tvs vs bs cs} (h : LowersRecBindsWith ops ctors ke tvs vs bs cs) :
     lowerRecBindsWith ops ke tvs vs bs = some cs := by
   cases h with
-  | nil => simp [lowerRecBindsWith_eq]
+  | nil => (rw [lowerRecBindsWith_eq]; skip)
   | cons ha he hw hr =>
-      simp [lowerRecBindsWith_eq, ha, lowerExprWith_complete he, hw,
-        lowerRecBindsWith_complete hr]
+      (rw [lowerRecBindsWith_eq]; try simp [ha, lowerExprWith_complete he, hw,
+        lowerRecBindsWith_complete hr])
 theorem lowerBranchesWith_complete {ops : LoweringOps Term ParamAnn BindAnn}
     {ctors ke tvs vs bs cs} (h : LowersBranchesWith ops ctors ke tvs vs bs cs) :
     lowerBranchesWith ops ke tvs vs bs = some cs := by
   cases h with
-  | nil => simp [lowerBranchesWith_eq]
-  | cons he hr => simp [lowerBranchesWith_eq, lowerExprWith_complete he, lowerBranchesWith_complete hr]
+  | nil => (rw [lowerBranchesWith_eq]; skip)
+  | cons he hr => (rw [lowerBranchesWith_eq]; try simp [lowerExprWith_complete he, lowerBranchesWith_complete hr])
 end
 
 mutual
@@ -3738,34 +3764,34 @@ theorem lowerExprWith_sound {ops : LoweringOps Term ParamAnn BindAnn} {ctors ke 
     (s : Surface.Expr) {c} (h : lowerExprWith ops ke tvs vs s = some c) :
     LowersExprWith ops ctors ke tvs vs s c := by
   match s with
-  | .primLit p => cases p <;> simp only [lowerExprWith_eq, Option.some.injEq] at h <;> subst h
+  | .primLit p => cases p <;> (rw [lowerExprWith_eq] at h; try simp only [Option.some.injEq] at h) <;> subst h
                   · exact .primLitUnit
                   · exact .primLitInt
                   · exact .primLitNat
                   · exact .primLitBool
                   · exact .primLitChar
-  | .primBinOp op => simp only [lowerExprWith_eq, Option.some.injEq] at h; subst h; exact .primBinOp
+  | .primBinOp op => (rw [lowerExprWith_eq] at h; try simp only [Option.some.injEq] at h); subst h; exact .primBinOp
   | .pair a b =>
-      simp only [lowerExprWith_eq] at h
+      (rw [lowerExprWith_eq] at h; skip)
       obtain ⟨a', ha, h⟩ := lowering_bind_eq_some h
       obtain ⟨b', hb, h⟩ := lowering_bind_eq_some h
       simp only [pure, Option.some.injEq] at h; subst h
       exact .pair (lowerExprWith_sound a ha) (lowerExprWith_sound b hb)
   | .cons a b =>
-      simp only [lowerExprWith_eq] at h
+      (rw [lowerExprWith_eq] at h; skip)
       obtain ⟨a', ha, h⟩ := lowering_bind_eq_some h
       obtain ⟨b', hb, h⟩ := lowering_bind_eq_some h
       simp only [pure, Option.some.injEq] at h; subst h
       exact .cons (lowerExprWith_sound a ha) (lowerExprWith_sound b hb)
   | .list items =>
-      simp only [lowerExprWith_eq] at h
+      (rw [lowerExprWith_eq] at h; skip)
       cases he : lowerExprListWith ops ke tvs vs items with
       | none => simp [he] at h
       | some items' =>
           simp only [he, Option.map_some, Option.some.injEq] at h; subst h
           exact .list (lowerExprListWith_sound items he)
   | .lambda param ann body =>
-      simp only [lowerExprWith_eq] at h
+      (rw [lowerExprWith_eq] at h; skip)
       obtain ⟨ann', ha, h⟩ := lowering_bind_eq_some h
       cases param with
       | name x =>
@@ -3785,13 +3811,13 @@ theorem lowerExprWith_sound {ops : LoweringOps Term ParamAnn BindAnn} {ctors ke 
           simp only [pure, Option.some.injEq] at h; subst h
           exact .lambda_pattern rfl ha (lowerExprWith_sound body hb)
   | .app f x =>
-      simp only [lowerExprWith_eq] at h
+      (rw [lowerExprWith_eq] at h; skip)
       obtain ⟨f', hf, h⟩ := lowering_bind_eq_some h
       obtain ⟨x', hx, h⟩ := lowering_bind_eq_some h
       simp only [pure, Option.some.injEq] at h; subst h
       exact .app (lowerExprWith_sound f hf) (lowerExprWith_sound x hx)
   | .letIn name tyParams params ann rhs body =>
-      simp only [lowerExprWith_eq] at h
+      (rw [lowerExprWith_eq] at h; skip)
       obtain ⟨ann', ha, h⟩ := lowering_bind_eq_some h
       obtain ⟨rhsCore, hr, h⟩ := lowering_bind_eq_some h
       obtain ⟨rhs', hw, h⟩ := lowering_bind_eq_some h
@@ -3799,26 +3825,26 @@ theorem lowerExprWith_sound {ops : LoweringOps Term ParamAnn BindAnn} {ctors ke 
       simp only [pure, Option.some.injEq] at h; subst h
       exact .letIn ha (lowerExprWith_sound rhs hr) hw (lowerExprWith_sound body hb)
   | .letRecIn binds body =>
-      simp only [lowerExprWith_eq] at h
+      (rw [lowerExprWith_eq] at h; skip)
       obtain ⟨bs', hr, h⟩ := lowering_bind_eq_some h
       obtain ⟨body', hb, h⟩ := lowering_bind_eq_some h
       simp only [pure, Option.some.injEq] at h; subst h
       exact .letRecIn (lowerRecBindsWith_sound binds hr) (lowerExprWith_sound body hb)
   | .var name =>
-      simp only [lowerExprWith_eq] at h
+      (rw [lowerExprWith_eq] at h; skip)
       cases hi : tvarIndex vs name with
       | none => simp [hi] at h
       | some i => simp only [hi, Option.map_some, Option.some.injEq] at h; subst h; exact .var hi
-  | .ctor name => simp only [lowerExprWith_eq, Option.some.injEq] at h; subst h; exact .ctor
+  | .ctor name => (rw [lowerExprWith_eq] at h; try simp only [Option.some.injEq] at h); subst h; exact .ctor
   | .ife cond t f =>
-      simp only [lowerExprWith_eq] at h
+      (rw [lowerExprWith_eq] at h; skip)
       obtain ⟨c', hc, h⟩ := lowering_bind_eq_some h
       obtain ⟨t', ht, h⟩ := lowering_bind_eq_some h
       obtain ⟨f', hf, h⟩ := lowering_bind_eq_some h
       simp only [pure, Option.some.injEq] at h; subst h
       exact .ife (lowerExprWith_sound cond hc) (lowerExprWith_sound t ht) (lowerExprWith_sound f hf)
   | .match_ scrut brs =>
-      simp only [lowerExprWith_eq] at h
+      (rw [lowerExprWith_eq] at h; skip)
       obtain ⟨s', hs, h⟩ := lowering_bind_eq_some h
       obtain ⟨bs', hb, h⟩ := lowering_bind_eq_some h
       simp only [pure, Option.some.injEq] at h; subst h
@@ -3831,9 +3857,9 @@ theorem lowerExprListWith_sound {ops : LoweringOps Term ParamAnn BindAnn} {ctors
     (es : List Surface.Expr) {cs} (h : lowerExprListWith ops ke tvs vs es = some cs) :
     LowersExprListWith ops ctors ke tvs vs es cs := by
   match es with
-  | [] => simp only [lowerExprListWith_eq, Option.some.injEq] at h; subst h; exact .nil
+  | [] => (rw [lowerExprListWith_eq] at h; try simp only [Option.some.injEq] at h); subst h; exact .nil
   | e :: es =>
-      simp only [lowerExprListWith_eq] at h
+      (rw [lowerExprListWith_eq] at h; skip)
       obtain ⟨e', he, h⟩ := lowering_bind_eq_some h
       obtain ⟨es', hr, h⟩ := lowering_bind_eq_some h
       simp only [pure, Option.some.injEq] at h; subst h
@@ -3846,9 +3872,9 @@ theorem lowerRecBindsWith_sound {ops : LoweringOps Term ParamAnn BindAnn} {ctors
     (bs : List Surface.Binding) {cs} (h : lowerRecBindsWith ops ke tvs vs bs = some cs) :
     LowersRecBindsWith ops ctors ke tvs vs bs cs := by
   match bs with
-  | [] => simp only [lowerRecBindsWith_eq, Option.some.injEq] at h; subst h; exact .nil
+  | [] => (rw [lowerRecBindsWith_eq] at h; try simp only [Option.some.injEq] at h); subst h; exact .nil
   | b :: rest =>
-      simp only [lowerRecBindsWith_eq] at h
+      (rw [lowerRecBindsWith_eq] at h; skip)
       obtain ⟨ann', ha, h⟩ := lowering_bind_eq_some h
       obtain ⟨e', he, h⟩ := lowering_bind_eq_some h
       obtain ⟨wrapped, hw, h⟩ := lowering_bind_eq_some h
@@ -3863,9 +3889,9 @@ theorem lowerBranchesWith_sound {ops : LoweringOps Term ParamAnn BindAnn} {ctors
     (bs : List (Surface.Pattern × Surface.Expr)) {cs} (h : lowerBranchesWith ops ke tvs vs bs = some cs) :
     LowersBranchesWith ops ctors ke tvs vs bs cs := by
   match bs with
-  | [] => simp only [lowerBranchesWith_eq, Option.some.injEq] at h; subst h; exact .nil
+  | [] => (rw [lowerBranchesWith_eq] at h; try simp only [Option.some.injEq] at h); subst h; exact .nil
   | (pat, b) :: rest =>
-      simp only [lowerBranchesWith_eq] at h
+      (rw [lowerBranchesWith_eq] at h; skip)
       obtain ⟨e', he, h⟩ := lowering_bind_eq_some h
       obtain ⟨rest', hr, h⟩ := lowering_bind_eq_some h
       simp only [pure, Option.some.injEq] at h; subst h
@@ -3971,6 +3997,56 @@ theorem lowerInputProgram_complete {p ctors input} (h : InputLowersProgram p cto
   | mk hd he hl =>
     simp [lowerInputProgram, lowerDataDeclsIn_complete hd,
       elabDecls_eq_some_iff.mpr he, lowerInput_complete hl]
+
+/-- Erasing native program failures recovers the compatibility API exactly. -/
+@[typed_result_projection] theorem lowerInputProgramResult_toOption (p : Surface.Program) :
+    (lowerInputProgramResult p).toOption = lowerInputProgram p := by
+  rw [lowerInputProgramResult, lowerInputProgram]
+  simp only [TypedResult.toOption_bind, TypedResult.toOption_mapError,
+    TypedResult.toOption_pure, lowerDataDeclsInResult_toOption, elabDeclsResult_toOption,
+    lowerInputResult_toOption, lowerInput]
+  rfl
+
+theorem lowerInputResult_eq_ok_iff {ctors s input} :
+    lowerInputResult ctors s = .ok input ↔ InputLowers ctors s input := by
+  rw [← TypedResult.toOption_eq_some, lowerInputResult_toOption]
+  exact ⟨lowerInputExpr_sound, lowerInputExpr_complete⟩
+
+theorem lowerInputResult_sound {ctors s input}
+    (h : lowerInputResult ctors s = .ok input) : InputLowers ctors s input :=
+  lowerInputResult_eq_ok_iff.mp h
+
+theorem lowerInputResult_complete {ctors s input}
+    (h : InputLowers ctors s input) : lowerInputResult ctors s = .ok input :=
+  lowerInputResult_eq_ok_iff.mpr h
+
+theorem lowerInputResult_error_not_lowers {ctors s error}
+    (h : lowerInputResult ctors s = .error error) : ¬ ∃ input, InputLowers ctors s input := by
+  rintro ⟨input, hi⟩
+  have := lowerInputResult_complete hi
+  rw [h] at this
+  cases this
+
+theorem lowerInputProgramResult_eq_ok_iff {p ctors input} :
+    lowerInputProgramResult p = .ok (ctors, input) ↔ InputLowersProgram p ctors input := by
+  rw [← TypedResult.toOption_eq_some, lowerInputProgramResult_toOption]
+  exact ⟨lowerInputProgram_sound, lowerInputProgram_complete⟩
+
+theorem lowerInputProgramResult_sound {p ctors input}
+    (h : lowerInputProgramResult p = .ok (ctors, input)) : InputLowersProgram p ctors input :=
+  lowerInputProgramResult_eq_ok_iff.mp h
+
+theorem lowerInputProgramResult_complete {p ctors input}
+    (h : InputLowersProgram p ctors input) : lowerInputProgramResult p = .ok (ctors, input) :=
+  lowerInputProgramResult_eq_ok_iff.mpr h
+
+theorem lowerInputProgramResult_error_not_lowers {p error}
+    (h : lowerInputProgramResult p = .error error) :
+    ¬ ∃ ctors input, InputLowersProgram p ctors input := by
+  rintro ⟨ctors, input, hi⟩
+  have := lowerInputProgramResult_complete hi
+  rw [h] at this
+  cases this
 
 /-- Canonical surface lowering preserves partial annotations for inference. -/
 abbrev lowerExpr := lowerInputExpr

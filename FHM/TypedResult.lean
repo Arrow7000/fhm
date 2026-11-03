@@ -58,5 +58,6 @@ theorem toOption_mapM {ε α β : Type} (map : α → Except ε β) (values : Li
   | nil => rfl
   | cons value rest ih =>
       simp only [List.mapM_cons, toOption_bind, toOption_pure, ih]
+      rfl
 
 end TypedResult

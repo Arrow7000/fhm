@@ -350,13 +350,44 @@ def Lowered.provenanceTotal (r : Lowered) : Bool :=
 
 abbrev InputLowered := Lowered InferInput
 
-def wrapParamsWithProvenance (ke : KindEnv) (tvs : List ValName) (owner : SourceNode)
+/-- Failures in optional provenance metadata are separate from source rejection. -/
+inductive ProvenanceFailureReason where
+  | programGroups (index bindingGroups spanGroups : Nat)
+  | programMembers (index bindings spans : Nat)
+  | expressionShape
+  | listShape (surfaceRemaining spansRemaining : Nat)
+  | branchShape (surfaceRemaining spansRemaining : Nat)
+  | bindingShape (surfaceRemaining spansRemaining : Nat)
+  | missingSourceClassification (id : SourceId)
+  | missingBinderClassification (site : SurfaceBinderSite)
+  deriving Repr
+
+structure ProvenanceFailure where
+  source? : Option SourceNode := none
+  reason : ProvenanceFailureReason
+  deriving Repr
+
+inductive ProvenanceLowerError where
+  | sourceFailure (source : SourceNode) (error : LoweringError)
+  | provenance (error : ProvenanceFailure)
+  deriving Repr
+
+def ProvenanceLowerError.mapSource (map : LoweringError → LoweringError) : ProvenanceLowerError → ProvenanceLowerError
+  | .sourceFailure source error => .sourceFailure source (map error)
+  | .provenance error => .provenance error
+
+def ProvenanceLowerError.atSource (source : SourceNode) : ProvenanceLowerError → ProvenanceLowerError
+  | .sourceFailure owner error => .sourceFailure owner error
+  | .provenance error => .provenance { error with source? := error.source?.orElse (fun _ => some source) }
+
+def wrapParamsWithProvenanceResult (ke : KindEnv) (tvs : List ValName) (owner : SourceNode)
     (site : Nat → SurfaceBinderSite) :
-    Nat → List (ValName × Option Surface.Ty) → InputLowered → Option InputLowered
-  | _, [], rhs => some rhs
+    Nat → List (ValName × Option Surface.Ty) → InputLowered → Except ProvenanceLowerError InputLowered
+  | _, [], rhs => .ok rhs
   | index, (_name, ann) :: rest, rhs => do
-      let inner ← wrapParamsWithProvenance ke tvs owner site (index + 1) rest rhs
-      let ann' ← lowerTemplateAnn ke tvs ann
+      let inner ← wrapParamsWithProvenanceResult ke tvs owner site (index + 1) rest rhs
+      let ann' ← (lowerTemplateAnnResult ke tvs ann).mapError fun error =>
+        .sourceFailure owner (error.atSite (.parameterAnnotation index))
       let child := inner.belowPath [.lambdaBody]
       pure {
         expr := .lambda ann' inner.expr
@@ -364,6 +395,17 @@ def wrapParamsWithProvenance (ke : KindEnv) (tvs : List ValName) (owner : Source
         sourceTargets := child.sourceTargets
         coreOrigins := generatedOrigin owner [] (.valueParamLambda index) :: child.coreOrigins
         binderTargets := (site index, .present [.lambda []]) :: child.binderTargets }
+
+def wrapParamsWithProvenance (ke : KindEnv) (tvs : List ValName) (owner : SourceNode)
+    (site : Nat → SurfaceBinderSite) (index : Nat) (params : List (ValName × Option Surface.Ty))
+    (rhs : InputLowered) : Option InputLowered :=
+  (wrapParamsWithProvenanceResult ke tvs owner site index params rhs).toOption
+
+@[typed_result_projection] theorem wrapParamsWithProvenanceResult_toOption
+    (ke : KindEnv) (tvs : List ValName) (owner : SourceNode) (site : Nat → SurfaceBinderSite)
+    (index : Nat) (params : List (ValName × Option Surface.Ty)) (rhs : InputLowered) :
+    (wrapParamsWithProvenanceResult ke tvs owner site index params rhs).toOption =
+      wrapParamsWithProvenance ke tvs owner site index params rhs := rfl
 
 def presentPathsFor (id : SourceId) (targets : SourceTargetMap) : List CorePath :=
   targets.flatMap fun (candidate, target) =>
@@ -384,14 +426,21 @@ def firstSourceAbsenceFor (id : SourceId) : SourceTargetMap → Option OriginAbs
 
 /-- Coalesce copies of source metadata after pattern compilation has cloned an
     arm. Missing classifications fail instead of being silently fabricated. -/
-def mergeSourceTargets (nodes : List SourceNode) (raw : SourceTargetMap) : Option SourceTargetMap :=
+def mergeSourceTargetsResult (nodes : List SourceNode) (raw : SourceTargetMap) :
+    Except ProvenanceLowerError SourceTargetMap :=
   nodes.mapM fun node =>
     let paths := (presentPathsFor node.id raw).dedup
-    if paths.isEmpty then do
-      let reason ← firstSourceAbsenceFor node.id raw
-      pure (node.id, .absent reason)
-    else
-      some (node.id, .present paths)
+    if paths.isEmpty then
+      match firstSourceAbsenceFor node.id raw with
+      | some reason => .ok (node.id, .absent reason)
+      | none => .error (.provenance ⟨some node, .missingSourceClassification node.id⟩)
+    else .ok (node.id, .present paths)
+
+def mergeSourceTargets (nodes : List SourceNode) (raw : SourceTargetMap) : Option SourceTargetMap :=
+  (mergeSourceTargetsResult nodes raw).toOption
+
+@[typed_result_projection] theorem mergeSourceTargetsResult_toOption (nodes : List SourceNode) (raw : SourceTargetMap) :
+    (mergeSourceTargetsResult nodes raw).toOption = mergeSourceTargets nodes raw := rfl
 
 def presentBinderSitesFor (source : SurfaceBinderSite)
     (targets : BinderTargetMap) : List CoreBinderSite :=
@@ -414,7 +463,7 @@ def firstBinderAbsenceFor (source : SurfaceBinderSite) :
 
 /-- Coalesce cloned binder sites and retain an explicit absence when their
     containing source arm was eliminated. -/
-def mergeBinderTargets (raw : BinderTargetMap) : Option BinderTargetMap :=
+def mergeBinderTargetsResult (raw : BinderTargetMap) : Except ProvenanceLowerError BinderTargetMap :=
   raw.map Prod.fst |>.dedup |>.mapM fun source =>
     let rawSites := (presentBinderSitesFor source raw).dedup
     let sites := match source with
@@ -424,11 +473,17 @@ def mergeBinderTargets (raw : BinderTargetMap) : Option BinderTargetMap :=
             | _ => []
           if paths.isEmpty then [] else [.patCapture paths.dedup capture]
       | _ => rawSites
-    if sites.isEmpty then do
-      let reason ← firstBinderAbsenceFor source raw
-      pure (source, .absent reason)
-    else
-      some (source, .present sites)
+    if sites.isEmpty then
+      match firstBinderAbsenceFor source raw with
+      | some reason => .ok (source, .absent reason)
+      | none => .error (.provenance ⟨none, .missingBinderClassification source⟩)
+    else .ok (source, .present sites)
+
+def mergeBinderTargets (raw : BinderTargetMap) : Option BinderTargetMap :=
+  (mergeBinderTargetsResult raw).toOption
+
+@[typed_result_projection] theorem mergeBinderTargetsResult_toOption (raw : BinderTargetMap) :
+    (mergeBinderTargetsResult raw).toOption = mergeBinderTargets raw := rfl
 
 def absentSourceTargets {Term : Type} (reason : OriginAbsence) (r : Lowered Term) : SourceTargetMap :=
   r.sourceNodes.map fun node => (node.id, .absent reason)
@@ -459,9 +514,9 @@ def traceCaptureTargets (owner : SourceId)
 
 /-- Translate PatComp's source-agnostic construction trace into the surface
     provenance vocabulary, merging duplicated arms and preserving elimination. -/
-def lowerTracedMatch (source : SourceNode) (scrut : InputLowered)
+def lowerTracedMatchResult (source : SourceNode) (scrut : InputLowered)
     (pats : List Surface.Pattern) (arms : List InputLowered)
-    (traced : PatComp.TracedLowering InferInput) : Option InputLowered := do
+    (traced : PatComp.TracedLowering InferInput) : Except ProvenanceLowerError InputLowered := do
   let scrutPart := scrut.belowPath [.letRhs]
   let armParts := clonedArmParts traced.trace arms
   let nodes := source :: scrut.sourceNodes ++ arms.flatMap (fun arm => arm.sourceNodes)
@@ -469,14 +524,14 @@ def lowerTracedMatch (source : SourceNode) (scrut : InputLowered)
     (source.id, .present [[]]) :: scrutPart.sourceTargets ++
       arms.flatMap (absentSourceTargets .eliminatedByPatternCompilation) ++
       armParts.flatMap (fun arm => arm.sourceTargets)
-  let sourceTargets ← mergeSourceTargets nodes rawSourceTargets
+  let sourceTargets ← (mergeSourceTargetsResult nodes rawSourceTargets).mapError (.atSource source)
   let rawBinderTargets : BinderTargetMap :=
     scrutPart.binderTargets ++
       arms.flatMap (absentBinderTargets .eliminatedByPatternCompilation) ++
       patternCaptureAbsences source.id pats ++
       armParts.flatMap (fun arm => arm.binderTargets) ++
       traceCaptureTargets source.id traced.trace
-  let binderTargets ← mergeBinderTargets rawBinderTargets
+  let binderTargets ← (mergeBinderTargetsResult rawBinderTargets).mapError (.atSource source)
   pure {
     expr := traced.expr
     sourceNodes := nodes
@@ -487,50 +542,99 @@ def lowerTracedMatch (source : SourceNode) (scrut : InputLowered)
       scrutPart.coreOrigins ++ armParts.flatMap (fun arm => arm.coreOrigins)
     binderTargets }
 
+def lowerTracedMatch (source : SourceNode) (scrut : InputLowered)
+    (pats : List Surface.Pattern) (arms : List InputLowered)
+    (traced : PatComp.TracedLowering InferInput) : Option InputLowered :=
+  (lowerTracedMatchResult source scrut pats arms traced).toOption
+
+@[typed_result_projection] theorem lowerTracedMatchResult_toOption
+    (source : SourceNode) (scrut : InputLowered) (pats : List Surface.Pattern)
+    (arms : List InputLowered) (traced : PatComp.TracedLowering InferInput) :
+    (lowerTracedMatchResult source scrut pats arms traced).toOption =
+      lowerTracedMatch source scrut pats arms traced := rfl
+
+def lowerListWithProvenanceValue (owner : SourceNode) (index : Nat) (isRoot : Bool) :
+    List InputLowered → InputLowered
+  | [] =>
+      let originKind := if isRoot then OriginKind.authored else .generated (.listCtor index)
+      {
+        expr := .ctor cNil
+        sourceNodes := if isRoot then [owner] else []
+        sourceTargets := if isRoot then [(owner.id, .present [[]])] else []
+        coreOrigins := [([], ⟨owner, originKind⟩)]
+        binderTargets := [] }
+  | item :: rest =>
+      let tail := lowerListWithProvenanceValue owner (index + 1) false rest
+      let expr := .app (.app (.ctor cCons) item.expr) tail.expr
+      let rootKind := if isRoot then OriginKind.authored else .generated (.listTailApp index)
+      let ownNodes := if isRoot then [owner] else []
+      let ownTargets := if isRoot then [(owner.id, .present [[]])] else []
+      let item' := item.belowPath [.appFun, .appArg]
+      let tail' := tail.belowPath [.appArg]
+      {
+        expr
+        sourceNodes := ownNodes ++ item'.sourceNodes ++ tail'.sourceNodes
+        sourceTargets := ownTargets ++ item'.sourceTargets ++ tail'.sourceTargets
+        coreOrigins :=
+          [([], ⟨owner, rootKind⟩),
+           generatedOrigin owner [.appFun] (.listPartialApp index),
+           generatedOrigin owner [.appFun, .appFun] (.listCtor index)] ++
+          item'.coreOrigins ++ tail'.coreOrigins
+        binderTargets := item'.binderTargets ++ tail'.binderTargets }
+def lowerListWithProvenance (owner : SourceNode) (index : Nat) (isRoot : Bool)
+    (items : List InputLowered) : Option InputLowered :=
+  some (lowerListWithProvenanceValue owner index isRoot items)
+
+@[typed_result_projection] theorem lowerListWithProvenanceValue_some
+    (owner : SourceNode) (index : Nat) (isRoot : Bool) (items : List InputLowered) :
+    some (lowerListWithProvenanceValue owner index isRoot items) =
+      lowerListWithProvenance owner index isRoot items := rfl
+
 mutual
-def lowerIdentifiedExpr (ke : KindEnv) (tvs vs : List ValName) :
-    Surface.Expr → IdentifiedExpr → Option InputLowered
+def lowerIdentifiedExprResult (ke : KindEnv) (tvs vs : List ValName) :
+    Surface.Expr → IdentifiedExpr → Except ProvenanceLowerError InputLowered
   | .primLit (.bool b), .leaf source =>
-      some (authoredRoot source (.ctor (if b then cTrue else cFalse)))
-  | .primLit .unit, .leaf source => some (authoredRoot source (.primLit .unit))
-  | .primLit (.int n), .leaf source => some (authoredRoot source (.primLit (.int n)))
-  | .primLit (.nat n), .leaf source => some (authoredRoot source (.primLit (.nat n)))
-  | .primLit (.char c), .leaf source => some (authoredRoot source (.primLit (.char c)))
-  | .primBinOp op, .leaf source => some (authoredRoot source (.primBinOp op))
+      .ok (authoredRoot source (.ctor (if b then cTrue else cFalse)))
+  | .primLit .unit, .leaf source => .ok (authoredRoot source (.primLit .unit))
+  | .primLit (.int n), .leaf source => .ok (authoredRoot source (.primLit (.int n)))
+  | .primLit (.nat n), .leaf source => .ok (authoredRoot source (.primLit (.nat n)))
+  | .primLit (.char c), .leaf source => .ok (authoredRoot source (.primLit (.char c)))
+  | .primBinOp op, .leaf source => .ok (authoredRoot source (.primBinOp op))
   | .pair a b, .pair source sa sb => do
-      let a' ← lowerIdentifiedExpr ke tvs vs a sa
-      let b' ← lowerIdentifiedExpr ke tvs vs b sb
+      let a' ← (lowerIdentifiedExprResult ke tvs vs a sa).mapError (.mapSource (LoweringError.below .pairLeft))
+      let b' ← (lowerIdentifiedExprResult ke tvs vs b sb).mapError (.mapSource (LoweringError.below .pairRight))
       let expr := .app (.app (.ctor cPair) a'.expr) b'.expr
       pure (combineAuthored source expr
         [a'.belowPath [.appFun, .appArg], b'.belowPath [.appArg]]
         [generatedOrigin source [.appFun] .pairPartialApp,
          generatedOrigin source [.appFun, .appFun] .pairCtor])
   | .cons h t, .cons source sh st => do
-      let h' ← lowerIdentifiedExpr ke tvs vs h sh
-      let t' ← lowerIdentifiedExpr ke tvs vs t st
+      let h' ← (lowerIdentifiedExprResult ke tvs vs h sh).mapError (.mapSource (LoweringError.below .consHead))
+      let t' ← (lowerIdentifiedExprResult ke tvs vs t st).mapError (.mapSource (LoweringError.below .consTail))
       let expr := .app (.app (.ctor cCons) h'.expr) t'.expr
       pure (combineAuthored source expr
         [h'.belowPath [.appFun, .appArg], t'.belowPath [.appArg]]
         [generatedOrigin source [.appFun] .consPartialApp,
          generatedOrigin source [.appFun, .appFun] .consCtor])
   | .list items, .list source sitems => do
-      let items' ← lowerIdentifiedList ke tvs vs items sitems
-      lowerListWithProvenance source 0 true items'
+      let items' ← (lowerIdentifiedListResult ke tvs vs items sitems).mapError (.atSource source)
+      pure (lowerListWithProvenanceValue source 0 true items')
   | .lambda param paramAnn body, .lambda source sbody => do
-      let ann' ← lowerTemplateAnn ke tvs paramAnn
+      let ann' ← (lowerTemplateAnnResult ke tvs paramAnn).mapError fun error =>
+        .sourceFailure source (error.atSite .lambdaAnnotation)
       match param with
       | .name name => do
-          let body' ← lowerIdentifiedExpr ke tvs (name :: vs) body sbody
+          let body' ← (lowerIdentifiedExprResult ke tvs (name :: vs) body sbody).mapError (.mapSource (LoweringError.below .lambdaBody))
           pure (combineAuthored source (.lambda ann' body'.expr)
             [body'.belowPath [.lambdaBody]] []
             [(.lambda source.id, .present [.lambda []])])
       | .wildcard => do
-          let body' ← lowerIdentifiedExpr ke tvs (.mk "_" :: vs) body sbody
+          let body' ← (lowerIdentifiedExprResult ke tvs (.mk "_" :: vs) body sbody).mapError (.mapSource (LoweringError.below .lambdaBody))
           pure (combineAuthored source (.lambda ann' body'.expr)
             [body'.belowPath [.lambdaBody]] []
             [(.lambda source.id, .present [.lambda []])])
       | _ => do
-          let body' ← lowerIdentifiedExpr ke tvs (patVars param ++ .mk "_" :: vs) body sbody
+          let body' ← (lowerIdentifiedExprResult ke tvs (patVars param ++ .mk "_" :: vs) body sbody).mapError (.mapSource (LoweringError.below .lambdaBody))
           let scrut : InputLowered := {
             expr := .var 0
             sourceNodes := []
@@ -539,32 +643,33 @@ def lowerIdentifiedExpr (ke : KindEnv) (tvs vs : List ValName) :
             binderTargets := [] }
           let traced := lowerInputMatchTrace scrut.expr [param]
             (fun i => [body'.expr].getD i (.ctor cNil))
-          let matched ← lowerTracedMatch source scrut [param] [body'] traced
+          let matched ← lowerTracedMatchResult source scrut [param] [body'] traced
           let inner := { matched with
             sourceNodes := matched.sourceNodes.filter (fun n => n.id != source.id)
             sourceTargets := matched.sourceTargets.filter (fun entry => entry.1 != source.id) }
           pure (combineAuthored source (.lambda ann' matched.expr)
             [inner.belowPath [.lambdaBody]])
   | .app fn arg, .app source sfn sarg => do
-      let fn' ← lowerIdentifiedExpr ke tvs vs fn sfn
-      let arg' ← lowerIdentifiedExpr ke tvs vs arg sarg
+      let fn' ← (lowerIdentifiedExprResult ke tvs vs fn sfn).mapError (.mapSource (LoweringError.below .appFun))
+      let arg' ← (lowerIdentifiedExprResult ke tvs vs arg sarg).mapError (.mapSource (LoweringError.below .appArg))
       pure (combineAuthored source (.app fn'.expr arg'.expr)
         [fn'.belowPath [.appFun], arg'.belowPath [.appArg]])
   | .letIn name tyParams params ann rhs body, .letIn source srhs sbody => do
       let annF := finalizeInputAnn tyParams params ann
-      let ann' ← lowerInputLetAnn ke tvs annF
+      let ann' ← (lowerInputLetAnnResult ke tvs annF).mapError fun error =>
+        .sourceFailure source ((error.atSite .bindingAnnotation).inBinding name)
       let tvs' := letAnnTyPrefix tyParams annF ++ tvs
-      let rhsCore ← lowerIdentifiedExpr ke tvs' (paramTermScope params vs) rhs srhs
-      let rhs' ← wrapParamsWithProvenance ke tvs' source
-        (fun i => .letParam source.id i) 0 params rhsCore
-      let body' ← lowerIdentifiedExpr ke tvs (name :: vs) body sbody
+      let rhsCore ← (lowerIdentifiedExprResult ke tvs' (paramTermScope params vs) rhs srhs).mapError (.mapSource (fun error => (error.below .letRhs).inBinding name))
+      let rhs' ← (wrapParamsWithProvenanceResult ke tvs' source
+        (fun i => .letParam source.id i) 0 params rhsCore).mapError (.mapSource (.inBinding name))
+      let body' ← (lowerIdentifiedExprResult ke tvs (name :: vs) body sbody).mapError (.mapSource (LoweringError.below .letBody))
       pure (combineAuthored source (.letIn ann' rhs'.expr body'.expr)
         [rhs'.belowPath [.letRhs], body'.belowPath [.letBody]] []
         [(.letIn source.id, .present [.letIn []])])
   | .letRecIn binds body, .letRecIn source srhss sbody => do
       let recScope := binds.map (fun b => b.name) ++ vs
-      let bindings' ← lowerIdentifiedRecBinds ke tvs recScope source 0 binds srhss
-      let body' ← lowerIdentifiedExpr ke tvs recScope body sbody
+      let bindings' ← lowerIdentifiedRecBindsResult ke tvs recScope source 0 binds srhss
+      let body' ← (lowerIdentifiedExprResult ke tvs recScope body sbody).mapError (.mapSource (LoweringError.below .letRecBody))
       let inputBindings := bindings'.map fun binding =>
         { ann := binding.ann, rhs := binding.rhs.expr }
       let bindingParts := bindings'.mapIdx fun member binding =>
@@ -575,100 +680,124 @@ def lowerIdentifiedExpr (ke : KindEnv) (tvs vs : List ValName) :
         (bindingParts ++ [body'.belowPath [.letRecBody]]) [] groupBinders
         )
   | .var name, .leaf source => do
-      let index ← tvarIndex vs name
+      let index ← (resolveValueResult vs name).mapError (.sourceFailure source)
       pure (authoredRoot source (.var index))
-  | .ctor name, .leaf source => some (authoredRoot source (.ctor name))
+  | .ctor name, .leaf source => .ok (authoredRoot source (.ctor name))
   | .ife cond then_ else_, .ife source scond sthen selse => do
-      let cond' ← lowerIdentifiedExpr ke tvs vs cond scond
-      let then' ← lowerIdentifiedExpr ke tvs vs then_ sthen
-      let else' ← lowerIdentifiedExpr ke tvs vs else_ selse
+      let cond' ← (lowerIdentifiedExprResult ke tvs vs cond scond).mapError (.mapSource (LoweringError.below .ifCondition))
+      let then' ← (lowerIdentifiedExprResult ke tvs vs then_ sthen).mapError (.mapSource (LoweringError.below .ifThen))
+      let else' ← (lowerIdentifiedExprResult ke tvs vs else_ selse).mapError (.mapSource (LoweringError.below .ifElse))
       let pats : List Surface.Pattern := [.ctor cTrue [], .ctor cFalse []]
       let arms := [then', else']
       let traced := lowerInputMatchTrace cond'.expr pats
         (fun i => (arms.map (fun arm => arm.expr)).getD i (.ctor cNil))
-      lowerTracedMatch source cond' pats arms traced
+      lowerTracedMatchResult source cond' pats arms traced
   | .match_ scrut branches, .match_ source sscrut sarms => do
-      let scrut' ← lowerIdentifiedExpr ke tvs vs scrut sscrut
-      let arms' ← lowerIdentifiedBranches ke tvs vs branches sarms
+      let scrut' ← (lowerIdentifiedExprResult ke tvs vs scrut sscrut).mapError (.mapSource (LoweringError.below .matchScrut))
+      let arms' ← (lowerIdentifiedBranchesResult ke tvs vs branches sarms).mapError (.atSource source)
       let pats := branches.map Prod.fst
       let traced := lowerInputMatchTrace scrut'.expr pats
         (fun i => (arms'.map (fun arm => arm.expr)).getD i (.ctor cNil))
-      lowerTracedMatch source scrut' pats arms' traced
-  | _, _ => none
+      lowerTracedMatchResult source scrut' pats arms' traced
+  | _, tree => .error (.provenance ⟨some tree.source, .expressionShape⟩)
 
-def lowerIdentifiedList (ke : KindEnv) (tvs vs : List ValName) :
-    List Surface.Expr → List IdentifiedExpr → Option (List InputLowered)
-  | [], [] => some []
+termination_by surface _ => surfaceExprSize surface
+decreasing_by all_goals simp only [surfaceExprSize, surfaceExprSizeList, surfaceExprSizeBranches, surfaceExprSizeLetRecBinds] <;> omega
+
+def lowerIdentifiedListResult (ke : KindEnv) (tvs vs : List ValName) :
+    List Surface.Expr → List IdentifiedExpr → Except ProvenanceLowerError (List InputLowered)
+  | [], [] => .ok []
   | e :: es, se :: ses => do
-      let e' ← lowerIdentifiedExpr ke tvs vs e se
-      let es' ← lowerIdentifiedList ke tvs vs es ses
+      let e' ← (lowerIdentifiedExprResult ke tvs vs e se).mapError (.mapSource (LoweringError.below (.listItem 0)))
+      let es' ← (lowerIdentifiedListResult ke tvs vs es ses).mapError (.mapSource LoweringError.nextListItem)
       pure (e' :: es')
-  | _, _ => none
+  | exprs, trees => .error (.provenance ⟨none, .listShape exprs.length trees.length⟩)
 
-def lowerIdentifiedBranches (ke : KindEnv) (tvs vs : List ValName) :
-    List (Surface.Pattern × Surface.Expr) → List IdentifiedExpr → Option (List InputLowered)
-  | [], [] => some []
+termination_by surfaces _ => surfaceExprSizeList surfaces
+decreasing_by all_goals simp only [surfaceExprSize, surfaceExprSizeList, surfaceExprSizeBranches, surfaceExprSizeLetRecBinds] <;> omega
+
+def lowerIdentifiedBranchesResult (ke : KindEnv) (tvs vs : List ValName) :
+    List (Surface.Pattern × Surface.Expr) → List IdentifiedExpr → Except ProvenanceLowerError (List InputLowered)
+  | [], [] => .ok []
   | (pat, body) :: rest, sbody :: srest => do
-      let body' ← lowerIdentifiedExpr ke tvs (patVars pat ++ vs) body sbody
-      let rest' ← lowerIdentifiedBranches ke tvs vs rest srest
+      let body' ← (lowerIdentifiedExprResult ke tvs (patVars pat ++ vs) body sbody).mapError (.mapSource (LoweringError.below (.matchBranch 0)))
+      let rest' ← (lowerIdentifiedBranchesResult ke tvs vs rest srest).mapError (.mapSource LoweringError.nextBranch)
       pure (body' :: rest')
-  | _, _ => none
+  | branches, trees => .error (.provenance ⟨none, .branchShape branches.length trees.length⟩)
 
-def lowerIdentifiedRecBinds (ke : KindEnv) (tvs recScope : List ValName)
+termination_by branches _ => surfaceExprSizeBranches branches
+decreasing_by all_goals simp only [surfaceExprSize, surfaceExprSizeList, surfaceExprSizeBranches, surfaceExprSizeLetRecBinds] <;> omega
+
+def lowerIdentifiedRecBindsResult (ke : KindEnv) (tvs recScope : List ValName)
     (owner : SourceNode) : Nat → List Surface.Binding → List IdentifiedExpr →
-      Option (List (RecBinding BindingAnn InputLowered))
-  | _, [], [] => some []
+      Except ProvenanceLowerError (List (RecBinding BindingAnn InputLowered))
+  | _, [], [] => .ok []
   | member, b :: rest, srhs :: srest => do
       let annF := finalizeInputAnn b.tyParams b.params b.ann
-      let ann' ← lowerInputLetAnn ke tvs annF
+      let ann' ← (lowerInputLetAnnResult ke tvs annF).mapError fun error =>
+        .sourceFailure owner (((error.atSite .bindingAnnotation).inBinding b.name).below (.letRecRhs member))
       let tvs' := letAnnTyPrefix b.tyParams annF ++ tvs
-      let rhsCore ← lowerIdentifiedExpr ke tvs' (paramTermScope b.params recScope) b.rhs srhs
-      let rhs' ← wrapParamsWithProvenance ke tvs' owner
-        (fun i => .letRecParam owner.id member i) 0 b.params rhsCore
-      let rest' ← lowerIdentifiedRecBinds ke tvs recScope owner (member + 1) rest srest
+      let rhsCore ← (lowerIdentifiedExprResult ke tvs' (paramTermScope b.params recScope) b.rhs srhs).mapError (.mapSource (fun error => (error.below (.letRecRhs member)).inBinding b.name))
+      let rhs' ← (wrapParamsWithProvenanceResult ke tvs' owner
+        (fun i => .letRecParam owner.id member i) 0 b.params rhsCore).mapError
+          (.mapSource (fun error => (error.inBinding b.name).below (.letRecRhs member)))
+      let rest' ← lowerIdentifiedRecBindsResult ke tvs recScope owner (member + 1) rest srest
       pure ({ ann := ann', rhs := rhs' } :: rest')
-  | _, _, _ => none
+  | _, bindings, trees => .error (.provenance ⟨some owner, .bindingShape bindings.length trees.length⟩)
 
-def lowerListWithProvenance (owner : SourceNode) (index : Nat) (isRoot : Bool) :
-    List InputLowered → Option InputLowered
-  | [] =>
-      let originKind := if isRoot then OriginKind.authored else .generated (.listCtor index)
-      some {
-        expr := .ctor cNil
-        sourceNodes := if isRoot then [owner] else []
-        sourceTargets := if isRoot then [(owner.id, .present [[]])] else []
-        coreOrigins := [([], ⟨owner, originKind⟩)]
-        binderTargets := [] }
-  | item :: rest => do
-      let tail ← lowerListWithProvenance owner (index + 1) false rest
-      let expr := .app (.app (.ctor cCons) item.expr) tail.expr
-      let rootKind := if isRoot then OriginKind.authored else .generated (.listTailApp index)
-      let ownNodes := if isRoot then [owner] else []
-      let ownTargets := if isRoot then [(owner.id, .present [[]])] else []
-      let item' := item.belowPath [.appFun, .appArg]
-      let tail' := tail.belowPath [.appArg]
-      pure {
-        expr
-        sourceNodes := ownNodes ++ item'.sourceNodes ++ tail'.sourceNodes
-        sourceTargets := ownTargets ++ item'.sourceTargets ++ tail'.sourceTargets
-        coreOrigins :=
-          [([], ⟨owner, rootKind⟩),
-           generatedOrigin owner [.appFun] (.listPartialApp index),
-           generatedOrigin owner [.appFun, .appFun] (.listCtor index)] ++
-          item'.coreOrigins ++ tail'.coreOrigins
-        binderTargets := item'.binderTargets ++ tail'.binderTargets }
+termination_by _ bindings _ => surfaceExprSizeLetRecBinds bindings
+decreasing_by all_goals simp only [surfaceExprSize, surfaceExprSizeList, surfaceExprSizeBranches, surfaceExprSizeLetRecBinds] <;> omega
+
 end
+
+
+def lowerIdentifiedExpr (ke : KindEnv) (tvs vs : List ValName)
+    (surface : Surface.Expr) (tree : IdentifiedExpr) : Option InputLowered :=
+  (lowerIdentifiedExprResult ke tvs vs surface tree).toOption
+
+def lowerIdentifiedList (ke : KindEnv) (tvs vs : List ValName)
+    (surfaces : List Surface.Expr) (trees : List IdentifiedExpr) : Option (List InputLowered) :=
+  (lowerIdentifiedListResult ke tvs vs surfaces trees).toOption
+
+def lowerIdentifiedBranches (ke : KindEnv) (tvs vs : List ValName)
+    (branches : List (Surface.Pattern × Surface.Expr)) (trees : List IdentifiedExpr) : Option (List InputLowered) :=
+  (lowerIdentifiedBranchesResult ke tvs vs branches trees).toOption
+
+def lowerIdentifiedRecBinds (ke : KindEnv) (tvs recScope : List ValName) (owner : SourceNode)
+    (member : Nat) (bindings : List Surface.Binding) (trees : List IdentifiedExpr) :
+    Option (List (RecBinding BindingAnn InputLowered)) :=
+  (lowerIdentifiedRecBindsResult ke tvs recScope owner member bindings trees).toOption
+
+@[typed_result_projection] theorem lowerIdentifiedExprResult_toOption (ke : KindEnv) (tvs vs : List ValName) (surface : Surface.Expr) (tree : IdentifiedExpr) :
+    (lowerIdentifiedExprResult ke tvs vs surface tree).toOption = lowerIdentifiedExpr ke tvs vs surface tree := rfl
+
+@[typed_result_projection] theorem lowerIdentifiedListResult_toOption (ke : KindEnv) (tvs vs : List ValName) (surfaces : List Surface.Expr) (trees : List IdentifiedExpr) :
+    (lowerIdentifiedListResult ke tvs vs surfaces trees).toOption = lowerIdentifiedList ke tvs vs surfaces trees := rfl
+
+@[typed_result_projection] theorem lowerIdentifiedBranchesResult_toOption (ke : KindEnv) (tvs vs : List ValName) (branches : List (Surface.Pattern × Surface.Expr)) (trees : List IdentifiedExpr) :
+    (lowerIdentifiedBranchesResult ke tvs vs branches trees).toOption = lowerIdentifiedBranches ke tvs vs branches trees := rfl
+
+@[typed_result_projection] theorem lowerIdentifiedRecBindsResult_toOption (ke : KindEnv) (tvs vs : List ValName) (owner : SourceNode) (member : Nat) (bindings : List Surface.Binding) (trees : List IdentifiedExpr) :
+    (lowerIdentifiedRecBindsResult ke tvs vs owner member bindings trees).toOption = lowerIdentifiedRecBinds ke tvs vs owner member bindings trees := rfl
 
 /-- Construction-time lowering. The `SpannedExpr` must mirror the
     Surface tree; shape mismatches fail instead of silently corrupting paths. -/
-def lowerWithProvenance (ctors : CtorEnv) (surface : Surface.Expr)
-    (spanned : SpannedExpr) : Option InputLowered := do
+def lowerWithProvenanceResult (ctors : CtorEnv) (surface : Surface.Expr)
+    (spanned : SpannedExpr) : Except ProvenanceLowerError InputLowered := do
   let identified := identify spanned
-  let lowered ← lowerIdentifiedExpr (kindEnvOfCtors ctors) [] [] surface identified
+  let lowered ← lowerIdentifiedExprResult (kindEnvOfCtors ctors) [] [] surface identified
   -- The ID pass, rather than the lowering recursion, is authoritative for the
   -- source domain. This makes an accidentally omitted source target observable
   -- to `sourceTargetsTotal` instead of letting both sides omit the same node.
   pure { lowered with sourceNodes := identified.nodes }
+
+def lowerWithProvenance (ctors : CtorEnv) (surface : Surface.Expr)
+    (spanned : SpannedExpr) : Option InputLowered :=
+  (lowerWithProvenanceResult ctors surface spanned).toOption
+
+@[typed_result_projection] theorem lowerWithProvenanceResult_toOption
+    (ctors : CtorEnv) (surface : Surface.Expr) (spanned : SpannedExpr) :
+    (lowerWithProvenanceResult ctors surface spanned).toOption = lowerWithProvenance ctors surface spanned := rfl
 
 /-! Successful provenance construction agrees exactly with the shared structural
 lowerer. The proofs quantify over arbitrary identified trees: mismatched metadata
@@ -676,12 +805,14 @@ may fail, but every accepted term has a lowering derivation independent of IDs.
 -/
 
 
+attribute [-typed_result_projection] Option.bind
+
 theorem lowerTracedMatch_expr {source : SourceNode} {scrut : InputLowered}
     {pats : List Surface.Pattern} {arms : List InputLowered}
     {traced : PatComp.TracedLowering InferInput} {result : InputLowered}
     (h : lowerTracedMatch source scrut pats arms traced = some result) :
     result.expr = traced.expr := by
-  simp only [lowerTracedMatch, bind, pure, Option.bind_eq_some_iff, Option.some.injEq] at h
+  rw [lowerTracedMatch, lowerTracedMatchResult] at h; simp only [typed_result_projection, Option.bind_eq_some_iff, Option.some.injEq] at h
   obtain ⟨_, _, _, _, rfl⟩ := h
   rfl
 
@@ -694,29 +825,36 @@ theorem wrapParamsWithProvenance_project {ke : KindEnv} {tvs : List ValName}
   | nil => cases h; rfl
   | cons param params ih =>
     rcases param with ⟨name, ann⟩
-    simp only [wrapParamsWithProvenance, bind, pure, Option.bind_eq_some_iff, Option.some.injEq] at h
+    rw [wrapParamsWithProvenance, wrapParamsWithProvenanceResult] at h; simp only [typed_result_projection, Option.bind_eq_some_iff, Option.some.injEq] at h
     obtain ⟨inner, hinner, ann', hann, rfl⟩ := h
     have hp := ih hinner
+    rw [wrapInputParams, LoweringOps.wrapParams_eq]
     change (do
       let annotation ← lowerTemplateAnn ke tvs ann
       let body ← wrapInputParams ke tvs params rhs.expr
       pure (Expr.lambda annotation body)) = some (Expr.lambda ann' inner.expr)
-    simp only [hann, hp, bind, pure, Option.bind_some]
+    simp only [typed_result_projection, hann, hp, bind, pure, Option.bind_some]
 
 theorem lowerListWithProvenance_project {owner : SourceNode} {index : Nat} {isRoot : Bool}
     {items : List InputLowered} {result : InputLowered}
     (h : lowerListWithProvenance owner index isRoot items = some result) :
     result.expr = mkInputList (items.map (·.expr)) := by
-  induction items generalizing index isRoot result with
-  | nil => cases h; rfl
-  | cons item items ih =>
-    simp only [lowerListWithProvenance, bind, pure, Option.bind_eq_some_iff, Option.some.injEq] at h
-    obtain ⟨tail, htail, rfl⟩ := h
-    have hp := ih htail
-    simpa only [mkInputList, LoweringOps.mkList, inputLoweringOps, List.map_cons] using
-      congrArg (fun tail => Expr.app (.app (.ctor cCons) item.expr) tail) hp
+  have valueExpr : ∀ (items : List InputLowered) (index : Nat) (isRoot : Bool),
+      (lowerListWithProvenanceValue owner index isRoot items).expr = mkInputList (items.map (·.expr)) := by
+    intro items
+    induction items with
+    | nil => intros; rfl
+    | cons item rest ih =>
+      intros
+      simp only [lowerListWithProvenanceValue, mkInputList, LoweringOps.mkList,
+        inputLoweringOps, List.map_cons, Lowered.belowPath]
+      exact congrArg (fun tail => Expr.app (.app (.ctor cCons) item.expr) tail) (ih _ _)
+  cases h
+  exact valueExpr _ _ _
 
-private theorem lowerRec_nil (ke) (tvs vs) (owner) (index) : lowerIdentifiedRecBinds ke tvs vs owner index [] [] = some [] := by rfl
+private theorem lowerRec_nil (ke) (tvs vs) (owner) (index) : lowerIdentifiedRecBinds ke tvs vs owner index [] [] = some [] := by
+  rw [lowerIdentifiedRecBinds, lowerIdentifiedRecBindsResult.eq_def]
+  rfl
 private theorem lowerRec_cons (ke) (tvs vs) (owner) (index) (b : Surface.Binding) (rest) (srhs) (srest) :
  lowerIdentifiedRecBinds ke tvs vs owner index (b::rest) (srhs::srest) = (do
  let annF := finalizeInputAnn b.tyParams b.params b.ann
@@ -725,12 +863,19 @@ private theorem lowerRec_cons (ke) (tvs vs) (owner) (index) (b : Surface.Binding
  let rhs ← lowerIdentifiedExpr ke tvs' (paramTermScope b.params vs) b.rhs srhs
  let rhs' ← wrapParamsWithProvenance ke tvs' owner (fun i => .letRecParam owner.id index i) 0 b.params rhs
  let rest' ← lowerIdentifiedRecBinds ke tvs vs owner (index+1) rest srest
- pure ({ ann := ann', rhs := rhs' }::rest')) := by rfl
+ pure ({ ann := ann', rhs := rhs' }::rest')) := by
+  rw [lowerIdentifiedRecBinds, lowerIdentifiedRecBindsResult.eq_def]
+  simp only [typed_result_projection]
+  rfl
 
 private theorem lowerRec_nil_cons (ke) (tvs vs) (owner) (index) (srhs) (srest) :
- lowerIdentifiedRecBinds ke tvs vs owner index [] (srhs::srest) = none := rfl
+ lowerIdentifiedRecBinds ke tvs vs owner index [] (srhs::srest) = none := by
+  rw [lowerIdentifiedRecBinds, lowerIdentifiedRecBindsResult.eq_def]
+  rfl
 private theorem lowerRec_cons_nil (ke) (tvs vs) (owner) (index) (b) (rest) :
- lowerIdentifiedRecBinds ke tvs vs owner index (b::rest) [] = none := rfl
+ lowerIdentifiedRecBinds ke tvs vs owner index (b::rest) [] = none := by
+  rw [lowerIdentifiedRecBinds, lowerIdentifiedRecBindsResult.eq_def]
+  rfl
 
 mutual
 theorem lowerIdentifiedExpr_project {ke : KindEnv} {tvs vs : List ValName}
@@ -739,164 +884,164 @@ theorem lowerIdentifiedExpr_project {ke : KindEnv} {tvs vs : List ValName}
     lowerInputExpr ke tvs vs surface = some result.expr := by
   cases hs : surface with
   | primLit p =>
-    cases p <;> cases identified <;> simp only [hs, lowerIdentifiedExpr, reduceCtorEq] at h
-    all_goals (cases h; simp only [lowerInputExpr, lowerExprWith, inputLoweringOps, authoredRoot] <;> rfl)
+    cases p <;> cases identified <;> (rw [lowerIdentifiedExpr, lowerIdentifiedExprResult.eq_def] at h; simp only [hs] at h; try dsimp only at h; simp only [typed_result_projection, reduceCtorEq] at h)
+    all_goals (cases h <;> simp only [typed_result_projection, lowerInputExpr,lowerExprWith_eq, inputLoweringOps, authoredRoot] <;> rfl)
   | primBinOp op =>
-    cases identified <;> simp only [hs, lowerIdentifiedExpr, reduceCtorEq] at h
+    cases identified <;> (rw [lowerIdentifiedExpr, lowerIdentifiedExprResult.eq_def] at h; simp only [hs] at h; try dsimp only at h; simp only [typed_result_projection, reduceCtorEq] at h)
     cases h
-    simp only [lowerInputExpr, lowerExprWith, inputLoweringOps, authoredRoot]
+    simp only [typed_result_projection, lowerInputExpr,lowerExprWith_eq, inputLoweringOps, authoredRoot]
   | pair a b =>
-    cases identified <;> simp only [hs, lowerIdentifiedExpr, reduceCtorEq] at h
-    simp only [bind, pure, Option.bind_eq_some_iff, Option.some.injEq] at h
+    cases identified <;> (rw [lowerIdentifiedExpr, lowerIdentifiedExprResult.eq_def] at h; simp only [hs] at h; try dsimp only at h; simp only [typed_result_projection, reduceCtorEq] at h)
+    simp only [typed_result_projection, Option.bind_eq_some_iff, Option.some.injEq] at h
     obtain ⟨a', ha, b', hb, rfl⟩ := h
     have hpa := lowerIdentifiedExpr_project ha
     have hpb := lowerIdentifiedExpr_project hb
-    simp only [lowerInputExpr, inputLoweringOps] at hpa hpb
-    simp only [lowerInputExpr, lowerExprWith, inputLoweringOps, hpa, hpb,
+    simp only [typed_result_projection, lowerInputExpr, inputLoweringOps] at hpa hpb
+    simp only [typed_result_projection, lowerInputExpr,lowerExprWith_eq, inputLoweringOps, hpa, hpb,
       bind, pure, Option.bind_some, combineAuthored]
     rfl
   | cons a b =>
-    cases identified <;> simp only [hs, lowerIdentifiedExpr, reduceCtorEq] at h
-    simp only [bind, pure, Option.bind_eq_some_iff, Option.some.injEq] at h
+    cases identified <;> (rw [lowerIdentifiedExpr, lowerIdentifiedExprResult.eq_def] at h; simp only [hs] at h; try dsimp only at h; simp only [typed_result_projection, reduceCtorEq] at h)
+    simp only [typed_result_projection, Option.bind_eq_some_iff, Option.some.injEq] at h
     obtain ⟨a', ha, b', hb, rfl⟩ := h
     have hpa := lowerIdentifiedExpr_project ha
     have hpb := lowerIdentifiedExpr_project hb
-    simp only [lowerInputExpr, inputLoweringOps] at hpa hpb
-    simp only [lowerInputExpr, lowerExprWith, inputLoweringOps, hpa, hpb,
+    simp only [typed_result_projection, lowerInputExpr, inputLoweringOps] at hpa hpb
+    simp only [typed_result_projection, lowerInputExpr,lowerExprWith_eq, inputLoweringOps, hpa, hpb,
       bind, pure, Option.bind_some, combineAuthored]
     rfl
   | app a b =>
-    cases identified <;> simp only [hs, lowerIdentifiedExpr, reduceCtorEq] at h
-    simp only [bind, pure, Option.bind_eq_some_iff, Option.some.injEq] at h
+    cases identified <;> (rw [lowerIdentifiedExpr, lowerIdentifiedExprResult.eq_def] at h; simp only [hs] at h; try dsimp only at h; simp only [typed_result_projection, reduceCtorEq] at h)
+    simp only [typed_result_projection, Option.bind_eq_some_iff, Option.some.injEq] at h
     obtain ⟨a', ha, b', hb, rfl⟩ := h
     have hpa := lowerIdentifiedExpr_project ha
     have hpb := lowerIdentifiedExpr_project hb
-    simp only [lowerInputExpr, inputLoweringOps] at hpa hpb
-    simp only [lowerInputExpr, lowerExprWith, inputLoweringOps, hpa, hpb,
+    simp only [typed_result_projection, lowerInputExpr, inputLoweringOps] at hpa hpb
+    simp only [typed_result_projection, lowerInputExpr,lowerExprWith_eq, inputLoweringOps, hpa, hpb,
       bind, pure, Option.bind_some, combineAuthored]
   | list items =>
-    cases identified <;> simp only [hs, lowerIdentifiedExpr, reduceCtorEq] at h
-    simp only [bind, Option.bind_eq_some_iff] at h
+    cases identified <;> (rw [lowerIdentifiedExpr, lowerIdentifiedExprResult.eq_def] at h; simp only [hs] at h; try dsimp only at h; simp only [typed_result_projection, reduceCtorEq] at h)
+    simp only [typed_result_projection, Option.bind_eq_some_iff] at h
     obtain ⟨items', hi, hl⟩ := h
     have hp := lowerIdentifiedList_project hi
     have he := lowerListWithProvenance_project hl
-    simp only [lowerInputExprList, inputLoweringOps] at hp
-    simp only [lowerInputExpr, lowerExprWith, inputLoweringOps, hp, Option.map_some]
+    simp only [typed_result_projection, lowerInputExprList, inputLoweringOps] at hp
+    simp only [typed_result_projection, lowerInputExpr,lowerExprWith_eq, inputLoweringOps, hp, Option.map_some]
     exact congrArg some he.symm
   | lambda param ann body =>
-    cases identified <;> simp only [hs, lowerIdentifiedExpr, reduceCtorEq] at h
+    cases identified <;> (rw [lowerIdentifiedExpr, lowerIdentifiedExprResult.eq_def] at h; simp only [hs] at h; try dsimp only at h; simp only [typed_result_projection, reduceCtorEq] at h)
     cases param with
     | name name =>
-      simp only [bind, pure, Option.bind_eq_some_iff, Option.some.injEq] at h
+      simp only [typed_result_projection, Option.bind_eq_some_iff, Option.some.injEq] at h
       obtain ⟨ann', ha, body', hb, rfl⟩ := h
       have hp := lowerIdentifiedExpr_project hb
-      simp only [lowerInputExpr, inputLoweringOps, inputEmissionOps] at hp
-      simp only [lowerInputExpr, lowerExprWith, inputLoweringOps, inputEmissionOps, ha, hp,
+      simp only [typed_result_projection, lowerInputExpr, inputLoweringOps, inputEmissionOps] at hp
+      simp only [typed_result_projection, lowerInputExpr,lowerExprWith_eq, inputLoweringOps, inputEmissionOps, ha, hp,
         bind, pure, Option.bind_some, combineAuthored]
     | wildcard =>
-      simp only [bind, pure, Option.bind_eq_some_iff, Option.some.injEq] at h
+      simp only [typed_result_projection, Option.bind_eq_some_iff, Option.some.injEq] at h
       obtain ⟨ann', ha, body', hb, rfl⟩ := h
       have hp := lowerIdentifiedExpr_project hb
-      simp only [lowerInputExpr, inputLoweringOps, inputEmissionOps] at hp
-      simp only [lowerInputExpr, lowerExprWith, inputLoweringOps, inputEmissionOps, ha, hp,
+      simp only [typed_result_projection, lowerInputExpr, inputLoweringOps, inputEmissionOps] at hp
+      simp only [typed_result_projection, lowerInputExpr,lowerExprWith_eq, inputLoweringOps, inputEmissionOps, ha, hp,
         bind, pure, Option.bind_some, combineAuthored]
     | pair fst snd =>
-      simp only [bind, pure, Option.bind_eq_some_iff, Option.some.injEq] at h
+      simp only [typed_result_projection, Option.bind_eq_some_iff, Option.some.injEq] at h
       obtain ⟨ann', ha, body', hb, matched, hm, rfl⟩ := h
       have hp := lowerIdentifiedExpr_project hb
       have he := lowerTracedMatch_expr hm
-      simp only [lowerInputMatchTrace_expr] at he
-      simp only [lowerInputExpr, inputLoweringOps, inputEmissionOps] at hp
-      simp only [lowerInputExpr, lowerExprWith, inputLoweringOps, inputEmissionOps, ha, hp,
+      simp only [typed_result_projection, lowerInputMatchTrace_expr] at he
+      simp only [typed_result_projection, lowerInputExpr, inputLoweringOps, inputEmissionOps] at hp
+      simp only [typed_result_projection, lowerInputExpr,lowerExprWith_eq, inputLoweringOps, inputEmissionOps, ha, hp,
         bind, pure, Option.bind_some, LoweringOps.patternLambda, LoweringOps.match_,
         combineAuthored, inputEmissionOps]
       exact congrArg (fun e => some (Expr.lambda ann' e)) he.symm
     | ctor name pats =>
-      simp only [bind, pure, Option.bind_eq_some_iff, Option.some.injEq] at h
+      simp only [typed_result_projection, Option.bind_eq_some_iff, Option.some.injEq] at h
       obtain ⟨ann', ha, body', hb, matched, hm, rfl⟩ := h
       have hp := lowerIdentifiedExpr_project hb
       have he := lowerTracedMatch_expr hm
-      simp only [lowerInputMatchTrace_expr] at he
-      simp only [lowerInputExpr, inputLoweringOps, inputEmissionOps] at hp
-      simp only [lowerInputExpr, lowerExprWith, inputLoweringOps, inputEmissionOps, ha, hp,
+      simp only [typed_result_projection, lowerInputMatchTrace_expr] at he
+      simp only [typed_result_projection, lowerInputExpr, inputLoweringOps, inputEmissionOps] at hp
+      simp only [typed_result_projection, lowerInputExpr,lowerExprWith_eq, inputLoweringOps, inputEmissionOps, ha, hp,
         bind, pure, Option.bind_some, LoweringOps.patternLambda, LoweringOps.match_,
         combineAuthored, inputEmissionOps]
       exact congrArg (fun e => some (Expr.lambda ann' e)) he.symm
     | cons head tail =>
-      simp only [bind, pure, Option.bind_eq_some_iff, Option.some.injEq] at h
+      simp only [typed_result_projection, Option.bind_eq_some_iff, Option.some.injEq] at h
       obtain ⟨ann', ha, body', hb, matched, hm, rfl⟩ := h
       have hp := lowerIdentifiedExpr_project hb
       have he := lowerTracedMatch_expr hm
-      simp only [lowerInputMatchTrace_expr] at he
-      simp only [lowerInputExpr, inputLoweringOps, inputEmissionOps] at hp
-      simp only [lowerInputExpr, lowerExprWith, inputLoweringOps, inputEmissionOps, ha, hp,
+      simp only [typed_result_projection, lowerInputMatchTrace_expr] at he
+      simp only [typed_result_projection, lowerInputExpr, inputLoweringOps, inputEmissionOps] at hp
+      simp only [typed_result_projection, lowerInputExpr,lowerExprWith_eq, inputLoweringOps, inputEmissionOps, ha, hp,
         bind, pure, Option.bind_some, LoweringOps.patternLambda, LoweringOps.match_,
         combineAuthored, inputEmissionOps]
       exact congrArg (fun e => some (Expr.lambda ann' e)) he.symm
     | list items =>
-      simp only [bind, pure, Option.bind_eq_some_iff, Option.some.injEq] at h
+      simp only [typed_result_projection, Option.bind_eq_some_iff, Option.some.injEq] at h
       obtain ⟨ann', ha, body', hb, matched, hm, rfl⟩ := h
       have hp := lowerIdentifiedExpr_project hb
       have he := lowerTracedMatch_expr hm
-      simp only [lowerInputMatchTrace_expr] at he
-      simp only [lowerInputExpr, inputLoweringOps, inputEmissionOps] at hp
-      simp only [lowerInputExpr, lowerExprWith, inputLoweringOps, inputEmissionOps, ha, hp,
+      simp only [typed_result_projection, lowerInputMatchTrace_expr] at he
+      simp only [typed_result_projection, lowerInputExpr, inputLoweringOps, inputEmissionOps] at hp
+      simp only [typed_result_projection, lowerInputExpr,lowerExprWith_eq, inputLoweringOps, inputEmissionOps, ha, hp,
         bind, pure, Option.bind_some, LoweringOps.patternLambda, LoweringOps.match_,
         combineAuthored, inputEmissionOps]
       exact congrArg (fun e => some (Expr.lambda ann' e)) he.symm
   | letIn name tyParams params ann rhs body =>
-    cases identified <;> simp only [hs, lowerIdentifiedExpr, reduceCtorEq] at h
-    simp only [bind, pure, Option.bind_eq_some_iff, Option.some.injEq] at h
+    cases identified <;> (rw [lowerIdentifiedExpr, lowerIdentifiedExprResult.eq_def] at h; simp only [hs] at h; try dsimp only at h; simp only [typed_result_projection, reduceCtorEq] at h)
+    simp only [typed_result_projection, Option.bind_eq_some_iff, Option.some.injEq] at h
     obtain ⟨ann', ha, rhsCore, hr, rhs', hw, body', hb, rfl⟩ := h
     have hpr := lowerIdentifiedExpr_project hr
     have hpw := wrapParamsWithProvenance_project hw
     have hpb := lowerIdentifiedExpr_project hb
-    simp only [lowerInputExpr, wrapInputParams, inputLoweringOps] at hpr hpw hpb
-    simp only [lowerInputExpr, lowerExprWith, inputLoweringOps, ha, hpr, hpw, hpb,
+    simp only [typed_result_projection, lowerInputExpr, wrapInputParams, inputLoweringOps] at hpr hpw hpb
+    simp only [typed_result_projection, lowerInputExpr,lowerExprWith_eq, inputLoweringOps, ha, hpr, hpw, hpb,
       bind, pure, Option.bind_some, combineAuthored]
   | letRecIn bindings body =>
-    cases identified <;> simp only [hs, lowerIdentifiedExpr, reduceCtorEq] at h
-    simp only [bind, pure, Option.bind_eq_some_iff, Option.some.injEq] at h
+    cases identified <;> (rw [lowerIdentifiedExpr, lowerIdentifiedExprResult.eq_def] at h; simp only [hs] at h; try dsimp only at h; simp only [typed_result_projection, reduceCtorEq] at h)
+    simp only [typed_result_projection, Option.bind_eq_some_iff, Option.some.injEq] at h
     obtain ⟨bindings', hr, body', hb, rfl⟩ := h
     have hpr := lowerIdentifiedRecBinds_project hr
     have hpb := lowerIdentifiedExpr_project hb
-    simp only [lowerInputExpr, lowerInputRecBinds, inputLoweringOps] at hpr hpb
-    simp only [lowerInputExpr, lowerExprWith, inputLoweringOps, hpr, hpb,
+    simp only [typed_result_projection, lowerInputExpr, lowerInputRecBinds, inputLoweringOps] at hpr hpb
+    simp only [typed_result_projection, lowerInputExpr,lowerExprWith_eq, inputLoweringOps, hpr, hpb,
       bind, pure, Option.bind_some, combineAuthored]
   | var name =>
-    cases identified <;> simp only [hs, lowerIdentifiedExpr, reduceCtorEq] at h
-    simp only [bind, pure, Option.bind_eq_some_iff, Option.some.injEq] at h
+    cases identified <;> (rw [lowerIdentifiedExpr, lowerIdentifiedExprResult.eq_def] at h; simp only [hs] at h; try dsimp only at h; simp only [typed_result_projection, reduceCtorEq] at h)
+    simp only [typed_result_projection, Option.bind_eq_some_iff, Option.some.injEq] at h
     obtain ⟨index, hi, rfl⟩ := h
-    simp only [lowerInputExpr, lowerExprWith, inputLoweringOps, hi, Option.map_some, authoredRoot]
+    simp only [typed_result_projection, lowerInputExpr,lowerExprWith_eq, inputLoweringOps, hi, Option.map_some, authoredRoot]
     rfl
   | ctor name =>
-    cases identified <;> simp only [hs, lowerIdentifiedExpr, reduceCtorEq] at h
+    cases identified <;> (rw [lowerIdentifiedExpr, lowerIdentifiedExprResult.eq_def] at h; simp only [hs] at h; try dsimp only at h; simp only [typed_result_projection, reduceCtorEq] at h)
     cases h
-    simp only [lowerInputExpr, lowerExprWith, inputLoweringOps, authoredRoot]
+    simp only [typed_result_projection, lowerInputExpr,lowerExprWith_eq, inputLoweringOps, authoredRoot]
     rfl
   | ife c t f =>
-    cases identified <;> simp only [hs, lowerIdentifiedExpr, reduceCtorEq] at h
-    simp only [bind, Option.bind_eq_some_iff] at h
+    cases identified <;> (rw [lowerIdentifiedExpr, lowerIdentifiedExprResult.eq_def] at h; simp only [hs] at h; try dsimp only at h; simp only [typed_result_projection, reduceCtorEq] at h)
+    simp only [typed_result_projection, Option.bind_eq_some_iff] at h
     obtain ⟨c', hc, t', ht, f', hf, hm⟩ := h
     have hpc := lowerIdentifiedExpr_project hc
     have hpt := lowerIdentifiedExpr_project ht
     have hpf := lowerIdentifiedExpr_project hf
     have he := lowerTracedMatch_expr hm
-    simp only [lowerInputMatchTrace_expr] at he
-    simp only [lowerInputExpr, inputLoweringOps] at hpc hpt hpf
-    simp only [hs, lowerInputExpr, lowerExprWith, inputLoweringOps, hpc, hpt, hpf,
+    simp only [typed_result_projection, lowerInputMatchTrace_expr] at he
+    simp only [typed_result_projection, lowerInputExpr, inputLoweringOps] at hpc hpt hpf
+    simp only [typed_result_projection, hs, lowerInputExpr,lowerExprWith_eq, inputLoweringOps, hpc, hpt, hpf,
       bind, pure, Option.bind_some, LoweringOps.match_, lowerInputMatch] at *
     exact congrArg some he.symm
   | match_ scrut branches =>
-    cases identified <;> simp only [hs, lowerIdentifiedExpr, reduceCtorEq] at h
-    simp only [bind, Option.bind_eq_some_iff] at h
+    cases identified <;> (rw [lowerIdentifiedExpr, lowerIdentifiedExprResult.eq_def] at h; simp only [hs] at h; try dsimp only at h; simp only [typed_result_projection, reduceCtorEq] at h)
+    simp only [typed_result_projection, Option.bind_eq_some_iff] at h
     obtain ⟨scrut', hs, arms', hb, hm⟩ := h
     have hps := lowerIdentifiedExpr_project hs
     have hpb := lowerIdentifiedBranches_project hb
     have he := lowerTracedMatch_expr hm
-    simp only [lowerInputMatchTrace_expr] at he
-    simp only [lowerInputExpr, lowerInputBranches, inputLoweringOps] at hps hpb
-    simp only [hs, lowerInputExpr, lowerExprWith, inputLoweringOps, hps, hpb,
+    simp only [typed_result_projection, lowerInputMatchTrace_expr] at he
+    simp only [typed_result_projection, lowerInputExpr, lowerInputBranches, inputLoweringOps] at hps hpb
+    simp only [typed_result_projection, hs, lowerInputExpr,lowerExprWith_eq, inputLoweringOps, hps, hpb,
       bind, pure, Option.bind_some, LoweringOps.match_, lowerInputMatch] at *
     exact congrArg some he.symm
 termination_by sizeOf surface
@@ -908,17 +1053,17 @@ theorem lowerIdentifiedList_project {ke : KindEnv} {tvs vs : List ValName}
     lowerInputExprList ke tvs vs surfaces = some (result.map (·.expr)) := by
   cases hss : surfaces with
   | nil =>
-    cases identified <;> simp only [hss, lowerIdentifiedList, reduceCtorEq] at h
+    cases identified <;> (rw [lowerIdentifiedList, lowerIdentifiedListResult.eq_def] at h; simp only [hss] at h; try dsimp only at h; simp only [typed_result_projection, reduceCtorEq] at h)
     cases h
-    simp only [lowerInputExprList, lowerExprListWith, List.map_nil]
+    simp only [typed_result_projection, lowerInputExprList,lowerExprListWith_eq, List.map_nil]
   | cons e es =>
-    cases identified <;> simp only [hss, lowerIdentifiedList, reduceCtorEq] at h
-    simp only [bind, pure, Option.bind_eq_some_iff, Option.some.injEq] at h
+    cases identified <;> (rw [lowerIdentifiedList, lowerIdentifiedListResult.eq_def] at h; simp only [hss] at h; try dsimp only at h; simp only [typed_result_projection, reduceCtorEq] at h)
+    simp only [typed_result_projection, Option.bind_eq_some_iff, Option.some.injEq] at h
     obtain ⟨e', he, es', hes, rfl⟩ := h
     have hp := lowerIdentifiedExpr_project he
     have hps := lowerIdentifiedList_project hes
-    simp only [lowerInputExpr, lowerInputExprList] at hp hps
-    simp only [lowerInputExprList, lowerExprListWith, hp, hps, bind, pure, Option.bind_some, List.map_cons]
+    simp only [typed_result_projection, lowerInputExpr, lowerInputExprList] at hp hps
+    simp only [typed_result_projection, lowerInputExprList,lowerExprListWith_eq, hp, hps, bind, pure, Option.bind_some, List.map_cons]
 termination_by sizeOf surfaces
 decreasing_by all_goals (subst_vars; simp_wf) <;> omega
 
@@ -928,19 +1073,19 @@ theorem lowerIdentifiedBranches_project {ke : KindEnv} {tvs vs : List ValName}
     lowerInputBranches ke tvs vs branches = some (result.map (·.expr)) := by
   cases hbs : branches with
   | nil =>
-    cases identified <;> simp only [hbs, lowerIdentifiedBranches, reduceCtorEq] at h
+    cases identified <;> (rw [lowerIdentifiedBranches, lowerIdentifiedBranchesResult.eq_def] at h; simp only [hbs] at h; try dsimp only at h; simp only [typed_result_projection, reduceCtorEq] at h)
     cases h
-    simp only [lowerInputBranches, lowerBranchesWith, List.map_nil]
+    simp only [typed_result_projection, lowerInputBranches,lowerBranchesWith_eq, List.map_nil]
   | cons branch branches =>
     cases hbranch : branch
     rename_i pat body
-    cases identified <;> simp only [hbs, hbranch, lowerIdentifiedBranches, reduceCtorEq] at h
-    simp only [bind, pure, Option.bind_eq_some_iff, Option.some.injEq] at h
+    cases identified <;> (rw [lowerIdentifiedBranches, lowerIdentifiedBranchesResult.eq_def] at h; simp only [hbs, hbranch] at h; try dsimp only at h; simp only [typed_result_projection, reduceCtorEq] at h)
+    simp only [typed_result_projection, Option.bind_eq_some_iff, Option.some.injEq] at h
     obtain ⟨b', hb, bs', hbs, rfl⟩ := h
     have hp := lowerIdentifiedExpr_project hb
     have hps := lowerIdentifiedBranches_project hbs
-    simp only [lowerInputExpr, lowerInputBranches] at hp hps
-    simp only [lowerInputBranches, lowerBranchesWith, hp, hps, bind, pure, Option.bind_some, List.map_cons]
+    simp only [typed_result_projection, lowerInputExpr, lowerInputBranches] at hp hps
+    simp only [typed_result_projection, lowerInputBranches,lowerBranchesWith_eq, hp, hps, bind, pure, Option.bind_some, List.map_cons]
 termination_by sizeOf branches
 decreasing_by all_goals (subst_vars; simp_wf) <;> omega
 
@@ -955,7 +1100,7 @@ theorem lowerIdentifiedRecBinds_project {ke : KindEnv} {tvs vs : List ValName}
   | nil =>
     cases identified <;> simp only [hbs, lowerRec_nil, lowerRec_nil_cons, reduceCtorEq] at h
     cases h
-    simp only [lowerInputRecBinds, lowerRecBindsWith, List.map_nil]
+    simp only [lowerInputRecBinds,lowerRecBindsWith_eq, List.map_nil]
   | cons b bindings =>
     cases hbnd : b
     rename_i name tyParams params ann rhs
@@ -966,7 +1111,7 @@ theorem lowerIdentifiedRecBinds_project {ke : KindEnv} {tvs vs : List ValName}
     have hpw := wrapParamsWithProvenance_project hw
     have hps := lowerIdentifiedRecBinds_project hrest
     simp only [lowerInputExpr, lowerInputRecBinds, wrapInputParams, inputLoweringOps] at hpr hpw hps
-    simp only [lowerInputRecBinds, lowerRecBindsWith, inputLoweringOps, ha, hpr, hpw, hps,
+    simp only [lowerInputRecBinds,lowerRecBindsWith_eq, inputLoweringOps, ha, hpr, hpw, hps,
       bind, pure, Option.bind_some, List.map_cons]
 termination_by sizeOf bindings
 decreasing_by all_goals (subst_vars; simp_wf) <;> omega
@@ -975,7 +1120,7 @@ theorem lowerWithProvenance_project {ctors : CtorEnv} {surface : Surface.Expr}
     {spanned : Surface.Span.SpannedExpr} {result : InputLowered}
     (h : lowerWithProvenance ctors surface spanned = some result) :
     lowerInput ctors surface = some result.expr := by
-  simp only [lowerWithProvenance, bind, pure, Option.bind_eq_some_iff,
+  rw [lowerWithProvenance, lowerWithProvenanceResult] at h; simp only [typed_result_projection, Option.bind_eq_some_iff,
     Option.some.injEq] at h
   obtain ⟨lowered, hl, rfl⟩ := h
   exact lowerIdentifiedExpr_project (result := lowered) hl

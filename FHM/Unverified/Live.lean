@@ -220,37 +220,28 @@ def checkPipeline (src : String) :
         }
     | .ok parsed => pure parsed
 
-  -- On failure, `collectHover` reruns the editor pipeline to locate the error.
-  let firstDiag := fun () => (collectHover src p binders sp).diagnostics.head?
-  let userDecls ← match lowerDataDeclsIn preludeKindEnv p.decls with
-    | none => return .error (diagnosedErr .lower (firstDiag ())
-        "declaration lowering failed")
-    | some decls => pure decls
-  let ctors ← match elabDecls (preludeDecls ++ userDecls) with
-    | none => return .error (diagnosedErr .lower (firstDiag ())
-        "declaration elaboration failed")
-    | some ctors => pure ctors
-
-  let scope :=
-    let spans := binders.map (·.span) ++ sp.groups.flatMap (·.map Surface.Span.SpannedExpr.span)
-      ++ [sp.body.span]
-    (Surface.Span.Span.hull spans).getD sp.body.span
-  let tree ← match FHM.Unverified.HMArtifacts.programSpanned p sp scope with
-    | none => return .error {
-        stage := .lower
-        message := "internal parser provenance shape mismatch"
-      }
-    | some tree => pure tree
-  let lowered ← match SurfaceBridge.Provenance.lowerWithProvenance ctors p.term tree with
-    | none => return .error (diagnosedErr .lower (firstDiag ()) "provenance-aware lowering failed")
-    | some lowered => pure lowered
+  let scope := programWideScope binders sp
+  let failLower (diag : HoverDiag) := diagnosedErr .lower (some diag) diag.message
+  let userDecls ← match lowerDataDeclsInResult preludeKindEnv p.decls with
+    | .error error => return .error (failLower
+        (FHM.Unverified.Diagnostics.loweringDiag error p sp binders scope))
+    | .ok decls => pure decls
+  let ctors ← match elabDeclsResult (preludeDecls ++ userDecls) with
+    | .error error => return .error (failLower
+        (FHM.Unverified.Diagnostics.declarationDiag error p sp binders))
+    | .ok ctors => pure ctors
+  let tree ← match FHM.Unverified.HMArtifacts.programSpannedResult p sp scope with
+    | .error error => return .error (failLower
+        (FHM.Unverified.Diagnostics.provenanceDiag error p sp binders scope))
+    | .ok tree => pure tree
+  let lowered ← match SurfaceBridge.Provenance.lowerWithProvenanceResult ctors p.term tree with
+    | .error error => return .error (failLower
+        (FHM.Unverified.Diagnostics.provenanceDiag error p sp binders scope))
+    | .ok lowered => pure lowered
   let typed ← match SurfaceBridge.Provenance.inferWithProvenanceResult ctors lowered with
-    | .error failure =>
-        let diagnostic := match FHM.Unverified.TypeDiagnostics.explain failure lowered with
-          | some (reason, span) =>
-              some { diagAtSpan reason.message (some span) with code? := some reason.code }
-          | none => firstDiag ()
-        return .error (diagnosedErr .typecheck diagnostic "typechecking failed")
+    | .error error =>
+        let diag := FHM.Unverified.Diagnostics.inferenceDiag error lowered p sp binders tree
+        return .error (diagnosedErr .typecheck (some diag) diag.message)
     | .ok typed => pure typed
   let τ := typed.inference.ty
   let inference := typed.inference

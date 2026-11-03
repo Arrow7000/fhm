@@ -148,20 +148,28 @@ end
     sidecars are already SCC-aligned by the parser. Acyclic singleton SCCs use
     `let`; recursive SCCs use `let rec`. Synthetic wrappers receive no
     occurrence hover; their IDs still identify group-exit schemes. -/
-def programSpanned (p : Surface.Program) (sp : SpannedProgram) (scope : Span) : Option SpannedExpr :=
-  let rec go : List (List Surface.Binding) → List (List SpannedExpr) → Option SpannedExpr
-    | [], [] => some sp.body
-    | g :: gs, rhs :: rhss => do
-        if g.length != rhs.length then none else do
-          let body ← go gs rhss
-          pure (match g, rhs with
+def programSpannedResult (p : Surface.Program) (sp : SpannedProgram) (scope : Span) :
+    Except ProvenanceLowerError SpannedExpr :=
+  let rec go (index : Nat) : List (List Surface.Binding) → List (List SpannedExpr) →
+      Except ProvenanceLowerError SpannedExpr
+    | [], [] => .ok sp.body
+    | group :: groups, rhs :: rhss => do
+        if group.length != rhs.length then
+          .error (.provenance ⟨none, .programMembers index group.length rhs.length⟩)
+        else do
+          let body ← go (index + 1) groups rhss
+          pure (match group, rhs with
             | [], [] => body
-            | [b], [r] =>
-                if b.refersTo b.name then .letRecIn scope [r] body
-                else .letIn scope r body
+            | [binding], [expr] =>
+                if binding.refersTo binding.name then .letRecIn scope [expr] body
+                else .letIn scope expr body
             | _, _ => .letRecIn scope rhs body)
-    | _, _ => none
-  go p.groups sp.groups
+    | groups, rhss => .error (.provenance ⟨none, .programGroups index groups.length rhss.length⟩)
+  go 0 p.groups sp.groups
+
+/-- Compatibility projection of native program-sidecar construction. -/
+def programSpanned (p : Surface.Program) (sp : SpannedProgram) (scope : Span) : Option SpannedExpr :=
+  (programSpannedResult p sp scope).toOption
 
 /-- Preserve the parser's authored header for each structural program binder.
 Pattern storage has no authored name token, so its header cannot be recovered
