@@ -7,7 +7,7 @@ types, and the verified pipeline is the one that actually runs your programs:
 from the command line, in your editor, or in a
 [browser playground](https://fhm-playground.onrender.com).
 
-![Editing fhm in VS Code: hovering shows inferred types, including a type hole filled in as Int; errors appear while typing; and saving re-runs the program](assets/fhm-demo.gif)
+![Editing fhm in VS Code: hovering shows inferred types, including a type hole filled in as Int; a missing match case and a type error appear while typing; and saving re-runs the program](assets/fhm-demo.gif)
 
 ## A taste of the language
 
