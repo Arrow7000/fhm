@@ -1,11 +1,13 @@
 # FHM: Formalised Hindley–Milner
 
-FHM is a small, Elm-flavoured functional language with Hindley–Milner type
+fhm is a small, Elm-flavoured functional language with Hindley–Milner type
 inference, algebraic data types and pattern matching, formalised in Lean 4. The
 type system is proved sound, inference is proved complete and to find principal
 types, and the verified pipeline is the one that actually runs your programs:
 from the command line, in your editor, or in a
 [browser playground](https://fhm-playground.onrender.com).
+
+![Editing fhm in VS Code: hover types, errors while typing, and a watch loop that re-runs the program on save](assets/fhm-demo.gif)
 
 ## A taste of the language
 
@@ -60,14 +62,14 @@ appear.
 
 ## The language
 
-If you've written Elm, OCaml or Haskell, most of FHM will look familiar. A
+If you've written Elm, OCaml or Haskell, most of fhm will look familiar. A
 program is a list of `type` and `let` declarations followed by one expression,
 which is the program's result. These are the parts you might not expect.
 
 ### Definitions are recursive, in any order
 
 Any `let` can refer to itself, and to the definitions around it, whether they
-come before or after it. There's no `rec` or `and`: FHM works out which
+come before or after it. There's no `rec` or `and`: fhm works out which
 definitions depend on each other and type-checks each group together.
 
 ```
@@ -106,7 +108,7 @@ let length (xs : List _) : Int =
 let twins (pair : (?t, ?t)) = pair
 ```
 
-FHM infers
+fhm infers
 
 ```text
 reverse : ∀ a. List a → List a
@@ -147,7 +149,7 @@ let (id, zero) = (\x -> x, 0)
 ```
 
 Every match must be exhaustive, including the implicit ones in lambda and `let`
-patterns. When one isn't, FHM names a missing case:
+patterns. When one isn't, fhm names a missing case:
 
 ```
 type Maybe a = Just a | Nothing
@@ -229,7 +231,7 @@ collects the main theorems in one place.
 
 **What is not verified:** the lexer and parser, the CLI and editor tooling, and
 the loop that drives evaluation in `fhm run`. That loop calls the verified
-single-step function, but keeps going until the program finishes, and FHM
+single-step function, but keeps going until the program finishes, and fhm
 programs don't have to finish. The verified alternative is `runSafe` in
 `Headlines.lean`, which takes a step budget and whose return type rules out
 getting stuck. The CLI also uses a version of the lowerer that tracks source

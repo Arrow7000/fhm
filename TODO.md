@@ -242,6 +242,13 @@ Error recovery and formatter work remain separate from these batches.
       that definition (by `fhm run` and `fhm diagnose` alike). Lowering
       errors are a single generic message: `lowering failed (unbound name, bad
 decl, or rejected sugar)`.
+      The fallback reaches further than recursive groups: once a program
+      contains any recursive definition, every type error loses its
+      explanation, even one outside that definition. `let inc n = n + 1`
+      followed by `inc True` reports `expected Int, got Bool`, but adding an
+      unrelated recursive `len` anywhere in the file turns the same error into
+      a bare `typechecking failed`, underlined across the whole of `inc True`
+      instead of at the argument.
 - [ ] **Error recovery.** A single lowering or typechecking error currently
       kills hover information for the whole file. Type checking already proceeds
       one recursive group at a time, so a failed group's members could get a
