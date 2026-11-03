@@ -1,0 +1,15 @@
+-- Each level contains bushes of bushes, changing the recursive element type.
+type Bush a = Empty | Node a (Bush (Bush a))
+
+let total {a} (f : a -> Int) (tree : Bush a) : Int =
+  match tree with
+  | Empty -> 0
+  | Node x rest -> f x + deeper f rest
+
+-- One cycle: total -> deeper -> visit -> total. total's signature lets
+-- inference generalize visit first; deeper then uses it at a AND Bush a.
+let deeper f = visit (visit f)
+let visit = total
+
+total (\n -> n) (Node 10 (Node (Node 20 Empty) Empty))
+-- 30

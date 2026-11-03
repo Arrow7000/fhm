@@ -1,5 +1,16 @@
 # Erased annotated-polymorphic-recursion smoke tests (`scratch/polyrec-*`)
 
+For a short shareable example, try `polyrec-share.fhm`: three functions,
+15 lines including comments, showing type-changing recursion and an
+annotation-informed SCC split. It produces `30`.
+
+For the fuller showcase, run
+`.lake/build/bin/fhm run scratch/polyrec-showcase.fhm`.
+Its nested bush fold combines changing recursive types, a local signature with
+an outer scoped result type, and annotation-informed SCC slicing: an inferred
+helper is generalized before another helper uses it at two types within the
+same runtime recursive group. It produces `([1, 2, 3], (6, [True, False]))`.
+
 `PolyRecTest.lean` is the executable specification for recursive typing on the
 erased branch. Run it from the repository root:
 

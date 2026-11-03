@@ -1,0 +1,35 @@
+-- Each bush level changes the element type: a, Bush a, Bush (Bush a), ...
+type Bush a = BNil | BCons a (Bush (Bush a))
+
+let append xs ys =
+  match xs with
+  | [] -> ys
+  | x :: rest -> x :: append rest ys
+
+-- One fold, arbitrary leaf and result types. The local contract quantifies b,
+-- while r belongs to this invocation of fold and stays fixed through recursion.
+let fold {a r} (join : r -> r -> r) (zero : r) (leaf : a -> r) (tree : Bush a) : r =
+  let go {b} (emit : b -> r) (tree : Bush b) : r =
+        match tree with
+        | BNil -> zero
+        | BCons x rest -> join (emit x) (descend emit rest)
+      descend emit rest = visit (visit emit) rest
+      visit = go
+  in go leaf tree
+
+-- Runtime SCC: go -> descend -> visit -> go. go's complete contract cuts it
+-- for inference: generalize visit, then descend, then check go. The tiny alias
+-- matters: descend uses inferred visit : {b} (b -> r) -> Bush b -> r at BOTH b
+-- and Bush b. One monomorphic unsigned group would fail. Neither helper needs
+-- a signature; removing go's signature (or putting a hole in it) is rejected.
+
+let flatten tree = fold append [] (\x -> [x]) tree
+let sum tree = fold (\x y -> x + y) 0 (\x -> x) tree
+
+-- Leaves 1, 2, 3, stored at three different nesting levels.
+let numbers =
+  BCons 1 (BCons (BCons 2 BNil) (BCons (BCons (BCons 3 BNil) BNil) BNil))
+let flags = BCons True (BCons (BCons False BNil) BNil)
+
+-- Expected: ([1, 2, 3], (6, [True, False]))
+(flatten numbers, (sum numbers, flatten flags))
