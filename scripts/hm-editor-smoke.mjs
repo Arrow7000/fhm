@@ -295,6 +295,9 @@ test("application errors expose stable codes and precise matching CLI/editor spa
     ["let f = \\n -> let id = \\x -> x in id True + n\nf 1\n", "type.argumentMismatch", "type mismatch: expected Int, got Bool", "id True", 0],
     ["1 True\n", "type.notFunction", "cannot apply a value of type Int as a function", "1", 0],
     ["\\x -> x x\n", "type.infiniteType", "infinite type: a would have to equal a → b", "x x", 0],
+    ["\\(f : ?a -> ?a) -> f f\n", "type.infiniteType", "infinite type: a would have to equal a → a", "f f", 0],
+    ["let inc n = n + 1\nlet len xs = match xs with | [] -> 0 | h :: t -> 1 + len t\ninc True\n", "type.argumentMismatch", "type mismatch: expected Int, got Bool", "True", 2],
+    ["let loop n = loop n + True\nloop 0\n", "type.argumentMismatch", "type mismatch: expected Int, got Bool", "True", 0],
   ];
   for (const [source, code, message, highlighted, line0] of cases) {
     const editor = cli(["diagnose"], source);

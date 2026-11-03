@@ -6830,7 +6830,7 @@ theorem seed_complete_source {K : List Nat} {F : List Ty} {Φ : Nat}
       (Ty.bvarsBelow_iff _).mpr ((hfit template rfl).allocate_lc_source hlc Φ)
     have hr : template.rigidVars.all (fun v => decide (v ∈ K ++ softVars F)) = true :=
       List.all_eq_true.mpr (fun v hv => decide_eq_true (hscope template rfl v hv))
-    simp only [seed, halloc, hr, dite_true, Option.isSome_some]
+    simp only [seed, seedResult, halloc, hr, dite_true, Except.toOption, Option.isSome_some]
 
 theorem checkLet_complete_source {K : List Nat} {F : List Ty} {Φ : Nat}
     {ann : CheckAnn} {ty target : Ty} {R : Subst}
@@ -6852,12 +6852,11 @@ theorem checkLet_complete_source {K : List Nat} {F : List Ty} {Φ : Nat}
     obtain ⟨U, hUlc, hagree, hUexpected⟩ := hfit.allocate_override_source htarget hR Φ hraw
     have hUty : U.onTy ty = target := (Subst.onTy_congr hagree hbelow).symm.trans heq.symm
     have huni : Unifies U ty (template.allocate Φ).2 := hUty.trans hUexpected.symm
-    have hunifies := unifyCoreK_complete hty hlc hUlc huni
+    obtain ⟨⟨subst, hun, hav⟩, hunifies⟩ := unifyResultK_complete hty hlc hUlc huni
       (fun k hk => (hagree k (hK k hk)).symm.trans (hRfix k hk))
-    cases template <;> simp only [checkLet, halloc, hr, dite_true, Option.isSome_some]
-    all_goals cases hu : unifyCoreK K ty _ with
-      | none => simp only [hu, Option.isSome_none] at hunifies; contradiction
-      | some result => rcases result with ⟨subst, hun, hav⟩; rfl
+    cases template <;>
+      simp only [checkLet, checkLetResult, halloc, hr, dite_true, Except.toOption, Option.isSome_some]
+    all_goals simp only [hunifies, Except.toOption, Option.isSome_some]
 
 
 
@@ -6887,11 +6886,9 @@ theorem checkSignature_complete_source {K written : List Nat} {F : List Ty}
       Subst.onTy_openVars_of_fixes hR hW
     have hUni : Unifies R ty (scheme.openVars written) :=
       heq.symm.trans ((hcomplete scheme rfl).2.trans hExpected.symm)
-    have hunifies := unifyCoreK_complete hty hexpected hR hUni hRfix
-    simp only [checkSignature, hSchemeB, hr, dite_true]
-    cases hu : unifyCoreK (K ++ written) ty (scheme.openVars written) with
-    | none => simp only [hu, Option.isSome_none] at hunifies; contradiction
-    | some result => rcases result with ⟨subst, hun, hav⟩; rfl
+    obtain ⟨⟨subst, hun, hav⟩, hunifies⟩ := unifyResultK_complete hty hexpected hR hUni hRfix
+    simp only [checkSignature, checkSignatureResult, hSchemeB, hr, dite_true,
+      hunifies, Except.toOption, Option.isSome_some]
   | partialForall count template =>
     have hfit := hpartial count template rfl
     rw [← PartialCore.Template.source_substTyFvars_openTyVarsFrom_of_fixes template hR hW 0] at hfit
@@ -6909,11 +6906,50 @@ theorem checkSignature_complete_source {K written : List Nat} {F : List Ty}
       hUty.trans hUexpected.symm
     have hUfix : ∀ k ∈ K ++ written, U.onTy (.fvar k) = .fvar k := fun k hk =>
       (hag k (hK k hk)).symm.trans (hRfix k hk)
-    have hunifies := unifyCoreK_complete hty hexpected hU hUni hUfix
-    simp only [checkSignature, hExpectedB, hr, dite_true]
-    cases hu : unifyCoreK (K ++ written) ty ((template.openTyVarsFrom 0 written).allocate frontier).2 with
-    | none => simp only [hu, Option.isSome_none] at hunifies; contradiction
-    | some result => rcases result with ⟨subst, hun, hav⟩; rfl
+    obtain ⟨⟨subst, hun, hav⟩, hunifies⟩ := unifyResultK_complete hty hexpected hU hUni hUfix
+    simp only [checkSignature, checkSignatureResult, hExpectedB, hr, dite_true,
+      hunifies, Except.toOption, Option.isSome_some]
+
+private theorem except_toOption_isSome_iff {ε α : Type} (result : Except ε α) :
+    result.toOption.isSome ↔ ∃ value, result = .ok value := by
+  cases result <;> simp [Except.toOption]
+
+/-- Source completeness with the native typed success result. -/
+theorem seedResult_complete_source {K : List Nat} {F : List Ty} {Φ : Nat}
+    {ann : Option TyTemplate} {target : Ty} {ambient : Subst}
+    (_hS : ∀ p ∈ ambient, p.2.IsLC) (hlc : target.IsLC)
+    (hfit : ∀ template, ann = some template → (template.substSourceTyFvars ambient).Matches target)
+    (hscope : ∀ template, ann = some template → ∀ v ∈ template.rigidVars, v ∈ K ++ softVars F) :
+    ∃ result, seedResult (K ++ softVars F) Φ ann = .ok result := by
+  exact (except_toOption_isSome_iff (seedResult (K ++ softVars F) Φ ann)).mp
+    (seed_complete_source _hS hlc hfit hscope)
+
+/-- Source completeness with the native typed success result. -/
+theorem checkLetResult_complete_source {K : List Nat} {F : List Ty} {Φ : Nat}
+    {ann : CheckAnn} {ty target : Ty} {R : Subst}
+    (hK : ∀ k ∈ K, k < Φ) (hty : ty.IsLC) (hbelow : Ty.BelowFvars Φ ty)
+    (hR : ∀ p ∈ R, p.2.IsLC) (hRfix : ∀ k ∈ K, R.onTy (.fvar k) = .fvar k)
+    (htarget : target.IsLC) (hfit : (ann.substSourceTyFvars R).FitsMono target)
+    (hscope : ∀ v ∈ ann.rigidVars, v ∈ K ++ softVars F)
+    (hraw : ∀ v ∈ ann.rigidVars, v < Φ)
+    (heq : target = R.onTy ty) : ∃ result, checkLetResult K F Φ ann ty = .ok result := by
+  exact (except_toOption_isSome_iff (checkLetResult K F Φ ann ty)).mp
+    (checkLet_complete_source hK hty hbelow hR hRfix htarget hfit hscope hraw heq)
+
+/-- Source completeness with the native typed success result. -/
+theorem checkSignatureResult_complete_source {K written : List Nat} {F : List Ty}
+    {frontier : Nat} {ann : CheckAnn} {ty target : Ty} {R : Subst}
+    (hmode : ann.isSignature = true) (hprefix : written.length = ann.paramCount)
+    (hK : ∀ k ∈ K ++ written, k < frontier) (hty : ty.IsLC) (hbelow : Ty.BelowFvars frontier ty)
+    (hR : ∀ pair ∈ R, pair.2.IsLC) (hRfix : ∀ k ∈ K ++ written, R.onTy (.fvar k) = .fvar k)
+    (htarget : target.IsLC) (hscope : ∀ v ∈ ann.rigidVars, v ∈ K ++ softVars F)
+    (hraw : ∀ v ∈ ann.rigidVars, v < frontier) (heq : target = R.onTy ty)
+    (hcomplete : ∀ scheme, ann = .complete scheme → scheme.WF ∧ target = (R.onPolyTy scheme).openVars written)
+    (hpartial : ∀ count template, ann = .partialForall count template →
+      ((template.substSourceTyFvars R).openTyVarsFrom 0 written).Matches target) :
+    ∃ result, checkSignatureResult K F written frontier ann ty = .ok result := by
+  exact (except_toOption_isSome_iff (checkSignatureResult K F written frontier ann ty)).mp
+    (checkSignature_complete_source hmode hprefix hK hty hbelow hR hRfix htarget hscope hraw heq hcomplete hpartial)
 
 namespace InferRequest
 
@@ -6955,15 +6991,15 @@ theorem inferRecComponentWithTypesCore_complete
       ScopedTyping P (ambient.onCtx ctx) (binding.rhs.substSourceTyFvars ambient) (ambient.onTy target)) :
     (inferRecComponentWithTypesCore K F members index frontier ctx bindings specs).isSome := by
   match bindings,specs with
-  | [],[] => simp only [inferRecComponentWithTypesCore,Option.isSome_some]
+  | [],[] => rw [inferRecComponentWithTypesCore, inferRecComponentWithTypesResultCore]; simp only [typed_result_projection, Option.isSome_some]
   | [],_::_ => simp at hlen
   | _::_,[] => simp at hlen
   | binding::rest,.poly scheme::specs =>
     have ht := inferRecComponentWithTypesCore_complete
         (bindings := rest) (specs := specs) (K := K) (F := F)
         (index := index+1) (frontier := frontier) (ctx := ctx)
-      (fun e he => hProducer e (by simp only [sizeBindings];omega))
-      (fun he hi => hPrincipal (by simp only [sizeBindings];omega) hi)
+      (fun e he => hProducer e (by simp only [typed_result_projection, sizeBindings];omega))
+      (fun he hi => hPrincipal (by simp only [typed_result_projection, sizeBindings];omega) hi)
       (Nat.succ.inj hlen) hctxWF hctx hK hF
       (fun spec hm => hspecLC spec (List.mem_cons_of_mem _ hm))
       (fun spec hm => hspecB spec (List.mem_cons_of_mem _ hm))
@@ -6971,8 +7007,8 @@ theorem inferRecComponentWithTypesCore_complete
       (fun j binding target hm hb ht => hcandidate (j+1) binding target
         (by simpa [Nat.add_assoc,Nat.add_comm,Nat.add_left_comm] using hm) hb ht)
     cases hr : inferRecComponentWithTypesCore K F members (index+1) frontier ctx rest specs with
-    | none => simp only [hr,Option.isSome_none] at ht;contradiction
-    | some result => simp only [inferRecComponentWithTypesCore,hr,Option.isSome_some]
+    | none => simp only [typed_result_projection, hr,Option.isSome_none] at ht;contradiction
+    | some result => rw [inferRecComponentWithTypesCore, inferRecComponentWithTypesResultCore]; simp only [typed_result_projection, hr,Option.isSome_some]
   | binding::rest,.mono expected::specs =>
     by_cases hm : index ∈ members
     · have hTyping := hcandidate 0 binding expected (by simpa using hm) rfl rfl
@@ -6983,12 +7019,12 @@ theorem inferRecComponentWithTypesCore_complete
           protectedBelow := hK
           softBelow := hF }
       have hrhsSome := hProducer (InferRequest.mk K F frontier ctx binding.rhs)
-        (by simp only [sizeBindings];omega) ambient (ambient.onTy expected) P
+        (by simp only [typed_result_projection, sizeBindings];omega) ambient (ambient.onTy expected) P
         hrhsReq hambient hfixK hP hfixP hTyping
       rw [InferRequest.run_isSome_worker] at hrhsSome
       obtain ⟨⟨⟨⟨first, s1, ty⟩,types,schemes⟩,hi⟩,hresult⟩ :=
         Option.isSome_iff_exists.mp hrhsSome
-      obtain ⟨R1,hR1,hty,hR1P,hag1⟩ := hPrincipal (by simp only [sizeBindings];omega) hi
+      obtain ⟨R1,hR1,hty,hR1P,hag1⟩ := hPrincipal (by simp only [typed_result_projection, sizeBindings];omega) hi
         hctxWF hctx hK hF ambient (ambient.onTy expected) P hambient hP hfixP
         (fun v _ hk _ => hfixK v hk) hTyping
       have hle := hi.frontier_le
@@ -7005,7 +7041,7 @@ theorem inferRecComponentWithTypesCore_complete
       obtain ⟨hiLC,hs1LC⟩ := hi.lc hctxWF
       have hSome := unifyCoreK_complete hiLC (Subst.onTy_lc hs1LC (hspecLC _ List.mem_cons_self)) hR1 hUni hR1K
       cases huni : unifyCoreK K ty (s1.onTy expected) with
-      | none => simp only [huni,Option.isSome_none] at hSome;contradiction
+      | none => simp only [typed_result_projection, huni,Option.isSome_none] at hSome;contradiction
       | some result =>
         obtain ⟨s2,hu,havoid⟩ := result
         obtain ⟨R2,hfac,hR2,hR2PK⟩ := hu.greatest_K R1 hR1 hUni
@@ -7033,8 +7069,8 @@ theorem inferRecComponentWithTypesCore_complete
           (specs := specs.map (RecSpec.onSubstSource (s1 ++ s2)))
           (K := K) (F := substSoft (s1 ++ s2) F) (index := index+1) (frontier := first)
           (ctx := s2.onCtx (s1.onCtx ctx))
-          (fun e he => hProducer e (by simp only [sizeBindings_substInputBindings] at he;simp only [sizeBindings];omega))
-          (fun he hi => hPrincipal (by simp only [sizeBindings_substInputBindings] at he;simp only [sizeBindings];omega) hi)
+          (fun e he => hProducer e (by simp only [typed_result_projection, sizeBindings_substInputBindings] at he;simp only [typed_result_projection, sizeBindings];omega))
+          (fun he hi => hPrincipal (by simp only [typed_result_projection, sizeBindings_substInputBindings] at he;simp only [typed_result_projection, sizeBindings];omega) hi)
           (by
             simpa only [substInputBindings_length, List.length_map] using
               Nat.succ.inj hlen)
@@ -7072,13 +7108,13 @@ theorem inferRecComponentWithTypesCore_complete
         cases htail : inferRecComponentWithTypesCore K (substSoft (s1 ++ s2) F) members (index+1) first
             (s2.onCtx (s1.onCtx ctx)) (substInputBindings (s1 ++ s2) rest)
             (specs.map (RecSpec.onSubstSource (s1 ++ s2))) with
-        | none => simp only [htail,Option.isSome_none] at ht;contradiction
-        | some tail => simp only [inferRecComponentWithTypesCore,dif_pos hm,hresult,huni,htail,Option.isSome_some]
+        | none => simp only [typed_result_projection, htail,Option.isSome_none] at ht;contradiction
+        | some tail => rw [inferRecComponentWithTypesCore, inferRecComponentWithTypesResultCore]; simp only [typed_result_projection, dif_pos hm,hresult,huni,htail,Option.isSome_some]
     · have ht := inferRecComponentWithTypesCore_complete
         (bindings := rest) (specs := specs) (K := K) (F := F)
         (index := index+1) (frontier := frontier) (ctx := ctx)
-        (fun e he => hProducer e (by simp only [sizeBindings];omega))
-        (fun he hi => hPrincipal (by simp only [sizeBindings];omega) hi)
+        (fun e he => hProducer e (by simp only [typed_result_projection, sizeBindings];omega))
+        (fun he hi => hPrincipal (by simp only [typed_result_projection, sizeBindings];omega) hi)
         (Nat.succ.inj hlen) hctxWF hctx hK hF
         (fun spec hm => hspecLC spec (List.mem_cons_of_mem _ hm))
         (fun spec hm => hspecB spec (List.mem_cons_of_mem _ hm))
@@ -7086,10 +7122,10 @@ theorem inferRecComponentWithTypesCore_complete
         (fun j binding target hm hb ht => hcandidate (j+1) binding target
           (by simpa [Nat.add_assoc,Nat.add_comm,Nat.add_left_comm] using hm) hb ht)
       cases hr : inferRecComponentWithTypesCore K F members (index+1) frontier ctx rest specs with
-      | none => simp only [hr,Option.isSome_none] at ht;contradiction
-      | some result => simp only [inferRecComponentWithTypesCore,dif_neg hm,hr,Option.isSome_some]
+      | none => simp only [typed_result_projection, hr,Option.isSome_none] at ht;contradiction
+      | some result => rw [inferRecComponentWithTypesCore, inferRecComponentWithTypesResultCore]; simp only [typed_result_projection, dif_neg hm,hr,Option.isSome_some]
  termination_by sizeBindings bindings
- decreasing_by all_goals simp only [sizeBindings,sizeBindings_substInputBindings];omega
+ decreasing_by all_goals simp only [typed_result_projection, sizeBindings,sizeBindings_substInputBindings];omega
 
 /-- Producer completeness for the concrete worker, under an arbitrary LC
 specialization fixing the inference's rigid variables. Successful results
@@ -7125,8 +7161,8 @@ theorem inferRequest_sourceComplete_primLit (lit : PrimLitExpr)
     (InferRequest.mk K F frontier ctx (.primLit lit)).SourceComplete := by
   intro ambient target P hreq _ _ _ _ _
   rw [InferRequest.run_isSome_worker]
-  cases lit <;>
-    simp only [inferWithTypesCore, dif_pos (rigid_all hreq.protectedBelow),
+  cases lit <;> rw [inferWithTypesCore, inferWithTypesResultCore]
+  all_goals simp only [typed_result_projection, dif_pos (rigid_all hreq.protectedBelow),
       dif_pos (ctx_all hreq.ctxBelow), dif_pos (soft_all hreq.softBelow),
       dif_pos (source_all hreq.sourceScope), Option.isSome_some]
 
@@ -7138,25 +7174,25 @@ theorem inferRequest_sourceComplete_primBinOp (op : PrimBinOp)
   have hc := ht.primBinOp_runtime
   cases hc with
   | primBinOpIntAdd | primBinOpIntSub =>
-    simp only [inferWithTypesCore, dif_pos (rigid_all hreq.protectedBelow),
+    rw [inferWithTypesCore, inferWithTypesResultCore]; simp only [typed_result_projection, dif_pos (rigid_all hreq.protectedBelow),
       dif_pos (ctx_all hreq.ctxBelow), dif_pos (soft_all hreq.softBelow),
       dif_pos (source_all hreq.sourceScope), Option.isSome_some]
   | primBinOpIntLt hTrue hFalse | primBinOpCharLt hTrue hFalse =>
     obtain ⟨trueC, hTrueLook, hTrueBool⟩ := Ctor.isBoolCtor_of_runtimeTyping hTrue
     obtain ⟨falseC, hFalseLook, hFalseBool⟩ := Ctor.isBoolCtor_of_runtimeTyping hFalse
     change LookupList.get? ctx.ctors _ = _ at hTrueLook hFalseLook
-    rw [inferWithTypesCore, dif_pos (rigid_all hreq.protectedBelow),
+    rw [inferWithTypesCore, inferWithTypesResultCore, dif_pos (rigid_all hreq.protectedBelow),
       dif_pos (ctx_all hreq.ctxBelow), dif_pos (soft_all hreq.softBelow),
-      dif_pos (source_all hreq.sourceScope)]
+      dif_pos (source_all hreq.sourceScope)]; simp only [typed_result_projection]
     split
-    · rename_i heq; simp only [hTrueLook] at heq; cases heq
+    · rename_i heq; simp only [typed_result_projection, hTrueLook] at heq; cases heq
     · rename_i tc heq
       cases Option.some.inj (heq.symm.trans hTrueLook)
       split
-      · rename_i heq; simp only [hFalseLook] at heq; cases heq
+      · rename_i heq; simp only [typed_result_projection, hFalseLook] at heq; cases heq
       · rename_i fc heq
         cases Option.some.inj (heq.symm.trans hFalseLook)
-        simp only [Ctor.isBoolCtor_iff.mpr hTrueBool, Ctor.isBoolCtor_iff.mpr hFalseBool,
+        simp only [typed_result_projection, Ctor.isBoolCtor_iff.mpr hTrueBool, Ctor.isBoolCtor_iff.mpr hFalseBool,
           dite_true, Option.isSome_some]
 
 theorem inferRequest_sourceComplete_var (index : Nat)
@@ -7168,13 +7204,13 @@ theorem inferRequest_sourceComplete_var (index : Nat)
   cases hc with
   | var hCandidate _ _ =>
     cases hlook : ctx.env[index]? with
-    | none => simp only [Subst.onCtx, Subst.onEnv, List.getElem?_map, hlook, Option.map_none] at hCandidate; cases hCandidate
+    | none => simp only [typed_result_projection, Subst.onCtx, Subst.onEnv, List.getElem?_map, hlook, Option.map_none] at hCandidate; cases hCandidate
     | some scheme =>
-      simp only [inferWithTypesCore, dif_pos (rigid_all hreq.protectedBelow),
+      rw [inferWithTypesCore, inferWithTypesResultCore]; simp only [typed_result_projection, dif_pos (rigid_all hreq.protectedBelow),
         dif_pos (ctx_all hreq.ctxBelow), dif_pos (soft_all hreq.softBelow),
         dif_pos (source_all hreq.sourceScope)]
       split
-      · rename_i heq; simp only [hlook] at heq; cases heq
+      · rename_i heq; simp only [typed_result_projection, hlook] at heq; cases heq
       · rfl
 
 theorem inferRequest_sourceComplete_ctor (name : CtorName)
@@ -7186,11 +7222,11 @@ theorem inferRequest_sourceComplete_ctor (name : CtorName)
   cases hc with
   | ctor hlook _ _ =>
     change LookupList.get? ctx.ctors name = _ at hlook
-    simp only [inferWithTypesCore, dif_pos (rigid_all hreq.protectedBelow),
+    rw [inferWithTypesCore, inferWithTypesResultCore]; simp only [typed_result_projection, dif_pos (rigid_all hreq.protectedBelow),
       dif_pos (ctx_all hreq.ctxBelow), dif_pos (soft_all hreq.softBelow),
       dif_pos (source_all hreq.sourceScope)]
     split
-    · rename_i heq; simp only [hlook] at heq; cases heq
+    · rename_i heq; simp only [typed_result_projection, hlook] at heq; cases heq
     · rfl
 
 theorem inferRequest_sourceComplete_lambda
@@ -7256,9 +7292,9 @@ theorem inferRequest_sourceComplete_lambda
   rw [InferRequest.run_isSome_worker] at hbody
   obtain ⟨⟨⟨⟨next, subst, bodyTy⟩, bodyTypes, bodySchemes⟩, hb⟩, hbodyResult⟩ :=
     Option.isSome_iff_exists.mp hbody
-  rw [inferWithTypesCore, dif_pos (rigid_all hK), dif_pos (ctx_all hbelow),
-    dif_pos (soft_all hF), dif_pos (source_all hscope)]
-  simp only [hseedResult, hbodyResult, Option.isSome_some]
+  rw [inferWithTypesCore, inferWithTypesResultCore, dif_pos (rigid_all hK), dif_pos (ctx_all hbelow),
+    dif_pos (soft_all hF), dif_pos (source_all hscope)]; simp only [typed_result_projection]
+  simp only [typed_result_projection, hseedResult, hbodyResult, Option.isSome_some]
 
 
 theorem inferRequest_sourceComplete_app
@@ -7362,9 +7398,9 @@ theorem inferRequest_sourceComplete_app
   have hsome := unifyCoreK_complete (Subst.onTy_lc hs2LC hfLC) (.arrow haLC .fvar) hU hUni hUK
   obtain ⟨⟨s3, hu⟩, huResult⟩ := Option.isSome_iff_exists.mp hsome
   rcases hu with ⟨hun, havoid⟩
-  rw [inferWithTypesCore, dif_pos (rigid_all hK), dif_pos (ctx_all hbelow),
-    dif_pos (soft_all hF), dif_pos (source_all hscope)]
-  simp only [hfResult, haResult, huResult, Option.isSome_some]
+  rw [inferWithTypesCore, inferWithTypesResultCore, dif_pos (rigid_all hK), dif_pos (ctx_all hbelow),
+    dif_pos (soft_all hF), dif_pos (source_all hscope)]; simp only [typed_result_projection]
+  simp only [typed_result_projection, hfResult, haResult, huResult, Option.isSome_some]
 
 theorem inferRequest_sourceComplete_letIn
     (ihr : RequestSourceCompleteUpTo rhs.sourceSize)
@@ -7416,7 +7452,7 @@ theorem inferRequest_sourceComplete_letIn
     rw [Subst.onTy_append, hs1K k hk, hfix k hk] at heq
     exact heq.symm
   have hannEq : (ann.substSourceTyFvars s1).substSourceTyFvars R = ann.substSourceTyFvars ambient := by
-    simp only [Option.annotationView_subst, ← PartialCore.Ann.source_substTyFvars_append, ← Option.source_substTyFvars_append]
+    simp only [typed_result_projection, Option.annotationView_subst, ← PartialCore.Ann.source_substTyFvars_append, ← Option.source_substTyFvars_append]
     exact ann.source_substTyFvars_congr (fun v hv => (hagR v (hannBelow v hv)).symm)
   have hannPostScope : ∀ v ∈ (ann.substSourceTyFvars s1).rigidVars, v ∈ K ++ softVars (substSoft s1 F) := by
     intro v hv
@@ -7438,7 +7474,7 @@ theorem inferRequest_sourceComplete_letIn
   have hPchecked : ∀ p ∈ P, p < checked := fun p hp => Nat.lt_of_lt_of_le (hP p hp) hle
   have hprefixK : ∀ k ∈ K, (s1 ++ sCheck).onTy (.fvar k) = .fvar k := by
     intro k hk
-    simp only [Subst.onTy_append, hs1K k hk, Subst.fixes_of_dom_avoids hc.dom_avoids k hk]
+    simp only [typed_result_projection, Subst.onTy_append, hs1K k hk, Subst.fixes_of_dom_avoids hc.dom_avoids k hk]
   have hVK : ∀ k ∈ K, V.onTy (.fvar k) = .fvar k := by
     intro k hk
     have heq := hagPrefix k (hK k hk)
@@ -7465,9 +7501,9 @@ theorem inferRequest_sourceComplete_letIn
   rw [InferRequest.run_isSome_worker] at hbodySome
   obtain ⟨⟨⟨⟨next, s2, bodyTy⟩, bodyTypes, bodySchemes⟩, hb⟩, hbResult⟩ :=
     Option.isSome_iff_exists.mp hbodySome
-  rw [inferWithTypesCore, dif_pos (rigid_all hK), dif_pos (ctx_all hbelow),
-    dif_pos (soft_all hF), dif_pos (source_all hscope)]
-  simp only [hmode, Bool.false_eq_true, ↓reduceIte, hrResult, hcResult, hbResult, Option.isSome_some]
+  rw [inferWithTypesCore, inferWithTypesResultCore, dif_pos (rigid_all hK), dif_pos (ctx_all hbelow),
+    dif_pos (soft_all hF), dif_pos (source_all hscope)]; simp only [typed_result_projection]
+  simp only [typed_result_projection, hmode, Bool.false_eq_true, ↓reduceIte, hrResult, hcResult, hbResult, Option.isSome_some]
 
 theorem inferRequest_sourceComplete_signature
     {ann : BindingAnn} {rhs body : InferInput}
@@ -7512,7 +7548,7 @@ theorem inferRequest_sourceComplete_signature
     ScopedTyping.align_partial_prefix_with_fits (by simp) hfits (by simpa using hann) htypes hCount hrhs
       hYlen hYnd hYsQ hYsCtx hYsM []
   have hFullLen : (written ++ extras).length = M.paramCount := by
-    simp only [List.length_append, hYlen, hElen]; omega
+    simp only [typed_result_projection, List.length_append, hYlen, hElen]; omega
   have hTake : (written ++ extras).take ann.paramCount = written := by rw [← hYlen]; simp
   have hCtxOpen : CtxBelow (frontier + ann.paramCount) ctx :=
     fun M hM => (hbelow M hM).mono (Nat.le_add_right _ _)
@@ -7531,7 +7567,7 @@ theorem inferRequest_sourceComplete_signature
   have hRhsOpen : SourceScope (K ++ written) F (rhs.openSourceTyVars written) := by
     intro v hv
     have hm := rhs.source_openTyVars_scope hRhsRaw written v hv
-    simp only [List.mem_append] at hm ⊢
+    simp only [typed_result_projection, List.mem_append] at hm ⊢
     tauto
   have hFOpen : ∀ t ∈ F, Ty.BelowFvars (frontier + ann.paramCount) t :=
     fun t ht => (hF t ht).mono (Nat.le_add_right _ _)
@@ -7569,7 +7605,7 @@ theorem inferRequest_sourceComplete_signature
   have hBound : ∀ v ∈ K ++ softVars F, v < frontier :=
     fun v hv => (List.mem_append.mp hv).elim (hK v) (softVars_lt hF v)
   have hAnnSource : (ann.substSourceTyFvars s1).substSourceTyFvars R = ann.substSourceTyFvars moved := by
-    simp only [Option.annotationView_subst, ← PartialCore.Ann.source_substTyFvars_append, ← Option.source_substTyFvars_append]
+    simp only [typed_result_projection, Option.annotationView_subst, ← PartialCore.Ann.source_substTyFvars_append, ← Option.source_substTyFvars_append]
     exact ann.source_substTyFvars_congr (fun v hv => (hagR v (by
       exact Nat.lt_of_lt_of_le
         (hBound v (hscope v (List.mem_append_left _ (List.mem_append_left _ hv))))
@@ -7588,7 +7624,7 @@ theorem inferRequest_sourceComplete_signature
   have hComplete : ∀ scheme, (ann.substSourceTyFvars s1).annotationView = .complete scheme →
       scheme.WF ∧ M.openVars (written ++ extras) = (R.onPolyTy scheme).openVars written := by
     intro scheme heq
-    simp only [Option.SignatureFits] at hFitsPost
+    simp only [typed_result_projection, Option.SignatureFits] at hFitsPost
     rw [Option.annotationView_subst, heq] at hFitsPost
     cases hFitsPost
     have hWF : scheme.WF := ContainsBvarsUpTo.of_substFvars hM
@@ -7606,7 +7642,7 @@ theorem inferRequest_sourceComplete_signature
   have hPartial : ∀ count template, (ann.substSourceTyFvars s1).annotationView = .partialForall count template →
       ((template.substSourceTyFvars R).openTyVarsFrom 0 written).Matches (M.openVars (written ++ extras)) := by
     intro count template heq
-    simp only [Option.SignatureFits] at hFitsPost
+    simp only [typed_result_projection, Option.SignatureFits] at hFitsPost
     rw [Option.annotationView_subst, heq] at hFitsPost
     cases hFitsPost with
     | partialSignature _ hf =>
@@ -7652,10 +7688,10 @@ theorem inferRequest_sourceComplete_signature
   rw [InferRequest.run_isSome_worker] at hbodySome
   obtain ⟨⟨⟨⟨next, s2, bodyTy⟩, bodyTypes, bodySchemes⟩, hb⟩, hbResult⟩ :=
     Option.isSome_iff_exists.mp hbodySome
-  rw [inferWithTypesCore, dif_pos (rigid_all hK), dif_pos (ctx_all hbelow),
-    dif_pos (soft_all hF), dif_pos (source_all hscope)]
-  simp only [written] at hrResult hcResult hbResult hescape
-  simp only [hmode, ↓reduceIte, hrResult, hcResult,
+  rw [inferWithTypesCore, inferWithTypesResultCore, dif_pos (rigid_all hK), dif_pos (ctx_all hbelow),
+    dif_pos (soft_all hF), dif_pos (source_all hscope)]; simp only [typed_result_projection]
+  simp only [typed_result_projection, written] at hrResult hcResult hbResult hescape
+  simp only [typed_result_projection, hmode, ↓reduceIte, hrResult, hcResult,
       dif_pos hescape, hbResult, Option.isSome_some]
 
 private theorem producer_branch_rigid_mem {bs : List (MatchPattern × InferInput)} {b : MatchPattern × InferInput}
@@ -7724,7 +7760,7 @@ private theorem residual_fixes_of_agrees {K : List Nat} {Φ : Nat} {ambient solv
 theorem inferBranchesWithTypesCore_sourceComplete_nil : InferBranchesWithTypesCoreSourceComplete [] := by
   unfold InferBranchesWithTypesCoreSourceComplete
   intros
-  simp only [inferBranchesWithTypesCore, rigidBranchVars, List.all_nil, dite_true, Option.isSome_some]
+  rw [inferBranchesWithTypesCore, inferBranchesWithTypesResultCore]; simp only [typed_result_projection, rigidBranchVars, List.all_nil, dite_true, Option.isSome_some]
 
 theorem inferBranchesWithTypesCore_sourceComplete_wildcard
     (ihbody : RequestSourceCompleteUpTo body.sourceSize)
@@ -7782,7 +7818,7 @@ theorem inferBranchesWithTypesCore_sourceComplete_wildcard
     have hagV : Subst.AgreesBelow frontier ambient ((s1 ++ s2) ++ V) := by
       intro v hv
       have heq := hag v hv
-      simp only [Subst.onTy_append] at heq
+      simp only [typed_result_projection, Subst.onTy_append] at heq
       simpa only [Subst.onTy_append] using heq.trans (hfac (s1.onTy (.fvar v)))
     have hctxeq : V.onCtx (s2.onCtx (s1.onCtx ctx)) = ambient.onCtx ctx := by
       simpa only [Subst.onCtx_append] using (Subst.onCtx_congr hagV hbelow).symm
@@ -7792,14 +7828,14 @@ theorem inferBranchesWithTypesCore_sourceComplete_wildcard
       simpa only [Subst.onTy_append] using (Subst.onTy_congr hagV hresultB).symm
     have hprefixK : ∀ k ∈ K, (s1 ++ s2).onTy (.fvar k) = .fvar k := by
       intro k hk
-      simp only [Subst.onTy_append, hs1K k hk, Subst.fixes_of_dom_avoids hav k hk]
+      simp only [typed_result_projection, Subst.onTy_append, hs1K k hk, Subst.fixes_of_dom_avoids hav k hk]
     have hFnext : ∀ t ∈ substSoft (s1 ++ s2) F, Ty.BelowFvars first t := by
       simpa only [substSoft_append] using substSoft_below hs2B (Nat.le_refl _) (substSoft_below hs1B hle hF)
     have hbr := producer_branch_candidates_frame hrestBelow hagV hctxeq
       (fun b hb => htyping b (List.mem_cons_of_mem _ hb))
     obtain ⟨⟨⟨next, s3, restTypes, restSchemes⟩, hr⟩, hrResult⟩ :=
       Option.isSome_iff_exists.mp (ihrest (substInputBranches (s1 ++ s2) rest) (by
-        simp only [sizeBranches_substInputBranches]; exact Nat.le_refl _) K (substSoft (s1 ++ s2) F) first
+        simp only [typed_result_projection, sizeBranches_substInputBranches]; exact Nat.le_refl _) K (substSoft (s1 ++ s2) F) first
         (s2.onCtx (s1.onCtx ctx)) (s2.onTy (s1.onTy scrutTy)) (s2.onTy (s1.onTy resultTy))
         (branchIndex + 1) V P (branch_scope_subst hrestScope hprefixK)
         (Subst.onCtx_wf hs2LC (Subst.onCtx_wf hs1LC hwf))
@@ -7808,7 +7844,7 @@ theorem inferBranchesWithTypesCore_sourceComplete_wildcard
         (Subst.onTy_lc hs2LC (Subst.onTy_lc hs1LC hresult))
         (Subst.onTy_belowFvars hs2B hscrut1B) (Subst.onTy_belowFvars hs2B hrightB)
         (by simpa only [hscruteq, hresulteq] using hbr))
-    simp only [inferBranchesWithTypesCore, dif_pos (branch_source_all hscope),
+    rw [inferBranchesWithTypesCore, inferBranchesWithTypesResultCore]; simp only [typed_result_projection, dif_pos (branch_source_all hscope),
       hbResult, huResult, hrResult, Option.isSome_some]
 theorem inferBranchesWithTypesCore_sourceComplete_named
     (ihbody : RequestSourceCompleteUpTo body.sourceSize)
@@ -7838,9 +7874,9 @@ theorem inferBranchesWithTypesCore_sourceComplete_named
     obtain ⟨U, hU, hagU, hblock⟩ := Subst.override_block hS frontier args hargsLC
     have hargs : ((freshVars frontier ctor.paramCount).map Ty.fvar).map U.onTy = args := by
       apply List.ext_getElem
-      · simp only [List.length_map, freshVars_length, hspec.arity]
+      · simp only [typed_result_projection, List.length_map, freshVars_length, hspec.arity]
       · intro i hi hi'
-        simp only [List.getElem_map, freshVars, List.getElem_range]
+        simp only [typed_result_projection, List.getElem_map, freshVars, List.getElem_range]
         exact hblock i hi'
     have hUK : ∀ k ∈ K, U.onTy (.fvar k) = .fvar k := fun k hk =>
       (hagU k (hK k hk)).symm.trans (hfix k hk)
@@ -7929,7 +7965,7 @@ theorem inferBranchesWithTypesCore_sourceComplete_named
       rw [← hbodyTy]
       have heq := Subst.onTy_congr hag0 hresultB
       have heq1 := Subst.onTy_congr hag1 hres0B
-      simp only [Subst.onTy_append] at heq heq1
+      simp only [typed_result_projection, Subst.onTy_append] at heq heq1
       exact heq.trans heq1
     obtain ⟨⟨s2, hu2⟩, hu2Result⟩ := Option.isSome_iff_exists.mp
       (unifyCoreK_complete hbLC (Subst.onTy_lc hs1LC (Subst.onTy_lc hs0LC hresult)) hR hUni2 hRK)
@@ -7944,7 +7980,7 @@ theorem inferBranchesWithTypesCore_sourceComplete_named
       have hag2 : Subst.AgreesBelow (frontier + ctor.paramCount) V (s1 ++ s2 ++ W) := by
         intro v hv
         have heq := hag1 v hv
-        simp only [Subst.onTy_append] at heq
+        simp only [typed_result_projection, Subst.onTy_append] at heq
         simpa only [Subst.onTy_append] using heq.trans (hfac (s1.onTy (.fvar v)))
       have heq := Subst.AgreesBelow.trans_append (Nat.le_add_right frontier ctor.paramCount) hag0 hs0B hag2
       simpa only [List.append_assoc] using heq
@@ -7957,7 +7993,7 @@ theorem inferBranchesWithTypesCore_sourceComplete_named
     have hs2K := Subst.fixes_of_dom_avoids hav2
     have hprefixK : ∀ k ∈ K, (s0 ++ s1 ++ s2).onTy (.fvar k) = .fvar k := by
       intro k hk
-      simp only [Subst.onTy_append, hs0K k hk, hs1K k hk, hs2K k hk]
+      simp only [typed_result_projection, Subst.onTy_append, hs0K k hk, hs1K k hk, hs2K k hk]
     have hFnext : ∀ t ∈ substSoft (s0 ++ s1 ++ s2) F, Ty.BelowFvars first t := by
       simpa only [substSoft_append] using substSoft_below hs2B (Nat.le_refl _)
         (substSoft_below hs1B hle hF0)
@@ -7966,7 +8002,7 @@ theorem inferBranchesWithTypesCore_sourceComplete_named
       (fun b hb => htyping b (List.mem_cons_of_mem _ hb))
     obtain ⟨⟨⟨next, s3, restTypes, restSchemes⟩, hr⟩, hrResult⟩ :=
       Option.isSome_iff_exists.mp (ihrest (substInputBranches (s0 ++ s1 ++ s2) rest) (by
-        simp only [sizeBranches_substInputBranches]; exact Nat.le_refl _) K (substSoft (s0 ++ s1 ++ s2) F)
+        simp only [typed_result_projection, sizeBranches_substInputBranches]; exact Nat.le_refl _) K (substSoft (s0 ++ s1 ++ s2) F)
         first (s2.onCtx (s1.onCtx (s0.onCtx ctx))) (s2.onTy (s1.onTy (s0.onTy scrutTy)))
         (s2.onTy (s1.onTy (s0.onTy resultTy))) (branchIndex + 1) W P
         (branch_scope_subst hrestScope hprefixK)
@@ -7976,17 +8012,16 @@ theorem inferBranchesWithTypesCore_sourceComplete_named
         (Subst.onTy_lc hs2LC (Subst.onTy_lc hs1LC (Subst.onTy_lc hs0LC hresult)))
         (Subst.onTy_belowFvars hs2B hscrut1B) (Subst.onTy_belowFvars hs2B hres1B)
         (by simpa only [hscruteq, hresulteq] using hbr))
-    rw [inferBranchesWithTypesCore, dif_pos (branch_source_all hscope)]
-    dsimp only
+    rw [inferBranchesWithTypesCore, inferBranchesWithTypesResultCore, dif_pos (branch_source_all hscope)]; simp only [typed_result_projection]
     change LookupList.get? ctx.ctors name = some ctor at hlookup
     split
     · rename_i heq
-      simp only [hlookup, reduceCtorEq] at heq
+      simp only [typed_result_projection, hlookup, reduceCtorEq] at heq
     · rename_i ctor' heq
       have hct := Option.some.inj (heq.symm.trans hlookup)
       subst ctor'
       rw [dif_pos hspec.bind_count]
-      simp only [hu0Result, hbResult, hu2Result, hrResult, Option.isSome_some]
+      simp only [typed_result_projection, hu0Result, hbResult, hu2Result, hrResult, Option.isSome_some]
 
 
 
@@ -8085,7 +8120,7 @@ theorem inferRequest_sourceComplete_match
       exact List.mem_map.mpr ⟨b, hb, rfl⟩))
   obtain ⟨⟨⟨next, s2, branchTypes, branchSchemes⟩, hb⟩, hbResult⟩ :=
     Option.isSome_iff_exists.mp (ihb (substInputBranches s1 branches) (by
-      simp only [sizeBranches_substInputBranches]; exact Nat.le_refl _) K (substSoft s1 F) (first + 1)
+      simp only [typed_result_projection, sizeBranches_substInputBranches]; exact Nat.le_refl _) K (substSoft s1 F) (first + 1)
       (s1.onCtx ctx) scrutTy (.fvar first) 0 U P (branch_scope_subst hbranchScope hs1K) hctxWF
       (fun M hM => (hctxB M hM).mono (Nat.le_succ _))
       (fun k hk => Nat.lt_of_lt_of_le (hK k hk) (hle.trans (Nat.le_succ _)))
@@ -8094,11 +8129,11 @@ theorem inferRequest_sourceComplete_match
       hU hUK (fun p hp => Nat.lt_of_lt_of_le (hP p hp) (hle.trans (Nat.le_succ _))) hUP hsLC .fvar
       (hsB.mono (Nat.le_succ _)) (.fvar (Nat.lt_succ_self _))
       (by simpa only [← hUst, hUtarget] using hbr))
-  rw [inferWithTypesCore, dif_pos (rigid_all hK), dif_pos (ctx_all hbelow),
-    dif_pos (soft_all hF), dif_pos (source_all hscope)]
+  rw [inferWithTypesCore, inferWithTypesResultCore, dif_pos (rigid_all hK), dif_pos (ctx_all hbelow),
+    dif_pos (soft_all hF), dif_pos (source_all hscope)]; simp only [typed_result_projection]
   cases branches with
   | nil => exact False.elim (hne rfl)
-  | cons b bs => simp only [hsResult, List.head?_cons, hbResult, Option.isSome_some]
+  | cons b bs => simp only [typed_result_projection, hsResult, List.head?_cons, hbResult, Option.isSome_some]
 
 theorem openRecAnn_complete_source {S0 : Subst} {names : List Nat} {target : Ty}
     (hS0 : ∀ p ∈ S0,p.2.IsLC) (hraw : ∀ v ∈ ann.rigidVars,v < frontier)
@@ -8106,11 +8141,11 @@ theorem openRecAnn_complete_source {S0 : Subst} {names : List Nat} {target : Ty}
     (hcount : names.length = ann.recPrefixCount) (htarget : target.IsLC) :
     (openRecAnn frontier ann).isSome := by
   cases ann with
-  | absent | complete => simp only [openRecAnn,Option.isSome_some]
+  | absent | complete => simp only [openRecAnn,openRecAnnResult,TypedResult.toOption_ok,Option.isSome_some]
   | template template =>
     have hLC := hfit.allocate_lc_source htarget frontier
     have hb := (Ty.bvarsBelow_iff _).mpr hLC
-    simp only [openRecAnn,hb,dite_true,Option.isSome_some]
+    simp only [openRecAnn,openRecAnnResult,hb,dite_true,TypedResult.toOption_ok,Option.isSome_some]
   | partialForall count template =>
     have hlen : names.length = count := hcount
     obtain ⟨U0,hU0,hag0,hblock⟩ := Subst.override_block hS0 frontier (names.map Ty.fvar)
@@ -8130,7 +8165,7 @@ theorem openRecAnn_complete_source {S0 : Subst} {names : List Nat} {target : Ty}
       exact hfit.2
     have hLC := hnewFit.allocate_lc_source htarget (frontier+count)
     have hb := (Ty.bvarsBelow_iff _).mpr hLC
-    simp only [openRecAnn,hb,dite_true,Option.isSome_some]
+    simp only [openRecAnn,openRecAnnResult,hb,dite_true,TypedResult.toOption_ok,Option.isSome_some]
 
 theorem openRecAnns_complete_source {S0 : Subst}
     (hS0 : ∀ p ∈ S0,p.2.IsLC)
@@ -8144,7 +8179,7 @@ theorem openRecAnns_complete_source {S0 : Subst}
         names.length = binding.ann.recPrefixCount ∧ target.IsLC) :
     (openRecAnns members index frontier bindings).isSome := by
   induction bindings generalizing frontier index targetNames targetTypes with
-  | nil => simp only [openRecAnns,Option.isSome_some]
+  | nil => rfl
   | cons binding rest ih =>
     cases targetNames with
     | nil => simp at hNames
@@ -8166,7 +8201,11 @@ theorem openRecAnns_complete_source {S0 : Subst}
               (by simpa [Nat.add_assoc,Nat.add_comm,Nat.add_left_comm] using hm) hb hn ht)
           cases hr : openRecAnns members (index+1) middle rest with
           | none => simp only [hr,Option.isSome_none] at htail;contradiction
-          | some result => simp only [openRecAnns,dif_pos hm,hresult,hr,Option.isSome_some]
+          | some result =>
+            rw [openRecAnns, openRecAnnsResult]
+            simp only [dif_pos hm, TypedResult.toOption_bind, TypedResult.toOption_mapError,
+              openRecAnnResult_toOption, openRecAnnsResult_toOption, hresult, hr,
+              Option.bind_some, TypedResult.toOption_pure, Option.isSome_some]
         · have htail := ih
             (frontier := frontier) (index := index+1)
             (fun binding hb => hraw binding (List.mem_cons_of_mem _ hb))
@@ -8175,7 +8214,10 @@ theorem openRecAnns_complete_source {S0 : Subst}
               (by simpa [Nat.add_assoc,Nat.add_comm,Nat.add_left_comm] using hm) hb hn ht)
           cases hr : openRecAnns members (index+1) frontier rest with
           | none => simp only [hr,Option.isSome_none] at htail;contradiction
-          | some result => simp only [openRecAnns,dif_neg hm,hr,Option.isSome_some]
+          | some result =>
+            rw [openRecAnns, openRecAnnsResult]
+            simp only [dif_neg hm, TypedResult.toOption_bind, openRecAnnsResult_toOption,
+              hr, Option.bind_some, TypedResult.toOption_pure, Option.isSome_some]
 
 theorem resolveRecSlots_complete_of_factor {R : Subst} {slots : List (List Ty)}
     (candidateNames : List (List Nat)) (hlen : candidateNames.length = slots.length)
@@ -8185,22 +8227,8 @@ theorem resolveRecSlots_complete_of_factor {R : Subst} {slots : List (List Ty)}
       ∀ name ∈ names,∀ v ∈ forbidden,name ∉ (R.onTy (.fvar v)).freeVars) :
     (resolveRecSlots members forbidden index slots).isSome := by
   induction slots generalizing index candidateNames with
-  | nil => dsimp only [resolveRecSlots];simp only [Option.isSome_some]
+  | nil => rfl
   | cons images rest ih =>
-    -- Use the compiled matchers directly: Lean 4.26 cannot generate the
-    -- overlapping dependent-match equation theorem for resolveRecSlots.
-    have hstep : resolveRecSlots members forbidden index (images :: rest) =
-        (if hm : index ∈ members then
-          resolveRecSlots.match_1 members forbidden index images rest
-            (fun _ _ => Option {names // ResolveRecSlots members forbidden index (images::rest) names})
-            (resolveRecWritten images forbidden) (resolveRecSlots members forbidden (index+1) rest)
-            (fun written hbare hnd hav names hn => some ⟨written::names,.cons hm hbare hnd hav hn⟩)
-            (fun _ _ => none)
-        else
-          resolveRecSlots.match_4 members forbidden index rest
-            (fun _ => Option {names // ResolveRecSlots members forbidden index (images::rest) names})
-            (resolveRecSlots members forbidden (index+1) rest)
-            (fun names hn => some ⟨[]::names,.skip hm hn⟩) (fun _ => none)) := rfl
     cases candidateNames with
     | nil => simp at hlen
     | cons names candidateNames =>
@@ -8218,10 +8246,13 @@ theorem resolveRecSlots_complete_of_factor {R : Subst} {slots : List (List Ty)}
           | some head =>
             obtain ⟨written,hbare,hnd,hav⟩ := head
             obtain ⟨tailNames,htailProof⟩ := tail
-            rw [hstep,dif_pos hm,hh,ht]
-            rfl
-        · rw [hstep,dif_neg hm,ht]
-          rfl
+            rw [resolveRecSlots, resolveRecSlotsResult]
+            simp only [dif_pos hm, TypedResult.toOption_bind, TypedResult.toOption_mapError,
+              resolveRecWrittenResult_toOption, resolveRecSlotsResult_toOption, hh, ht,
+              Option.bind_some, TypedResult.toOption_pure, Option.isSome_some]
+        · rw [resolveRecSlots, resolveRecSlotsResult]
+          simp only [dif_neg hm, TypedResult.toOption_bind, resolveRecSlotsResult_toOption,
+            ht, Option.bind_some, TypedResult.toOption_pure, Option.isSome_some]
 
 theorem finishRecComponent_complete_of_factor {state : RecState} {R : Subst}
     (candidateNames : List (List Nat)) (hlen : candidateNames.length = state.slots.length)
@@ -8235,7 +8266,10 @@ theorem finishRecComponent_complete_of_factor {state : RecState} {R : Subst}
     (by simpa only [Nat.zero_add] using hfactor)
   cases hr : resolveRecSlots members ((state.fixedCtx ctx).env.freeVars ++ K ++ soft) 0 state.slots with
   | none => simp only [hr,Option.isSome_none] at hslots;contradiction
-  | some result => simp only [finishRecComponent,hr,Option.isSome_some]
+  | some result =>
+    rw [finishRecComponent, finishRecComponentResult]
+    simp only [TypedResult.toOption_bind, resolveRecSlotsResult_toOption, hr,
+      Option.bind_some, TypedResult.toOption_pure, Option.isSome_some]
 
 theorem inferRecSignedWithTypesCore_complete_one
     {K P : List Nat} {F : List Ty} {frontier index : Nat} {outer : Ctx}
@@ -8296,7 +8330,7 @@ theorem inferRecSignedWithTypesCore_complete_one
       hYlen hYnd hYsQ hYsCtx hYsM []
   change extras.length = M.paramCount - ann.paramCount at hElen
   have hFullLen : (written ++ extras).length = M.paramCount := by
-    simp only [List.length_append, hYlen, hElen]; omega
+    simp only [typed_result_projection, List.length_append, hYlen, hElen]; omega
   have hTake : (written ++ extras).take ann.paramCount = written := by rw [← hYlen]; simp
   have hCtxOpen : CtxBelow (frontier + ann.paramCount) ctx :=
     fun M hM => (hbelow M hM).mono (Nat.le_add_right _ _)
@@ -8315,7 +8349,7 @@ theorem inferRecSignedWithTypesCore_complete_one
   have hRhsOpen : SourceScope (K ++ written) F (rhs.openSourceTyVars written) := by
     intro v hv
     have hm := rhs.source_openTyVars_scope hRhsRaw written v hv
-    simp only [List.mem_append] at hm ⊢
+    simp only [typed_result_projection, List.mem_append] at hm ⊢
     tauto
   have hFOpen : ∀ t ∈ F, Ty.BelowFvars (frontier + ann.paramCount) t :=
     fun t ht => (hF t ht).mono (Nat.le_add_right _ _)
@@ -8372,7 +8406,7 @@ theorem inferRecSignedWithTypesCore_complete_one
   have hComplete : ∀ scheme, (ann.substSourceTyFvars s1).annotationView = .complete scheme →
       scheme.WF ∧ M.openVars (written ++ extras) = (R.onPolyTy scheme).openVars written := by
     intro scheme heq
-    simp only [Option.SignatureFits] at hFitsPost
+    simp only [typed_result_projection, Option.SignatureFits] at hFitsPost
     rw [Option.annotationView_subst, heq] at hFitsPost
     cases hFitsPost
     have hWF : scheme.WF := ContainsBvarsUpTo.of_substFvars hM
@@ -8388,7 +8422,7 @@ theorem inferRecSignedWithTypesCore_complete_one
       exact ht.symm.trans (by rwa [hCountEq])
     exact ⟨hWF, congrArg (R.onPolyTy scheme).openVars hFull⟩
   obtain ⟨hSchemeWF,hExpectedEq⟩ := hComplete (s1.onPolyTy scheme) (by simp [Option.annotationView_subst, hAnn, PartialCore.Ann.substSourceTyFvars, Subst.onPolyTy, Subst.onTy, scheme])
-  have hExpectedLC := PolyTy.openVars_isLC (Xs := written) hSchemeWF (by simp only [written,hcount,PartialCore.Ann.paramCount,freshVars_length,Subst.onPolyTy];omega)
+  have hExpectedLC := PolyTy.openVars_isLC (Xs := written) hSchemeWF (by simp only [typed_result_projection, written,hcount,PartialCore.Ann.paramCount,freshVars_length,Subst.onPolyTy];omega)
   have hOpenEq : R.onTy ((s1.onPolyTy scheme).openVars written) =
       (R.onPolyTy (s1.onPolyTy scheme)).openVars written :=
     Subst.onTy_openVars_of_fixes hR (fun y hy => hFixRK y (List.mem_append_right _ hy))
@@ -8412,16 +8446,17 @@ theorem inferRecSignedWithTypesCore_complete_one
         softVars (substSoft (s1 ++ s2) F) := by
     rw [RecState.rhsCtx_onSubst]
     simpa only [ctx,written,hcount,PartialCore.Ann.paramCount,Subst.onCtx_append] using hescape
-  rw [inferRecSignedWithTypesCore]
+  rw [inferRecSignedWithTypesCore, inferRecSignedWithTypesResultCore]; simp only [typed_result_projection]
   split <;> rename_i hMode
   all_goals have hSame := hAnn.symm.trans hMode
   all_goals cases hSame
-  simp only [scheme] at hSchemeWF0 hUnifyResult
-  simp only [PolyTy.wf_iff_bvarsBelow.mpr hSchemeWF0,dite_true,hraw]
-  simp only [ctx,written] at hrResult hUnifyResult
-  simp only [← hcount] at hescape' ⊢
-  simp only [hrResult, hUnifyResult, dif_pos hescape', substInputBindings,
-    inferRecSignedWithTypesCore, Option.isSome_some]
+  simp only [typed_result_projection, scheme] at hSchemeWF0 hUnifyResult
+  simp only [typed_result_projection, PolyTy.wf_iff_bvarsBelow.mpr hSchemeWF0,dite_true,hraw]
+  simp only [typed_result_projection, ctx,written] at hrResult hUnifyResult
+  simp only [typed_result_projection, ← hcount] at hescape' ⊢
+  simp only [typed_result_projection, hrResult, hUnifyResult, dif_pos hescape', substInputBindings]
+  rw [inferRecSignedWithTypesCore, inferRecSignedWithTypesResultCore]
+  rfl
 
 
 
@@ -8455,7 +8490,7 @@ theorem inferRecSignedWithTypesCore_complete
           ((rhs.substSourceTyFvars R).openSourceTyVars Ys) ((R.onPolyTy scheme).openVars Ys)) :
     (inferRecSignedWithTypesCore K F index frontier ctx bindings state).isSome := by
   match bindings with
-  | [] => simp only [inferRecSignedWithTypesCore,Option.isSome_some]
+  | [] => rw [inferRecSignedWithTypesCore, inferRecSignedWithTypesResultCore]; simp only [typed_result_projection, Option.isSome_some]
   | ⟨ann, rhs⟩ :: rest =>
     cases hAnn : ann.annotationView with
     | complete scheme =>
@@ -8487,22 +8522,22 @@ theorem inferRecSignedWithTypesCore_complete
         simpa only [PartialCore.Ann.substSourceTyFvars,PartialCore.Ann.paramCount,Option.paramCount_substSourceTyFvars, ← Option.annotationView_paramCount ann,hAnn,Subst.onPolyTy,htake] using htypes' Ys hy
       have hscope : SourceScope K F (.letIn ann rhs (.primLit .unit)) := by
         intro v hv
-        simp only [Expr.rigidVars,PartialCore.Ann.rigidVars,List.mem_append,List.not_mem_nil,or_false] at hv
+        simp only [typed_result_projection, Expr.rigidVars,PartialCore.Ann.rigidVars,List.mem_append,List.not_mem_nil,or_false] at hv
         exact hv.elim (hheadAnn v) (hraw v)
       have hOne := inferRecSignedWithTypesCore_complete_one (index := index) hAnn
-        (fun e he => hProducer e (by simp only [sizeBindings];omega))
-        (fun he hi => hPrincipal (by simp only [sizeBindings];omega) hi)
+        (fun e he => hProducer e (by simp only [typed_result_projection, sizeBindings];omega))
+        (fun he hi => hPrincipal (by simp only [typed_result_projection, sizeBindings];omega) hi)
         hiCtxWF hiCtxB hK hF hres.lc hfixK hP hres.fixes hscope hUnit
       have hrawBool : rhs.rigidVars.all (fun v => decide (v ∈ K ++ softVars F)) = true :=
         List.all_eq_true.mpr (fun v hv => decide_eq_true (hraw v hv))
       cases hiResult : inferWithTypesCore (K ++ freshVars frontier scheme.paramCount)
           (frontier + scheme.paramCount) (state.rhsCtx ctx) (rhs.openSourceTyVars (freshVars frontier scheme.paramCount)) F with
       | none =>
-        rw [inferRecSignedWithTypesCore] at hOne
+        rw [inferRecSignedWithTypesCore, inferRecSignedWithTypesResultCore] at hOne; simp only [typed_result_projection] at hOne
         split at hOne <;> rename_i hMode
         all_goals have hSame := hAnn.symm.trans hMode
         all_goals cases hSame
-        simp only [PolyTy.wf_iff_bvarsBelow.mpr hSchemeWF,
+        simp only [typed_result_projection, PolyTy.wf_iff_bvarsBelow.mpr hSchemeWF,
           hrawBool,dite_true,hiResult,Option.isSome_none] at hOne
         contradiction
       | some result =>
@@ -8510,11 +8545,11 @@ theorem inferRecSignedWithTypesCore_complete
         cases huResult : unifyCoreK (K ++ freshVars frontier scheme.paramCount) ty
             ((s1.onPolyTy scheme).openVars (freshVars frontier scheme.paramCount)) with
         | none =>
-          rw [inferRecSignedWithTypesCore] at hOne
+          rw [inferRecSignedWithTypesCore, inferRecSignedWithTypesResultCore] at hOne; simp only [typed_result_projection] at hOne
           split at hOne <;> rename_i hMode
           all_goals have hSame := hAnn.symm.trans hMode
           all_goals cases hSame
-          simp only [PolyTy.wf_iff_bvarsBelow.mpr hSchemeWF,
+          simp only [typed_result_projection, PolyTy.wf_iff_bvarsBelow.mpr hSchemeWF,
             hrawBool,dite_true,hiResult,huResult,Option.isSome_none] at hOne
           contradiction
         | some result =>
@@ -8533,7 +8568,7 @@ theorem inferRecSignedWithTypesCore_complete
                   InferRecSignedCert.nil)
             obtain ⟨U,hU,hUP,hag,hresChecked⟩ :=
               InferRecSignedCert.sourcePrincipal_residual hstep
-              (fun he hi => hPrincipal (by simp only [sizeBindings] at he ⊢;omega) hi)
+              (fun he hi => hPrincipal (by simp only [typed_result_projection, sizeBindings] at he ⊢;omega) hi)
               hres hctxWF hctx hstateLC hstateB hK hF hP hpoly hdone
               (fun binding' hb => by rcases List.mem_singleton.mp hb with rfl;exact hheadAnn)
               (fun binding' hb => by rcases List.mem_singleton.mp hb with rfl;exact hraw)
@@ -8560,7 +8595,7 @@ theorem inferRecSignedWithTypesCore_complete
                     have he : scheme = sigma := by simpa only [hAnn, PartialCore.Ann.complete.injEq] using hComplete
                     cases he
                     exact ⟨L,htypes⟩
-                | succ j => simp only [List.getElem?_cons_succ,List.getElem?_nil] at hb;cases hb)
+                | succ j => simp only [typed_result_projection, List.getElem?_cons_succ,List.getElem?_nil] at hb;cases hb)
             have hle := hstep.frontier_le
             obtain ⟨hbothLC,hcheckedLC⟩ := hstep.lc_of_infer (fun _ hi hc => hi.lc hc) hctxWF hstateLC
             obtain ⟨hbothB,hcheckedB⟩ := hstep.belowFvars_of_infer
@@ -8598,7 +8633,7 @@ theorem inferRecSignedWithTypesCore_complete
                 (fun v hv => (hag v (hrhsBelow binding hb v hv)).symm)
             have hpolyChecked : ∀ (i : Nat) (sigma : PolyTy),checked.specs[i]? = some (.poly sigma) → checked.exports[i]? = some (some sigma) := by
               intro i sigma hs
-              simp only [checked, RecState.specs_setSigned, RecState.specs_onSubst] at hs
+              simp only [typed_result_projection, checked, RecState.specs_setSigned, RecState.specs_onSubst] at hs
               rw [List.getElem?_map] at hs
               obtain ⟨spec,hold,heq⟩ := Option.map_eq_some_iff.mp hs
               cases spec with
@@ -8606,23 +8641,23 @@ theorem inferRecSignedWithTypesCore_complete
               | poly old =>
                 change RecSpec.poly ((s1 ++ s2).onPolyTy old) = RecSpec.poly sigma at heq
                 cases heq
-                simp only [checked, RecState.exports_setSigned, RecState.exports_onSubst, List.getElem?_map,
+                simp only [typed_result_projection, checked, RecState.exports_setSigned, RecState.exports_onSubst, List.getElem?_map,
                   hpoly i old hold,Option.map_some]
             have htail := inferRecSignedWithTypesCore_complete (index := index+1)
               (bindings := substInputBindings (s1 ++ s2) rest)
               (fun e he => hProducer e (by
-                simp only [sizeBindings_substInputBindings] at he
-                simp only [sizeBindings]; omega))
+                simp only [typed_result_projection, sizeBindings_substInputBindings] at he
+                simp only [typed_result_projection, sizeBindings]; omega))
               (fun he hi => hPrincipal (by
-                simp only [sizeBindings_substInputBindings] at he
-                simp only [sizeBindings]; omega) hi)
+                simp only [typed_result_projection, sizeBindings_substInputBindings] at he
+                simp only [typed_result_projection, sizeBindings]; omega) hi)
               hresChecked (Subst.onCtx_wf hbothLC hctxWF) (Subst.onCtx_below hbothB hle hctx)
               hcheckedLC hcheckedB (fun k hk => (hK k hk).trans_le hle) (substSoft_below hbothB hle hF)
               (fun p hp => (hP p hp).trans_le hle) hUfixK
               hpolyChecked
               (by
                 intro i tau hs
-                simp only [checked, RecState.specs_setSigned, RecState.specs_onSubst] at hs
+                simp only [typed_result_projection, checked, RecState.specs_setSigned, RecState.specs_onSubst] at hs
                 obtain ⟨old,hold,_⟩ := RecSpec.mono_getElem?_map_onSubstSource hs
                 exact hdone i old hold)
               (by intro mapped hm v hv
@@ -8656,7 +8691,7 @@ theorem inferRecSignedWithTypesCore_complete
                 | absent | template _ | partialForall _ _ =>
                   simp [hOld, PartialCore.Ann.substSourceTyFvars] at hComplete
                 | complete old =>
-                  simp only [hOld, PartialCore.Ann.substSourceTyFvars, PartialCore.Ann.complete.injEq] at hComplete
+                  simp only [typed_result_projection, hOld, PartialCore.Ann.substSourceTyFvars, PartialCore.Ann.complete.injEq] at hComplete
                   cases hComplete
                   obtain ⟨L,htypes⟩ := hcandidate (j+1) old oldRhs oldAnn
                     (by simpa only [List.getElem?_cons_succ] using ho) hOld
@@ -8679,26 +8714,26 @@ theorem inferRecSignedWithTypesCore_complete
                   exact htypes Ys hy)
             cases htResult : inferRecSignedWithTypesCore K (substSoft (s1 ++ s2) F) (index+1) first
                 ((s1 ++ s2).onCtx ctx) (substInputBindings (s1 ++ s2) rest) checked with
-            | none => simp only [htResult,Option.isSome_none] at htail;contradiction
+            | none => simp only [typed_result_projection, htResult,Option.isSome_none] at htail;contradiction
             | some result =>
-              dsimp only [checked] at htResult
-              rw [inferRecSignedWithTypesCore]
+              dsimp only [typed_result_projection, checked] at htResult
+              rw [inferRecSignedWithTypesCore, inferRecSignedWithTypesResultCore]; simp only [typed_result_projection]
               split <;> rename_i hMode
               all_goals have hSame := hAnn.symm.trans hMode
               all_goals cases hSame
-              simp only [PolyTy.wf_iff_bvarsBelow.mpr hSchemeWF,hrawBool,
+              simp only [typed_result_projection, PolyTy.wf_iff_bvarsBelow.mpr hSchemeWF,hrawBool,
                 dite_true,hiResult,huResult,dif_pos hescape,htResult,Option.isSome_some]
-          · rw [inferRecSignedWithTypesCore] at hOne
+          · rw [inferRecSignedWithTypesCore, inferRecSignedWithTypesResultCore] at hOne; simp only [typed_result_projection] at hOne
             split at hOne <;> rename_i hMode
             all_goals have hSame := hAnn.symm.trans hMode
             all_goals cases hSame
-            simp only [PolyTy.wf_iff_bvarsBelow.mpr hSchemeWF,hrawBool,
+            simp only [typed_result_projection, PolyTy.wf_iff_bvarsBelow.mpr hSchemeWF,hrawBool,
               dite_true,hiResult,huResult,dif_neg hescape,Option.isSome_none] at hOne
             contradiction
     | absent | template _ | partialForall _ _ =>
       have htail := inferRecSignedWithTypesCore_complete (index := index+1)
-        (fun e he => hProducer e (by simp only [sizeBindings];omega))
-        (fun he hi => hPrincipal (by simp only [sizeBindings];omega) hi)
+        (fun e he => hProducer e (by simp only [typed_result_projection, sizeBindings];omega))
+        (fun he hi => hPrincipal (by simp only [typed_result_projection, sizeBindings];omega) hi)
         hres hctxWF hctx hstateLC hstateB hK hF hP hfixK hpoly hdone
         (fun binding hm => hannScope binding (List.mem_cons_of_mem _ hm))
         (fun binding hm => hrhsScope binding (List.mem_cons_of_mem _ hm))
@@ -8707,15 +8742,15 @@ theorem inferRecSignedWithTypesCore_complete
         (fun j sigma rhs ann hb hAnn => hcandidate (j+1) sigma rhs ann
           (by simpa only [List.getElem?_cons_succ] using hb) hAnn)
       cases htResult : inferRecSignedWithTypesCore K F (index+1) frontier ctx rest state with
-      | none => simp only [htResult,Option.isSome_none] at htail;contradiction
+      | none => simp only [typed_result_projection, htResult,Option.isSome_none] at htail;contradiction
       | some result =>
-        rw [inferRecSignedWithTypesCore]
+        rw [inferRecSignedWithTypesCore, inferRecSignedWithTypesResultCore]; simp only [typed_result_projection]
         split <;> rename_i hMode
         all_goals have hSame := hAnn.symm.trans hMode
         all_goals cases hSame
-        simp only [htResult,Option.isSome_some]
+        simp only [typed_result_projection, htResult,Option.isSome_some]
 termination_by sizeBindings bindings
-decreasing_by all_goals (simp only [sizeBindings,sizeBindings_substInputBindings];omega)
+decreasing_by all_goals (simp only [typed_result_projection, sizeBindings,sizeBindings_substInputBindings];omega)
 
 theorem inferRecStrataWithTypesCore_cons_of_singleton
     (one : {r : RecRunResult // InferRecStrata K F frontier ctx bindings state [component]
@@ -8733,11 +8768,11 @@ theorem inferRecStrataWithTypesCore_cons_of_singleton
       result.val.frontier = tail.val.frontier ∧ result.val.subst = one.val.subst ++ tail.val.subst ∧
       result.val.state = tail.val.state := by
   cases ho : openRecAnns component 0 frontier bindings with
-  | none => simp only [inferRecStrataWithTypesCore,ho] at hOne;cases hOne
+  | none => rw [inferRecStrataWithTypesCore, inferRecStrataWithTypesResultCore] at hOne; simp only [typed_result_projection, ho] at hOne;cases hOne
   | some opening =>
     obtain ⟨⟨opened,openings⟩,hOpen⟩ := opening
     cases hp : checkRecShapes K ((state.installOpenings component openings).shapes component openings) with
-    | none => simp only [inferRecStrataWithTypesCore,ho,hp] at hOne;cases hOne
+    | none => rw [inferRecStrataWithTypesCore, inferRecStrataWithTypesResultCore] at hOne; simp only [typed_result_projection, ho,hp] at hOne;cases hOne
     | some shapes =>
       obtain ⟨pre,hShapes⟩ := shapes
       cases hc : inferRecComponentWithTypesCore K
@@ -8745,19 +8780,19 @@ theorem inferRecStrataWithTypesCore_cons_of_singleton
           (((state.installOpenings component openings).onSubst pre).rhsCtx (pre.onCtx ctx))
           (substInputBindings pre (openRecSources openings bindings))
           ((state.installOpenings component openings).onSubst pre).specs with
-      | none => simp only [inferRecStrataWithTypesCore,ho,hp,hc] at hOne;cases hOne
+      | none => rw [inferRecStrataWithTypesCore, inferRecStrataWithTypesResultCore] at hOne; simp only [typed_result_projection, ho,hp,hc] at hOne;cases hOne
       | some current =>
         obtain ⟨current,hCurrent⟩ := current
         cases hf : finishRecComponent K (softVars (substSoft (pre ++ current.subst) F)) component
             ((pre ++ current.subst).onCtx ctx)
             ((state.installOpenings component openings).onSubst (pre ++ current.subst))
             current.artifacts with
-        | none => simp only [inferRecStrataWithTypesCore,ho,hp,hc,hf] at hOne;cases hOne
+        | none => rw [inferRecStrataWithTypesCore, inferRecStrataWithTypesResultCore] at hOne; simp only [typed_result_projection, ho,hp,hc,hf] at hOne;cases hOne
         | some exported =>
           obtain ⟨exported,hExported⟩ := exported
-          simp only [inferRecStrataWithTypesCore,ho,hp,hc,hf,List.append_nil,Option.some.injEq] at hOne
+          rw [inferRecStrataWithTypesCore, inferRecStrataWithTypesResultCore] at hOne; simp only [typed_result_projection, ho,hp,hc,hf,List.append_nil,Option.some.injEq] at hOne
           subst one
-          simp only [inferRecStrataWithTypesCore,ho,hp,hc,hf,hTail]
+          rw [inferRecStrataWithTypesCore, inferRecStrataWithTypesResultCore]; simp only [typed_result_projection, ho,hp,hc,hf,hTail]
           exact ⟨_,rfl,rfl,rfl,rfl⟩
 
 
@@ -8833,7 +8868,7 @@ private theorem inferRecStrataWithTypesCore_complete_of_step
   | [] =>
     have bindingsNil : substInputBindings [] bindings = bindings :=
       substInputBindings_eq_self_of_fixes bindings (fun _ _ => rfl)
-    refine ⟨⟨⟨frontier,[],state⟩,.nil⟩,(by simp only [inferRecStrataWithTypesCore]),R,
+    refine ⟨⟨⟨frontier,[],state⟩,.nil⟩,(by rw [inferRecStrataWithTypesCore, inferRecStrataWithTypesResultCore]; simp only [typed_result_projection]),R,
       hres.lc,hres.fixes,hfixK,(fun _ _ => rfl),?_,?_,hXsK,?_⟩
     · simpa only [Subst.onCtx_nil,List.append_nil] using hres
     · simpa only [bindingsNil] using hbindingsEq
@@ -8848,7 +8883,7 @@ private theorem inferRecStrataWithTypesCore_complete_of_step
       rcases componentResult with ⟨componentFirst, current, artifacts⟩
       cases hr
       have hneutral : List.append (pre ++ current) [] = pre ++ current := List.append_nil _
-      simp only [hneutral] at hOneEq hag hresStep
+      simp only [typed_result_projection, hneutral] at hOneEq hag hresStep
       obtain ⟨hstepFrame,_,_⟩ := recStep_frame ho hp hc hf
         (fun _ hi => hi.sourceLocality) hvalid hframe hstateLC hctxWF hstateB hbase
         (fun binding hb v hv => (List.mem_append.mp hv).elim
@@ -8876,11 +8911,11 @@ private theorem inferRecStrataWithTypesCore_complete_of_step
             rw [← substInputBindings_append]
             apply List.ext_getElem?
             intro i
-            simp only [substInputBindings_eq_map, List.getElem?_map]
+            simp only [typed_result_projection, substInputBindings_eq_map, List.getElem?_map]
             cases hb : bindings[i]? with
             | none => rfl
             | some binding =>
-              simp only [Option.map_some]
+              simp only [typed_result_projection, Option.map_some]
               apply congrArg some
               apply RecBinding.ext
               · change Option.substSourceTyFvars (pre ++ current ++ U) binding.ann =
@@ -8901,7 +8936,7 @@ private theorem inferRecStrataWithTypesCore_complete_of_step
         exact he.symm
       have hUfixK : ∀ k ∈ K,U.onTy (.fvar k) = .fvar k := fun k hk => (hUonK k hk).trans (hfixK k hk)
       have hUF : substSoft U (substSoft (pre ++ current) F) = substSoft R F := by
-        simp only [substSoft,List.map_map,Function.comp_def]
+        simp only [typed_result_projection, substSoft,List.map_map,Function.comp_def]
         apply List.map_congr_left
         intro ty ht
         simpa only [Subst.onTy_append] using (Subst.onTy_congr hag (hF ty ht)).symm
@@ -9142,7 +9177,10 @@ theorem collectCompletedRecMembers_complete {members : List RecMemberState}
       simp only at hs hc
       subst exported
       subst checked
-      simp only [collectCompletedRecMembers, dite_true, hr, Option.isSome_some]
+      rw [collectCompletedRecMembers, collectCompletedRecMembersResult]
+      simp only [dite_true, TypedResult.toOption_bind, TypedResult.toOption_mapError,
+        collectCompletedRecMembersResult_toOption, hr, Option.bind_some,
+        TypedResult.toOption_pure, Option.isSome_some]
 
 theorem RecState.Frame.exports_present
     {state : RecState} (h : state.Frame base K F ctx bindings done)
@@ -9295,7 +9333,7 @@ theorem inferRecStrataWithTypesCore_aligned_singleton
       v ∈ openings.flatMap RecOpening.written := by
     intro i v hv
     cases he : openings[i]? with
-    | none => simp only [he,Option.getD_none,RecOpening.empty,List.not_mem_nil] at hv
+    | none => simp only [typed_result_projection, he,Option.getD_none,RecOpening.empty,List.not_mem_nil] at hv
     | some opening => exact List.mem_flatMap.mpr ⟨opening,List.mem_of_getElem? he,by simpa only [he,Option.getD_some] using hv⟩
   have hsource : ∀ binding ∈ raws, SourceScope K active binding.rhs := by
     intro binding hm v hv
@@ -9328,13 +9366,13 @@ theorem inferRecStrataWithTypesCore_aligned_singleton
             RecSpec.monoTy?, hop] at he
           obtain ⟨rfl,hex⟩ := he
           have hsourceSpec : state.specs[i]? = some (.mono actual) := by
-            simp only [RecState.getElem?_specs, hs, Option.map_some, hspec]
+            simp only [typed_result_projection, RecState.getElem?_specs, hs, Option.map_some, hspec]
           exact (hsolve i opening actual expected hi hop hsourceSpec hex).symm
   have hShapeLC := RecState.shapes_lc (members := members) hiLC ho.expected_lc
   have hShapeB := RecState.shapes_below (members := members) hiB (ho.expected_below hannB)
   have hShapeSome := checkRecShapes_complete hShapeLC hres.lc hsolveShapes hUK
   cases hShapeRun : checkRecShapes K (installed.shapes members openings) with
-  | none => simp only [hShapeRun,Option.isSome_none] at hShapeSome; contradiction
+  | none => simp only [typed_result_projection, hShapeRun,Option.isSome_none] at hShapeSome; contradiction
   | some result =>
     obtain ⟨pre,hp⟩ := result
     have hpreLC := hp.lc hShapeLC
@@ -9347,9 +9385,9 @@ theorem inferRecStrataWithTypesCore_aligned_singleton
       rw [hpreK k hk,hUK k hk] at hh
       exact hh.symm
     have hCtxFactor : Z.onCtx (pre.onCtx (installed.rhsCtx ctx)) = U.onCtx (state.rhsCtx ctx) := by
-      simp only [installed, RecState.rhsCtx_installOpenings]
+      simp only [typed_result_projection, installed, RecState.rhsCtx_installOpenings]
       apply congrArg₂ Ctx.mk
-      · simp only [Subst.onCtx,Subst.onEnv,List.map_map]
+      · simp only [typed_result_projection, Subst.onCtx,Subst.onEnv,List.map_map]
         apply List.map_congr_left
         intro M hm
         exact congrArg (Scheme.mk M.paramCount) (hfactor M.body).symm
@@ -9387,7 +9425,7 @@ theorem inferRecStrataWithTypesCore_aligned_singleton
         intro j binding target hj hb ht
         rw [substInputBindings_eq_map, List.getElem?_map] at hb
         obtain ⟨raw,hr0,rfl⟩ := Option.map_eq_some_iff.mp hb
-        simp only [RecState.specs_onSubst] at ht
+        simp only [typed_result_projection, RecState.specs_onSubst] at ht
         obtain ⟨old,ht0,rfl⟩ := RecSpec.mono_getElem?_map_onSubstSource ht
         have htState : state.specs[j]? = some (.mono old) := by
           simpa only [installed, RecState.specs_installOpenings] using ht0
@@ -9397,7 +9435,7 @@ theorem inferRecStrataWithTypesCore_aligned_singleton
     cases hCompRun : inferRecComponentWithTypesCore K (substSoft pre active) members 0 opened
         ((installed.onSubst pre).rhsCtx (pre.onCtx ctx)) (substInputBindings pre raws)
         (installed.onSubst pre).specs with
-    | none => simp only [hCompRun,Option.isSome_none] at hCompSome; contradiction
+    | none => simp only [typed_result_projection, hCompRun,Option.isSome_none] at hCompSome; contradiction
     | some result =>
       obtain ⟨cres,hc⟩ := result
       obtain ⟨V,hV,hVP,hag⟩ := InferRecComponentCert.sourcePrincipal_after_shapes hp
@@ -9448,7 +9486,7 @@ theorem inferRecStrataWithTypesCore_aligned_singleton
         (K := K) (soft := softVars (substSoft solved F)) (members := members)
         (ctx := solved.onCtx ctx) (state := installed.onSubst solved)
         (artifacts := cres.artifacts) (R := V) candidateNames
-        (by simp only [candidateNames, List.length_mapIdx, RecState.slots_length,
+        (by simp only [typed_result_projection, candidateNames, List.length_mapIdx, RecState.slots_length,
           RecState.onSubst, installed, RecState.installOpenings, List.length_map])
         (by
           intro i images names hi hs hn
@@ -9457,7 +9495,7 @@ theorem inferRecStrataWithTypesCore_aligned_singleton
               RecState.installOpenings, List.length_map, List.length_mapIdx] using
               (List.getElem?_eq_some_iff.mp hs).1
           have hslot := List.getElem?_eq_getElem hib
-          simp only [candidateNames,List.getElem?_mapIdx,hslot,Option.map_some,Option.some.injEq] at hn
+          simp only [typed_result_projection, candidateNames,List.getElem?_mapIdx,hslot,Option.map_some,Option.some.injEq] at hn
           subst names
           have hiopen : i < openings.length := by rw [ho.length,← hslotLen];exact hib
           let opening := openings[i]
@@ -9466,7 +9504,7 @@ theorem inferRecStrataWithTypesCore_aligned_singleton
           rw [RecState.getElem?_specs] at hsourceTy
           obtain ⟨member, hm, _⟩ := Option.map_eq_some_iff.mp hsourceTy
           have he : images = (opening.written.map Ty.fvar).map solved.onTy := by
-            simp only [RecState.slots_onSubst, List.getElem?_map, installed,
+            simp only [typed_result_projection, RecState.slots_onSubst, List.getElem?_map, installed,
               RecState.getElem?_slots_installOpenings, hm, Option.map_some, if_pos hi,
               hop, Option.getD_some] at hs
             exact (Option.some.inj hs).symm
@@ -9476,7 +9514,7 @@ theorem inferRecStrataWithTypesCore_aligned_singleton
             exact (hprefix i declTy hd).2
           refine ⟨?_,?_,?_⟩
           · rw [he]
-            simp only [List.map_map,Function.comp_def]
+            simp only [typed_result_projection, List.map_map,Function.comp_def]
             calc
               _ = opening.written.map (fun v => U.onTy (.fvar v)) := by
                 apply List.map_congr_left
@@ -9491,7 +9529,7 @@ theorem inferRecStrataWithTypesCore_aligned_singleton
             exact hBoundary name (recRenameNames_mem hXsLen hnamesSub name hn) v hv)
       cases hFinishRun : finishRecComponent K (softVars (substSoft solved F)) members (solved.onCtx ctx)
           (installed.onSubst solved) cres.artifacts with
-      | none => simp only [hFinishRun,Option.isSome_none] at hFinishSome; contradiction
+      | none => simp only [typed_result_projection, hFinishRun,Option.isSome_none] at hFinishSome; contradiction
       | some result =>
         obtain ⟨exported,hf⟩ := result
         obtain ⟨T,hT,hTP,hagT,hTRes⟩ := hres.close_opened_component ho hp hc hf hPrincipal
@@ -9502,7 +9540,7 @@ theorem inferRecStrataWithTypesCore_aligned_singleton
             r.frontier r.subst r.state} :=
           ⟨⟨cres.frontier,pre ++ cres.subst ++ [],exported⟩,.cons ho hp hc hf .nil⟩
         refine ⟨one,?_,T,hT,hTP,?_,?_⟩
-        · simp only [inferRecStrataWithTypesCore,hOpenRun,hShapeRun,hCompRun,hFinishRun,
+        · rw [inferRecStrataWithTypesCore, inferRecStrataWithTypesResultCore]; simp only [typed_result_projection, hOpenRun,hShapeRun,hCompRun,hFinishRun,
             List.append_nil,one,installed,raws,active,solved]
         · simpa only [one,List.append_nil] using hagT
         · simpa only [one,List.append_nil] using hTRes
@@ -10118,7 +10156,7 @@ private theorem inferRequest_sourceComplete_rec_of_unsigned
       change (Option.substSourceTyFvars ambient binding.ann).recModeAnn =
         some (ambient.onPolyTy scheme)
       rw [Option.recModeAnn_subst_source]
-      simp only [Option.recModeAnn, heq, PartialCore.Ann.recModeAnn, Option.map_some]
+      simp only [typed_result_projection, Option.recModeAnn, heq, PartialCore.Ann.recModeAnn, Option.map_some]
     have hmodeCore : some (ambient.onPolyTy scheme) ∈
         ((substInputBindings ambient bindings).map InputRecBinding.recMode).map
           RecBinding.ann := by
@@ -10175,7 +10213,7 @@ private theorem inferRequest_sourceComplete_rec_of_unsigned
   have hXs : FreshNames (G ++ L) G.length Xs := by
     refine ⟨hXslen, hXsnd, ?_⟩
     intro x hx hv
-    exact hXsavoid x hx (by simp only [avoid, List.mem_append] at hv ⊢; tauto)
+    exact hXsavoid x hx (by simp only [typed_result_projection, avoid, List.mem_append] at hv ⊢; tauto)
   obtain ⟨R, hR, hag0, hRP, hres0⟩ := RecResidual.init (declPrefixes := declPrefixes) (Xs := Xs)
     hdeclWF hambient hP hfix hannbelow hctx
   have hBindingsEq : substInputBindings R bindings =
@@ -10192,7 +10230,7 @@ private theorem inferRequest_sourceComplete_rec_of_unsigned
     intro x hx k hk hv
     rw [← hag0 k (hK k hk)] at hv
     have hm : x ∈ K.flatMap (fun k => (ambient.onTy (.fvar k)).freeVars) := List.mem_flatMap.mpr ⟨k, hk, hv⟩
-    exact hXsavoid x hx (by simp only [avoid, List.mem_append]; tauto)
+    exact hXsavoid x hx (by simp only [typed_result_projection, avoid, List.mem_append]; tauto)
   have hXsF : ∀ x ∈ Xs, x ∉ softVars (substSoft R F) := by
     intro x hx hv
     have he : substSoft R F = substSoft ambient F := by
@@ -10200,7 +10238,7 @@ private theorem inferRequest_sourceComplete_rec_of_unsigned
       intro t ht
       exact (Subst.onTy_congr hag0 (hF t ht)).symm
     rw [he] at hv
-    exact hXsavoid x hx (by simp only [avoid, List.mem_append]; tauto)
+    exact hXsavoid x hx (by simp only [typed_result_projection, avoid, List.mem_append]; tauto)
   have hRfixK : ∀ k ∈ K,R.onTy (.fvar k) = .fvar k :=
     fun k hk => (hag0 k (hK k hk)).symm.trans (hfixK k hk)
   obtain ⟨⟨⟨first,s1,state1⟩,hstrata⟩,hStrataResult,R1,hR1,hR1P,hR1K,hag1,hres1,
@@ -10212,13 +10250,13 @@ private theorem inferRequest_sourceComplete_rec_of_unsigned
       hGhigh (by
         intro x hx
         by_contra hh
-        exact hXsavoid x hx (by simp only [avoid,List.mem_append];exact Or.inr (List.mem_range.mpr (by omega))))
+        exact hXsavoid x hx (by simp only [typed_result_projection, avoid,List.mem_append];exact Or.inr (List.mem_range.mpr (by omega))))
       hXslen hXsnd (by intro g hg hx;exact hXs.avoid g hx (List.mem_append_left _ hg))
       (by intro x hx spec hs hv;exact hXsavoid x hx (by
-        simp only [avoid,List.mem_append]
+        simp only [typed_result_projection, avoid,List.mem_append]
         have hm : x ∈ declSpecs.flatMap RecSpec.freeVars := List.mem_flatMap.mpr ⟨spec,hs,hv⟩
         tauto))
-      (by intro x hx hv;exact hXsavoid x hx (by simp only [avoid,List.mem_append] at hv ⊢;tauto))
+      (by intro x hx hv;exact hXsavoid x hx (by simp only [typed_result_projection, avoid,List.mem_append] at hv ⊢;tauto))
       hctxWF hctxSeed hinitLC hinitBelow hinitFrame hKSeed hFSeed hPSeed hres0 hRfixK hXsK hXsF
       hannscope hrhsscope hBindingsEq
   have hvalid0 : RecGroups.ValidResidualGroups (bindings.map InputRecBinding.recMode)
@@ -10289,9 +10327,9 @@ private theorem inferRequest_sourceComplete_rec_of_unsigned
     rw [List.getElem?_map, hs0, List.getElem?_map, hb] at hmode
     have hs : state1.specs[j]? = some (.poly scheme) := by
       cases heq : state1.specs[j]'hj with
-      | mono ty => simp only [heq, Option.map_some, RecSpec.ann, Option.recModeAnn, hAnn, PartialCore.Ann.recModeAnn] at hmode; cases hmode
+      | mono ty => simp only [typed_result_projection, heq, Option.map_some, RecSpec.ann, Option.recModeAnn, hAnn, PartialCore.Ann.recModeAnn] at hmode; cases hmode
       | poly other =>
-        simp only [heq, Option.map_some, RecSpec.ann, Option.recModeAnn, hAnn, PartialCore.Ann.recModeAnn, Option.some.injEq] at hmode
+        simp only [typed_result_projection, heq, Option.map_some, RecSpec.ann, Option.recModeAnn, hAnn, PartialCore.Ann.recModeAnn, Option.some.injEq] at hmode
         exact hmode ▸ (heq ▸ hs0)
     obtain ⟨declScheme, hds, he⟩ := hres1.poly j scheme hs
     refine ⟨L, ?_⟩
@@ -10390,9 +10428,9 @@ private theorem inferRequest_sourceComplete_rec_of_unsigned
     hstrata hsigned hvalid hinitFrame hframe1 hframe2
   obtain ⟨⟨completed,hcompleted⟩,hCollectCompleted⟩ :=
     Option.isSome_iff_exists.mp hCompleted
-  rw [inferWithTypesCore,dif_pos (rigid_all hK),dif_pos (ctx_all hctx),
-    dif_pos (soft_all hF),dif_pos (source_all hscope)]
-  simp only [hStrataResult,hSignedResult,hCollectCompleted,hBodyResult]
+  rw [inferWithTypesCore, inferWithTypesResultCore,dif_pos (rigid_all hK),dif_pos (ctx_all hctx),
+    dif_pos (soft_all hF),dif_pos (source_all hscope)]; simp only [typed_result_projection]
+  simp only [typed_result_projection, hStrataResult,hSignedResult,hCollectCompleted,hBodyResult]
   split
   · rfl
   · rename_i hBad
@@ -10833,6 +10871,44 @@ theorem inferWithTypes_typing_iff {ctors : CtorEnv} {input : InferInput} {ty : T
     rw [heq]
     simpa only [Subst.onCtx_empty] using
       (inferWithTypes_input_sound hr).onSubst_fixes R hlc hfix
+
+/-- Native inference is complete under the independent source-typing rules. -/
+theorem inferWithTypesResult_complete {ctors : CtorEnv} {input : InferInput} {ty : Ty}
+    (ht : InputTyping ⟨[], ctors⟩ input ty) :
+    ∃ result, inferWithTypesResult ctors input = .ok result := by
+  apply (except_toOption_isSome_iff _).mp
+  rw [inferWithTypesResult_toOption]
+  exact inferWithTypes_complete ht
+
+/-- A native rejection rules out every declarative source type. -/
+theorem inferWithTypesResult_error_not_typing {ctors : CtorEnv} {input : InferInput}
+    {error : InferError} (h : inferWithTypesResult ctors input = .error error) (ty : Ty) :
+    ¬ InputTyping ⟨[], ctors⟩ input ty := by
+  intro ht
+  obtain ⟨result, hr⟩ := inferWithTypesResult_complete ht
+  rw [h] at hr
+  contradiction
+
+/-- Principality is preserved for the successful value of the native API. -/
+theorem inferWithTypesResult_principal {ctors : CtorEnv} {input : InferInput}
+    {result : InferenceResult} (h : inferWithTypesResult ctors input = .ok result) :
+    ∀ target, InputTyping ⟨[], ctors⟩ input target →
+      ∃ R : Subst, (∀ pair ∈ R, pair.2.IsLC) ∧ target = R.onTy result.ty ∧
+        (∀ v ∈ input.rigidVars, R.onTy (.fvar v) = .fvar v) := by
+  apply inferWithTypes_principal
+  rw [← inferWithTypesResult_toOption, h]
+  rfl
+
+/-- The native successful value characterizes all valid source types. -/
+theorem inferWithTypesResult_typing_iff {ctors : CtorEnv} {input : InferInput} {ty : Ty} :
+    InputTyping ⟨[], ctors⟩ input ty ↔
+      ∃ (result : InferenceResult) (R : Subst),
+        inferWithTypesResult ctors input = .ok result ∧
+        (∀ pair ∈ R, pair.2.IsLC) ∧
+        (∀ v ∈ input.rigidVars, R.onTy (.fvar v) = .fvar v) ∧
+        ty = R.onTy result.ty := by
+  simpa only [← inferWithTypesResult_toOption, TypedResult.toOption_eq_some] using
+    (inferWithTypes_typing_iff (ctors := ctors) (input := input) (ty := ty))
 
 #print axioms inferCore_complete
 #print axioms Infer.complete

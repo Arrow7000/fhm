@@ -46,6 +46,13 @@ private theorem pair_lc (a b : Ty) (ha : a.IsLC) (hb : b.IsLC) : (pair a b).IsLC
   | none => false
 #guard (checkAnnotation 5 repeated (pair (.prim .int) (.prim .char))
   (pair_lc _ _ .prim .prim)).isNone
+#guard match checkAnnotationResult 5 repeated (pair (.prim .int) (.prim .char))
+    (pair_lc _ _ .prim .prim) with
+  | .error (.unification (.mismatch (.prim .int) (.prim .char))) => true
+  | _ => false
+#guard match allocateResult 5 (.fixed (.bvar 0)) with
+  | .error (.invalidBoundVariables (.bvar 0) 0) => true
+  | _ => false
 
 /-- The factor realizes one named solution, with proof of the reported lookup.
 Production inference uses this same theorem for anonymous and named holes. -/

@@ -387,13 +387,13 @@ def collectHover (src : String) (p : Surface.Program) (binders : List BinderSpan
         match SurfaceBridge.Provenance.lowerWithProvenance ctors p.term tree with
         | none => fail (locateLowerFail src p sp)
         | some lowered =>
-          match SurfaceBridge.Provenance.inferWithProvenance ctors lowered with
-          | none =>
-            match FHM.Unverified.TypeDiagnostics.explain ctors lowered with
+          match SurfaceBridge.Provenance.inferWithProvenanceResult ctors lowered with
+          | .error failure =>
+            match FHM.Unverified.TypeDiagnostics.explain failure lowered with
             | some (reason, span) =>
                 fail { diagAtSpan reason.message (some span) with code? := some reason.code }
             | none => fail (locateTypecheckFail ctors ke p binders sp)
-          | some typed =>
+          | .ok typed =>
             if !(typed.lowering.mapExpr Expr.erase).provenanceTotal ||
                 !typed.nodeTypesTotal || !typed.sourceTypesTotal ||
                 !typed.patternBinderTypesTotal then

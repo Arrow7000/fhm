@@ -14,7 +14,14 @@ run_cmd do
       `SurfaceBridge.coreTypecheck] do
     if env.contains historical then
       throwError "The default verified import closure still contains {historical}"
-  for root in #[`inferWithTypes_infer, `inferWithTypes_input_sound,
+  for root in #[`unifyResult_sound, `unifyResultK_complete,
+      `unifyResultK_error_not_unifies,
+      `seedResult_complete_source, `checkLetResult_complete_source,
+      `checkSignatureResult_complete_source,
+      `inferWithTypesResult_infer, `inferWithTypesResult_input_sound,
+      `inferWithTypesResult_complete, `inferWithTypesResult_error_not_typing,
+      `inferWithTypesResult_principal, `inferWithTypesResult_typing_iff,
+      `inferWithTypes_infer, `inferWithTypes_input_sound,
       `inferWithTypes_runtime_sound, `inferWithTypes_complete, `inferWithTypes_principal,
       `inferWithTypes_typing_iff, `principalType_sound, `typecheck_sound,
       `InputTyping.erase, `elabDecls_sound, `elabDecls_eq_some_iff,

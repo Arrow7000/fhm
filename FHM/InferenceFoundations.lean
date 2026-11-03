@@ -5070,6 +5070,20 @@ is the `K = []` instance of the rigidity-aware `unifyCoreK` (defined below), so
 soundness is immediate (the derivation is carried) and completeness reduces to
 `unifyCoreK_complete` at the empty rigid set. -/
 
+/-- A failed unification constraint, before any presentation or source-location
+policy is applied. Types are the actual (possibly already substituted) operands
+at the failing step. `arityMismatch` retains the unmatched list suffixes.
+
+Rigid-variable failures are distinct from occurs-check failures: callers can
+explain authored abstract types without mistaking them for infinite types.
+Bound variables outside an opened scheme are rejected as `mismatch`, as before. -/
+inductive UnifyError where
+  | mismatch (left right : Ty)
+  | rigidVariable (varId : Nat) (other : Ty)
+  | occursCheck (varId : Nat) (within : Ty)
+  | arityMismatch (leftRemaining rightRemaining : List Ty)
+  deriving Repr
+
 mutual
 /-- **Rigidity-aware unifier.** Like `unifyCore`, but refuses to bind any variable
     in the rigid set `K`: at a variable step it orients the binding toward the
@@ -5080,78 +5094,96 @@ mutual
     which plain left-leaning `unifyCore` does not (it would bind a skolem sitting on
     the left of a flexible unification, spuriously failing the annotated-`let`
     escape check). With `K = []` it coincides with `unifyCore`. -/
-def unifyCoreK (K : List Nat) (a b : Ty) :
-    Option { S : Subst // UnifyRel a b S ∧ (∀ p ∈ S, p.1 ∉ K) } :=
+def unifyResultK (K : List Nat) (a b : Ty) :
+    Except UnifyError { S : Subst // UnifyRel a b S ∧ (∀ p ∈ S, p.1 ∉ K) } :=
   match a, b with
   | .prim p, .prim q =>
-      if h : p = q then some ⟨[], by subst h; exact .prim, by simp⟩ else none
+      if h : p = q then .ok ⟨[], by subst h; exact .prim, by simp⟩ else .error (.mismatch a b)
   | .fvar n, .fvar m =>
-      if h : n = m then some ⟨[], by subst h; exact .fvarRefl, by simp⟩
+      if h : n = m then .ok ⟨[], by subst h; exact .fvarRefl, by simp⟩
       else if hnK : n ∈ K then
-        if hmK : m ∈ K then none
-        else some ⟨[(m, .fvar n)],
+        if hmK : m ∈ K then .error (.rigidVariable n (.fvar m))
+        else .ok ⟨[(m, .fvar n)],
           .fvarR (by simp only [ne_eq, Ty.fvar.injEq]; omega)
             (by simp only [Ty.freeVars, List.mem_singleton]; omega),
           by intro p hp; rw [List.mem_singleton] at hp; subst hp; exact hmK⟩
-      else some ⟨[(n, .fvar m)],
+      else .ok ⟨[(n, .fvar m)],
         .fvarL (by simp only [ne_eq, Ty.fvar.injEq]; omega)
           (by simp only [Ty.freeVars, List.mem_singleton]; omega),
         by intro p hp; rw [List.mem_singleton] at hp; subst hp; exact hnK⟩
   | .arrow a₁ a₂, .arrow c₁ c₂ =>
-      match unifyCoreK K a₁ c₁ with
-      | none => none
-      | some ⟨S₁, hS₁, hav₁⟩ =>
-        match unifyCoreK K (S₁.onTy a₂) (S₁.onTy c₂) with
-        | none => none
-        | some ⟨S₂, hS₂, hav₂⟩ => some ⟨S₁ ++ S₂, .arrow hS₁ hS₂, by
+      match unifyResultK K a₁ c₁ with
+      | .error error => .error error
+      | .ok ⟨S₁, hS₁, hav₁⟩ =>
+        match unifyResultK K (S₁.onTy a₂) (S₁.onTy c₂) with
+        | .error error => .error error
+        | .ok ⟨S₂, hS₂, hav₂⟩ => .ok ⟨S₁ ++ S₂, .arrow hS₁ hS₂, by
             intro p hp; rcases List.mem_append.mp hp with hp | hp
             · exact hav₁ p hp
             · exact hav₂ p hp⟩
   | .customTy n₁ ts₁, .customTy n₂ ts₂ =>
       if h : n₁ = n₂ then
-        match unifyListCoreK K ts₁ ts₂ with
-        | none => none
-        | some ⟨S, hS, hav⟩ => some ⟨S, by subst h; exact .customTy hS, hav⟩
-      else none
+        match unifyListResultK K ts₁ ts₂ with
+        | .error error => .error error
+        | .ok ⟨S, hS, hav⟩ => .ok ⟨S, by subst h; exact .customTy hS, hav⟩
+      else .error (.mismatch a b)
   | .fvar n, b =>
-      if hnK : n ∈ K then none
-      else if h : n ∈ b.freeVars then none
-      else some ⟨[(n, b)],
+      if hnK : n ∈ K then .error (.rigidVariable n b)
+      else if h : n ∈ b.freeVars then .error (.occursCheck n b)
+      else .ok ⟨[(n, b)],
         .fvarL (by intro he; subst he; exact h (by simp [Ty.freeVars])) h,
         by intro p hp; rw [List.mem_singleton] at hp; subst hp; exact hnK⟩
   | a, .fvar n =>
-      if hnK : n ∈ K then none
-      else if h : n ∈ a.freeVars then none
-      else some ⟨[(n, a)],
+      if hnK : n ∈ K then .error (.rigidVariable n a)
+      else if h : n ∈ a.freeVars then .error (.occursCheck n a)
+      else .ok ⟨[(n, a)],
         .fvarR (by intro he; subst he; exact h (by simp [Ty.freeVars])) h,
         by intro p hp; rw [List.mem_singleton] at hp; subst hp; exact hnK⟩
-  | _, _ => none
+  | _, _ => .error (.mismatch a b)
 termination_by ((pairVars a b).length, a.size + b.size)
 decreasing_by
   · exact unifyDec_arrow1
   · exact unifyDec_arrow2 hS₁
   · exact unifyDec_customTy
 
-def unifyListCoreK (K : List Nat) (as bs : List Ty) :
-    Option { S : Subst // UnifyRelList as bs S ∧ (∀ p ∈ S, p.1 ∉ K) } :=
+def unifyListResultK (K : List Nat) (as bs : List Ty) :
+    Except UnifyError { S : Subst // UnifyRelList as bs S ∧ (∀ p ∈ S, p.1 ∉ K) } :=
   match as, bs with
-  | [], [] => some ⟨[], .nil, by simp⟩
+  | [], [] => .ok ⟨[], .nil, by simp⟩
   | t₁ :: ts₁, t₂ :: ts₂ =>
-      match unifyCoreK K t₁ t₂ with
-      | none => none
-      | some ⟨S₁, hS₁, hav₁⟩ =>
-        match unifyListCoreK K (ts₁.map S₁.onTy) (ts₂.map S₁.onTy) with
-        | none => none
-        | some ⟨S₂, hS₂, hav₂⟩ => some ⟨S₁ ++ S₂, .cons hS₁ hS₂, by
+      match unifyResultK K t₁ t₂ with
+      | .error error => .error error
+      | .ok ⟨S₁, hS₁, hav₁⟩ =>
+        match unifyListResultK K (ts₁.map S₁.onTy) (ts₂.map S₁.onTy) with
+        | .error error => .error error
+        | .ok ⟨S₂, hS₂, hav₂⟩ => .ok ⟨S₁ ++ S₂, .cons hS₁ hS₂, by
             intro p hp; rcases List.mem_append.mp hp with hp | hp
             · exact hav₁ p hp
             · exact hav₂ p hp⟩
-  | _, _ => none
+  | _, _ => .error (.arityMismatch as bs)
 termination_by ((listVars as bs).length, TyList.size as + TyList.size bs + 1)
 decreasing_by
   · exact unifyDec_cons1
   · exact unifyDec_cons2 hS₁
 end
+
+/-- Compatibility projection for inference clients that still return `Option`.
+The typed worker above is the sole executable unification implementation. -/
+def unifyCoreK (K : List Nat) (a b : Ty) :
+    Option { S : Subst // UnifyRel a b S ∧ (∀ p ∈ S, p.1 ∉ K) } :=
+  (unifyResultK K a b).toOption
+
+/-- List compatibility projection; failure data remains available through
+`unifyListResultK`. -/
+def unifyListCoreK (K : List Nat) (as bs : List Ty) :
+    Option { S : Subst // UnifyRelList as bs S ∧ (∀ p ∈ S, p.1 ∉ K) } :=
+  (unifyListResultK K as bs).toOption
+
+theorem unifyResultK_toOption (K : List Nat) (a b : Ty) :
+    (unifyResultK K a b).toOption = unifyCoreK K a b := rfl
+
+theorem unifyListResultK_toOption (K : List Nat) (as bs : List Ty) :
+    (unifyListResultK K as bs).toOption = unifyListCoreK K as bs := rfl
 
 /-- `unifyCore` is the `K = []` instance of the rigidity-aware `unifyCoreK` (no
     variable is off-limits), projected to drop the now-trivial avoids-`[]`
@@ -5166,6 +5198,16 @@ def unifyListCore (as bs : List Ty) : Option { S : Subst // UnifyRelList as bs S
 /-- The executable unifier, refining `UnifyRel`. -/
 def unify (a b : Ty) : Option Subst := (unifyCore a b).map (·.1)
 
+/-- Typed public unification without the proof payload. Presentation belongs
+in callers; the worker retains its derivation and rigid-variable invariant. -/
+def unifyResult (a b : Ty) : Except UnifyError Subst :=
+  (unifyResultK [] a b).map Subtype.val
+
+/-- Dropping failure data gives exactly the existing public API. -/
+theorem unifyResult_toOption (a b : Ty) : (unifyResult a b).toOption = unify a b := by
+  unfold unifyResult unify unifyCore unifyCoreK
+  cases unifyResultK [] a b <;> rfl
+
 /-- `unify` soundness: a returned substitution is a genuine `UnifyRel` unifier
     (immediate — `unifyCore` carries the derivation). -/
 theorem unify_sound {a b : Ty} {S : Subst} (h : unify a b = some S) : UnifyRel a b S := by
@@ -5175,6 +5217,13 @@ theorem unify_sound {a b : Ty} {S : Subst} (h : unify a b = some S) : UnifyRel a
   · simp only [Option.map_some, Option.some.injEq] at h
     subst h
     exact hS'
+
+/-- The public typed API retains the same soundness guarantee. -/
+theorem unifyResult_sound {a b : Ty} {S : Subst}
+    (h : unifyResult a b = .ok S) : UnifyRel a b S := by
+  apply unify_sound
+  rw [← unifyResult_toOption, h]
+  rfl
 
 
 /-- Emit scheme facts for the genuinely generalized members of a recursion
@@ -6226,6 +6275,10 @@ theorem UnifyRel.complete_K {K : List Nat} {a b : Ty} {U : Subst}
 
 /-! ### Completeness of the executable unifier -/
 
+private theorem except_toOption_eq_some {ε α : Type} {result : Except ε α} {value : α} :
+    result.toOption = some value ↔ result = .ok value := by
+  cases result <;> simp [Except.toOption]
+
 /-- **Rigidity-aware unify completeness.** When the (LC) inputs admit an LC unifier
     `U` that keeps every `k ∈ K` rigid, the rigidity-aware `unifyCoreK K` succeeds.
     Fuses the size induction of `unifyCore_complete_aux` with the orientation
@@ -6252,12 +6305,12 @@ theorem unifyCoreK_complete_aux {K : List Nat} : ∀ (N : Nat),
       | prim p =>
         cases b with
         | bvar i => cases hb with | bvar h => omega
-        | prim q => simp only [Unifies, Subst.onTy_prim, Ty.prim.injEq] at hU; subst hU; simp [unifyCoreK]
+        | prim q => simp only [Unifies, Subst.onTy_prim, Ty.prim.injEq] at hU; subst hU; simp [Except.toOption, unifyCoreK, unifyResultK]
         | fvar m =>
           have hmK : m ∉ K := fun hmK => by
             have h1 : U.onTy (Ty.prim p) = U.onTy (Ty.fvar m) := hU
             rw [hUK m hmK, Subst.onTy_prim] at h1; exact absurd h1 (by simp)
-          simp [unifyCoreK, hmK, Ty.freeVars]
+          simp [Except.toOption, unifyCoreK, unifyResultK, hmK, Ty.freeVars]
         | arrow b₁ b₂ => simp [Unifies] at hU
         | customTy nm bs => simp [Unifies] at hU
       | fvar n =>
@@ -6265,13 +6318,13 @@ theorem unifyCoreK_complete_aux {K : List Nat} : ∀ (N : Nat),
         | bvar i => cases hb with | bvar h => omega
         | fvar m =>
           by_cases hnm : n = m
-          · subst hnm; simp [unifyCoreK]
+          · subst hnm; simp [Except.toOption, unifyCoreK, unifyResultK]
           · by_cases hnK : n ∈ K
             · have hmK : m ∉ K := fun hmK => by
                 have h1 : U.onTy (Ty.fvar n) = U.onTy (Ty.fvar m) := hU
                 rw [hUK n hnK, hUK m hmK] at h1; simp only [Ty.fvar.injEq] at h1; exact hnm h1
-              simp [unifyCoreK, hnm, hnK, hmK]
-            · simp [unifyCoreK, hnm, hnK]
+              simp [Except.toOption, unifyCoreK, unifyResultK, hnm, hnK, hmK]
+            · simp [Except.toOption, unifyCoreK, unifyResultK, hnm, hnK]
         | prim q =>
           by_cases hocc : n ∈ (Ty.prim q).freeVars
           · have hlt := Ty.size_onTy_fvar_lt (S := U) hocc (by simp)
@@ -6280,7 +6333,7 @@ theorem unifyCoreK_complete_aux {K : List Nat} : ∀ (N : Nat),
             · exfalso
               have h1 : U.onTy (Ty.fvar n) = U.onTy (Ty.prim q) := hU
               rw [hUK n hnK, Subst.onTy_prim] at h1; exact absurd h1 (by simp)
-            · simp [unifyCoreK, hnK, hocc]
+            · simp [Except.toOption, unifyCoreK, unifyResultK, hnK, hocc]
         | arrow b₁ b₂ =>
           by_cases hocc : n ∈ (Ty.arrow b₁ b₂).freeVars
           · have hlt := Ty.size_onTy_fvar_lt (S := U) hocc (by simp)
@@ -6289,7 +6342,7 @@ theorem unifyCoreK_complete_aux {K : List Nat} : ∀ (N : Nat),
             · exfalso
               have h1 : U.onTy (Ty.fvar n) = U.onTy (Ty.arrow b₁ b₂) := hU
               rw [hUK n hnK, Subst.onTy_arrow] at h1; exact absurd h1 (by simp)
-            · simp [unifyCoreK, hnK, hocc]
+            · simp [Except.toOption, unifyCoreK, unifyResultK, hnK, hocc]
         | customTy nm bs =>
           by_cases hocc : n ∈ (Ty.customTy nm bs).freeVars
           · have hlt := Ty.size_onTy_fvar_lt (S := U) hocc (by simp)
@@ -6298,7 +6351,7 @@ theorem unifyCoreK_complete_aux {K : List Nat} : ∀ (N : Nat),
             · exfalso
               have h1 : U.onTy (Ty.fvar n) = U.onTy (Ty.customTy nm bs) := hU
               rw [hUK n hnK, Subst.onTy_customTy] at h1; exact absurd h1 (by simp)
-            · simp [unifyCoreK, hnK, hocc]
+            · simp [Except.toOption, unifyCoreK, unifyResultK, hnK, hocc]
       | arrow a₁ a₂ =>
         cases ha with
         | arrow ha₁ ha₂ =>
@@ -6312,7 +6365,7 @@ theorem unifyCoreK_complete_aux {K : List Nat} : ∀ (N : Nat),
             · exfalso
               have h1 : U.onTy (Ty.arrow a₁ a₂) = U.onTy (Ty.fvar m) := hU
               rw [hUK m hmK, Subst.onTy_arrow] at h1; exact absurd h1 (by simp)
-            · simp [unifyCoreK, hmK, hocc]
+            · simp [Except.toOption, unifyCoreK, unifyResultK, hmK, hocc]
         | prim q => simp [Unifies] at hU
         | customTy nm bs => simp [Unifies] at hU
         | arrow b₁ b₂ =>
@@ -6323,13 +6376,15 @@ theorem unifyCoreK_complete_aux {K : List Nat} : ∀ (N : Nat),
           simp only [Unifies, Subst.onTy_arrow, Ty.arrow.injEq] at hU
           obtain ⟨⟨S₁, h₁, _⟩, he1⟩ := Option.isSome_iff_exists.mp
             (ihU (a := a₁) (b := b₁) (U := U) (by rw [hpsz] at hsz; omega) ha₁ hb₁ hUlc hU.1 hUK)
+          have he1 := except_toOption_eq_some.mp he1
           have hS₁lc := UnifyRel.lc h₁ ha₁ hb₁
           obtain ⟨R, hR, hRlc, hRK⟩ := UnifyRel.greatest_K h₁ U hUlc hU.1 hUK
           obtain ⟨⟨S₂, h₂, _⟩, he2⟩ := Option.isSome_iff_exists.mp
             (ihU (a := S₁.onTy a₂) (b := S₁.onTy b₂) (U := R) (by rw [← hR a₂]; rw [hpsz] at hsz; omega)
               (Subst.onTy_lc hS₁lc ha₂) (Subst.onTy_lc hS₁lc hb₂) hRlc
               (by show R.onTy (S₁.onTy a₂) = R.onTy (S₁.onTy b₂); rw [← hR a₂, ← hR b₂]; exact hU.2) hRK)
-          rw [unifyCoreK]; simp only [he1, he2, Option.isSome_some]
+          have he2 := except_toOption_eq_some.mp he2
+          rw [unifyCoreK, unifyResultK]; simp only [he1, he2, Except.toOption, Option.isSome_some]
       | customTy nm tys₁ =>
         cases b with
         | bvar i => cases hb with | bvar h => omega
@@ -6341,7 +6396,7 @@ theorem unifyCoreK_complete_aux {K : List Nat} : ∀ (N : Nat),
             · exfalso
               have h1 : U.onTy (Ty.customTy nm tys₁) = U.onTy (Ty.fvar m) := hU
               rw [hUK m hmK, Subst.onTy_customTy] at h1; exact absurd h1 (by simp)
-            · simp [unifyCoreK, hmK, hocc]
+            · simp [Except.toOption, unifyCoreK, unifyResultK, hmK, hocc]
         | prim q => simp [Unifies] at hU
         | arrow b₁ b₂ => simp [Unifies] at hU
         | customTy nm' tys₂ =>
@@ -6356,12 +6411,13 @@ theorem unifyCoreK_complete_aux {K : List Nat} : ∀ (N : Nat),
               (fun t ht => by cases ha with | customTy h => exact h t ht)
               (fun t ht => by cases hb with | customTy h => exact h t ht)
               hUlc hlen hmapeq hUK)
-          rw [unifyCoreK]; simp [heL]
+          have heL := except_toOption_eq_some.mp heL
+          rw [unifyCoreK, unifyResultK]; simp [heL, Except.toOption]
     · intro as bs U hsz has hbs hUlc hlen hmap hUK
       cases as with
       | nil =>
         cases bs with
-        | nil => simp [unifyListCoreK]
+        | nil => simp [Except.toOption, unifyListCoreK, unifyListResultK]
         | cons t₂ ts₂ => simp at hlen
       | cons t₁ ts₁ =>
         cases bs with
@@ -6374,6 +6430,7 @@ theorem unifyCoreK_complete_aux {K : List Nat} : ∀ (N : Nat),
           obtain ⟨⟨S₁, h₁, _⟩, he1⟩ := Option.isSome_iff_exists.mp
             (ihU (a := t₁) (b := t₂) (U := U) (by rw [htsz] at hsz; omega)
               (has t₁ List.mem_cons_self) (hbs t₂ List.mem_cons_self) hUlc hmap.1 hUK)
+          have he1 := except_toOption_eq_some.mp he1
           have hS₁lc := UnifyRel.lc h₁ (has t₁ List.mem_cons_self) (hbs t₂ List.mem_cons_self)
           obtain ⟨R, hR, hRlc, hRK⟩ := UnifyRel.greatest_K h₁ U hUlc hmap.1 hUK
           have key : ∀ l : List Ty, l.map (R.onTy ∘ S₁.onTy) = l.map U.onTy := by
@@ -6390,7 +6447,8 @@ theorem unifyCoreK_complete_aux {K : List Nat} : ∀ (N : Nat),
               (by intro t ht; obtain ⟨t0, ht0, rfl⟩ := List.mem_map.mp ht
                   exact Subst.onTy_lc hS₁lc (hbs t0 (List.mem_cons_of_mem _ ht0)))
               hRlc (by simp only [List.length_map]; have := hlen; simpa using this) hmaptail hRK)
-          rw [unifyListCoreK]; simp only [he1, he2, Option.isSome_some]
+          have he2 := except_toOption_eq_some.mp he2
+          rw [unifyListCoreK, unifyListResultK]; simp only [he1, he2, Except.toOption, Option.isSome_some]
 
 /-- `unifyCoreK` completeness wrapper. -/
 theorem unifyCoreK_complete {K : List Nat} {a b : Ty} {U : Subst}
@@ -6398,6 +6456,28 @@ theorem unifyCoreK_complete {K : List Nat} {a b : Ty} {U : Subst}
     (hU : Unifies U a b) (hUK : ∀ k ∈ K, U.onTy (.fvar k) = .fvar k) :
     (unifyCoreK K a b).isSome :=
   (unifyCoreK_complete_aux (2 * (U.onTy a).size + 1)).1 (by omega) ha hb hUlc hU hUK
+
+/-- Typed completeness: a locally closed, rigid-preserving solution guarantees
+an `.ok` result, including the worker's unification and rigidity proofs. -/
+theorem unifyResultK_complete {K : List Nat} {a b : Ty} {U : Subst}
+    (ha : a.IsLC) (hb : b.IsLC) (hUlc : ∀ p ∈ U, p.2.IsLC)
+    (hU : Unifies U a b) (hUK : ∀ k ∈ K, U.onTy (.fvar k) = .fvar k) :
+    ∃ result, unifyResultK K a b = .ok result := by
+  obtain ⟨result, hresult⟩ := Option.isSome_iff_exists.mp
+    (unifyCoreK_complete ha hb hUlc hU hUK)
+  exact ⟨result, except_toOption_eq_some.mp hresult⟩
+
+/-- A native error rules out every locally closed unifier that respects `K`.
+This uses the same acceptance contract as inference, rather than a diagnostic
+probe's reconstruction of a rejected constraint. -/
+theorem unifyResultK_error_not_unifies {K : List Nat} {a b : Ty} {U : Subst}
+    {error : UnifyError} (herror : unifyResultK K a b = .error error)
+    (ha : a.IsLC) (hb : b.IsLC) (hUlc : ∀ p ∈ U, p.2.IsLC)
+    (hUK : ∀ k ∈ K, U.onTy (.fvar k) = .fvar k) : ¬ Unifies U a b := by
+  intro hU
+  obtain ⟨result, hresult⟩ := unifyResultK_complete ha hb hUlc hU hUK
+  rw [herror] at hresult
+  contradiction
 
 /-- `unify` completeness: `unify` succeeds whenever the (LC) inputs are unifiable.
     Reduces to `unifyCoreK_complete` at the empty rigid set — the MGU `S` is LC by

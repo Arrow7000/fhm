@@ -1,5 +1,11 @@
 import FHM.AnnotationAllocation
 import FHM.SourceAnnotations
+import FHM.TypedResult
+
+attribute [typed_result_projection] TypedResult.toOption_ok TypedResult.toOption_pure
+  TypedResult.toOption_error TypedResult.toOption_bind TypedResult.toOption_mapError
+  TypedResult.toOption_map TypedResult.toOption_ite TypedResult.toOption_dite
+  unifyResultK_toOption unifyListResultK_toOption Option.bind Option.bind_some Option.bind_none
 
 /-! Source operations, annotation-checking premises, the internal scope refinement
 `ScopedTyping`, and recursive inference state. Source syntax lives in `Core`;
@@ -4545,42 +4551,54 @@ inductive OpenRecAnns (selected : List Nat) :
       OpenRecAnns selected (index + 1) middle rest next openings →
       OpenRecAnns selected index frontier (binding :: rest) next (opening :: openings)
 
-def openRecAnn (frontier : Nat) (ann : CheckAnn) :
-    Option { result : Nat × RecOpening // OpenRecAnn frontier ann result.1 result.2 } :=
+def openRecAnnResult (frontier : Nat) (ann : CheckAnn) :
+    Except AnnotationError { result : Nat × RecOpening // OpenRecAnn frontier ann result.1 result.2 } :=
   match ann with
-  | .absent => some ⟨(frontier, .empty), .absent⟩
-  | .complete _ => some ⟨(frontier, .empty), .complete⟩
+  | .absent => .ok ⟨(frontier, .empty), .absent⟩
+  | .complete _ => .ok ⟨(frontier, .empty), .complete⟩
   | .template template =>
       let result := template.allocate frontier
       if hlc : result.2.bvarsBelow 0 = true then
-        some ⟨(result.1, ⟨[], some result.2⟩), .template rfl ((Ty.bvarsBelow_iff _).mp hlc)⟩
-      else none
+        .ok ⟨(result.1, ⟨[], some result.2⟩), .template rfl ((Ty.bvarsBelow_iff _).mp hlc)⟩
+      else .error (.invalidBoundVariables result.2 0)
   | .partialForall count template =>
       let written := freshVars frontier count
       let result := (template.openTyVarsFrom 0 written).allocate (frontier + count)
       if hlc : result.2.bvarsBelow 0 = true then
-        some ⟨(result.1, ⟨written, some result.2⟩), .partialForall rfl ((Ty.bvarsBelow_iff _).mp hlc)⟩
-      else none
+        .ok ⟨(result.1, ⟨written, some result.2⟩), .partialForall rfl ((Ty.bvarsBelow_iff _).mp hlc)⟩
+      else .error (.invalidBoundVariables result.2 0)
+
+/-- The member index is retained when opening a selected recursive signature fails. -/
+def openRecAnnsResult (selected : List Nat) (index frontier : Nat) (bindings : List InputRecBinding) :
+    Except (Nat × AnnotationError) { result : Nat × List RecOpening //
+      OpenRecAnns selected index frontier bindings result.1 result.2 } := do
+  match bindings with
+  | [] => return ⟨(frontier, []), .nil⟩
+  | binding :: rest =>
+      if hs : index ∈ selected then
+        let ⟨(middle, opening), hhead⟩ ←
+          (openRecAnnResult frontier binding.ann.annotationView).mapError (index, ·)
+        let ⟨(next, openings), htail⟩ ← openRecAnnsResult selected (index + 1) middle rest
+        return ⟨(next, opening :: openings), .cons hs hhead htail⟩
+      else
+        let ⟨(next, openings), htail⟩ ← openRecAnnsResult selected (index + 1) frontier rest
+        return ⟨(next, .empty :: openings), .skip hs htail⟩
+
+/-- Compatibility projections for inference clients not yet carrying errors. -/
+def openRecAnn (frontier : Nat) (ann : CheckAnn) :
+    Option { result : Nat × RecOpening // OpenRecAnn frontier ann result.1 result.2 } :=
+  (openRecAnnResult frontier ann).toOption
 
 def openRecAnns (selected : List Nat) (index frontier : Nat) (bindings : List InputRecBinding) :
     Option { result : Nat × List RecOpening //
       OpenRecAnns selected index frontier bindings result.1 result.2 } :=
-  match bindings with
-  | [] => some ⟨(frontier, []), .nil⟩
-  | binding :: rest =>
-      if hs : index ∈ selected then
-        match openRecAnn frontier binding.ann.annotationView with
-        | none => none
-        | some ⟨(middle, opening), hhead⟩ =>
-            match openRecAnns selected (index + 1) middle rest with
-            | none => none
-            | some ⟨(next, openings), htail⟩ =>
-                some ⟨(next, opening :: openings), .cons hs hhead htail⟩
-      else
-        match openRecAnns selected (index + 1) frontier rest with
-        | none => none
-        | some ⟨(next, openings), htail⟩ =>
-            some ⟨(next, .empty :: openings), .skip hs htail⟩
+  (openRecAnnsResult selected index frontier bindings).toOption
+
+@[typed_result_projection] theorem openRecAnnResult_toOption (frontier : Nat) (ann : CheckAnn) :
+    (openRecAnnResult frontier ann).toOption = openRecAnn frontier ann := rfl
+
+@[typed_result_projection] theorem openRecAnnsResult_toOption (selected : List Nat) (index frontier : Nat) (bindings : List InputRecBinding) :
+    (openRecAnnsResult selected index frontier bindings).toOption = openRecAnns selected index frontier bindings := rfl
 
 theorem OpenRecAnns.length (h : OpenRecAnns selected index frontier anns next openings) :
     openings.length = anns.length := by
@@ -4758,17 +4776,31 @@ private theorem recWrittenNames_map (names : List Nat) :
 
 /-- Validate one member's normalized prefix. Sharing roots with another member
 is permitted; this call checks distinctness only within the supplied prefix. -/
-def resolveRecWritten (images : List Ty) (forbidden : List Nat) :
-    Option { names : List Nat // names.map Ty.fvar = images ∧ names.Nodup ∧
+inductive RecPrefixError where
+  | notVariables (images : List Ty)
+  | repeatedVariables (names : List Nat)
+  | escapingVariables (names : List Nat)
+  deriving Repr
+
+def resolveRecWrittenResult (images : List Ty) (forbidden : List Nat) :
+    Except RecPrefixError { names : List Nat // names.map Ty.fvar = images ∧ names.Nodup ∧
       ∀ name ∈ names, name ∉ forbidden } :=
   match hp : recWrittenNames images with
-  | none => none
+  | none => .error (.notVariables images)
   | some names =>
       if hnd : names.Nodup then
         if havoid : ∀ name ∈ names, name ∉ forbidden then
-          some ⟨names, recWrittenNames_sound hp, hnd, havoid⟩
-        else none
-      else none
+          .ok ⟨names, recWrittenNames_sound hp, hnd, havoid⟩
+        else .error (.escapingVariables (names.filter fun name => decide (name ∈ forbidden)))
+      else .error (.repeatedVariables names)
+
+def resolveRecWritten (images : List Ty) (forbidden : List Nat) :
+    Option { names : List Nat // names.map Ty.fvar = images ∧ names.Nodup ∧
+      ∀ name ∈ names, name ∉ forbidden } :=
+  (resolveRecWrittenResult images forbidden).toOption
+
+@[typed_result_projection] theorem resolveRecWrittenResult_toOption (images : List Ty) (forbidden : List Nat) :
+    (resolveRecWrittenResult images forbidden).toOption = resolveRecWritten images forbidden := rfl
 
 theorem resolveRecWritten_isSome_iff : (resolveRecWritten images forbidden).isSome ↔
     ∃ names : List Nat, names.map Ty.fvar = images ∧ names.Nodup ∧
@@ -4778,7 +4810,7 @@ theorem resolveRecWritten_isSome_iff : (resolveRecWritten images forbidden).isSo
     obtain ⟨⟨names, hnames⟩, _⟩ := Option.isSome_iff_exists.mp hs
     exact ⟨names, hnames⟩
   · rintro ⟨names, rfl, hnd, havoid⟩
-    unfold resolveRecWritten
+    unfold resolveRecWritten resolveRecWrittenResult
     split
     · rename_i hp
       rw [recWrittenNames_map] at hp
@@ -4786,7 +4818,7 @@ theorem resolveRecWritten_isSome_iff : (resolveRecWritten images forbidden).isSo
     · rename_i names' hp
       have heq : names' = names := Option.some.inj (hp.symm.trans (recWrittenNames_map names))
       subst names'
-      simp only [dif_pos hnd, dif_pos havoid, Option.isSome_some]
+      simp only [dif_pos hnd, dif_pos havoid, TypedResult.toOption_ok, Option.isSome_some]
 
 theorem resolveRecWritten_length {result}
     (_h : resolveRecWritten images forbidden = some result) : result.val.length = images.length := by
@@ -4912,23 +4944,27 @@ inductive CheckRecShapes (K : List Nat) : List RecShape → Subst → Prop
       CheckRecShapes K ((ty, some expected) :: rest) (first ++ tail)
 
 /-- One rigidity-aware unification for each expected shape; no allocation. -/
-def checkRecShapes (K : List Nat) (shapes : List RecShape) :
-    Option { S : Subst // CheckRecShapes K shapes S } :=
+def checkRecShapesResult (K : List Nat) (shapes : List RecShape) :
+    Except (Nat × UnifyError) { S : Subst // CheckRecShapes K shapes S } := do
   match shapes with
-  | [] => some ⟨[], .nil⟩
+  | [] => return ⟨[], .nil⟩
   | (ty, none) :: rest =>
-      match checkRecShapes K rest with
-      | none => none
-      | some ⟨S, hS⟩ => some ⟨S, .skipNone hS⟩
+      let ⟨S, hS⟩ ← (checkRecShapesResult K rest).mapError fun (index, error) => (index + 1, error)
+      return ⟨S, .skipNone hS⟩
   | (ty, some expected) :: rest =>
-      match unifyCoreK K ty expected with
-      | none => none
-      | some ⟨first, hu, hav⟩ =>
-          match checkRecShapes K (substRecShapes first rest) with
-          | none => none
-          | some ⟨tail, ht⟩ => some ⟨first ++ tail, .consSome ⟨hu, hav⟩ ht⟩
+      let ⟨first, hu, hav⟩ ← (unifyResultK K ty expected).mapError (0, ·)
+      let ⟨tail, ht⟩ ← (checkRecShapesResult K (substRecShapes first rest)).mapError
+        fun (index, error) => (index + 1, error)
+      return ⟨first ++ tail, .consSome ⟨hu, hav⟩ ht⟩
 termination_by shapes.length
 decreasing_by all_goals simp_wf
+
+def checkRecShapes (K : List Nat) (shapes : List RecShape) :
+    Option { S : Subst // CheckRecShapes K shapes S } :=
+  (checkRecShapesResult K shapes).toOption
+
+@[typed_result_projection] theorem checkRecShapesResult_toOption (K : List Nat) (shapes : List RecShape) :
+    (checkRecShapesResult K shapes).toOption = checkRecShapes K shapes := rfl
 
 /-- Both the shared monotype and optional expected shape are locally closed. -/
 def RecShape.LC (shape : RecShape) : Prop :=
@@ -5090,14 +5126,18 @@ theorem checkRecShapes_complete {K : List Nat} {shapes : List RecShape} {U : Sub
     (hK : ∀ k ∈ K,U.onTy (.fvar k) = .fvar k) :
     (checkRecShapes K shapes).isSome := by
   match shapes with
-  | [] => simp only [checkRecShapes,Option.isSome_some]
+  | [] => rw [checkRecShapes, checkRecShapesResult]; rfl
   | (ty,none)::rest =>
     have ht := checkRecShapes_complete
       (fun shape hm => hLC shape (List.mem_cons_of_mem _ hm)) hU
       (fun ty expected hm => hsolve ty expected (List.mem_cons_of_mem _ hm)) hK
     cases hc : checkRecShapes K rest with
     | none => simp only [hc,Option.isSome_none] at ht; contradiction
-    | some result => simp only [checkRecShapes,hc,Option.isSome_some]
+    | some result =>
+      rw [checkRecShapes, checkRecShapesResult]
+      simp only [TypedResult.toOption_bind, TypedResult.toOption_mapError,
+        checkRecShapesResult_toOption, hc, TypedResult.toOption_pure, Option.bind_some,
+        Option.isSome_some]
   | (ty,some expected)::rest =>
     have hh := hLC (ty,some expected) List.mem_cons_self
     have hu := unifyCoreK_complete hh.1 (hh.2 expected rfl) hU (hsolve _ _ List.mem_cons_self) hK
@@ -5112,7 +5152,11 @@ theorem checkRecShapes_complete {K : List Nat} {shapes : List RecShape} {U : Sub
         (recShape_solutions_factor (fun ty expected hm => hsolve ty expected (List.mem_cons_of_mem _ hm)) hfac) hVK
       cases ht' : checkRecShapes K (substRecShapes first rest) with
       | none => simp only [ht',Option.isSome_none] at ht; contradiction
-      | some tail => simp only [checkRecShapes,hc,ht',Option.isSome_some]
+      | some tail =>
+        rw [checkRecShapes, checkRecShapesResult]
+        simp only [TypedResult.toOption_bind, TypedResult.toOption_mapError,
+          checkRecShapesResult_toOption, unifyResultK_toOption, hc, ht',
+          TypedResult.toOption_pure, Option.bind_some, Option.isSome_some]
  termination_by shapes.length
  decreasing_by all_goals simp_wf
 
@@ -5505,20 +5549,25 @@ inductive ResolveRecSlots (members : List Nat) (forbidden : List Nat) :
       ResolveRecSlots members forbidden (index + 1) rest names →
       ResolveRecSlots members forbidden index (images :: rest) (written :: names)
 
-def resolveRecSlots (members forbidden : List Nat) (index : Nat) (slots : List (List Ty)) :
-    Option { names : List (List Nat) // ResolveRecSlots members forbidden index slots names } :=
+def resolveRecSlotsResult (members forbidden : List Nat) (index : Nat) (slots : List (List Ty)) :
+    Except (Nat × RecPrefixError) { names : List (List Nat) // ResolveRecSlots members forbidden index slots names } := do
   match slots with
-  | [] => some ⟨[], .nil⟩
+  | [] => return ⟨[], .nil⟩
   | images :: rest =>
       if hm : index ∈ members then
-        match resolveRecWritten images forbidden, resolveRecSlots members forbidden (index + 1) rest with
-        | some ⟨written, hbare, hnd, hav⟩, some ⟨names, hn⟩ =>
-            some ⟨written :: names, .cons hm hbare hnd hav hn⟩
-        | _, _ => none
+        let ⟨written, hbare, hnd, hav⟩ ← (resolveRecWrittenResult images forbidden).mapError (index, ·)
+        let ⟨names, hn⟩ ← resolveRecSlotsResult members forbidden (index + 1) rest
+        return ⟨written :: names, .cons hm hbare hnd hav hn⟩
       else
-        match resolveRecSlots members forbidden (index + 1) rest with
-        | some ⟨names, hn⟩ => some ⟨[] :: names, .skip hm hn⟩
-        | none => none
+        let ⟨names, hn⟩ ← resolveRecSlotsResult members forbidden (index + 1) rest
+        return ⟨[] :: names, .skip hm hn⟩
+
+def resolveRecSlots (members forbidden : List Nat) (index : Nat) (slots : List (List Ty)) :
+    Option { names : List (List Nat) // ResolveRecSlots members forbidden index slots names } :=
+  (resolveRecSlotsResult members forbidden index slots).toOption
+
+@[typed_result_projection] theorem resolveRecSlotsResult_toOption (members forbidden : List Nat) (index : Nat) (slots : List (List Ty)) :
+    (resolveRecSlotsResult members forbidden index slots).toOption = resolveRecSlots members forbidden index slots := rfl
 
 def RecState.componentPool (state : RecState) (K soft members : List Nat)
     (ctx : Ctx) (written : List (List Nat)) : List Nat :=
@@ -5536,14 +5585,21 @@ inductive FinishRecComponent (K soft members : List Nat) (ctx : Ctx)
       FinishRecComponent K soft members ctx state artifacts
         (state.exportComponent members written (state.componentPool K soft members ctx written) artifacts)
 
+def finishRecComponentResult (K soft members : List Nat) (ctx : Ctx)
+    (state : RecState) (artifacts : List (Option RecComponentArtifact)) :
+    Except (Nat × RecPrefixError) { result : RecState // FinishRecComponent K soft members ctx state artifacts result } := do
+  let ⟨written, hw⟩ ← resolveRecSlotsResult members ((state.fixedCtx ctx).env.freeVars ++ K ++ soft) 0 state.slots
+  return ⟨state.exportComponent members written (state.componentPool K soft members ctx written) artifacts, .mk hw⟩
+
 def finishRecComponent (K soft members : List Nat) (ctx : Ctx)
     (state : RecState) (artifacts : List (Option RecComponentArtifact)) :
     Option { result : RecState // FinishRecComponent K soft members ctx state artifacts result } :=
-  match resolveRecSlots members ((state.fixedCtx ctx).env.freeVars ++ K ++ soft) 0 state.slots with
-  | none => none
-  | some ⟨written, hw⟩ =>
-      some ⟨state.exportComponent members written (state.componentPool K soft members ctx written) artifacts, .mk hw⟩
+  (finishRecComponentResult K soft members ctx state artifacts).toOption
 
+@[typed_result_projection] theorem finishRecComponentResult_toOption (K soft members : List Nat) (ctx : Ctx)
+    (state : RecState) (artifacts : List (Option RecComponentArtifact)) :
+    (finishRecComponentResult K soft members ctx state artifacts).toOption =
+      finishRecComponent K soft members ctx state artifacts := rfl
 
 def RecFacts.closeWritten (names : List Nat) (facts : RecFacts) : RecFacts :=
   ⟨(facts.nodeTypes.closeTyVars names).underTyBinders names.length,
@@ -5753,25 +5809,37 @@ theorem RecState.getElem?_exports_exportComponent (state : RecState) (members : 
 
 
 /-- Collect exported schemes once every member has been checked. -/
-def collectCompletedRecMembers : (members : List RecMemberState) →
-    Option { result : List CompletedRecMember // CompletedRecMembers members result }
-  | [] => some ⟨[], ⟨rfl, by simp, rfl⟩⟩
-  | member :: rest =>
+inductive RecCompletionError where
+  | missingExport
+  | uncheckedMember
+  deriving Repr
+
+/-- Completion failures retain the member offset within this state. -/
+def collectCompletedRecMembersResult : (members : List RecMemberState) →
+    Except (Nat × RecCompletionError) { result : List CompletedRecMember // CompletedRecMembers members result }
+  | [] => .ok ⟨[], ⟨rfl, by simp, rfl⟩⟩
+  | member :: rest => do
       match he : member.exported with
-      | none => none
+      | none => .error (0, .missingExport)
       | some scheme =>
         if hc : member.checked = true then
-          match collectCompletedRecMembers rest with
-          | some ⟨completed, hcompleted⟩ =>
-              some ⟨{ scheme, annInfo := member.annInfo } :: completed, {
-                exports := by simp only [List.map_cons, he, hcompleted.exports]
-                checked := by
-                  intro m hm
-                  exact (List.mem_cons.mp hm).elim (fun h => h ▸ hc) (hcompleted.checked m)
-                annInfo := by simp only [List.map_cons, hcompleted.annInfo]
-              }⟩
-          | none => none
-        else none
+          let ⟨completed, hcompleted⟩ ← (collectCompletedRecMembersResult rest).mapError
+            fun (index, error) => (index + 1, error)
+          return ⟨{ scheme, annInfo := member.annInfo } :: completed, {
+            exports := by simp only [List.map_cons, he, hcompleted.exports]
+            checked := by
+              intro m hm
+              exact (List.mem_cons.mp hm).elim (fun h => h ▸ hc) (hcompleted.checked m)
+            annInfo := by simp only [List.map_cons, hcompleted.annInfo]
+          }⟩
+        else .error (0, .uncheckedMember)
+
+def collectCompletedRecMembers (members : List RecMemberState) :
+    Option { result : List CompletedRecMember // CompletedRecMembers members result } :=
+  (collectCompletedRecMembersResult members).toOption
+
+@[typed_result_projection] theorem collectCompletedRecMembersResult_toOption (members : List RecMemberState) :
+    (collectCompletedRecMembersResult members).toOption = collectCompletedRecMembers members := rfl
 
 theorem CompletedRecMembers.length_eq {members : List RecMemberState}
     {completed : List CompletedRecMember} (h : CompletedRecMembers members completed) :

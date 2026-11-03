@@ -129,7 +129,8 @@ private def literalResult : InferCoreResult :=
 /-- A successful run records the exact executable result and exposes its certificate. -/
 theorem literalRequest_run : InferRun literalRequest literalResult := by
   simp [InferRun, InferRequest.run, inferRequestCore, literalRequest, literalResult,
-    inferWithTypesCore, Expr.rigidVars, softVars, TyList.freeVars, Env.freeVars,
+    inferWithTypesCore, inferWithTypesResultCore, Except.toOption,
+    Expr.rigidVars, softVars, TyList.freeVars, Env.freeVars,
     InferredNodeTypes.root]
 
 theorem literalRequest_cert : InferCert literalRequest literalResult.toInferResult :=
@@ -144,7 +145,8 @@ private def invalidGuardResult : InferResult :=
 
 /-- Guard failure is operational: the underlying inference certificate still exists. -/
 theorem invalidGuardRequest_rejected : invalidGuardRequest.run = none := by
-  simp [InferRequest.run, inferRequestCore, invalidGuardRequest, inferWithTypesCore]
+  simp [InferRequest.run, inferRequestCore, invalidGuardRequest,
+    inferWithTypesCore, inferWithTypesResultCore, Except.toOption]
 
 theorem invalidGuardRequest_cert : InferCert invalidGuardRequest invalidGuardResult :=
   .primLitUnit
@@ -176,8 +178,7 @@ theorem flexibleFvars_unify_right :
 theorem flexibleFvars_executable_orientation :
     (unifyCoreK [] (.fvar 0) (.fvar 1)).map Subtype.val =
       some [(0, .fvar 1)] := by
-  unfold unifyCoreK
-  rfl
+  simp [unifyCoreK, unifyResultK, Except.toOption]
 
 private def pair (left right : InferInput) : InferInput :=
   .app (.app (.ctor ⟨"Pair"⟩) left) right

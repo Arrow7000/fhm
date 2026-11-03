@@ -244,9 +244,14 @@ def checkPipeline (src : String) :
   let lowered ← match SurfaceBridge.Provenance.lowerWithProvenance ctors p.term tree with
     | none => return .error (diagnosedErr .lower (firstDiag ()) "provenance-aware lowering failed")
     | some lowered => pure lowered
-  let typed ← match SurfaceBridge.Provenance.inferWithProvenance ctors lowered with
-    | none => return .error (diagnosedErr .typecheck (firstDiag ()) "typechecking failed")
-    | some typed => pure typed
+  let typed ← match SurfaceBridge.Provenance.inferWithProvenanceResult ctors lowered with
+    | .error failure =>
+        let diagnostic := match FHM.Unverified.TypeDiagnostics.explain failure lowered with
+          | some (reason, span) =>
+              some { diagAtSpan reason.message (some span) with code? := some reason.code }
+          | none => firstDiag ()
+        return .error (diagnosedErr .typecheck diagnostic "typechecking failed")
+    | .ok typed => pure typed
   let τ := typed.inference.ty
   let inference := typed.inference
   let tCheck1 ← IO.monoNanosNow

@@ -497,6 +497,14 @@ def typeBodySrc : String :=
           d.col == 5 && d.endCol == 9  -- `True`
       | _ => false)
 
+-- Native failure paths cross unrelated recursive wrappers and recursive RHSs.
+#guard (match hoverReport
+    "let inc n = n + 1\nlet len xs = match xs with | [] -> 0 | h :: t -> 1 + len t\ninc True\n" with
+  | some r => r.diagnostics.any fun d => d.code? == some "type.argumentMismatch" &&
+      d.message == "type mismatch: expected Int, got Bool" &&
+      d.line == 3 && d.col == 5 && d.endLine == 3 && d.endCol == 9
+  | none => false)
+
 -- Direct source diagnostics traverse written schemes without converting the AST,
 -- including when a continuation contains partial annotations.
 #guard (match hoverReport
@@ -805,6 +813,13 @@ private def holeIdSrc := "let id = \\(x : _) -> x\n(id 1, id True)\n"
     | none => false)
 #guard (match hoverReport "let f = \\(x : _) -> x x\nf\n" with
   | some r => r.diagnostics.any fun d => d.code? == some "type.infiniteType"
+  | none => false)
+-- An occurs check inside an already known arrow type comes from the native
+-- unifier too; it must not become a generic argument mismatch.
+#guard (match hoverReport "\\(f : ?a -> ?a) -> f f\n" with
+  | some r => r.diagnostics.any fun d => d.code? == some "type.infiniteType" &&
+      d.message == "infinite type: a would have to equal a → a" &&
+      d.line == 1 && d.col == 20 && d.endLine == 1 && d.endCol == 23
   | none => false)
 #guard (match hoverReport "let f : Int -> _ = \\x -> x\nf True\n" with
   | some r => !r.diagnostics.isEmpty

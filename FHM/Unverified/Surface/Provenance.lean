@@ -1128,8 +1128,8 @@ def patternBinderTypesAt (nodeTypes : NodeTypeMap) (targets : BinderTargetMap) :
 
 /-- Infer the lowered source once, retaining its emitted paths for all type
     and scheme joins. The original partial source remains the payload. -/
-def inferWithProvenance (ctors : CtorEnv) (lowering : InputLowered) : Option TypedLowered := do
-  let inference ← inferWithTypes ctors lowering.expr
+def inferWithProvenanceResult (ctors : CtorEnv) (lowering : InputLowered) : Except InferError TypedLowered := do
+  let inference ← inferWithTypesResult ctors lowering.expr
   pure {
     ctors
     input := lowering.expr
@@ -1139,5 +1139,9 @@ def inferWithProvenance (ctors : CtorEnv) (lowering : InputLowered) : Option Typ
       (id, typesAtTarget inference.nodeTypes target)
     inferredBinderSchemes := joinBinderSchemes lowering.binderTargets inference.binderSchemes
     patternBinderTypes := patternBinderTypesAt inference.nodeTypes lowering.binderTargets }
+
+/-- Compatibility projection of the native inference-and-provenance result. -/
+def inferWithProvenance (ctors : CtorEnv) (lowering : InputLowered) : Option TypedLowered :=
+  (inferWithProvenanceResult ctors lowering).toOption
 
 end SurfaceBridge.Provenance

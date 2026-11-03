@@ -3,6 +3,18 @@ import FHM.AnnotationMatching
 /-! Annotation-local allocation and checking, independent of expression
 inference and of generalization or recursive scheduling policy. -/
 
+/-- Native annotation-checking failures. These retain language data only;
+source paths, spans and wording are supplied by the inference/diagnostic layers.
+The mode errors describe a caller using the wrong annotation-checking worker,
+rather than rejecting otherwise valid source syntax. -/
+inductive AnnotationError where
+  | invalidBoundVariables (body : Ty) (binderCount : Nat)
+  | outOfScopeVariables (varIds : List Nat)
+  | unification (error : UnifyError)
+  | expectedMonotype
+  | expectedSignature
+  deriving Repr
+
 namespace PartialCore
 
 /-- Tabulation gives a finite, annotation-local assignment. The caller starts
@@ -96,17 +108,21 @@ structure Allocation (t : Template) where
   ty : Ty
   completion : Completion 0 t ty
 
-def allocate (frontier : Nat) (t : Template) : Option (Allocation t) :=
+def allocateResult (frontier : Nat) (t : Template) : Except AnnotationError (Allocation t) :=
   let keys := t.names.dedup
   let holes := holeTable keys frontier
   let result := resolveTemplate holes (frontier + keys.length) t
   if hlc : result.2.bvarsBelow 0 = true then
-    some ⟨result.1, result.2,
+    .ok ⟨result.1, result.2,
       ⟨holes, holeTable_unique (List.nodup_dedup _), holeTable_scope,
         resolveTemplate_fits t holes _ (fun _ hn =>
           ⟨_, lookup_holeTable (List.mem_dedup.mpr hn)⟩),
         (Ty.bvarsBelow_iff _).mp hlc⟩⟩
-  else none
+  else .error (.invalidBoundVariables result.2 0)
+
+/-- Compatibility projection of the native allocation worker. -/
+def allocate (frontier : Nat) (t : Template) : Option (Allocation t) :=
+  (allocateResult frontier t).toOption
 
 structure CheckedAnnotation (t : Template) (target : Ty) where
   subst : Subst
@@ -116,14 +132,19 @@ structure CheckedAnnotation (t : Template) (target : Ty) where
 /-- The repeated-name constraint participates in unification, rather than a
 post-hoc comparison of independent holes. The reported assignment is proved to
 match the substituted authored template. -/
-def checkAnnotation (frontier : Nat) (t : Template) (target : Ty)
-    (htarget : target.IsLC) : Option (CheckedAnnotation t target) := do
-  let allocated ← allocate frontier t
-  let solved ← unifyCore allocated.ty target
-  let hlc := solved.property.lc allocated.completion.regular htarget
+def checkAnnotationResult (frontier : Nat) (t : Template) (target : Ty)
+    (htarget : target.IsLC) : Except AnnotationError (CheckedAnnotation t target) := do
+  let allocated ← allocateResult frontier t
+  let solved ← (unifyResultK [] allocated.ty target).mapError AnnotationError.unification
+  let hlc := solved.property.1.lc allocated.completion.regular htarget
   let completion := allocated.completion.onSubst solved.val hlc
-  have heq := solved.property.unifies
+  have heq := solved.property.1.unifies
   pure ⟨solved.val, hlc, heq ▸ completion⟩
+
+/-- Compatibility projection of the native standalone annotation check. -/
+def checkAnnotation (frontier : Nat) (t : Template) (target : Ty)
+    (htarget : target.IsLC) : Option (CheckedAnnotation t target) :=
+  (checkAnnotationResult frontier t target htarget).toOption
 
 private theorem lookup_mem {holes : HoleAssignment} {name : String} {ty : Ty}
     (h : LookupList.get? holes name = some ty) : (name, ty) ∈ holes := by

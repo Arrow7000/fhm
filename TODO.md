@@ -229,26 +229,42 @@ Error recovery and formatter work remain separate from these batches.
       verified functions currently return `Option`; moving them to `Except` means
       restating their theorems in terms of `.ok` rather than `some`, which is
       mechanical but touches a lot of code.
-      First slice done: application failures carry a reason ADT and Core path in
+      Initial diagnostic slice: application failures carry a reason ADT and Core path in
       `FHM/Unverified/TypeDiagnostics.lean`, with stable JSON diagnostic codes shared
       by CLI and editor output. This is an explanatory probe after verified
-      rejection; the verified workers still return `Option`. Migrating their own
-      failure results remains future work.
+      rejection; the verified inference workers still return `Option`.
+      Native worker migration has now started with unification:
+      `unifyResultK` / `unifyListResultK` return `Except UnifyError`, distinguishing
+      incompatible types, rigid-variable conflicts, occurs checks and unmatched
+      type-argument lists. Success still carries the existing unification and
+      rigidity proofs; completeness and rejection are proved for the typed API.
+      The old unification APIs project to `Option`, so inference can migrate
+      separately. Application diagnostics consume native occurs-check failures,
+      including ones inside a known function type.
+      Annotation seeding, monotype checks and signature checks now have native
+      `Except AnnotationError` workers too, preserving unification reasons and
+      distinguishing invalid bound variables, out-of-scope variables and wrong
+      checking modes. Their source completeness theorems expose native success;
+      existing inference clients still use `Option` projections.
+      Expression inference, match branches and recursive workers now return
+      `Except InferError`, preserving Core paths, native reasons and member/shape
+      indices. Native public inference retains soundness, completeness,
+      principality and the source-typing characterization. Application
+      diagnostics consume these failures directly; their explanatory probe has
+      been removed. Next: migrate lowering and the remaining diagnostic
+      presentation fallbacks. See
+      [typed-error migration](docs/typed-errors.md).
 - [ ] **Better error messages.** Application argument mismatches now report
       expected and actual types at the argument span. Non-function applications
       and infinite application types also have explanations and precise spans.
-      Recursive groups, match failures and other unsupported cases still use
+      Application explanations now work through recursive groups and matches.
+      Other unsupported failure kinds still use
       `typechecking failed`, plus the name of the failing definition, located at
       that definition (by `fhm run` and `fhm diagnose` alike). Lowering
       errors are a single generic message: `lowering failed (unbound name, bad
 decl, or rejected sugar)`.
-      The fallback reaches further than recursive groups: once a program
-      contains any recursive definition, every type error loses its
-      explanation, even one outside that definition. `let inc n = n + 1`
-      followed by `inc True` reports `expected Int, got Bool`, but adding an
-      unrelated recursive `len` anywhere in the file turns the same error into
-      a bare `typechecking failed`, underlined across the whole of `inc True`
-      instead of at the argument.
+      Adding an unrelated recursive definition no longer hides application
+      explanations or moves the underline away from the failing argument.
 - [ ] **Error recovery.** A single lowering or typechecking error currently
       kills hover information for the whole file. Type checking already proceeds
       one recursive group at a time, so a failed group's members could get a
