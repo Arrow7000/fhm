@@ -29,6 +29,7 @@ roots = [
   "FHM.NamedHoleTests",
   "FHM.SurfaceBridge",
   "FHM.LoweringError",
+  "FHM.LoweringErrorTests",
   "FHM.SurfaceSafety",
   "FHM.InferW",
   "FHM.InferenceErrorTests",
@@ -59,6 +60,7 @@ roots = [
   "FHM.Unverified.HMDisplay",
   "FHM.Unverified.HMReport",
   "FHM.Unverified.TypeDiagnostics",
+  "FHM.Unverified.Diagnostics",
   "FHM.Unverified.CoverageDiagnostics",
   "FHM.Unverified.Surface.Lex",
   "FHM.Unverified.Surface.Parse",
@@ -74,7 +76,8 @@ roots = ["FHM.Unverified.EditorSupport"]
 [[lean_lib]]
 name = "FHMEditorTests"
 # Editor and runtime canaries -- `lake build FHMEditorTests`.
-roots = ["FHM.Unverified.EditorSupportTests", "FHM.Unverified.LiveTests"]
+roots = ["FHM.Unverified.EditorSupportTests", "FHM.Unverified.LiveTests",
+  "FHM.Unverified.LoweringErrorTests"]
 
 [[lean_lib]]
 name = "FHMCli"

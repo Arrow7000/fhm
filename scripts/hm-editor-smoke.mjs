@@ -1157,5 +1157,45 @@ test("malformed named holes and named holes used as values are rejected", () => 
   }
 });
 
+
+// Both frontends render the exact same native source rejection. Locate the
+// selected occurrence explicitly so earlier valid spellings cannot mask it.
+for (const {name, source, code, token, line, occurrence = 0} of [
+  {name: "unbound occurrence after a same-named parameter", source: "let f = \\missing -> missing\nlet bad = missing\nbad\n",
+    code: "lower.unboundName", token: "missing", line: 2},
+  {name: "later repeated type in a binding annotation", source: "let bad : List Int -> List = \\x -> x\nbad\n",
+    code: "lower.typeArity", token: "List", line: 1, occurrence: 1},
+  {name: "later repeated type in a constructor field", source: "type Bad = Bad (List Int) List\n",
+    code: "lower.typeArity", token: "List", line: 1, occurrence: 1},
+  {name: "later repeated type in a parameter annotation", source: "let bad (x : List Int) (y : List) = y\nbad\n",
+    code: "lower.typeArity", token: "List", line: 1, occurrence: 1},
+  {name: "unknown written type variable", source: "\\(x : unknown) -> x\n",
+    code: "lower.unknownTypeVariable", token: "unknown", line: 1},
+  {name: "unknown type constructor", source: "\\(x : Unknown) -> x\n",
+    code: "lower.unknownType", token: "Unknown", line: 1},
+  {name: "hole rejected in declaration", source: "type Bad = Bad _\n",
+    code: "lower.holeNotAllowed", token: "_", line: 1},
+  {name: "duplicate constructor", source: "type A = C\ntype B = C\n",
+    code: "decl.duplicateConstructor", token: "C", line: 2},
+]) {
+  test(`native lowering identifies ${name}`, () => {
+    const editor = cli(["diagnose"], source);
+    const runner = cli(["run", "--json"], source);
+    assert.equal(editor.status, 1);
+    assert.equal(runner.status, 1);
+    const [diag] = editor.payload.diagnostics;
+    assert.equal(editor.payload.diagnostics.length, 1);
+    assert.equal(diag.code, code);
+    const text = source.split("\n")[line - 1];
+    const column = [...text.matchAll(new RegExp(token, "g"))][occurrence].index + 1;
+    assert.deepEqual([diag.line, diag.col, diag.endLine, diag.endCol], [line, column, line, column + token.length]);
+    assert.equal(runner.payload.stage, "lower");
+    assert.equal(runner.payload.code, code);
+    assert.equal(runner.payload.message, diag.message);
+    assert.deepEqual([runner.payload.line, runner.payload.col, runner.payload.endLine, runner.payload.endCol],
+      [diag.line, diag.col, diag.endLine, diag.endCol]);
+  });
+}
+
 console.log(`${tests - failures}/${tests} HM CLI/editor semantic smoke checks passed.`);
 process.exitCode = failures ? 1 : 0;

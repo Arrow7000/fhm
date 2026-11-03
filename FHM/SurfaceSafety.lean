@@ -188,7 +188,8 @@ private theorem wrap_exhaustive {ctors : CtorEnv} {ke : KindEnv} {tvs : List Val
   induction params generalizing wrapped with
   | nil => cases hw; exact hb
   | cons param rest ih =>
-    simp only [wrapInputParams, LoweringOps.wrapParams, bind, pure,
+    rw [wrapInputParams, LoweringOps.wrapParams_eq] at hw
+    simp only [bind, pure,
       Option.bind_eq_some_iff, Option.some.injEq] at hw
     obtain ⟨ann, _, inner, hi, rfl⟩ := hw
     simp only [inputLoweringOps, Expr.erase]

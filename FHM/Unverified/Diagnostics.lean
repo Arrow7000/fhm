@@ -198,7 +198,7 @@ def loweringDiag (error : LoweringError) (p : Surface.Program) (sp : SpannedProg
     | .constructorFields parent name => ctorRegion binders name ((declSpan p sp parent).getD fallback)
     | .bindingAnnotation | .parameterAnnotation _ =>
         ((error.binding?.bind fun name =>
-          (sp.bindingHeaders.find? (·.1 == valName name)).map (·.2))).getD fallback
+          (sp.bindingHeaders.find? (fun entry => entry.1 == valName name && inside entry.2 fallback)).map (·.2))).getD fallback
     | _ => fallback
   match error.reason with
   | .declarationElaboration cause => declarationDiag cause p sp binders
@@ -259,10 +259,10 @@ private def effectivePath (error : InferError) : CorePath :=
   | _ => error.path
 
 private def ownerDepth (path : CorePath) : CoreBinderSite → Option Nat
-  | .letIn prefix =>
-      if (prefix ++ [.letRhs]).isPrefixOf path then some (prefix.length + 1) else none
-  | .letRec prefix member =>
-      if (prefix ++ [.letRecRhs member]).isPrefixOf path then some (prefix.length + 1) else none
+  | .letIn basePath =>
+      if (basePath ++ [CoreStep.letRhs]).isPrefixOf path then some (basePath.length + 1) else none
+  | .letRec basePath member =>
+      if (basePath ++ [CoreStep.letRecRhs member]).isPrefixOf path then some (basePath.length + 1) else none
   | _ => none
 
 private def bindingOwner (p : Surface.Program) (binders : List BinderSpan) (tree : SpannedExpr)

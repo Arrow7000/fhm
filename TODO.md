@@ -223,48 +223,22 @@ Error recovery and formatter work remain separate from these batches.
 
 ## Errors and diagnostics
 
-- [ ] **Errors as data.** Replace the stringly typed errors throughout the
-      pipeline with an error ADT, so errors can be collected, computed over, and
-      presented differently depending on context (terminal, JSON, editor). The
-      verified functions currently return `Option`; moving them to `Except` means
-      restating their theorems in terms of `.ok` rather than `some`, which is
-      mechanical but touches a lot of code.
-      Initial diagnostic slice: application failures carry a reason ADT and Core path in
-      `FHM/Unverified/TypeDiagnostics.lean`, with stable JSON diagnostic codes shared
-      by CLI and editor output. This is an explanatory probe after verified
-      rejection; the verified inference workers still return `Option`.
-      Native worker migration has now started with unification:
-      `unifyResultK` / `unifyListResultK` return `Except UnifyError`, distinguishing
-      incompatible types, rigid-variable conflicts, occurs checks and unmatched
-      type-argument lists. Success still carries the existing unification and
-      rigidity proofs; completeness and rejection are proved for the typed API.
-      The old unification APIs project to `Option`, so inference can migrate
-      separately. Application diagnostics consume native occurs-check failures,
-      including ones inside a known function type.
-      Annotation seeding, monotype checks and signature checks now have native
-      `Except AnnotationError` workers too, preserving unification reasons and
-      distinguishing invalid bound variables, out-of-scope variables and wrong
-      checking modes. Their source completeness theorems expose native success;
-      existing inference clients still use `Option` projections.
-      Expression inference, match branches and recursive workers now return
-      `Except InferError`, preserving Core paths, native reasons and member/shape
-      indices. Native public inference retains soundness, completeness,
-      principality and the source-typing characterization. Application
-      diagnostics consume these failures directly; their explanatory probe has
-      been removed. Next: migrate lowering and the remaining diagnostic
-      presentation fallbacks. See
-      [typed-error migration](docs/typed-errors.md).
-- [ ] **Better error messages.** Application argument mismatches now report
-      expected and actual types at the argument span. Non-function applications
-      and infinite application types also have explanations and precise spans.
-      Application explanations now work through recursive groups and matches.
-      Other unsupported failure kinds still use
-      `typechecking failed`, plus the name of the failing definition, located at
-      that definition (by `fhm run` and `fhm diagnose` alike). Lowering
-      errors are a single generic message: `lowering failed (unbound name, bad
-decl, or rejected sugar)`.
-      Adding an unrelated recursive definition no longer hides application
-      explanations or moves the underline away from the failing argument.
+- [x] **Errors as data in inference and lowering.** Native unification,
+      annotation checks, expression/recursive inference, declaration elaboration,
+      structural lowering and provenance construction now return typed failures.
+      Compatibility `Option` APIs project the same workers. Native public APIs
+      retain soundness, completeness, principality and rejection guarantees;
+      lowering success is characterized by its declarative relation. CLI/editor
+      diagnostics render native reasons and source paths without stripping
+      annotations or rerunning inference. Provenance metadata failures are
+      distinct from source rejection. See [typed-error migration](docs/typed-errors.md).
+- [ ] **Better error messages.** Native reasons now distinguish unbound names,
+      unknown types/type variables, arity errors, invalid declaration fields,
+      duplicate names, annotation failures, rigidity, escaping variables and
+      recursive-state failures. Application errors retain their precise spans.
+      CLI and editor share codes, messages and source locations. Further wording
+      and context improvements can build on the typed data without diagnostic
+      rechecking.
 - [ ] **Error recovery.** A single lowering or typechecking error currently
       kills hover information for the whole file. Type checking already proceeds
       one recursive group at a time, so a failed group's members could get a

@@ -32,7 +32,8 @@ Successful results retain the existing proof of unification and preservation of
 rigid variables. `unifyResultK_complete` proves success whenever locally closed
 inputs admit a locally closed, rigid-preserving unifier.
 `unifyResultK_error_not_unifies` gives the corresponding rejection guarantee.
-The existing inference soundness/completeness API continues to use `Option`.
+Native inference exposes soundness and completeness too; the compatibility
+`Option` API retains the same guarantees.
 
 Application diagnostics now use native failure reasons instead of probing
 rejected expressions. For example, `\(f : ?a -> ?a) -> f f` reports an infinite
@@ -90,17 +91,37 @@ the full source-typing characterization. `inferWithTypesResult_error_not_typing`
 proves that a native rejection rules out every declarative source type. These
 theorems are included in the proof-dependency audit.
 
-The editor and runner call `inferWithProvenanceResult`. Application presentation
-reads its native failure directly; the old application probe has been removed.
-Other diagnostic presentation still has binding-level fallbacks to migrate.
+Declaration and expression lowering follow the same design. `DeclError`
+distinguishes duplicate type/constructor names from invalid constructor fields.
+`LoweringError` retains a `SurfacePath`, a type-child path, an annotation or
+declaration site, the nearest binding name, and a structured reason. Unknown
+values, unknown type variables, unknown types, incorrect arities, declaration
+holes and duplicate names have distinct reasons. Paths retain list, branch,
+recursive-member and parameter indexes. `LoweringOps` shares these native
+workers between structural lowering and its declarative relation.
 
-The next migration steps are:
+`lowerInputResult` and `lowerInputProgramResult` expose native structural
+lowering. Their `..._eq_ok_iff` theorems characterize the entire success graph;
+`..._error_not_lowers` proves that rejection rules out a declarative lowering.
+Declaration elaboration has the corresponding graph and rejection theorems.
+These guarantees are covered by the proof-dependency audit. Existing `Option`
+entry points erase failures from the same workers.
 
-1. Give declaration and expression lowering their own failure data and source
-   identity, so lowering failures do not need a diagnostic reconstruction.
-2. Finish migrating operational provenance failures and the remaining
-   declaration, lowering and type-error presentation fallbacks to native failure
-   data. Preserve useful annotation mismatch wording without rechecking source.
+Operational provenance construction returns `Except ProvenanceLowerError`.
+A source failure carries its precise `SourceNode` and original `LoweringError`;
+a metadata failure describes a shape mismatch or missing source/binder
+classification. It cannot be mistaken for an unbound name or invalid annotation.
+`lowerWithProvenanceResult_project` proves that every successful native
+provenance result has exactly the canonical structurally lowered term.
+
+The editor and runner call the native declaration, provenance and inference
+APIs. `FHM/Unverified/Diagnostics.lean` renders the supplied reasons and paths
+into shared messages, diagnostic codes and authored spans. Type-child paths
+select the failing occurrence even when an annotation contains earlier valid
+uses of the same type name. Annotation mismatch presentation uses the actual
+failed constraint. The old probes that stripped annotations, retried lowering,
+or reran inference have been removed. Parsing and presentation remain outside
+the verified boundary.
 
 Error recovery remains a separate follow-up:
 
@@ -111,5 +132,6 @@ Error recovery remains a separate follow-up:
 
 Typed failures are the prerequisite for recovery; this slice still stops at the
 first failure. Regression coverage lives in `FHM/UnificationTests.lean`,
-`FHM/AnnotationErrorTests.lean`, `FHM/InferenceErrorTests.lean`, the editor tests,
+`FHM/AnnotationErrorTests.lean`, `FHM/InferenceErrorTests.lean`,
+`FHM/LoweringErrorTests.lean`, the provenance/editor tests,
 and `scripts/hm-editor-smoke.mjs`.

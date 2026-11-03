@@ -445,7 +445,7 @@ def unboundSrc : String :=
           d.col == 9  -- `y` in `let x = y`
       | _ => false)
 
--- E8. Type error on second binding: progressive probe points at `bad`, not (1,1).
+-- E8. Native failure ownership points at `bad` and its RHS, not (1,1).
 -- Prefer expected/got when ascription is the problem.
 def typeSecondSrc : String :=
   "let ok = 1\nlet bad : Int = True\nbad\n"

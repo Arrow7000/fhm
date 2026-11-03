@@ -5,8 +5,8 @@ import FHM.Unverified.HMDisplay
 
 The verified worker supplies native failure data and logical Core paths.
 This module only chooses presentation and authored source spans; it does not
-rerun inference to reconstruct a failed application. Unsupported presentation
-cases retain the binding-level diagnostic while the migration continues.
+rerun inference to reconstruct a failed application. Other native reasons are
+rendered by the shared `Diagnostics` module.
 -/
 
 namespace FHM.Unverified.TypeDiagnostics

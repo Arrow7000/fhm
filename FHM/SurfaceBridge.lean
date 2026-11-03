@@ -4048,6 +4048,20 @@ theorem lowerInputProgramResult_error_not_lowers {p error}
   rw [h] at this
   cases this
 
+theorem lowerDataDeclsInResult_eq_ok_iff {ke : KindEnv}
+    {surface : List Surface.DataDecl} {core : List DataDecl} :
+    lowerDataDeclsInResult ke surface = .ok core ↔ LowersDataDeclsIn ke surface core := by
+  rw [← TypedResult.toOption_eq_some, lowerDataDeclsInResult_toOption]
+  exact ⟨lowerDataDeclsIn_sound, lowerDataDeclsIn_complete⟩
+
+theorem lowerDataDeclsInResult_error_not_lowers {ke surface error}
+    (h : lowerDataDeclsInResult ke surface = .error error) :
+    ¬ ∃ core, LowersDataDeclsIn ke surface core := by
+  rintro ⟨core, hi⟩
+  have := lowerDataDeclsInResult_eq_ok_iff.mpr hi
+  rw [h] at this
+  cases this
+
 /-- Canonical surface lowering preserves partial annotations for inference. -/
 abbrev lowerExpr := lowerInputExpr
 abbrev lowerExprList := lowerInputExprList
