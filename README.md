@@ -54,8 +54,9 @@ evaluating…
 ```
 
 Ill-typed programs and non-exhaustive matches are rejected before anything runs.
-[Open this example in the playground](https://fhm-playground.onrender.com/#code=1.pZxBDsIwDAT_VG48gl8gTgj-f2LWdtYJoPbQW6W0SVOrcTwb-xCCL_qSsVkDsxaXWmXSf3xz2l0cklSMcUfDyMo3DFJLkfMB1jTq1AGIpDTkOcGpsBMLCDxpv8Mx6Z9esZNhVJH9sFR169CthEtXIHu9dT3Sp8cB60gwfuAZRjWhxIbsqSPPgQ8Z-_urobcKXBmA9wTirv-oOyn3l6me0M091D2za3jnhIr9-AK3R7AqFXb2sZWWV0s-7oAGhAzEI5ll1megeH1CFHok4JrNm9h1NgNS1Vwjb36HS0xPzv8D)
-and hover over any name to see its type.
+[Try this example in the playground](https://fhm-playground.onrender.com/#code=1.pZxBDsIwDAT_VG48gl8gTgj-f2LWdtYJoPbQW6W0SVOrcTwb-xCCL_qSsVkDsxaXWmXSf3xz2l0cklSMcUfDyMo3DFJLkfMB1jTq1AGIpDTkOcGpsBMLCDxpv8Mx6Z9esZNhVJH9sFR169CthEtXIHu9dT3Sp8cB60gwfuAZRjWhxIbsqSPPgQ8Z-_urobcKXBmA9wTirv-oOyn3l6me0M091D2za3jnhIr9-AK3R7AqFXb2sZWWV0s-7oAGhAzEI5ll1megeH1CFHok4JrNm9h1NgNS1Vwjb36HS0xPzv8D):
+hover over any name to see its type, or break something and watch the errors
+appear.
 
 ## The language
 
@@ -76,13 +77,11 @@ let isOdd n = if n < 1 then False else isEven (n - 1)
 
 ### Annotations
 
-Type annotations are optional, and checked when given. They can cover a whole
-definition, or individual parameters and the result of a function. Type
-variables are never implicitly quantified: `{a b}` introduces them, and they
-stay in scope for the whole definition, so annotations inside it can refer to
-them. An annotation can also leave parts for inference to fill in: each `_` is
-inferred independently, while every `?name` in one annotation must be the same
-type.
+Annotations are optional, and checked when given. They can cover a whole
+definition or just some of its parameters, and they can leave holes for
+inference to fill in. The one rule that might surprise you is that type
+variables are never implicitly quantified: `{a}` introduces `a`, and it's in
+scope for the whole definition.
 
 ```
 -- {a} introduces a, which the annotation on acc then refers to.
@@ -97,13 +96,13 @@ let reverse : {a} List a -> List a = \xs ->
 let clamp (lo : Int) hi n : Int =
   if n < lo then lo else if hi < n then hi else n
 
--- A hole can turn out polymorphic, like anything else inference fills in.
+-- _ is a hole for inference to fill in. It can even turn out polymorphic.
 let length (xs : List _) : Int =
   match xs with
   | [] -> 0
   | _ :: rest -> 1 + length rest
 
--- Both components can be any type, as long as it's the same one.
+-- ?t is a named hole: each ?t in the annotation stands for the same type.
 let twins (pair : (?t, ?t)) = pair
 ```
 
@@ -135,8 +134,6 @@ let depth {a} (nested : Nested a) : Int =
 Inferring polymorphic recursion is undecidable in general, so, as in Haskell,
 the signature is required: without it, or with a hole in it, `depth` is a type
 error. Signatures work the same way across mutually recursive definitions.
-[`recursion-language-comparison/`](./recursion-language-comparison/) compares
-FHM's recursion rules with GHC, OCaml, F#, Elm and Standard ML.
 
 ### Patterns
 
@@ -174,12 +171,6 @@ let both pair =
 - Evaluation is pure. Function arguments are evaluated before the call, but a
   `let`'s right-hand side is evaluated where it's used (call-by-name), so an
   unused binding never runs, and one used twice runs twice.
-
-[`scratch/language-guide.fhm`](./scratch/language-guide.fhm) goes through
-annotations and recursion in more depth, and
-[`anonymous-type-holes.fhm`](./scratch/anonymous-type-holes.fhm) and
-[`named-type-holes.fhm`](./scratch/named-type-holes.fhm) do the same for holes.
-They're all runnable: open them with the editor extension and hover around.
 
 ## What is proved
 
@@ -264,7 +255,6 @@ lake build fhm       # build the fhm executable
 .lake/build/bin/fhm run program.fhm                # infer types, then evaluate
 .lake/build/bin/fhm run --fuel 100000 program.fhm  # stop after 100000 evaluation steps
 .lake/build/bin/fhm run --json program.fhm         # the same, as JSON
-.lake/build/bin/fhm diagnose program.fhm           # diagnostics and hover info, for editors
 ```
 
 Evaluation also stops, with an `eval.depthLimit` error, if the expression being
