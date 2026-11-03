@@ -2,6 +2,7 @@ import FHM.PatComp.Trace
 import FHM.Decls
 import FHM.PatComp
 import FHM.SourceSupport
+import FHM.LoweringError
 
 /-! # The canonical surface → inference-input bridge
 
@@ -54,9 +55,97 @@ def tvarIndex : List ValName → ValName → Option Nat
   | [], _ => none
   | x :: xs, n => if x = n then some 0 else (tvarIndex xs n).map (· + 1)
 
+def checkTypeArityResult (ke : KindEnv) (name : TyName) (actual : Nat) : Except LoweringError Unit :=
+  match LookupList.get? ke name with
+  | none => .error (.root (.unknownType name))
+  | some expected =>
+      if expected = actual then .ok ()
+      else .error (.root (.typeArity name expected actual))
+
+@[typed_result_projection] theorem checkTypeArityResult_toOption (ke : KindEnv) (name : TyName) (actual : Nat) :
+    (checkTypeArityResult ke name actual).toOption = (guard (LookupList.get? ke name = some actual) : Option Unit) := by
+  cases h : LookupList.get? ke name with
+  | none => simp [checkTypeArityResult, h, guard, Except.toOption]
+  | some expected =>
+      by_cases he : expected = actual <;>
+        simp [checkTypeArityResult, h, he, guard, Except.toOption]
+
+def checkedCustomTypeResult (ke : KindEnv) (name : TyName) (args : List Ty) : Except LoweringError Ty := do
+  let _ ← checkTypeArityResult ke name args.length
+  pure (.customTy name args)
+
+theorem checkedCustomTypeResult_toOption (ke : KindEnv) (name : TyName) (args : List Ty) :
+    (checkedCustomTypeResult ke name args).toOption =
+      if LookupList.get? ke name = some args.length then some (.customTy name args) else none := by
+  unfold checkedCustomTypeResult
+  simp only [TypedResult.toOption_bind, checkTypeArityResult_toOption, TypedResult.toOption_pure]
+  by_cases h : LookupList.get? ke name = some args.length <;> simp [guard, h]
+
+def resolveTypeVarResult (tvs : List ValName) (name : ValName) : Except LoweringError Ty :=
+  match tvarIndex tvs name with
+  | some index => .ok (.bvar index)
+  | none => .error (.root (.unboundTypeVariable name))
+
+theorem resolveTypeVarResult_toOption (tvs : List ValName) (name : ValName) :
+    (resolveTypeVarResult tvs name).toOption = (tvarIndex tvs name).map Ty.bvar := by
+  unfold resolveTypeVarResult
+  cases tvarIndex tvs name <;> rfl
+
+def resolveValueResult (vs : List ValName) (name : ValName) : Except LoweringError Nat :=
+  match tvarIndex vs name with
+  | some index => .ok index
+  | none => .error (.root (.unboundValue name))
+
+@[typed_result_projection] theorem resolveValueResult_toOption (vs : List ValName) (name : ValName) :
+    (resolveValueResult vs name).toOption = tvarIndex vs name := by
+  unfold resolveValueResult
+  cases tvarIndex vs name <;> rfl
+
 mutual
-/-- Lower a surface type against a kind env and a tyvar scope. -/
-def lowerTy (ke : KindEnv) (tvs : List ValName) : Surface.Ty → Option Ty
+/-- Native kind-checked type lowering. Holes are permitted only by template lowering. -/
+def lowerTyResult (ke : KindEnv) (tvs : List ValName) : Surface.Ty → Except LoweringError Ty
+  | .hole => .error (.root (.holeNotAllowed none))
+  | .namedHole name => .error (.root (.holeNotAllowed (some name)))
+  | .prim .unit => .ok (.prim .unit)
+  | .prim .int => .ok (.prim .int)
+  | .prim .nat => .ok (.prim .nat)
+  | .prim .char => .ok (.prim .char)
+  | .prim .bool => checkedCustomTypeResult ke nBool []
+  | .arrow a b => do
+      let a' ← (lowerTyResult ke tvs a).mapError (.belowType .domain)
+      let b' ← (lowerTyResult ke tvs b).mapError (.belowType .codomain)
+      pure (.arrow a' b')
+  | .pair a b => do
+      let a' ← (lowerTyResult ke tvs a).mapError (.belowType .pairLeft)
+      let b' ← (lowerTyResult ke tvs b).mapError (.belowType .pairRight)
+      checkedCustomTypeResult ke nPair [a', b']
+  | .tvar name => resolveTypeVarResult tvs name
+  | .customTy name args => do
+      let args' ← lowerTyListResult ke tvs args
+      checkedCustomTypeResult ke name args'
+def lowerTyListResult (ke : KindEnv) (tvs : List ValName) :
+    List Surface.Ty → Except LoweringError (List Ty)
+  | [] => .ok []
+  | ty :: rest => do
+      let ty' ← (lowerTyResult ke tvs ty).mapError (.belowType (.argument 0))
+      let rest' ← (lowerTyListResult ke tvs rest).mapError LoweringError.nextTypeArgument
+      pure (ty' :: rest')
+end
+
+def lowerTy (ke : KindEnv) (tvs : List ValName) (ty : Surface.Ty) : Option Ty :=
+  (lowerTyResult ke tvs ty).toOption
+
+def lowerTyList (ke : KindEnv) (tvs : List ValName) (types : List Surface.Ty) : Option (List Ty) :=
+  (lowerTyListResult ke tvs types).toOption
+
+@[typed_result_projection] theorem lowerTyResult_toOption (ke : KindEnv) (tvs : List ValName) (ty : Surface.Ty) :
+    (lowerTyResult ke tvs ty).toOption = lowerTy ke tvs ty := rfl
+
+@[typed_result_projection] theorem lowerTyListResult_toOption (ke : KindEnv) (tvs : List ValName) (types : List Surface.Ty) :
+    (lowerTyListResult ke tvs types).toOption = lowerTyList ke tvs types := rfl
+
+theorem lowerTy_eq (ke : KindEnv) (tvs : List ValName) (ty : Surface.Ty) :
+    lowerTy ke tvs ty = (match ty with
   | .hole | .namedHole _ => none
   | .prim .unit => some (.prim .unit)
   | .prim .int  => some (.prim .int)
@@ -81,17 +170,23 @@ def lowerTy (ke : KindEnv) (tvs : List ValName) : Surface.Ty → Option Ty
       match lowerTyList ke tvs args with
       | some args' =>
           if LookupList.get? ke T = some args'.length then some (.customTy T args') else none
-      | none => none
-/-- Pointwise lowering of a type-argument list (mutual to make termination
-    structural, mirroring `Decls.TyList.wellKindedB`). -/
-def lowerTyList (ke : KindEnv) (tvs : List ValName) :
-    List Surface.Ty → Option (List Ty)
+      | none => none) := by
+  rw [lowerTy, lowerTyResult]
+  cases ty <;> simp only [typed_result_projection, checkedCustomTypeResult_toOption,
+    resolveTypeVarResult_toOption, List.length_cons, List.length_nil]
+  all_goals repeat first | split | (solve | rfl)
+
+theorem lowerTyList_eq (ke : KindEnv) (tvs : List ValName) (types : List Surface.Ty) :
+    lowerTyList ke tvs types = (match types with
   | [] => some []
   | t :: ts =>
       match lowerTy ke tvs t, lowerTyList ke tvs ts with
       | some t', some ts' => some (t' :: ts')
-      | _, _ => none
-end
+      | _, _ => none) := by
+  rw [lowerTyList, lowerTyListResult]
+  cases types <;> simp only [typed_result_projection]
+  all_goals repeat first | split | (solve | rfl)
+
 /-- A resolved tyvar index is in range (feeds `Ty.WellKinded.bvar`). -/
 theorem tvarIndex_lt {tvs : List ValName} {n : ValName} {i : Nat}
     (h : tvarIndex tvs n = some i) : i < tvs.length := by
@@ -115,10 +210,10 @@ theorem lowerTyList_wellKinded {ke : KindEnv} {tvs : List ValName}
     ∀ c ∈ cs, Ty.WellKinded ke tvs.length c := by
   cases ss with
   | nil =>
-    simp only [lowerTyList, Option.some.injEq] at h; subst h
+    simp only [lowerTyList_eq, Option.some.injEq] at h; subst h
     intro c hc; cases hc
   | cons s ss =>
-    simp only [lowerTyList] at h
+    simp only [lowerTyList_eq] at h
     cases ht : lowerTy ke tvs s with
     | none => simp [ht] at h
     | some t' =>
@@ -145,15 +240,15 @@ theorem lowerTy_wellKinded {ke : KindEnv} {tvs : List ValName} {s : Surface.Ty} 
   | prim p =>
     cases p with
     | unit | int | nat | char =>
-      simp only [lowerTy, Option.some.injEq] at h; subst h; exact .prim
+      simp only [lowerTy_eq, Option.some.injEq] at h; subst h; exact .prim
     | bool =>
-      simp only [lowerTy] at h
+      simp only [lowerTy_eq] at h
       split at h
       · rename_i hg; simp only [Option.some.injEq] at h; subst h
         exact .customTy hg (by intro _ hmem; simp at hmem)
       · cases h
   | arrow a b =>
-    simp only [lowerTy] at h
+    simp only [lowerTy_eq] at h
     cases ha : lowerTy ke tvs a with
     | none => simp [ha] at h
     | some a' =>
@@ -163,7 +258,7 @@ theorem lowerTy_wellKinded {ke : KindEnv} {tvs : List ValName} {s : Surface.Ty} 
         simp only [ha, hb, Option.some.injEq] at h; subst h
         exact .arrow (lowerTy_wellKinded ha) (lowerTy_wellKinded hb)
   | pair a b =>
-    simp only [lowerTy] at h
+    simp only [lowerTy_eq] at h
     cases ha : lowerTy ke tvs a with
     | none => simp [ha] at h
     | some a' =>
@@ -181,14 +276,14 @@ theorem lowerTy_wellKinded {ke : KindEnv} {tvs : List ValName} {s : Surface.Ty} 
             · exact lowerTy_wellKinded hb)
         · cases h
   | tvar name =>
-    simp only [lowerTy] at h
+    simp only [lowerTy_eq] at h
     cases hi : tvarIndex tvs name with
     | none => simp [hi] at h
     | some i =>
       simp only [hi, Option.some.injEq] at h; subst h
       exact .bvar (tvarIndex_lt hi)
   | customTy T args =>
-    simp only [lowerTy] at h
+    simp only [lowerTy_eq] at h
     cases hargs : lowerTyList ke tvs args with
     | none => simp [hargs] at h
     | some args' =>
@@ -287,23 +382,68 @@ abbrev LowersDataDecls (sdecls : List Surface.DataDecl) (decls : List DataDecl) 
   LowersDataDeclsIn [] sdecls decls
 
 /-- Lower one surface decl against a kind env. -/
-def lowerDataDecl (ke : KindEnv) (s : Surface.DataDecl) : Option DataDecl := do
+def lowerDataDeclResult (ke : KindEnv) (decl : Surface.DataDecl) : Except LoweringError DataDecl := do
+  TypedResult.ensure
+    ((LoweringError.root (.duplicateTypeParameters decl.name
+      (decl.params.filter (fun name => 1 < decl.params.count name)).dedup)).atSite (.declaration decl.name))
+    decl.params.Nodup
+  let constructors ← decl.ctors.mapM fun (name, fields) => do
+    let fields' ← (lowerTyListResult ke decl.params fields).mapError
+      (.atSite (.constructorFields decl.name name))
+    pure (name, fields')
+  pure ⟨decl.name, decl.params.length, constructors⟩
+
+def lowerDataDeclsInResult (ambient : KindEnv) (decls : List Surface.DataDecl) :
+    Except LoweringError (List DataDecl) := do
+  let types := decls.map (·.name)
+  TypedResult.ensure (.root (.duplicateTypes (types.filter (fun name => 1 < types.count name)).dedup)) types.Nodup
+  let constructors := decls.flatMap (fun decl => decl.ctors.map Prod.fst)
+  TypedResult.ensure (.root (.duplicateConstructors
+    (constructors.filter (fun name => 1 < constructors.count name)).dedup)) constructors.Nodup
+  decls.mapM (lowerDataDeclResult (declKindEnv ambient decls))
+
+def lowerDataDecl (ke : KindEnv) (s : Surface.DataDecl) : Option DataDecl :=
+  (lowerDataDeclResult ke s).toOption
+
+def lowerDataDeclsIn (ke₀ : KindEnv) (sdecls : List Surface.DataDecl) : Option (List DataDecl) :=
+  (lowerDataDeclsInResult ke₀ sdecls).toOption
+
+def lowerDataDeclsResult (decls : List Surface.DataDecl) : Except LoweringError (List DataDecl) :=
+  lowerDataDeclsInResult [] decls
+
+def lowerDataDecls (sdecls : List Surface.DataDecl) : Option (List DataDecl) := lowerDataDeclsIn [] sdecls
+
+@[typed_result_projection] theorem lowerDataDeclResult_toOption (ke : KindEnv) (decl : Surface.DataDecl) :
+    (lowerDataDeclResult ke decl).toOption = lowerDataDecl ke decl := rfl
+
+@[typed_result_projection] theorem lowerDataDeclsInResult_toOption (ke : KindEnv) (decls : List Surface.DataDecl) :
+    (lowerDataDeclsInResult ke decls).toOption = lowerDataDeclsIn ke decls := rfl
+
+theorem lowerDataDecl_eq (ke : KindEnv) (s : Surface.DataDecl) :
+    lowerDataDecl ke s = (show Option DataDecl from
+ do
   guard s.params.Nodup
   let ctors' ← s.ctors.mapM fun (n, fs) =>
     (lowerTyList ke s.params fs).map fun fs' => (n, fs')
-  pure ⟨s.name, s.params.length, ctors'⟩
+  pure ⟨s.name, s.params.length, ctors'⟩) := by
+  unfold lowerDataDecl lowerDataDeclResult
+  simp only [TypedResult.toOption_bind, TypedResult.toOption_ensure, TypedResult.toOption_mapM,
+    TypedResult.toOption_mapError, TypedResult.toOption_map, TypedResult.toOption_pure,
+    lowerTyListResult_toOption, lowerDataDeclResult_toOption]
+  rfl
 
-/-- Lower a surface decl group under ambient kinds `ke₀`. -/
-def lowerDataDeclsIn (ke₀ : KindEnv) (sdecls : List Surface.DataDecl) :
-    Option (List DataDecl) := do
+theorem lowerDataDeclsIn_eq (ke₀ : KindEnv) (sdecls : List Surface.DataDecl) :
+    lowerDataDeclsIn ke₀ sdecls = (show Option (List DataDecl) from
+ do
   guard ((sdecls.map (·.name)).Nodup)
   guard ((sdecls.flatMap (fun d => d.ctors.map Prod.fst)).Nodup)
   let ke := declKindEnv ke₀ sdecls
-  sdecls.mapM (lowerDataDecl ke)
-
-/-- Closed-group specialization (`ke₀ = []`). -/
-def lowerDataDecls (sdecls : List Surface.DataDecl) : Option (List DataDecl) :=
-  lowerDataDeclsIn [] sdecls
+  sdecls.mapM (lowerDataDecl ke)) := by
+  unfold lowerDataDeclsIn lowerDataDeclsInResult
+  simp only [TypedResult.toOption_bind, TypedResult.toOption_ensure, TypedResult.toOption_mapM,
+    TypedResult.toOption_mapError, TypedResult.toOption_map, TypedResult.toOption_pure,
+    lowerTyListResult_toOption, lowerDataDeclResult_toOption]
+  rfl
 
 /-- A successful `mapM` yields pointwise `f a = some b`. -/
 private theorem mapM_forall₂_of_eq {α β : Type} (f : α → Option β) :
@@ -372,10 +512,10 @@ theorem LowersFields.of_lowerTyList {ke : KindEnv} {tvs : List ValName}
     (h : lowerTyList ke tvs ss = some cs) : LowersFields ke tvs ss cs := by
   cases ss with
   | nil =>
-    simp only [lowerTyList, Option.some.injEq] at h; subst h
+    simp only [lowerTyList_eq, Option.some.injEq] at h; subst h
     exact .nil
   | cons s ss =>
-    simp only [lowerTyList] at h
+    simp only [lowerTyList_eq] at h
     cases ht : lowerTy ke tvs s with
     | none => simp [ht] at h
     | some c =>
@@ -392,7 +532,7 @@ theorem LowersFields.to_lowerTyList {ke : KindEnv} {tvs : List ValName}
   induction h with
   | nil => rfl
   | cons ht htl ih =>
-    simp only [lowerTyList, ht, ih]
+    simp only [lowerTyList_eq, ht, ih]
 end
 
 private theorem LowersFields.mem_lowerTy {ke : KindEnv} {tvs : List ValName}
@@ -447,7 +587,7 @@ private def lowerCtorFields (ke : KindEnv) (tvs : List ValName)
 
 private theorem lowerDataDecl_sound {ke : KindEnv} {s : Surface.DataDecl} {d : DataDecl}
     (h : lowerDataDecl ke s = some d) : LowersDataDecl ke s d := by
-  unfold lowerDataDecl at h
+  rw [lowerDataDecl_eq] at h
   obtain ⟨hp, hbind⟩ := option_guard_bind h
   obtain ⟨ctors', hmap⟩ := option_bind_eq_some_left hbind
   have hpure :
@@ -485,7 +625,7 @@ private theorem lowerDataDecl_complete {ke : KindEnv} {s : Surface.DataDecl} {d 
         rw [LowersFields.to_lowerTyList hfs, Option.map_some, hn])
       hct
     have hmap := mapM_of_forall₂_of_eq (lowerCtorFields ke params) hct'
-    rw [lowerDataDecl, option_guard_bind_pos hp]
+    rw [lowerDataDecl_eq, option_guard_bind_pos hp]
     have hbind :
         (sctors.mapM (fun x =>
           (lowerTyList ke params x.2).map fun fs' => (x.1, fs'))) = some dctors := by
@@ -600,7 +740,7 @@ theorem lowerDataDeclsIn_sound {ke₀ : KindEnv}
     {sdecls : List Surface.DataDecl} {decls : List DataDecl} :
     lowerDataDeclsIn ke₀ sdecls = some decls → LowersDataDeclsIn ke₀ sdecls decls := by
   intro h
-  unfold lowerDataDeclsIn at h
+  rw [lowerDataDeclsIn_eq] at h
   obtain ⟨hP1, h⟩ := option_guard_bind h
   obtain ⟨hP2, h⟩ := option_guard_bind h
   have hfor := mapM_forall₂_of_eq (lowerDataDecl (declKindEnv ke₀ sdecls)) h
@@ -615,7 +755,7 @@ theorem lowerDataDeclsIn_complete {ke₀ : KindEnv}
     {sdecls : List Surface.DataDecl} {decls : List DataDecl} :
     LowersDataDeclsIn ke₀ sdecls decls → lowerDataDeclsIn ke₀ sdecls = some decls := by
   intro h
-  unfold lowerDataDeclsIn
+  rw [lowerDataDeclsIn_eq]
   rw [option_guard_bind_pos h.tyNamesNodup, option_guard_bind_pos h.ctorNamesNodup]
   simp only
   rw [mapM_of_forall₂_of_eq _ (Forall₂_imp
@@ -1002,15 +1142,36 @@ def indexSetsToBindings (binds : List Surface.Binding) (sets : List (List Nat)) 
     idxs.filterMap fun i => binds[i]?
 
 /-- Executable SCC grouping: `none` if binding names are not unique. -/
-def sccGroups (binds : List Surface.Binding) :
-    Option (List (List Surface.Binding)) := do
-  guard (binds.map (·.name)).Nodup
+def sccGroupsResult (binds : List Surface.Binding) :
+    Except LoweringError (List (List Surface.Binding)) := do
+  let names := binds.map (·.name)
+  TypedResult.ensure (.root (.duplicateBindings (names.filter (fun name => 1 < names.count name)).dedup)) names.Nodup
   let tbl := bindSuccTable binds
   let succ := fun i => tbl[i]?.getD []
   let comps := sccIndexSets binds
   let order := kahnTopo comps.length (sccBeforeEdges succ comps)
   let ordered := order.filterMap fun k => comps[k]?
   pure (indexSetsToBindings binds ordered)
+
+def sccGroups (binds : List Surface.Binding) : Option (List (List Surface.Binding)) :=
+  (sccGroupsResult binds).toOption
+
+@[typed_result_projection] theorem sccGroupsResult_toOption (binds : List Surface.Binding) :
+    (sccGroupsResult binds).toOption = sccGroups binds := rfl
+
+theorem sccGroups_eq (binds : List Surface.Binding) :
+    sccGroups binds = (show Option (List (List Surface.Binding)) from
+ do
+  guard (binds.map (·.name)).Nodup
+  let tbl := bindSuccTable binds
+  let succ := fun i => tbl[i]?.getD []
+  let comps := sccIndexSets binds
+  let order := kahnTopo comps.length (sccBeforeEdges succ comps)
+  let ordered := order.filterMap fun k => comps[k]?
+  pure (indexSetsToBindings binds ordered)) := by
+  unfold sccGroups sccGroupsResult
+  simp only [TypedResult.toOption_bind, TypedResult.toOption_ensure, TypedResult.toOption_pure]
+  rfl
 
 /-! #### SCC adequacy helpers -/
 
@@ -1032,12 +1193,12 @@ theorem sccGroups_eq_some_iff {binds : List Surface.Binding}
   · intro h
     have hn : (binds.map (·.name)).Nodup := by
       by_contra hdup
-      simp [sccGroups, guard, hdup] at h
+      simp [sccGroups_eq, guard, hdup] at h
     refine ⟨hn, ?_⟩
-    simp [sccGroups, guard, hn, hsucc] at h
+    simp [sccGroups_eq, guard, hn, hsucc] at h
     exact h.symm
   · intro ⟨hn, hg⟩
-    simp [sccGroups, guard, hn, sccOrderedIndexSets, hg, hsucc]
+    simp [sccGroups_eq, guard, hn, sccOrderedIndexSets, hg, hsucc]
 
 private theorem map_name_length (binds : List Surface.Binding) :
     (binds.map (·.name)).length = binds.length := by
@@ -2872,11 +3033,15 @@ theorem sccGroups_complete {binds : List Surface.Binding}
     ValidBindingGroups binds groups → (sccGroups binds).isSome := by
   intro h
   have hn := h.namesNodup
-  simp [sccGroups, guard, hn]
+  simp [sccGroups_eq, guard, hn]
 
 /-- Build a `Program` from a flat binding list: SCC-sort groups, keep
     `desugarGroups` as the sole consumer of `List (List Binding)`.
     Fails (`none`) iff binding names are not unique. -/
+def Program.ofFlatResult (decls : List Surface.DataDecl)
+    (bindings : List Surface.Binding) (body : Surface.Expr) : Except LoweringError Surface.Program :=
+  (sccGroupsResult bindings).map fun groups => ⟨decls, groups, body⟩
+
 def Program.ofFlat (decls : List Surface.DataDecl)
     (binds : List Surface.Binding) (body : Surface.Expr) :
     Option Surface.Program :=
@@ -2941,16 +3106,25 @@ private def bK : Surface.Binding :=
     scheme's own `foralls` are innermost, so they precede `tvs`; only those own
     binders contribute to `paramCount`. Ambient names therefore lower to bvars
     beyond the scheme's own binder block and are opened by the enclosing term. -/
-def lowerPolyIn (ke : KindEnv) (tvs : List ValName) (σ : Surface.PolyTy) : Option PolyTy :=
-  let fs := σ.foralls.eraseDups
-  (lowerTy ke (fs ++ tvs) σ.body).map (fun b => ⟨fs.length, b⟩)
+def lowerPolyInResult (ke : KindEnv) (tvs : List ValName) (scheme : Surface.PolyTy) :
+    Except LoweringError PolyTy :=
+  let names := scheme.foralls.eraseDups
+  (lowerTyResult ke (names ++ tvs) scheme.body).map (fun body => ⟨names.length, body⟩)
 
-/-- Closed-scope specialization used by declarations and compatibility lemmas. -/
-def lowerPoly (ke : KindEnv) (σ : Surface.PolyTy) : Option PolyTy :=
-  let fs := σ.foralls.eraseDups
-  (lowerTy ke fs σ.body).map (fun b => ⟨fs.length, b⟩)
+def lowerPolyResult (ke : KindEnv) (scheme : Surface.PolyTy) : Except LoweringError PolyTy :=
+  lowerPolyInResult ke [] scheme
 
+def lowerPolyIn (ke : KindEnv) (tvs : List ValName) (scheme : Surface.PolyTy) : Option PolyTy :=
+  (lowerPolyInResult ke tvs scheme).toOption
 
+def lowerPoly (ke : KindEnv) (scheme : Surface.PolyTy) : Option PolyTy :=
+  (lowerPolyResult ke scheme).toOption
+
+@[typed_result_projection] theorem lowerPolyInResult_toOption (ke : KindEnv) (tvs : List ValName) (scheme : Surface.PolyTy) :
+    (lowerPolyInResult ke tvs scheme).toOption = lowerPolyIn ke tvs scheme := rfl
+
+@[typed_result_projection] theorem lowerPolyResult_toOption (ke : KindEnv) (scheme : Surface.PolyTy) :
+    (lowerPolyResult ke scheme).toOption = lowerPoly ke scheme := rfl
 
 /-! ## Shared binding-head normalization -/
 
@@ -3015,35 +3189,56 @@ def compoundLambdaPattern : Surface.Pattern → Bool
 end SurfaceBridge
 
 mutual
-/-- Lower a template with the same name, kind and arity checks as ordinary
-surface type lowering. Named scoped variables remain fixed bound variables. -/
-def lowerTemplate (ke : KindEnv) (tvs : List ValName) : Surface.Ty → Option TyTemplate
-  | .hole => some .hole
-  | .namedHole name => some (.named name)
-  | .prim p => (SurfaceBridge.lowerTy ke tvs (.prim p)).map .fixed
-  | .tvar name => (SurfaceBridge.lowerTy ke tvs (.tvar name)).map .fixed
-  | .arrow a b => return .arrow (← lowerTemplate ke tvs a) (← lowerTemplate ke tvs b)
+/-- Templates preserve holes while retaining native kind and scope failures. -/
+def lowerTemplateResult (ke : KindEnv) (tvs : List ValName) : Surface.Ty → Except LoweringError TyTemplate
+  | .hole => .ok .hole
+  | .namedHole name => .ok (.named name)
+  | .prim prim => (SurfaceBridge.lowerTyResult ke tvs (.prim prim)).map .fixed
+  | .tvar name => (SurfaceBridge.lowerTyResult ke tvs (.tvar name)).map .fixed
+  | .arrow a b => do
+      let a' ← (lowerTemplateResult ke tvs a).mapError (.belowType .domain)
+      let b' ← (lowerTemplateResult ke tvs b).mapError (.belowType .codomain)
+      pure (.arrow a' b')
   | .pair a b => do
-      let a' ← lowerTemplate ke tvs a
-      let b' ← lowerTemplate ke tvs b
-      if LookupList.get? ke SurfaceBridge.nPair = some 2 then
-        some (.custom SurfaceBridge.nPair [a', b'])
-      else none
+      let a' ← (lowerTemplateResult ke tvs a).mapError (.belowType .pairLeft)
+      let b' ← (lowerTemplateResult ke tvs b).mapError (.belowType .pairRight)
+      let _ ← SurfaceBridge.checkTypeArityResult ke SurfaceBridge.nPair 2
+      pure (.custom SurfaceBridge.nPair [a', b'])
   | .customTy name args => do
-      let args' ← lowerTemplateList ke tvs args
-      if LookupList.get? ke name = some args'.length then some (.custom name args') else none
-
-def lowerTemplateList (ke : KindEnv) (tvs : List ValName) :
-    List Surface.Ty → Option (List TyTemplate)
-  | [] => some []
-  | ty :: rest => return (← lowerTemplate ke tvs ty) :: (← lowerTemplateList ke tvs rest)
+      let args' ← lowerTemplateListResult ke tvs args
+      let _ ← SurfaceBridge.checkTypeArityResult ke name args'.length
+      pure (.custom name args')
+def lowerTemplateListResult (ke : KindEnv) (tvs : List ValName) :
+    List Surface.Ty → Except LoweringError (List TyTemplate)
+  | [] => .ok []
+  | ty :: rest => do
+      let ty' ← (lowerTemplateResult ke tvs ty).mapError (.belowType (.argument 0))
+      let rest' ← (lowerTemplateListResult ke tvs rest).mapError LoweringError.nextTypeArgument
+      pure (ty' :: rest')
 end
 
-/-- Lower an optional lambda-parameter annotation without filling its holes. -/
-def lowerTemplateAnn (ke : KindEnv) (tvs : List ValName) :
-    Option Surface.Ty → Option (Option TyTemplate)
-  | none => some none
-  | some ty => (lowerTemplate ke tvs ty).map some
+def lowerTemplate (ke : KindEnv) (tvs : List ValName) (ty : Surface.Ty) : Option TyTemplate :=
+  (lowerTemplateResult ke tvs ty).toOption
+
+def lowerTemplateList (ke : KindEnv) (tvs : List ValName) (types : List Surface.Ty) : Option (List TyTemplate) :=
+  (lowerTemplateListResult ke tvs types).toOption
+
+def lowerTemplateAnnResult (ke : KindEnv) (tvs : List ValName) :
+    Option Surface.Ty → Except LoweringError (Option TyTemplate)
+  | none => .ok none
+  | some ty => (lowerTemplateResult ke tvs ty).map some
+
+def lowerTemplateAnn (ke : KindEnv) (tvs : List ValName) (ann : Option Surface.Ty) : Option (Option TyTemplate) :=
+  (lowerTemplateAnnResult ke tvs ann).toOption
+
+@[typed_result_projection] theorem lowerTemplateResult_toOption (ke : KindEnv) (tvs : List ValName) (ty : Surface.Ty) :
+    (lowerTemplateResult ke tvs ty).toOption = lowerTemplate ke tvs ty := rfl
+
+@[typed_result_projection] theorem lowerTemplateListResult_toOption (ke : KindEnv) (tvs : List ValName) (types : List Surface.Ty) :
+    (lowerTemplateListResult ke tvs types).toOption = lowerTemplateList ke tvs types := rfl
+
+@[typed_result_projection] theorem lowerTemplateAnnResult_toOption (ke : KindEnv) (tvs : List ValName) (ann : Option Surface.Ty) :
+    (lowerTemplateAnnResult ke tvs ann).toOption = lowerTemplateAnn ke tvs ann := rfl
 
 /-- Normalize binding-head sugar for the canonical input pipeline.
 A result annotation describes the RHS after every head parameter. Missing
@@ -3087,13 +3282,19 @@ example : finalizeInputAnn [.mk "a"] [(.mk "x", none)]
 
 /-- Lower a written scheme without storing a checking-mode tag. The checker
 classifies its body when it needs the complete/partial distinction. -/
-def lowerInputLetAnn (ke : KindEnv) (tvs : List ValName) :
-    Option Surface.PolyTy → Option BindingAnn
-  | none => some none
+def lowerInputLetAnnResult (ke : KindEnv) (tvs : List ValName) :
+    Option Surface.PolyTy → Except LoweringError BindingAnn
+  | none => .ok none
   | some scheme => do
       let names := scheme.foralls.eraseDups
-      let template ← lowerTemplate ke (names ++ tvs) scheme.body
+      let template ← lowerTemplateResult ke (names ++ tvs) scheme.body
       pure (some ⟨names.length, template⟩)
+
+def lowerInputLetAnn (ke : KindEnv) (tvs : List ValName) (ann : Option Surface.PolyTy) : Option BindingAnn :=
+  (lowerInputLetAnnResult ke tvs ann).toOption
+
+@[typed_result_projection] theorem lowerInputLetAnnResult_toOption (ke : KindEnv) (tvs : List ValName) (ann : Option Surface.PolyTy) :
+    (lowerInputLetAnnResult ke tvs ann).toOption = lowerInputLetAnn ke tvs ann := rfl
 
 /-- Preserve input annotations while using the single generic pattern emitter. -/
 def inputEmissionOps : PatComp.EmissionOps InferInput :=
@@ -3126,9 +3327,25 @@ structure LoweringOps (Term ParamAnn BindAnn : Type) where
   lambda : ParamAnn → Term → Term
   letIn : BindAnn → Term → Term → Term
   letRec : List (RecBinding BindAnn Term) → Term → Term
-  lowerParamAnn : KindEnv → List ValName → Option Surface.Ty → Option ParamAnn
+  lowerParamAnnResult : KindEnv → List ValName → Option Surface.Ty → Except LoweringError ParamAnn
   finalize : List ValName → List (ValName × Option Surface.Ty) → Option Surface.PolyTy → Option Surface.PolyTy
-  lowerBindAnn : KindEnv → List ValName → Option Surface.PolyTy → Option BindAnn
+  lowerBindAnnResult : KindEnv → List ValName → Option Surface.PolyTy → Except LoweringError BindAnn
+
+def LoweringOps.lowerParamAnn (ops : LoweringOps Term ParamAnn BindAnn)
+    (ke : KindEnv) (tvs : List ValName) (ann : Option Surface.Ty) : Option ParamAnn :=
+  (ops.lowerParamAnnResult ke tvs ann).toOption
+
+def LoweringOps.lowerBindAnn (ops : LoweringOps Term ParamAnn BindAnn)
+    (ke : KindEnv) (tvs : List ValName) (ann : Option Surface.PolyTy) : Option BindAnn :=
+  (ops.lowerBindAnnResult ke tvs ann).toOption
+
+@[typed_result_projection] theorem LoweringOps.lowerParamAnnResult_toOption
+    (ops : LoweringOps Term ParamAnn BindAnn) (ke : KindEnv) (tvs : List ValName) (ann : Option Surface.Ty) :
+    (ops.lowerParamAnnResult ke tvs ann).toOption = ops.lowerParamAnn ke tvs ann := rfl
+
+@[typed_result_projection] theorem LoweringOps.lowerBindAnnResult_toOption
+    (ops : LoweringOps Term ParamAnn BindAnn) (ke : KindEnv) (tvs : List ValName) (ann : Option Surface.PolyTy) :
+    (ops.lowerBindAnnResult ke tvs ann).toOption = ops.lowerBindAnn ke tvs ann := rfl
 
 private theorem lowering_bind_eq_some {α β : Type} {o : Option α} {f : α → Option β} {b : β}
     (h : o.bind f = some b) : ∃ a, o = some a ∧ f a = some b := by
@@ -3142,13 +3359,33 @@ def LoweringOps.mkList (ops : LoweringOps Term ParamAnn BindAnn) : List Term →
   | [] => ops.emission.ctor cNil
   | x :: xs => ops.app (ops.app (ops.emission.ctor cCons) x) (ops.mkList xs)
 
-def LoweringOps.wrapParams (ops : LoweringOps Term ParamAnn BindAnn)
-    (ke : KindEnv) (tvs : List ValName) : List (ValName × Option Surface.Ty) → Term → Option Term
-  | [], body => some body
+def LoweringOps.wrapParamsResult (ops : LoweringOps Term ParamAnn BindAnn)
+    (ke : KindEnv) (tvs : List ValName) : List (ValName × Option Surface.Ty) → Term → Except LoweringError Term
+  | [], body => .ok body
   | (_, ann) :: rest, body => do
-      let ann' ← ops.lowerParamAnn ke tvs ann
-      let inner ← ops.wrapParams ke tvs rest body
+      let ann' ← (ops.lowerParamAnnResult ke tvs ann).mapError (.atSite (.parameterAnnotation 0))
+      let inner ← (ops.wrapParamsResult ke tvs rest body).mapError LoweringError.nextParameter
       pure (ops.lambda ann' inner)
+
+def LoweringOps.wrapParams (ops : LoweringOps Term ParamAnn BindAnn)
+    (ke : KindEnv) (tvs : List ValName) (params : List (ValName × Option Surface.Ty)) (body : Term) : Option Term :=
+  (ops.wrapParamsResult ke tvs params body).toOption
+
+@[typed_result_projection] theorem LoweringOps.wrapParamsResult_toOption
+    (ops : LoweringOps Term ParamAnn BindAnn) (ke : KindEnv) (tvs : List ValName)
+    (params : List (ValName × Option Surface.Ty)) (body : Term) :
+    (ops.wrapParamsResult ke tvs params body).toOption = ops.wrapParams ke tvs params body := rfl
+
+theorem LoweringOps.wrapParams_eq (ops : LoweringOps Term ParamAnn BindAnn)
+    (ke : KindEnv) (tvs : List ValName) (params : List (ValName × Option Surface.Ty)) (body : Term) :
+    ops.wrapParams ke tvs params body = (match params with
+      | [] => some body
+      | (_, ann) :: rest => do
+          let ann' ← ops.lowerParamAnn ke tvs ann
+          let inner ← ops.wrapParams ke tvs rest body
+          pure (ops.lambda ann' inner)) := by
+  rw [LoweringOps.wrapParams, LoweringOps.wrapParamsResult]
+  cases params <;> simp only [typed_result_projection]
 
 def LoweringOps.match_ (ops : LoweringOps Term ParamAnn BindAnn)
     (scrut : Term) (pats : List Surface.Pattern) (bodies : List Term) : Term :=
@@ -3159,8 +3396,138 @@ def LoweringOps.patternLambda (ops : LoweringOps Term ParamAnn BindAnn)
   ops.lambda ann (ops.match_ (ops.emission.var 0) [pat] [body])
 
 mutual
- def lowerExprWith (ops : LoweringOps Term ParamAnn BindAnn) (ke : KindEnv)
-     (tvs vs : List ValName) : Surface.Expr → Option Term
+ def lowerExprWithResult (ops : LoweringOps Term ParamAnn BindAnn) (ke : KindEnv)
+     (tvs vs : List ValName) : Surface.Expr → Except LoweringError Term
+   | .primLit (.bool b) => .ok (ops.emission.ctor (if b then cTrue else cFalse))
+   | .primLit .unit => .ok (ops.primLit .unit)
+   | .primLit (.int n) => .ok (ops.primLit (.int n))
+   | .primLit (.nat n) => .ok (ops.primLit (.nat n))
+   | .primLit (.char c) => .ok (ops.primLit (.char c))
+   | .primBinOp op => .ok (ops.primBinOp op)
+   | .pair a b => do
+       let a' ← (lowerExprWithResult ops ke tvs vs a).mapError (.below .pairLeft)
+       let b' ← (lowerExprWithResult ops ke tvs vs b).mapError (.below .pairRight)
+       pure (ops.app (ops.app (ops.emission.ctor cPair) a') b')
+   | .cons head tail => do
+       let head' ← (lowerExprWithResult ops ke tvs vs head).mapError (.below .consHead)
+       let tail' ← (lowerExprWithResult ops ke tvs vs tail).mapError (.below .consTail)
+       pure (ops.app (ops.app (ops.emission.ctor cCons) head') tail')
+   | .list items => (lowerExprListWithResult ops ke tvs vs items).map ops.mkList
+   | .lambda param ann body => do
+       let ann' ← (ops.lowerParamAnnResult ke tvs ann).mapError (.atSite .lambdaAnnotation)
+       match param with
+       | .name name =>
+           let body' ← (lowerExprWithResult ops ke tvs (name :: vs) body).mapError (.below .lambdaBody)
+           pure (ops.lambda ann' body')
+       | .wildcard =>
+           let body' ← (lowerExprWithResult ops ke tvs (.mk "_" :: vs) body).mapError (.below .lambdaBody)
+           pure (ops.lambda ann' body')
+       | _ =>
+           let body' ← (lowerExprWithResult ops ke tvs (patVars param ++ .mk "_" :: vs) body).mapError (.below .lambdaBody)
+           pure (ops.patternLambda ann' param body')
+   | .app fn arg => do
+       let fn' ← (lowerExprWithResult ops ke tvs vs fn).mapError (.below .appFun)
+       let arg' ← (lowerExprWithResult ops ke tvs vs arg).mapError (.below .appArg)
+       pure (ops.app fn' arg')
+   | .letIn name tyParams params ann rhs body => do
+       let annF := ops.finalize tyParams params ann
+       let ann' ← (ops.lowerBindAnnResult ke tvs annF).mapError fun error =>
+         (error.atSite .bindingAnnotation).inBinding name
+       let tvs' := letAnnTyPrefix tyParams annF ++ tvs
+       let rhsCore ← (lowerExprWithResult ops ke tvs' (paramTermScope params vs) rhs).mapError fun error =>
+         (error.below .letRhs).inBinding name
+       let rhs' ← (ops.wrapParamsResult ke tvs' params rhsCore).mapError (.inBinding name)
+       let body' ← (lowerExprWithResult ops ke tvs (name :: vs) body).mapError (.below .letBody)
+       pure (ops.letIn ann' rhs' body')
+   | .letRecIn binds body => do
+       let recScope := binds.map (·.name) ++ vs
+       let bindings' ← lowerRecBindsWithResult ops ke tvs recScope binds
+       let body' ← (lowerExprWithResult ops ke tvs recScope body).mapError (.below .letRecBody)
+       pure (ops.letRec bindings' body')
+   | .var name => (resolveValueResult vs name).map ops.emission.var
+   | .ctor name => .ok (ops.emission.ctor name)
+   | .ife condition yes no => do
+       let condition' ← (lowerExprWithResult ops ke tvs vs condition).mapError (.below .ifCondition)
+       let yes' ← (lowerExprWithResult ops ke tvs vs yes).mapError (.below .ifThen)
+       let no' ← (lowerExprWithResult ops ke tvs vs no).mapError (.below .ifElse)
+       pure (ops.match_ condition' [.ctor cTrue [], .ctor cFalse []] [yes', no'])
+   | .match_ scrutinee branches => do
+       let scrutinee' ← (lowerExprWithResult ops ke tvs vs scrutinee).mapError (.below .matchScrut)
+       let bodies' ← lowerBranchesWithResult ops ke tvs vs branches
+       pure (ops.match_ scrutinee' (branches.map Prod.fst) bodies')
+ termination_by expr => lowerExprSize expr
+ decreasing_by all_goals simp [lowerExprSize] <;> omega
+ def lowerExprListWithResult (ops : LoweringOps Term ParamAnn BindAnn) (ke : KindEnv)
+     (tvs vs : List ValName) : List Surface.Expr → Except LoweringError (List Term)
+   | [] => .ok []
+   | expr :: rest => do
+       let expr' ← (lowerExprWithResult ops ke tvs vs expr).mapError (.below (.listItem 0))
+       let rest' ← (lowerExprListWithResult ops ke tvs vs rest).mapError LoweringError.nextListItem
+       pure (expr' :: rest')
+ termination_by exprs => lowerExprListSize exprs
+ decreasing_by all_goals simp [lowerExprListSize] <;> omega
+ def lowerBranchesWithResult (ops : LoweringOps Term ParamAnn BindAnn) (ke : KindEnv)
+     (tvs vs : List ValName) : List (Surface.Pattern × Surface.Expr) → Except LoweringError (List Term)
+   | [] => .ok []
+   | (pattern, body) :: rest => do
+       let body' ← (lowerExprWithResult ops ke tvs (patVars pattern ++ vs) body).mapError (.below (.matchBranch 0))
+       let rest' ← (lowerBranchesWithResult ops ke tvs vs rest).mapError LoweringError.nextBranch
+       pure (body' :: rest')
+ termination_by branches => lowerBranchesSize branches
+ decreasing_by all_goals simp [lowerBranchesSize] <;> omega
+ def lowerRecBindsWithResult (ops : LoweringOps Term ParamAnn BindAnn) (ke : KindEnv)
+     (tvs vs : List ValName) : List Surface.Binding → Except LoweringError (List (RecBinding BindAnn Term))
+   | [] => .ok []
+   | binding :: rest => do
+       let annF := ops.finalize binding.tyParams binding.params binding.ann
+       let ann' ← (ops.lowerBindAnnResult ke tvs annF).mapError fun error =>
+         ((error.atSite .bindingAnnotation).inBinding binding.name).below (.letRecRhs 0)
+       let tvs' := letAnnTyPrefix binding.tyParams annF ++ tvs
+       let rhsCore ← (lowerExprWithResult ops ke tvs' (paramTermScope binding.params vs) binding.rhs).mapError fun error =>
+         (error.inBinding binding.name).below (.letRecRhs 0)
+       let rhs' ← (ops.wrapParamsResult ke tvs' binding.params rhsCore).mapError fun error =>
+         (error.inBinding binding.name).below (.letRecRhs 0)
+       let rest' ← (lowerRecBindsWithResult ops ke tvs vs rest).mapError LoweringError.nextRecBinding
+       pure ({ ann := ann', rhs := rhs' } :: rest')
+ termination_by bindings => lowerRecBindsSize bindings
+ decreasing_by all_goals simp [lowerRecBindsSize] <;> omega
+end
+
+def lowerExprWith (ops : LoweringOps Term ParamAnn BindAnn) (ke : KindEnv)
+    (tvs vs : List ValName) (expr : Surface.Expr) : Option Term :=
+  (lowerExprWithResult ops ke tvs vs expr).toOption
+
+@[typed_result_projection] theorem lowerExprWithResult_toOption
+    (ops : LoweringOps Term ParamAnn BindAnn) (ke : KindEnv) (tvs vs : List ValName) (expr : Surface.Expr) :
+    (lowerExprWithResult ops ke tvs vs expr).toOption = lowerExprWith ops ke tvs vs expr := rfl
+
+def lowerExprListWith (ops : LoweringOps Term ParamAnn BindAnn) (ke : KindEnv)
+    (tvs vs : List ValName) (exprs : List Surface.Expr) : Option (List Term) :=
+  (lowerExprListWithResult ops ke tvs vs exprs).toOption
+
+@[typed_result_projection] theorem lowerExprListWithResult_toOption
+    (ops : LoweringOps Term ParamAnn BindAnn) (ke : KindEnv) (tvs vs : List ValName) (exprs : List Surface.Expr) :
+    (lowerExprListWithResult ops ke tvs vs exprs).toOption = lowerExprListWith ops ke tvs vs exprs := rfl
+
+def lowerBranchesWith (ops : LoweringOps Term ParamAnn BindAnn) (ke : KindEnv)
+    (tvs vs : List ValName) (branches : List (Surface.Pattern × Surface.Expr)) : Option (List Term) :=
+  (lowerBranchesWithResult ops ke tvs vs branches).toOption
+
+@[typed_result_projection] theorem lowerBranchesWithResult_toOption
+    (ops : LoweringOps Term ParamAnn BindAnn) (ke : KindEnv) (tvs vs : List ValName) (branches : List (Surface.Pattern × Surface.Expr)) :
+    (lowerBranchesWithResult ops ke tvs vs branches).toOption = lowerBranchesWith ops ke tvs vs branches := rfl
+
+def lowerRecBindsWith (ops : LoweringOps Term ParamAnn BindAnn) (ke : KindEnv)
+    (tvs vs : List ValName) (bindings : List Surface.Binding) : Option (List (RecBinding BindAnn Term)) :=
+  (lowerRecBindsWithResult ops ke tvs vs bindings).toOption
+
+@[typed_result_projection] theorem lowerRecBindsWithResult_toOption
+    (ops : LoweringOps Term ParamAnn BindAnn) (ke : KindEnv) (tvs vs : List ValName) (bindings : List Surface.Binding) :
+    (lowerRecBindsWithResult ops ke tvs vs bindings).toOption = lowerRecBindsWith ops ke tvs vs bindings := rfl
+
+theorem lowerExprWith_eq (ops : LoweringOps Term ParamAnn BindAnn) (ke : KindEnv)
+    (tvs vs : List ValName) (expr : Surface.Expr) :
+    lowerExprWith ops ke tvs vs expr = (show Option Term from match expr with
    | .primLit (.bool b) => some (ops.emission.ctor (if b then cTrue else cFalse))
    | .primLit .unit => some (ops.primLit .unit)
    | .primLit (.int n) => some (ops.primLit (.int n))
@@ -3201,23 +3568,34 @@ mutual
        let scrut' ← lowerExprWith ops ke tvs vs scrut
        let bodies' ← lowerBranchesWith ops ke tvs vs brs
        pure (ops.match_ scrut' (brs.map Prod.fst) bodies')
- termination_by e => lowerExprSize e
- decreasing_by all_goals simp [lowerExprSize] <;> omega
- def lowerExprListWith (ops : LoweringOps Term ParamAnn BindAnn) (ke : KindEnv)
-     (tvs vs : List ValName) : List Surface.Expr → Option (List Term)
+) := by
+  rw [lowerExprWith, lowerExprWithResult]
+  cases expr <;> simp only [typed_result_projection]
+  all_goals repeat first | split | (solve | rfl)
+
+theorem lowerExprListWith_eq (ops : LoweringOps Term ParamAnn BindAnn) (ke : KindEnv)
+    (tvs vs : List ValName) (exprs : List Surface.Expr) :
+    lowerExprListWith ops ke tvs vs exprs = (show Option (List Term) from match exprs with
    | [] => some []
    | e :: es => return (← lowerExprWith ops ke tvs vs e) :: (← lowerExprListWith ops ke tvs vs es)
- termination_by es => lowerExprListSize es
- decreasing_by all_goals simp [lowerExprListSize] <;> omega
- def lowerBranchesWith (ops : LoweringOps Term ParamAnn BindAnn) (ke : KindEnv)
-     (tvs vs : List ValName) : List (Surface.Pattern × Surface.Expr) → Option (List Term)
+) := by
+  rw [lowerExprListWith, lowerExprListWithResult]
+  cases exprs <;> simp only [typed_result_projection]
+  all_goals repeat first | split | (solve | rfl)
+
+theorem lowerBranchesWith_eq (ops : LoweringOps Term ParamAnn BindAnn) (ke : KindEnv)
+    (tvs vs : List ValName) (branches : List (Surface.Pattern × Surface.Expr)) :
+    lowerBranchesWith ops ke tvs vs branches = (show Option (List Term) from match branches with
    | [] => some []
    | (p,b) :: rest => return (← lowerExprWith ops ke tvs (patVars p ++ vs) b) :: (← lowerBranchesWith ops ke tvs vs rest)
- termination_by bs => lowerBranchesSize bs
- decreasing_by all_goals simp [lowerBranchesSize] <;> omega
- def lowerRecBindsWith (ops : LoweringOps Term ParamAnn BindAnn) (ke : KindEnv)
-     (tvs vs : List ValName) :
-     List Surface.Binding → Option (List (RecBinding BindAnn Term))
+) := by
+  rw [lowerBranchesWith, lowerBranchesWithResult]
+  cases branches <;> simp only [typed_result_projection]
+  all_goals repeat first | split | (solve | rfl)
+
+theorem lowerRecBindsWith_eq (ops : LoweringOps Term ParamAnn BindAnn) (ke : KindEnv)
+    (tvs vs : List ValName) (bindings : List Surface.Binding) :
+    lowerRecBindsWith ops ke tvs vs bindings = (show Option (List (RecBinding BindAnn Term)) from match bindings with
    | [] => some []
    | b :: rest => do
        let annF := ops.finalize b.tyParams b.params b.ann
@@ -3226,9 +3604,12 @@ mutual
        let rhsCore ← lowerExprWith ops ke tvs' (paramTermScope b.params vs) b.rhs
        let rhs' ← ops.wrapParams ke tvs' b.params rhsCore
        return { ann := ann', rhs := rhs' } :: (← lowerRecBindsWith ops ke tvs vs rest)
- termination_by bs => lowerRecBindsSize bs
- decreasing_by all_goals simp [lowerRecBindsSize] <;> omega
-end
+) := by
+  rw [lowerRecBindsWith, lowerRecBindsWithResult]
+  cases bindings <;> simp only [typed_result_projection]
+  all_goals repeat first | split | (solve | rfl)
+
+
 mutual
 /-- Structural surface lowering, parameterized only by target syntax and annotation policy. -/
 inductive LowersExprWith (ops : LoweringOps Term ParamAnn BindAnn) (ctors : CtorEnv) (ke : KindEnv) :
@@ -3316,40 +3697,40 @@ theorem lowerExprWith_complete {ops : LoweringOps Term ParamAnn BindAnn}
     {ctors ke tvs vs s c} (h : LowersExprWith ops ctors ke tvs vs s c) :
     lowerExprWith ops ke tvs vs s = some c := by
   cases h with
-  | primLitUnit | primLitInt | primLitNat | primLitChar | primLitBool | primBinOp | ctor => simp [lowerExprWith]
-  | pair ha hb => simp [lowerExprWith, lowerExprWith_complete ha, lowerExprWith_complete hb]
-  | cons ha hb => simp [lowerExprWith, lowerExprWith_complete ha, lowerExprWith_complete hb]
-  | list hs => simp [lowerExprWith, lowerExprListWith_complete hs]
-  | lambda_name ha hb => simp [lowerExprWith, ha, lowerExprWith_complete hb]
-  | lambda_wild ha hb => simp [lowerExprWith, ha, lowerExprWith_complete hb]
+  | primLitUnit | primLitInt | primLitNat | primLitChar | primLitBool | primBinOp | ctor => simp [lowerExprWith_eq]
+  | pair ha hb => simp [lowerExprWith_eq, lowerExprWith_complete ha, lowerExprWith_complete hb]
+  | cons ha hb => simp [lowerExprWith_eq, lowerExprWith_complete ha, lowerExprWith_complete hb]
+  | list hs => simp [lowerExprWith_eq, lowerExprListWith_complete hs]
+  | lambda_name ha hb => simp [lowerExprWith_eq, ha, lowerExprWith_complete hb]
+  | lambda_wild ha hb => simp [lowerExprWith_eq, ha, lowerExprWith_complete hb]
   | @lambda_pattern tvs vs param ann ann' body body' hp ha hb =>
-      cases param <;> simp_all [compoundLambdaPattern, lowerExprWith, lowerExprWith_complete hb]
-  | app ha hb => simp [lowerExprWith, lowerExprWith_complete ha, lowerExprWith_complete hb]
-  | letIn ha hr hw hb => simp [lowerExprWith, ha, lowerExprWith_complete hr, hw, lowerExprWith_complete hb]
-  | letRecIn hr hb => simp [lowerExprWith, lowerRecBindsWith_complete hr, lowerExprWith_complete hb]
-  | var hi => simp [lowerExprWith, hi]
-  | ife hc ht hf => simp [lowerExprWith, lowerExprWith_complete hc, lowerExprWith_complete ht, lowerExprWith_complete hf]
-  | match_ hs hb => simp [lowerExprWith, lowerExprWith_complete hs, lowerBranchesWith_complete hb]
+      cases param <;> simp_all [compoundLambdaPattern,lowerExprWith_eq, lowerExprWith_complete hb]
+  | app ha hb => simp [lowerExprWith_eq, lowerExprWith_complete ha, lowerExprWith_complete hb]
+  | letIn ha hr hw hb => simp [lowerExprWith_eq, ha, lowerExprWith_complete hr, hw, lowerExprWith_complete hb]
+  | letRecIn hr hb => simp [lowerExprWith_eq, lowerRecBindsWith_complete hr, lowerExprWith_complete hb]
+  | var hi => simp [lowerExprWith_eq, hi]
+  | ife hc ht hf => simp [lowerExprWith_eq, lowerExprWith_complete hc, lowerExprWith_complete ht, lowerExprWith_complete hf]
+  | match_ hs hb => simp [lowerExprWith_eq, lowerExprWith_complete hs, lowerBranchesWith_complete hb]
 theorem lowerExprListWith_complete {ops : LoweringOps Term ParamAnn BindAnn}
     {ctors ke tvs vs es cs} (h : LowersExprListWith ops ctors ke tvs vs es cs) :
     lowerExprListWith ops ke tvs vs es = some cs := by
   cases h with
-  | nil => simp [lowerExprListWith]
-  | cons he hr => simp [lowerExprListWith, lowerExprWith_complete he, lowerExprListWith_complete hr]
+  | nil => simp [lowerExprListWith_eq]
+  | cons he hr => simp [lowerExprListWith_eq, lowerExprWith_complete he, lowerExprListWith_complete hr]
 theorem lowerRecBindsWith_complete {ops : LoweringOps Term ParamAnn BindAnn}
     {ctors ke tvs vs bs cs} (h : LowersRecBindsWith ops ctors ke tvs vs bs cs) :
     lowerRecBindsWith ops ke tvs vs bs = some cs := by
   cases h with
-  | nil => simp [lowerRecBindsWith]
+  | nil => simp [lowerRecBindsWith_eq]
   | cons ha he hw hr =>
-      simp [lowerRecBindsWith, ha, lowerExprWith_complete he, hw,
+      simp [lowerRecBindsWith_eq, ha, lowerExprWith_complete he, hw,
         lowerRecBindsWith_complete hr]
 theorem lowerBranchesWith_complete {ops : LoweringOps Term ParamAnn BindAnn}
     {ctors ke tvs vs bs cs} (h : LowersBranchesWith ops ctors ke tvs vs bs cs) :
     lowerBranchesWith ops ke tvs vs bs = some cs := by
   cases h with
-  | nil => simp [lowerBranchesWith]
-  | cons he hr => simp [lowerBranchesWith, lowerExprWith_complete he, lowerBranchesWith_complete hr]
+  | nil => simp [lowerBranchesWith_eq]
+  | cons he hr => simp [lowerBranchesWith_eq, lowerExprWith_complete he, lowerBranchesWith_complete hr]
 end
 
 mutual
@@ -3357,34 +3738,34 @@ theorem lowerExprWith_sound {ops : LoweringOps Term ParamAnn BindAnn} {ctors ke 
     (s : Surface.Expr) {c} (h : lowerExprWith ops ke tvs vs s = some c) :
     LowersExprWith ops ctors ke tvs vs s c := by
   match s with
-  | .primLit p => cases p <;> simp only [lowerExprWith, Option.some.injEq] at h <;> subst h
+  | .primLit p => cases p <;> simp only [lowerExprWith_eq, Option.some.injEq] at h <;> subst h
                   · exact .primLitUnit
                   · exact .primLitInt
                   · exact .primLitNat
                   · exact .primLitBool
                   · exact .primLitChar
-  | .primBinOp op => simp only [lowerExprWith, Option.some.injEq] at h; subst h; exact .primBinOp
+  | .primBinOp op => simp only [lowerExprWith_eq, Option.some.injEq] at h; subst h; exact .primBinOp
   | .pair a b =>
-      simp only [lowerExprWith] at h
+      simp only [lowerExprWith_eq] at h
       obtain ⟨a', ha, h⟩ := lowering_bind_eq_some h
       obtain ⟨b', hb, h⟩ := lowering_bind_eq_some h
       simp only [pure, Option.some.injEq] at h; subst h
       exact .pair (lowerExprWith_sound a ha) (lowerExprWith_sound b hb)
   | .cons a b =>
-      simp only [lowerExprWith] at h
+      simp only [lowerExprWith_eq] at h
       obtain ⟨a', ha, h⟩ := lowering_bind_eq_some h
       obtain ⟨b', hb, h⟩ := lowering_bind_eq_some h
       simp only [pure, Option.some.injEq] at h; subst h
       exact .cons (lowerExprWith_sound a ha) (lowerExprWith_sound b hb)
   | .list items =>
-      simp only [lowerExprWith] at h
+      simp only [lowerExprWith_eq] at h
       cases he : lowerExprListWith ops ke tvs vs items with
       | none => simp [he] at h
       | some items' =>
           simp only [he, Option.map_some, Option.some.injEq] at h; subst h
           exact .list (lowerExprListWith_sound items he)
   | .lambda param ann body =>
-      simp only [lowerExprWith] at h
+      simp only [lowerExprWith_eq] at h
       obtain ⟨ann', ha, h⟩ := lowering_bind_eq_some h
       cases param with
       | name x =>
@@ -3404,13 +3785,13 @@ theorem lowerExprWith_sound {ops : LoweringOps Term ParamAnn BindAnn} {ctors ke 
           simp only [pure, Option.some.injEq] at h; subst h
           exact .lambda_pattern rfl ha (lowerExprWith_sound body hb)
   | .app f x =>
-      simp only [lowerExprWith] at h
+      simp only [lowerExprWith_eq] at h
       obtain ⟨f', hf, h⟩ := lowering_bind_eq_some h
       obtain ⟨x', hx, h⟩ := lowering_bind_eq_some h
       simp only [pure, Option.some.injEq] at h; subst h
       exact .app (lowerExprWith_sound f hf) (lowerExprWith_sound x hx)
   | .letIn name tyParams params ann rhs body =>
-      simp only [lowerExprWith] at h
+      simp only [lowerExprWith_eq] at h
       obtain ⟨ann', ha, h⟩ := lowering_bind_eq_some h
       obtain ⟨rhsCore, hr, h⟩ := lowering_bind_eq_some h
       obtain ⟨rhs', hw, h⟩ := lowering_bind_eq_some h
@@ -3418,26 +3799,26 @@ theorem lowerExprWith_sound {ops : LoweringOps Term ParamAnn BindAnn} {ctors ke 
       simp only [pure, Option.some.injEq] at h; subst h
       exact .letIn ha (lowerExprWith_sound rhs hr) hw (lowerExprWith_sound body hb)
   | .letRecIn binds body =>
-      simp only [lowerExprWith] at h
+      simp only [lowerExprWith_eq] at h
       obtain ⟨bs', hr, h⟩ := lowering_bind_eq_some h
       obtain ⟨body', hb, h⟩ := lowering_bind_eq_some h
       simp only [pure, Option.some.injEq] at h; subst h
       exact .letRecIn (lowerRecBindsWith_sound binds hr) (lowerExprWith_sound body hb)
   | .var name =>
-      simp only [lowerExprWith] at h
+      simp only [lowerExprWith_eq] at h
       cases hi : tvarIndex vs name with
       | none => simp [hi] at h
       | some i => simp only [hi, Option.map_some, Option.some.injEq] at h; subst h; exact .var hi
-  | .ctor name => simp only [lowerExprWith, Option.some.injEq] at h; subst h; exact .ctor
+  | .ctor name => simp only [lowerExprWith_eq, Option.some.injEq] at h; subst h; exact .ctor
   | .ife cond t f =>
-      simp only [lowerExprWith] at h
+      simp only [lowerExprWith_eq] at h
       obtain ⟨c', hc, h⟩ := lowering_bind_eq_some h
       obtain ⟨t', ht, h⟩ := lowering_bind_eq_some h
       obtain ⟨f', hf, h⟩ := lowering_bind_eq_some h
       simp only [pure, Option.some.injEq] at h; subst h
       exact .ife (lowerExprWith_sound cond hc) (lowerExprWith_sound t ht) (lowerExprWith_sound f hf)
   | .match_ scrut brs =>
-      simp only [lowerExprWith] at h
+      simp only [lowerExprWith_eq] at h
       obtain ⟨s', hs, h⟩ := lowering_bind_eq_some h
       obtain ⟨bs', hb, h⟩ := lowering_bind_eq_some h
       simp only [pure, Option.some.injEq] at h; subst h
@@ -3450,9 +3831,9 @@ theorem lowerExprListWith_sound {ops : LoweringOps Term ParamAnn BindAnn} {ctors
     (es : List Surface.Expr) {cs} (h : lowerExprListWith ops ke tvs vs es = some cs) :
     LowersExprListWith ops ctors ke tvs vs es cs := by
   match es with
-  | [] => simp only [lowerExprListWith, Option.some.injEq] at h; subst h; exact .nil
+  | [] => simp only [lowerExprListWith_eq, Option.some.injEq] at h; subst h; exact .nil
   | e :: es =>
-      simp only [lowerExprListWith] at h
+      simp only [lowerExprListWith_eq] at h
       obtain ⟨e', he, h⟩ := lowering_bind_eq_some h
       obtain ⟨es', hr, h⟩ := lowering_bind_eq_some h
       simp only [pure, Option.some.injEq] at h; subst h
@@ -3465,9 +3846,9 @@ theorem lowerRecBindsWith_sound {ops : LoweringOps Term ParamAnn BindAnn} {ctors
     (bs : List Surface.Binding) {cs} (h : lowerRecBindsWith ops ke tvs vs bs = some cs) :
     LowersRecBindsWith ops ctors ke tvs vs bs cs := by
   match bs with
-  | [] => simp only [lowerRecBindsWith, Option.some.injEq] at h; subst h; exact .nil
+  | [] => simp only [lowerRecBindsWith_eq, Option.some.injEq] at h; subst h; exact .nil
   | b :: rest =>
-      simp only [lowerRecBindsWith] at h
+      simp only [lowerRecBindsWith_eq] at h
       obtain ⟨ann', ha, h⟩ := lowering_bind_eq_some h
       obtain ⟨e', he, h⟩ := lowering_bind_eq_some h
       obtain ⟨wrapped, hw, h⟩ := lowering_bind_eq_some h
@@ -3482,9 +3863,9 @@ theorem lowerBranchesWith_sound {ops : LoweringOps Term ParamAnn BindAnn} {ctors
     (bs : List (Surface.Pattern × Surface.Expr)) {cs} (h : lowerBranchesWith ops ke tvs vs bs = some cs) :
     LowersBranchesWith ops ctors ke tvs vs bs cs := by
   match bs with
-  | [] => simp only [lowerBranchesWith, Option.some.injEq] at h; subst h; exact .nil
+  | [] => simp only [lowerBranchesWith_eq, Option.some.injEq] at h; subst h; exact .nil
   | (pat, b) :: rest =>
-      simp only [lowerBranchesWith] at h
+      simp only [lowerBranchesWith_eq] at h
       obtain ⟨e', he, h⟩ := lowering_bind_eq_some h
       obtain ⟨rest', hr, h⟩ := lowering_bind_eq_some h
       simp only [pure, Option.some.injEq] at h; subst h
@@ -3505,9 +3886,14 @@ def inputLoweringOps : LoweringOps InferInput (Option TyTemplate) BindingAnn :=
     lambda := Expr.lambda
     letIn := Expr.letIn
     letRec := Expr.letRec
-    lowerParamAnn := lowerTemplateAnn
+    lowerParamAnnResult := lowerTemplateAnnResult
     finalize := finalizeInputAnn
-    lowerBindAnn := lowerInputLetAnn }
+    lowerBindAnnResult := lowerInputLetAnnResult }
+abbrev lowerInputExprResult := lowerExprWithResult inputLoweringOps
+abbrev lowerInputExprListResult := lowerExprListWithResult inputLoweringOps
+abbrev lowerInputBranchesResult := lowerBranchesWithResult inputLoweringOps
+abbrev lowerInputRecBindsResult := lowerRecBindsWithResult inputLoweringOps
+abbrev wrapInputParamsResult := inputLoweringOps.wrapParamsResult
 abbrev lowerInputExpr := lowerExprWith inputLoweringOps
 abbrev lowerInputExprList := lowerExprListWith inputLoweringOps
 abbrev lowerInputBranches := lowerBranchesWith inputLoweringOps
@@ -3518,6 +3904,13 @@ abbrev InputLowersExpr := LowersExprWith inputLoweringOps
 abbrev InputLowersExprList := LowersExprListWith inputLoweringOps
 abbrev InputLowersBranches := LowersBranchesWith inputLoweringOps
 abbrev InputLowersRecBinds := LowersRecBindsWith inputLoweringOps
+
+def lowerInputResult (ctors : CtorEnv) (surface : Surface.Expr) : Except LoweringError InferInput :=
+  lowerInputExprResult (kindEnvOfCtors ctors) [] [] surface
+
+@[typed_result_projection] theorem lowerInputResult_toOption (ctors : CtorEnv) (surface : Surface.Expr) :
+    (lowerInputResult ctors surface).toOption =
+      lowerInputExpr (kindEnvOfCtors ctors) [] [] surface := rfl
 
 def lowerInput (ctors : CtorEnv) (s : Surface.Expr) : Option InferInput :=
   lowerInputExpr (kindEnvOfCtors ctors) [] [] s
@@ -3544,6 +3937,13 @@ theorem lowerInput_complete {ctors s input} (h : InputLowers ctors s input) : lo
   lowerInputExpr_complete h
 
 /-- The same declaration elaboration precedes canonical annotated expression lowering. -/
+def lowerInputProgramResult (program : Surface.Program) : Except LoweringError (CtorEnv × InferInput) := do
+  let decls ← lowerDataDeclsInResult preludeKindEnv program.decls
+  let ctors ← (elabDeclsResult (preludeDecls ++ decls)).mapError
+    (fun error => LoweringError.root (.declarationElaboration error))
+  let input ← lowerInputResult ctors program.term
+  pure (ctors, input)
+
 def lowerInputProgram (p : Surface.Program) : Option (CtorEnv × InferInput) := do
   let userCore ← lowerDataDeclsIn preludeKindEnv p.decls
   let ctors ← elabDecls (preludeDecls ++ userCore)

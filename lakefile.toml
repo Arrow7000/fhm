@@ -28,6 +28,7 @@ roots = [
   "FHM.AnnotationErrorTests",
   "FHM.NamedHoleTests",
   "FHM.SurfaceBridge",
+  "FHM.LoweringError",
   "FHM.SurfaceSafety",
   "FHM.InferW",
   "FHM.InferenceErrorTests",

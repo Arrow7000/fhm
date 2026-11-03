@@ -7,6 +7,14 @@ register_simp_attr typed_result_projection
 
 namespace TypedResult
 
+/-- A checked condition with caller-supplied failure data. -/
+def ensure {ε : Type} (error : ε) (condition : Prop) [Decidable condition] : Except ε Unit :=
+  if condition then .ok () else .error error
+
+theorem toOption_ensure {ε : Type} (error : ε) (condition : Prop) [Decidable condition] :
+    (ensure error condition).toOption = (guard condition : Option Unit) := by
+  by_cases h : condition <;> simp [ensure, guard, h, Except.toOption]
+
 theorem toOption_ok {ε α : Type} (value : α) :
     (Except.ok value : Except ε α).toOption = some value := rfl
 
@@ -43,5 +51,12 @@ theorem toOption_dite {ε α : Type} (condition : Prop) [Decidable condition]
 theorem toOption_eq_some {ε α : Type} {result : Except ε α} {value : α} :
     result.toOption = some value ↔ result = .ok value := by
   cases result <;> simp [Except.toOption]
+
+theorem toOption_mapM {ε α β : Type} (map : α → Except ε β) (values : List α) :
+    (values.mapM map).toOption = values.mapM (fun value => (map value).toOption) := by
+  induction values with
+  | nil => rfl
+  | cons value rest ih =>
+      simp only [List.mapM_cons, toOption_bind, toOption_pure, ih]
 
 end TypedResult

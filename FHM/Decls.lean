@@ -1,4 +1,4 @@
-import FHM.Core
+import FHM.TypedResult
 
 /-! # Verified type-declaration elaboration
 
@@ -265,18 +265,42 @@ theorem Ty.WellKinded.toNoFreeVars {ke : KindEnv} {pc : Nat} {ty : Ty}
 /-- Build a `Ctor` for the type `tn` (arity `pc`) from `fields`, discharging the
     `bound`/`closed` obligations from a successful kind-check. `none` if the
     fields don't kind-check. -/
+/-- Native declaration validation failures, before source lookup or wording. -/
+inductive DeclError where
+  | duplicateTypes (names : List TyName)
+  | duplicateConstructors (names : List CtorName)
+  | invalidFields (parent : TyName) (paramCount : Nat) (fields : List Ty)
+  | inConstructor (name : CtorName) (error : DeclError)
+  deriving Repr
+
+def mkCtorFromFieldsResult (ke : KindEnv) (pc : Nat) (tn : TyName) (fields : List Ty) : Except DeclError Ctor :=
+  if h : TyList.wellKindedB ke pc fields = true then
+    .ok { paramCount := pc, tyName := tn, contents := fields,
+           bound  := fun ty hty => ((TyList.wellKindedB_iff fields).mp h ty hty).toContainsBvars,
+           closed := fun ty hty => ((TyList.wellKindedB_iff fields).mp h ty hty).toNoFreeVars }
+  else .error (.invalidFields tn pc (fields.filter fun ty => !Ty.wellKindedB ke pc ty))
+
 def mkCtorFromFields (ke : KindEnv) (pc : Nat) (tn : TyName) (fields : List Ty) : Option Ctor :=
+  (mkCtorFromFieldsResult ke pc tn fields).toOption
+
+@[typed_result_projection] theorem mkCtorFromFieldsResult_toOption
+    (ke : KindEnv) (pc : Nat) (tn : TyName) (fields : List Ty) :
+    (mkCtorFromFieldsResult ke pc tn fields).toOption = mkCtorFromFields ke pc tn fields := rfl
+
+theorem mkCtorFromFields_eq (ke : KindEnv) (pc : Nat) (tn : TyName) (fields : List Ty) : mkCtorFromFields ke pc tn fields =
   if h : TyList.wellKindedB ke pc fields = true then
     some { paramCount := pc, tyName := tn, contents := fields,
            bound  := fun ty hty => ((TyList.wellKindedB_iff fields).mp h ty hty).toContainsBvars,
            closed := fun ty hty => ((TyList.wellKindedB_iff fields).mp h ty hty).toNoFreeVars }
-  else none
+  else none := by
+  unfold mkCtorFromFields mkCtorFromFieldsResult
+  split <;> rfl
 
 /-- A successful `mkCtorFromFields` implies its fields kind-checked. -/
 theorem mkCtorFromFields_wellKinded {ke : KindEnv} {pc : Nat} {tn : TyName}
     {fields : List Ty} {ct : Ctor} (h : mkCtorFromFields ke pc tn fields = some ct) :
     TyList.wellKindedB ke pc fields = true := by
-  unfold mkCtorFromFields at h
+  rw [mkCtorFromFields_eq] at h
   split at h
   · assumption
   · exact absurd h (by simp)
@@ -284,7 +308,7 @@ theorem mkCtorFromFields_wellKinded {ke : KindEnv} {pc : Nat} {tn : TyName}
 theorem mkCtorFromFields_signature {ke : KindEnv} {pc : Nat} {tn : TyName}
     {fields : List Ty} {ctor : Ctor} (h : mkCtorFromFields ke pc tn fields = some ctor) :
     ctor.signature = (pc, tn, fields) := by
-  unfold mkCtorFromFields at h
+  rw [mkCtorFromFields_eq] at h
   split at h
   · cases h; rfl
   · cases h
@@ -331,14 +355,37 @@ theorem option_guard_bind {P : Prop} [Decidable P] {β : Type} {k : Unit → Opt
     `KindEnv` (names + arities), then — after checking type/constructor names are
     distinct — kind-check every constructor's fields and emit one `Ctor` each.
     `none` on any violation. -/
-def elabDecls (decls : List DataDecl) : Option CtorEnv := do
+def elabDeclsResult (decls : List DataDecl) : Except DeclError CtorEnv := do
+  let ke := DataDecls.kindEnv decls
+  let types := decls.map (·.name)
+  TypedResult.ensure (.duplicateTypes (types.filter (fun name => 1 < types.count name)).dedup) types.Nodup
+  let constructors := decls.flatMap (fun d => d.ctors.map Prod.fst)
+  TypedResult.ensure
+    (.duplicateConstructors (constructors.filter (fun name => 1 < constructors.count name)).dedup)
+    constructors.Nodup
+  let nested ← decls.mapM fun d =>
+    d.ctors.mapM fun c => do
+      let ctor ← (mkCtorFromFieldsResult ke d.paramCount d.name c.2).mapError (.inConstructor c.1)
+      pure (c.1, ctor)
+  pure nested.flatten
+
+def elabDecls (decls : List DataDecl) : Option CtorEnv := (elabDeclsResult decls).toOption
+
+@[typed_result_projection] theorem elabDeclsResult_toOption (decls : List DataDecl) :
+    (elabDeclsResult decls).toOption = elabDecls decls := rfl
+
+theorem elabDecls_eq (decls : List DataDecl) : elabDecls decls = (show Option CtorEnv from
+ do
   let ke := DataDecls.kindEnv decls
   guard ((decls.map (·.name)).Nodup)
   guard ((decls.flatMap (fun d => d.ctors.map Prod.fst)).Nodup)
   let nested ← decls.mapM (fun d =>
     d.ctors.mapM (fun c => (mkCtorFromFields ke d.paramCount d.name c.2).map (fun ct => (c.1, ct))))
-  pure nested.flatten
-
+  pure nested.flatten) := by
+  unfold elabDecls elabDeclsResult
+  simp only [TypedResult.toOption_bind, TypedResult.toOption_ensure, TypedResult.toOption_mapM,
+    TypedResult.toOption_mapError, mkCtorFromFieldsResult_toOption, TypedResult.toOption_pure]
+  rfl
 
 /-! ### 6. Soundness: a produced env came from a well-formed declaration group. -/
 
@@ -348,7 +395,7 @@ def elabDecls (decls : List DataDecl) : Option CtorEnv := do
     well-kindedness via `TyList.wellKindedB_iff`. -/
 theorem elabDecls_wellFormed {decls : List DataDecl} {env : CtorEnv}
     (h : elabDecls decls = some env) : DataDecls.WF decls := by
-  unfold elabDecls at h
+  rw [elabDecls_eq] at h
   simp only [] at h
   obtain ⟨hP1, h⟩ := option_guard_bind h
   obtain ⟨hP2, h⟩ := option_guard_bind h
@@ -385,7 +432,7 @@ written declarations, including constructor names, arities, parents and fields. 
 theorem elabDecls_sound {decls : List DataDecl} {env : CtorEnv}
     (h : elabDecls decls = some env) : DataDecls.ElaboratesTo decls env := by
   refine ⟨elabDecls_wellFormed h, ?_⟩
-  unfold elabDecls at h
+  rw [elabDecls_eq] at h
   simp only [] at h
   obtain ⟨_, h⟩ := option_guard_bind h
   obtain ⟨_, h⟩ := option_guard_bind h
@@ -428,7 +475,7 @@ theorem mapM_option_isSome {α β : Type} {g : α → Option β} :
 theorem mkCtorFromFields_isSome {ke : KindEnv} {pc : Nat} {tn : TyName}
     {fields : List Ty} (h : TyList.wellKindedB ke pc fields = true) :
     (mkCtorFromFields ke pc tn fields).isSome := by
-  unfold mkCtorFromFields
+  rw [mkCtorFromFields_eq]
   rw [dif_pos h]
   rfl
 
@@ -444,7 +491,7 @@ theorem option_guard_bind_pos {P : Prop} [Decidable P] {β : Type} {k : Unit →
     via `TyList.wellKindedB_iff`), so both the inner and outer `mapM`s succeed. -/
 theorem elabDecls_complete {decls : List DataDecl} (h : DataDecls.WF decls) :
     (elabDecls decls).isSome := by
-  unfold elabDecls
+  rw [elabDecls_eq]
   simp only []
   rw [option_guard_bind_pos h.tyNamesNodup, option_guard_bind_pos h.ctorNamesNodup]
   have hOuter :
