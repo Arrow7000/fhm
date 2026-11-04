@@ -1,0 +1,33 @@
+-- Editor recovery showcase: five independent errors, all reported together.
+-- Open this file in the editor, or run:
+--   .lake/build/bin/fhm diagnose scratch/error-recovery.fhm
+--
+-- Healthy definitions and uses still have inferred hovers. Failed bindings
+-- export no type; their dependants are skipped to avoid misleading cascades.
+-- `fhm run` still rejects the file. Recovery never makes it executable.
+
+let id x = x
+
+-- 1. Expected Int, got Bool: underline True.
+let badArgument = 1 + True
+
+-- 2. The written Int annotation conflicts with the Bool RHS.
+let badAnnotation : Int = True
+
+-- 3. Unbound value: underline noSuchValue.
+let badName = noSuchValue
+
+-- 4. The second List is missing its type argument.
+let badArity : List Int -> List = \xs -> xs
+
+-- 5. Self-application requires an infinite type.
+let badInfinite f = f f
+
+-- No additional errors or invented types for these dependent bindings.
+let blocked = badArgument + 1
+let alsoBlocked = blocked + 2
+
+-- These remain checked and have hovers despite the unrelated failures.
+let number = id 41
+let truth = id True
+(number + 1, truth)

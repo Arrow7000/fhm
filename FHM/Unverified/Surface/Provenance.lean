@@ -1282,10 +1282,14 @@ def patternBinderTypesAt (nodeTypes : NodeTypeMap) (targets : BinderTargetMap) :
 
 /-- Infer the lowered source once, retaining its emitted paths for all type
     and scheme joins. The original partial source remains the payload. -/
-def inferWithProvenanceResult (ctors : CtorEnv) (lowering : InputLowered) : Except InferError TypedLowered := do
-  let inference ← inferWithTypesResult ctors lowering.expr
+def inferWithProvenanceInResult (ctx : Ctx) (lowering : InputLowered) : Except InferError TypedLowered := do
+  let result ← inferWithTypesResultCore lowering.expr.rigidVars lowering.expr.source_freshFloor ctx lowering.expr
+  let inference : InferenceResult := {
+    toInferResult := result.val.toInferResult
+    nodeTypes := result.val.nodeTypes.toMap
+    binderSchemes := result.val.binderSchemes.toMap }
   pure {
-    ctors
+    ctors := ctx.ctors
     input := lowering.expr
     lowering
     inference
@@ -1293,6 +1297,11 @@ def inferWithProvenanceResult (ctors : CtorEnv) (lowering : InputLowered) : Exce
       (id, typesAtTarget inference.nodeTypes target)
     inferredBinderSchemes := joinBinderSchemes lowering.binderTargets inference.binderSchemes
     patternBinderTypes := patternBinderTypesAt inference.nodeTypes lowering.binderTargets }
+
+/-- Closed-program entry point; editor recovery supplies only checked external
+schemes to `inferWithProvenanceInResult` for each independent group. -/
+def inferWithProvenanceResult (ctors : CtorEnv) (lowering : InputLowered) : Except InferError TypedLowered :=
+  inferWithProvenanceInResult ⟨[], ctors⟩ lowering
 
 /-- Compatibility projection of the native inference-and-provenance result. -/
 def inferWithProvenance (ctors : CtorEnv) (lowering : InputLowered) : Option TypedLowered :=

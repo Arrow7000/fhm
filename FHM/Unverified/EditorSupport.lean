@@ -1,5 +1,6 @@
 import FHM.Unverified.HMDisplay
 import FHM.Unverified.Diagnostics
+import FHM.Unverified.EditorRecovery
 import FHM.Unverified.CoverageDiagnostics
 import FHM.Unverified.Surface.Parse
 
@@ -231,7 +232,116 @@ def exhaustivenessDiag (typed : SurfaceBridge.Provenance.TypedLowered)
     missingPatterns := patterns
     moreMissing := more }
 
-def collectHover (src : String) (p : Surface.Program) (binders : List BinderSpan)
+/-- Render one checked source slice using its native inference artifacts. -/
+def collectTypedHover (src : String) (p : Surface.Program) (binders : List BinderSpan)
+    (sp : SpannedProgram) (tree : SpannedExpr)
+    (typed : SurfaceBridge.Provenance.TypedLowered) : HoverReport :=
+  let ctors := typed.ctors
+  let lowered := typed.lowering
+  let scope := programWideScope binders sp
+  let fail (d : HoverDiag) : HoverReport :=
+    { symbols := [], programTy := "", diagnostics := [d] }
+  if !(typed.lowering.mapExpr Expr.erase).provenanceTotal ||
+      !typed.nodeTypesTotal || !typed.sourceTypesTotal ||
+      !typed.patternBinderTypesTotal then
+    fail (diagAtSpan "internal inferred provenance coverage failure" (some scope))
+  else
+    let identified := SurfaceBridge.Provenance.identify tree
+    let collected := FHM.Unverified.HMArtifacts.collect binders p.term identified
+    let wrapperIds := FHM.Unverified.HMArtifacts.programWrapperIds p.groups identified
+    let authoredOccurrences := collected.occurrences.filter fun occ =>
+      !(wrapperIds.contains occ.id)
+    let locations := { collected with occurrences := authoredOccurrences }
+    let displayScopes := FHM.Unverified.HMDisplay.scopes typed locations
+    let docAt (span : Span) : Option String :=
+      (binders.find? (·.span == span)).bind (·.doc?)
+    let ctorDecl (name : String) : Option String :=
+      ((p.decls.find? fun d => d.ctors.any fun c => prettyCtorName c.1 == name).map
+        fun d => prettySurfaceDataDecl d) <|>
+      ((preludeDecls.find? fun d => d.ctors.any fun c => prettyCtorName c.1 == name).map
+        prettyCoreDataDecl)
+    let values := locations.binders.filterMap fun b =>
+      (FHM.Unverified.HMDisplay.binderType typed displayScopes locations b.site).map
+        fun ty => { mkSym b.name b.kind.toString ty b.span b.scope with
+          isDef := true, doc := docAt b.span }
+    let occurrences := locations.occurrences.filterMap fun occ => do
+      let source ← lowered.sourceNodes.find? (fun n => n.id == occ.id)
+      let ty ← FHM.Unverified.HMDisplay.sourceType typed displayScopes occ.id
+      let name := if occ.kind == "lit" || occ.kind == "op" then
+        FHM.Unverified.HMArtifacts.spanText src source.span else occ.name
+      -- A value occurrence refers to the innermost binder of its name.
+      let binder := if occ.kind == "val" then
+        ((locations.binders.filter fun b => b.name == occ.name &&
+          b.scope.contains source.span.startLine source.span.startCol).mergeSort
+          (fun a b => a.scope.area ≤ b.scope.area)).head?
+        else none
+      let kind := if occ.kind == "val" then
+        (binder.map (·.kind.toString)).getD "val" else occ.kind
+      let doc := match binder with
+        | some b => docAt b.span
+        | none => if occ.kind == "ctor" then
+            (binders.find? fun b => b.kind == .ctor && b.name == occ.name).bind (·.doc?)
+          else none
+      pure { mkSym name kind ty source.span source.span with
+        doc := doc
+        declaration := if occ.kind == "ctor" then ctorDecl name else none }
+    let syntaxSyms := (binders.filterMap fun b =>
+      if locations.binders.any (fun s => s.span == b.span) then none
+      else if b.kind == .type then
+        (p.decls.find? (fun d => prettyTyName d.name == b.name)).map fun d =>
+          let ctorDoc := fun (c : CtorName) => (binders.find? fun b =>
+            b.kind == .ctor && b.name == prettyCtorName c).bind (·.doc?)
+          mkSym b.name "type" (prettySurfaceDataDecl d ctorDoc) b.span scope
+      else if b.kind == .ctor then
+        (LookupList.get? ctors (.mk b.name)).map fun c =>
+          let names := ((p.decls.find? fun d =>
+            d.ctors.any (fun (name, _) => prettyCtorName name == b.name)).map
+              (fun d => d.params.map prettyValName)).getD []
+          mkSym b.name "ctor" (FHM.Unverified.HMDisplay.scheme {} names c.toTy)
+            b.span scope
+      else if b.kind == .param then
+        let decl := (p.decls.zip sp.declSpans).find? fun (_, s) =>
+          FHM.Unverified.HMArtifacts.inside b.span s
+        let label := match decl with
+          | some (d, _) => s!"type variable (of {prettyTyName d.name})"
+          | none => "type variable (scheme binder)"
+        let sc := match decl with
+          | some (_, s) => s
+          | none => b.scope?.getD scope
+        some (mkSym b.name "param" label b.span sc)
+      else none).map fun s => { s with
+        isDef := true
+        doc := docAt s.span
+        declaration := if s.kind == "ctor" then ctorDecl s.name else none }
+    let prelude := (preludeTypeCtorSymbols ctors scope ++ primTypeSymbols scope).filter fun s =>
+      !(syntaxSyms.any fun b => b.name == s.name && b.kind == s.kind)
+    let references := sp.references.filterMap fun ref => do
+      let kind ← match ref.kind with
+        | .type => some "type"
+        | .typeVar => some "param"
+        | .ctor => some "ctor"
+        | .typeHole => none
+      let candidates := (prelude ++ syntaxSyms).filter fun s =>
+        s.kind == kind
+      let target ← symbolAtUseSite candidates ref.span.startLine ref.span.startCol ref.name
+      pure { target with span := ref.span, scope := ref.span, isDef := false }
+    let holeSymbols :=
+      (FHM.Unverified.HMDisplay.holeDisplays typed displayScopes binders sp.references
+        (FHM.Unverified.HMArtifacts.programBindingHeaders sp p.groups identified) p.term identified).filterMap
+        fun hole => if hole.types.isEmpty then none else
+          some (mkSym hole.name "typeHole" (String.intercalate " | " hole.types) hole.span
+            (if hole.name == "_" then hole.span else hole.annotation?.getD hole.span))
+    let sugarOps := (collectLitOpSymbols src ctors).filter fun s => s.name == "::"
+    -- Typing succeeded, so hovers stay available alongside this error.
+    let exhaustiveness :=
+      if checkExhaustive ctors p.term then []
+      else [exhaustivenessDiag typed p.term identified (bodyDiagSpan sp.body)]
+    { symbols := prelude ++ syntaxSyms ++ values ++ sugarOps ++ occurrences ++ references ++ holeSymbols
+      programTy := FHM.Unverified.HMDisplay.scheme {} []
+        (genScheme [] [] typed.inference.ty)
+      diagnostics := exhaustiveness }
+
+def collectHoverStrict (src : String) (p : Surface.Program) (binders : List BinderSpan)
     (sp : SpannedProgram) : HoverReport :=
   let fail (d : HoverDiag) : HoverReport :=
     { symbols := [], programTy := "", diagnostics := [d] }
@@ -252,105 +362,27 @@ def collectHover (src : String) (p : Surface.Program) (binders : List BinderSpan
           | .error error =>
             fail (FHM.Unverified.Diagnostics.inferenceDiag error lowered p sp binders tree)
           | .ok typed =>
-            if !(typed.lowering.mapExpr Expr.erase).provenanceTotal ||
-                !typed.nodeTypesTotal || !typed.sourceTypesTotal ||
-                !typed.patternBinderTypesTotal then
-              fail (diagAtSpan "internal inferred provenance coverage failure" (some scope))
-            else
-              let identified := SurfaceBridge.Provenance.identify tree
-              let collected := FHM.Unverified.HMArtifacts.collect binders p.term identified
-              let wrapperIds := FHM.Unverified.HMArtifacts.programWrapperIds p.groups identified
-              let authoredOccurrences := collected.occurrences.filter fun occ =>
-                !(wrapperIds.contains occ.id)
-              let locations := { collected with occurrences := authoredOccurrences }
-              let displayScopes := FHM.Unverified.HMDisplay.scopes typed locations
-              let docAt (span : Span) : Option String :=
-                (binders.find? (·.span == span)).bind (·.doc?)
-              let ctorDecl (name : String) : Option String :=
-                ((p.decls.find? fun d => d.ctors.any fun c => prettyCtorName c.1 == name).map
-                  fun d => prettySurfaceDataDecl d) <|>
-                ((preludeDecls.find? fun d => d.ctors.any fun c => prettyCtorName c.1 == name).map
-                  prettyCoreDataDecl)
-              let values := locations.binders.filterMap fun b =>
-                (FHM.Unverified.HMDisplay.binderType typed displayScopes locations b.site).map
-                  fun ty => { mkSym b.name b.kind.toString ty b.span b.scope with
-                    isDef := true, doc := docAt b.span }
-              let occurrences := locations.occurrences.filterMap fun occ => do
-                let source ← lowered.sourceNodes.find? (fun n => n.id == occ.id)
-                let ty ← FHM.Unverified.HMDisplay.sourceType typed displayScopes occ.id
-                let name := if occ.kind == "lit" || occ.kind == "op" then
-                  FHM.Unverified.HMArtifacts.spanText src source.span else occ.name
-                -- A value occurrence refers to the innermost binder of its name.
-                let binder := if occ.kind == "val" then
-                  ((locations.binders.filter fun b => b.name == occ.name &&
-                    b.scope.contains source.span.startLine source.span.startCol).mergeSort
-                    (fun a b => a.scope.area ≤ b.scope.area)).head?
-                  else none
-                let kind := if occ.kind == "val" then
-                  (binder.map (·.kind.toString)).getD "val" else occ.kind
-                let doc := match binder with
-                  | some b => docAt b.span
-                  | none => if occ.kind == "ctor" then
-                      (binders.find? fun b => b.kind == .ctor && b.name == occ.name).bind (·.doc?)
-                    else none
-                pure { mkSym name kind ty source.span source.span with
-                  doc := doc
-                  declaration := if occ.kind == "ctor" then ctorDecl name else none }
-              let syntaxSyms := (binders.filterMap fun b =>
-                if locations.binders.any (fun s => s.span == b.span) then none
-                else if b.kind == .type then
-                  (p.decls.find? (fun d => prettyTyName d.name == b.name)).map fun d =>
-                    let ctorDoc := fun (c : CtorName) => (binders.find? fun b =>
-                      b.kind == .ctor && b.name == prettyCtorName c).bind (·.doc?)
-                    mkSym b.name "type" (prettySurfaceDataDecl d ctorDoc) b.span scope
-                else if b.kind == .ctor then
-                  (LookupList.get? ctors (.mk b.name)).map fun c =>
-                    let names := ((p.decls.find? fun d =>
-                      d.ctors.any (fun (name, _) => prettyCtorName name == b.name)).map
-                        (fun d => d.params.map prettyValName)).getD []
-                    mkSym b.name "ctor" (FHM.Unverified.HMDisplay.scheme {} names c.toTy)
-                      b.span scope
-                else if b.kind == .param then
-                  let decl := (p.decls.zip sp.declSpans).find? fun (_, s) =>
-                    FHM.Unverified.HMArtifacts.inside b.span s
-                  let label := match decl with
-                    | some (d, _) => s!"type variable (of {prettyTyName d.name})"
-                    | none => "type variable (scheme binder)"
-                  let sc := match decl with
-                    | some (_, s) => s
-                    | none => b.scope?.getD scope
-                  some (mkSym b.name "param" label b.span sc)
-                else none).map fun s => { s with
-                  isDef := true
-                  doc := docAt s.span
-                  declaration := if s.kind == "ctor" then ctorDecl s.name else none }
-              let prelude := (preludeTypeCtorSymbols ctors scope ++ primTypeSymbols scope).filter fun s =>
-                !(syntaxSyms.any fun b => b.name == s.name && b.kind == s.kind)
-              let references := sp.references.filterMap fun ref => do
-                let kind ← match ref.kind with
-                  | .type => some "type"
-                  | .typeVar => some "param"
-                  | .ctor => some "ctor"
-                  | .typeHole => none
-                let candidates := (prelude ++ syntaxSyms).filter fun s =>
-                  s.kind == kind
-                let target ← symbolAtUseSite candidates ref.span.startLine ref.span.startCol ref.name
-                pure { target with span := ref.span, scope := ref.span, isDef := false }
-              let holeSymbols :=
-                (FHM.Unverified.HMDisplay.holeDisplays typed displayScopes binders sp.references
-                  (FHM.Unverified.HMArtifacts.programBindingHeaders sp p.groups identified) p.term identified).filterMap
-                  fun hole => if hole.types.isEmpty then none else
-                    some (mkSym hole.name "typeHole" (String.intercalate " | " hole.types) hole.span
-                      (if hole.name == "_" then hole.span else hole.annotation?.getD hole.span))
-              let sugarOps := (collectLitOpSymbols src ctors).filter fun s => s.name == "::"
-              -- Typing succeeded, so hovers stay available alongside this error.
-              let exhaustiveness :=
-                if checkExhaustive ctors p.term then []
-                else [exhaustivenessDiag typed p.term identified (bodyDiagSpan sp.body)]
-              { symbols := prelude ++ syntaxSyms ++ values ++ sugarOps ++ occurrences ++ references ++ holeSymbols
-                programTy := FHM.Unverified.HMDisplay.scheme {} []
-                  (genScheme [] [] typed.inference.ty)
-                diagnostics := exhaustiveness }
+            collectTypedHover src p binders sp tree typed
+
+/-- Fully checked programs retain the original whole-program artifact path.
+After a source rejection, the editor checks independent top-level groups and
+keeps only their validated hovers. The runner never uses recovery. -/
+def collectHover (src : String) (p : Surface.Program) (binders : List BinderSpan)
+    (sp : SpannedProgram) : HoverReport :=
+  let strict := collectHoverStrict src p binders sp
+  if !strict.symbols.isEmpty || strict.diagnostics.isEmpty then strict
+  else
+    match FHM.Unverified.EditorRecovery.check p sp binders (programWideScope binders sp) with
+    | .error diagnostic => { symbols := [], programTy := "", diagnostics := [diagnostic] }
+    | .ok recovered =>
+      let reports := recovered.checked.map fun slice =>
+        collectTypedHover src slice.program slice.binders slice.spanned slice.tree slice.typed
+      let body := recovered.checked.find? (·.isBody)
+      { symbols := (reports.flatMap (·.symbols)).eraseDups
+        programTy := (body.map fun slice => FHM.Unverified.HMDisplay.scheme {} []
+          (genScheme [] [] slice.typed.inference.ty)).getD ""
+        diagnostics := (recovered.diagnostics ++ reports.flatMap (·.diagnostics)).mergeSort
+          (fun a b => a.line < b.line || (a.line == b.line && a.col ≤ b.col)) }
 
 def parseDiagJson (e : ParseError) : Lean.Json :=
   Lean.Json.mkObj [
