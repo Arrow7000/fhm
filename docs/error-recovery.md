@@ -21,7 +21,7 @@ diagnostics and ranged symbols. Execution still rejects the file.
 Fully checked programs use the existing whole-program inference and artifact
 path. When that path rejects a source expression, the editor runs a recovery
 pass over the parser's dependency-ordered top-level groups and then the final
-expression. Parsing and the declaration environment must still succeed first.
+expression. Parsing must still succeed first. Declaration groups recover independently.
 
 Each group is lowered with provenance and checked by the same native contextual
 inference worker. A successful group exports its actual group-exit schemes,
@@ -58,11 +58,21 @@ editor slices and diagnostics, not a checked executable whole program. `fhm run`
 the strict acceptance path. Successful recovered slices call the native checker;
 recovery does not add language acceptance rules or placeholder schemes.
 
-This first slice reports one native failure per top-level SCC. Recovery inside
-one SCC, nested expressions, malformed declarations and parser errors remains
-future work. A syntax or declaration error currently stops the file. An entire
-recursive group is withheld when any member fails, even when finer recovery
-might eventually be possible.
+Declaration recovery groups datatype dependencies and shared-name conflicts.
+Each successful component is lowered and elaborated by the native workers;
+failed components export no kinds or constructor signatures. Their dependent
+declarations and values retain the original declaration cause without cascading
+unknown-name errors. All definitions involved in a duplicate type/constructor
+conflict are withheld. Valid forward and mutually recursive datatype references
+continue checking. The prelude remains the validated initial environment.
+
+[`scratch/error-recovery-declarations.fhm`](../scratch/error-recovery-declarations.fhm)
+demonstrates independent declaration and value errors together. Unavailable
+type and constructor references preserve separate namespaces for navigation.
+
+Recovery within a recursive value group, nested expressions and parser errors
+remains future work. A syntax error currently stops the file. An entire value
+SCC is withheld when a member fails, even when finer recovery may be possible.
 
 Regression coverage is in `FHM/Unverified/EditorRecoveryTests.lean` and
 `scripts/hm-recovery-smoke.mjs`, alongside the existing HM/editor suites. It covers

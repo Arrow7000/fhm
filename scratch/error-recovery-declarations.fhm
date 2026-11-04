@@ -1,0 +1,34 @@
+-- Declaration recovery: five independent errors are visible together.
+-- Invalid declaration groups export no kinds or constructor schemes.
+-- Their dependants keep lexical hovers without causing additional errors.
+--   .lake/build/bin/fhm diagnose scratch/error-recovery-declarations.fhm
+
+-- 1. Holes are not allowed in datatype fields.
+type Bad = MkBad _
+type Dependent = MkDependent Bad
+
+-- 2. This type name is not declared.
+type Unknown = MkUnknown Missing
+
+-- 3. Neither conflicting definition is kept.
+type Duplicate = First
+type Duplicate = Second
+
+-- 4. Neither datatype gets to export the conflicting constructor.
+type Left = Shared Int
+type Right = Shared Bool
+
+-- Valid forward type references still work.
+type Forward = Forward Known
+type Known = Known Int
+
+-- These depend on rejected declarations, so no cascade diagnostics.
+let blocked = MkDependent (MkBad 1)
+let blockedAnnotation (x : Unknown) = x
+
+-- 5. An independent value error is checked too.
+let badApplication = 1 True
+
+-- Healthy types, constructors, values and uses retain hovers/navigation.
+let healthy = Forward (Known 2)
+healthy

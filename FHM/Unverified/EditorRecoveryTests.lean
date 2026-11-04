@@ -37,8 +37,8 @@ private def dependencyChain : String :=
   "let unrelated x = x\nunrelated 7\n"
 #guard match recover dependencyChain with
   | some result => result.diagnostics.length == 1 &&
-      result.blocked.any (fun blocked => blocked.names == [ValName.mk "direct"] && blocked.causes == [ValName.mk "failed"]) &&
-      result.blocked.any (fun blocked => blocked.names == [ValName.mk "indirect"] && blocked.causes == [ValName.mk "failed"])
+      result.blocked.any (fun blocked => blocked.names == [ValName.mk "direct"] && blocked.causes == [.binding (ValName.mk "failed")]) &&
+      result.blocked.any (fun blocked => blocked.names == [ValName.mk "indirect"] && blocked.causes == [.binding (ValName.mk "failed")])
   | none => false
 #guard match hover dependencyChain with
   | some report => report.diagnostics.length == 1 && report.programTy == "Int" &&
@@ -86,10 +86,11 @@ private def failedMutual : String :=
   | some report => report.diagnostics.length == 1 && report.programTy.isEmpty
   | none => false
 
--- This first slice does not speculate past an invalid declaration environment.
+-- Declaration failures no longer hide independent value failures.
 #guard match hover "type Bad = Bad _\nlet another = absent\n1\n" with
-  | some report => report.diagnostics.length == 1 && report.symbols.isEmpty &&
-      report.diagnostics.all (·.code? == some "lower.holeNotAllowed")
+  | some report => report.diagnostics.length == 2 && !report.symbols.isEmpty &&
+      report.diagnostics.any (·.code? == some "lower.holeNotAllowed") &&
+      report.diagnostics.any (·.code? == some "lower.unboundName") && report.programTy == "Int"
   | none => false
 
 end FHM.Unverified.EditorRecoveryTests

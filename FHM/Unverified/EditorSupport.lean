@@ -371,8 +371,10 @@ def collectUnavailableHover (src : String) (slice : FHM.Unverified.EditorRecover
   let identified := SurfaceBridge.Provenance.identify slice.tree
   let locations := FHM.Unverified.HMArtifacts.collect slice.binders slice.program.term identified
   let wrappers := FHM.Unverified.HMArtifacts.programWrapperIds slice.program.groups identified
-  let names := slice.causes.filterMap fun name =>
-    if Surface.internalBindingName name then none else some ("`" ++ prettyValName name ++ "`")
+  let names := slice.causes.filterMap fun
+    | .binding name => if Surface.internalBindingName name then none else some ("`" ++ prettyValName name ++ "`")
+    | .declaration name => some ("type `" ++ prettyTyName name ++ "`")
+    | .syntax span => some s!"syntax at {span.startLine}:{span.startCol}"
   let cause := if names.isEmpty then
     (if slice.causes.isEmpty then "this expression" else "a pattern binding")
     else String.intercalate ", " names
@@ -394,7 +396,38 @@ def collectUnavailableHover (src : String) (slice : FHM.Unverified.EditorRecover
         let kind := if occurrence.kind == "val" then
           (binder.map (·.kind.toString)).getD "val" else occurrence.kind
         pure (mkSym name kind label source.span source.span)
-  definitions ++ occurrences
+  let regions := if slice.program.groups.isEmpty then [slice.spanned.body.span] else
+    slice.spanned.bindingHeaders.map (·.2) ++ slice.spanned.groups.flatten.map (·.span)
+  let inRegion := fun span => regions.any (FHM.Unverified.HMArtifacts.inside span ·)
+  let typeBinders := slice.binders.filterMap fun binder =>
+    if binder.scope?.isSome && inRegion binder.span &&
+        !(locations.binders.any (fun existing => existing.span == binder.span)) then
+      some { mkSym binder.name binder.kind.toString label binder.span
+        (binder.scope?.getD binder.span) with isDef := true, doc := binder.doc? }
+    else none
+  let references := slice.spanned.references.filterMap fun reference =>
+    if !inRegion reference.span then none else
+      some (mkSym reference.name (match reference.kind with
+        | .type => "type" | .ctor => "ctor" | .typeVar => "param" | .typeHole => "typeHole")
+        label reference.span reference.span)
+  definitions ++ typeBinders ++ occurrences ++ references
+
+/-- Invalid declarations keep names and navigation, but contribute no kinds or
+constructor signatures to the recovered inference environment. -/
+def collectUnavailableDeclarationHover (binders : List BinderSpan) (sp : SpannedProgram)
+    (scope : Span) (unavailable : FHM.Unverified.DeclarationRecovery.Unavailable) : List RangedSymbol :=
+  let causes := unavailable.causes.map fun
+    | .declaration name => "type `" ++ prettyTyName name ++ "`"
+    | .binding name => "`" ++ prettyValName name ++ "`"
+    | .syntax span => s!"syntax at {span.startLine}:{span.startCol}"
+  let label := "type unknown (error in " ++ String.intercalate ", " causes ++ ")"
+  let definitions := (binders.filter fun binder => FHM.Unverified.HMArtifacts.inside binder.span unavailable.span).map
+    fun binder => { mkSym binder.name binder.kind.toString label binder.span
+      (if binder.kind == .param then unavailable.span else scope) with isDef := true, doc := binder.doc? }
+  let references := (sp.references.filter fun ref => FHM.Unverified.HMArtifacts.inside ref.span unavailable.span).map
+    fun ref => mkSym ref.name (match ref.kind with | .type => "type" | .ctor => "ctor" | .typeVar => "param" | .typeHole => "typeHole")
+      label ref.span ref.span
+  definitions ++ references
 
 /-- Fully checked programs retain the original whole-program artifact path.
 After a source rejection, the editor checks independent top-level groups and
@@ -411,7 +444,9 @@ def collectHover (src : String) (p : Surface.Program) (binders : List BinderSpan
         collectTypedHover src slice.program slice.binders slice.spanned slice.tree slice.typed
       let body := recovered.checked.find? (·.isBody)
       let symbols := (reports.flatMap (·.symbols) ++
-        recovered.unavailable.flatMap (collectUnavailableHover src)).eraseDups
+        recovered.unavailable.flatMap (collectUnavailableHover src) ++
+        recovered.unavailableDeclarations.flatMap (collectUnavailableDeclarationHover binders sp
+          (programWideScope binders sp))).eraseDups
       let symbols := symbols.map fun symbol =>
         if symbol.isDef || symbol.doc.isSome then symbol else
           let definition := ((symbols.filter fun candidate => candidate.isDef &&

@@ -251,7 +251,8 @@ Error recovery and formatter work remain separate from these batches.
   - [x] Suppress dependent cascades and preserve lexical shadowing/navigation.
   - [x] Demonstrate multiple precise errors in [scratch/error-recovery.fhm](scratch/error-recovery.fhm).
   - [ ] Recover more finely within a recursive group or nested expression.
-  - [ ] Recover declaration environments and resynchronise after parse failures.
+  - [x] Recover declaration environments by dependency/conflict groups.
+  - [ ] Resynchronise after top-level parse failures.
 
       See [editor recovery](docs/error-recovery.md) for the current boundary.
 

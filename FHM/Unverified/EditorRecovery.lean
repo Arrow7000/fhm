@@ -1,13 +1,14 @@
 import FHM.Unverified.Diagnostics
+import FHM.Unverified.DeclarationRecovery
 
 /-! Editor-only recovery at top-level SCC boundaries. Each group uses the
 canonical native workers and only closed schemes exported by checked groups.
 Failed groups export nothing. Their transitive dependants are skipped, without
 inventing types or emitting cascades. This module produces editor artifacts,
-never a checked executable program. Parsing and declarations remain atomic. -/
+never a checked executable program. Declaration groups are recovered independently; parsing remains atomic. -/
 
 namespace FHM.Unverified.EditorRecovery
-open SurfaceBridge SurfaceBridge.Provenance Surface.Span
+open SurfaceBridge SurfaceBridge.Provenance Surface.Span RecoveryDependencies
 
 structure CheckedSlice where
   program : Surface.Program
@@ -19,7 +20,7 @@ structure CheckedSlice where
 
 structure Blocked where
   names : List ValName
-  causes : List ValName
+  causes : List Cause
   deriving Repr
 
 structure UnavailableSlice where
@@ -27,13 +28,14 @@ structure UnavailableSlice where
   spanned : SpannedProgram
   binders : List BinderSpan
   tree : SpannedExpr
-  causes : List ValName
+  causes : List Cause
 
 structure Result where
   checked : List CheckedSlice := []
   diagnostics : List HoverDiag := []
   blocked : List Blocked := []
   unavailable : List UnavailableSlice := []
+  unavailableDeclarations : List DeclarationRecovery.Unavailable := []
 
 private def internalError (message : String) (scope : Span) : HoverDiag :=
   { diagAtSpan message (some scope) with code? := some "internal.recoveryArtifact" }
@@ -79,7 +81,7 @@ private def checkSlice (ctors : CtorEnv) (names : List ValName) (schemes : List 
 /-- Lexical artifacts describe unavailable hovers without supplying any type to
 inference. They also preserve shadowing and definition navigation in rejected code. -/
 private def unavailableSlice (program : Surface.Program) (spanned : SpannedProgram)
-    (binders : List BinderSpan) (scope : Span) (causes : List ValName) :
+    (binders : List BinderSpan) (scope : Span) (causes : List Cause) :
     Except HoverDiag UnavailableSlice := do
   let tree ← (HMArtifacts.programSpannedResult program spanned scope).mapError
     (fun error => Diagnostics.provenanceDiag error program spanned binders scope)
@@ -103,7 +105,7 @@ private def exports (group : List Surface.Binding) (typed : TypedLowered)
   if schemes.all (fun scheme => scheme.body.freeVars.isEmpty) then pure schemes
   else .error (internalError "internal recovery error: open group export" scope)
 
-private def causesFor (unavailable : List (ValName × List ValName)) (uses : List ValName) : List ValName :=
+private def causesFor (unavailable : List (ValName × List Cause)) (uses : List ValName) : List Cause :=
   (uses.flatMap fun name =>
     ((unavailable.find? (·.1 == name)).map (·.2)).getD []).eraseDups
 
@@ -111,22 +113,35 @@ private def causesFor (unavailable : List (ValName × List ValName)) (uses : Lis
 result; successful slices do not certify the rejected whole program. -/
 def check (program : Surface.Program) (spanned : SpannedProgram)
     (binders : List BinderSpan) (scope : Span) : Except HoverDiag Result := do
-  let decls ← (lowerDataDeclsInResult preludeKindEnv program.decls).mapError
-    (fun error => Diagnostics.loweringDiag error program spanned binders scope)
-  let ctors ← (elabDeclsResult (preludeDecls ++ decls)).mapError
-    (fun error => Diagnostics.declarationDiag error program spanned binders)
+  let declarations ← DeclarationRecovery.check program spanned binders scope
+  let ctors := declarations.ctors
+  let program := { program with decls := declarations.declarations }
+  let spanned := { spanned with declSpans := declarations.spans }
   -- Validate the entire sidecar shape before zipping; no group can disappear.
   let _ ← (HMArtifacts.programSpannedResult program spanned scope).mapError
     (fun error => Diagnostics.provenanceDiag error program spanned binders scope)
-  let mut result : Result := {}
+  let mut result : Result := {
+    diagnostics := declarations.diagnostics
+    unavailableDeclarations := declarations.unavailable }
+  if !declarations.unavailable.isEmpty then
+    let declarationProgram := { program with groups := [], body := .primLit .unit }
+    let declarationSpanned := { spanned with
+      groups := []
+      body := .generated (.leaf scope)
+      bindingHeaders := []
+      references := spanned.references.filter fun ref => spanned.declSpans.any (HMArtifacts.inside ref.span ·) }
+    let declarationBinders := binders.filter fun binder => spanned.declSpans.any (HMArtifacts.inside binder.span ·)
+    let slice ← checkSlice ctors [] [] declarationProgram declarationSpanned declarationBinders scope
+    result := { result with checked := [slice] }
   let mut names : List ValName := []
   let mut schemes : List PolyTy := []
-  let mut unavailable : List (ValName × List ValName) := []
+  let mut unavailable : List (ValName × List Cause) := []
   for (group, rhss) in program.groups.zip spanned.groups do
     if !group.isEmpty then
       let groupNames := group.map (·.name)
       let uses := Surface.freeNamesBinds groupNames group
-      let causes := causesFor unavailable uses
+      let causes := (causesFor unavailable uses ++
+        DeclarationRecovery.causesFor declarations (RecoveryDependencies.bindings group)).eraseDups
       let localProgram := { program with groups := [group], body := .primLit .unit }
       let localSpanned := groupSpanned spanned group rhss scope
       let regions := localSpanned.bindingHeaders.map (·.2) ++ rhss.map (·.span)
@@ -140,15 +155,16 @@ def check (program : Surface.Program) (spanned : SpannedProgram)
         match checkSlice ctors names schemes localProgram localSpanned localBinders scope with
         | .error diagnostic =>
             result := { result with diagnostics := result.diagnostics ++ [diagnostic] }
-            let slice ← unavailableSlice localProgram localSpanned localBinders scope groupNames
+            let slice ← unavailableSlice localProgram localSpanned localBinders scope (groupNames.map Cause.binding)
             result := { result with unavailable := result.unavailable ++ [slice] }
-            unavailable := groupNames.map (fun name => (name, groupNames)) ++ unavailable
+            unavailable := groupNames.map (fun name => (name, groupNames.map Cause.binding)) ++ unavailable
         | .ok slice =>
             let exported ← exports group slice.typed scope
             names := groupNames ++ names
             schemes := exported ++ schemes
             result := { result with checked := result.checked ++ [slice] }
-  let bodyCauses := causesFor unavailable (Surface.freeNames [] program.body)
+  let bodyCauses := (causesFor unavailable (Surface.freeNames [] program.body) ++
+    DeclarationRecovery.causesFor declarations (expression program.body)).eraseDups
   let localProgram := { program with groups := [] }
   let localSpanned := { spanned with
     groups := []

@@ -134,5 +134,48 @@ test("healthy programs use identical strict artifacts after fixing a rejected gr
   assert.equal(runner.payload.result, "7");
 });
 
+test("declaration showcase recovers independent errors and validated forward references", () => {
+  const source = readFileSync(new URL("../scratch/error-recovery-declarations.fhm", import.meta.url), "utf8");
+  const { payload, status } = cli(["diagnose"], source);
+  assert.equal(status, 1);
+  assert.deepEqual(payload.diagnostics.map(d => d.code), ["lower.holeNotAllowed", "lower.unknownType",
+    "decl.duplicateType", "decl.duplicateConstructor", "type.notFunction"]);
+  const lines = source.split("\n");
+  const healthy = lines.findIndex(line => line.startsWith("let healthy"));
+  assert.equal(at(payload, source, healthy, "healthy").hover.type, "Forward");
+  assert.equal(payload.programTy, "Forward");
+  const blocked = lines.findIndex(line => line.startsWith("let blocked ="));
+  assert.equal(at(payload, source, blocked, "blocked").hover.type, "type unknown (error in type `Bad`)");
+  assert.ok(!payload.symbols.some(symbol => symbol.type === "Int → Left" || symbol.type === "Bool → Right"));
+  const runner = cli(["run", "--json"], source);
+  assert.equal(runner.status, 1);
+  assert.equal(runner.payload.ok, false);
+});
+
+test("unavailable type and constructor references preserve their separate namespaces", () => {
+  const source = "type Bad = Bad _\nlet asType (x : Bad) = x\nlet asCtor = Bad 1\nlet healthy = 7\nhealthy\n";
+  const { payload } = cli(["diagnose"], source);
+  assert.equal(payload.diagnostics.length, 1);
+  const type = at(payload, source, 1, "Bad");
+  const ctor = at(payload, source, 2, "Bad");
+  assert.equal(type.hover.kind, "type");
+  assert.equal(ctor.hover.kind, "ctor");
+  assert.deepEqual([type.definition.startLine0, type.definition.startCol0], [0, 5]);
+  assert.deepEqual([ctor.definition.startLine0, ctor.definition.startCol0], [0, 11]);
+  assert.equal(at(payload, source, 3, "healthy").hover.type, "Int");
+});
+
+test("fixing declaration failures restores strict typing and clears dependency statuses", () => {
+  const source = "type Bad = MkBad _\nlet value = MkBad 1\nvalue\n";
+  assert.equal(cli(["diagnose"], source).payload.diagnostics.length, 1);
+  const fixed = source.replace("MkBad _", "MkBad Int");
+  const { payload, status } = cli(["diagnose"], fixed);
+  assert.equal(status, 0);
+  assert.deepEqual(payload.diagnostics, []);
+  assert.equal(at(payload, fixed, 1, "value").hover.type, "Bad");
+  assert.ok(!payload.symbols.some(symbol => symbol.type.startsWith("type unknown")));
+  assert.equal(cli(["run", "--json"], fixed).status, 0);
+});
+
 console.log(`${tests - failures}/${tests} editor recovery checks passed.`);
 process.exitCode = failures ? 1 : 0;
