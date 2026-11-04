@@ -239,10 +239,11 @@ Error recovery and formatter work remain separate from these batches.
       CLI and editor share codes, messages and source locations. Further wording
       and context improvements can build on the typed data without diagnostic
       rechecking.
-- [ ] **Error recovery.** The first editor slice now recovers between top-level
-      binding/SCC groups. `fhm diagnose` reports independent lowering and type
-      failures together and preserves validated hovers for healthy groups.
-      Failed groups export no schemes; transitive dependants are skipped and
+- [x] **Error recovery.** The editor recovers independent declarations,
+      top-level binding/SCC groups, and nested source regions, with safe parser
+      and lexer resynchronisation. `fhm diagnose` reports independent failures
+      together and preserves checked hovers, documentation and navigation.
+      Failed groups export no schemes; dependent regions remain unavailable and
       display `type unknown (error in …)` instead of receiving guessed types.
       Fully checked programs retain the original artifact path. `fhm run` and
       the verified acceptance/safety APIs still require a fully checked program.
@@ -250,7 +251,9 @@ Error recovery and formatter work remain separate from these batches.
   - [x] Recover independent top-level groups using native contextual inference.
   - [x] Suppress dependent cascades and preserve lexical shadowing/navigation.
   - [x] Demonstrate multiple precise errors in [scratch/error-recovery.fhm](scratch/error-recovery.fhm).
-  - [ ] Recover more finely within a recursive group or nested expression.
+  - [x] Recover independent regions within recursive groups and nested expressions;
+      failed SCC members and failed expression results remain unavailable.
+      See [the nested showcase](scratch/error-recovery-nested.fhm).
   - [x] Recover declaration environments by dependency/conflict groups.
   - [x] Resynchronise after top-level parse failures while withholding rejected headers.
   - [x] Preserve healthy prefix code and recover safe boundaries after lexer failures.

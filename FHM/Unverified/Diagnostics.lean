@@ -9,6 +9,8 @@ structure HoverDiag where
   /-- Internal native mismatch data for recovery deduplication; never JSON or
   an inference input. Diagnostic wording has no effect on recovery. -/
   constraint? : Option (Ty × Ty) := none
+  /-- A native generated constraint origin replaced by a precise source child. -/
+  relocatedFrom? : Option Span := none
   missingPatterns : List String := []
   moreMissing : Bool := false
   line : Nat := 1

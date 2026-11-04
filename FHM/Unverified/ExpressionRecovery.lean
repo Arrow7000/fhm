@@ -49,6 +49,19 @@ private def addError (state : State) (error : HoverDiag) : State :=
 private def diagnosticSpan (diagnostic : HoverDiag) : Span :=
   ⟨diagnostic.line, diagnostic.col, diagnostic.endLine, diagnostic.endCol⟩
 
+mutual
+private def sameType : Ty → Ty → Bool
+  | .prim a, .prim b => decide (a = b)
+  | .fvar a, .fvar b | .bvar a, .bvar b => a == b
+  | .arrow a b, .arrow c d => sameType a c && sameType b d
+  | .customTy a args, .customTy b other => decide (a = b) && sameTypes args other
+  | _, _ => false
+private def sameTypes : List Ty → List Ty → Bool
+  | [], [] => true
+  | a :: rest, b :: other => sameType a b && sameTypes rest other
+  | _, _ => false
+end
+
 /-- Retain native root failures, including recursive-call constraints that
 cannot be reconstructed without provisional member types. Replace only a broad
 ancestor or recursive result-shape cascade with a more precise source failure. -/
@@ -57,8 +70,9 @@ def withNativeFailure (before : Nat) (diagnostic : HoverDiag) (state : State) : 
   let same := children.any (fun child => child.code? == diagnostic.code? &&
     child.line == diagnostic.line && child.col == diagnostic.col)
   let represented := diagnostic.code? == some "type.mismatch" && children.any fun child =>
-    child.code? == diagnostic.code? && match diagnostic.constraint?, child.constraint? with
-      | some (a, b), some (c, d) => decide ((a = c ∧ b = d) ∨ (a = d ∧ b = c))
+    child.code? == diagnostic.code? && child.relocatedFrom? == some (diagnosticSpan diagnostic) &&
+      match diagnostic.constraint?, child.constraint? with
+      | some (a, b), some (c, d) => (sameType a c && sameType b d) || (sameType a d && sameType b c)
       | _, _ => false
   let ancestor := !same && diagnostic.code?.any (·.startsWith "type.") &&
     children.any (fun child => HMArtifacts.inside (diagnosticSpan child) (diagnosticSpan diagnostic) &&
@@ -123,7 +137,7 @@ private def patternHeader (source : Source) (state : State) (pat : Surface.Patte
     { diagAtSpan "internal recovered pattern capture missing" (some owner) with code? := some "internal.recoveryArtifact" }
   pure (slice, types)
 
-private def compareTypes (source : Source) (state : State) (actual expected : Ty) (span : Span) (annotation : Bool := false) : State :=
+private def compareTypes (source : Source) (state : State) (actual expected : Ty) (span : Span) (annotation : Bool := false) (nativeSpan : Option Span := none) : State :=
   match unifyResultK state.context.protectedVars actual expected with
   | .ok result =>
       let escaped := state.context.escaping result.val
@@ -134,7 +148,7 @@ private def compareTypes (source : Source) (state : State) (actual expected : Ty
       let reason : InferErrorReason := if annotation then .annotation (.unification error) else .unification error
       let diagnostic := Diagnostics.inferenceDiag (InferError.root reason)
         (authoredRoot ⟨0, span, true⟩ (.primLit .unit)) source.program source.spanned source.binders (.leaf span)
-      addError state diagnostic
+      addError state { diagnostic with relocatedFrom? := nativeSpan }
 
 private def enterPattern (source : Source) (state : State) (expr : Surface.Expr) (tree : SpannedExpr)
     (pat : Surface.Pattern) (types : List PolyTy) (body : Span) : State :=
@@ -427,7 +441,9 @@ def walk : Nat → Source → State → Surface.Expr → SpannedExpr → Option 
             let (next, conditionTy) := recurse state condition sc none
             state := next
             if let some conditionTy := conditionTy then
-              state := compareTypes source state (conditionTy.current state) (Ty.customTy ⟨"Bool"⟩ []) sc.span
+              -- Native Bool-pattern checking owns the first compiled arm;
+              -- retain that origin while pointing at the actual condition.
+              state := compareTypes source state (conditionTy.current state) (Ty.customTy ⟨"Bool"⟩ []) sc.span false (some sy.span)
             let (next, yesTy) := recurse state yes sy expectedType
             let (next, noTy) := recurse next no sn expectedType
             state := next

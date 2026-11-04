@@ -518,5 +518,24 @@ test("authored type parameters stay scoped and navigable in failed head-paramete
   assert.equal(at(payload, source, 0, "item", 1).definition.startCol0, source.indexOf("item"));
 });
 
+test("shadowing restores outer aliases with constraints learned inside the inner scope", () => {
+  const source = "let f x = let alias = x in (1 True, ((\\x -> (2 False, (x + 1, if alias then 0 else 1))) 0, x))\n0\n";
+  const { payload } = cli(["diagnose"], source);
+  assert.deepEqual(payload.diagnostics.map(d => d.code), ["type.notFunction", "type.notFunction"]);
+  for (const occurrence of [0, 1, 4]) assert.equal(at(payload, source, 0, "x", occurrence).hover.type, "Bool");
+  for (const occurrence of [2, 3]) assert.equal(at(payload, source, 0, "x", occurrence).hover.type, "Int");
+  assert.equal(at(payload, source, 0, "x", 3).definition.startCol0, source.indexOf("\\x") + 1);
+  assert.equal(at(payload, source, 0, "x", 4).definition.startCol0, source.indexOf("x"));
+});
+
+test("identical concrete mismatches in different conditionals remain separate diagnostics", () => {
+  const source = "let rejected : Int = True\nlet f = (if 1 then 0 else 1, if 2 then 0 else 1)\n0\n";
+  const { payload } = cli(["diagnose"], source);
+  assert.deepEqual(payload.diagnostics.map(d => d.code), ["type.annotationMismatch", "type.mismatch", "type.mismatch"]);
+  const line = source.split("\n")[1];
+  assert.deepEqual(payload.diagnostics.slice(1).map(d => [d.col, d.endCol]),
+    [line.indexOf("1 then"), line.indexOf("2 then")].map(col => [col + 1, col + 2]));
+});
+
 console.log(`${tests - failures}/${tests} editor recovery checks passed.`);
 process.exitCode = failures ? 1 : 0;

@@ -123,9 +123,10 @@ failed constraint. The old probes that stripped annotations, retried lowering,
 or reran inference have been removed. Parsing and presentation remain outside
 the verified boundary.
 
-The [first editor recovery slice](error-recovery.md) now consumes these typed
-failures at top-level binding/SCC boundaries. It reports independent errors and
-preserves checked hovers, while keeping unavailable groups out of inference.
+The [editor recovery passes](error-recovery.md) consume these typed failures
+across declarations, top-level groups and nested source expressions. They report
+independent errors and preserve checked hovers while withholding unavailable
+bindings. Parser and lexer recovery preserve safe source boundaries.
 The native acceptance worker itself still stops at the first failure, and the
 runner continues to require a fully checked program.
 

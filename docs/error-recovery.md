@@ -16,7 +16,7 @@ The diagnose command returns failure status while supplying all recovered
 diagnostics and hover symbols. Both editor clients already consume arrays of
 diagnostics and ranged symbols. Execution still rejects the file.
 
-## The first recovery boundary
+## Recovery between groups
 
 Fully checked programs use the existing whole-program inference and artifact
 path. When that path rejects a source expression, the editor runs a recovery
@@ -29,13 +29,13 @@ inference worker. A successful group exports its actual group-exit schemes,
 including validated complete signatures. Exports must be closed before they
 enter the environment for later groups. Polymorphic instantiation, recursive
 group checking, annotation checking and generalisation stay in the canonical
-checker. The recovery pass checks each group once; it does not replay growing
-prefix programs or remove annotations.
+checker. The recovery pass checks each whole group once before descending into
+rejected regions; it does not replay growing prefix programs or remove annotations.
 
 A failed group contributes its native diagnostic and exports nothing. Every
 member of its syntactic SCC becomes unavailable, including members with complete
-signatures. A later group that refers to an unavailable name is skipped. The
-pass tracks the original failed groups through transitive dependencies so the
+signatures. A later group that refers to an unavailable name exports nothing;
+its independent subexpressions are still inspected. The pass tracks the original failed groups through transitive dependencies so the
 editor can explain the cause without producing unbound-name or type-error
 cascades. Local parameters, patterns and nested bindings still shadow names
 when dependencies are computed. Independent groups continue checking.
@@ -101,13 +101,87 @@ fallbacks. These markers never enter the parser or inference.
 demonstrates lexical and ordinary type errors together, including healthy code
 on both sides of closed bad tokens and before an unfinished comment.
 
-Recovery within a recursive value group and nested expressions remains future
-work. An entire value SCC is withheld when a member fails, even when finer
-recovery may be possible.
+## Recovery inside expressions and recursive groups
 
-Regression coverage is in the editor, declaration, parser and lexer recovery
+[`scratch/error-recovery-nested.fhm`](../scratch/error-recovery-nested.fhm)
+shows seven errors together inside local bindings, match arms, mutually recursive
+functions and a scoped `forall`. Healthy local definitions, parameters, pattern
+captures and later polymorphic uses retain types and navigation. Fixing those
+errors returns the entire program to the strict artifact and execution path.
+
+`ExpressionRecovery` descends through rejected applications, pairs, lists,
+conditionals, lambdas, matches and local lets. Every checked fragment is lowered
+with its original annotations and checked in its actual lexical context by the
+native worker. A failed expression yields no result type, even if its children
+were checked. Independent errors still appear when another child refers to an
+unavailable binding. For example, `1 unavailable` is certainly applying an `Int`
+as a function; recovery reports that without inventing an argument type.
+
+Successful local bindings export only their native schemes into the local
+continuation. Captured outer parameters remain monomorphic, while ordinary local
+let polymorphism still generalises under the real surrounding environment.
+Successful substitutions constrain subsequent siblings and update earlier checked
+hover artifacts. Substitutions from failed checks are discarded. Lexical scope
+restoration preserves successful constraints, including when a shadowed outer
+name shares a type variable with another visible binding.
+
+Lambda parameters and patterns are checked separately when their bodies fail.
+Match captures receive native types only when the scrutinee itself has a checked
+type. An unavailable scrutinee keeps captures unavailable, while independent arm
+bodies can still check. Rejected datatype dependencies suppress constructor and
+pattern cascades. Administrative wrappers are marked separately from their
+authored children, preserving real RHS occurrences without displaying synthetic
+`Unit` result types or synthetic coverage errors.
+
+Authored annotations supply expected constraints without becoming exported
+binding schemes. Explicit type variables stay rigid and retain their authored
+names. Every accepted contextual substitution is checked against saved outer
+environments, preventing a local rigid variable from escaping. Safe constraints
+on captured monotypes still survive a rejected local `forall`.
+
+Recursive SCCs remain atomic for exports, both locally and at top level. A
+rejected group exports none of its members, including members with complete
+signatures. Recovery inspects each member's independent RHS regions and its own
+authored annotation; recursive calls remain unavailable. The native group's
+original recursive-call or occurs-check failure is retained when independent
+fragment failures cannot explain it. Incomplete signatures never grant
+polymorphic recursive calls.
+
+## Deliberate conservative boundaries
+
+Recovery produces useful checked regions, rather than a repaired executable or
+a type for every source node. Constraints that require a failed child's result
+or an unavailable recursive member remain deferred. In particular, recovery
+does not invent provisional member schemes to enumerate every possible conflict
+inside a rejected recursive SCC. Failed enclosing signatures and their holes can
+remain unavailable even when a healthy parameter or nested binding has a type.
+Native checks remain authoritative when the source is repaired.
+
+Parser resynchronisation is at safe top-level boundaries. A malformed nested
+expression can quarantine its containing item; recovery does not insert missing
+tokens or guess the intended nested grammar. Unfinished literals consume their
+tail. These choices prevent accidentally accepting a different program while
+still preserving independently parseable code.
+
+Regression coverage is in the editor, declaration, expression, parser and lexer recovery
 Lean test modules and `scripts/hm-recovery-smoke.mjs`, alongside the existing
 HM/editor suites. It covers
 multiple precise diagnostics, source-order/SCC reordering, closed polymorphic
 exports, recursive-group atomicity, dependency suppression, lexical shadowing,
-unknown hovers, documentation/navigation, fixing errors, and strict execution.
+unknown hovers, documentation/navigation, local polymorphism, shared monomorphic
+constraints, scoped variables and escape prevention, multiple recursive-member
+failures, fixing errors, and strict execution.
+
+## Validation
+
+The completed recovery work is checked with:
+
+```sh
+lake build FHM FHMUnverified FHMEditorTests FHMExamples fhm
+lake env lean scripts/check-source-proof-boundary.lean
+bash scripts/check-unverified-boundary.sh
+node scripts/hm-editor-smoke.mjs
+node scripts/hm-recovery-smoke.mjs
+bash recursion-language-comparison/check.sh fhm
+(cd editors/web && npm test)
+```
