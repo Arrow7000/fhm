@@ -13,6 +13,8 @@ structure State where
   unavailable : List UnavailableSlice := []
   diagnostics : List HoverDiag := []
   subst : Subst := []
+  declared : List DeclaredInterface := []
+  assumptions : List InterfaceRef := []
 
 structure Fact where
   ty : Ty
@@ -21,18 +23,23 @@ structure Fact where
 
 def Fact.current (fact : Fact) (state : State) : Ty := Subst.onTy (state.subst.drop fact.after) fact.ty
 
-private def applySubst (state : State) (subst : Subst) (frontier : Nat) : State :=
+private def applySubst (state : State) (subst : Subst) (frontier : Nat) (assumptions : List InterfaceRef := []) : State :=
   { state with
-    context := { state.context.onSubst subst with frontier := max frontier state.context.frontier }
-    checked := state.checked.map (fun slice => { slice with typed := slice.typed.onSubst subst })
-    subst := state.subst ++ subst }
+    context := { state.context.constrain subst assumptions with frontier := max frontier state.context.frontier }
+    checked := state.checked.map (fun slice =>
+      let affected := slice.typed.inference.nodeTypes.any fun (_, ty) => ty.freeVars.any (fun id => subst.any (·.1 == id))
+      { slice with
+        typed := slice.typed.onSubst subst
+        assumptions := (slice.assumptions ++ if affected then assumptions else []).eraseDups })
+    subst := state.subst ++ subst
+    assumptions := (state.assumptions ++ assumptions).eraseDups }
 
 private def accept (state : State) (slice : CheckedSlice) (emit : Bool := true) : State :=
-  let state := applySubst state slice.typed.inference.subst slice.typed.inference.frontier
+  let state := applySubst state slice.typed.inference.subst slice.typed.inference.frontier slice.assumptions
   if emit then { state with checked := state.checked ++ [slice] } else state
 
 private def restore (state : State) (outer : Context) (start : Nat) : State :=
-  { state with context := { outer.onSubst (state.subst.drop start) with frontier := state.context.frontier } }
+  { state with context := { outer.constrain (state.subst.drop start) state.assumptions with frontier := state.context.frontier } }
 
 private def causes (source : Source) (context : Context) (expr : Surface.Expr) : List Cause :=
   (context.causesFor (Surface.freeNames [] expr) ++
@@ -70,7 +77,8 @@ def withNativeFailure (before : Nat) (diagnostic : HoverDiag) (state : State) : 
   let same := children.any (fun child => child.code? == diagnostic.code? &&
     child.line == diagnostic.line && child.col == diagnostic.col)
   let represented := diagnostic.code? == some "type.mismatch" && children.any fun child =>
-    child.code? == diagnostic.code? && child.relocatedFrom? == some (diagnosticSpan diagnostic) &&
+    (child.code? == diagnostic.code? || child.code? == some "type.annotationMismatch") &&
+      child.relocatedFrom? == some (diagnosticSpan diagnostic) &&
       match diagnostic.constraint?, child.constraint? with
       | some (a, b), some (c, d) => (sameType a c && sameType b d) || (sameType a d && sameType b c)
       | _, _ => false
@@ -141,7 +149,7 @@ private def compareTypes (source : Source) (state : State) (actual expected : Ty
   match unifyResultK state.context.protectedVars actual expected with
   | .ok result =>
       let escaped := state.context.escaping result.val
-      if escaped.isEmpty then applySubst state result.val state.context.frontier else
+      if escaped.isEmpty then applySubst state result.val state.context.frontier state.assumptions else
         addError state (Diagnostics.inferenceDiag (InferError.root (.escapingVariables escaped))
           (authoredRoot ⟨0, span, true⟩ (.primLit .unit)) source.program source.spanned source.binders (.leaf span))
   | .error error =>
@@ -274,15 +282,77 @@ private def recoverLet (recurse : State → Surface.Expr → SpannedExpr → Opt
     let before := state.diagnostics.length
     state := inspectRhs recurse source state binding rhs scope
     if let some error := failure then state := withNativeFailure before error state
-    state := enterUnknown state [binding.name] roots
+    match declaredInterface source state.context binding rhs scope with
+    | some interface =>
+        state := { state with
+          context := state.context.withBindings [binding.name] [interface.scheme] [interface.ref]
+          declared := state.declared ++ [interface] }
+    | none => state := enterUnknown state [binding.name] roots
   else
-    state := { state with context := state.context.withBindings [binding.name] exported.toList }
+    let assumptions := state.checked.getLast?.map (·.assumptions) |>.getD []
+    state := { state with context := state.context.withBindings [binding.name] exported.toList assumptions }
   let expression := Surface.Expr.letIn binding.name binding.tyParams binding.params binding.ann binding.rhs continuation
   let tree := SpannedExpr.letIn scope rhs body
   state := { state with context := { state.context with
     lexical := lexical source expression tree [binding.name] body.span ++ state.context.lexical } }
   let (next, _) := recurse state continuation body expected
   return restore next outer start
+
+/-- Cut dependency edges at complete declared interfaces. Unsigned residual
+components still use ordinary native SCC checking; all exported facts retain
+which unvalidated interfaces they assumed. -/
+private def recoverBindings (recurse : State → Surface.Expr → SpannedExpr → Option Fact → State × Option Fact)
+    (source : Source) (initial : State) (bindings : List Surface.Binding) (rhss : List SpannedExpr)
+    (scope : Span) (roots : List Cause) : State := Id.run do
+  let interfaces := (bindings.zip rhss).filterMap fun (binding, rhs) =>
+    declaredInterface source initial.context binding rhs scope
+  let mut state := { initial with context := initial.context.withUnavailable (bindings.map (·.name)) roots }
+  for interface in interfaces do
+    state := { state with
+      context := state.context.withBindings [interface.ref.name] [interface.scheme] [interface.ref]
+      declared := state.declared ++ [interface] }
+  let residual := bindings.filter fun binding => !interfaces.any (·.ref.name == binding.name)
+  let groups := components residual (fun binding dependency => SurfaceBridge.Binding.refersTo binding dependency.name)
+  for group in groups do
+    let trees := group.filterMap fun binding => ((bindings.zip rhss).find? (·.1.name == binding.name)).map (·.2)
+    let capsule := source.group group trees scope
+    let dependencies := (causes source state.context capsule.program.term ++
+      state.context.causesFor ((group.map (·.name)).filter source.quarantined.contains)).eraseDups
+    let mut failure : Option HoverDiag := none
+    let mut succeeded := false
+    if dependencies.isEmpty then
+      match RecoveryArtifacts.check state.context capsule source.declarations.ctors with
+      | .ok slice =>
+          if let some schemes := groupSchemes group slice.typed then
+            state := accept state slice
+            state := { state with context := state.context.withBindings (group.map (·.name)) schemes slice.assumptions }
+            succeeded := true
+      | .error error => failure := some error
+    if !succeeded then
+      let failures := if dependencies.isEmpty then roots else dependencies
+      state := markUnavailable state capsule failures
+      state := enterUnknown state (group.map (·.name)) failures
+      let before := state.diagnostics.length
+      for (binding, rhs) in group.zip trees do
+        state := inspectRhs recurse source state binding rhs scope
+      if let some error := failure then state := withNativeFailure before error state
+  -- Complete members keep their contracts even when the implementation fails.
+  -- Check their real implementations after inferring unsigned residual groups.
+  for (binding, rhs) in bindings.zip rhss do
+    if interfaces.any (·.ref.name == binding.name) then
+      let header := bindingHeader source binding rhs scope
+      let dependencies := causes source state.context header.program.term
+      let mut failure : Option HoverDiag := none
+      let mut succeeded := false
+      if dependencies.isEmpty then
+        match RecoveryArtifacts.check state.context header source.declarations.ctors with
+        | .ok slice => state := accept state slice; succeeded := true
+        | .error error => failure := some error
+      if !succeeded then
+        let before := state.diagnostics.length
+        state := inspectRhs recurse source state binding rhs scope
+        if let some error := failure then state := withNativeFailure before error state
+  return state
 
 private def recoverRec (recurse : State → Surface.Expr → SpannedExpr → Option Fact → State × Option Fact)
     (source : Source) (state : State) (bindings : List Surface.Binding) (rhss : List SpannedExpr × SpannedExpr)
@@ -291,29 +361,23 @@ private def recoverRec (recurse : State → Surface.Expr → SpannedExpr → Opt
   let start := state.subst.length
   let names := bindings.map (·.name)
   let header := recHeader source bindings rhss.1 scope
-  let dependencies := causes source state.context (.letRecIn bindings (.primLit .unit))
+  let dependencies := causes source state.context header.program.term
+  let checked := if dependencies.isEmpty then RecoveryArtifacts.check state.context header source.declarations.ctors
+    else .error (diagAtSpan "unavailable dependency" (some scope))
   let mut state := state
-  let mut exported : Option (List PolyTy) := none
-  let mut failure : Option HoverDiag := none
-  let mut roots := dependencies
-  if dependencies.isEmpty then
-    match RecoveryArtifacts.check state.context header source.declarations.ctors with
-    | .ok slice =>
-        exported := groupSchemes bindings slice.typed
-        state := accept state slice
-    | .error error =>
-        failure := some error
-        roots := bindings.map (fun binding => Cause.localBinding binding.name scope)
-  if exported.isNone then
-    if roots.isEmpty then roots := bindings.map (fun binding => Cause.localBinding binding.name scope)
-    state := markUnavailable state header roots
-    state := enterUnknown state names roots
-    let before := state.diagnostics.length
-    for (binding, rhs) in bindings.zip rhss.1 do
-      state := inspectRhs recurse source state binding rhs scope
-    if let some error := failure then state := withNativeFailure before error state
-  else
-    state := { state with context := state.context.withBindings names (exported.getD []) }
+  match checked with
+  | .ok slice =>
+      match groupSchemes bindings slice.typed with
+      | some schemes =>
+          state := accept state slice
+          state := { state with context := state.context.withBindings names schemes slice.assumptions }
+      | none => state := addError state { diagAtSpan "internal missing recursive schemes" (some scope) with code? := some "internal.recoveryArtifact" }
+  | .error original =>
+      let roots := if dependencies.isEmpty then bindings.map (fun binding => Cause.localBinding binding.name scope) else dependencies
+      state := markUnavailable state header roots
+      let before := state.diagnostics.length
+      state := recoverBindings recurse source state bindings rhss.1 scope roots
+      if dependencies.isEmpty then state := withNativeFailure before original state
   let expression := Surface.Expr.letRecIn bindings continuation
   let tree := SpannedExpr.letRecIn scope rhss.1 rhss.2
   state := { state with context := { state.context with
@@ -346,7 +410,10 @@ def walk : Nat → Source → State → Surface.Expr → SpannedExpr → Option 
         code? := some "internal.recoveryArtifact" }, none)
   | fuel + 1, source, initial, expr, tree, expectedType => Id.run do
       let roots := causes source initial.context expr
-      let checked := if roots.isEmpty then
+      let structuralExpected := expectedType.isSome && match expr with
+        | .lambda .. | .ife .. | .match_ .. => true
+        | _ => false
+      let checked := if roots.isEmpty && !structuralExpected then
         RecoveryArtifacts.check initial.context (source.expression expr tree) source.declarations.ctors
         else .error (diagAtSpan "unavailable dependency" (some tree.span))
       match checked with
@@ -399,7 +466,7 @@ def walk : Nat → Source → State → Surface.Expr → SpannedExpr → Option 
               state := next
               match expected, fact with
               | some prior, some actual =>
-                  state := compareTypes source state (actual.current state) (prior.current state) child.span
+                  if expectedType.isNone then state := compareTypes source state (actual.current state) (prior.current state) child.span
               | none, some actual => expected := some actual
               | _, _ => pure ()
         | .lambda pat ann body, .lambda owner sbody =>
@@ -447,9 +514,10 @@ def walk : Nat → Source → State → Surface.Expr → SpannedExpr → Option 
             let (next, yesTy) := recurse state yes sy expectedType
             let (next, noTy) := recurse next no sn expectedType
             state := next
-            if let some yesTy := yesTy then
-              if let some noTy := noTy then
-                state := compareTypes source state (noTy.current state) (yesTy.current state) sn.span
+            if expectedType.isNone then
+              if let some yesTy := yesTy then
+                if let some noTy := noTy then
+                  state := compareTypes source state (noTy.current state) (yesTy.current state) sn.span
         | .match_ scrut branches, .match_ owner sscrut arms =>
             let (next, scrutTy) := recurse state scrut sscrut none
             state := next
@@ -481,11 +549,23 @@ def walk : Nat → Source → State → Surface.Expr → SpannedExpr → Option 
               state := restore next outer start
               match expected, fact with
               | some prior, some actual =>
-                  state := compareTypes source state (actual.current state) (prior.current state) arm.span
+                  if expectedType.isNone then state := compareTypes source state (actual.current state) (prior.current state) arm.span
               | none, some actual => expected := some actual
               | _, _ => pure ()
         | _, _ => pure ()
-        if roots.isEmpty then state := withNativeFailure diagnosticCount original state
+        if roots.isEmpty && !structuralExpected then
+          -- Expected result constraints can locate a branch violation more
+          -- precisely than the native branch-join constraint it also causes.
+          if expectedType.isSome && original.code? == some "type.mismatch" then
+            state := { state with diagnostics := state.diagnostics.map fun child =>
+              if child.code? == some "type.annotationMismatch" && HMArtifacts.inside (diagnosticSpan child) tree.span then
+                match original.constraint?, child.constraint? with
+                | some (a, b), some (c, d) =>
+                    if (sameType a c && sameType b d) || (sameType a d && sameType b c) then
+                      { child with relocatedFrom? := some (diagnosticSpan original) } else child
+                | _, _ => child
+              else child }
+          state := withNativeFailure diagnosticCount original state
         let failures := if roots.isEmpty then [.expression tree.span] else roots
         state := markUnavailable state (source.expression expr tree) failures
         return (state, none)
@@ -511,15 +591,12 @@ private def fuelBranches : List (Surface.Pattern × Surface.Expr) → Nat
   | (_, body) :: rest => fuelSize body + fuelBranches rest
 end
 
-/-- Inspect a rejected top-level group without exporting any of its members.
-Actual group checking and all successful top-level exports stay in EditorRecovery. -/
+/-- Recover rejected top-level components using complete interfaces as
+editor assumptions, and expose native residual exports to the editor driver. -/
 def group (source : Source) (context : Context) (bindings : List Surface.Binding) (rhss : List SpannedExpr)
-    (roots : List Cause) : State := Id.run do
-  let context := context.withUnavailable (bindings.map (·.name)) roots
-  let mut state : State := { context }
-  for (binding, rhs) in bindings.zip rhss do
-    state := inspectRhs (walk (fuelSize binding.rhs + binding.params.length + 32) source) source state binding rhs source.scope
-  return state
+    (roots : List Cause) : State :=
+  let fuel := bindings.foldl (fun n binding => n + fuelSize binding.rhs + binding.params.length) 32
+  recoverBindings (walk fuel source) source { context } bindings rhss source.scope roots
 
 def expression (source : Source) (context : Context) (expr : Surface.Expr) (tree : SpannedExpr) : State :=
   (walk (fuelSize expr + 32) source { context } expr tree none).1

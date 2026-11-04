@@ -28,6 +28,7 @@ structure Result where
   blocked : List Blocked := []
   unavailable : List UnavailableSlice := []
   unavailableDeclarations : List DeclarationRecovery.Unavailable := []
+  declared : List RecoveryArtifacts.DeclaredInterface := []
 
 private def internalError (message : String) (scope : Span) : HoverDiag :=
   { diagAtSpan message (some scope) with code? := some "internal.recoveryArtifact" }
@@ -55,7 +56,8 @@ private def sliceBinders (binders : List BinderSpan) (sp : SpannedProgram)
 
 private def checkSlice (ctors : CtorEnv) (names : List ValName) (schemes : List PolyTy)
     (program : Surface.Program) (spanned : SpannedProgram) (binders : List BinderSpan)
-    (scope : Span) (isBody : Bool := false) : Except HoverDiag CheckedSlice := do
+    (scope : Span) (isBody : Bool := false)
+    (assumed : List (ValName × List RecoveryArtifacts.InterfaceRef) := []) : Except HoverDiag CheckedSlice := do
   let tree ← (HMArtifacts.programSpannedResult program spanned scope).mapError
     (fun error => Diagnostics.provenanceDiag error program spanned binders scope)
   let identified := identify tree
@@ -68,7 +70,8 @@ private def checkSlice (ctors : CtorEnv) (names : List ValName) (schemes : List 
       !typed.nodeTypesTotal || !typed.sourceTypesTotal || !typed.patternBinderTypesTotal then
     .error (internalError "internal recovered provenance coverage failure" scope)
   else
-    .ok ⟨program, spanned, binders, tree, typed, isBody, [], true⟩
+    .ok ⟨program, spanned, binders, tree, typed, isBody, [], true,
+      (RecoveryArtifacts.Context.assumptionsFor { assumed := assumed } (Surface.freeNames [] program.term))⟩
 
 /-- Lexical artifacts describe unavailable hovers without supplying any type to
 inference. They also preserve shadowing and definition navigation in rejected code. -/
@@ -105,7 +108,8 @@ private def addPartials (result : Result) (partialResult : ExpressionRecovery.St
   { result with
     checked := result.checked ++ partialResult.checked
     unavailable := result.unavailable ++ partialResult.unavailable
-    diagnostics := result.diagnostics ++ partialResult.diagnostics }
+    diagnostics := result.diagnostics ++ partialResult.diagnostics
+    declared := result.declared ++ partialResult.declared }
 
 private def diagnosticSpan (diagnostic : HoverDiag) : Span :=
   ⟨diagnostic.line, diagnostic.col, diagnostic.endLine, diagnostic.endCol⟩
@@ -150,10 +154,12 @@ def check (program : Surface.Program) (spanned : SpannedProgram)
     binders := binders
     scope := scope
     declarations := declarations
-    valueBinderSpans := (HMArtifacts.collect binders program.term (identify wholeTree)).binders.map (·.span) }
+    valueBinderSpans := (HMArtifacts.collect binders program.term (identify wholeTree)).binders.map (·.span)
+    quarantined := seed.values.map (·.1) }
   let mut names : List ValName := []
   let mut schemes : List PolyTy := []
   let mut unavailable : List (ValName × List Cause) := seed.values
+  let mut assumed : List (ValName × List RecoveryArtifacts.InterfaceRef) := []
   for (group, rhss) in program.groups.zip spanned.groups do
     if !group.isEmpty then
       let groupNames := group.map (·.name)
@@ -168,21 +174,34 @@ def check (program : Surface.Program) (spanned : SpannedProgram)
         result := { result with blocked := result.blocked ++ [⟨groupNames, causes⟩] }
         let slice ← unavailableSlice localProgram localSpanned localBinders scope causes
         result := { result with unavailable := result.unavailable ++ [slice] }
-        result := addPartials result (ExpressionRecovery.group source
-          { names, schemes, unavailable } group rhss causes)
-        unavailable := groupNames.map (·, causes) ++ unavailable
+        let partialResult := ExpressionRecovery.group source
+          { names, schemes, unavailable, assumed } group rhss causes
+        if !partialResult.context.schemes.all (fun scheme => scheme.body.freeVars.isEmpty) then
+          throw (internalError "internal open interface export" scope)
+        result := addPartials result partialResult
+        names := partialResult.context.names
+        schemes := partialResult.context.schemes
+        unavailable := partialResult.context.unavailable
+        assumed := partialResult.context.assumed
       else
-        match checkSlice ctors names schemes localProgram localSpanned localBinders scope with
+        match checkSlice ctors names schemes localProgram localSpanned localBinders scope false assumed with
         | .error diagnostic =>
             let slice ← unavailableSlice localProgram localSpanned localBinders scope (groupNames.map Cause.binding)
             result := { result with unavailable := result.unavailable ++ [slice] }
-            result := addFailure result diagnostic (ExpressionRecovery.group source
-              { names, schemes, unavailable } group rhss (groupNames.map Cause.binding))
-            unavailable := groupNames.map (fun name => (name, groupNames.map Cause.binding)) ++ unavailable
+            let partialResult := ExpressionRecovery.group source
+              { names, schemes, unavailable, assumed } group rhss (groupNames.map Cause.binding)
+            if !partialResult.context.schemes.all (fun scheme => scheme.body.freeVars.isEmpty) then
+              throw (internalError "internal open interface export" scope)
+            result := addFailure result diagnostic partialResult
+            names := partialResult.context.names
+            schemes := partialResult.context.schemes
+            unavailable := partialResult.context.unavailable
+            assumed := partialResult.context.assumed
         | .ok slice =>
             let exported ← exports group slice.typed scope
             names := groupNames ++ names
             schemes := exported ++ schemes
+            if !slice.assumptions.isEmpty then assumed := groupNames.map (·, slice.assumptions) ++ assumed
             result := { result with checked := result.checked ++ [slice] }
   let bodyCauses := (seed.body ++ causesFor unavailable (Surface.freeNames [] program.body) ++
     DeclarationRecovery.causesFor declarations (expression program.body)).eraseDups
@@ -198,13 +217,13 @@ def check (program : Surface.Program) (spanned : SpannedProgram)
       blocked := result.blocked ++ [⟨[], bodyCauses⟩]
       unavailable := result.unavailable ++ [slice] }
     if seed.body.isEmpty then
-      result := addPartials result (ExpressionRecovery.expression source { names, schemes, unavailable } program.body spanned.body)
+      result := addPartials result (ExpressionRecovery.expression source { names, schemes, unavailable, assumed } program.body spanned.body)
   else
-    match checkSlice ctors names schemes localProgram localSpanned localBinders scope true with
+    match checkSlice ctors names schemes localProgram localSpanned localBinders scope true assumed with
     | .error diagnostic =>
         let slice ← unavailableSlice localProgram localSpanned localBinders scope []
         result := { result with unavailable := result.unavailable ++ [slice] }
-        result := addFailure result diagnostic (ExpressionRecovery.expression source { names, schemes, unavailable } program.body spanned.body)
+        result := addFailure result diagnostic (ExpressionRecovery.expression source { names, schemes, unavailable, assumed } program.body spanned.body)
     | .ok slice => result := { result with checked := result.checked ++ [slice] }
   let diagnostics := deduplicate result.diagnostics
   let diagnostics := diagnostics.filter fun diagnostic =>

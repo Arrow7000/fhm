@@ -84,14 +84,14 @@ test("healthy recovered use hovers retain definition documentation", () => {
   assert.equal(use.definition.startLine0, 1);
 });
 
-test("failed mutual group exports neither signed nor inferred members", () => {
+test("a complete signature cuts failed recursion and permits conditional unsigned exports", () => {
   const source = "let f : Int -> Int = \\x -> if True then True else g x\n" +
     "let g x = f x\nlet blocked = g 1\nlet healthy = 9\nhealthy\n";
   const { payload } = cli(["diagnose"], source);
   assert.equal(payload.diagnostics.length, 1);
-  for (const [line, name] of [[0, "f"], [1, "g"], [2, "blocked"]]) {
-    assert.match(at(payload, source, line, name).hover.type, /^type unknown \(error in /);
-  }
+  assert.equal(at(payload, source, 0, "f").hover.type, "Int → Int");
+  assert.equal(at(payload, source, 1, "g").hover.type, "Int → Int");
+  assert.equal(at(payload, source, 2, "blocked").hover.type, "Int");
   assert.equal(at(payload, source, 3, "healthy").hover.type, "Int");
   assert.equal(payload.programTy, "Int");
 });
@@ -99,7 +99,7 @@ test("failed mutual group exports neither signed nor inferred members", () => {
 test("final-expression failure remains independent and unavailable dependencies suppress cascades", () => {
   const independent = cli(["diagnose"], "let failed : Int = True\n1 True\n");
   assert.deepEqual(independent.payload.diagnostics.map(d => d.code), ["type.annotationMismatch", "type.notFunction"]);
-  const source = "let failed : Int = True\nlet next = failed + 1\nnext + 1\n";
+  const source = "let failed : List _ = True\nlet next = failed + 1\nnext + 1\n";
   const { payload } = cli(["diagnose"], source);
   assert.equal(payload.diagnostics.length, 1);
   assert.equal(payload.programTy, "");
@@ -361,9 +361,13 @@ test("nested showcase reports seven errors with healthy local and polymorphic na
   assert.equal(at(payload, source, lines.length - 2, "after", 1).hover.type, "Bool → Bool");
   assert.match(at(payload, source, lines.length - 2, "after").hover.doc, /Healthy polymorphism/);
   assert.equal(payload.programTy, "(Int, Bool)");
-  for (const name of ["nested", "arms", "left", "right", "dependent", "preserve"]) {
+  for (const name of ["nested", "arms"]) {
     const line = lines.findIndex(line => line.startsWith(`let ${name} `));
     assert.match(at(payload, source, line, name).hover.type, /^type unknown/);
+  }
+  for (const name of ["left", "right", "preserve"]) {
+    const line = lines.findIndex(line => line.startsWith(`let ${name} `));
+    assert.equal(at(payload, source, line, name).hover.typeStatus, "declared");
   }
   assert.equal(cli(["run", "--json"], source).payload.ok, false);
 });
@@ -435,7 +439,7 @@ test("pattern lambdas retain independently constrained captures", () => {
 });
 
 test("unavailable match scrutinees withhold capture types while independent arms recover", () => {
-  const source = "let failed : Int = True\nlet f = match failed with | x :: xs -> (1 True, x) | [] -> 2 False\n0\n";
+  const source = "let failed : List _ = True\nlet f = match failed with | x :: xs -> (1 True, x) | [] -> 2 False\n0\n";
   const { payload } = cli(["diagnose"], source);
   assert.deepEqual(payload.diagnostics.map(d => d.code), ["type.annotationMismatch", "type.notFunction", "type.notFunction"]);
   for (const name of ["x", "xs"]) assert.equal(at(payload, source, 1, name).hover.type, "type unknown (error in `failed`)");
@@ -443,7 +447,7 @@ test("unavailable match scrutinees withhold capture types while independent arms
 });
 
 test("known list elements still disagree across an unavailable element", () => {
-  const source = "let failed : Int = True\nlet f = [1, failed, False, 2 True]\n0\n";
+  const source = "let failed : List _ = True\nlet f = [1, failed, False, 2 True]\n0\n";
   const { payload } = cli(["diagnose"], source);
   assert.deepEqual(payload.diagnostics.map(d => d.code), ["type.annotationMismatch", "type.mismatch", "type.notFunction"]);
   assert.equal(payload.diagnostics[1].col, source.split("\n")[1].indexOf("False") + 1);
@@ -462,17 +466,17 @@ test("failed local forall checks cannot leak rigid variables to the outer contin
   assert.deepEqual(payload.diagnostics.map(d => d.code), ["type.escapingVariable", "type.notFunction"]);
   assert.equal(at(payload, source, 0, "x").hover.type, "Int");
   assert.equal(at(payload, source, 0, "x", 2).hover.type, "Int");
-  assert.match(at(payload, source, 0, "bad").hover.type, /^type unknown/);
+  assert.equal(at(payload, source, 0, "bad").hover.typeStatus, "declared");
 });
 
-test("local mutually recursive failures retain independent signatures and withhold members", () => {
+test("local mutually recursive failures retain complete declared interfaces", () => {
   const source = "let outer x =\n  let f : Int -> Int = \\n -> if True then True else g n\n" +
-    "      g : Bool -> Bool = \\n -> if True then 7 else f 1\n  in (1 True, x + 1)\n0\n";
+    "      g : Int -> Int = \\n -> if True then False else f 1\n  in (1 True, x + 1)\n0\n";
   const { payload } = cli(["diagnose"], source);
   assert.deepEqual(payload.diagnostics.map(d => d.code), ["type.annotationMismatch", "type.annotationMismatch", "type.notFunction"]);
-  for (const [line, name] of [[1, "f"], [2, "g"]]) assert.match(at(payload, source, line, name).hover.type, /^type unknown/);
+  for (const [line, name] of [[1, "f"], [2, "g"]]) assert.equal(at(payload, source, line, name).hover.typeStatus, "declared");
   assert.equal(at(payload, source, 1, "n").hover.type, "Int");
-  assert.equal(at(payload, source, 2, "n").hover.type, "Bool");
+  assert.equal(at(payload, source, 2, "n").hover.type, "Int");
   assert.equal(at(payload, source, 3, "x").hover.type, "Int");
 });
 
@@ -484,7 +488,7 @@ test("a native monomorphic-recursion failure survives unrelated fragment errors"
 });
 
 test("final-expression recovery reports concrete non-functions with unavailable arguments", () => {
-  const source = "let failed : Int = True\n(1 failed, (2 False, 3 True))\n";
+  const source = "let failed : List _ = True\n(1 failed, (2 False, 3 True))\n";
   const { payload } = cli(["diagnose"], source);
   assert.deepEqual(payload.diagnostics.map(d => d.code), ["type.annotationMismatch", "type.notFunction", "type.notFunction", "type.notFunction"]);
   assert.equal(payload.programTy, "");
@@ -506,7 +510,7 @@ test("safe captured constraints survive a rejected local forall", () => {
   const { payload } = cli(["diagnose"], source);
   assert.deepEqual(payload.diagnostics.map(d => d.code), ["type.notFunction", "type.mismatch"]);
   assert.equal(at(payload, source, 0, "x").hover.type, "Int");
-  assert.match(at(payload, source, 0, "bad").hover.type, /^type unknown/);
+  assert.equal(at(payload, source, 0, "bad").hover.typeStatus, "declared");
 });
 
 test("authored type parameters stay scoped and navigable in failed head-parameter bindings", () => {

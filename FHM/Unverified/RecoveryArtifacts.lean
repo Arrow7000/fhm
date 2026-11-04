@@ -5,6 +5,22 @@ passes. No value in this module certifies a rejected whole program. -/
 namespace FHM.Unverified.RecoveryArtifacts
 open SurfaceBridge SurfaceBridge.Provenance Surface.Span RecoveryDependencies
 
+/-- Identity of an editor-only declared interface, distinct across shadowing. -/
+structure InterfaceRef where
+  name : ValName
+  span : Span
+  deriving Repr, BEq
+
+/-- A complete, natively lowered annotation. This contains no claim that its
+implementation has passed checking. -/
+structure DeclaredInterface where
+  ref : InterfaceRef
+  scheme : PolyTy
+  writtenNames : List String
+  aliases : List (Nat × String)
+  scope : Span
+  doc : Option String := none
+
 structure CheckedSlice where
   program : Surface.Program
   spanned : SpannedProgram
@@ -14,6 +30,7 @@ structure CheckedSlice where
   isBody : Bool := false
   outerBinders : List HMArtifacts.BinderLocation := []
   checkCoverage : Bool := true
+  assumptions : List InterfaceRef := []
 
 structure UnavailableSlice where
   program : Surface.Program
@@ -31,6 +48,7 @@ structure Context where
   protectedVars : List Nat := []
   frontier : Nat := 0
   lexical : List HMArtifacts.BinderLocation := []
+  assumed : List (ValName × List InterfaceRef) := []
   /-- Rigid variables that must not enter the saved surrounding environments. -/
   boundaries : List (List Nat × List PolyTy) := []
 
@@ -39,6 +57,18 @@ def Context.onSubst (context : Context) (subst : Subst) : Context :=
     schemes := context.schemes.map subst.onPolyTy
     boundaries := context.boundaries.map (fun (written, env) => (written, env.map subst.onPolyTy)) }
 
+def Context.assumptionsFor (context : Context) (uses : List ValName) : List InterfaceRef :=
+  (uses.flatMap (fun name => ((context.assumed.find? (·.1 == name)).map (·.2)).getD [])).eraseDups
+
+/-- Constraint provenance follows outer monotypes affected by a successful
+substitution. Closed, unrelated schemes retain their original status. -/
+def Context.constrain (context : Context) (subst : Subst) (assumptions : List InterfaceRef) : Context :=
+  let result := context.onSubst subst
+  let affected := (context.names.zip context.schemes).filterMap fun (name, scheme) =>
+    if scheme.body.freeVars.any (fun id => subst.any (·.1 == id)) then some name else none
+  let origins := context.assumptionsFor affected
+  { result with assumed := (if assumptions.isEmpty then [] else affected.map (·, (origins ++ assumptions).eraseDups)) ++ result.assumed }
+
 def Context.escaping (context : Context) (subst : Subst) : List Nat :=
   (context.boundaries.flatMap fun (written, env) => written.filter fun name =>
     env.any (fun scheme => (subst.onPolyTy scheme).body.freeVars.contains name)).eraseDups
@@ -46,19 +76,23 @@ def Context.escaping (context : Context) (subst : Subst) : List Nat :=
 def Context.causesFor (context : Context) (uses : List ValName) : List Cause :=
   (uses.flatMap (fun name => ((context.unavailable.find? (·.1 == name)).map (·.2)).getD [])).eraseDups
 
+
 /-- A lexical binder shadows both available and unavailable outer names. -/
-def Context.withBindings (context : Context) (names : List ValName) (schemes : List PolyTy) : Context :=
+def Context.withBindings (context : Context) (names : List ValName) (schemes : List PolyTy) (assumptions : List InterfaceRef := []) : Context :=
   { context with
     names := names ++ context.names
     schemes := schemes ++ context.schemes
-    unavailable := context.unavailable.filter (fun (name, _) => !names.contains name) }
+    unavailable := context.unavailable.filter (fun (name, _) => !names.contains name)
+    assumed := (if assumptions.isEmpty then [] else names.map (·, assumptions)) ++
+      context.assumed.filter (fun (name, _) => !names.contains name) }
 
 def Context.withUnavailable (context : Context) (names : List ValName) (causes : List Cause) : Context :=
   let available := (context.names.zip context.schemes).filter (fun (name, _) => !names.contains name)
   { context with
     names := available.map (·.1)
     schemes := available.map (·.2)
-    unavailable := names.map (·, causes) ++ context.unavailable }
+    unavailable := names.map (·, causes) ++ context.unavailable
+    assumed := context.assumed.filter (fun (name, _) => !names.contains name) }
 
 structure Source where
   program : Surface.Program
@@ -67,6 +101,7 @@ structure Source where
   scope : Span
   declarations : DeclarationRecovery.Result
   valueBinderSpans : List Span := []
+  quarantined : List ValName := []
 
 private def insideAny (regions : List Span) (span : Span) : Bool := regions.any (HMArtifacts.inside span ·)
 
@@ -100,6 +135,28 @@ def Source.group (source : Source) (bindings : List Surface.Binding) (rhss : Lis
     { source.spanned with groups := [rhss], body := .generated (.leaf scope), bindingHeaders := headers }
     (headers.map (·.2) ++ rhss.map (·.span))
 
+/-- Complete annotations are independently checked by the native annotation
+lowerer. Holes, invalid declarations and quarantined parser names give no
+interface. Opening uses exactly the real enclosing authored type variables. -/
+def declaredInterface (source : Source) (context : Context) (binding : Surface.Binding)
+    (rhs : SpannedExpr) (scope : Span) : Option DeclaredInterface := do
+  if source.quarantined.contains binding.name || Surface.internalBindingName binding.name then none else do
+    let annotation ← finalizeInputAnn binding.tyParams binding.params binding.ann
+    if !(DeclarationRecovery.causesFor source.declarations ⟨typeNames annotation.body, []⟩).isEmpty then none else do
+      let lowered ← (lowerInputLetAnnResult (kindEnvOfCtors source.declarations.ctors) context.tvs (some annotation)).toOption
+      let scheme ← (lowered.openTyVarsFrom 0 context.written).recModeAnn
+      if !scheme.body.bvarsBelow scheme.paramCount then none else do
+        let name := match binding.name with | .mk name => name
+        let binder ← (source.binders.filter fun binder => binder.name == name && binder.kind == .val &&
+          HMArtifacts.inside binder.span scope && HMArtifacts.before binder.span rhs.span).getLast?
+        pure {
+          ref := ⟨binding.name, binder.span⟩
+          scheme := scheme
+          writtenNames := annotation.foralls.eraseDups.map (fun | .mk name => name)
+          aliases := context.written.zip (context.tvs.map (fun | .mk name => name))
+          scope := scope
+          doc := binder.doc? }
+
 def unavailable (source : Source) (causes : List Cause) : Except HoverDiag UnavailableSlice := do
   let tree ← (HMArtifacts.programSpannedResult source.program source.spanned source.scope).mapError
     (fun error => Diagnostics.provenanceDiag error source.program source.spanned source.binders source.scope)
@@ -128,7 +185,7 @@ def check (context : Context) (source : Source) (ctors : CtorEnv) (isBody : Bool
       !typed.nodeTypesTotal || !typed.sourceTypesTotal || !typed.patternBinderTypesTotal then
     .error { diagAtSpan "internal recovered provenance coverage failure" (some source.scope) with
       code? := some "internal.recoveryArtifact" }
-  else pure ⟨source.program, source.spanned, source.binders, tree, typed, isBody, context.lexical, true⟩
+  else pure ⟨source.program, source.spanned, source.binders, tree, typed, isBody, context.lexical, true, context.assumptionsFor (Surface.freeNames [] source.program.term)⟩
 
 /-- Read validated native group-exit schemes, including complete signatures.
 Nested schemes may mention their real monomorphic or rigid outer context. -/

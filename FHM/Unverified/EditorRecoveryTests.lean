@@ -28,12 +28,12 @@ private def independent : String :=
       report.diagnostics.any (·.code? == some "type.annotationMismatch") &&
       report.diagnostics.any (·.code? == some "lower.unboundName") &&
       definition report "number" == some "Int" && definition report "truth" == some "Bool" &&
-      unknown report "bad" && unknown report "missing" &&
+      definition report "bad" == some "Int" && unknown report "missing" &&
       report.programTy == "(Int, Bool)"
   | none => false
 
 private def dependencyChain : String :=
-  "let failed : Int = True\nlet direct = failed + 1\nlet indirect = direct + 1\n" ++
+  "let failed : List _ = True\nlet direct = failed + 1\nlet indirect = direct + 1\n" ++
   "let unrelated x = x\nunrelated 7\n"
 #guard match recover dependencyChain with
   | some result => result.diagnostics.length == 1 &&
@@ -52,13 +52,13 @@ private def dependencyChain : String :=
       (definition report "good").isSome
   | none => false
 
--- A syntactic SCC is atomic, even if another member has a complete signature.
+-- Complete signatures cut a failed syntactic SCC into conditional residual exports.
 private def failedMutual : String :=
   "let f : Int -> Int = \\x -> if True then True else g x\n" ++
   "let g x = f x\nlet blocked = g 1\nlet healthy = 9\nhealthy\n"
 #guard match hover failedMutual with
   | some report => report.diagnostics.length == 1 && definition report "healthy" == some "Int" &&
-      unknown report "f" && unknown report "g" && unknown report "blocked"
+      definition report "f" == some "Int → Int" && definition report "g" == some "Int → Int" && definition report "blocked" == some "Int"
   | none => false
 
 -- Declared and inferred schemes both cross recovery boundaries polymorphically.
@@ -82,7 +82,7 @@ private def failedMutual : String :=
   | some report => report.diagnostics.length == 2 && report.programTy.isEmpty &&
       report.diagnostics.any (·.code? == some "type.notFunction")
   | none => false
-#guard match hover "let failed : Int = True\nfailed + 1\n" with
+#guard match hover "let failed : List _ = True\nfailed + 1\n" with
   | some report => report.diagnostics.length == 1 && report.programTy.isEmpty
   | none => false
 

@@ -341,6 +341,13 @@ function kindBadge(kind) {
 function hoverMarkdown(hit) {
   const doc = typeof hit?.doc === "string" && hit.doc.length > 0 ? hit.doc : "";
   const sections = [hoverSignature(hit)];
+  if (hit?.typeStatus === "declared") {
+    sections.push("Declared type; implementation is not fully validated.");
+  } else if (hit?.typeStatus === "conditional") {
+    const names = [...new Set((hit.typeAssumptions || []).map(a => a.name))];
+    sections.push("Type checked using unvalidated declared interfaces" +
+      (names.length ? ": " + names.map(n => "`" + n.replace(/`/g, "'") + "`").join(", ") : "") + ".");
+  }
   // Keep the instantiated signature and constructor docs above the declaration.
   if (doc) sections.push(doc);
   if (typeof hit?.declaration === "string" && hit.declaration.length > 0) {
@@ -655,6 +662,9 @@ function resolveHover(ranged, line0, col0, lineText, tokens) {
     name,
     kind: kindBadge(sym.kind || "val"),
     type,
+    ...(["declared", "conditional"].includes(sym.typeStatus) ? { typeStatus: sym.typeStatus,
+      typeAssumptions: Array.isArray(sym.typeAssumptions)
+        ? sym.typeAssumptions.filter(a => a && typeof a.name === "string") : [] } : {}),
     ...(typeof sym.doc === "string" && sym.doc.length > 0 ? { doc: sym.doc } : {}),
     ...(typeof sym.declaration === "string" && sym.declaration.length > 0
       ? { declaration: sym.declaration.length > 2000

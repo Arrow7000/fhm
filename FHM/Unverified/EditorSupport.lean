@@ -68,7 +68,13 @@ structure RangedSymbol where
   doc : Option String := none
   /-- A constructor's enclosing data declaration, separate from its use-site type. -/
   declaration : Option String := none
+  declared : Bool := false
+  assumptions : List FHM.Unverified.RecoveryArtifacts.InterfaceRef := []
   deriving Repr, BEq
+
+def interfaceRefJson (ref : FHM.Unverified.RecoveryArtifacts.InterfaceRef) : Lean.Json :=
+  Lean.Json.mkObj [ ("name", Lean.Json.str (prettyValName ref.name)),
+    ("line", Lean.Json.num ref.span.startLine), ("col", Lean.Json.num ref.span.startCol) ]
 
 def RangedSymbol.toJson (s : RangedSymbol) : Lean.Json :=
   Lean.Json.mkObj <| [
@@ -85,7 +91,11 @@ def RangedSymbol.toJson (s : RangedSymbol) : Lean.Json :=
     ("scopeEndCol", Lean.Json.num s.scope.endCol),
     ("def", Lean.Json.bool s.isDef)
   ] ++ (s.doc.map fun d => ("doc", Lean.Json.str d)).toList ++
-    (s.declaration.map fun d => ("declaration", Lean.Json.str d)).toList
+    (s.declaration.map fun d => ("declaration", Lean.Json.str d)).toList ++
+    (if s.declared then [("typeStatus", Lean.Json.str "declared")] else
+      if s.assumptions.isEmpty then [] else [("typeStatus", Lean.Json.str "conditional")]) ++
+    (if s.assumptions.isEmpty then [] else
+      [("typeAssumptions", Lean.Json.arr (s.assumptions.map interfaceRefJson).toArray)])
 
 def mkSym (name kind type_ : String) (span scope : Span) : RangedSymbol :=
   { name, kind, type_, span, scope }
@@ -211,6 +221,7 @@ structure HoverReport where
   symbols : List RangedSymbol
   programTy : String
   diagnostics : List HoverDiag := []
+  assumptions : List FHM.Unverified.RecoveryArtifacts.InterfaceRef := []
   deriving Repr
 
 def bodyDiagSpan (body : SpannedExpr) : Span :=
@@ -449,10 +460,19 @@ def collectRecoveredHover (src : String) (p : Surface.Program) (binders : List B
   match FHM.Unverified.EditorRecovery.check p sp binders (programWideScope binders sp) seed with
   | .error diagnostic => { symbols := [], programTy := "", diagnostics := [diagnostic] }
   | .ok recovered =>
-    let reports := recovered.checked.map fun slice =>
-      collectTypedHover src slice.program slice.binders slice.spanned slice.tree slice.typed slice.outerBinders slice.checkCoverage
+    let reports : List HoverReport := recovered.checked.map fun slice =>
+      let report := collectTypedHover src slice.program slice.binders slice.spanned slice.tree slice.typed slice.outerBinders slice.checkCoverage
+      { report with symbols := report.symbols.map fun (symbol : RangedSymbol) =>
+          if symbol.kind == "type" || (symbol.isDef && symbol.kind == "ctor") || symbol.kind == "lit" || symbol.kind == "op" then symbol
+          else { symbol with assumptions := slice.assumptions } }
     let body := recovered.checked.find? (·.isBody)
-    let checkedSymbols := reports.flatMap (·.symbols)
+    let interfaces := recovered.declared.map fun interface =>
+      { mkSym (prettyValName interface.ref.name) "val"
+          (FHM.Unverified.HMDisplay.scheme { aliases := interface.aliases } interface.writtenNames interface.scheme)
+          interface.ref.span interface.scope with
+        isDef := true, declared := true, assumptions := [interface.ref], doc := interface.doc }
+    let checkedSymbols := ((reports.flatMap (·.symbols)).filter fun symbol =>
+      !interfaces.any (fun interface => symbol.isDef && symbol.name == interface.name && symbol.span == interface.span)) ++ interfaces
     -- A source token has one identity even when an enclosing unavailable
     -- slice knows less about its binder kind. Prefer checked facts, then the
     -- innermost original failure over broad enclosing failures.
@@ -495,6 +515,7 @@ def collectRecoveredHover (src : String) (p : Surface.Program) (binders : List B
     { symbols
       programTy := (body.map fun slice => FHM.Unverified.HMDisplay.scheme {} []
         (genScheme [] [] slice.typed.inference.ty)).getD ""
+      assumptions := (body.map (·.assumptions)).getD []
       diagnostics := ((recovered.diagnostics ++ reports.flatMap (·.diagnostics)).foldl
         (fun found diagnostic => if found.any (fun prior => prior.code? == diagnostic.code? &&
           prior.line == diagnostic.line && prior.col == diagnostic.col && prior.endLine == diagnostic.endLine &&
@@ -585,22 +606,24 @@ def diagnosePayload (src : String) : Lean.Json :=
       ]
     | .ok parsed =>
       let report := collectParseRecoveredHover src parsed
-      Lean.Json.mkObj [
+      Lean.Json.mkObj <| [
         ("version", Lean.Json.num 3),
         ("diagnostics", Lean.Json.arr (report.diagnostics.map HoverDiag.toJson).toArray),
         ("symbols", Lean.Json.arr (report.symbols.map RangedSymbol.toJson).toArray),
         ("tokens", tokensJson src),
         ("programTy", Lean.Json.str report.programTy)
-      ]
+      ] ++ (if report.assumptions.isEmpty then [] else [
+        ("programTypeAssumptions", Lean.Json.arr (report.assumptions.map interfaceRefJson).toArray)])
   | .ok (p, binders, sp) =>
     let r := collectHover src p binders sp
-    Lean.Json.mkObj [
+    Lean.Json.mkObj <| [
       ("version", Lean.Json.num 3),
       ("diagnostics", Lean.Json.arr (r.diagnostics.map HoverDiag.toJson).toArray),
       ("symbols", Lean.Json.arr (r.symbols.map RangedSymbol.toJson).toArray),
       ("tokens", tokensJson src),
       ("programTy", Lean.Json.str r.programTy)
-    ]
+    ] ++ (if r.assumptions.isEmpty then [] else [
+      ("programTypeAssumptions", Lean.Json.arr (r.assumptions.map interfaceRefJson).toArray)])
 
 def binderNames (bs : List BinderSpan) : List String :=
   bs.map (·.name)
