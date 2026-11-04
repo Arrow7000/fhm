@@ -408,10 +408,15 @@ def collectUnavailableHover (src : String) (slice : FHM.Unverified.EditorRecover
     slice.spanned.bindingHeaders.map (·.2) ++ slice.spanned.groups.flatten.map (·.span)
   let inRegion := fun span => regions.any (FHM.Unverified.HMArtifacts.inside span ·)
   let typeBinders := slice.binders.filterMap fun binder =>
-    if binder.scope?.isSome && inRegion binder.span &&
+    if (binder.scope?.isSome || binder.kind == .param) && inRegion binder.span &&
         !(locations.binders.any (fun existing => existing.span == binder.span)) then
-      some { mkSym binder.name binder.kind.toString label binder.span
-        (binder.scope?.getD binder.span) with isDef := true, doc := binder.doc? }
+      let header := slice.spanned.bindingHeaders.find? (fun entry =>
+        FHM.Unverified.HMArtifacts.inside binder.span entry.2)
+      let rhs := header.bind fun (name, _) =>
+        ((slice.program.groups.flatten.zip slice.spanned.groups.flatten).find?
+          (fun (binding, _) => binding.name == .mk name)).map (·.2.span)
+      let scope := binder.scope?.getD ((header.bind fun (_, header) => rhs.map (header.union ·)).getD slice.tree.span)
+      some { mkSym binder.name binder.kind.toString label binder.span scope with isDef := true, doc := binder.doc? }
     else none
   let references := slice.spanned.references.filterMap fun reference =>
     if !inRegion reference.span then none else
@@ -455,8 +460,16 @@ def collectRecoveredHover (src : String) (p : Surface.Program) (binders : List B
       a.name == b.name && a.span == b.span && a.isDef == b.isDef
     let unavailable := recovered.unavailable.mergeSort fun a b =>
       a.spanned.body.span.area ≤ b.spanned.body.span.area
+    let lexicalBinders := ((FHM.Unverified.HMArtifacts.programSpannedResult p sp (programWideScope binders sp)).toOption.map
+      (fun tree => (FHM.Unverified.HMArtifacts.collect binders p.term (SurfaceBridge.Provenance.identify tree)).binders)).getD []
     let candidates := unavailable.flatMap fun slice =>
       (collectUnavailableHover src slice).map fun symbol =>
+        let symbol := if symbol.kind == "val" && !symbol.isDef then
+          let binder := ((lexicalBinders.filter fun binder => binder.name == symbol.name &&
+            binder.scope.contains symbol.span.startLine symbol.span.startCol).mergeSort
+              (fun a b => a.scope.area ≤ b.scope.area)).head?
+          { symbol with kind := (binder.map (·.kind.toString)).getD symbol.kind }
+          else symbol
         let ownCause := slice.causes.any fun
           | .binding name | .localBinding name _ => name == .mk symbol.name
           | .declaration name => name == .mk symbol.name

@@ -740,6 +740,7 @@ partial def atom : PE := do
           let sa' :=
             match sa with
             | .generated e => .generated e
+            | .generatedRoot e => .generatedRoot e
             | .leaf _ => SpannedExpr.leaf span
             | .pair _ x y => .pair span x y
             | .cons _ x y => .cons span x y

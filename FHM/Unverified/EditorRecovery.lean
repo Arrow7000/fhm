@@ -111,17 +111,7 @@ private def diagnosticSpan (diagnostic : HoverDiag) : Span :=
   ⟨diagnostic.line, diagnostic.col, diagnostic.endLine, diagnostic.endCol⟩
 
 private def addFailure (result : Result) (diagnostic : HoverDiag) (partialResult : ExpressionRecovery.State) : Result :=
-  let same := partialResult.diagnostics.any (fun child => child.code? == diagnostic.code? &&
-    child.line == diagnostic.line && child.col == diagnostic.col)
-  let ancestor := !same && diagnostic.code?.any (·.startsWith "type.") &&
-    partialResult.diagnostics.any (fun child =>
-      HMArtifacts.inside (diagnosticSpan child) (diagnosticSpan diagnostic) && diagnosticSpan child != diagnosticSpan diagnostic)
-  let dependent := !partialResult.diagnostics.isEmpty && partialResult.unavailable.any (fun slice =>
-    match slice.program.term with
-    | .var _ => !slice.causes.isEmpty && slice.tree.span.contains diagnostic.line diagnostic.col
-    | _ => false)
-  let suppress := diagnostic.code? != some "type.infiniteType" && (ancestor || dependent)
-  addPartials (if suppress then result else { result with diagnostics := result.diagnostics ++ [diagnostic] }) partialResult
+  addPartials result (ExpressionRecovery.withNativeFailure 0 diagnostic partialResult)
 
 private def deduplicate (diagnostics : List HoverDiag) : List HoverDiag :=
   diagnostics.foldl (fun found diagnostic =>
@@ -139,7 +129,7 @@ def check (program : Surface.Program) (spanned : SpannedProgram)
   let program := { program with decls := declarations.declarations }
   let spanned := { spanned with declSpans := declarations.spans }
   -- Validate the entire sidecar shape before zipping; no group can disappear.
-  let _ ← (HMArtifacts.programSpannedResult program spanned scope).mapError
+  let wholeTree ← (HMArtifacts.programSpannedResult program spanned scope).mapError
     (fun error => Diagnostics.provenanceDiag error program spanned binders scope)
   let mut result : Result := {
     diagnostics := declarations.diagnostics
@@ -154,7 +144,13 @@ def check (program : Surface.Program) (spanned : SpannedProgram)
     let declarationBinders := binders.filter fun binder => spanned.declSpans.any (HMArtifacts.inside binder.span ·)
     let slice ← checkSlice ctors [] [] declarationProgram declarationSpanned declarationBinders scope
     result := { result with checked := [slice] }
-  let source : RecoveryArtifacts.Source := ⟨program, spanned, binders, scope, declarations⟩
+  let source : RecoveryArtifacts.Source := {
+    program := program
+    spanned := spanned
+    binders := binders
+    scope := scope
+    declarations := declarations
+    valueBinderSpans := (HMArtifacts.collect binders program.term (identify wholeTree)).binders.map (·.span) }
   let mut names : List ValName := []
   let mut schemes : List PolyTy := []
   let mut unavailable : List (ValName × List Cause) := seed.values

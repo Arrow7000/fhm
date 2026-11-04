@@ -42,9 +42,34 @@ private def addError (state : State) (error : HoverDiag) : State :=
   if state.diagnostics.any (fun existing => existing.code? == error.code? && existing.line == error.line && existing.col == error.col) then
     { state with diagnostics := state.diagnostics.map (fun existing =>
       if existing.code? == error.code? && existing.line == error.line && existing.col == error.col &&
-          (error.endLine < existing.endLine || (error.endLine == existing.endLine && error.endCol < existing.endCol))
+          (error.endLine < existing.endLine || (error.endLine == existing.endLine && error.endCol ≤ existing.endCol))
         then error else existing) }
   else { state with diagnostics := state.diagnostics ++ [error] }
+
+private def diagnosticSpan (diagnostic : HoverDiag) : Span :=
+  ⟨diagnostic.line, diagnostic.col, diagnostic.endLine, diagnostic.endCol⟩
+
+/-- Retain native root failures, including recursive-call constraints that
+cannot be reconstructed without provisional member types. Replace only a broad
+ancestor or recursive result-shape cascade with a more precise source failure. -/
+def withNativeFailure (before : Nat) (diagnostic : HoverDiag) (state : State) : State :=
+  let children := state.diagnostics.drop before
+  let same := children.any (fun child => child.code? == diagnostic.code? &&
+    child.line == diagnostic.line && child.col == diagnostic.col)
+  let represented := diagnostic.code? == some "type.mismatch" && children.any fun child =>
+    child.code? == diagnostic.code? && match diagnostic.constraint?, child.constraint? with
+      | some (a, b), some (c, d) => decide ((a = c ∧ b = d) ∨ (a = d ∧ b = c))
+      | _, _ => false
+  let ancestor := !same && diagnostic.code?.any (·.startsWith "type.") &&
+    children.any (fun child => HMArtifacts.inside (diagnosticSpan child) (diagnosticSpan diagnostic) &&
+      diagnosticSpan child != diagnosticSpan diagnostic)
+  let dependent := diagnostic.code? == some "type.mismatch" &&
+    children.any (·.code? == some "type.annotationMismatch") && state.unavailable.any (fun slice =>
+      match slice.program.term with
+      | .var _ => !slice.causes.isEmpty && slice.tree.span.contains diagnostic.line diagnostic.col
+      | _ => false)
+  if diagnostic.code? != some "type.infiniteType" && (represented || ancestor || dependent) then state
+  else addError state diagnostic
 
 private def markUnavailable (state : State) (source : Source) (roots : List Cause) : State :=
   match RecoveryArtifacts.unavailable source roots with
@@ -52,7 +77,7 @@ private def markUnavailable (state : State) (source : Source) (roots : List Caus
   | .ok slice => { state with unavailable := state.unavailable ++ [slice] }
 
 private def stripGenerated : SpannedExpr → SpannedExpr
-  | .generated tree => stripGenerated tree
+  | .generated tree | .generatedRoot tree => stripGenerated tree
   | tree => tree
 
 private def rootCause (name : ValName) (span : Span) : List Cause := [.localBinding name span]
@@ -92,7 +117,7 @@ private def require (value : Option α) (error : HoverDiag) : Except HoverDiag �
 private def patternHeader (source : Source) (state : State) (pat : Surface.Pattern)
     (ann : Option Surface.Ty) (owner body : Span) : Except HoverDiag (CheckedSlice × List PolyTy) := do
   let (expr, tree) := captureBody (Surface.patVars pat) body
-  let header := source.expression (.lambda pat ann expr) (.generated (.lambda owner tree))
+  let header := source.expression (.lambda pat ann expr) (.generatedRoot (.lambda owner tree))
   let slice ← RecoveryArtifacts.check state.context header source.declarations.ctors
   let types ← require (captureTypes pat slice.typed)
     { diagAtSpan "internal recovered pattern capture missing" (some owner) with code? := some "internal.recoveryArtifact" }
@@ -125,18 +150,34 @@ private def bindingHeader (source : Source) (binding : Surface.Binding) (rhs : S
   let grouped := source.group [binding] [rhs] scope
   { grouped with
     program := { grouped.program with groups := [], body := .letIn binding.name binding.tyParams binding.params binding.ann binding.rhs (.primLit .unit) }
-    spanned := { grouped.spanned with groups := [], body := .generated (.letIn scope rhs (.generated (.leaf scope))) } }
+    spanned := { grouped.spanned with groups := [], body := .generatedRoot (.letIn scope rhs (.generated (.leaf scope))) } }
 
 private def recHeader (source : Source) (bindings : List Surface.Binding) (rhss : List SpannedExpr)
     (scope : Span) : Source :=
   let grouped := source.group bindings rhss scope
   { grouped with
     program := { grouped.program with groups := [], body := .letRecIn bindings (.primLit .unit) }
-    spanned := { grouped.spanned with groups := [], body := .generated (.letRecIn scope rhss (.generated (.leaf scope))) } }
+    spanned := { grouped.spanned with groups := [], body := .generatedRoot (.letRecIn scope rhss (.generated (.leaf scope))) } }
 
-private def wrapParameters (binding : Surface.Binding) (tree : SpannedExpr) (scope : Span) : Surface.Expr × SpannedExpr :=
-  binding.params.foldr (fun (name, ann) (body, tree) =>
-    (.lambda (.name name) ann body, .generated (.lambda scope tree))) (binding.rhs, tree)
+private def wrapParameters (source : Source) (binding : Surface.Binding) (tree : SpannedExpr)
+    (scope : Span) : Surface.Expr × SpannedExpr :=
+  let name := match binding.name with | .mk name => name
+  let owner := (source.binders.filter fun binder => binder.name == name && binder.kind == .val &&
+    HMArtifacts.inside binder.span scope && HMArtifacts.before binder.span tree.span).getLast?
+  let header := { scope with
+    startLine := (owner.map (·.span.startLine)).getD scope.startLine
+    startCol := (owner.map (·.span.startCol)).getD scope.startCol }
+  let parameters := (source.binders.filter fun binder => binder.kind == .param && source.valueBinderSpans.contains binder.span &&
+    HMArtifacts.inside binder.span header && HMArtifacts.before binder.span tree.span).mergeSort fun a b =>
+      a.span.startLine < b.span.startLine || (a.span.startLine == b.span.startLine && a.span.startCol ≤ b.span.startCol)
+  let starts := binding.params.zipIdx.map fun ((name, _), index) =>
+    let candidate := parameters[index]?
+    match candidate with
+    | some binder => if name == ValName.mk binder.name then binder.span else tree.span
+    | none => tree.span
+  (binding.params.zip starts).foldr (fun ((name, ann), start) (body, child) =>
+    let span := { tree.span with startLine := start.startLine, startCol := start.startCol }
+    (.lambda (.name name) ann body, .generatedRoot (.lambda span child))) (binding.rhs, tree)
 
 private def rhsContext (state : State) (binding : Surface.Binding) : Context :=
   let typePrefix := letAnnTyPrefix binding.tyParams (finalizeInputAnn binding.tyParams binding.params binding.ann)
@@ -184,24 +225,15 @@ private def validateAnnotation (source : Source) (state : State) (binding : Surf
 private def inspectRhs (recurse : State → Surface.Expr → SpannedExpr → Option Fact → State × Option Fact)
     (source : Source) (state : State) (binding : Surface.Binding) (tree : SpannedExpr) (scope : Span) : State :=
   let state := validateAnnotation source state binding tree scope
-  let (expr, tree) := wrapParameters binding tree scope
+  let (expr, tree) := wrapParameters source binding tree scope
   let context := rhsContext state binding
-  if context.written.length != state.context.written.length then
-    -- Failed forall scopes may constrain captured outer monotypes to rigid
-    -- variables. Keep their internal artifacts, but roll back those constraints.
-    let isolated : State := { context }
-    let (isolated, expected) := rhsExpected source isolated state.context binding
-    let (inside, _) := recurse isolated expr tree expected
-    { state with
-      context := { state.context with frontier := inside.context.frontier }
-      checked := state.checked ++ inside.checked
-      unavailable := state.unavailable ++ inside.unavailable
-      diagnostics := inside.diagnostics.foldl addError state |>.diagnostics }
-  else
-    let start := state.subst.length
-    let (inside, expected) := rhsExpected source { state with context } state.context binding
-    let (inside, _) := recurse inside expr tree expected
-    restore inside state.context start
+  -- Every accepted substitution has passed the saved forall escape boundary.
+  -- Keep safe constraints on captured monotypes even when this RHS fails;
+  -- restore removes only the lexical/type-variable scope, never those facts.
+  let start := state.subst.length
+  let (inside, expected) := rhsExpected source { state with context } state.context binding
+  let (inside, _) := recurse inside expr tree expected
+  restore inside state.context start
 
 private def recoverLet (recurse : State → Surface.Expr → SpannedExpr → Option Fact → State × Option Fact)
     (source : Source) (state : State) (binding : Surface.Binding) (rhs body : SpannedExpr)
@@ -212,6 +244,7 @@ private def recoverLet (recurse : State → Surface.Expr → SpannedExpr → Opt
   let dependencies := causes source state.context (.letIn binding.name binding.tyParams binding.params binding.ann binding.rhs (.primLit .unit))
   let mut state := state
   let mut exported : Option PolyTy := none
+  let mut failure : Option HoverDiag := none
   let mut roots := dependencies
   if dependencies.isEmpty then
     match RecoveryArtifacts.check state.context header source.declarations.ctors with
@@ -219,12 +252,14 @@ private def recoverLet (recurse : State → Surface.Expr → SpannedExpr → Opt
         exported := (groupSchemes [binding] slice.typed).bind (·.head?)
         state := accept state slice
     | .error error =>
-        state := addError state error
+        failure := some error
         roots := rootCause binding.name scope
   if exported.isNone then
     if roots.isEmpty then roots := rootCause binding.name scope
     state := markUnavailable state header roots
+    let before := state.diagnostics.length
     state := inspectRhs recurse source state binding rhs scope
+    if let some error := failure then state := withNativeFailure before error state
     state := enterUnknown state [binding.name] roots
   else
     state := { state with context := state.context.withBindings [binding.name] exported.toList }
@@ -245,6 +280,7 @@ private def recoverRec (recurse : State → Surface.Expr → SpannedExpr → Opt
   let dependencies := causes source state.context (.letRecIn bindings (.primLit .unit))
   let mut state := state
   let mut exported : Option (List PolyTy) := none
+  let mut failure : Option HoverDiag := none
   let mut roots := dependencies
   if dependencies.isEmpty then
     match RecoveryArtifacts.check state.context header source.declarations.ctors with
@@ -252,14 +288,16 @@ private def recoverRec (recurse : State → Surface.Expr → SpannedExpr → Opt
         exported := groupSchemes bindings slice.typed
         state := accept state slice
     | .error error =>
-        state := addError state error
+        failure := some error
         roots := bindings.map (fun binding => Cause.localBinding binding.name scope)
   if exported.isNone then
     if roots.isEmpty then roots := bindings.map (fun binding => Cause.localBinding binding.name scope)
     state := markUnavailable state header roots
     state := enterUnknown state names roots
+    let before := state.diagnostics.length
     for (binding, rhs) in bindings.zip rhss.1 do
       state := inspectRhs recurse source state binding rhs scope
+    if let some error := failure then state := withNativeFailure before error state
   else
     state := { state with context := state.context.withBindings names (exported.getD []) }
   let expression := Surface.Expr.letRecIn bindings continuation
@@ -274,7 +312,7 @@ private def matchHeader (source : Source) (state : State) (pat : Surface.Pattern
   let dummy := ValName.mk "$recover/scrutinee"
   let (expr, tree) := captureBody (Surface.patVars pat) body
   let header := source.expression (.match_ (.var dummy) [(pat, expr)])
-    (.generated (.match_ owner (.generated (.leaf scrut)) [tree]))
+    (.generatedRoot (.match_ owner (.generated (.leaf scrut)) [tree]))
   let context := state.context.withBindings [dummy] [PolyTy.mkTrivial scrutTy]
   let slice ← RecoveryArtifacts.check context header source.declarations.ctors
   let types ← require ((Surface.patVars pat).zipIdx.mapM fun (_, capture) => (do
@@ -431,7 +469,7 @@ def walk : Nat → Source → State → Surface.Expr → SpannedExpr → Option 
               | none, some actual => expected := some actual
               | _, _ => pure ()
         | _, _ => pure ()
-        if roots.isEmpty && state.diagnostics.length == diagnosticCount then state := addError state original
+        if roots.isEmpty then state := withNativeFailure diagnosticCount original state
         let failures := if roots.isEmpty then [.expression tree.span] else roots
         state := markUnavailable state (source.expression expr tree) failures
         return (state, none)

@@ -73,11 +73,27 @@ private def generatedList : List IdentifiedExpr → List IdentifiedExpr
   | e :: es => e.asGenerated :: generatedList es
 end
 
+/-- Hide only an administrative expression root, retaining authored children. -/
+def IdentifiedExpr.asGeneratedRoot : IdentifiedExpr → IdentifiedExpr
+  | .leaf n => .leaf { n with authored := false }
+  | .pair n a b => .pair { n with authored := false } a b
+  | .cons n a b => .cons { n with authored := false } a b
+  | .list n items => .list { n with authored := false } items
+  | .lambda n body => .lambda { n with authored := false } body
+  | .app n fn arg => .app { n with authored := false } fn arg
+  | .letIn n rhs body => .letIn { n with authored := false } rhs body
+  | .letRecIn n rhss body => .letRecIn { n with authored := false } rhss body
+  | .ife n c t f => .ife { n with authored := false } c t f
+  | .match_ n scrut arms => .match_ { n with authored := false } scrut arms
+
 mutual
 def identifyFrom (next : SourceId) : SpannedExpr → SourceId × IdentifiedExpr
   | .generated expr =>
       let (next, identified) := identifyFrom next expr
       (next, identified.asGenerated)
+  | .generatedRoot expr =>
+      let (next, identified) := identifyFrom next expr
+      (next, identified.asGeneratedRoot)
   | .leaf span => (next + 1, .leaf ⟨next, span, true⟩)
   | .pair span a b =>
       let root := next

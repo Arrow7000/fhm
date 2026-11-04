@@ -340,5 +340,183 @@ test("fixing lexical errors restores the original strict path and execution", ()
   assert.equal(cli(["run", "--json"], fixed).payload.result, "4");
 });
 
+test("nested showcase reports seven errors with healthy local and polymorphic navigation", () => {
+  const source = readFileSync(new URL("../scratch/error-recovery-nested.fhm", import.meta.url), "utf8");
+  const { payload, status } = cli(["diagnose"], source);
+  assert.equal(status, 1);
+  assert.deepEqual(payload.diagnostics.map(d => d.code), ["type.notFunction", "type.notFunction",
+    "type.notFunction", "type.notFunction", "type.annotationMismatch", "type.annotationMismatch", "type.notFunction"]);
+  const lines = source.split("\n");
+  const local = lines.findIndex(line => line.startsWith("  (2 False"));
+  const healthy = at(payload, source, local, "healthy");
+  assert.equal(healthy.hover.type, "Int");
+  assert.equal(healthy.definition.startLine0, lines.findIndex(line => line.startsWith("  let healthy")));
+  const arm = lines.findIndex(line => line.includes("head :: tail"));
+  assert.equal(at(payload, source, arm, "head", 1).hover.type, "Int");
+  assert.equal(at(payload, source, arm, "tail").hover.type, "List Int");
+  assert.equal(at(payload, source, arm, "head", 1).definition.startCol0, lines[arm].indexOf("head"));
+  const forall = lines.findIndex(line => line.includes("if True then x else x"));
+  assert.equal(at(payload, source, forall, "x").hover.type, "item");
+  assert.equal(at(payload, source, lines.length - 2, "after", 0).hover.type, "Int → Int");
+  assert.equal(at(payload, source, lines.length - 2, "after", 1).hover.type, "Bool → Bool");
+  assert.match(at(payload, source, lines.length - 2, "after").hover.doc, /Healthy polymorphism/);
+  assert.equal(payload.programTy, "(Int, Bool)");
+  for (const name of ["nested", "arms", "left", "right", "dependent", "preserve"]) {
+    const line = lines.findIndex(line => line.startsWith(`let ${name} `));
+    assert.match(at(payload, source, line, name).hover.type, /^type unknown/);
+  }
+  assert.equal(cli(["run", "--json"], source).payload.ok, false);
+});
+
+test("healthy local RHS uses keep contextual types and their exact parameter target", () => {
+  const source = "let f x = let bad = 1 True in let good = x + 1 in (2 False, (good, bad))\n0\n";
+  const { payload } = cli(["diagnose"], source);
+  assert.equal(payload.diagnostics.length, 2);
+  const use = at(payload, source, 0, "x", 1);
+  assert.equal(use.hover.type, "Int");
+  assert.deepEqual([use.definition.startLine0, use.definition.startCol0], [0, 6]);
+  assert.equal(at(payload, source, 0, "good", 1).hover.type, "Int");
+  assert.equal(at(payload, source, 0, "bad", 1).hover.type, "type unknown (error in `bad`)");
+  assert.equal(at(payload, source, 0, "bad", 1).definition.startCol0, source.indexOf("bad"));
+});
+
+test("multiple head parameters keep distinct types and navigation inside a failed function", () => {
+  const source = "let f x y = (1 True, (x + 1, if y then 2 False else 0))\n0\n";
+  const { payload } = cli(["diagnose"], source);
+  assert.equal(payload.diagnostics.length, 2);
+  for (const [name, type, column] of [["x", "Int", 6], ["y", "Bool", 8]]) {
+    assert.equal(at(payload, source, 0, name).hover.type, type);
+    assert.equal(at(payload, source, 0, name, 1).hover.type, type);
+    assert.equal(at(payload, source, 0, name, 1).definition.startCol0, column);
+  }
+  assert.ok(!payload.symbols.some(s => s.name === "x" && s.type === "type variable (scheme binder)"));
+});
+
+test("shared outer monotypes are constrained across successfully checked siblings", () => {
+  const source = "let f x = (1 True, (x + 1, if x then 0 else 1))\n0\n";
+  const { payload } = cli(["diagnose"], source);
+  assert.deepEqual(payload.diagnostics.map(d => d.code), ["type.notFunction", "type.mismatch"]);
+  assert.equal(payload.diagnostics[1].col, source.indexOf("x then") + 1);
+  assert.equal(at(payload, source, 0, "x").hover.type, "Int");
+  assert.match(at(payload, source, 0, "f").hover.type, /^type unknown/);
+});
+
+test("successful local bindings generalise without generalising captured parameters", () => {
+  const source = "let f x = let bad = 1 True in let id y = y in (id 1, (id False, x))\n0\n";
+  const { payload } = cli(["diagnose"], source);
+  assert.equal(payload.diagnostics.length, 1);
+  assert.equal(at(payload, source, 0, "id").hover.type, "∀ a. a → a");
+  assert.equal(at(payload, source, 0, "id", 1).hover.type, "Int → Int");
+  assert.equal(at(payload, source, 0, "id", 2).hover.type, "Bool → Bool");
+  const captured = "let f x = let bad = 1 True in let y = x in (y + 1, if y then 0 else 1)\n0\n";
+  const second = cli(["diagnose"], captured).payload;
+  assert.equal(second.diagnostics.length, 2);
+  assert.equal(at(second, captured, 0, "y").hover.type, "Int");
+});
+
+test("a healthy local binder shadows an unavailable outer definition", () => {
+  const source = "let bad : Int = True\nlet f = let bad x = x in (1 True, bad 7)\n0\n";
+  const { payload } = cli(["diagnose"], source);
+  assert.equal(payload.diagnostics.length, 2);
+  const use = at(payload, source, 1, "bad", 1);
+  assert.equal(use.hover.type, "Int → Int");
+  assert.deepEqual([use.definition.startLine0, use.definition.startCol0], [1, source.split("\n")[1].indexOf("bad")]);
+});
+
+test("pattern lambdas retain independently constrained captures", () => {
+  const source = "let f = \\(x, y) -> (1 True, (x + 1, if y then 2 False else 0))\n0\n";
+  const { payload } = cli(["diagnose"], source);
+  assert.equal(payload.diagnostics.length, 2);
+  assert.equal(at(payload, source, 0, "x").hover.type, "Int");
+  assert.equal(at(payload, source, 0, "y").hover.type, "Bool");
+  for (const name of ["x", "y"]) {
+    assert.equal(at(payload, source, 0, name, 1).definition.startCol0, source.indexOf(name));
+  }
+});
+
+test("unavailable match scrutinees withhold capture types while independent arms recover", () => {
+  const source = "let failed : Int = True\nlet f = match failed with | x :: xs -> (1 True, x) | [] -> 2 False\n0\n";
+  const { payload } = cli(["diagnose"], source);
+  assert.deepEqual(payload.diagnostics.map(d => d.code), ["type.annotationMismatch", "type.notFunction", "type.notFunction"]);
+  for (const name of ["x", "xs"]) assert.equal(at(payload, source, 1, name).hover.type, "type unknown (error in `failed`)");
+  assert.equal(at(payload, source, 1, "x", 1).definition.startCol0, source.split("\n")[1].indexOf("x ::"));
+});
+
+test("known list elements still disagree across an unavailable element", () => {
+  const source = "let failed : Int = True\nlet f = [1, failed, False, 2 True]\n0\n";
+  const { payload } = cli(["diagnose"], source);
+  assert.deepEqual(payload.diagnostics.map(d => d.code), ["type.annotationMismatch", "type.mismatch", "type.notFunction"]);
+  assert.equal(payload.diagnostics[1].col, source.split("\n")[1].indexOf("False") + 1);
+  assert.match(at(payload, source, 1, "f").hover.type, /^type unknown/);
+});
+
+test("a bad local annotation stays independent of an unavailable RHS", () => {
+  const source = "let failed : Int = True\nlet f = let x : Absent = failed in (1 True, x)\n0\n";
+  const { payload } = cli(["diagnose"], source);
+  assert.deepEqual(payload.diagnostics.map(d => d.code), ["type.annotationMismatch", "lower.unknownType", "type.notFunction"]);
+});
+
+test("failed local forall checks cannot leak rigid variables to the outer continuation", () => {
+  const source = "let f x = let bad : {a} a -> a = \\y -> if True then x else y in (1 True, x + 1)\n0\n";
+  const { payload } = cli(["diagnose"], source);
+  assert.deepEqual(payload.diagnostics.map(d => d.code), ["type.escapingVariable", "type.notFunction"]);
+  assert.equal(at(payload, source, 0, "x").hover.type, "Int");
+  assert.equal(at(payload, source, 0, "x", 2).hover.type, "Int");
+  assert.match(at(payload, source, 0, "bad").hover.type, /^type unknown/);
+});
+
+test("local mutually recursive failures retain independent signatures and withhold members", () => {
+  const source = "let outer x =\n  let f : Int -> Int = \\n -> if True then True else g n\n" +
+    "      g : Bool -> Bool = \\n -> if True then 7 else f 1\n  in (1 True, x + 1)\n0\n";
+  const { payload } = cli(["diagnose"], source);
+  assert.deepEqual(payload.diagnostics.map(d => d.code), ["type.annotationMismatch", "type.annotationMismatch", "type.notFunction"]);
+  for (const [line, name] of [[1, "f"], [2, "g"]]) assert.match(at(payload, source, line, name).hover.type, /^type unknown/);
+  assert.equal(at(payload, source, 1, "n").hover.type, "Int");
+  assert.equal(at(payload, source, 2, "n").hover.type, "Bool");
+  assert.equal(at(payload, source, 3, "x").hover.type, "Int");
+});
+
+test("a native monomorphic-recursion failure survives unrelated fragment errors", () => {
+  const source = "let f x = (f True + f 1, 1 True)\n0\n";
+  const { payload } = cli(["diagnose"], source);
+  assert.deepEqual(payload.diagnostics.map(d => d.code), ["type.argumentMismatch", "type.notFunction"]);
+  assert.match(at(payload, source, 0, "f").hover.type, /^type unknown/);
+});
+
+test("final-expression recovery reports concrete non-functions with unavailable arguments", () => {
+  const source = "let failed : Int = True\n(1 failed, (2 False, 3 True))\n";
+  const { payload } = cli(["diagnose"], source);
+  assert.deepEqual(payload.diagnostics.map(d => d.code), ["type.annotationMismatch", "type.notFunction", "type.notFunction", "type.notFunction"]);
+  assert.equal(payload.programTy, "");
+});
+
+test("fixing nested showcase errors restores strict artifacts and execution", () => {
+  const broken = readFileSync(new URL("../scratch/error-recovery-nested.fhm", import.meta.url), "utf8");
+  const fixed = broken.replaceAll(/\b[1-5] (?:True|False)\b/g, "1").replaceAll("then True else", "then 1 else").replaceAll("then False else", "then 1 else").replace("| [] -> 1\n", "| [] -> (1, 1)\n");
+  const { payload, status } = cli(["diagnose"], fixed);
+  assert.equal(status, 0);
+  assert.deepEqual(payload.diagnostics, []);
+  assert.ok(!payload.symbols.some(s => s.type.startsWith("type unknown")));
+  assert.equal(payload.programTy, "(Int, Bool)");
+  assert.equal(cli(["run", "--json"], fixed).payload.result, "(7, True)");
+});
+
+test("safe captured constraints survive a rejected local forall", () => {
+  const source = "let f x = let bad : {a} a -> a = \\y -> let ok = x + 1 in let fail = 1 True in y in if x then 0 else 1\n0\n";
+  const { payload } = cli(["diagnose"], source);
+  assert.deepEqual(payload.diagnostics.map(d => d.code), ["type.notFunction", "type.mismatch"]);
+  assert.equal(at(payload, source, 0, "x").hover.type, "Int");
+  assert.match(at(payload, source, 0, "bad").hover.type, /^type unknown/);
+});
+
+test("authored type parameters stay scoped and navigable in failed head-parameter bindings", () => {
+  const source = "let f {item} (x : item) y = (1 True, (x, if y then 2 False else 0))\n0\n";
+  const { payload } = cli(["diagnose"], source);
+  assert.equal(payload.diagnostics.length, 2);
+  assert.equal(at(payload, source, 0, "x").hover.type, "item");
+  assert.equal(at(payload, source, 0, "y").hover.type, "Bool");
+  assert.equal(at(payload, source, 0, "item", 1).definition.startCol0, source.indexOf("item"));
+});
+
 console.log(`${tests - failures}/${tests} editor recovery checks passed.`);
 process.exitCode = failures ? 1 : 0;

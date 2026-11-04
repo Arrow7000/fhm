@@ -84,7 +84,7 @@ roots = ["FHM.Unverified.EditorSupport"]
 name = "FHMEditorTests"
 # Editor and runtime canaries -- `lake build FHMEditorTests`.
 roots = ["FHM.Unverified.EditorSupportTests", "FHM.Unverified.LiveTests",
-  "FHM.Unverified.LoweringErrorTests", "FHM.Unverified.EditorRecoveryTests", "FHM.Unverified.DeclarationRecoveryTests", "FHM.Unverified.ParserRecoveryTests", "FHM.Unverified.LexRecoveryTests"]
+  "FHM.Unverified.LoweringErrorTests", "FHM.Unverified.EditorRecoveryTests", "FHM.Unverified.DeclarationRecoveryTests", "FHM.Unverified.ParserRecoveryTests", "FHM.Unverified.LexRecoveryTests", "FHM.Unverified.ExpressionRecoveryTests"]
 
 [[lean_lib]]
 name = "FHMCli"

@@ -6,6 +6,9 @@ open Surface.Span
 structure HoverDiag where
   message : String
   code? : Option String := none
+  /-- Internal native mismatch data for recovery deduplication; never JSON or
+  an inference input. Diagnostic wording has no effect on recovery. -/
+  constraint? : Option (Ty × Ty) := none
   missingPatterns : List String := []
   moreMissing : Bool := false
   line : Nat := 1
@@ -290,38 +293,44 @@ private def mismatchMessage (owner : Option String) (message : String) : String 
 
 def inferenceDiag (error : InferError) (lowered : InputLowered) (p : Surface.Program)
     (sp : SpannedProgram) (binders : List BinderSpan) (tree : SpannedExpr) : HoverDiag :=
-  match TypeDiagnostics.explain error lowered with
-  | some (reason, span) => diagnostic reason.code reason.message span
-  | none =>
-    let path := effectivePath error
-    let span := (originSpan lowered path).getD sp.body.span
-    let owner := bindingOwner p binders tree lowered path
-    let (code, message) := match error.reason with
-      | .application fn arg names cause =>
-          let reason := (TypeDiagnostics.applicationError path fn arg names cause).reason
-          (reason.code, reason.message)
-      | .annotation cause =>
-          let (code, message) := annotationData cause
-          (code, match cause with | .unification _ => mismatchMessage owner message | _ => message)
-      | .unification cause | .recursiveShape _ _ cause =>
-          let (code, message) := unificationData cause
-          (code, mismatchMessage owner message)
-      | .unboundVariable _ => ("type.unboundVariable", "unbound variable")
-      | .unknownConstructor name => ("type.unknownConstructor", "unknown constructor `" ++ ctorName name ++ "`")
-      | .invalidBooleanConstructor name => ("type.invalidBooleanConstructor", "invalid boolean constructor `" ++ ctorName name ++ "`")
-      | .emptyMatch => ("type.emptyMatch", "a match must have at least one branch")
-      | .patternArity name expected actual => ("type.patternArity",
-          s!"constructor `{ctorName name}` expects {expected} pattern arguments, got {actual}")
-      | .outOfScopeVariables _ => ("type.outOfScope", "type annotation refers to variables outside its scope")
-      | .escapingVariables _ => ("type.escapingVariable", "a declared type variable escapes its binding")
-      | .invalidRecursiveSignatures _ => ("type.invalidAnnotation", "invalid recursive type annotation")
-      | .recursivePrefix cause => match cause with
-          | .notVariables _ => ("type.specializedTypeVariable", "a declared type variable must remain abstract")
-          | .repeatedVariables _ => ("type.repeatedTypeVariable", "declared type variables must remain distinct")
-          | .escapingVariables _ => ("type.escapingVariable", "a declared type variable escapes its binding")
-      | .recursiveCompletion _ => ("internal.recursiveCompletion", "recursive binding did not finish checking")
-      | .frontierViolation .. => ("internal.inferenceFrontier", "internal inference scope invariant failed")
-      | .recursiveStateLength .. => ("internal.recursiveState", "internal recursive-state shape mismatch")
-    diagnostic code message span
+  let constraint := match error.reason with
+    | .unification (.mismatch a b) | .recursiveShape _ _ (.mismatch a b)
+    | .application _ _ _ (.mismatch a b) | .annotation (.unification (.mismatch a b)) => some (a, b)
+    | _ => none
+  let report :=
+    match TypeDiagnostics.explain error lowered with
+    | some (reason, span) => diagnostic reason.code reason.message span
+    | none =>
+      let path := effectivePath error
+      let span := (originSpan lowered path).getD sp.body.span
+      let owner := bindingOwner p binders tree lowered path
+      let (code, message) := match error.reason with
+        | .application fn arg names cause =>
+            let reason := (TypeDiagnostics.applicationError path fn arg names cause).reason
+            (reason.code, reason.message)
+        | .annotation cause =>
+            let (code, message) := annotationData cause
+            (code, match cause with | .unification _ => mismatchMessage owner message | _ => message)
+        | .unification cause | .recursiveShape _ _ cause =>
+            let (code, message) := unificationData cause
+            (code, mismatchMessage owner message)
+        | .unboundVariable _ => ("type.unboundVariable", "unbound variable")
+        | .unknownConstructor name => ("type.unknownConstructor", "unknown constructor `" ++ ctorName name ++ "`")
+        | .invalidBooleanConstructor name => ("type.invalidBooleanConstructor", "invalid boolean constructor `" ++ ctorName name ++ "`")
+        | .emptyMatch => ("type.emptyMatch", "a match must have at least one branch")
+        | .patternArity name expected actual => ("type.patternArity",
+            s!"constructor `{ctorName name}` expects {expected} pattern arguments, got {actual}")
+        | .outOfScopeVariables _ => ("type.outOfScope", "type annotation refers to variables outside its scope")
+        | .escapingVariables _ => ("type.escapingVariable", "a declared type variable escapes its binding")
+        | .invalidRecursiveSignatures _ => ("type.invalidAnnotation", "invalid recursive type annotation")
+        | .recursivePrefix cause => match cause with
+            | .notVariables _ => ("type.specializedTypeVariable", "a declared type variable must remain abstract")
+            | .repeatedVariables _ => ("type.repeatedTypeVariable", "declared type variables must remain distinct")
+            | .escapingVariables _ => ("type.escapingVariable", "a declared type variable escapes its binding")
+        | .recursiveCompletion _ => ("internal.recursiveCompletion", "recursive binding did not finish checking")
+        | .frontierViolation .. => ("internal.inferenceFrontier", "internal inference scope invariant failed")
+        | .recursiveStateLength .. => ("internal.recursiveState", "internal recursive-state shape mismatch")
+      diagnostic code message span
+  { report with constraint? := constraint }
 
 end FHM.Unverified.Diagnostics

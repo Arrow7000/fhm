@@ -66,16 +66,21 @@ structure Source where
   binders : List BinderSpan
   scope : Span
   declarations : DeclarationRecovery.Result
+  valueBinderSpans : List Span := []
 
 private def insideAny (regions : List Span) (span : Span) : Bool := regions.any (HMArtifacts.inside span ·)
 
 def Source.slice (source : Source) (program : Surface.Program) (spanned : SpannedProgram)
     (regions : List Span) : Source :=
   let regions := regions ++ spanned.declSpans
+  let represented := (HMArtifacts.programSpannedResult program spanned source.scope).toOption.map fun tree =>
+    (HMArtifacts.collect source.binders program.term (identify tree)).binders.map (·.span)
   { source with
     program
     spanned := { spanned with references := spanned.references.filter (fun ref => insideAny regions ref.span) }
-    binders := source.binders.filter (fun binder => insideAny regions binder.span) }
+    binders := source.binders.filter (fun binder => insideAny regions binder.span &&
+      (!source.valueBinderSpans.contains binder.span ||
+        (represented.map (·.contains binder.span)).getD true)) }
 
 def Source.expression (source : Source) (expr : Surface.Expr) (tree : SpannedExpr) : Source :=
   source.slice { source.program with groups := [], body := expr }

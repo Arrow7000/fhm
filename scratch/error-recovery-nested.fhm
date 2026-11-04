@@ -1,0 +1,25 @@
+--- Two independent local failures; healthy still has type Int.
+let nested x =
+  let badLocal = 1 True in
+  let healthy = x + 1 in
+  (2 False, (healthy, badLocal))
+
+--- The list pattern and its captures retain checked types in both broken arms.
+let arms xs =
+  match xs with
+  | head :: tail -> (3 True, head + 1)
+  | [] -> 4 False
+
+--- Both recursive members fail independently; neither signature is exported.
+let left : Int -> Int = \x -> if True then True else right x
+let right : Int -> Int = \x -> if True then False else left x
+let dependent = left 3
+
+--- The authored item name survives inside a rejected forall scope.
+let preserve : {item} item -> item = \x ->
+  let bad = 5 True in
+  if True then x else x
+
+--- Healthy polymorphism, documentation and navigation survive all seven errors.
+let after x = x
+(after 7, after True)
