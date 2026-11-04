@@ -196,9 +196,9 @@ mutual
   | primLit | primBinOp | var | ctor => rfl
   | lambda ann body => simp only [Expr.openTyVarsFrom, Expr.erase, body.source_erase_openTyVarsFrom d Xs]
   | app f a => simp only [Expr.openTyVarsFrom, Expr.erase, f.source_erase_openTyVarsFrom d Xs, a.source_erase_openTyVarsFrom d Xs]
-  | letIn ann rhs body => simp only [Expr.openTyVarsFrom, Expr.erase, ← sourceEraseBindings_eq_map,
+  | letIn ann rhs body => simp only [Expr.openTyVarsFrom, Expr.erase,
       rhs.source_erase_openTyVarsFrom (d + ann.paramCount) Xs, body.source_erase_openTyVarsFrom d Xs]
-  | match_ scrut branches => simp only [Expr.openTyVarsFrom, Expr.erase, ← sourceEraseBranches_eq_map, ← sourceEraseBindings_eq_map,
+  | match_ scrut branches => simp only [Expr.openTyVarsFrom, Expr.erase, ← sourceEraseBranches_eq_map,
       scrut.source_erase_openTyVarsFrom d Xs, eraseBranches_openInputBranches branches d Xs]
   | letRec bindings body => simp only [Expr.openTyVarsFrom, Expr.erase, ← sourceEraseBindings_eq_map,
       eraseBindings_openInputBindings bindings d Xs, body.source_erase_openTyVarsFrom d Xs]
@@ -326,9 +326,9 @@ mutual
   | primLit | primBinOp | var | ctor => rfl
   | lambda ann body => simp only [Expr.substSourceTyFvars, Expr.erase, body.source_erase_substTyFvars subst]
   | app f a => simp only [Expr.substSourceTyFvars, Expr.erase, f.source_erase_substTyFvars subst, a.source_erase_substTyFvars subst]
-  | letIn ann rhs body => simp only [Expr.substSourceTyFvars, Expr.erase, ← sourceEraseBindings_eq_map,
+  | letIn ann rhs body => simp only [Expr.substSourceTyFvars, Expr.erase,
       rhs.source_erase_substTyFvars subst, body.source_erase_substTyFvars subst]
-  | match_ scrut branches => simp only [Expr.substSourceTyFvars, Expr.erase, ← sourceEraseBranches_eq_map, ← sourceEraseBindings_eq_map,
+  | match_ scrut branches => simp only [Expr.substSourceTyFvars, Expr.erase, ← sourceEraseBranches_eq_map,
       scrut.source_erase_substTyFvars subst, eraseBranches_substInputBranches branches subst]
   | letRec bindings body => simp only [Expr.substSourceTyFvars, Expr.erase, ← sourceEraseBindings_eq_map,
       eraseBindings_substInputBindings bindings subst, body.source_erase_substTyFvars subst]
@@ -577,7 +577,7 @@ theorem Expr.source_substTyFvars_openTyVarsFrom (input : InferInput) {subst : Li
   | app f a => simp only [Expr.openTyVarsFrom, Expr.substSourceTyFvars,
       f.source_substTyFvars_openTyVarsFrom hlc hfresh d, a.source_substTyFvars_openTyVarsFrom hlc hfresh d]
   | letIn ann rhs body => simp only [Expr.openTyVarsFrom, Expr.substSourceTyFvars,
-      PartialCore.Ann.paramCount_substTyFvars, Option.paramCount_substSourceTyFvars, ann.source_substTyFvars_openTyVarsFrom hlc hfresh d,
+      Option.paramCount_substSourceTyFvars, ann.source_substTyFvars_openTyVarsFrom hlc hfresh d,
       rhs.source_substTyFvars_openTyVarsFrom hlc hfresh (d + ann.paramCount),
       body.source_substTyFvars_openTyVarsFrom hlc hfresh d]
   | match_ scrut branches => simp only [Expr.openTyVarsFrom, Expr.substSourceTyFvars,
@@ -608,7 +608,7 @@ theorem substInputBindings_openInputBindings (bindings : List InputRecBinding)
   cases bindings with
   | nil => rfl
   | cons binding rest => simp only [openInputBindings, substInputBindings,
-      PartialCore.Ann.paramCount_substTyFvars, Option.paramCount_substSourceTyFvars,
+      Option.paramCount_substSourceTyFvars,
       binding.ann.source_substTyFvars_openTyVarsFrom hlc hfresh d,
       binding.rhs.source_substTyFvars_openTyVarsFrom hlc hfresh (d + binding.ann.paramCount),
       substInputBindings_openInputBindings rest hlc hfresh d]
@@ -1835,7 +1835,7 @@ theorem RecSpecs.WF.subst_fresh_pool {S : Subst} {G W : List Nat}
       cases spec <;> rfl
     rw [hmap, h.anns_eq]
     simp only [substInputBindings_eq_map, List.map_map, Function.comp_def,
-      InputRecBinding.recMode, PartialCore.Ann.recModeAnn_subst_source, Option.recModeAnn_subst_source]
+      InputRecBinding.recMode, Option.recModeAnn_subst_source]
   · intro ty ht
     obtain ⟨spec, hs, heq⟩ := List.mem_map.mp ht
     cases spec with
@@ -2344,7 +2344,7 @@ theorem Expr.source_substTyFvars_openTyVarsFrom_of_fixes (input : InferInput) {s
   | app f a => simp only [Expr.openTyVarsFrom, Expr.substSourceTyFvars,
       f.source_substTyFvars_openTyVarsFrom_of_fixes hlc hfix d, a.source_substTyFvars_openTyVarsFrom_of_fixes hlc hfix d]
   | letIn ann rhs body => simp only [Expr.openTyVarsFrom, Expr.substSourceTyFvars,
-      PartialCore.Ann.paramCount_substTyFvars, Option.paramCount_substSourceTyFvars, ann.source_substTyFvars_openTyVarsFrom_of_fixes hlc hfix d,
+      Option.paramCount_substSourceTyFvars, ann.source_substTyFvars_openTyVarsFrom_of_fixes hlc hfix d,
       rhs.source_substTyFvars_openTyVarsFrom_of_fixes hlc hfix (d + ann.paramCount),
       body.source_substTyFvars_openTyVarsFrom_of_fixes hlc hfix d]
   | match_ scrut branches => simp only [Expr.openTyVarsFrom, Expr.substSourceTyFvars,
@@ -2375,7 +2375,7 @@ theorem substInputBindings_openInputBindings_of_fixes (bindings : List InputRecB
   cases bindings with
   | nil => rfl
   | cons binding rest => simp only [openInputBindings, substInputBindings,
-      PartialCore.Ann.paramCount_substTyFvars, Option.paramCount_substSourceTyFvars,
+      Option.paramCount_substSourceTyFvars,
       binding.ann.source_substTyFvars_openTyVarsFrom_of_fixes hlc hfix d,
       binding.rhs.source_substTyFvars_openTyVarsFrom_of_fixes hlc hfix
         (d + binding.ann.paramCount),
@@ -2934,7 +2934,7 @@ theorem PartialCore.Ann.RecMatches.onSubst_source {ann : CheckAnn} {written pool
     (hdom : ∀ p ∈ S, p.1 ∉ pool) (hran : ∀ p ∈ S, ∀ v ∈ p.2.freeVars, v ∉ pool)
     (hwritten : ∀ v ∈ written, v ∈ pool) :
     (ann.substSourceTyFvars S).RecMatches written pool (S.onTy ty) := by
-  refine ⟨by simp only [PartialCore.Ann.recModeAnn_subst_source, Option.recModeAnn_subst_source, h.mono, Option.map_none],
+  refine ⟨by simp only [PartialCore.Ann.recModeAnn_subst_source, h.mono, Option.map_none],
     by simpa only [PartialCore.Ann.recPrefixCount_subst_source, Option.recPrefixCount_subst_source] using h.count, ?_⟩
   obtain ⟨hc⟩ := h.completion
   rw [recScheme_subst_pool_avoid hdom hran hwritten, PartialCore.Ann.subst_eq_map]
@@ -3775,8 +3775,8 @@ theorem ScopedTyping.rigidVars (h : ScopedTyping K ctx input ty) : ∀ v ∈ inp
         have hmode := hf.isSignature
         cases ha : ann.annotationView with
         | absent => simp [ha, PartialCore.Ann.rigidVars] at hv'
-        | complete _ => simp [Option.MonoMatches, ha, PartialCore.Ann.isSignature] at hmode
-        | partialForall _ _ => simp [Option.MonoMatches, ha, PartialCore.Ann.isSignature] at hmode
+        | complete _ => simp [ha, PartialCore.Ann.isSignature] at hmode
+        | partialForall _ _ => simp [ha, PartialCore.Ann.isSignature] at hmode
         | template t => exact hr t ha v (by simpa [ha, PartialCore.Ann.rigidVars] using hv')
       · exact ihr Xs hXs v hv
     · exact ihb v hv
@@ -4288,7 +4288,7 @@ theorem Expr.source_substTyFvars_openTyVarsFrom_of_images (input : InferInput) {
   | app f a => simp only [Expr.openTyVarsFrom, Expr.substSourceTyFvars,
       f.source_substTyFvars_openTyVarsFrom_of_images hlc himages d, a.source_substTyFvars_openTyVarsFrom_of_images hlc himages d]
   | letIn ann rhs body => simp only [Expr.openTyVarsFrom, Expr.substSourceTyFvars,
-      PartialCore.Ann.paramCount_substTyFvars, Option.paramCount_substSourceTyFvars, ann.source_substTyFvars_openTyVarsFrom_of_images hlc himages d,
+      Option.paramCount_substSourceTyFvars, ann.source_substTyFvars_openTyVarsFrom_of_images hlc himages d,
       rhs.source_substTyFvars_openTyVarsFrom_of_images hlc himages (d + ann.paramCount),
       body.source_substTyFvars_openTyVarsFrom_of_images hlc himages d]
   | match_ scrut branches => simp only [Expr.openTyVarsFrom, Expr.substSourceTyFvars,
@@ -4319,7 +4319,7 @@ theorem substInputBindings_openInputBindings_of_images (bindings : List InputRec
   cases bindings with
   | nil => rfl
   | cons binding rest => simp only [openInputBindings, substInputBindings,
-      PartialCore.Ann.paramCount_substTyFvars, Option.paramCount_substSourceTyFvars,
+      Option.paramCount_substSourceTyFvars,
       binding.ann.source_substTyFvars_openTyVarsFrom_of_images hlc himages d,
       binding.rhs.source_substTyFvars_openTyVarsFrom_of_images hlc himages
         (d + binding.ann.paramCount),
@@ -5349,7 +5349,7 @@ def RecState.recPrefixCountAt (state : RecState) (i : Nat) : Option Nat :=
   | cons binding bindings ih =>
       rcases binding with ⟨ann, rhs⟩
       cases hv : ann.annotationView <;> simp [RecMemberState.initAll, RecMemberState.init,
-        PartialCore.Ann.recModeAnn, Option.recModeAnn, Option.recMemberAnnInfo, hv, InputRecBinding.recMode, RecSpec.init, ih]
+        PartialCore.Ann.recModeAnn, Option.recModeAnn, hv, InputRecBinding.recMode, RecSpec.init, ih]
 
 @[simp] theorem RecMemberState.initAll_slots (frontier : Nat) (bindings : List InputRecBinding) :
     (RecMemberState.initAll frontier bindings).map RecMemberState.slotImages =
@@ -5359,7 +5359,7 @@ def RecState.recPrefixCountAt (state : RecState) (i : Nat) : Option Nat :=
   | cons binding bindings ih =>
       rcases binding with ⟨ann, rhs⟩
       cases hv : ann.annotationView <;> simp [RecMemberState.initAll, RecMemberState.init,
-        PartialCore.Ann.recModeAnn, Option.recModeAnn, Option.recMemberAnnInfo, hv, ih]
+        PartialCore.Ann.recModeAnn, hv, ih]
 
 @[simp] theorem RecMemberState.initAll_annInfo (frontier : Nat) (bindings : List InputRecBinding) :
     (RecMemberState.initAll frontier bindings).map RecMemberState.annInfo =
@@ -5369,7 +5369,7 @@ def RecState.recPrefixCountAt (state : RecState) (i : Nat) : Option Nat :=
   | cons binding bindings ih =>
       rcases binding with ⟨ann, rhs⟩
       cases hv : ann.annotationView <;> simp [RecMemberState.initAll, RecMemberState.init,
-        PartialCore.Ann.recModeAnn, Option.recModeAnn, Option.recMemberAnnInfo, hv, ih]
+        PartialCore.Ann.recModeAnn, Option.recMemberAnnInfo, hv, ih]
 
 @[simp] theorem RecMemberState.initAll_exports (frontier : Nat) (bindings : List InputRecBinding) :
     (RecMemberState.initAll frontier bindings).map RecMemberState.exported =
@@ -5379,7 +5379,7 @@ def RecState.recPrefixCountAt (state : RecState) (i : Nat) : Option Nat :=
   | cons binding bindings ih =>
       rcases binding with ⟨ann, rhs⟩
       cases hv : ann.annotationView <;> simp [RecMemberState.initAll, RecMemberState.init,
-        PartialCore.Ann.recModeAnn, Option.recModeAnn, Option.recMemberAnnInfo, hv, ih]
+        PartialCore.Ann.recModeAnn, Option.recModeAnn, hv, ih]
 
 @[simp] theorem RecMemberState.initAll_checkedRhs (frontier : Nat) (bindings : List InputRecBinding) :
     (RecMemberState.initAll frontier bindings).map RecMemberState.checked =
@@ -5389,7 +5389,7 @@ def RecState.recPrefixCountAt (state : RecState) (i : Nat) : Option Nat :=
   | cons binding bindings ih =>
       rcases binding with ⟨ann, rhs⟩
       cases hv : ann.annotationView <;> simp [RecMemberState.initAll, RecMemberState.init,
-        PartialCore.Ann.recModeAnn, Option.recModeAnn, Option.recMemberAnnInfo, hv, ih]
+        PartialCore.Ann.recModeAnn, hv, ih]
 
 @[simp] theorem RecState.specs_length (state : RecState) :
     state.specs.length = state.memberStates.length := by

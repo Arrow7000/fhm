@@ -2657,7 +2657,7 @@ theorem InferCert.belowFvars {request : InferRequest} {result : InferResult}
       ctxBelow := by
         intro M hM
         rcases List.mem_cons.mp hM with rfl | hM
-        · simp only [Option.annotationView_subst, PartialCore.Ann.source_substTyFvars_append, Option.source_substTyFvars_append]
+        · simp only [Option.annotationView_subst, Option.source_substTyFvars_append]
           simpa only [Option.annotationView_subst] using
             hc.scheme_belowFvars (Q := K ++ softVars (substSoft (s1 ++ sCheck) F))
               (ctx := sCheck.onCtx (s1.onCtx ctx)) hcTy (fun v hv => hpostrigid v
@@ -3691,7 +3691,7 @@ mutual
     · have := freshVars_ge w h; omega
   | .lambda _ hs hb =>
     intro w hw hrefs hwe
-    simp only [Expr.erase, Expr.ForallOuter, Expr.rec_strong, Nat.zero_add, List.length_map] at hrefs
+    simp only [Expr.erase, Expr.ForallOuter, Expr.rec_strong, Nat.zero_add] at hrefs
     simp only [Expr.rigidVars, List.mem_append, not_or] at hwe
     have hp := hs.sourceAvoid hw (by intro t ht; cases ht; exact hwe.1)
     have hbrefs := Expr.ForallOuter.lookupAvoid_prepend (pre := [PolyTy.mkTrivial _]) hrefs
@@ -3720,7 +3720,7 @@ mutual
       _ hr hc hb =>
     intro w hw hrefs hwe
     expose_names
-    simp only [Expr.erase, Expr.ForallOuter, Expr.rec_strong, Nat.zero_add, List.length_map] at hrefs
+    simp only [Expr.erase, Expr.ForallOuter, Expr.rec_strong, Nat.zero_add] at hrefs
     simp only [Expr.rigidVars, List.mem_append, not_or] at hwe
     obtain ⟨hrS, hrTy, hrD⟩ := hr.sourceLocality_raw hw hrefs.1 hwe.1.2
     have hcA := hc.sourceAvoid (Nat.lt_of_lt_of_le hw (Infer.frontier_le hr)) hrTy
@@ -3745,7 +3745,7 @@ mutual
     expose_names
     subst written
     dsimp only at hr hc hb
-    simp only [Expr.erase, Expr.ForallOuter, Expr.rec_strong, Nat.zero_add, List.length_map] at hrefs
+    simp only [Expr.erase, Expr.ForallOuter, Expr.rec_strong, Nat.zero_add] at hrefs
     simp only [Expr.rigidVars, List.mem_append, not_or] at hwe
     have hwr : w ∉ freshVars frontier ann.paramCount := fun hm => by have := freshVars_ge w hm; omega
     have hrLe : frontier + ann.paramCount ≤ first := by
@@ -3785,7 +3785,7 @@ mutual
     intro w hw hrefs hwe
     dsimp only at hs hp hb
     simp only [Expr.erase, Expr.ForallOuter, Expr.rec_strong,
-      eraseBindings_length_local, Nat.zero_add, List.length_map] at hrefs
+      Nat.zero_add, List.length_map] at hrefs
     simp only [Expr.rigidVars, List.mem_append, not_or] at hwe
     have hbindings : ∀ binding ∈ bindings, w ∉ binding.ann.rigidVars :=
       fun binding hb hv => hwe.1 (ann_rigid_mem hb hv)
@@ -3841,7 +3841,7 @@ mutual
     intro w hw hrefs hwe
     dsimp only at hs hb
     expose_names
-    simp only [Expr.erase, Expr.ForallOuter, Expr.rec_strong, Nat.zero_add, List.length_map] at hrefs
+    simp only [Expr.erase, Expr.ForallOuter, Expr.rec_strong, Nat.zero_add] at hrefs
     simp only [Expr.rigidVars, List.mem_append, not_or] at hwe
     obtain ⟨hsS, hsTy, hsD⟩ := hs.sourceLocality_raw hw hrefs.1 hwe.1
     have hnew : w ∉ (Ty.fvar first).freeVars := by
@@ -4043,10 +4043,10 @@ private theorem soft_avoids_subst {F : List Ty} {S : Subst} {v : Nat}
       cases spec <;> rfl
     rw [hm, h.modes]
     simp only [substInputBindings_eq_map, List.map_map, Function.comp_def,
-      PartialCore.Ann.recModeAnn_subst_source, Option.recModeAnn_subst_source]
+      Option.recModeAnn_subst_source]
   · rw [RecState.annInfo_onSubst, h.annInfo]
     simp only [substInputBindings_eq_map, List.map_map, Function.comp_def,
-      PartialCore.Ann.recMemberAnnInfo_substTyFvars, Option.recMemberAnnInfo_substSourceTyFvars]
+      Option.recMemberAnnInfo_substSourceTyFvars]
   · intro i scheme hget
     rw [RecState.specs_onSubst, List.getElem?_map] at hget
     obtain ⟨old, hold, heq⟩ := Option.map_eq_some_iff.mp hget
@@ -4145,7 +4145,7 @@ private theorem mem_eraseBindings_local {bindings : List InputRecBinding}
           exact .primBinOp (.primBinOpCharLt (.ctor ht ha hi) (.ctor hf hfa hfi))
   | lambda hlc hfit hprotected _ ih =>
     intro env' hag
-    simp only [Expr.erase, Expr.ForallOuter, Expr.rec_strong, Nat.zero_add, List.length_map] at hag
+    simp only [Expr.erase, Expr.ForallOuter, Expr.rec_strong, Nat.zero_add] at hag
     refine .lambda hlc hfit hprotected (ih _ ?_)
     exact Expr.ForallOuter.prepend_env (pre := [PolyTy.mkTrivial _]) hag
   | app _ _ ihf iha =>
@@ -4154,12 +4154,12 @@ private theorem mem_eraseBindings_local {bindings : List InputRecBinding}
     exact .app (ihf env' hag.1) (iha env' hag.2)
   | letIn hwf hprotected hfit _ _ ihr ihb =>
     intro env' hag
-    simp only [Expr.erase, Expr.ForallOuter, Expr.rec_strong, Nat.zero_add, List.length_map] at hag
+    simp only [Expr.erase, Expr.ForallOuter, Expr.rec_strong, Nat.zero_add] at hag
     refine .letIn hwf hprotected hfit (fun Xs hf => ihr Xs hf env' hag.1) (ihb _ ?_)
     exact Expr.ForallOuter.prepend_env (pre := [_]) hag.2
   | letSignature hwf hann hrhs hfit _ _ ihr ihb =>
     intro env' hag
-    simp only [Expr.erase, Expr.ForallOuter, Expr.rec_strong, Nat.zero_add, List.length_map] at hag
+    simp only [Expr.erase, Expr.ForallOuter, Expr.rec_strong, Nat.zero_add] at hag
     refine .letSignature hwf hann hrhs hfit (fun Xs hf => ihr Xs hf env' ?_) (ihb _ ?_)
     · simpa only [Expr.source_erase_openTyVars] using hag.1
     · exact Expr.ForallOuter.prepend_env (pre := [_]) hag.2
@@ -4170,14 +4170,14 @@ private theorem mem_eraseBindings_local {bindings : List InputRecBinding}
   | ctor hlook hargs hinst => intro _ _; exact .ctor hlook hargs hinst
   | match_ _ hne _ ihs ihbr =>
     intro env' hag
-    simp only [Expr.erase, Expr.ForallOuter, Expr.rec_strong, Nat.zero_add, List.length_map] at hag
+    simp only [Expr.erase, Expr.ForallOuter, Expr.rec_strong, Nat.zero_add] at hag
     refine .match_ (ihs env' hag.1) hne ?_
     intro ⟨pat, body⟩ hb
     exact ihbr (pat, body) hb env' (hag.2 pat body.erase (mem_eraseBranches_local hb))
   | @letRec bindings K ctx body resultTy specs groups prefixes G L hg hw hp hG hscope hMatches _ _ _ ihMono ihPoly ihBody =>
     intro env' hag
     simp only [Expr.erase, Expr.ForallOuter, Expr.rec_strong,
-      eraseBindings_length_local, Nat.zero_add, List.length_map] at hag
+      Nat.zero_add, List.length_map] at hag
     let avoid := K ++ env'.freeVars ++ G ++ specs.flatMap RecSpec.freeVars
     obtain ⟨W, hWlen, hWnd, hWavoid⟩ := exists_fresh_names avoid G.length
     have hGW : ∀ g ∈ G, g ∉ W := by
@@ -4925,12 +4925,12 @@ private theorem ResolveRecSlots.names_avoid_of_slots
       cases spec <;> rfl
     rw [RecState.specs_exportComponent, hm, h.modes]
     simp only [substInputBindings_eq_map, List.map_map, Function.comp_def,
-      PartialCore.Ann.recModeAnn_subst_source, Option.recModeAnn_subst_source]
+      Option.recModeAnn_subst_source]
   · rw [RecState.annInfo_exportComponent]
     change (state.onSubst S).memberStates.map RecMemberState.annInfo = _
     rw [RecState.annInfo_onSubst, h.annInfo]
     simp only [substInputBindings_eq_map, List.map_map, Function.comp_def,
-      PartialCore.Ann.recMemberAnnInfo_substTyFvars, Option.recMemberAnnInfo_substSourceTyFvars]
+      Option.recMemberAnnInfo_substSourceTyFvars]
   · intro i sigma hs
     rw [RecState.specs_exportComponent] at hs
     have hex := hpoly i sigma hs
@@ -5549,7 +5549,7 @@ private theorem RecState.Frame.export_mono_prefixes {state : RecState} {i : Nat}
   obtain ⟨names, hslots, _, _, _, hex⟩ := if_pos hd ▸ h.mono i ty hs
   have hp : state.prefixes[i]? = some names := by
     rw [RecState.getElem?_prefixes_of_mono state hs, hslots]
-    simp [Option.recModeAnn, Option.recPrefixCount, recSlotName, Function.comp_def]
+    simp [recSlotName, Function.comp_def]
   simpa only [hp, Option.getD_some] using hex
 
 private theorem pool_renaming_lc {G Xs : List Nat} :
@@ -5595,11 +5595,11 @@ private theorem RecState.Frame.stageCtx_rename {state : RecState} {earlier Xs : 
     cases hm : state.memberStates[i]? with
     | none =>
       have hs : state.specs[i]? = none := by
-        simp [Option.recModeAnn, Option.recPrefixCount, RecState.getElem?_specs, hm]
-      simp [Option.recModeAnn, Option.recPrefixCount, hs]
+        simp [RecState.getElem?_specs, hm]
+      simp [hs]
     | some member =>
       have hs : state.specs[i]? = some member.spec := by
-        simp [Option.recModeAnn, Option.recPrefixCount, RecState.getElem?_specs, hm]
+        simp [RecState.getElem?_specs, hm]
       simp only [Option.map_some, Function.comp_apply]
       cases hspec : member.spec with
       | poly scheme =>
@@ -5611,16 +5611,16 @@ private theorem RecState.Frame.stageCtx_rename {state : RecState} {earlier Xs : 
           Subst.onPolyTy_eq_self_of_dom_avoids
             (fun p hp => h.pool_poly scheme ⟨i, hspoly⟩ p.1 (List.of_mem_zip hp).1)
         by_cases hi : i ∈ earlier <;>
-          simp [Option.recModeAnn, Option.recPrefixCount, hi, hspoly, hex, recStageEntry, RecSpec.monoEntry, hfixed]
+          simp [hi, hspoly, hex, recStageEntry, RecSpec.monoEntry, hfixed]
       | mono ty =>
         have hsmono : state.specs[i]? = some (.mono ty) := by simpa [hspec] using hs
         by_cases hi : i ∈ earlier
         · have hex := h.export_mono_prefixes hsmono (hdone i hi)
           rw [RecState.getElem?_exports, hm] at hex
           simp only [Option.map_some, Option.some.injEq] at hex
-          simp [Option.recModeAnn, Option.recPrefixCount, hi, hsmono, hex, recStageEntry, RecSpec.monoEntry,
+          simp [hi, hsmono, hex, recStageEntry, RecSpec.monoEntry,
             recScheme_pool_fixed]
-        · simp [Option.recModeAnn, Option.recPrefixCount, hi, hsmono, recStageEntry, RecSpec.monoEntry]
+        · simp [hi, hsmono, recStageEntry, RecSpec.monoEntry]
           rfl
 
 /-- Close each actual checked recursive annotation once, before fresh pool
@@ -6700,7 +6700,7 @@ theorem InferCert.scopedSound_source {request : InferRequest} {result : InferRes
         rfl
       rw [hctxeq] at bodyTyped
       simp only [letResult, ← substSoft_append, ← Expr.source_substTyFvars_append,
-        Option.annotationView_subst, ← PartialCore.Ann.source_substTyFvars_append, ← Option.source_substTyFvars_append, List.append_assoc] at hfits hgeneral bodyTyped hannFinal ⊢
+        Option.annotationView_subst, ← PartialCore.Ann.source_substTyFvars_append, List.append_assoc] at hfits hgeneral bodyTyped hannFinal ⊢
       refine ScopedTyping.letIn (L := avoid) (Subst.onPolyTy_wf hs2 (genScheme_wf checkedTyLC))
         (by simpa only [Option.annotationView_subst] using hannFinal)
         (by simpa only [Option.MonoMatches, Option.annotationView_subst] using hfits) ?_ bodyTyped
@@ -6769,12 +6769,12 @@ theorem InferCert.scopedSound_source {request : InferRequest} {result : InferRes
       hpost v (List.mem_append_left _ (List.mem_append_right _ hv))
     have hcomp := hc.completion (Q := K ++ softVars (substSoft (s1 ++ sCheck) F))
       (ctx := sCheck.onCtx (s1.onCtx ctx)) (by simpa using hlen) hrTy
-    simp only [Option.annotationView_subst, ← PartialCore.Ann.source_substTyFvars_append, ← Option.source_substTyFvars_append] at hcomp
+    simp only [Option.annotationView_subst, ← PartialCore.Ann.source_substTyFvars_append] at hcomp
     have hnamesND := hc.names_nodup (Q := K ++ softVars (substSoft (s1 ++ sCheck) F))
       (ctx := sCheck.onCtx (s1.onCtx ctx)) hnd
     have hnamesAvoid := hc.names_avoid (ctx := sCheck.onCtx (s1.onCtx ctx)) havoidPost
     have hnamesFresh := hc.names_fresh (Q := K ++ softVars (substSoft (s1 ++ sCheck) F)) hnamesFresh
-    simp only [Option.annotationView_subst, ← PartialCore.Ann.source_substTyFvars_append, ← Option.source_substTyFvars_append] at hnamesND hnamesAvoid hnamesFresh
+    simp only [Option.annotationView_subst, ← PartialCore.Ann.source_substTyFvars_append] at hnamesND hnamesAvoid hnamesFresh
     have hmatches := hcomp.matches (by simpa only [Option.annotationView_subst] using hscheme)
       hnamesND hnamesAvoid (by simpa only [Option.annotationView_subst] using hscopePost) checkedTyLC
     obtain ⟨typeAvoid, htypes⟩ := hcomp.cofinite_typing rhsTyped (by simpa only [Option.annotationView_subst] using hscheme)
@@ -6804,7 +6804,7 @@ theorem InferCert.scopedSound_source {request : InferRequest} {result : InferRes
         v ∈ K ++ softVars (substSoft (s1 ++ sCheck ++ s2) F) := fun v hv =>
       hpostFinal v (List.mem_append_left _ (List.mem_append_right _ hv))
     simp only [letResult, ← substSoft_append, ← Expr.source_substTyFvars_append,
-      Option.annotationView_subst, ← PartialCore.Ann.source_substTyFvars_append, ← Option.source_substTyFvars_append, List.append_assoc] at hfitsFinal htypesFinal bodyTyped hannFinal hrhsFinal ⊢
+      Option.annotationView_subst, ← PartialCore.Ann.source_substTyFvars_append, List.append_assoc] at hfitsFinal htypesFinal bodyTyped hannFinal hrhsFinal ⊢
     refine ScopedTyping.letSignature (L := avoid) (Subst.onPolyTy_wf hs2 (by simpa only [Option.annotationView_subst] using hscheme))
       hannFinal hrhsFinal
       (by simpa only [Option.SignatureMatches, Option.annotationView_subst] using hfitsFinal) ?_ (by simpa only [Option.annotationView_subst] using bodyTyped)

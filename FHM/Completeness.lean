@@ -162,7 +162,7 @@ theorem Expr.source_inferenceSccs_substTyFvars
       rhs := binding.rhs.substSourceTyFvars S })).map InputRecBinding.recMode =
       (bindings.map InputRecBinding.recMode).map f := by
     simp only [List.map_map, Function.comp_def, InputRecBinding.recMode,
-      PartialCore.Ann.recModeAnn_subst_source, Option.recModeAnn_subst_source,
+      Option.recModeAnn_subst_source,
       Expr.source_erase_substTyFvars, f]
   rw [hmap]
   apply RecGroup.inferenceSccs_congr_map
@@ -173,7 +173,7 @@ theorem Expr.source_inferenceSccs_substTyFvars
     | some binding =>
       rcases binding with ⟨ann, rhs⟩
       simp only [Option.map_some]
-      cases hm : ann.recModeAnn <;> simp [InputRecBinding.recMode, Option.recModeAnn_subst_source, hm]
+      cases hm : ann.recModeAnn <;> simp [InputRecBinding.recMode, hm]
   · intro binding _
     rfl
 
@@ -305,8 +305,6 @@ theorem ScopedTyping.partialSignature_completion
   | partialForall hle hs hc =>
       refine ⟨scheme, avoid, hc, hle, hs, ?_, ?_, hbody⟩
       · intro Xs hf
-        change PartialCore.Template.Fits (PartialCore.HoleAssignment.map (Ty.openVars Xs) hc.holes)
-          (template.map (Ty.openVars (Xs.take count))) (scheme.openVars Xs)
         rw [hs.open_prefix]
         exact (hc.open Xs hf.length.ge).fits
       · intro Xs hf
@@ -1319,7 +1317,7 @@ theorem Infer.source_signature_frame_aligned {rhs body : InferInput} {ann : Bind
   have hs1Fix : ∀ k ∈ K, s1.onTy (.fvar k) = .fvar k :=
     Subst.fixes_of_dom_avoids (fun p hp hk => hr.dom_avoids p hp (List.mem_append_left _ hk))
   have hannEq : (ann.substSourceTyFvars s1).substSourceTyFvars R = ann.substSourceTyFvars ambient := by
-    simp only [Option.annotationView_subst, ← PartialCore.Ann.source_substTyFvars_append, ← Option.source_substTyFvars_append]
+    simp only [← Option.source_substTyFvars_append]
     exact ann.source_substTyFvars_congr (fun v hv => (hagR v (by
       have := hscopeBound v (hscope v (List.mem_append_left _ (List.mem_append_left _ hv)))
       omega)).symm)
@@ -1409,7 +1407,7 @@ theorem Infer.source_signature_frame_aligned {rhs body : InferInput} {ann : Bind
   have hannSource : ∀ v ∈ ((ann.substSourceTyFvars s1).substSourceTyFvars sCheck).rigidVars,
       v ∈ K ++ softVars (substSoft (s1 ++ sCheck) F) := by
     intro v hv
-    simp only [Option.annotationView_subst, ← PartialCore.Ann.source_substTyFvars_append, ← Option.source_substTyFvars_append] at hv
+    simp only [← Option.source_substTyFvars_append] at hv
     exact hpostScope v (List.mem_append_left _ (List.mem_append_left _ hv))
   have havoidQ : ∀ y ∈ Ys, y ∉ K ++ softVars (substSoft (s1 ++ sCheck) F) := by
     intro y hy hc
@@ -1419,7 +1417,7 @@ theorem Infer.source_signature_frame_aligned {rhs body : InferInput} {ann : Bind
   have hgen := hc.scheme_generalizes (ctx := sCheck.onCtx (s1.onCtx ctx)) hYlen' hYnd hrLC
     (by simpa using hannSource) havoidQ hV hM hXnd hXlen hXM hcheckedTy
     (by simpa only [hctxBridge] using hXctx) hVimages
-  simp only [Option.annotationView_subst, ← PartialCore.Ann.source_substTyFvars_append, ← Option.source_substTyFvars_append] at hgen
+  simp only [Option.annotationView_subst, ← PartialCore.Ann.source_substTyFvars_append] at hgen
   have hbodyWeak := ScopedTyping.weaken_schemes (env := (ambient.onCtx ctx).env) (.cons hgen .nil) hbD
   have hbodySource : body.substSourceTyFvars ambient =
       (body.substSourceTyFvars (s1 ++ sCheck)).substSourceTyFvars V := by
@@ -1658,7 +1656,7 @@ theorem Infer.source_signature_frame {rhs body : InferInput} {ann : BindingAnn}
     omega
   obtain ⟨Ns, hNlen, hNnd, hNavoid⟩ := exists_fresh_names L M.paramCount
   have hle := (hannFits Ns ⟨hNlen, hNnd, hNavoid⟩).prefix_le
-  simp only [Option.annotationView_subst, PartialCore.Ann.paramCount_substTyFvars, Option.annotationView_paramCount, Option.paramCount_substSourceTyFvars] at hle
+  simp only [Option.annotationView_subst, PartialCore.Ann.paramCount_substTyFvars, Option.annotationView_paramCount] at hle
   let images := K.flatMap (fun k => (ambient.onTy (.fvar k)).freeVars) ++ softVars (substSoft ambient F)
   obtain ⟨extras, hElen, hXsNd, hExtra, hAll, hAligned, hAlignedFits⟩ :=
     ScopedTyping.align_partial_prefix_with_fits (by simp) hannFits
@@ -1880,7 +1878,7 @@ theorem Infer.source_let_frame
   obtain ⟨hrLC, hs1LC⟩ := hr.lc hwf
   have hF1 := substSoft_below hs1B hrle hF
   have hannEq : (ann.substSourceTyFvars s1).substSourceTyFvars R = ann.substSourceTyFvars ambient := by
-    simp only [Option.annotationView_subst, ← PartialCore.Ann.source_substTyFvars_append, ← Option.source_substTyFvars_append]
+    simp only [← Option.source_substTyFvars_append]
     exact ann.source_substTyFvars_congr (fun v hv => (hagR v
       (hscopeBound v (hscope v (List.mem_append_left _ (List.mem_append_left _ hv))))).symm)
   obtain ⟨V, hV, hcheckedTy, hVP, hagV⟩ := hc.factor_source
@@ -4431,7 +4429,7 @@ theorem Infer.signed_check_factor
       Subst.AgreesBelow frontier R ((s1 ++ s2) ++ U) := by
   have hscope : SourceScope K F (.letIn (Option.fromScheme (some scheme)) rhs (.primLit .unit)) := by
     intro v hv
-    simp only [Expr.rigidVars, PartialCore.Ann.rigidVars, List.mem_append, List.not_mem_nil, or_false] at hv
+    simp only [Expr.rigidVars, List.mem_append, List.not_mem_nil, or_false] at hv
     exact hv.elim (hann v) (hraw v)
   have havoid : ∀ name ∈ freshVars frontier scheme.paramCount, name ∉ K ++ softVars F := by
     intro name hn hc
@@ -4590,7 +4588,7 @@ theorem InferRecSignedCert.sourcePrincipal_residual
       hiCtxWF hiCtxB hK hF hres.lc hP hres.fixes
       (by
         intro v hv hk hn
-        simp only [Expr.rigidVars, PartialCore.Ann.rigidVars, List.mem_append, List.not_mem_nil, or_false] at hv
+        simp only [Expr.rigidVars, List.mem_append, List.not_mem_nil, or_false] at hv
         exact hv.elim (fun hv => hannFreeze _ List.mem_cons_self v
           ((Option.mem_annotationView_rigidVars ann v).mp (by simpa [hAnn, PartialCore.Ann.rigidVars, Option.fromScheme, Option.rigidVars, Scheme.map, PartialCore.Template.rigidVars] using hv)) hk hn)
           (fun hv => hrhsFreeze _ List.mem_cons_self v hv hk hn))
@@ -4788,7 +4786,7 @@ theorem RecResidual.init
         (Option.map ambient.onPolyTy) := by
     rw [hwf.anns_eq]
     simp only [substInputBindings_eq_map, List.map_map, Function.comp_def,
-      InputRecBinding.recMode, PartialCore.Ann.recModeAnn_subst_source, Option.recModeAnn_subst_source]
+      InputRecBinding.recMode, Option.recModeAnn_subst_source]
   have hlen : declSpecs.length = bindings.length := by
     have he := congrArg List.length hmodes
     simpa only [List.length_map] using he
@@ -6856,7 +6854,7 @@ theorem checkLet_complete_source {K : List Nat} {F : List Ty} {Φ : Nat}
       (fun k hk => (hagree k (hK k hk)).symm.trans (hRfix k hk))
     cases template <;>
       simp only [checkLet, checkLetResult, halloc, hr, dite_true, Except.toOption, Option.isSome_some]
-    all_goals simp only [hunifies, Except.toOption, Option.isSome_some]
+    all_goals simp only [hunifies, Option.isSome_some]
 
 
 
@@ -7452,7 +7450,7 @@ theorem inferRequest_sourceComplete_letIn
     rw [Subst.onTy_append, hs1K k hk, hfix k hk] at heq
     exact heq.symm
   have hannEq : (ann.substSourceTyFvars s1).substSourceTyFvars R = ann.substSourceTyFvars ambient := by
-    simp only [typed_result_projection, Option.annotationView_subst, ← PartialCore.Ann.source_substTyFvars_append, ← Option.source_substTyFvars_append]
+    simp only [typed_result_projection, ← Option.source_substTyFvars_append]
     exact ann.source_substTyFvars_congr (fun v hv => (hagR v (hannBelow v hv)).symm)
   have hannPostScope : ∀ v ∈ (ann.substSourceTyFvars s1).rigidVars, v ∈ K ++ softVars (substSoft s1 F) := by
     intro v hv
@@ -7605,7 +7603,7 @@ theorem inferRequest_sourceComplete_signature
   have hBound : ∀ v ∈ K ++ softVars F, v < frontier :=
     fun v hv => (List.mem_append.mp hv).elim (hK v) (softVars_lt hF v)
   have hAnnSource : (ann.substSourceTyFvars s1).substSourceTyFvars R = ann.substSourceTyFvars moved := by
-    simp only [typed_result_projection, Option.annotationView_subst, ← PartialCore.Ann.source_substTyFvars_append, ← Option.source_substTyFvars_append]
+    simp only [typed_result_projection, ← Option.source_substTyFvars_append]
     exact ann.source_substTyFvars_congr (fun v hv => (hagR v (by
       exact Nat.lt_of_lt_of_le
         (hBound v (hscope v (List.mem_append_left _ (List.mem_append_left _ hv))))
@@ -8422,7 +8420,7 @@ theorem inferRecSignedWithTypesCore_complete_one
       exact ht.symm.trans (by rwa [hCountEq])
     exact ⟨hWF, congrArg (R.onPolyTy scheme).openVars hFull⟩
   obtain ⟨hSchemeWF,hExpectedEq⟩ := hComplete (s1.onPolyTy scheme) (by simp [Option.annotationView_subst, hAnn, PartialCore.Ann.substSourceTyFvars, Subst.onPolyTy, Subst.onTy, scheme])
-  have hExpectedLC := PolyTy.openVars_isLC (Xs := written) hSchemeWF (by simp only [typed_result_projection, written,hcount,PartialCore.Ann.paramCount,freshVars_length,Subst.onPolyTy];omega)
+  have hExpectedLC := PolyTy.openVars_isLC (Xs := written) hSchemeWF (by simp only [typed_result_projection, written,hcount,freshVars_length,Subst.onPolyTy];omega)
   have hOpenEq : R.onTy ((s1.onPolyTy scheme).openVars written) =
       (R.onPolyTy (s1.onPolyTy scheme)).openVars written :=
     Subst.onTy_openVars_of_fixes hR (fun y hy => hFixRK y (List.mem_append_right _ hy))
@@ -8522,7 +8520,7 @@ theorem inferRecSignedWithTypesCore_complete
         simpa only [PartialCore.Ann.substSourceTyFvars,PartialCore.Ann.paramCount,Option.paramCount_substSourceTyFvars, ← Option.annotationView_paramCount ann,hAnn,Subst.onPolyTy,htake] using htypes' Ys hy
       have hscope : SourceScope K F (.letIn ann rhs (.primLit .unit)) := by
         intro v hv
-        simp only [typed_result_projection, Expr.rigidVars,PartialCore.Ann.rigidVars,List.mem_append,List.not_mem_nil,or_false] at hv
+        simp only [typed_result_projection, Expr.rigidVars,List.mem_append,List.not_mem_nil,or_false] at hv
         exact hv.elim (hheadAnn v) (hraw v)
       have hOne := inferRecSignedWithTypesCore_complete_one (index := index) hAnn
         (fun e he => hProducer e (by simp only [typed_result_projection, sizeBindings];omega))
@@ -9151,7 +9149,7 @@ theorem InferRecSignedCert.checked
             { ann := ann'.substSourceTyFvars (s1 ++ s2), rhs := rhs.substSourceTyFvars (s1 ++ s2) } := by
           simp only [substInputBindings_eq_map, List.getElem?_map,
             show bindings[j]? = some { ann := ann', rhs := rhs } from hb,
-            Option.map_some, PartialCore.Ann.substSourceTyFvars, Subst.onPolyTy, Subst.onTy]
+            Option.map_some]
         simpa only [Nat.add_assoc, Nat.add_comm 1 j] using
           hFill j ((s1 ++ s2).onPolyTy sigma) (rhs.substSourceTyFvars (s1 ++ s2))
           (ann'.substSourceTyFvars (s1 ++ s2)) hnew (by
@@ -9249,8 +9247,7 @@ theorem InferRecSignedCert.completed_members_of_strata
           { ann := bindings[i].ann.substSourceTyFvars S1,
             rhs := bindings[i].rhs.substSourceTyFvars S1 } := by
         simp only [substInputBindings_eq_map, List.getElem?_map, hBinding,
-          Option.map_some, heq, PartialCore.Ann.substSourceTyFvars, Subst.onPolyTy,
-          Subst.onTy]
+          Option.map_some]
       simpa only [Nat.zero_add] using
         hComplete i (S1.onPolyTy scheme) (bindings[i].rhs.substSourceTyFvars S1)
           (bindings[i].ann.substSourceTyFvars S1) hb (by
