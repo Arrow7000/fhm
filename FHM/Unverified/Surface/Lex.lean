@@ -87,19 +87,31 @@ partial def takeIdentCont (cs : List Char) (line col : Nat) (acc : String) :
       (acc, cs, line, col)
   | [] => (acc, [], line, col)
 
-/-- Full lexer. Positions are 1-based. Skips spaces/newlines/CR; rejects tabs. -/
-partial def lex (input : String) : Except LexError (Array TokenWithSource) :=
+/-- Checkpoint at the beginning of a rejected token. The emitted prefix and
+raw remainder let the editor recover without retokenising accepted source or
+inventing boundaries inside an unfinished literal/comment. -/
+structure Failure where
+  error : LexError
+  tokens : Array TokenWithSource
+  remaining : List Char
+  line : Nat
+  col : Nat
+
+/-- Native lexer with failure checkpoints. Positions are 1-based; the strict
+entry point below projects the original error without changing acceptance. -/
+partial def lexWithCheckpoint (input : List Char) (startLine startCol : Nat) :
+    Except Failure (Array TokenWithSource) :=
   let rec go (cs : List Char) (line col : Nat) (acc : Array TokenWithSource) :
-      Except LexError (Array TokenWithSource) :=
+      Except Failure (Array TokenWithSource) :=
     match cs with
     | [] => .ok acc
-    | '\t' :: _ => .error (.tab line col)
+    | '\t' :: _ => .error ⟨.tab line col, acc, cs, line, col⟩
     | ' ' :: rest => go rest line (col + 1) acc
     | '\n' :: rest => go rest (line + 1) 1 acc
     | '\r' :: rest => go rest line col acc
     | '-' :: '-' :: rest =>
       match takeLineComment rest line (col + 2) "" with
-      | .error e => .error e
+      | .error e => .error ⟨e, acc, cs, line, col⟩
       | .ok (text, rest', line', col') =>
         -- Exactly three dashes start a doc line; four or more (`-------`
         -- separators) are an ordinary comment.
@@ -110,7 +122,7 @@ partial def lex (input : String) : Except LexError (Array TokenWithSource) :=
         go rest' line' col' (acc.push (mkTok tok line col line' col'))
     | '/' :: '-' :: rest =>
       match takeBlockComment rest line (col + 2) 1 "" line col with
-      | .error e => .error e
+      | .error e => .error ⟨e, acc, cs, line, col⟩
       | .ok (text, rest', line', col') =>
         -- Likewise `/--` starts a doc comment but `/---` doesn't.
         let tok := match text.toList with
@@ -141,8 +153,8 @@ partial def lex (input : String) : Except LexError (Array TokenWithSource) :=
         let (line1, col1) := bump line (col + 1) c
         let (name, rest', line', col') := takeIdentCont rest line1 col1 (String.ofList [c])
         go rest' line' col' (acc.push (mkTok (.namedHole name) line col line' col'))
-      else .error (.unexpectedChar '?' line col)
-    | '?' :: [] => .error (.unexpectedChar '?' line col)
+      else .error ⟨.unexpectedChar '?' line col, acc, cs, line, col⟩
+    | '?' :: [] => .error ⟨.unexpectedChar '?' line col, acc, cs, line, col⟩
     | c :: rest =>
       if c.isDigit then
         let (n, rest') := takeDigits (c :: rest) 0
@@ -201,18 +213,23 @@ partial def lex (input : String) : Except LexError (Array TokenWithSource) :=
             (acc.push (mkTok (.punct .underscore) line col line (col + 1)))
         | '\'' =>
           match takeCharLit rest line (col + 1) line col with
-          | .error e => .error e
+          | .error e => .error ⟨e, acc, cs, line, col⟩
           | .ok (ch, rest', line', col') =>
             go rest' line' col'
               (acc.push (mkTok (.charLit ch) line col line' col'))
         | '"' =>
           match takeStringLit rest line (col + 1) "" line col with
-          | .error e => .error e
+          | .error e => .error ⟨e, acc, cs, line, col⟩
           | .ok (s, rest', line', col') =>
             go rest' line' col'
               (acc.push (mkTok (.stringLit s) line col line' col'))
-        | _ => .error (.unexpectedChar c line col)
-  go input.toList 1 1 #[]
+        | _ => .error ⟨.unexpectedChar c line col, acc, cs, line, col⟩
+  go input startLine startCol #[]
+
+/-- Strict lexer; editor recovery never changes this acceptance boundary. -/
+def lex (input : String) : Except LexError (Array TokenWithSource) :=
+  (lexWithCheckpoint input.toList 1 1).mapError (·.error)
+
 
 /-- Token payload only (for `#guard`s). -/
 def lexTokens (input : String) : Except LexError (Array Token) :=

@@ -86,14 +86,28 @@ demonstrates syntax, declaration and value errors together. Unparsed identifiers
 mask outer hover/navigation fallbacks until their lexical identity is known.
 The strict parser and runner still reject the original file.
 
-Recovery within a recursive value group and nested expressions remains future
-work. Lexer failures also remain strict at this stage: an unfinished string or
-comment can contain apparent declaration keywords that must not become code.
-An entire value SCC is withheld when a member fails, even when finer recovery
-may be possible.
+Lexical recovery uses checkpoints from the original lexer. It keeps emitted
+prefix tokens and resumes after closed malformed literals, invalid characters,
+or recoverable layout errors. Code owning a lexical gap is quarantined even
+when deleting the bad token would make it parse and typecheck. Multiple lexical
+failures retain their original positions and dependency causes. Invalid comment
+regions do not change the meaning of checked code outside them.
 
-Regression coverage is in `FHM/Unverified/EditorRecoveryTests.lean` and
-`scripts/hm-recovery-smoke.mjs`, alongside the existing HM/editor suites. It covers
+Unfinished strings consume their remaining tail; unfinished block comments keep
+the prefix but do not promote comment text into declarations. Editor-only opaque
+token markers keep literal/comment text out of identifier hover and navigation
+fallbacks. These markers never enter the parser or inference.
+[`scratch/error-recovery-lexical.fhm`](../scratch/error-recovery-lexical.fhm)
+demonstrates lexical and ordinary type errors together, including healthy code
+on both sides of closed bad tokens and before an unfinished comment.
+
+Recovery within a recursive value group and nested expressions remains future
+work. An entire value SCC is withheld when a member fails, even when finer
+recovery may be possible.
+
+Regression coverage is in the editor, declaration, parser and lexer recovery
+Lean test modules and `scripts/hm-recovery-smoke.mjs`, alongside the existing
+HM/editor suites. It covers
 multiple precise diagnostics, source-order/SCC reordering, closed polymorphic
 exports, recursive-group atomicity, dependency suppression, lexical shadowing,
 unknown hovers, documentation/navigation, fixing errors, and strict execution.

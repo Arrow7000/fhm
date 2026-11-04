@@ -25,8 +25,9 @@ lexer token with its class (`comment`, `ident`, `keyword`, `lit`, `op`,
 `punct`), so editors can tell what a position is on.
 
 On recoverable top-level parse failure, later checked source still supplies
-symbols and diagnostics. A failed final expression has no program type. Lexer
-failures currently retain the strict diagnostic-only fallback.
+symbols and diagnostics. A failed final expression has no program type.
+Lexer checkpoints retain healthy source around rejected lexical regions; tokens
+inside unfinished strings/comments remain opaque. The runner remains strict.
 Line/col are 1-based half-open spans (same as `ParseError` / the lexer).
 -/
 

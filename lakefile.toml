@@ -65,6 +65,7 @@ roots = [
   "FHM.Unverified.DeclarationRecovery",
   "FHM.Unverified.RecoveryDependencies",
   "FHM.Unverified.ParserRecovery",
+  "FHM.Unverified.LexRecovery",
   "FHM.Unverified.CoverageDiagnostics",
   "FHM.Unverified.Surface.Lex",
   "FHM.Unverified.Surface.Parse",
@@ -81,7 +82,7 @@ roots = ["FHM.Unverified.EditorSupport"]
 name = "FHMEditorTests"
 # Editor and runtime canaries -- `lake build FHMEditorTests`.
 roots = ["FHM.Unverified.EditorSupportTests", "FHM.Unverified.LiveTests",
-  "FHM.Unverified.LoweringErrorTests", "FHM.Unverified.EditorRecoveryTests", "FHM.Unverified.DeclarationRecoveryTests", "FHM.Unverified.ParserRecoveryTests"]
+  "FHM.Unverified.LoweringErrorTests", "FHM.Unverified.EditorRecoveryTests", "FHM.Unverified.DeclarationRecoveryTests", "FHM.Unverified.ParserRecoveryTests", "FHM.Unverified.LexRecoveryTests"]
 
 [[lean_lib]]
 name = "FHMCli"

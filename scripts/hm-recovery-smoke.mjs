@@ -259,5 +259,86 @@ test("a rejected final expression has no invented Unit type and repair restores 
   assert.equal(cli(["run", "--json"], repaired).payload.result, "(7, True)");
 });
 
+test("lexical showcase preserves prefix/suffix code without accepting repaired bindings", () => {
+  const source = readFileSync(new URL("../scratch/error-recovery-lexical.fhm", import.meta.url), "utf8");
+  const { payload, status } = cli(["diagnose"], source);
+  assert.equal(status, 1);
+  assert.equal(payload.diagnostics.length, 5);
+  assert.deepEqual(payload.diagnostics.map(d => d.message.includes("escape") ? "escape" : d.code || d.message),
+    ["escape", "unexpected character '@'", "escape", "type.notFunction", "unfinished block comment"]);
+  const lines = source.split("\n");
+  const number = lines.findIndex(line => line.startsWith("let number"));
+  const truth = lines.findIndex(line => line.startsWith("let truth"));
+  const bad = lines.findIndex(line => line.startsWith("let wouldTypeAfterDeletion"));
+  assert.equal(at(payload, source, number, "id").hover.type, "Int → Int");
+  assert.equal(at(payload, source, truth, "id").hover.type, "Bool → Bool");
+  assert.match(at(payload, source, bad, "wouldTypeAfterDeletion").hover.type, /^type unknown/);
+  assert.ok(!payload.symbols.some(symbol => symbol.def && symbol.name === "thisIsCommentText"));
+  assert.equal(payload.programTy, "(Int, Bool)");
+  assert.equal(cli(["run", "--json"], source).payload.stage, "parse");
+});
+
+test("a later lexical gap stays quarantined even behind an earlier grammar failure", () => {
+  const source = "let syntaxBroken=(\nlet lexicalBroken=1 @ + 2\nlet use=lexicalBroken\nlet healthy=7\nhealthy\n";
+  const { payload } = cli(["diagnose"], source);
+  assert.equal(payload.diagnostics.length, 2);
+  assert.deepEqual(payload.diagnostics.map(d => d.line), [1, 2]);
+  assert.match(at(payload, source, 2, "use").hover.type, /^type unknown/);
+  assert.equal(at(payload, source, 3, "healthy").hover.type, "Int");
+});
+
+test("unfinished literals preserve the prefix and never promote keyword text into declarations", () => {
+  const source = "let before=7\nlet broken=\"unterminated\nlet ghost=99\nbefore\n";
+  const { payload } = cli(["diagnose"], source);
+  assert.equal(payload.diagnostics.length, 1);
+  assert.equal(at(payload, source, 0, "before").hover.type, "Int");
+  assert.equal(payload.programTy, "");
+  assert.ok(!payload.symbols.some(symbol => symbol.def && symbol.name === "ghost"));
+  const text = at(payload, source, 3, "before");
+  assert.equal(text.hover, undefined);
+  assert.equal(text.definition, undefined);
+});
+
+test("malformed multiline strings and comments retain opaque editor token boundaries", () => {
+  const source = "let id x=x\nlet broken=\"bad\\q\nlet ghost=id 99\nend\"\n" +
+    "--\t id\nlet healthy=id 7\nhealthy\n";
+  const { payload } = cli(["diagnose"], source);
+  assert.equal(payload.diagnostics.length, 2);
+  assert.equal(at(payload, source, 2, "id").hover, undefined, "literal text has no identifier hover");
+  assert.equal(at(payload, source, 4, "id").hover, undefined, "comment text has no identifier hover");
+  assert.equal(at(payload, source, 5, "id").hover.type, "Int → Int");
+  assert.ok(!payload.symbols.some(symbol => symbol.def && symbol.name === "ghost"));
+});
+
+test("lexical error positions remain UTF-16 after a non-BMP character", () => {
+  const source = "let broken = ('😀', \"bad\\q\")\nlet healthy=7\nhealthy\n";
+  const { payload } = cli(["diagnose"], source);
+  assert.equal(payload.diagnostics.length, 1);
+  const [error] = payload.diagnostics;
+  const col = source.split("\n")[0].indexOf("q") + 1;
+  assert.deepEqual([error.line, error.col, error.endLine, error.endCol], [1, col, 1, col + 1]);
+  assert.equal(payload.programTy, "Int");
+});
+
+test("multiple lexical causes on one binding remain visible without dependency cascades", () => {
+  const source = "let bad=1 @ +2 #\nlet use=bad\nlet healthy=7\nhealthy\n";
+  const { payload } = cli(["diagnose"], source);
+  assert.equal(payload.diagnostics.length, 2);
+  const use = at(payload, source, 1, "use").hover.type;
+  assert.ok(use.includes("1:11") && use.includes("1:16"), "Both original lexical causes survive");
+  assert.equal(at(payload, source, 2, "healthy").hover.type, "Int");
+});
+
+test("fixing lexical errors restores the original strict path and execution", () => {
+  const source = "let bad=1 @ + 2\nlet result=bad + 1\nresult\n";
+  assert.equal(cli(["diagnose"], source).status, 1);
+  const fixed = source.replace(" @", "");
+  const { payload, status } = cli(["diagnose"], fixed);
+  assert.equal(status, 0);
+  assert.deepEqual(payload.diagnostics, []);
+  assert.equal(payload.programTy, "Int");
+  assert.equal(cli(["run", "--json"], fixed).payload.result, "4");
+});
+
 console.log(`${tests - failures}/${tests} editor recovery checks passed.`);
 process.exitCode = failures ? 1 : 0;

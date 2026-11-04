@@ -1,5 +1,6 @@
 import FHM.Unverified.Surface.Parse
 import FHM.Unverified.RecoveryDependencies
+import FHM.Unverified.LexRecovery
 
 /-! Editor-only top-level parser resynchronisation. Native parsing remains
 strict. Recovery removes rejected token regions, retaining original token spans,
@@ -48,7 +49,7 @@ private def regionSpan (tokens : Array Tok) (first last : Nat) : Span :=
 
 /-- Scan only through grammar-accepted items; errors preserve the native site.
 The finite fuel also protects the editor if a future parser fails to advance. -/
-private def scan (tokens : Array Tok) : Scan :=
+private def scan (tokens : Array Tok) (offset : Nat := 0) : Scan :=
   let rec go : Nat → Nat → List Item → Scan
     | 0, index, items => ⟨items, none, some index⟩
     | fuel + 1, index, items =>
@@ -62,7 +63,7 @@ private def scan (tokens : Array Tok) : Scan :=
           | .ok remaining parsed =>
             if remaining.start ≤ first then ⟨items, none, some first⟩ else
               go fuel remaining.start (items ++ [⟨beforeComments tokens first, beforeComments tokens remaining.start, parsed⟩])
-  go (tokens.size + 1) 0 []
+  go (tokens.size + 1) offset []
 
 private def nextHeader (tokens : Array Tok) (first : Nat) : Nat :=
   match tokens[first]? with
@@ -158,20 +159,121 @@ private def headerBinders (tokens : Array Tok) : List BinderSpan := Id.run do
             return { name, kind := .type, span := Span.ofTok nameToken } :: constructors
     | _ => return []
 
+private def mergeNames [BEq α] (existing additions : List (α × List Cause)) : List (α × List Cause) :=
+  additions.foldl (fun current (name, causes) =>
+    if current.any (·.1 == name) then current.map (fun (prior, old) =>
+      if prior == name then (prior, (old ++ causes).eraseDups) else (prior, old))
+    else current ++ [(name, causes)]) existing
+
 private def addSeed (seed : Seed) (binders : List BinderSpan) (cause : Cause)
     (body : Bool) : Seed :=
-  { values := binders.filterMap (fun binder =>
-      if binder.kind == .val then some (.mk binder.name, [cause]) else none) ++ seed.values
-    types := binders.filterMap (fun binder =>
-      if binder.kind == .type then some (.mk binder.name, [cause]) else none) ++ seed.types
-    constructors := binders.filterMap (fun binder =>
-      if binder.kind == .ctor then some (.mk binder.name, [cause]) else none) ++ seed.constructors
-    body := if body then (cause :: seed.body).eraseDups else seed.body }
+  { values := mergeNames seed.values (binders.filterMap (fun binder =>
+      if binder.kind == .val then some (.mk binder.name, [cause]) else none))
+    types := mergeNames seed.types (binders.filterMap (fun binder =>
+      if binder.kind == .type then some (.mk binder.name, [cause]) else none))
+    constructors := mergeNames seed.constructors (binders.filterMap (fun binder =>
+      if binder.kind == .ctor then some (.mk binder.name, [cause]) else none))
+    body := if body then (seed.body ++ [cause]).eraseDups else seed.body }
 
-/-- Recover token-delimited top-level items. Lexer failures currently remain
-strict because an unfinished token can contain apparent declaration keywords. -/
+private def positionLE (a b : Span) : Bool :=
+  a.startLine < b.startLine || (a.startLine == b.startLine && a.startCol ≤ b.startCol)
+
+private def inInterval (tokens : Array Tok) (gap : Span) (first last : Nat) : Bool :=
+  let start := (tokens[first]?.map Span.ofTok).getD Span.empty
+  let stop := tokens[last]?.map Span.ofTok
+  positionLE start gap && (stop.map (fun stop => !positionLE stop gap)).getD true
+
+private def bodyOwner (tokens : Array Tok) (scanned : Scan) (first : Nat) : Nat :=
+  match scanned.items.getLast?, tokens[first]? with
+  | some previous, some bodyToken =>
+      let headerIndex := codeAt tokens previous.first
+      let headerCol := ((tokens[headerIndex]?).map (·.startCol)).getD 1
+      let previousSpan := regionSpan tokens previous.first previous.last
+      if bodyToken.startLine == previousSpan.endLine || bodyToken.startCol > headerCol then headerIndex else first
+  | _, _ => first
+
+private def scanAround (tokens : Array Tok) (gap : Span) : Scan :=
+  let rec go : Nat → Nat → Scan
+    | 0, offset => scan tokens offset
+    | fuel + 1, offset =>
+        let scanned := scan tokens offset
+        let failed := (scanned.failure.map (·.1)).orElse
+          (fun _ => scanned.body.map (bodyOwner tokens scanned))
+        match failed with
+        | none => scanned
+        | some first =>
+            let next := nextHeader tokens first
+            match tokens[next]? with
+            | some header => if next > offset && header.startLine ≤ gap.startLine then go fuel next else scanned
+            | none => scanned
+  go (tokens.size + 1) 0
+
+/-- A lexical gap can make the remaining tokens look valid. Quarantine its
+owning item/body before any recovered source is checked, instead of accepting a
+program obtained by deleting a malformed literal or layout character. -/
+private def gapRemoval (tokens : Array Tok) (gap : Span) : Option Removal := Id.run do
+  let scanned := scanAround tokens gap
+  let exact := scanned.items.find? fun item =>
+    covers (regionSpan tokens item.first item.last) { msg := "", line := gap.startLine, col := gap.startCol }
+  let before := (scanned.items.filter fun item =>
+    let span := regionSpan tokens item.first item.last
+    gap.startLine == span.endLine && gap.startCol ≥ span.endCol).getLast?
+  let after := scanned.items.find? fun item =>
+    let span := regionSpan tokens item.first item.last
+    gap.startLine == span.startLine && gap.startCol ≤ span.startCol
+  let owner := exact.orElse (fun _ => before) |>.orElse (fun _ => after)
+  match owner with
+  | some item => return some ⟨item.first, item.last, false⟩
+  | none =>
+    match scanned.failure with
+    | some (first, _) =>
+        let last := nextHeader tokens first
+        if inInterval tokens gap first last ||
+            ((tokens[first]?.map (·.startLine)).getD 0 == gap.startLine) then
+          return some ⟨beforeComments tokens first, last, false⟩
+    | none => pure ()
+    match scanned.body with
+    | some bodyFirst =>
+        let first := bodyOwner tokens scanned bodyFirst
+        let last := nextHeader tokens first
+        if inInterval tokens gap first last then return some ⟨beforeComments tokens first, last, first == bodyFirst⟩
+    | none => pure ()
+    let laterHeader := tokens.toList.any fun token => isHeader token.token && positionLE gap (Span.ofTok token)
+    if !laterHeader then
+      match scanned.body with
+      | some first => return some ⟨first, tokens.size, true⟩
+      | none => return none
+    else return none
+
+/-- Recover top-level source from native tokens and rejected lexical regions.
+Opaque gap markers are excluded from parsing and inference. -/
 def check (source : String) : Except ParseError Result := do
-  let original ← (Surface.Lex.lex source).mapError lexToParse
+  let lexed := LexRecovery.check source
+  let original := lexed.tokens
+  let mut lexicalUnavailable : List Unparsed := []
+  let mut lexicalSeed : Seed := {}
+  let mut lexicalRemovals : List Removal := []
+  for gap in lexed.gaps do
+    let error := lexToParse gap.error
+    let cause := Cause.syntax ⟨error.line, error.col, error.endLine, error.endCol⟩
+    if gap.commentOnly then
+      lexicalUnavailable := lexicalUnavailable ++ [⟨error, gap.span, #[], []⟩]
+    else
+      match gapRemoval original gap.span with
+      | some removal =>
+          let removed := original.extract removal.first removal.last
+          let binders := headerBinders removed
+          let span := (Span.hull [regionSpan original removal.first removal.last, gap.span]).getD gap.span
+          if !lexicalUnavailable.any (·.span == span) then
+            lexicalUnavailable := lexicalUnavailable ++ [⟨error, span, removed, binders⟩]
+          lexicalRemovals := lexicalRemovals ++ [removal]
+          lexicalSeed := addSeed lexicalSeed binders cause (removal.last == original.size)
+      | none =>
+          lexicalUnavailable := lexicalUnavailable ++ [⟨error, gap.span, #[], []⟩]
+          let laterHeader := original.toList.any fun token => isHeader token.token && positionLE gap.span (Span.ofTok token)
+          if !laterHeader then lexicalSeed := { lexicalSeed with body := (lexicalSeed.body ++ [cause]).eraseDups }
+  let surviving := original.zipIdx.filterMap fun (token, index) =>
+    if lexicalRemovals.any (fun removal => removal.first ≤ index && index < removal.last) then none else some token
   let rec go (fuel : Nat) (tokens : Array Tok) (errors : List ParseError)
       (unavailable : List Unparsed) (seed : Seed) : Except ParseError Result := do
     match parseProgramTokensWithSpans tokens with
@@ -215,6 +317,6 @@ def check (source : String) : Except ParseError Result := do
             if rejected.any (fun removal => removal.first ≤ index && index < removal.last) then none else some token
           if remaining.size ≥ tokens.size then .error error else
             go fuel remaining (errors ++ [diagnostic]) exclusions nextSeed
-  go (original.size + 1) original [] [] {}
+  go (original.size + 1) surviving (lexed.gaps.map (fun gap => lexToParse gap.error)) lexicalUnavailable lexicalSeed
 
 end FHM.Unverified.ParserRecovery

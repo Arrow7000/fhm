@@ -486,10 +486,13 @@ def tokenClass : Surface.Lex.Token → String
   | .punct _ => "punct"
 
 /-- Every token as a compact `[startLine, startCol, endLine, endCol, class]`
-    (1-based, half-open, in source order). Empty if the source doesn't lex. -/
+    (1-based, half-open, in source order). Rejected lexical regions use opaque
+    editor markers, which never become parser input. -/
 def tokensJson (src : String) : Lean.Json :=
   match Surface.Lex.lex src with
-  | .error _ => Lean.Json.arr #[]
+  | .error _ => Lean.Json.arr <| (FHM.Unverified.LexRecovery.check src).editorTokens.map fun t =>
+      Lean.Json.arr #[Lean.Json.num t.startLine, Lean.Json.num t.startCol,
+        Lean.Json.num t.endLine, Lean.Json.num t.endCol, Lean.Json.str (tokenClass t.token)]
   | .ok toks => Lean.Json.arr <| toks.map fun t =>
       Lean.Json.arr #[Lean.Json.num t.startLine, Lean.Json.num t.startCol,
         Lean.Json.num t.endLine, Lean.Json.num t.endCol, Lean.Json.str (tokenClass t.token)]

@@ -253,7 +253,7 @@ Error recovery and formatter work remain separate from these batches.
   - [ ] Recover more finely within a recursive group or nested expression.
   - [x] Recover declaration environments by dependency/conflict groups.
   - [x] Resynchronise after top-level parse failures while withholding rejected headers.
-  - [ ] Preserve healthy prefix code and recover safe boundaries after lexer failures.
+  - [x] Preserve healthy prefix code and recover safe boundaries after lexer failures.
 
       See [editor recovery](docs/error-recovery.md) for the current boundary.
 

@@ -1,0 +1,29 @@
+-- Lexical recovery: five errors, with healthy code before and after them.
+--   .lake/build/bin/fhm diagnose scratch/error-recovery-lexical.fhm
+-- Bad tokens are never silently deleted to validate their owning bindings.
+-- Closed malformed tokens can be skipped; an unfinished token keeps its tail
+-- opaque. The runner continues to reject the original file.
+
+let id x = x
+
+-- 1. A closed string with a bad escape does not hide later declarations.
+let badString = "bad\q"
+
+-- 2. Removing @ would repair this expression, but it must stay unavailable.
+let wouldTypeAfterDeletion = 1 @ + 2
+let blocked = wouldTypeAfterDeletion + 1
+
+-- 3. The same applies to a malformed character literal.
+let badChar = '\q'
+
+-- 4. An independent ordinary type error is still checked.
+let badApplication = 1 True
+
+-- Healthy inferred hovers and polymorphic use sites remain available.
+let number = id 41
+let truth = id True
+(number + 1, truth)
+
+-- 5. This unfinished comment does not erase the checked prefix.
+/-
+let thisIsCommentText = 99
