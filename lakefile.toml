@@ -110,3 +110,8 @@ rev = "v4.26.0"
 name = "Parser"
 git = "https://github.com/fgdorais/lean4-parser"
 rev = "b50def30c0b6"
+
+[[lean_exe]]
+name = "fhm_parser_audit"
+root = "FHM.Unverified.ParserAudit"
+# Opt-in structural parser differential and generative verification harness.
