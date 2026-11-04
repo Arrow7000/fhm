@@ -32,13 +32,19 @@ group checking, annotation checking and generalisation stay in the canonical
 checker. The recovery pass checks each whole group once before descending into
 rejected regions; it does not replay growing prefix programs or remove annotations.
 
-A failed group contributes its native diagnostic and exports nothing. Every
-member of its syntactic SCC becomes unavailable, including members with complete
-signatures. A later group that refers to an unavailable name exports nothing;
-its independent subexpressions are still inspected. The pass tracks the original failed groups through transitive dependencies so the
-editor can explain the cause without producing unbound-name or type-error
-cascades. Local parameters, patterns and nested bindings still shadow names
-when dependencies are computed. Independent groups continue checking.
+A failed implementation contributes its native diagnostic. A complete valid
+annotation can independently provide a declared editor interface. Recovery cuts
+dependency edges at those interfaces and checks the remaining components using
+the native worker. This includes unsigned members of an originally recursive
+SCC: they can acquire actual inferred schemes conditional on a signed member's
+declared contract.
+
+A binding without a usable interface remains unavailable. Its transitive
+dependants preserve the original failure cause, avoiding unbound-name cascades;
+independent children still check. Annotations containing `_` or named holes,
+invalid annotations, unavailable datatype dependencies and parser-quarantined
+names never provide declared interfaces. Ordinary native success can still
+resolve a partial annotation in an otherwise checkable residual component.
 
 Healthy source slices keep inferred definition/use types, holes, documentation,
 source locations and definition navigation. Unavailable slices retain lexical
@@ -56,8 +62,9 @@ Recovered diagnostics are displayed in source order.
 Recovery lives under `FHM/Unverified/EditorRecovery.lean`. Its result contains
 editor slices and diagnostics, not a checked executable whole program. `fhm run`,
 `elaborateSafe` and the verified typing, completeness and safety interfaces retain
-the strict acceptance path. Successful recovered slices call the native checker;
-recovery does not add language acceptance rules or placeholder schemes.
+the strict acceptance path. Successful recovered slices call the native checker. Their environments may
+contain declared interface assumptions, recorded separately from validated
+implementations. Recovery adds no execution acceptance rules or guessed schemes.
 
 Declaration recovery groups datatype dependencies and shared-name conflicts.
 Each successful component is lowered and elaborated by the native workers;
@@ -139,22 +146,37 @@ names. Every accepted contextual substitution is checked against saved outer
 environments, preventing a local rigid variable from escaping. Safe constraints
 on captured monotypes still survive a rejected local `forall`.
 
-Recursive SCCs remain atomic for exports, both locally and at top level. A
-rejected group exports none of its members, including members with complete
-signatures. Recovery inspects each member's independent RHS regions and its own
-authored annotation; recursive calls remain unavailable. The native group's
-original recursive-call or occurs-check failure is retained when independent
-fragment failures cannot explain it. Incomplete signatures never grant
-polymorphic recursive calls.
+Whole recursive SCCs still use the original native check first. After rejection,
+complete interfaces cut the cycle; unsigned residual SCCs retain native recursive
+checking and generalisation. Complete members' implementations are checked against
+their actual annotations using the recovered environment. Incomplete signatures
+never grant polymorphic recursive calls through recovery assumptions.
+
+[`scratch/error-recovery-interfaces.fhm`](../scratch/error-recovery-interfaces.fhm)
+shows a broken signed recursive member, an inferred unsigned member, a caller
+argument error and a polymorphic declared interface together. Signature hovers
+say that the implementation is not fully validated. Caller hovers say which
+unvalidated interfaces their types assume. Documentation and definition targets
+remain attached to the original lexical definition.
+
+The additive v3 JSON fields `typeStatus: "declared" | "conditional"` and
+`typeAssumptions` preserve that distinction. Each assumption includes its binding
+name and definition position, distinguishing shadowed names. A conditional final
+expression also carries `programTypeAssumptions`. Successful constraints on shared
+outer monotypes propagate interface provenance to affected artifacts. Unrelated
+closed definitions keep their ordinary status. Fully valid programs use the
+strict path and omit these recovery fields.
 
 ## Deliberate conservative boundaries
 
 Recovery produces useful checked regions, rather than a repaired executable or
 a type for every source node. Constraints that require a failed child's result
-or an unavailable recursive member remain deferred. In particular, recovery
+or a recursive member without a usable interface remain deferred. Recovery
 does not invent provisional member schemes to enumerate every possible conflict
-inside a rejected recursive SCC. Failed enclosing signatures and their holes can
-remain unavailable even when a healthy parameter or nested binding has a type.
+inside a rejected unsigned SCC. A rejected enclosing expression still has no
+inferred result merely because independent nested definitions have interfaces.
+Partial signatures and their holes can remain unavailable even when a healthy
+parameter or nested binding has a type.
 Native checks remain authoritative when the source is repaired.
 
 Parser resynchronisation is at safe top-level boundaries. A malformed nested
@@ -167,7 +189,7 @@ Regression coverage is in the editor, declaration, expression, parser and lexer 
 Lean test modules and `scripts/hm-recovery-smoke.mjs`, alongside the existing
 HM/editor suites. It covers
 multiple precise diagnostics, source-order/SCC reordering, closed polymorphic
-exports, recursive-group atomicity, dependency suppression, lexical shadowing,
+exports, native residual recursion, dependency suppression, lexical shadowing,
 unknown hovers, documentation/navigation, local polymorphism, shared monomorphic
 constraints, scoped variables and escape prevention, multiple recursive-member
 failures, fixing errors, and strict execution.
@@ -182,6 +204,7 @@ lake env lean scripts/check-source-proof-boundary.lean
 bash scripts/check-unverified-boundary.sh
 node scripts/hm-editor-smoke.mjs
 node scripts/hm-recovery-smoke.mjs
+node scripts/hm-interface-recovery-smoke.mjs
 bash recursion-language-comparison/check.sh fhm
 (cd editors/web && npm test)
 ```

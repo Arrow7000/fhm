@@ -3,12 +3,11 @@ import FHM.Unverified.DeclarationRecovery
 import FHM.Unverified.RecoveryArtifacts
 import FHM.Unverified.ExpressionRecovery
 
-/-! Editor-only recovery at top-level SCC boundaries. Each group uses the
-canonical native workers and only closed schemes exported by checked groups.
-Failed groups export nothing. Their transitive dependants are skipped, without
-inventing types or emitting cascades. This module produces editor artifacts,
-never a checked executable program. Nested source recovery retains real lexical
-contexts; top-level parser recovery supplies its own unavailable-name seed. -/
+/-! Editor-only recovery at top-level dependency boundaries. Successful groups
+export native closed schemes. Rejected implementations with complete valid
+annotations provide explicitly declared editor interfaces; residual components
+can check conditionally against them. Other failed bindings remain unavailable.
+No recovery result certifies an executable program. -/
 
 namespace FHM.Unverified.EditorRecovery
 open SurfaceBridge SurfaceBridge.Provenance Surface.Span RecoveryDependencies
@@ -230,6 +229,10 @@ def check (program : Surface.Program) (spanned : SpannedProgram)
     diagnostic.code? != some "type.escapingVariable" || !diagnostics.any fun child =>
       child.code? == diagnostic.code? && diagnosticSpan child != diagnosticSpan diagnostic &&
         HMArtifacts.inside (diagnosticSpan child) (diagnosticSpan diagnostic)
-  pure { result with diagnostics }
+  let blocked := result.blocked.filterMap fun entry =>
+    if entry.names.isEmpty then some entry else
+      let names := entry.names.filter fun name => unavailable.any (·.1 == name)
+      if names.isEmpty then none else some { entry with names }
+  pure { result with diagnostics, blocked }
 
 end FHM.Unverified.EditorRecovery

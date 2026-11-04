@@ -1,7 +1,8 @@
 import FHM.Unverified.RecoveryArtifacts
 
 /-! Recovery of source subexpressions in actual lexical inference contexts.
-Native success is the only source of fragment types and binding schemes.
+Native inference supplies fragment types and inferred schemes; complete native
+annotation lowering supplies explicitly unvalidated declared interfaces.
 Failed source expressions always return no type. Their independent children can
 still contribute checked artifacts and successful contextual constraints. -/
 namespace FHM.Unverified.ExpressionRecovery
@@ -307,6 +308,10 @@ private def recoverBindings (recurse : State → Surface.Expr → SpannedExpr �
   let interfaces := (bindings.zip rhss).filterMap fun (binding, rhs) =>
     declaredInterface source initial.context binding rhs scope
   let mut state := { initial with context := initial.context.withUnavailable (bindings.map (·.name)) roots }
+  if interfaces.isEmpty then
+    for (binding, rhs) in bindings.zip rhss do
+      state := inspectRhs recurse source state binding rhs scope
+    return state
   for interface in interfaces do
     state := { state with
       context := state.context.withBindings [interface.ref.name] [interface.scheme] [interface.ref]
@@ -413,8 +418,10 @@ def walk : Nat → Source → State → Surface.Expr → SpannedExpr → Option 
       let structuralExpected := expectedType.isSome && match expr with
         | .lambda .. | .ife .. | .match_ .. => true
         | _ => false
-      let checked := if roots.isEmpty && !structuralExpected then
-        RecoveryArtifacts.check initial.context (source.expression expr tree) source.declarations.ctors
+      let checked : Except HoverDiag CheckedSlice := if roots.isEmpty then
+        match RecoveryArtifacts.check initial.context (source.expression expr tree) source.declarations.ctors with
+        | .ok slice => if structuralExpected then .error (diagAtSpan "check expected children" (some tree.span)) else .ok slice
+        | .error error => .error error
         else .error (diagAtSpan "unavailable dependency" (some tree.span))
       match checked with
       | .ok slice =>
@@ -553,7 +560,7 @@ def walk : Nat → Source → State → Surface.Expr → SpannedExpr → Option 
               | none, some actual => expected := some actual
               | _, _ => pure ()
         | _, _ => pure ()
-        if roots.isEmpty && !structuralExpected then
+        if roots.isEmpty && original.code?.isSome then
           -- Expected result constraints can locate a branch violation more
           -- precisely than the native branch-join constraint it also causes.
           if expectedType.isSome && original.code? == some "type.mismatch" then

@@ -2,8 +2,8 @@
 -- Open this file in the editor, or run:
 --   .lake/build/bin/fhm diagnose scratch/error-recovery.fhm
 --
--- Healthy definitions and uses still have inferred hovers. Failed bindings
--- export no type; their dependants are skipped to avoid misleading cascades.
+-- Healthy definitions and uses still have inferred hovers. Bindings without a complete interface
+-- stay unavailable after failure; their dependants avoid misleading cascades.
 -- `fhm run` still rejects the file. Recovery never makes it executable.
 
 let id x = x

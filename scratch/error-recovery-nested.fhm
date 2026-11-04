@@ -10,7 +10,7 @@ let arms xs =
   | head :: tail -> (3 True, head + 1)
   | [] -> 4 False
 
---- Both recursive members fail independently; neither signature is exported.
+--- Both recursive members fail independently; their declared interfaces remain usable.
 let left : Int -> Int = \x -> if True then True else right x
 let right : Int -> Int = \x -> if True then False else left x
 let dependent = left 3

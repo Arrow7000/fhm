@@ -1,0 +1,15 @@
+--- This complete interface cuts the recursive dependency despite the bad True.
+let broken : Int -> Int = \x -> if True then True else member x
+let member x = broken x
+
+--- Inferred using broken's declared interface: hover says Int.
+let number = member 7
+
+--- The caller is checked against that interface: False is a separate error.
+let wrong = member False
+
+--- A complete polymorphic interface remains polymorphic while its body is broken.
+let identity : {item} item -> item = \x -> 1 True
+let answer = identity number
+let truth = identity False
+(answer, truth)

@@ -1,7 +1,7 @@
 import FHM.Unverified.EditorSupport
 
-/-! Recovery consumes certified contextual inference; failed groups do not
-produce schemes, and dependencies never acquire guessed placeholder types. -/
+/-! Recovery consumes certified contextual inference; failed incomplete bindings do not
+produce schemes, and complete declared interfaces retain separate provenance. -/
 namespace FHM.Unverified.EditorRecoveryTests
 open Surface.Parse Surface.Span
 

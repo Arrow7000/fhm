@@ -1,7 +1,7 @@
 import FHM.Unverified.EditorSupport
 
 /-! Operational recovery canaries: native fragments can constrain their real
-context, but a rejected enclosing binding never becomes an exported scheme. -/
+context, while complete declared interfaces remain distinct from inferred schemes. -/
 namespace FHM.Unverified.ExpressionRecoveryTests
 open Surface.Parse Surface.Span
 
