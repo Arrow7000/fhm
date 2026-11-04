@@ -177,5 +177,87 @@ test("fixing declaration failures restores strict typing and clears dependency s
   assert.equal(cli(["run", "--json"], fixed).status, 0);
 });
 
+test("parser showcase retains later diagnostics, healthy hovers and documentation", () => {
+  const source = readFileSync(new URL("../scratch/error-recovery-parser.fhm", import.meta.url), "utf8");
+  const { payload, status } = cli(["diagnose"], source);
+  assert.equal(status, 1);
+  assert.equal(payload.diagnostics.length, 5);
+  assert.deepEqual(payload.diagnostics.map(d => d.code), [undefined, undefined,
+    "lower.holeNotAllowed", "lower.unboundName", "type.annotationMismatch"]);
+  const lines = source.split("\n");
+  const numberLine = lines.findIndex(line => line.startsWith("let number"));
+  const truthLine = lines.findIndex(line => line.startsWith("let truth"));
+  const number = at(payload, source, numberLine, "id");
+  assert.equal(number.hover.type, "Int → Int");
+  assert.equal(number.hover.doc, "Healthy documentation survives resynchronisation.");
+  assert.equal(at(payload, source, truthLine, "id").hover.type, "Bool → Bool");
+  assert.equal(payload.programTy, "(Int, Bool)");
+  assert.ok(payload.tokens.length > 0, "Recovered source positions retain the original tokens");
+  const runner = cli(["run", "--json"], source);
+  assert.equal(runner.status, 1);
+  assert.equal(runner.payload.stage, "parse");
+});
+
+test("parser resynchronisation ignores keyword text inside strings and comments", () => {
+  for (const hidden of ['  "text\nlet ghost = 99\nend"\n', '  /-\nlet ghost = 99\n  -/\n']) {
+    const source = "let broken = (\n" + hidden + "let good=7\ngood\n";
+    const { payload } = cli(["diagnose"], source);
+    assert.equal(payload.diagnostics.length, 1);
+    assert.equal(payload.programTy, "Int");
+    assert.ok(!payload.symbols.some(symbol => symbol.def && symbol.name === "ghost"));
+  }
+});
+
+test("unparsed local names cannot borrow a healthy outer binder's hover or navigation", () => {
+  const source = "let id x=x\nlet broken =\n  \\id ->\n    (id 1,\nlet good=id 7\ngood\n";
+  const { payload } = cli(["diagnose"], source);
+  assert.equal(payload.diagnostics.length, 1);
+  const unparsed = at(payload, source, 3, "id");
+  assert.match(unparsed.hover.type, /^type unknown \(syntax at /);
+  assert.equal(unparsed.definition, undefined);
+  const good = at(payload, source, 4, "id");
+  assert.equal(good.hover.type, "Int → Int");
+  assert.deepEqual([good.definition.startLine0, good.definition.startCol0], [0, 4]);
+});
+
+test("malformed datatype headers preserve separate type and constructor identity", () => {
+  const source = "type Bad = Bad (\nlet asType (x : Bad) = x\nlet asCtor = Bad 1\nlet good=7\ngood\n";
+  const { payload } = cli(["diagnose"], source);
+  assert.equal(payload.diagnostics.length, 1);
+  const type = at(payload, source, 1, "Bad"), ctor = at(payload, source, 2, "Bad");
+  assert.deepEqual([type.definition.startLine0, type.definition.startCol0], [0, 5]);
+  assert.deepEqual([ctor.definition.startLine0, ctor.definition.startCol0], [0, 11]);
+  assert.equal(payload.programTy, "Int");
+});
+
+test("parser duplicates quarantine every definition and keep a precise original cause", () => {
+  for (const prefix of ["let f=1\nlet f=True\n", "let f=(\nlet f=1\n"]) {
+    const source = prefix + "let use=f\nlet healthy=7\nhealthy\n";
+    const { payload } = cli(["diagnose"], source);
+    assert.equal(payload.diagnostics.length, 1);
+    assert.ok(payload.symbols.filter(symbol => symbol.def && symbol.name === "f").every(
+      symbol => symbol.type.startsWith("type unknown")));
+    assert.match(at(payload, source, 2, "use").hover.type, /^type unknown/);
+    assert.equal(payload.programTy, "Int");
+    if (prefix.includes("True")) {
+      const [d] = payload.diagnostics;
+      assert.deepEqual([d.line, d.col, d.endLine, d.endCol], [2, 5, 2, 6]);
+    }
+  }
+});
+
+test("a rejected final expression has no invented Unit type and repair restores execution", () => {
+  const brokenBody = "let good=7\n(good,\n";
+  const response = cli(["diagnose"], brokenBody);
+  assert.equal(response.payload.diagnostics.length, 1);
+  assert.equal(response.payload.programTy, "");
+  assert.equal(at(response.payload, brokenBody, 0, "good").hover.type, "Int");
+  const repaired = brokenBody.replace("(good,", "(good, True)");
+  const fixed = cli(["diagnose"], repaired);
+  assert.equal(fixed.status, 0);
+  assert.equal(fixed.payload.programTy, "(Int, Bool)");
+  assert.equal(cli(["run", "--json"], repaired).payload.result, "(7, True)");
+});
+
 console.log(`${tests - failures}/${tests} editor recovery checks passed.`);
 process.exitCode = failures ? 1 : 0;

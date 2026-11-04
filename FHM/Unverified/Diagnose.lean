@@ -24,8 +24,9 @@ Reads a `.fhm` source file (or stdin) and prints a versioned JSON object:
 lexer token with its class (`comment`, `ident`, `keyword`, `lit`, `op`,
 `punct`), so editors can tell what a position is on.
 
-On parse failure: diagnostics and tokens only, empty `symbols` array, no
-`programTy`.
+On recoverable top-level parse failure, later checked source still supplies
+symbols and diagnostics. A failed final expression has no program type. Lexer
+failures currently retain the strict diagnostic-only fallback.
 Line/col are 1-based half-open spans (same as `ParseError` / the lexer).
 -/
 

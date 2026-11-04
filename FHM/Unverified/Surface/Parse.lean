@@ -1338,25 +1338,27 @@ def parseExprWithSpans (src : String) :
 
 /-- Parse with binder spans (carrying doc comments) + spanned program (expr
     hulls for scopes). -/
+def parseProgramTokensWithSpans (toks : Array Tok) :
+    Except ParseError (Program × List BinderSpan × SpannedProgram) := do
+  let (p, bs, sp) ← runTokP program toks
+  let refs := bs.filterMap fun b =>
+    if b.isDef then none else
+      some ({
+        name := b.name
+        span := b.span
+        annotation? := b.annotation?
+        kind := match b.kind with
+          | .type => .type
+          | .ctor => .ctor
+          | _ => if b.name == "_" || b.name.startsWith "?" then .typeHole else .typeVar } : Surface.Span.NameReference)
+  let defs := bs.filterMap fun b => if b.isDef then some b.toBinderSpan else none
+  let defs ← attachDocs defs toks.toList
+  pure (p, defs, { sp with references := refs })
+
 def parseProgramWithSpans (src : String) :
-    Except ParseError (Program × List BinderSpan × SpannedProgram) :=
-  match Lex.lex src with
-  | .error e => .error (lexToParse e)
-  | .ok toks => do
-    let (p, bs, sp) ← runTokP program toks
-    let refs := bs.filterMap fun b =>
-      if b.isDef then none else
-        some ({
-          name := b.name
-          span := b.span
-          annotation? := b.annotation?
-          kind := match b.kind with
-            | .type => .type
-            | .ctor => .ctor
-            | _ => if b.name == "_" || b.name.startsWith "?" then .typeHole else .typeVar } : Surface.Span.NameReference)
-    let defs := bs.filterMap fun b => if b.isDef then some b.toBinderSpan else none
-    let defs ← attachDocs defs toks.toList
-    pure (p, defs, { sp with references := refs })
+    Except ParseError (Program × List BinderSpan × SpannedProgram) := do
+  let tokens ← (Lex.lex src).mapError lexToParse
+  parseProgramTokensWithSpans tokens
 
 def parseProgramWithBinders (src : String) : Except ParseError (Program × List BinderSpan) :=
   parseProgramWithSpans src |>.map fun (p, bs, _) => (p, bs)

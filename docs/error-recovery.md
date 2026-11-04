@@ -21,7 +21,8 @@ diagnostics and ranged symbols. Execution still rejects the file.
 Fully checked programs use the existing whole-program inference and artifact
 path. When that path rejects a source expression, the editor runs a recovery
 pass over the parser's dependency-ordered top-level groups and then the final
-expression. Parsing must still succeed first. Declaration groups recover independently.
+expression. Declaration groups recover independently. When strict parsing fails, top-level
+resynchronisation first recovers parseable source fragments.
 
 Each group is lowered with provenance and checked by the same native contextual
 inference worker. A successful group exports its actual group-exit schemes,
@@ -70,9 +71,26 @@ continue checking. The prelude remains the validated initial environment.
 demonstrates independent declaration and value errors together. Unavailable
 type and constructor references preserve separate namespaces for navigation.
 
-Recovery within a recursive value group, nested expressions and parser errors
-remains future work. A syntax error currently stops the file. An entire value
-SCC is withheld when a member fails, even when finer recovery may be possible.
+Top-level parser recovery uses native item parsing and resumes at a later
+`let` or `type` token on a new line at the failed header's indentation or less.
+It retains original token positions; strings and comments cannot introduce fake
+resynchronisation boundaries. Complete surviving token fragments are parsed by
+the original grammar. Rejected headers withhold their known names, and duplicate
+binding definitions are all quarantined. Malformed trailing syntax also
+quarantines a softly parsed item prefix, so a broken declaration cannot export
+an incomplete constructor signature. Failed final expressions have no synthetic
+`Unit` program type. Documentation and namespace-specific navigation survive.
+
+[`scratch/error-recovery-parser.fhm`](../scratch/error-recovery-parser.fhm)
+demonstrates syntax, declaration and value errors together. Unparsed identifiers
+mask outer hover/navigation fallbacks until their lexical identity is known.
+The strict parser and runner still reject the original file.
+
+Recovery within a recursive value group and nested expressions remains future
+work. Lexer failures also remain strict at this stage: an unfinished string or
+comment can contain apparent declaration keywords that must not become code.
+An entire value SCC is withheld when a member fails, even when finer recovery
+may be possible.
 
 Regression coverage is in `FHM/Unverified/EditorRecoveryTests.lean` and
 `scripts/hm-recovery-smoke.mjs`, alongside the existing HM/editor suites. It covers

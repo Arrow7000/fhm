@@ -3,6 +3,7 @@ import FHM.Unverified.Diagnostics
 import FHM.Unverified.EditorRecovery
 import FHM.Unverified.CoverageDiagnostics
 import FHM.Unverified.Surface.Parse
+import FHM.Unverified.ParserRecovery
 
 /-!
 # Editor support helpers
@@ -429,36 +430,39 @@ def collectUnavailableDeclarationHover (binders : List BinderSpan) (sp : Spanned
       label ref.span ref.span
   definitions ++ references
 
+/-- Render the editor recovery pass, including names withheld by parsing. -/
+def collectRecoveredHover (src : String) (p : Surface.Program) (binders : List BinderSpan)
+    (sp : SpannedProgram) (seed : FHM.Unverified.RecoveryDependencies.Seed := {}) : HoverReport :=
+  match FHM.Unverified.EditorRecovery.check p sp binders (programWideScope binders sp) seed with
+  | .error diagnostic => { symbols := [], programTy := "", diagnostics := [diagnostic] }
+  | .ok recovered =>
+    let reports := recovered.checked.map fun slice =>
+      collectTypedHover src slice.program slice.binders slice.spanned slice.tree slice.typed
+    let body := recovered.checked.find? (·.isBody)
+    let symbols := (reports.flatMap (·.symbols) ++
+      recovered.unavailable.flatMap (collectUnavailableHover src) ++
+      recovered.unavailableDeclarations.flatMap (collectUnavailableDeclarationHover binders sp
+        (programWideScope binders sp))).eraseDups
+    let symbols := symbols.map fun symbol =>
+      if symbol.isDef || symbol.doc.isSome then symbol else
+        let definition := ((symbols.filter fun candidate => candidate.isDef &&
+          candidate.name == symbol.name && candidate.kind == symbol.kind &&
+          candidate.scope.contains symbol.span.startLine symbol.span.startCol).mergeSort
+          (fun a b => a.scope.area ≤ b.scope.area)).head?
+        { symbol with doc := definition.bind (·.doc) }
+    { symbols
+      programTy := (body.map fun slice => FHM.Unverified.HMDisplay.scheme {} []
+        (genScheme [] [] slice.typed.inference.ty)).getD ""
+      diagnostics := (recovered.diagnostics ++ reports.flatMap (·.diagnostics)).mergeSort
+        (fun a b => a.line < b.line || (a.line == b.line && a.col ≤ b.col)) }
+
 /-- Fully checked programs retain the original whole-program artifact path.
-After a source rejection, the editor checks independent top-level groups and
-keeps only their validated hovers. The runner never uses recovery. -/
+After a source rejection, only the editor consumes recovered source slices. -/
 def collectHover (src : String) (p : Surface.Program) (binders : List BinderSpan)
     (sp : SpannedProgram) : HoverReport :=
   let strict := collectHoverStrict src p binders sp
   if !strict.symbols.isEmpty || strict.diagnostics.isEmpty then strict
-  else
-    match FHM.Unverified.EditorRecovery.check p sp binders (programWideScope binders sp) with
-    | .error diagnostic => { symbols := [], programTy := "", diagnostics := [diagnostic] }
-    | .ok recovered =>
-      let reports := recovered.checked.map fun slice =>
-        collectTypedHover src slice.program slice.binders slice.spanned slice.tree slice.typed
-      let body := recovered.checked.find? (·.isBody)
-      let symbols := (reports.flatMap (·.symbols) ++
-        recovered.unavailable.flatMap (collectUnavailableHover src) ++
-        recovered.unavailableDeclarations.flatMap (collectUnavailableDeclarationHover binders sp
-          (programWideScope binders sp))).eraseDups
-      let symbols := symbols.map fun symbol =>
-        if symbol.isDef || symbol.doc.isSome then symbol else
-          let definition := ((symbols.filter fun candidate => candidate.isDef &&
-            candidate.name == symbol.name && candidate.kind == symbol.kind &&
-            candidate.scope.contains symbol.span.startLine symbol.span.startCol).mergeSort
-            (fun a b => a.scope.area ≤ b.scope.area)).head?
-          { symbol with doc := definition.bind (·.doc) }
-      { symbols
-        programTy := (body.map fun slice => FHM.Unverified.HMDisplay.scheme {} []
-          (genScheme [] [] slice.typed.inference.ty)).getD ""
-        diagnostics := (recovered.diagnostics ++ reports.flatMap (·.diagnostics)).mergeSort
-          (fun a b => a.line < b.line || (a.line == b.line && a.col ≤ b.col)) }
+  else collectRecoveredHover src p binders sp
 
 def parseDiagJson (e : ParseError) : Lean.Json :=
   Lean.Json.mkObj [
@@ -490,14 +494,56 @@ def tokensJson (src : String) : Lean.Json :=
       Lean.Json.arr #[Lean.Json.num t.startLine, Lean.Json.num t.startCol,
         Lean.Json.num t.endLine, Lean.Json.num t.endCol, Lean.Json.str (tokenClass t.token)]
 
+/-- Only established header binders get definition identity in unparsed code.
+Other identifiers explicitly mask outer hover fallbacks: their lexical role is
+unknown until parsing succeeds, so navigation must not guess a same-named binder. -/
+def collectUnparsedHover (src : String) (scope : Span)
+    (unparsed : FHM.Unverified.ParserRecovery.Unparsed) : List RangedSymbol :=
+  let label := s!"type unknown (syntax at {unparsed.error.line}:{unparsed.error.col})"
+  let definitions := unparsed.binders.map fun binder =>
+    { mkSym binder.name binder.kind.toString label binder.span scope with isDef := true }
+  let tokens := unparsed.tokens.toList.filterMap fun token =>
+    if unparsed.binders.any (·.span == Span.ofTok token) then none else
+      match token.token with
+      | .ident _ _ | .namedHole _ =>
+          some (mkSym (FHM.Unverified.HMArtifacts.spanText src (Span.ofTok token))
+            "unavailable" label (Span.ofTok token) (Span.ofTok token))
+      | _ => none
+  definitions ++ tokens
+
+def collectParseRecoveredHover (src : String) (parsed : FHM.Unverified.ParserRecovery.Result) : HoverReport :=
+  let report := collectRecoveredHover src parsed.program parsed.binders parsed.spanned parsed.seed
+  let scope := (Span.hull ((programWideScope parsed.binders parsed.spanned) :: parsed.unavailable.map (·.span))).getD Span.empty
+  let diagnostics := parsed.errors.map fun error =>
+    ({ message := error.msg
+       line := error.line
+       col := error.col
+       endLine := error.endLine
+       endCol := error.endCol } : HoverDiag)
+  { report with
+    symbols := report.symbols ++ parsed.unavailable.flatMap (collectUnparsedHover src scope)
+    diagnostics := (diagnostics ++ report.diagnostics).mergeSort
+      (fun a b => a.line < b.line || (a.line == b.line && a.col ≤ b.col)) }
+
 def diagnosePayload (src : String) : Lean.Json :=
   match parseProgramWithSpans src with
-  | .error e => Lean.Json.mkObj [
-      ("version", Lean.Json.num 3),
-      ("diagnostics", Lean.Json.arr #[parseDiagJson e]),
-      ("symbols", Lean.Json.arr #[]),
-      ("tokens", tokensJson src)
-    ]
+  | .error e =>
+    match FHM.Unverified.ParserRecovery.check src with
+    | .error _ => Lean.Json.mkObj [
+        ("version", Lean.Json.num 3),
+        ("diagnostics", Lean.Json.arr #[parseDiagJson e]),
+        ("symbols", Lean.Json.arr #[]),
+        ("tokens", tokensJson src)
+      ]
+    | .ok parsed =>
+      let report := collectParseRecoveredHover src parsed
+      Lean.Json.mkObj [
+        ("version", Lean.Json.num 3),
+        ("diagnostics", Lean.Json.arr (report.diagnostics.map HoverDiag.toJson).toArray),
+        ("symbols", Lean.Json.arr (report.symbols.map RangedSymbol.toJson).toArray),
+        ("tokens", tokensJson src),
+        ("programTy", Lean.Json.str report.programTy)
+      ]
   | .ok (p, binders, sp) =>
     let r := collectHover src p binders sp
     Lean.Json.mkObj [

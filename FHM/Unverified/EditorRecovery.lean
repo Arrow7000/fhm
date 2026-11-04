@@ -112,8 +112,8 @@ private def causesFor (unavailable : List (ValName × List Cause)) (uses : List 
 /-- Check each group once in dependency order. Only the editor consumes this
 result; successful slices do not certify the rejected whole program. -/
 def check (program : Surface.Program) (spanned : SpannedProgram)
-    (binders : List BinderSpan) (scope : Span) : Except HoverDiag Result := do
-  let declarations ← DeclarationRecovery.check program spanned binders scope
+    (binders : List BinderSpan) (scope : Span) (seed : Seed := {}) : Except HoverDiag Result := do
+  let declarations ← DeclarationRecovery.check program spanned binders scope seed
   let ctors := declarations.ctors
   let program := { program with decls := declarations.declarations }
   let spanned := { spanned with declSpans := declarations.spans }
@@ -135,12 +135,12 @@ def check (program : Surface.Program) (spanned : SpannedProgram)
     result := { result with checked := [slice] }
   let mut names : List ValName := []
   let mut schemes : List PolyTy := []
-  let mut unavailable : List (ValName × List Cause) := []
+  let mut unavailable : List (ValName × List Cause) := seed.values
   for (group, rhss) in program.groups.zip spanned.groups do
     if !group.isEmpty then
       let groupNames := group.map (·.name)
       let uses := Surface.freeNamesBinds groupNames group
-      let causes := (causesFor unavailable uses ++
+      let causes := (causesFor unavailable (groupNames ++ uses) ++
         DeclarationRecovery.causesFor declarations (RecoveryDependencies.bindings group)).eraseDups
       let localProgram := { program with groups := [group], body := .primLit .unit }
       let localSpanned := groupSpanned spanned group rhss scope
@@ -163,7 +163,7 @@ def check (program : Surface.Program) (spanned : SpannedProgram)
             names := groupNames ++ names
             schemes := exported ++ schemes
             result := { result with checked := result.checked ++ [slice] }
-  let bodyCauses := (causesFor unavailable (Surface.freeNames [] program.body) ++
+  let bodyCauses := (seed.body ++ causesFor unavailable (Surface.freeNames [] program.body) ++
     DeclarationRecovery.causesFor declarations (expression program.body)).eraseDups
   let localProgram := { program with groups := [] }
   let localSpanned := { spanned with

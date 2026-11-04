@@ -1,0 +1,28 @@
+-- Top-level parser recovery plus declaration and value recovery.
+-- Five independent failures are visible; healthy code still has hovers.
+--   .lake/build/bin/fhm diagnose scratch/error-recovery-parser.fhm
+-- Execution stays strict, and neither malformed header exports a type.
+
+-- 1. Missing constructors: parsing resumes at the next top-level let.
+type Broken =
+
+-- 2. Missing closing syntax: parsing resumes at the next declaration.
+let brokenValue = (1,
+
+-- Dependants of either malformed header do not add cascade errors.
+type BlockedType = MkBlocked Broken
+let blockedValue = brokenValue
+let blockedAnnotation (x : Broken) = x
+
+-- 3. A separate declaration error is still checked.
+type BadField = MkBadField _
+
+-- 4–5. Independent semantic errors remain visible after parse recovery.
+let missingName = noSuchValue
+let wrongType : Int = True
+
+--- Healthy documentation survives resynchronisation.
+let id x = x
+let number = id 41
+let truth = id True
+(number + 1, truth)

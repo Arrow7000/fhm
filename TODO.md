@@ -252,7 +252,8 @@ Error recovery and formatter work remain separate from these batches.
   - [x] Demonstrate multiple precise errors in [scratch/error-recovery.fhm](scratch/error-recovery.fhm).
   - [ ] Recover more finely within a recursive group or nested expression.
   - [x] Recover declaration environments by dependency/conflict groups.
-  - [ ] Resynchronise after top-level parse failures.
+  - [x] Resynchronise after top-level parse failures while withholding rejected headers.
+  - [ ] Preserve healthy prefix code and recover safe boundaries after lexer failures.
 
       See [editor recovery](docs/error-recovery.md) for the current boundary.
 

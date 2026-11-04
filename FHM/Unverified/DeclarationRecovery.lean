@@ -43,20 +43,24 @@ private def withhold (result : Result) (group : List (Surface.DataDecl × Span))
 /-- Declaration recovery does not manufacture kinds or constructor signatures.
 Unavailable names suppress their dependants before native lowering. -/
 def check (program : Surface.Program) (spanned : SpannedProgram) (binders : List BinderSpan)
-    (scope : Span) : Except HoverDiag Result := do
+    (scope : Span) (seed : Seed := {}) : Except HoverDiag Result := do
   if program.decls.length != spanned.declSpans.length then
     .error { diagAtSpan "internal declaration provenance shape mismatch" (some scope) with
       code? := some "internal.declarationProvenance" }
   else do
     let initial ← (elabDeclsResult preludeDecls).mapError
       (fun error => Diagnostics.declarationDiag error program spanned binders)
-    let mut result : Result := { ctors := initial }
+    let mut result : Result := {
+      ctors := initial
+      unavailableTypes := seed.types
+      unavailableConstructors := seed.constructors }
     let mut core : List DataDecl := []
     for component in components (program.decls.zip spanned.declSpans) depends do
       let group := component.mergeSort (fun a b => a.2.startLine < b.2.startLine ||
         (a.2.startLine == b.2.startLine && a.2.startCol ≤ b.2.startCol))
       let surface := group.map (·.1)
-      let uses : Uses := ⟨surface.flatMap declaration, []⟩
+      let uses : Uses := ⟨surface.map (·.name) ++ surface.flatMap declaration,
+        surface.flatMap (fun decl => decl.ctors.map (·.1))⟩
       let causes := causesFor result uses
       if !causes.isEmpty then result := withhold result group causes
       else

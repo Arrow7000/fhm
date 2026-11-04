@@ -11,6 +11,14 @@ inductive Cause where
   | syntax (span : Surface.Span.Span)
   deriving Repr, BEq
 
+/-- Names excluded by a preceding recovery stage. These carry failure identity,
+not kinds or schemes. The parser can withhold a malformed authored header. -/
+structure Seed where
+  values : List (ValName × List Cause) := []
+  types : List (TyName × List Cause) := []
+  constructors : List (CtorName × List Cause) := []
+  body : List Cause := []
+
 structure Uses where
   types : List TyName := []
   constructors : List CtorName := []
