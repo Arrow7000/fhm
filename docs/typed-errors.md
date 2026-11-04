@@ -123,15 +123,13 @@ failed constraint. The old probes that stripped annotations, retried lowering,
 or reran inference have been removed. Parsing and presentation remain outside
 the verified boundary.
 
-Error recovery remains a separate follow-up:
+The [first editor recovery slice](error-recovery.md) now consumes these typed
+failures at top-level binding/SCC boundaries. It reports independent errors and
+preserves checked hovers, while keeping unavailable groups out of inference.
+The native acceptance worker itself still stops at the first failure, and the
+runner continues to require a fully checked program.
 
-1. Make the editor collect failures at binding/SCC boundaries and continue
-   checking independent groups. Define how dependent failures suppress cascades
-   before adding placeholder types. The safe elaboration path continues to
-   require a fully checked program.
-
-Typed failures are the prerequisite for recovery; this slice still stops at the
-first failure. Regression coverage lives in `FHM/UnificationTests.lean`,
+Regression coverage lives in `FHM/UnificationTests.lean`,
 `FHM/AnnotationErrorTests.lean`, `FHM/InferenceErrorTests.lean`,
 `FHM/LoweringErrorTests.lean`, the provenance/editor tests,
 and `scripts/hm-editor-smoke.mjs`.

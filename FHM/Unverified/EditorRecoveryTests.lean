@@ -16,6 +16,9 @@ private def hover (source : String) : Option HoverReport := do
 private def definition (report : HoverReport) (name : String) : Option String :=
   (report.symbols.find? (fun symbol => symbol.name == name && symbol.isDef && symbol.kind == "val")).map (·.type_)
 
+private def unknown (report : HoverReport) (name : String) : Bool :=
+  ((definition report name).map (·.startsWith "type unknown (error in ")).getD false
+
 private def independent : String :=
   "let id x = x\nlet bad : Int = True\nlet missing = absent\n" ++
   "let number = id 1\nlet truth = id True\n(number, truth)\n"
@@ -25,7 +28,7 @@ private def independent : String :=
       report.diagnostics.any (·.code? == some "type.annotationMismatch") &&
       report.diagnostics.any (·.code? == some "lower.unboundName") &&
       definition report "number" == some "Int" && definition report "truth" == some "Bool" &&
-      (definition report "bad").isNone && (definition report "missing").isNone &&
+      unknown report "bad" && unknown report "missing" &&
       report.programTy == "(Int, Bool)"
   | none => false
 
@@ -39,7 +42,7 @@ private def dependencyChain : String :=
   | none => false
 #guard match hover dependencyChain with
   | some report => report.diagnostics.length == 1 && report.programTy == "Int" &&
-      (definition report "direct").isNone && (definition report "indirect").isNone &&
+      unknown report "direct" && unknown report "indirect" &&
       (definition report "unrelated").isSome
   | none => false
 
@@ -55,8 +58,7 @@ private def failedMutual : String :=
   "let g x = f x\nlet blocked = g 1\nlet healthy = 9\nhealthy\n"
 #guard match hover failedMutual with
   | some report => report.diagnostics.length == 1 && definition report "healthy" == some "Int" &&
-      (definition report "f").isNone && (definition report "g").isNone &&
-      (definition report "blocked").isNone
+      unknown report "f" && unknown report "g" && unknown report "blocked"
   | none => false
 
 -- Declared and inferred schemes both cross recovery boundaries polymorphically.

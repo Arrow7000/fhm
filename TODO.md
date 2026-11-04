@@ -239,14 +239,21 @@ Error recovery and formatter work remain separate from these batches.
       CLI and editor share codes, messages and source locations. Further wording
       and context improvements can build on the typed data without diagnostic
       rechecking.
-- [ ] **Error recovery.** A single lowering or typechecking error currently
-      kills hover information for the whole file. Type checking already proceeds
-      one recursive group at a time, so a failed group's members could get a
-      placeholder type and checking could continue; only code that depends on the
-      failure would lose information. Lowering can recover per binding in the
-      same way, and the parser (unverified) can resynchronise at top-level
-      declarations. Recovery is for the editor path only: `elaborateSafe` and the
-      theorems keep applying to programs that check completely.
+- [ ] **Error recovery.** The first editor slice now recovers between top-level
+      binding/SCC groups. `fhm diagnose` reports independent lowering and type
+      failures together and preserves validated hovers for healthy groups.
+      Failed groups export no schemes; transitive dependants are skipped and
+      display `type unknown (error in …)` instead of receiving guessed types.
+      Fully checked programs retain the original artifact path. `fhm run` and
+      the verified acceptance/safety APIs still require a fully checked program.
+
+  - [x] Recover independent top-level groups using native contextual inference.
+  - [x] Suppress dependent cascades and preserve lexical shadowing/navigation.
+  - [x] Demonstrate multiple precise errors in [scratch/error-recovery.fhm](scratch/error-recovery.fhm).
+  - [ ] Recover more finely within a recursive group or nested expression.
+  - [ ] Recover declaration environments and resynchronise after parse failures.
+
+      See [editor recovery](docs/error-recovery.md) for the current boundary.
 
 ## Editor tooling
 
@@ -259,8 +266,8 @@ Error recovery and formatter work remain separate from these batches.
   - [x] Show a constructor's full declaration, not just its type.
   - [ ] For annotated bindings, show the inferred type when it differs from the
         annotation.
-  - [ ] With error recovery, show something like "type unknown (error in `g`)"
-        instead of nothing.
+  - [x] With top-level recovery, show `type unknown (error in …)` for failed
+        bindings and their dependants, preserving lexical identity.
 
 - [x] **Missing-case witnesses.** Non-exhaustive matches now name missing
       patterns (`missing: Just Nothing`) in both `fhm run` and `fhm diagnose`.

@@ -22,10 +22,18 @@ structure Blocked where
   causes : List ValName
   deriving Repr
 
+structure UnavailableSlice where
+  program : Surface.Program
+  spanned : SpannedProgram
+  binders : List BinderSpan
+  tree : SpannedExpr
+  causes : List ValName
+
 structure Result where
   checked : List CheckedSlice := []
   diagnostics : List HoverDiag := []
   blocked : List Blocked := []
+  unavailable : List UnavailableSlice := []
 
 private def internalError (message : String) (scope : Span) : HoverDiag :=
   { diagAtSpan message (some scope) with code? := some "internal.recoveryArtifact" }
@@ -67,6 +75,15 @@ private def checkSlice (ctors : CtorEnv) (names : List ValName) (schemes : List 
     .error (internalError "internal recovered provenance coverage failure" scope)
   else
     .ok ⟨program, spanned, binders, tree, typed, isBody⟩
+
+/-- Lexical artifacts describe unavailable hovers without supplying any type to
+inference. They also preserve shadowing and definition navigation in rejected code. -/
+private def unavailableSlice (program : Surface.Program) (spanned : SpannedProgram)
+    (binders : List BinderSpan) (scope : Span) (causes : List ValName) :
+    Except HoverDiag UnavailableSlice := do
+  let tree ← (HMArtifacts.programSpannedResult program spanned scope).mapError
+    (fun error => Diagnostics.provenanceDiag error program spanned binders scope)
+  pure ⟨program, spanned, binders, tree, causes⟩
 
 /-- Read actual group-exit schemes. Complete signatures are intentionally absent
 from inferred scheme metadata; their validated lowered annotations are authoritative. -/
@@ -110,17 +127,21 @@ def check (program : Surface.Program) (spanned : SpannedProgram)
       let groupNames := group.map (·.name)
       let uses := Surface.freeNamesBinds groupNames group
       let causes := causesFor unavailable uses
+      let localProgram := { program with groups := [group], body := .primLit .unit }
+      let localSpanned := groupSpanned spanned group rhss scope
+      let regions := localSpanned.bindingHeaders.map (·.2) ++ rhss.map (·.span)
+      let localBinders := sliceBinders binders spanned regions
       if !causes.isEmpty then
         result := { result with blocked := result.blocked ++ [⟨groupNames, causes⟩] }
+        let slice ← unavailableSlice localProgram localSpanned localBinders scope causes
+        result := { result with unavailable := result.unavailable ++ [slice] }
         unavailable := groupNames.map (·, causes) ++ unavailable
       else
-        let localProgram := { program with groups := [group], body := .primLit .unit }
-        let localSpanned := groupSpanned spanned group rhss scope
-        let regions := localSpanned.bindingHeaders.map (·.2) ++ rhss.map (·.span)
-        let localBinders := sliceBinders binders spanned regions
         match checkSlice ctors names schemes localProgram localSpanned localBinders scope with
         | .error diagnostic =>
             result := { result with diagnostics := result.diagnostics ++ [diagnostic] }
+            let slice ← unavailableSlice localProgram localSpanned localBinders scope groupNames
+            result := { result with unavailable := result.unavailable ++ [slice] }
             unavailable := groupNames.map (fun name => (name, groupNames)) ++ unavailable
         | .ok slice =>
             let exported ← exports group slice.typed scope
@@ -128,17 +149,24 @@ def check (program : Surface.Program) (spanned : SpannedProgram)
             schemes := exported ++ schemes
             result := { result with checked := result.checked ++ [slice] }
   let bodyCauses := causesFor unavailable (Surface.freeNames [] program.body)
+  let localProgram := { program with groups := [] }
+  let localSpanned := { spanned with
+    groups := []
+    bindingHeaders := []
+    references := spanned.references.filter fun ref => sliceSpans spanned [spanned.body.span] ref.span }
+  let localBinders := sliceBinders binders spanned [spanned.body.span]
   if !bodyCauses.isEmpty then
-    result := { result with blocked := result.blocked ++ [⟨[], bodyCauses⟩] }
+    let slice ← unavailableSlice localProgram localSpanned localBinders scope bodyCauses
+    result := { result with
+      blocked := result.blocked ++ [⟨[], bodyCauses⟩]
+      unavailable := result.unavailable ++ [slice] }
   else
-    let localProgram := { program with groups := [] }
-    let localSpanned := { spanned with
-      groups := []
-      bindingHeaders := []
-      references := spanned.references.filter fun ref => sliceSpans spanned [spanned.body.span] ref.span }
-    let localBinders := sliceBinders binders spanned [spanned.body.span]
     match checkSlice ctors names schemes localProgram localSpanned localBinders scope true with
-    | .error diagnostic => result := { result with diagnostics := result.diagnostics ++ [diagnostic] }
+    | .error diagnostic =>
+        let slice ← unavailableSlice localProgram localSpanned localBinders scope []
+        result := { result with
+          diagnostics := result.diagnostics ++ [diagnostic]
+          unavailable := result.unavailable ++ [slice] }
     | .ok slice => result := { result with checked := result.checked ++ [slice] }
   pure result
 

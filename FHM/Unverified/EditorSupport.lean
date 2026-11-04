@@ -364,6 +364,38 @@ def collectHoverStrict (src : String) (p : Surface.Program) (binders : List Bind
           | .ok typed =>
             collectTypedHover src p binders sp tree typed
 
+/-- Unavailable code keeps lexical identity but has no inferred type. This text
+is presentation metadata; it is never inserted into the inference environment. -/
+def collectUnavailableHover (src : String) (slice : FHM.Unverified.EditorRecovery.UnavailableSlice) :
+    List RangedSymbol :=
+  let identified := SurfaceBridge.Provenance.identify slice.tree
+  let locations := FHM.Unverified.HMArtifacts.collect slice.binders slice.program.term identified
+  let wrappers := FHM.Unverified.HMArtifacts.programWrapperIds slice.program.groups identified
+  let names := slice.causes.filterMap fun name =>
+    if Surface.internalBindingName name then none else some ("`" ++ prettyValName name ++ "`")
+  let cause := if names.isEmpty then
+    (if slice.causes.isEmpty then "this expression" else "a pattern binding")
+    else String.intercalate ", " names
+  let label := "type unknown (error in " ++ cause ++ ")"
+  let definitions := locations.binders.filterMap fun binder =>
+    if Surface.internalBindingName (.mk binder.name) then none else
+      some { mkSym binder.name binder.kind.toString label binder.span binder.scope with
+        isDef := true
+        doc := (slice.binders.find? (·.span == binder.span)).bind (·.doc?) }
+  let occurrences := locations.occurrences.filterMap fun occurrence => do
+    if wrappers.contains occurrence.id then none else do
+      let source ← identified.nodes.find? (·.id == occurrence.id)
+      let name := if occurrence.kind == "lit" || occurrence.kind == "op" then
+        FHM.Unverified.HMArtifacts.spanText src source.span else occurrence.name
+      if Surface.internalBindingName (.mk name) then none else do
+        let binder := ((locations.binders.filter fun binder => binder.name == name &&
+          binder.scope.contains source.span.startLine source.span.startCol).mergeSort
+          (fun a b => a.scope.area ≤ b.scope.area)).head?
+        let kind := if occurrence.kind == "val" then
+          (binder.map (·.kind.toString)).getD "val" else occurrence.kind
+        pure (mkSym name kind label source.span source.span)
+  definitions ++ occurrences
+
 /-- Fully checked programs retain the original whole-program artifact path.
 After a source rejection, the editor checks independent top-level groups and
 keeps only their validated hovers. The runner never uses recovery. -/
@@ -378,7 +410,16 @@ def collectHover (src : String) (p : Surface.Program) (binders : List BinderSpan
       let reports := recovered.checked.map fun slice =>
         collectTypedHover src slice.program slice.binders slice.spanned slice.tree slice.typed
       let body := recovered.checked.find? (·.isBody)
-      { symbols := (reports.flatMap (·.symbols)).eraseDups
+      let symbols := (reports.flatMap (·.symbols) ++
+        recovered.unavailable.flatMap (collectUnavailableHover src)).eraseDups
+      let symbols := symbols.map fun symbol =>
+        if symbol.isDef || symbol.doc.isSome then symbol else
+          let definition := ((symbols.filter fun candidate => candidate.isDef &&
+            candidate.name == symbol.name && candidate.kind == symbol.kind &&
+            candidate.scope.contains symbol.span.startLine symbol.span.startCol).mergeSort
+            (fun a b => a.scope.area ≤ b.scope.area)).head?
+          { symbol with doc := definition.bind (·.doc) }
+      { symbols
         programTy := (body.map fun slice => FHM.Unverified.HMDisplay.scheme {} []
           (genScheme [] [] slice.typed.inference.ty)).getD ""
         diagnostics := (recovered.diagnostics ++ reports.flatMap (·.diagnostics)).mergeSort

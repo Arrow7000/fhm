@@ -193,8 +193,8 @@ private def topBindingTypes (groups : List (List Surface.Binding))
           pure (here ++ later)
   go groups []
 
-/-- A `stage` error with the message and position `fhm diagnose` gives the
-    program's first error, so both commands agree. -/
+/-- Render a strict pipeline failure using the same diagnostic format as the
+editor. Recovery is confined to `fhm diagnose`; execution still stops here. -/
 def diagnosedErr (stage : PipelineStage) (d? : Option HoverDiag) (fallback : String) :
     PipelineErr :=
   match d? with
