@@ -27,7 +27,7 @@ const forms = [
   hole => `(\\inner -> if True then ${hole} else (inner + outside))`,
   hole => `(let missing = ${hole} in let clean = outside + 1 in (clean, missing))`,
 ];
-const damage = ['(2 + )', '(outside + )', '"outside"', '(if True then else)'];
+const damage = ['(2 + )', '(outside + )', '"outside ) ] } let phantom = 7"', '(if True then else)'];
 let checks = 0;
 for (let seed = 0; seed < 5; seed++) for (let form = 0; form < forms.length; form++) for (let edit = 0; edit < damage.length; edit++) {
   const id = `seed-${seed}/form-${form}/edit-${edit}`;
@@ -84,6 +84,13 @@ for (const body of damagedDelimiters) {
   assert.equal(result.payload.symbols.find(s => s.def && s.name === 'later').type, 'Int');
   assert.equal(result.payload.programTy, 'Int');
 }
+for (const prefix of ['(1 + )', '[1, (2 + ), 3]', '(if True then else 2)']) {
+  const source = `${prefix}\nlet later=7\nlater\n`;
+  const result = cli(source);
+  assert.equal(result.status, 1);
+  assert.equal(result.payload.symbols.find(s => s.def && s.name === 'later').type, 'Int');
+  assert.equal(result.payload.programTy, 'Int');
+}
 const showcase = readFileSync(new URL('../scratch/error-recovery-partial-parser.fhm', import.meta.url), 'utf8');
 const report = cli(showcase);
 assert.equal(report.status, 1);
@@ -95,3 +102,10 @@ const fixedReport = cli(fixed);
 assert.equal(fixedReport.status, 0, JSON.stringify(fixedReport.payload.diagnostics));
 assert.equal(cli(fixed, ['run', '--json']).payload.result, '(41, True)');
 console.log('PASS unmatched/mismatched delimiter fallback and complete showcase repair.');
+
+const unicode = 'let 🦄=True\nlet damaged 🦄 = ((2 + ), 🦄 + 1)\nlet later=7\nlater\n';
+const unicodeReport = cli(unicode).payload;
+assert.equal(unicodeReport.diagnostics[0].col, unicode.split('\n')[1].indexOf(')') + 1);
+assert.equal(unicodeReport.symbols.find(s => s.def && s.name === '🦄' && s.kind === 'param').type, 'Int');
+assert.equal(unicodeReport.symbols.find(s => s.def && s.name === '🦄' && s.kind === 'val').type, 'Bool');
+console.log('PASS UTF-16 recovery spans and non-BMP lexical shadowing.');

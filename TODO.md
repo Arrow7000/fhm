@@ -257,6 +257,9 @@ Error recovery and formatter work remain separate from these batches.
       See [the nested showcase](scratch/error-recovery-nested.fhm).
   - [x] Recover declaration environments by dependency/conflict groups.
   - [x] Resynchronise after top-level parse failures while withholding rejected headers.
+  - [x] Shared handwritten partial expression parsing at delimiter/grammar boundaries,
+      with a frozen strict baseline, independent generated ASTs, mutation/scope
+      tests, and strict-success compatibility theorems. See [partial parsing](docs/partial-parser.md).
   - [x] Preserve healthy prefix code and recover safe boundaries after lexer failures.
 
       See [editor recovery](docs/error-recovery.md) for the current boundary.

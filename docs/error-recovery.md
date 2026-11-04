@@ -179,11 +179,11 @@ Partial signatures and their holes can remain unavailable even when a healthy
 parameter or nested binding has a type.
 Native checks remain authoritative when the source is repaired.
 
-Parser resynchronisation is at safe top-level boundaries. A malformed nested
-expression can quarantine its containing item; recovery does not insert missing
-tokens or guess the intended nested grammar. Unfinished literals consume their
-tail. These choices prevent accidentally accepting a different program while
-still preserving independently parseable code.
+The [shared partial parser](partial-parser.md) retains expression holes at known
+grammar and delimiter boundaries, including arbitrary parenthesised expressions.
+Malformed headers, annotations, patterns and ambiguous/unclosed syntax can still
+quarantine their containing item and resume at a safe top-level header. No missing
+token is inserted. Unfinished literals consume their tail.
 
 Regression coverage is in the editor, declaration, expression, parser and lexer recovery
 Lean test modules and `scripts/hm-recovery-smoke.mjs`, alongside the existing
@@ -199,12 +199,14 @@ failures, fixing errors, and strict execution.
 The completed recovery work is checked with:
 
 ```sh
-lake build FHM FHMUnverified FHMEditorTests FHMExamples fhm
+lake build FHM FHMUnverified FHMEditorTests FHMExamples fhm fhm_parser_audit
 lake env lean scripts/check-source-proof-boundary.lean
 bash scripts/check-unverified-boundary.sh
 node scripts/hm-editor-smoke.mjs
 node scripts/hm-recovery-smoke.mjs
 node scripts/hm-interface-recovery-smoke.mjs
+node scripts/parser-properties.mjs
+node scripts/parser-recovery-properties.mjs
 bash recursion-language-comparison/check.sh fhm
 (cd editors/web && npm test)
 ```

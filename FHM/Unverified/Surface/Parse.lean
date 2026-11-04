@@ -238,7 +238,7 @@ structure ExprHole where
   error : ParseError
   first : Nat
   last : Nat
-  deriving Repr
+  deriving Repr, BEq
 
 structure RecoveryMode where
   enabled : Bool := false
@@ -258,7 +258,7 @@ structure ParsedNameSpan extends BinderSpan where
   isDef : Bool := true
   annotation? : Option Span := none
   hole? : Option ExprHole := none
-  deriving Repr
+  deriving Repr, BEq
 
 abbrev PE := P (Expr × List ParsedNameSpan × SpannedExpr)
 
@@ -1332,7 +1332,9 @@ def programWith (mode : RecoveryMode) : P (Program × List ParsedNameSpan × Spa
     let (body, bsBody, sBody) ←
       match ← option? (withBacktracking (endOfInput *> pure ())) with
       | some _ => pure (.primLit .unit, [], .leaf Span.empty)
-      | none => exprWith mode
+      | none => do
+          let first ← nextTok
+          exprWith { mode with layout := some (first.startLine, first.startCol) }
     if mode.enabled && bsBody.any (·.hole?.isSome) then
       match items.back? with
       | some (.inl (_, previous), _) =>
@@ -1342,6 +1344,12 @@ def programWith (mode : RecoveryMode) : P (Program × List ParsedNameSpan × Spa
             | some hole => throwRecoveredError hole.error
             | none => throwUnexpected
       | _ => pure ()
+    if mode.enabled && bsBody.any (·.hole?.isSome) then
+      let remaining ← getStream
+      if remaining.start < remaining.stop then
+        match bsBody.findSome? (·.hole?) with
+        | some hole => throwRecoveredError hole.error
+        | none => pure ()
     let decls := items.toList.filterMap fun
       | (.inl (d, _), _) => some d
       | (.inr _, _) => none
