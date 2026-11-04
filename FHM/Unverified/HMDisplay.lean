@@ -164,7 +164,8 @@ def scopes (typed : TypedLowered) (locations : Locations) : List Scope :=
         facts.flatMap fun (p, ty) => if path.isPrefixOf p then ty.freeVars else [])).eraseDups
       -- Metadata closes explicit scoped binders only. Newly generalized hole
       -- variables remain fvars, and receive names through the aliases above.
-      pure ⟨path, display.names, aliases.eraseDups, freeIds⟩) []
+      pure ⟨path, display.names, aliases.eraseDups, freeIds⟩)
+    (if typed.outerAliases.isEmpty then [] else [⟨[], [], typed.outerAliases, []⟩])
 
 
 def sourceType (typed : TypedLowered) (scopes : List Scope) (id : SourceId) : Option String := do

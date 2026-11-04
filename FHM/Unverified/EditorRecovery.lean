@@ -1,34 +1,26 @@
 import FHM.Unverified.Diagnostics
 import FHM.Unverified.DeclarationRecovery
+import FHM.Unverified.RecoveryArtifacts
+import FHM.Unverified.ExpressionRecovery
 
 /-! Editor-only recovery at top-level SCC boundaries. Each group uses the
 canonical native workers and only closed schemes exported by checked groups.
 Failed groups export nothing. Their transitive dependants are skipped, without
 inventing types or emitting cascades. This module produces editor artifacts,
-never a checked executable program. Declaration groups are recovered independently; parsing remains atomic. -/
+never a checked executable program. Nested source recovery retains real lexical
+contexts; top-level parser recovery supplies its own unavailable-name seed. -/
 
 namespace FHM.Unverified.EditorRecovery
 open SurfaceBridge SurfaceBridge.Provenance Surface.Span RecoveryDependencies
 
-structure CheckedSlice where
-  program : Surface.Program
-  spanned : SpannedProgram
-  binders : List BinderSpan
-  tree : SpannedExpr
-  typed : TypedLowered
-  isBody : Bool := false
+abbrev CheckedSlice := RecoveryArtifacts.CheckedSlice
 
 structure Blocked where
   names : List ValName
   causes : List Cause
   deriving Repr
 
-structure UnavailableSlice where
-  program : Surface.Program
-  spanned : SpannedProgram
-  binders : List BinderSpan
-  tree : SpannedExpr
-  causes : List Cause
+abbrev UnavailableSlice := RecoveryArtifacts.UnavailableSlice
 
 structure Result where
   checked : List CheckedSlice := []
@@ -76,7 +68,7 @@ private def checkSlice (ctors : CtorEnv) (names : List ValName) (schemes : List 
       !typed.nodeTypesTotal || !typed.sourceTypesTotal || !typed.patternBinderTypesTotal then
     .error (internalError "internal recovered provenance coverage failure" scope)
   else
-    .ok ⟨program, spanned, binders, tree, typed, isBody⟩
+    .ok ⟨program, spanned, binders, tree, typed, isBody, [], true⟩
 
 /-- Lexical artifacts describe unavailable hovers without supplying any type to
 inference. They also preserve shadowing and definition navigation in rejected code. -/
@@ -109,6 +101,35 @@ private def causesFor (unavailable : List (ValName × List Cause)) (uses : List 
   (uses.flatMap fun name =>
     ((unavailable.find? (·.1 == name)).map (·.2)).getD []).eraseDups
 
+private def addPartials (result : Result) (partialResult : ExpressionRecovery.State) : Result :=
+  { result with
+    checked := result.checked ++ partialResult.checked
+    unavailable := result.unavailable ++ partialResult.unavailable
+    diagnostics := result.diagnostics ++ partialResult.diagnostics }
+
+private def diagnosticSpan (diagnostic : HoverDiag) : Span :=
+  ⟨diagnostic.line, diagnostic.col, diagnostic.endLine, diagnostic.endCol⟩
+
+private def addFailure (result : Result) (diagnostic : HoverDiag) (partialResult : ExpressionRecovery.State) : Result :=
+  let same := partialResult.diagnostics.any (fun child => child.code? == diagnostic.code? &&
+    child.line == diagnostic.line && child.col == diagnostic.col)
+  let ancestor := !same && diagnostic.code?.any (·.startsWith "type.") &&
+    partialResult.diagnostics.any (fun child =>
+      HMArtifacts.inside (diagnosticSpan child) (diagnosticSpan diagnostic) && diagnosticSpan child != diagnosticSpan diagnostic)
+  let dependent := !partialResult.diagnostics.isEmpty && partialResult.unavailable.any (fun slice =>
+    match slice.program.term with
+    | .var _ => !slice.causes.isEmpty && slice.tree.span.contains diagnostic.line diagnostic.col
+    | _ => false)
+  let suppress := diagnostic.code? != some "type.infiniteType" && (ancestor || dependent)
+  addPartials (if suppress then result else { result with diagnostics := result.diagnostics ++ [diagnostic] }) partialResult
+
+private def deduplicate (diagnostics : List HoverDiag) : List HoverDiag :=
+  diagnostics.foldl (fun found diagnostic =>
+    if found.any (fun prior => prior.code? == diagnostic.code? && prior.line == diagnostic.line && prior.col == diagnostic.col) then
+      found.map (fun prior => if prior.code? == diagnostic.code? && prior.line == diagnostic.line && prior.col == diagnostic.col &&
+        (diagnostic.endLine < prior.endLine || (diagnostic.endLine == prior.endLine && diagnostic.endCol < prior.endCol)) then diagnostic else prior)
+    else found ++ [diagnostic]) []
+
 /-- Check each group once in dependency order. Only the editor consumes this
 result; successful slices do not certify the rejected whole program. -/
 def check (program : Surface.Program) (spanned : SpannedProgram)
@@ -133,6 +154,7 @@ def check (program : Surface.Program) (spanned : SpannedProgram)
     let declarationBinders := binders.filter fun binder => spanned.declSpans.any (HMArtifacts.inside binder.span ·)
     let slice ← checkSlice ctors [] [] declarationProgram declarationSpanned declarationBinders scope
     result := { result with checked := [slice] }
+  let source : RecoveryArtifacts.Source := ⟨program, spanned, binders, scope, declarations⟩
   let mut names : List ValName := []
   let mut schemes : List PolyTy := []
   let mut unavailable : List (ValName × List Cause) := seed.values
@@ -150,13 +172,16 @@ def check (program : Surface.Program) (spanned : SpannedProgram)
         result := { result with blocked := result.blocked ++ [⟨groupNames, causes⟩] }
         let slice ← unavailableSlice localProgram localSpanned localBinders scope causes
         result := { result with unavailable := result.unavailable ++ [slice] }
+        result := addPartials result (ExpressionRecovery.group source
+          { names, schemes, unavailable } group rhss causes)
         unavailable := groupNames.map (·, causes) ++ unavailable
       else
         match checkSlice ctors names schemes localProgram localSpanned localBinders scope with
         | .error diagnostic =>
-            result := { result with diagnostics := result.diagnostics ++ [diagnostic] }
             let slice ← unavailableSlice localProgram localSpanned localBinders scope (groupNames.map Cause.binding)
             result := { result with unavailable := result.unavailable ++ [slice] }
+            result := addFailure result diagnostic (ExpressionRecovery.group source
+              { names, schemes, unavailable } group rhss (groupNames.map Cause.binding))
             unavailable := groupNames.map (fun name => (name, groupNames.map Cause.binding)) ++ unavailable
         | .ok slice =>
             let exported ← exports group slice.typed scope
@@ -176,14 +201,20 @@ def check (program : Surface.Program) (spanned : SpannedProgram)
     result := { result with
       blocked := result.blocked ++ [⟨[], bodyCauses⟩]
       unavailable := result.unavailable ++ [slice] }
+    if seed.body.isEmpty then
+      result := addPartials result (ExpressionRecovery.expression source { names, schemes, unavailable } program.body spanned.body)
   else
     match checkSlice ctors names schemes localProgram localSpanned localBinders scope true with
     | .error diagnostic =>
         let slice ← unavailableSlice localProgram localSpanned localBinders scope []
-        result := { result with
-          diagnostics := result.diagnostics ++ [diagnostic]
-          unavailable := result.unavailable ++ [slice] }
+        result := { result with unavailable := result.unavailable ++ [slice] }
+        result := addFailure result diagnostic (ExpressionRecovery.expression source { names, schemes, unavailable } program.body spanned.body)
     | .ok slice => result := { result with checked := result.checked ++ [slice] }
-  pure result
+  let diagnostics := deduplicate result.diagnostics
+  let diagnostics := diagnostics.filter fun diagnostic =>
+    diagnostic.code? != some "type.escapingVariable" || !diagnostics.any fun child =>
+      child.code? == diagnostic.code? && diagnosticSpan child != diagnosticSpan diagnostic &&
+        HMArtifacts.inside (diagnosticSpan child) (diagnosticSpan diagnostic)
+  pure { result with diagnostics }
 
 end FHM.Unverified.EditorRecovery

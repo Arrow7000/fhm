@@ -63,12 +63,12 @@ test("showcase reports five exact failures and keeps healthy polymorphic hovers"
   assert.equal(runner.payload.result, undefined, "Recovered artifacts must never run");
 });
 
-test("failed local parameters shadow known outer definitions without borrowing their type", () => {
+test("recovered local parameters retain lexical identity and actual contextual types", () => {
   const source = "let id x = x\nlet broken id = id 1 + True\nlet good = id 7\ngood\n";
   const { payload } = cli(["diagnose"], source);
   assert.equal(payload.diagnostics.length, 1);
   const local = at(payload, source, 1, "id", 1);
-  assert.equal(local.hover.type, "type unknown (error in `broken`)");
+  assert.equal(local.hover.type, "Int → Int");
   assert.deepEqual([local.definition.startLine0, local.definition.startCol0], [1, 11]);
   assert.equal(at(payload, source, 2, "id").hover.type, "Int → Int");
   assert.deepEqual([at(payload, source, 2, "id").definition.startLine0,

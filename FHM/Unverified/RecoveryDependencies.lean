@@ -7,7 +7,9 @@ namespace FHM.Unverified.RecoveryDependencies
 
 inductive Cause where
   | binding (name : ValName)
+  | localBinding (name : ValName) (span : Surface.Span.Span)
   | declaration (name : TyName)
+  | expression (span : Surface.Span.Span)
   | syntax (span : Surface.Span.Span)
   deriving Repr, BEq
 

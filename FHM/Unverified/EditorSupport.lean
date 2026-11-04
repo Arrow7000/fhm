@@ -236,7 +236,9 @@ def exhaustivenessDiag (typed : SurfaceBridge.Provenance.TypedLowered)
 /-- Render one checked source slice using its native inference artifacts. -/
 def collectTypedHover (src : String) (p : Surface.Program) (binders : List BinderSpan)
     (sp : SpannedProgram) (tree : SpannedExpr)
-    (typed : SurfaceBridge.Provenance.TypedLowered) : HoverReport :=
+    (typed : SurfaceBridge.Provenance.TypedLowered)
+    (outerBinders : List FHM.Unverified.HMArtifacts.BinderLocation := [])
+    (checkCoverage : Bool := true) : HoverReport :=
   let ctors := typed.ctors
   let lowered := typed.lowering
   let scope := programWideScope binders sp
@@ -249,6 +251,10 @@ def collectTypedHover (src : String) (p : Surface.Program) (binders : List Binde
   else
     let identified := SurfaceBridge.Provenance.identify tree
     let collected := FHM.Unverified.HMArtifacts.collect binders p.term identified
+    let sentinel := (typed.lowering.sourceNodes.map (·.id)).foldl max 0 + 1
+    let external := outerBinders.mapIdx fun index binder =>
+      { binder with site := .lambda (sentinel + index) }
+    let collected := { collected with binders := external ++ collected.binders }
     let wrapperIds := FHM.Unverified.HMArtifacts.programWrapperIds p.groups identified
     let authoredOccurrences := collected.occurrences.filter fun occ =>
       !(wrapperIds.contains occ.id)
@@ -335,7 +341,7 @@ def collectTypedHover (src : String) (p : Surface.Program) (binders : List Binde
     let sugarOps := (collectLitOpSymbols src ctors).filter fun s => s.name == "::"
     -- Typing succeeded, so hovers stay available alongside this error.
     let exhaustiveness :=
-      if checkExhaustive ctors p.term then []
+      if !checkCoverage || checkExhaustive ctors p.term then []
       else [exhaustivenessDiag typed p.term identified (bodyDiagSpan sp.body)]
     { symbols := prelude ++ syntaxSyms ++ values ++ sugarOps ++ occurrences ++ references ++ holeSymbols
       programTy := FHM.Unverified.HMDisplay.scheme {} []
@@ -373,8 +379,9 @@ def collectUnavailableHover (src : String) (slice : FHM.Unverified.EditorRecover
   let locations := FHM.Unverified.HMArtifacts.collect slice.binders slice.program.term identified
   let wrappers := FHM.Unverified.HMArtifacts.programWrapperIds slice.program.groups identified
   let names := slice.causes.filterMap fun
-    | .binding name => if Surface.internalBindingName name then none else some ("`" ++ prettyValName name ++ "`")
+    | .binding name | .localBinding name _ => if Surface.internalBindingName name then none else some ("`" ++ prettyValName name ++ "`")
     | .declaration name => some ("type `" ++ prettyTyName name ++ "`")
+    | .expression span => some s!"expression at {span.startLine}:{span.startCol}"
     | .syntax span => some s!"syntax at {span.startLine}:{span.startCol}"
   let cause := if names.isEmpty then
     (if slice.causes.isEmpty then "this expression" else "a pattern binding")
@@ -419,7 +426,8 @@ def collectUnavailableDeclarationHover (binders : List BinderSpan) (sp : Spanned
     (scope : Span) (unavailable : FHM.Unverified.DeclarationRecovery.Unavailable) : List RangedSymbol :=
   let causes := unavailable.causes.map fun
     | .declaration name => "type `" ++ prettyTyName name ++ "`"
-    | .binding name => "`" ++ prettyValName name ++ "`"
+    | .binding name | .localBinding name _ => "`" ++ prettyValName name ++ "`"
+    | .expression span => s!"expression at {span.startLine}:{span.startCol}"
     | .syntax span => s!"syntax at {span.startLine}:{span.startCol}"
   let label := "type unknown (error in " ++ String.intercalate ", " causes ++ ")"
   let definitions := (binders.filter fun binder => FHM.Unverified.HMArtifacts.inside binder.span unavailable.span).map
@@ -437,12 +445,33 @@ def collectRecoveredHover (src : String) (p : Surface.Program) (binders : List B
   | .error diagnostic => { symbols := [], programTy := "", diagnostics := [diagnostic] }
   | .ok recovered =>
     let reports := recovered.checked.map fun slice =>
-      collectTypedHover src slice.program slice.binders slice.spanned slice.tree slice.typed
+      collectTypedHover src slice.program slice.binders slice.spanned slice.tree slice.typed slice.outerBinders slice.checkCoverage
     let body := recovered.checked.find? (·.isBody)
-    let symbols := (reports.flatMap (·.symbols) ++
-      recovered.unavailable.flatMap (collectUnavailableHover src) ++
-      recovered.unavailableDeclarations.flatMap (collectUnavailableDeclarationHover binders sp
-        (programWideScope binders sp))).eraseDups
+    let checkedSymbols := reports.flatMap (·.symbols)
+    -- A source token has one identity even when an enclosing unavailable
+    -- slice knows less about its binder kind. Prefer checked facts, then the
+    -- innermost original failure over broad enclosing failures.
+    let sameToken := fun (a b : RangedSymbol) =>
+      a.name == b.name && a.span == b.span && a.isDef == b.isDef
+    let unavailable := recovered.unavailable.mergeSort fun a b =>
+      a.spanned.body.span.area ≤ b.spanned.body.span.area
+    let candidates := unavailable.flatMap fun slice =>
+      (collectUnavailableHover src slice).map fun symbol =>
+        let ownCause := slice.causes.any fun
+          | .binding name | .localBinding name _ => name == .mk symbol.name
+          | .declaration name => name == .mk symbol.name
+          | _ => false
+        (symbol, ownCause)
+    let unknownSymbols := candidates.foldl (fun (found : List (RangedSymbol × Bool)) (symbol, own) =>
+      if checkedSymbols.any (sameToken symbol) then found else
+      match found.find? (fun (prior, _) => sameToken symbol prior) with
+      | none => found ++ [(symbol, own)]
+      | some (_, priorOwn) => if own && !priorOwn then
+          found.map (fun prior => if sameToken symbol prior.1 then (symbol, own) else prior)
+        else found) []
+    let unknownSymbols := unknownSymbols.map (·.1) ++
+      recovered.unavailableDeclarations.flatMap (collectUnavailableDeclarationHover binders sp (programWideScope binders sp))
+    let symbols := (unknownSymbols ++ checkedSymbols).eraseDups
     let symbols := symbols.map fun symbol =>
       if symbol.isDef || symbol.doc.isSome then symbol else
         let definition := ((symbols.filter fun candidate => candidate.isDef &&
@@ -453,7 +482,10 @@ def collectRecoveredHover (src : String) (p : Surface.Program) (binders : List B
     { symbols
       programTy := (body.map fun slice => FHM.Unverified.HMDisplay.scheme {} []
         (genScheme [] [] slice.typed.inference.ty)).getD ""
-      diagnostics := (recovered.diagnostics ++ reports.flatMap (·.diagnostics)).mergeSort
+      diagnostics := ((recovered.diagnostics ++ reports.flatMap (·.diagnostics)).foldl
+        (fun found diagnostic => if found.any (fun prior => prior.code? == diagnostic.code? &&
+          prior.line == diagnostic.line && prior.col == diagnostic.col && prior.endLine == diagnostic.endLine &&
+          prior.endCol == diagnostic.endCol) then found else found ++ [diagnostic]) []).mergeSort
         (fun a b => a.line < b.line || (a.line == b.line && a.col ≤ b.col)) }
 
 /-- Fully checked programs retain the original whole-program artifact path.

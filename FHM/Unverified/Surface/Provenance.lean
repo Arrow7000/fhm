@@ -1185,6 +1185,8 @@ structure TypedLowered where
   sourceTypes : SourceTypeMap
   inferredBinderSchemes : InferredSurfaceBinderSchemes
   patternBinderTypes : PatternBinderTypeMap
+  /-- Authored rigid names belonging to a surrounding recovered lexical scope. -/
+  outerAliases : List (Nat × String) := []
 
 structure SourceHover where
   source : SourceNode
@@ -1282,8 +1284,9 @@ def patternBinderTypesAt (nodeTypes : NodeTypeMap) (targets : BinderTargetMap) :
 
 /-- Infer the lowered source once, retaining its emitted paths for all type
     and scheme joins. The original partial source remains the payload. -/
-def inferWithProvenanceInResult (ctx : Ctx) (lowering : InputLowered) : Except InferError TypedLowered := do
-  let result ← inferWithTypesResultCore lowering.expr.rigidVars lowering.expr.source_freshFloor ctx lowering.expr
+def inferWithProvenanceAtResult (K : List Nat) (frontier : Nat) (ctx : Ctx)
+    (lowering : InputLowered) : Except InferError TypedLowered := do
+  let result ← inferWithTypesResultCore K frontier ctx lowering.expr
   let inference : InferenceResult := {
     toInferResult := result.val.toInferResult
     nodeTypes := result.val.nodeTypes.toMap
@@ -1297,6 +1300,24 @@ def inferWithProvenanceInResult (ctx : Ctx) (lowering : InputLowered) : Except I
       (id, typesAtTarget inference.nodeTypes target)
     inferredBinderSchemes := joinBinderSchemes lowering.binderTargets inference.binderSchemes
     patternBinderTypes := patternBinderTypesAt inference.nodeTypes lowering.binderTargets }
+
+/-- Contextual entry point for closed external schemes. -/
+def inferWithProvenanceInResult (ctx : Ctx) (lowering : InputLowered) : Except InferError TypedLowered :=
+  inferWithProvenanceAtResult lowering.expr.rigidVars lowering.expr.source_freshFloor ctx lowering
+
+/-- Apply only subsequent successful constraints to already checked artifacts.
+The recovery driver never supplies substitutions from a failed check. -/
+def TypedLowered.onSubst (typed : TypedLowered) (subst : Subst) : TypedLowered :=
+  let inference := { typed.inference with
+    ty := subst.onTy typed.inference.ty
+    subst := typed.inference.subst ++ subst
+    nodeTypes := typed.inference.nodeTypes.map (fun (path, ty) => (path, subst.onTy ty))
+    binderSchemes := typed.inference.binderSchemes.map (fun (site, scheme) => (site, subst.onPolyTy scheme)) }
+  { typed with
+    inference
+    sourceTypes := typed.lowering.sourceTargets.map (fun (id, target) => (id, typesAtTarget inference.nodeTypes target))
+    inferredBinderSchemes := joinBinderSchemes typed.lowering.binderTargets inference.binderSchemes
+    patternBinderTypes := patternBinderTypesAt inference.nodeTypes typed.lowering.binderTargets }
 
 /-- Closed-program entry point; editor recovery supplies only checked external
 schemes to `inferWithProvenanceInResult` for each independent group. -/
