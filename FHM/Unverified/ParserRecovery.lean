@@ -49,7 +49,7 @@ private def regionSpan (tokens : Array Tok) (first last : Nat) : Span :=
 
 /-- Scan only through grammar-accepted items; errors preserve the native site.
 The finite fuel also protects the editor if a future parser fails to advance. -/
-private def scan (tokens : Array Tok) (offset : Nat := 0) : Scan :=
+private def scan (tokens : Array Tok) (offset : Nat := 0) (mode : RecoveryMode := .strict) : Scan :=
   let rec go : Nat → Nat → List Item → Scan
     | 0, index, items => ⟨items, none, some index⟩
     | fuel + 1, index, items =>
@@ -58,7 +58,7 @@ private def scan (tokens : Array Tok) (offset : Nat := 0) : Scan :=
       | none => ⟨items, none, none⟩
       | some token =>
         if !isHeader token.token then ⟨items, none, some first⟩ else
-          match Parser.run programItem (tokens.toSubarray first) with
+          match Parser.run (programItemWith mode) (tokens.toSubarray first) with
           | .error _ error => ⟨items, some (first, simpleErrToParse tokens error), none⟩
           | .ok remaining parsed =>
             if remaining.start ≤ first then ⟨items, none, some first⟩ else
@@ -96,7 +96,7 @@ private def removals (tokens : Array Tok) (error : ParseError) : List Removal :=
     let index := (List.range tokens.size).find? fun i =>
       (tokens[i]?.map fun token => covers (Span.ofTok token) error).getD false
     return index.toList.map fun i => ⟨i, i + 1, false⟩
-  let scanned := scan tokens
+  let scanned := scan tokens 0 .editor
   match scanned.failure with
   | some (first, _) =>
       return [⟨beforeComments tokens first, nextHeader tokens first, false⟩]
@@ -276,8 +276,16 @@ def check (source : String) : Except ParseError Result := do
     if lexicalRemovals.any (fun removal => removal.first ≤ index && index < removal.last) then none else some token
   let rec go (fuel : Nat) (tokens : Array Tok) (errors : List ParseError)
       (unavailable : List Unparsed) (seed : Seed) : Except ParseError Result := do
-    match parseProgramTokensWithSpans tokens with
-    | .ok (program, binders, spanned) => pure ⟨program, binders, spanned, errors, unavailable, seed⟩
+    match parseProgramTokensPartial tokens with
+    | .ok parsed =>
+        let mut nextSeed := seed
+        let mut regions := unavailable
+        for hole in parsed.holes do
+          let cause := Cause.syntax ⟨hole.error.line, hole.error.col, hole.error.endLine, hole.error.endCol⟩
+          nextSeed := { nextSeed with values := mergeNames nextSeed.values [(hole.name, [cause])] }
+          regions := regions ++ [⟨hole.error, hole.span, tokens.extract hole.first hole.last, []⟩]
+        pure ⟨parsed.program, parsed.binders, parsed.spanned,
+          errors ++ parsed.holes.map (·.error), regions, nextSeed⟩
     | .error error =>
       match fuel with
       | 0 => .error error

@@ -94,3 +94,57 @@ if (process.argv.includes('--record-baseline')) {
   console.log(`PASS ${cases.length} frozen strict parses (AST, spans, binders, exact failures).`);
 }
 console.log(`PASS ${cases.filter(c => c.expected).length} independently generated AST round trips.`);
+
+if (!process.argv.includes('--record-baseline')) {
+  const partials = run(cases.map(({ source, kind }) => ({ source, kind, mode: 'partial' })));
+  let recovered = 0, islands = 0;
+  function verify(c, strict, partial) {
+    try {
+      if (strict.ok) {
+        assert.equal(partial.ok, true, 'valid input rejected by editor');
+        assert.deepEqual(partial.holes, [], 'valid input gained errors');
+        for (const key of ['ast', 'binders', 'spans']) assert.deepEqual(partial[key], strict[key], `valid ${key} changed`);
+      }
+      if (partial.ok) {
+        assert.equal(partial.registryOk, true, 'orphan/duplicated error leaf');
+        assert.equal(partial.holes.length === 0, !!strict.ok, 'invalid input silently repaired');
+        if (partial.strictProjection !== undefined) assert.equal(partial.strictProjection, partial.holes.length === 0);
+        for (const hole of partial.holes) assert.ok(hole.first <= hole.last, 'backward recovery range');
+        for (const fragment of partial.fragments) {
+          islands++;
+          assert.equal(fragment.parsed.ok, true, `retained fragment does not parse from its original token interval: ${JSON.stringify(fragment)}`);
+          assert.deepEqual(fragment.parsed.ast, fragment.ast, 'retained fragment AST differs from its original source');
+        }
+        if (partial.holes.length) recovered++;
+      }
+    } catch (error) { throw new Error(`${c.id}\n${c.source}\n${error.stack}`); }
+  }
+  cases.forEach((c, i) => verify(c, results[i], partials[i]));
+  const extras = [];
+  const operators = [['+', 'PrimBinOp.intAdd'], ['-', 'PrimBinOp.intSub'], ['<', 'PrimBinOp.intLt']];
+  for (let i = 0; i < 360; i++) {
+    const a = expr(3), b = expr(2), n = `capture${i}`;
+    const [operator, tag] = operators[i % operators.length];
+    extras.push({ id: `infix-${i}`, kind: 'expr', source: `(${a.source} ${operator} ${b.source})`,
+      expected: ['app', ['app', ['op', tag], a.ast], b.ast] });
+    extras.push({ id: `match-${i}`, kind: 'expr', source: `(match ${a.source} with | ${n} -> ${n})`,
+      expected: ['match', a.ast, [[['name', n], ['var', n]]]] });
+    extras.push({ id: `cons-${i}`, kind: 'expr', source: `(${a.source} :: ${b.source})`, expected: ['cons', a.ast, b.ast] });
+    extras.push({ id: `lambdas-${i}`, kind: 'expr', source: `(\\x${i} y${i} -> (x${i}, y${i}))`, expected:
+      ['lambda', ['name', `x${i}`], null, ['lambda', ['name', `y${i}`], null, ['pair', ['var', `x${i}`], ['var', `y${i}`]]]] });
+  }
+  const alphabet = ['(', ')', '[', ']', '{', '}', ',', '=', ':', '->', '\\', '+', '::', '|',
+    'let', 'in', 'if', 'then', 'else', 'match', 'with', 'type', 'x', 'Int', 'True', '1', '/- ( let -/'];
+  for (let i = 0; i < 800; i++) extras.push({ id: `tokens-${i}`, kind: i % 2 ? 'expr' : 'program',
+    source: Array.from({ length: 1 + random(32) }, () => alphabet[random(alphabet.length)]).join(' ') });
+  const strictExtras = run(extras), partialExtras = run(extras.map(c => ({ ...c, mode: 'partial' })));
+  extras.forEach((c, i) => {
+    if (c.expected) {
+      assert.equal(strictExtras[i].ok, true, c.source);
+      assert.deepEqual(strictExtras[i].ast, c.expected, c.source);
+    }
+    verify(c, strictExtras[i], partialExtras[i]);
+  });
+  console.log(`PASS ${extras.filter(c => c.expected).length} additional generated infix, cons, match and multiple-lambda ASTs.`);
+  console.log(`PASS ${cases.length + extras.length} strict/editor conservation and recovery checks; ${recovered} recovered inputs, ${islands} independently reparsed islands.`);
+}

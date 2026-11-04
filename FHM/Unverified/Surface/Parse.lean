@@ -1,4 +1,5 @@
 import Parser.Basic
+import FHM.Unverified.Surface.PartialSyntax
 import FHM.Unverified.Surface.Lex
 import FHM.Surface.Span
 import FHM.SurfaceBridge
@@ -229,12 +230,35 @@ lists (unlike StateT, which would leak across backtracks).
 Expression parsers return `Expr × List ParsedNameSpan × SpannedExpr`.
 -/
 
+/-- An editor-only expression hole. Its reserved identity cannot be written
+in source. The token interval and original diagnostic remain explicit. -/
+structure ExprHole where
+  name : ValName
+  span : Span
+  error : ParseError
+  first : Nat
+  last : Nat
+  deriving Repr
+
+structure RecoveryMode where
+  enabled : Bool := false
+  stops : List Token := []
+  layout : Option (Nat × Nat) := none
+
+def RecoveryMode.strict : RecoveryMode := {}
+def RecoveryMode.editor : RecoveryMode := { enabled := true }
+def RecoveryMode.inside (mode : RecoveryMode) (stops : List Token) : RecoveryMode :=
+  { mode with stops }
+
+def isRecoveryName := Surface.PartialSyntax.isHole
+
 /-- Internal writer entry: definitions and references travel together so
     backtracking discards both. Public APIs keep returning definition spans. -/
 structure ParsedNameSpan extends BinderSpan where
   isDef : Bool := true
   annotation? : Option Span := none
-  deriving Repr, BEq
+  hole? : Option ExprHole := none
+  deriving Repr
 
 abbrev PE := P (Expr × List ParsedNameSpan × SpannedExpr)
 
@@ -276,6 +300,84 @@ def spanOfConsumed (startPos stopPos : Nat) : P Span := do
     match s.array[startPos]?, s.array[stopPos - 1]? with
     | some t0, some t1 => return Span.union (Span.ofTok t0) (Span.ofTok t1)
     | _, _ => return Span.empty
+
+private def closes : Token → Option Punct
+  | .punct .lparen => some .rparen
+  | .punct .lbrack => some .rbrack
+  | .punct .lbrace => some .rbrace
+  | _ => none
+private def isClose : Token → Bool
+  | .punct .rparen | .punct .rbrack | .punct .rbrace => true
+  | _ => false
+
+private def atBoundary (mode : RecoveryMode) (token : Tok) : Bool :=
+  mode.stops.contains token.token || (mode.layout.map fun (line, col) =>
+    token.startLine > line && token.startCol ≤ col).getD false
+
+/-- Resynchronise only at this production's follow set and delimiter depth.
+A mismatched closer belongs to an enclosing production; it is never consumed.
+An unmatched opener cannot swallow the next top-level declaration. -/
+private def synchronise (mode : RecoveryMode) (tokens : Array Tok) (first stop : Nat) : Option Nat :=
+  let rec go : Nat → Nat → List Punct → Option Nat
+    | 0, _, _ => none
+    | fuel + 1, index, stack =>
+      if index ≥ stop then if stack.isEmpty then some stop else none else
+      match tokens[index]? with
+      | none => none
+      | some token =>
+        if (mode.layout.map fun (line, col) => token.startLine > line && token.startCol ≤ col &&
+            (token.token == .keyword .«let» || token.token == .keyword .«type»)).getD false then
+          if stack.isEmpty then some index else none
+        else if stack.isEmpty && atBoundary mode token then some index else
+        match closes token.token with
+        | some closer => go fuel (index + 1) (closer :: stack)
+        | none =>
+          if isClose token.token then
+            match stack with
+            | expected :: rest => if token.token == .punct expected then go fuel (index + 1) rest else none
+            | [] => none
+          else go fuel (index + 1) stack
+  go (stop - first + 1) first []
+
+private def throwRecoveredError (error : ParseError) : P α := do
+  let stream ← getStream
+  let index := ((List.range stream.array.size).find? fun index =>
+    (stream.array[index]?.map fun token => token.startLine == error.line && token.startCol == error.col).getD false).getD stream.array.size
+  let native : Parser.Error.Simple TokStream Tok := .addMessage (.unexpected index stream.array[index]?) index error.msg
+  throw native
+
+/-- Diagnostics are Writer entries, so abandoned alternatives roll them back
+with their binders and source tree. Strict mode executes the original parser. -/
+def recoverExpression (mode : RecoveryMode) (complete : Bool) (parser : PE) : PE := do
+  if !mode.enabled then return ← parser
+  let initial ← getStream
+  try
+    let result ← parser
+    if complete then
+      skipComments
+      let remaining ← getStream
+      if remaining.start < remaining.stop then
+        let token ← nextTok
+        if !atBoundary mode token then throwUnexpected (some token)
+    return result
+  catch error =>
+    let _ ← setStream initial
+    match synchronise mode initial.array initial.start initial.stop with
+    | none => throw error
+    | some last =>
+      let diagnostic := simpleErrToParse initial.array error
+      let span := (Span.hull ((initial.array.extract initial.start last).toList.map Span.ofTok)).getD
+        ⟨diagnostic.line, diagnostic.col, diagnostic.endLine, diagnostic.endCol⟩
+      let name := ValName.mk s!"$syntax/{initial.start}/{last}"
+      let hole : ExprHole := ⟨name, span, diagnostic, initial.start, last⟩
+      let _ ← setPosition last
+      let entry : ParsedNameSpan := {
+        name := match name with | .mk text => text
+        kind := .val
+        span := span
+        isDef := false
+        hole? := some hole }
+      return (.var name, [entry], .leaf span)
 
 /-! ## Type grammar
 
@@ -691,7 +793,7 @@ def checkPatternBindingCycles (entries : List (Binding × SpannedExpr))
 
 mutual
 
-partial def atom : PE := do
+partial def atomWith (mode : RecoveryMode) : PE := do
   skipComments
   -- Reject strings *before* `first`: later branches consume-and-fail past the
   -- lit and `first`'s default combine would keep that worse error.
@@ -701,7 +803,7 @@ partial def atom : PE := do
       throwUnexpectedWithMessage (some t0)
         "string literals are not supported in expressions"
   | _ => pure ()
-  withErrorMessage "expected expression atom" do
+  withErrorMessage "expected expression (atomWith mode)" do
     -- Prefer specific reject messages (e.g. value-level `*`) over later bare fails.
     first (combine := preferErr) [
       -- int / bool / char
@@ -724,12 +826,12 @@ partial def atom : PE := do
       do
         let t0 ← punct .lparen
         skipComments
-        let (a, bsA, sa) ← expr
+        let (a, bsA, sa) ← exprWith (mode.inside [.punct .comma, .punct .rparen])
         skipComments
         match ← option? (punct .comma) with
         | some _ =>
           skipComments
-          let (b, bsB, sb) ← expr
+          let (b, bsB, sb) ← exprWith (mode.inside [.punct .rparen])
           skipComments
           let t1 ← punct .rparen
           let span := Span.union (Span.ofTok t0) (Span.ofTok t1)
@@ -760,12 +862,15 @@ partial def atom : PE := do
         | some t1 =>
           return (.list [], [], .list (Span.union (Span.ofTok t0) (Span.ofTok t1)) [])
         | none =>
-          let (hd, bsHd, sh) ← expr
-          let tl ← takeMany (withBacktracking do
-            skipComments
-            let _ ← punct .comma
-            skipComments
-            expr)
+          let (hd, bsHd, sh) ← exprWith (mode.inside [.punct .comma, .punct .rbrack])
+          let tl ← if !mode.enabled then takeMany (withBacktracking do
+              skipComments
+              let _ ← punct .comma
+              skipComments
+              exprWith mode) else
+            Parser.takeMany (do
+              let _ ← withBacktracking (skipComments *> punct .comma)
+              exprWith (mode.inside [.punct .comma, .punct .rbrack]))
           skipComments
           let t1 ← punct .rbrack
           let items := hd :: tl.toList.map (·.1)
@@ -773,7 +878,7 @@ partial def atom : PE := do
           let bs := bsHd ++ concatBinders3 tl
           let span := Span.union (Span.ofTok t0) (Span.ofTok t1)
           return (.list items, bs, .list span spans),
-      -- `\ binder+ -> expr`
+      -- `\ binder+ -> (exprWith mode)`
       do
         let bsTok ← punct .backslash
         skipComments
@@ -781,7 +886,7 @@ partial def atom : PE := do
         skipComments
         let _ ← punct .arrow
         skipComments
-        let (body, bsBody, sBody) ← expr
+        let (body, bsBody, sBody) ← (exprWith mode)
         let bsBind := binders.toList.flatMap (·.2.2.1)
         let (e, s) :=
           binders.toList.foldr
@@ -808,16 +913,16 @@ partial def atom : PE := do
 /-- Left-associative juxtaposition: `f a b` ≡ `(f a) b`.
     Layout: args must share the head's line or start at a greater column
     (so a same-column sibling after a let RHS is not consumed as an app arg). -/
-partial def appExpr : PE :=
+partial def appExprWith (mode : RecoveryMode) : PE :=
   withErrorMessage "expected expression" do
     skipComments
     let headTok ← nextTok
-    let (head, bsHead, sHead) ← atom
+    let (head, bsHead, sHead) ← (atomWith mode)
     let args ← takeMany (withBacktracking do
       let t ← nextTok
       if t.startLine != headTok.startLine && t.startCol ≤ headTok.startCol then
         throwUnexpectedWithMessage none "app argument must be same line or indented"
-      atom)
+      (atomWith mode))
     -- Soft `takeMany` swallows a failed arg; re-surface common rejects so
     -- `f "bla"` points at the string instead of a generic leftover error.
     skipComments
@@ -839,19 +944,19 @@ partial def appExpr : PE :=
     return (e, bsHead ++ concatBinders3 args, s)
 
 /-- Infix RHS: layout forms or an app — not another infix (keeps single-infix). -/
-partial def infixRhs : PE :=
-  first [letExpr, ifExpr, matchExpr, appExpr]
+partial def infixRhsWith (mode : RecoveryMode) : PE :=
+  recoverExpression mode false <| first [(letExprWith mode), (ifExprWith mode), (matchExprWith mode), (appExprWith mode)]
 
 /-- Single optional infix; a second infix at this layer is an error. -/
-partial def infixExpr : PE :=
+partial def infixExprWith (mode : RecoveryMode) : PE :=
   withErrorMessage "expected expression" do
-    let (left, bsL, sL) ← appExpr
+    let (left, bsL, sL) ← (appExprWith mode)
     skipComments
     match ← option? (withBacktracking binOpTokFull) with
     | none => return (left, bsL, sL)
     | some (opTok, op) =>
       skipComments
-      let (right, bsR, sR) ← infixRhs
+      let (right, bsR, sR) ← (infixRhsWith mode)
       skipComments
       match ← option? (withBacktracking binOpTok) with
       | some _ =>
@@ -862,7 +967,7 @@ partial def infixExpr : PE :=
 
 /-- Named lets retain ordinary recursive/SCC semantics. A pattern head
     expands to ordinary call-by-name storage and independently generalised projections. -/
-partial def letBinding (indentCol : Nat) : P (ParsedLetBinding × List ParsedNameSpan) :=
+partial def letBindingWith (mode : RecoveryMode) (indentCol : Nat) : P (ParsedLetBinding × List ParsedNameSpan) :=
   withErrorMessage "expected let binding" do
     skipComments
     let headTok ← nextTok
@@ -894,7 +999,8 @@ partial def letBinding (indentCol : Nat) : P (ParsedLetBinding × List ParsedNam
     skipComments
     let t ← nextTok
     if t.startLine > eqTok.startLine then colGt indentCol
-    let (rhs, bsRhs, sRhs) ← expr
+    let rhsMode := { mode with stops := .keyword .«in» :: mode.stops, layout := some (eqTok.startLine, indentCol) }
+    let (rhs, bsRhs, sRhs) ← exprWith rhsMode
     let recursiveNames := (patVars pat).filter fun name => (freeNames [] rhs).contains name
     if name?.isNone && !recursiveNames.isEmpty then
       let names := recursiveNames.map fun | .mk name => name
@@ -926,21 +1032,21 @@ non-recursive node.
 
 Duplicate names retain the old lexical nesting semantics: SCC construction is
 ambiguous in their presence, but ordinary shadowing is not. -/
-partial def letExpr : PE :=
+partial def letExprWith (mode : RecoveryMode) : PE :=
   withErrorMessage "expected let expression" do
     skipComments
     let letTok ← keyword .«let»
-    let (first, bs0) ← letBinding letTok.startCol
+    let (first, bs0) ← (letBindingWith mode) letTok.startCol
     let rest ← takeMany (withBacktracking do
       colEq first.column
-      letBinding first.column)
+      (letBindingWith mode) first.column)
     let parsed := first :: rest.toList.map (·.1)
     let bindsWithSpans := parsed.flatMap (·.entries)
     checkPatternBindingCycles bindsWithSpans (parsed.filterMap (·.patternToken?)) true
     skipComments
     let _ ← keyword .«in»
     skipComments
-    let (body, bsBody, sBody) ← expr
+    let (body, bsBody, sBody) ← (exprWith mode)
     let binds : List Binding := bindsWithSpans.map (·.1)
     let bsRest := concatBinders rest
     let bindingBinders := bs0 ++ bsRest
@@ -998,42 +1104,42 @@ partial def letExpr : PE :=
     return (e, bs0 ++ bsRest ++ bsBody, s')
 
 /-- `if e then e else e` → `.ife`. -/
-partial def ifExpr : PE :=
+partial def ifExprWith (mode : RecoveryMode) : PE :=
   withErrorMessage "expected if expression" do
     skipComments
     let ifTok ← keyword .«if»
     skipComments
-    let (c, bsC, sC) ← expr
+    let (c, bsC, sC) ← exprWith (mode.inside [.keyword .«then»])
     skipComments
     let _ ← keyword .«then»
     skipComments
-    let (t, bsT, sT) ← expr
+    let (t, bsT, sT) ← exprWith (mode.inside [.keyword .«else»])
     skipComments
     let _ ← keyword .«else»
     skipComments
-    let (f, bsF, sF) ← expr
+    let (f, bsF, sF) ← (exprWith mode)
     let span := Span.union (Span.ofTok ifTok) sF.span
     return (.ife c t f, bsC ++ bsT ++ bsF, .ife span sC sT sF)
 
-/-- One match arm: `pattern -> expr`. -/
-partial def matchArm : P ((Pattern × Expr × SpannedExpr) × List ParsedNameSpan) := do
+/-- One match arm: `pattern -> (exprWith mode)`. -/
+partial def matchArmWith (mode : RecoveryMode) : P ((Pattern × Expr × SpannedExpr) × List ParsedNameSpan) := do
   skipComments
   let (pat, bsPat) ← pattern
   skipComments
   let _ ← punct .arrow
   skipComments
-  let (body, bsBody, sBody) ← expr
+  let (body, bsBody, sBody) ← exprWith (mode.inside (.punct .pipe :: mode.stops))
   return ((pat, body, sBody), bsPat ++ bsBody)
 
 /-- F#-style `match e with [|] P -> e | Q -> e`.
     Leading `|` optional; later branches use `|`.
     Newline-aligned `|` must share the first branch column. -/
-partial def matchExpr : PE :=
+partial def matchExprWith (mode : RecoveryMode) : PE :=
   withErrorMessage "expected match expression" do
     skipComments
     let matchTok ← keyword .«match»
     skipComments
-    let (scrut, bsScrut, sScrut) ← expr
+    let (scrut, bsScrut, sScrut) ← exprWith (mode.inside [.keyword .«with»])
     skipComments
     let _ ← keyword .«with»
     skipComments
@@ -1048,7 +1154,7 @@ partial def matchExpr : PE :=
       match leadPipe? with
       | some p => p.startLine
       | none => t.startLine
-    let (arm0, bs0) ← matchArm
+    let (arm0, bs0) ← (matchArmWith mode)
     let rest ← takeMany (withBacktracking do
       skipComments
       let pipe ← nextTok
@@ -1057,7 +1163,7 @@ partial def matchExpr : PE :=
       if pipe.startLine > blockLine && pipe.startCol != blockCol then
         throwUnexpectedWithMessage none "match branch misaligned"
       let _ ← punct .pipe
-      matchArm)
+      (matchArmWith mode))
     let arms := arm0 :: rest.toList.map (·.1)
     let armExprs := arms.map fun ⟨p, e, _⟩ => (p, e)
     let armSpans := arms.map fun ⟨_, _, s⟩ => s
@@ -1071,20 +1177,31 @@ partial def matchExpr : PE :=
       .match_ span sScrut armSpans)
 
 /-- Top expression: layout forms or infix/app. -/
-partial def expr : PE :=
-  withErrorMessage "expected expression" do
+partial def exprWith (mode : RecoveryMode) : PE :=
+  recoverExpression mode true <| withErrorMessage "expected expression" do
     skipComments
     -- Commit on the leading keyword rather than trying each form in turn:
     -- `first` keeps only the last alternative's error, so an error inside a
-    -- `match` (say) would be reported as `infixExpr` rejecting the keyword.
+    -- `match` (say) would be reported as `(infixExprWith mode)` rejecting the keyword.
     let next : Option Token := (← option? nextTok).map (·.token)
     match next with
-    | some (.keyword .«let») => letExpr
-    | some (.keyword .«if») => ifExpr
-    | some (.keyword .«match») => matchExpr
-    | _ => infixExpr
+    | some (.keyword .«let») => (letExprWith mode)
+    | some (.keyword .«if») => (ifExprWith mode)
+    | some (.keyword .«match») => (matchExprWith mode)
+    | _ => (infixExprWith mode)
 
 end
+
+def atom := atomWith RecoveryMode.strict
+def appExpr := appExprWith RecoveryMode.strict
+def infixRhs := infixRhsWith RecoveryMode.strict
+def infixExpr := infixExprWith RecoveryMode.strict
+def letBinding := letBindingWith RecoveryMode.strict
+def letExpr := letExprWith RecoveryMode.strict
+def ifExpr := ifExprWith RecoveryMode.strict
+def matchArm := matchArmWith RecoveryMode.strict
+def matchExpr := matchExprWith RecoveryMode.strict
+def expr := exprWith RecoveryMode.strict
 
 /-! ## Program grammar (F# style)
 
@@ -1161,17 +1278,17 @@ def typeDecl : P (DataDecl × List ParsedNameSpan × Span) :=
     return (d, bs, declSpan)
 
 /-- Top-level named or pattern let (no `in`). -/
-def topLet : P (ParsedLetBinding × List ParsedNameSpan) :=
+def topLetWith (mode : RecoveryMode) : P (ParsedLetBinding × List ParsedNameSpan) :=
   withErrorMessage "expected top-level let" do
     skipComments
     let letTok ← keyword .«let»
-    letBinding letTok.startCol
+    letBindingWith mode letTok.startCol
 
 /-- One top-level `type` / `let` item. Soft-fails only when the next token is
 **not** `type`/`let` (so `takeMany` can stop). Once the keyword is seen, the
 item parse is **committed** — RHS errors keep their real site/message instead of
 being swallowed by `foldl`/`takeMany` and re-reported as `unexpected` on `let`. -/
-def programItem : P (Sum (DataDecl × Span) ParsedLetBinding × List ParsedNameSpan) := do
+def programItemWith (mode : RecoveryMode) : P (Sum (DataDecl × Span) ParsedLetBinding × List ParsedNameSpan) := do
   skipComments
   let t ← nextTok
   match t.token with
@@ -1179,13 +1296,13 @@ def programItem : P (Sum (DataDecl × Span) ParsedLetBinding × List ParsedNameS
       let (d, bs, dSpan) ← typeDecl
       return (Sum.inl (d, dSpan), bs)
   | .keyword .«let» =>
-      let (b, bs) ← topLet
+      let (b, bs) ← (topLetWith mode)
       return (Sum.inr b, bs)
   | _ => throwUnexpected
 
 /-- Zero or more committed top-level items. Stops at the first non-`type`/`let`
 token (or EOF) without discarding a real item error. -/
-partial def programItems : P (Array (Sum (DataDecl × Span) ParsedLetBinding × List ParsedNameSpan)) :=
+partial def programItemsWith (mode : RecoveryMode) : P (Array (Sum (DataDecl × Span) ParsedLetBinding × List ParsedNameSpan)) :=
   go #[]
 where
   go (acc : Array (Sum (DataDecl × Span) ParsedLetBinding × List ParsedNameSpan)) := do
@@ -1199,23 +1316,32 @@ where
     | none => return acc
     | some _ =>
         -- Keyword present: parse committed (errors propagate with true site).
-        let item ← programItem
+        let item ← (programItemWith mode)
         go (acc.push item)
 
 /-- Interleaved `type` / `let`, then optional body expr (default unit).
     Groups via `SurfaceBridge.Program.ofFlat` (SCC); fails on duplicate names.
     Also returns a `SpannedProgram` aligned with group/body structure. -/
-def program : P (Program × List ParsedNameSpan × SpannedProgram) :=
+def programWith (mode : RecoveryMode) : P (Program × List ParsedNameSpan × SpannedProgram) :=
   withErrorMessage "expected program" do
     skipComments
-    let items ← programItems
+    let items ← (programItemsWith mode)
     skipComments
     -- If anything remains, parse body **committed** so body errors aren't soft-
     -- failed into a generic endOfInput at the wrong token. EOF → unit body.
     let (body, bsBody, sBody) ←
       match ← option? (withBacktracking (endOfInput *> pure ())) with
       | some _ => pure (.primLit .unit, [], .leaf Span.empty)
-      | none => expr
+      | none => exprWith mode
+    if mode.enabled && bsBody.any (·.hole?.isSome) then
+      match items.back? with
+      | some (.inl (_, previous), _) =>
+          let body := sBody.span
+          if body.startLine == previous.endLine || body.startCol > previous.startCol then
+            match bsBody.findSome? (·.hole?) with
+            | some hole => throwRecoveredError hole.error
+            | none => throwUnexpected
+      | _ => pure ()
     let decls := items.toList.filterMap fun
       | (.inl (d, _), _) => some d
       | (.inr _, _) => none
@@ -1250,6 +1376,11 @@ def program : P (Program × List ParsedNameSpan × SpannedProgram) :=
       return (p, bsItems ++ bsBody, sp)
     | none =>
       throwUnexpectedWithMessage none "duplicate binding names"
+
+def topLet := topLetWith RecoveryMode.strict
+def programItem := programItemWith RecoveryMode.strict
+def programItems := programItemsWith RecoveryMode.strict
+def program := programWith RecoveryMode.strict
 
 /-! ## Doc comments
 
@@ -1339,11 +1470,11 @@ def parseExprWithSpans (src : String) :
 
 /-- Parse with binder spans (carrying doc comments) + spanned program (expr
     hulls for scopes). -/
-def parseProgramTokensWithSpans (toks : Array Tok) :
+private def finishProgram (toks : Array Tok) (parsed : Program × List ParsedNameSpan × SpannedProgram) :
     Except ParseError (Program × List BinderSpan × SpannedProgram) := do
-  let (p, bs, sp) ← runTokP program toks
+  let (p, bs, sp) := parsed
   let refs := bs.filterMap fun b =>
-    if b.isDef then none else
+    if b.isDef || b.hole?.isSome then none else
       some ({
         name := b.name
         span := b.span
@@ -1355,6 +1486,60 @@ def parseProgramTokensWithSpans (toks : Array Tok) :
   let defs := bs.filterMap fun b => if b.isDef then some b.toBinderSpan else none
   let defs ← attachDocs defs toks.toList
   pure (p, defs, { sp with references := refs })
+
+/-- Editor expression tree paired with its explicit error leaves. -/
+structure PartialExpr where
+  expr : Expr
+  binders : List BinderSpan
+  spanned : SpannedExpr
+  holes : List ExprHole
+
+def parseExprPartial (source : String) : Except ParseError PartialExpr :=
+  match parseExprWithSpans source with
+  | .ok (expr, binders, spanned) => .ok ⟨expr, binders, spanned, []⟩
+  | .error _ => do
+      let (expr, names, spanned) ← runLexParse (exprWith RecoveryMode.editor) source
+      pure ⟨expr, names.filterMap (fun b => if b.isDef then some b.toBinderSpan else none),
+        spanned, names.filterMap (·.hole?)⟩
+
+/-- Valid source retains precisely its existing AST and public sidecars. -/
+theorem parseExprPartial_of_strict {source : String} {expr : Expr} {binders : List BinderSpan} {spanned : SpannedExpr}
+    (h : parseExprWithSpans source = .ok (expr, binders, spanned)) :
+    parseExprPartial source = .ok ⟨expr, binders, spanned, []⟩ := by
+  simp [parseExprPartial, h]
+
+/-- A partial syntax tree uses reserved leaves paired with explicit errors.
+Only this editor API can return those leaves; strict APIs never do. -/
+structure PartialProgram where
+  program : Program
+  binders : List BinderSpan
+  spanned : SpannedProgram
+  holes : List ExprHole
+
+def PartialProgram.toStrict (result : PartialProgram) : Except ParseError (Program × List BinderSpan × SpannedProgram) :=
+  match result.holes.head? with
+  | some hole => .error hole.error
+  | none => if Surface.PartialSyntax.hasHole result.program.term then
+      .error { msg := "internal partial syntax without diagnostic", line := 1, col := 1 }
+    else .ok (result.program, result.binders, result.spanned)
+
+def parseProgramTokensWithSpans (toks : Array Tok) :
+    Except ParseError (Program × List BinderSpan × SpannedProgram) := do
+  finishProgram toks (← runTokP program toks)
+
+def parseProgramTokensPartial (toks : Array Tok) : Except ParseError PartialProgram :=
+  match parseProgramTokensWithSpans toks with
+  | .ok (program, binders, spanned) => .ok ⟨program, binders, spanned, []⟩
+  | .error _ => do
+      let parsed ← runTokP (programWith RecoveryMode.editor) toks
+      let (p, bs, sp) ← finishProgram toks parsed
+      pure ⟨p, bs, sp, parsed.2.1.filterMap (·.hole?)⟩
+
+theorem parseProgramTokensPartial_of_strict {toks : Array Tok} {program : Program}
+    {binders : List BinderSpan} {spanned : SpannedProgram}
+    (h : parseProgramTokensWithSpans toks = .ok (program, binders, spanned)) :
+    parseProgramTokensPartial toks = .ok ⟨program, binders, spanned, []⟩ := by
+  simp [parseProgramTokensPartial, h]
 
 def parseProgramWithSpans (src : String) :
     Except ParseError (Program × List BinderSpan × SpannedProgram) := do

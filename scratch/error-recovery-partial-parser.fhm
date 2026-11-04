@@ -1,0 +1,21 @@
+-- Partial parser showcase: five syntax errors and an independent type error.
+-- No repaired tokens are inferred or executed. Healthy source still has hovers.
+
+--- Local bindings and an arbitrary parenthesised lambda survive nearby errors.
+let outer x =
+  let broken = (1 + ) in
+  let healthy = x + 1 in
+  ((\flag -> if flag then (2 + ) else healthy), ([healthy, (3 + ), healthy], broken))
+
+--- A broken arm body keeps its pattern captures and the other arm.
+let arms xs =
+  match xs with
+  | head :: tail -> ((4 + ), head + 1)
+  | [] -> (5 True, 0)
+
+-- The missing condition does not discard the then/else expressions.
+let condition = if then 6 else 7
+
+--- Documentation, polymorphism and navigation survive every error above.
+let after value = value
+(after 41, after True)

@@ -408,7 +408,9 @@ def collectUnavailableHover (src : String) (slice : FHM.Unverified.EditorRecover
       let source ← identified.nodes.find? (·.id == occurrence.id)
       let name := if occurrence.kind == "lit" || occurrence.kind == "op" then
         FHM.Unverified.HMArtifacts.spanText src source.span else occurrence.name
-      if Surface.internalBindingName (.mk name) then none else do
+      if Surface.PartialSyntax.isHole (.mk name) then
+        pure (mkSym "expression" "expr" label source.span source.span)
+      else if Surface.internalBindingName (.mk name) then none else do
         let binder := ((locations.binders.filter fun binder => binder.name == name &&
           binder.scope.contains source.span.startLine source.span.startCol).mergeSort
           (fun a b => a.scope.area ≤ b.scope.area)).head?

@@ -1,4 +1,5 @@
 import FHM.Unverified.DeclarationRecovery
+import FHM.Unverified.Surface.PartialSyntax
 
 /-! Contextual native checks and editor artifact containers shared by recovery
 passes. No value in this module certifies a rejected whole program. -/
@@ -140,7 +141,8 @@ lowerer. Holes, invalid declarations and quarantined parser names give no
 interface. Opening uses exactly the real enclosing authored type variables. -/
 def declaredInterface (source : Source) (context : Context) (binding : Surface.Binding)
     (rhs : SpannedExpr) (scope : Span) : Option DeclaredInterface := do
-  if source.quarantined.contains binding.name || Surface.internalBindingName binding.name then none else do
+  if source.quarantined.contains binding.name || Surface.internalBindingName binding.name ||
+      Surface.PartialSyntax.hasHole binding.rhs then none else do
     let annotation ← finalizeInputAnn binding.tyParams binding.params binding.ann
     if !(DeclarationRecovery.causesFor source.declarations ⟨typeNames annotation.body, []⟩).isEmpty then none else do
       let lowered ← (lowerInputLetAnnResult (kindEnvOfCtors source.declarations.ctors) context.tvs (some annotation)).toOption
@@ -166,6 +168,8 @@ def unavailable (source : Source) (causes : List Cause) : Except HoverDiag Unava
 forall variables are opened, as they are in the canonical enclosing checker. -/
 def check (context : Context) (source : Source) (ctors : CtorEnv) (isBody : Bool := false) :
     Except HoverDiag CheckedSlice := do
+  if Surface.PartialSyntax.hasHole source.program.term then
+    throw { diagAtSpan "internal partial syntax reached fragment checker" (some source.scope) with code? := some "internal.partialSyntax" }
   let tree ← (HMArtifacts.programSpannedResult source.program source.spanned source.scope).mapError
     (fun error => Diagnostics.provenanceDiag error source.program source.spanned source.binders source.scope)
   let identified := identify tree

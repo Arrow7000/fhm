@@ -57,6 +57,8 @@ private def checkSlice (ctors : CtorEnv) (names : List ValName) (schemes : List 
     (program : Surface.Program) (spanned : SpannedProgram) (binders : List BinderSpan)
     (scope : Span) (isBody : Bool := false)
     (assumed : List (ValName × List RecoveryArtifacts.InterfaceRef) := []) : Except HoverDiag CheckedSlice := do
+  if Surface.PartialSyntax.hasHole program.term then
+    throw (internalError "internal partial syntax reached whole-group checker" scope)
   let tree ← (HMArtifacts.programSpannedResult program spanned scope).mapError
     (fun error => Diagnostics.provenanceDiag error program spanned binders scope)
   let identified := identify tree
