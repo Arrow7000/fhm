@@ -144,3 +144,34 @@ assert.deepEqual([conditionError.col, conditionError.endCol],
   [missingThen.split('\n')[conditionLine].indexOf('else') + 1, missingThen.split('\n')[conditionLine].indexOf('else') + 5]);
 assert.ok(missingThenReport.diagnostics.every(d => d.line <= conditionLine + 1));
 console.log(`PASS ${keywordChecks} deleted-keyword boundary cases and the exact scratch-file edit.`);
+
+// An invalid binding structure rejects its item. Recovering it as an operand
+// must not strand `in` and hide the primary error behind a separator cascade.
+const bindingWrappers = [e => e, e => `(${e})`, e => `[${e}, 7]`,
+  e => `(${e}, True)`, e => `\\parameter -> ${e}`, e => `if True then ${e} else 7`];
+let bindingChecks = 0;
+for (let seed = 0; seed < 3; seed++) for (const wrap of bindingWrappers) for (const duplicate of [false, true]) {
+  const name = `capture${seed}`, other = `other${seed}`;
+  const head = `(${name}, ${duplicate ? name : other})`;
+  const damaged = `let ${head} = (${duplicate ? '1' : name}, 0) in ${name}`;
+  const repaired = `let (${name}, ${other}) = (1, 0) in ${name}`;
+  const sourceFor = body => `let broken = ${wrap(body)}\nlet dependent = broken\nlet later=7\nlater\n`;
+  const source = sourceFor(damaged);
+  const result = cli(source);
+  assert.equal(result.status, 1, source);
+  assert.equal(result.payload.diagnostics.length, 1, source);
+  const diagnostic = result.payload.diagnostics[0];
+  assert.equal(diagnostic.message, duplicate ? 'duplicate names in let pattern' : `recursive pattern binding involving: ${name}`, source);
+  assert.deepEqual([diagnostic.line, diagnostic.col], [1, source.indexOf(head) + 1], source);
+  assert.equal(result.payload.programTy, 'Int', source);
+  assert.equal(result.payload.symbols.find(s => s.def && s.name === 'later').type, 'Int', source);
+  assert.match(result.payload.symbols.find(s => s.def && s.name === 'dependent').type, /^type unknown/, source);
+  const rejected = cli(source, ['run', '--json']);
+  assert.equal(rejected.status, 1, source);
+  assert.equal(rejected.payload.stage, 'parse', source);
+  const fixedResult = cli(sourceFor(repaired));
+  assert.equal(fixedResult.status, 0, source);
+  assert.deepEqual(fixedResult.payload.diagnostics, [], source);
+  bindingChecks++;
+}
+console.log(`PASS ${bindingChecks} binding-structure damage/repair cases: primary errors, dependent withholding and healthy later code.`);

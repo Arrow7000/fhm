@@ -53,6 +53,19 @@ private def definition (r : HoverReport) (name : String) : Option String :=
       definition r "later" == some "Int"
   | none => false
 
+-- Binding-structure rejections cannot become operand holes that strand `in`
+-- and replace the primary header error with a separator cascade.
+#guard match report "let bad = let (x, y) = (x, 0) in x\nlet later=7\nlater\n" with
+  | some r => r.diagnostics.length == 1 && r.diagnostics.all (fun d =>
+      d.message == "recursive pattern binding involving: x" && d.line == 1 && d.col == 15) &&
+      definition r "later" == some "Int" && r.programTy == "Int"
+  | none => false
+#guard match report "let bad = (let (x, x) = (1, 0) in x)\nlet later=7\nlater\n" with
+  | some r => r.diagnostics.length == 1 && r.diagnostics.all (fun d =>
+      d.message == "duplicate names in let pattern" && d.line == 1 && d.col == 16) &&
+      definition r "later" == some "Int"
+  | none => false
+
 -- Complete valid syntax uses the exact strict result, including metadata.
 example {source : String} {expr : Surface.Expr} {binders : List BinderSpan} {spanned : SpannedExpr}
     (h : parseExprWithSpans source = .ok (expr, binders, spanned)) :

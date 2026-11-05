@@ -77,7 +77,17 @@ private def nextHeader (tokens : Array Tok) (first : Nat) : Nat :=
 private structure Removal where
   first : Nat
   last : Nat
-  body : Bool := false
+
+/-- A trailing fragment on the same line, or indented beneath the previous
+item, still belongs to that item. Syntax and lexical recovery share this rule. -/
+private def bodyOwner (tokens : Array Tok) (scanned : Scan) (first : Nat) : Nat :=
+  match scanned.items.getLast?, tokens[first]? with
+  | some previous, some bodyToken =>
+      let headerIndex := codeAt tokens previous.first
+      let headerCol := ((tokens[headerIndex]?).map (·.startCol)).getD 1
+      let previousSpan := regionSpan tokens previous.first previous.last
+      if bodyToken.startLine == previousSpan.endLine || bodyToken.startCol > headerCol then headerIndex else first
+  | _, _ => first
 
 private def itemNames (item : Item) : List ValName :=
   match item.parsed.1 with
@@ -95,38 +105,32 @@ private def removals (tokens : Array Tok) (error : ParseError) : List Removal :=
   if error.msg.startsWith "a doc comment must" then
     let index := (List.range tokens.size).find? fun i =>
       (tokens[i]?.map fun token => covers (Span.ofTok token) error).getD false
-    return index.toList.map fun i => ⟨i, i + 1, false⟩
+    return index.toList.map fun i => ⟨i, i + 1⟩
   let scanned := scan tokens 0 .editor
   match scanned.failure with
   | some (first, _) =>
-      return [⟨beforeComments tokens first, nextHeader tokens first, false⟩]
+      return [⟨beforeComments tokens first, nextHeader tokens first⟩]
   | none =>
     let names := scanned.items.flatMap itemNames
     let duplicates := (names.filter (fun name => 1 < names.count name)).eraseDups
     if !duplicates.isEmpty then
       return (scanned.items.filter fun item => (itemNames item).any duplicates.contains).map
-        fun item => ⟨item.first, item.last, false⟩
+        fun item => ⟨item.first, item.last⟩
     let pattern := scanned.items.find? fun item =>
       match item.parsed.1 with
       | .inr binding => (binding.patternToken?.map fun token => covers (Span.ofTok token) error).getD false
       | _ => false
     match pattern with
-    | some item => return [⟨item.first, item.last, false⟩]
+    | some item => return [⟨item.first, item.last⟩]
     | none =>
       match scanned.body with
       | some first =>
-          match scanned.items.getLast?, tokens[first]? with
-          | some previous, some bodyToken =>
-              let headerIndex := codeAt tokens previous.first
-              let headerCol := ((tokens[headerIndex]?).map (·.startCol)).getD 1
-              let previousSpan := regionSpan tokens previous.first previous.last
-              if bodyToken.startLine == previousSpan.endLine || bodyToken.startCol > headerCol then
-                return [⟨previous.first, nextHeader tokens headerIndex, false⟩]
-              else return [⟨first, nextHeader tokens first, true⟩]
-          | _, _ => return [⟨first, nextHeader tokens first, true⟩]
+          let owner := bodyOwner tokens scanned first
+          let start := if owner == first then first else beforeComments tokens owner
+          return [⟨start, nextHeader tokens owner⟩]
       | none =>
           return ((scanned.items.find? fun item => covers (regionSpan tokens item.first item.last) error).toList).map
-            fun item => ⟨item.first, item.last, false⟩
+            fun item => ⟨item.first, item.last⟩
 
 /-- Parse the already established part of a malformed header with the native
 pattern/name grammar. A missing name is not guessed from the failed RHS. -/
@@ -183,15 +187,6 @@ private def inInterval (tokens : Array Tok) (gap : Span) (first last : Nat) : Bo
   let stop := tokens[last]?.map Span.ofTok
   positionLE start gap && (stop.map (fun stop => !positionLE stop gap)).getD true
 
-private def bodyOwner (tokens : Array Tok) (scanned : Scan) (first : Nat) : Nat :=
-  match scanned.items.getLast?, tokens[first]? with
-  | some previous, some bodyToken =>
-      let headerIndex := codeAt tokens previous.first
-      let headerCol := ((tokens[headerIndex]?).map (·.startCol)).getD 1
-      let previousSpan := regionSpan tokens previous.first previous.last
-      if bodyToken.startLine == previousSpan.endLine || bodyToken.startCol > headerCol then headerIndex else first
-  | _, _ => first
-
 private def scanAround (tokens : Array Tok) (gap : Span) : Scan :=
   let rec go : Nat → Nat → Scan
     | 0, offset => scan tokens offset
@@ -223,25 +218,25 @@ private def gapRemoval (tokens : Array Tok) (gap : Span) : Option Removal := Id.
     gap.startLine == span.startLine && gap.startCol ≤ span.startCol
   let owner := exact.orElse (fun _ => before) |>.orElse (fun _ => after)
   match owner with
-  | some item => return some ⟨item.first, item.last, false⟩
+  | some item => return some ⟨item.first, item.last⟩
   | none =>
     match scanned.failure with
     | some (first, _) =>
         let last := nextHeader tokens first
         if inInterval tokens gap first last ||
             ((tokens[first]?.map (·.startLine)).getD 0 == gap.startLine) then
-          return some ⟨beforeComments tokens first, last, false⟩
+          return some ⟨beforeComments tokens first, last⟩
     | none => pure ()
     match scanned.body with
     | some bodyFirst =>
         let first := bodyOwner tokens scanned bodyFirst
         let last := nextHeader tokens first
-        if inInterval tokens gap first last then return some ⟨beforeComments tokens first, last, first == bodyFirst⟩
+        if inInterval tokens gap first last then return some ⟨beforeComments tokens first, last⟩
     | none => pure ()
     let laterHeader := tokens.toList.any fun token => isHeader token.token && positionLE gap (Span.ofTok token)
     if !laterHeader then
       match scanned.body with
-      | some first => return some ⟨first, tokens.size, true⟩
+      | some first => return some ⟨first, tokens.size⟩
       | none => return none
     else return none
 
@@ -294,7 +289,7 @@ def check (source : String) : Except ParseError Result := do
         if rejected.isEmpty then .error error else do
           let spans := rejected.map (fun removal => regionSpan tokens removal.first removal.last)
           let diagnostic := if spans.any (covers · error) then error else
-            let last := rejected.getLast?.getD ⟨0, 0, false⟩
+            let last := rejected.getLast?.getD ⟨0, 0⟩
             let span := if error.msg == "duplicate binding names" then
               ((headerBinders (tokens.extract last.first last.last)).find? (·.kind == .val)).map (·.span)
                 |>.getD ((spans.getLast?).getD Span.empty)

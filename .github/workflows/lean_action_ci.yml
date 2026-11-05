@@ -14,3 +14,10 @@ jobs:
       - name: Check verified/unverified boundary
         run: bash scripts/check-unverified-boundary.sh
       - uses: leanprover/lean-action@v1
+      - uses: actions/setup-node@v4
+        with:
+          node-version: '22'
+      - name: Check source proof boundary
+        run: lake env lean scripts/check-source-proof-boundary.lean
+      - name: Check editor and error recovery
+        run: bash scripts/check-editor-recovery.sh

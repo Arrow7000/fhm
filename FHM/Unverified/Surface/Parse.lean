@@ -98,6 +98,20 @@ def simpleErrToParse (toks : Array Tok) (e : Parser.Error.Simple TokStream Tok) 
     line := s.startLine, col := s.startCol
     endLine := s.endLine, endCol := s.endCol }
 
+/-- Structural binding rejections invalidate their containing item, rather than
+an expression operand. Carry an internal tag through the existing error tree so
+expression recovery cannot turn their primary error into a later separator
+error. The generic `expected …` wrapper changes neither public diagnostics nor
+native alternative specificity. -/
+private def bindingFailureTag : String := "expected structurally valid binding"
+
+private def rejectBinding (token : Option Tok) (message : String) : P α :=
+  withErrorMessage bindingFailureTag (throwUnexpectedWithMessage token message)
+
+private def isBindingFailure : Parser.Error.Simple TokStream Tok → Bool
+  | .unexpected .. => false
+  | .addMessage inner _ message => message == bindingFailureTag || isBindingFailure inner
+
 /-! ## Builtin type names (must match SurfaceBridge lowering) -/
 
 /-- Map a surface type name to a primitive; `none` means customTy. Never emits `.nat`. -/
@@ -365,6 +379,7 @@ def recoverExpression (mode : RecoveryMode) (complete : Bool) (parser : PE) : PE
         if !atBoundary mode token then throwUnexpected (some token)
     return result
   catch error =>
+    if isBindingFailure error then throw error
     let _ ← setStream initial
     match synchronise mode initial.array initial.start initial.stop with
     | none => throw error
@@ -773,7 +788,7 @@ def checkPatternBindingCycles (entries : List (Binding × SpannedExpr))
   let names := binds.map (·.name)
   if names.eraseDups.length != names.length then
     if lexicalDuplicates then return ()
-    throwUnexpectedWithMessage tokens.head?
+    rejectBinding tokens.head?
       "duplicate binding names in a pattern let block"
   let groups := (SurfaceBridge.sccGroups (binds.map fun b => { b with ann := none })).getD []
   for group in groups do
@@ -783,7 +798,7 @@ def checkPatternBindingCycles (entries : List (Binding × SpannedExpr))
         fun b => match b.name with | .mk name => name
       let site := (tokens.find? fun t => group.any fun b =>
         b.name == ValName.mk s!"$pattern/{t.startLine}/{t.startCol}").or tokens.head?
-      throwUnexpectedWithMessage site
+      rejectBinding site
         ("recursive pattern binding involving: " ++ String.intercalate ", " names)
 
 /-! ## Expression grammar
@@ -807,7 +822,7 @@ partial def atomWith (mode : RecoveryMode) : PE := do
       throwUnexpectedWithMessage (some t0)
         "string literals are not supported in expressions"
   | _ => pure ()
-  withErrorMessage "expected expression (atomWith mode)" do
+  withErrorMessage "expected expression atom" do
     -- Prefer specific reject messages (e.g. value-level `*`) over later bare fails.
     first (combine := preferErr) [
       -- int / bool / char
@@ -882,7 +897,7 @@ partial def atomWith (mode : RecoveryMode) : PE := do
           let bs := bsHd ++ concatBinders3 tl
           let span := Span.union (Span.ofTok t0) (Span.ofTok t1)
           return (.list items, bs, .list span spans),
-      -- `\ binder+ -> (exprWith mode)`
+      -- `\ binder+ -> expr`
       do
         let bsTok ← punct .backslash
         skipComments
@@ -890,7 +905,7 @@ partial def atomWith (mode : RecoveryMode) : PE := do
         skipComments
         let _ ← punct .arrow
         skipComments
-        let (body, bsBody, sBody) ← (exprWith mode)
+        let (body, bsBody, sBody) ← exprWith mode
         let bsBind := binders.toList.flatMap (·.2.2.1)
         let (e, s) :=
           binders.toList.foldr
@@ -921,12 +936,12 @@ partial def appExprWith (mode : RecoveryMode) : PE :=
   withErrorMessage "expected expression" do
     skipComments
     let headTok ← nextTok
-    let (head, bsHead, sHead) ← (atomWith mode)
+    let (head, bsHead, sHead) ← atomWith mode
     let args ← takeMany (withBacktracking do
       let t ← nextTok
       if t.startLine != headTok.startLine && t.startCol ≤ headTok.startCol then
         throwUnexpectedWithMessage none "app argument must be same line or indented"
-      (atomWith mode))
+      atomWith mode)
     -- Soft `takeMany` swallows a failed arg; re-surface common rejects so
     -- `f "bla"` points at the string instead of a generic leftover error.
     skipComments
@@ -949,18 +964,18 @@ partial def appExprWith (mode : RecoveryMode) : PE :=
 
 /-- Infix RHS: layout forms or an app — not another infix (keeps single-infix). -/
 partial def infixRhsWith (mode : RecoveryMode) : PE :=
-  recoverExpression mode false <| first [(letExprWith mode), (ifExprWith mode), (matchExprWith mode), (appExprWith mode)]
+  recoverExpression mode false <| first [letExprWith mode, ifExprWith mode, matchExprWith mode, appExprWith mode]
 
 /-- Single optional infix; a second infix at this layer is an error. -/
 partial def infixExprWith (mode : RecoveryMode) : PE :=
   withErrorMessage "expected expression" do
-    let (left, bsL, sL) ← (appExprWith mode)
+    let (left, bsL, sL) ← appExprWith mode
     skipComments
     match ← option? (withBacktracking binOpTokFull) with
     | none => return (left, bsL, sL)
     | some (opTok, op) =>
       skipComments
-      let (right, bsR, sR) ← (infixRhsWith mode)
+      let (right, bsR, sR) ← infixRhsWith mode
       skipComments
       match ← option? (withBacktracking binOpTok) with
       | some _ =>
@@ -988,7 +1003,7 @@ partial def letBindingWith (mode : RecoveryMode) (indentCol : Nat) : P (ParsedLe
           let (pat, bs) ← pattern
           let names := patVars pat
           if names.eraseDups.length != names.length then
-            throwUnexpectedWithMessage (some headTok) "duplicate names in let pattern"
+            rejectBinding (some headTok) "duplicate names in let pattern"
           let bs := bs.map fun b =>
             if b.isDef && b.kind == .pat then { b with kind := .val } else b
           pure (pat, bs, [], [])
@@ -1008,7 +1023,7 @@ partial def letBindingWith (mode : RecoveryMode) (indentCol : Nat) : P (ParsedLe
     let recursiveNames := (patVars pat).filter fun name => (freeNames [] rhs).contains name
     if name?.isNone && !recursiveNames.isEmpty then
       let names := recursiveNames.map fun | .mk name => name
-      throwUnexpectedWithMessage (some headTok)
+      rejectBinding (some headTok)
         ("recursive pattern binding involving: " ++ String.intercalate ", " names)
     let (ann, bsAnn) := match annRaw with
       | some (σ, bs) => (some σ, bs)
@@ -1040,17 +1055,17 @@ partial def letExprWith (mode : RecoveryMode) : PE :=
   withErrorMessage "expected let expression" do
     skipComments
     let letTok ← keyword .«let»
-    let (first, bs0) ← (letBindingWith mode) letTok.startCol
+    let (first, bs0) ← letBindingWith mode letTok.startCol
     let rest ← takeMany (withBacktracking do
       colEq first.column
-      (letBindingWith mode) first.column)
+      letBindingWith mode first.column)
     let parsed := first :: rest.toList.map (·.1)
     let bindsWithSpans := parsed.flatMap (·.entries)
     checkPatternBindingCycles bindsWithSpans (parsed.filterMap (·.patternToken?)) true
     skipComments
     let _ ← keyword .«in»
     skipComments
-    let (body, bsBody, sBody) ← (exprWith mode)
+    let (body, bsBody, sBody) ← exprWith mode
     let binds : List Binding := bindsWithSpans.map (·.1)
     let bsRest := concatBinders rest
     let bindingBinders := bs0 ++ bsRest
@@ -1121,11 +1136,11 @@ partial def ifExprWith (mode : RecoveryMode) : PE :=
     skipComments
     let _ ← keyword .«else»
     skipComments
-    let (f, bsF, sF) ← (exprWith mode)
+    let (f, bsF, sF) ← exprWith mode
     let span := Span.union (Span.ofTok ifTok) sF.span
     return (.ife c t f, bsC ++ bsT ++ bsF, .ife span sC sT sF)
 
-/-- One match arm: `pattern -> (exprWith mode)`. -/
+/-- One match arm: `pattern -> expr`. -/
 partial def matchArmWith (mode : RecoveryMode) : P ((Pattern × Expr × SpannedExpr) × List ParsedNameSpan) := do
   skipComments
   let (pat, bsPat) ← pattern
@@ -1158,7 +1173,7 @@ partial def matchExprWith (mode : RecoveryMode) : PE :=
       match leadPipe? with
       | some p => p.startLine
       | none => t.startLine
-    let (arm0, bs0) ← (matchArmWith mode)
+    let (arm0, bs0) ← matchArmWith mode
     let rest ← takeMany (withBacktracking do
       skipComments
       let pipe ← nextTok
@@ -1167,7 +1182,7 @@ partial def matchExprWith (mode : RecoveryMode) : PE :=
       if pipe.startLine > blockLine && pipe.startCol != blockCol then
         throwUnexpectedWithMessage none "match branch misaligned"
       let _ ← punct .pipe
-      (matchArmWith mode))
+      matchArmWith mode)
     let arms := arm0 :: rest.toList.map (·.1)
     let armExprs := arms.map fun ⟨p, e, _⟩ => (p, e)
     let armSpans := arms.map fun ⟨_, _, s⟩ => s
@@ -1186,13 +1201,13 @@ partial def exprWith (mode : RecoveryMode) : PE :=
     skipComments
     -- Commit on the leading keyword rather than trying each form in turn:
     -- `first` keeps only the last alternative's error, so an error inside a
-    -- `match` (say) would be reported as `(infixExprWith mode)` rejecting the keyword.
+    -- `match` (say) would be reported as `infixExpr` rejecting the keyword.
     let next : Option Token := (← option? nextTok).map (·.token)
     match next with
-    | some (.keyword .«let») => (letExprWith mode)
-    | some (.keyword .«if») => (ifExprWith mode)
-    | some (.keyword .«match») => (matchExprWith mode)
-    | _ => (infixExprWith mode)
+    | some (.keyword .«let») => letExprWith mode
+    | some (.keyword .«if») => ifExprWith mode
+    | some (.keyword .«match») => matchExprWith mode
+    | _ => infixExprWith mode
 
 end
 
@@ -1300,7 +1315,7 @@ def programItemWith (mode : RecoveryMode) : P (Sum (DataDecl × Span) ParsedLetB
       let (d, bs, dSpan) ← typeDecl
       return (Sum.inl (d, dSpan), bs)
   | .keyword .«let» =>
-      let (b, bs) ← (topLetWith mode)
+      let (b, bs) ← topLetWith mode
       return (Sum.inr b, bs)
   | _ => throwUnexpected
 
@@ -1320,7 +1335,7 @@ where
     | none => return acc
     | some _ =>
         -- Keyword present: parse committed (errors propagate with true site).
-        let item ← (programItemWith mode)
+        let item ← programItemWith mode
         go (acc.push item)
 
 /-- Interleaved `type` / `let`, then optional body expr (default unit).
@@ -1329,7 +1344,7 @@ where
 def programWith (mode : RecoveryMode) : P (Program × List ParsedNameSpan × SpannedProgram) :=
   withErrorMessage "expected program" do
     skipComments
-    let items ← (programItemsWith mode)
+    let items ← programItemsWith mode
     skipComments
     -- If anything remains, parse body **committed** so body errors aren't soft-
     -- failed into a generic endOfInput at the wrong token. EOF → unit body.

@@ -199,14 +199,14 @@ failures, fixing errors, and strict execution.
 The completed recovery work is checked with:
 
 ```sh
-lake build FHM FHMUnverified FHMEditorTests FHMExamples fhm fhm_parser_audit
+lake build FHM FHMExamples
 lake env lean scripts/check-source-proof-boundary.lean
 bash scripts/check-unverified-boundary.sh
-node scripts/hm-editor-smoke.mjs
-node scripts/hm-recovery-smoke.mjs
-node scripts/hm-interface-recovery-smoke.mjs
-node scripts/parser-properties.mjs
-node scripts/parser-recovery-properties.mjs
-bash recursion-language-comparison/check.sh fhm
-(cd editors/web && npm test)
+bash scripts/check-editor-recovery.sh
 ```
+
+The editor command builds its own Lean test targets, CLI, parser audit and grammar
+exporter, then runs the semantic, recovery, generated parser, recursion and shared
+editor suites. It requires Node.js and npm but no installed npm dependencies or
+browser. CI runs this same command alongside the proof and import-boundary checks;
+the default local `lake build` continues to check the verified library alone.

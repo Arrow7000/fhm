@@ -23,6 +23,12 @@ import these modules. Operational builds remain available through
 `lake build FHMUnverified`, `lake build FHMEditorTests`, `lake build fhm`, and
 `lake build fhm_grammar`.
 
+For editor or recovery changes, run `bash scripts/check-editor-recovery.sh`.
+It builds the required targets and runs the semantic, recovery, generated parser,
+recursion and shared editor checks; CI runs the same command. See
+[editor recovery](../../docs/error-recovery.md) and
+[partial parsing](../../docs/partial-parser.md) for the architecture and limits.
+
 Run `bash scripts/check-unverified-boundary.sh` to check that all production
 partial declarations remain here and that the default library's local import
 closure stays outside this directory. Historical design briefs retain their

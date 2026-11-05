@@ -39,6 +39,14 @@ The parser retains its original alternative ordering and error-selection rules.
 A soft datatype prefix is still quarantined if damaged trailing syntax belongs
 to it; recovery cannot publish an incomplete constructor signature.
 
+Explicit binding-structure rejections, such as duplicate pattern captures or
+recursive pattern bindings, carry an internal error tag and bypass expression
+hole recovery. Their containing item is quarantined with its primary diagnostic.
+Otherwise a hole could stop at that local binding's `in`, strand the separator,
+and replace the useful header error with a later generic syntax error. The tag
+uses the existing parser error tree and does not appear in public messages or
+change strict alternative selection.
+
 ## Partial trees and typing
 
 `PartialExpr` and `PartialProgram` pair a Surface-shaped skeleton with explicit
@@ -70,6 +78,9 @@ node scripts/parser-properties.mjs
 node scripts/parser-recovery-properties.mjs
 ```
 
+For the complete editor and recovery regression suite, including these checks,
+run `bash scripts/check-editor-recovery.sh`. CI runs the same command.
+
 Verification combines several independent checks:
 
 - Before changing the parser, commit `464546a` recorded 3,384 strict results in
@@ -97,6 +108,8 @@ Verification combines several independent checks:
   `then`/`with` boundaries across nesting, wrappers and layout, including the
   exact scratch-file edit that originally skipped past `else`. Additional cases
   cover unmatched/mismatched delimiters, later top-level headers and UTF-16 positions.
+  A further 36 damage/repair cases check primary binding-structure errors across
+  expression wrappers, dependent withholding and healthy later declarations.
 - `parseExprPartial_of_strict` and `parseProgramTokensPartial_of_strict` prove
   exact preservation of every successful strict result at the API boundary,
   including sidecars. This follows from the strict-success fast path, without

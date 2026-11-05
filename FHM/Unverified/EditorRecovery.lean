@@ -87,14 +87,8 @@ private def unavailableSlice (program : Surface.Program) (spanned : SpannedProgr
 from inferred scheme metadata; their validated lowered annotations are authoritative. -/
 private def exports (group : List Surface.Binding) (typed : TypedLowered)
     (scope : Span) : Except HoverDiag (List PolyTy) := do
-  let schemes ← group.zipIdx.mapM fun (_, member) => do
-    let (declared, site) := match typed.input with
-      | .letIn ann _ _ => (ann.recModeAnn, CoreBinderSite.letIn [])
-      | .letRec bindings _ =>
-          ((bindings[member]?).bind (fun binding => binding.ann.recModeAnn), .letRec [] member)
-      | _ => (none, .letIn [])
-    match declared.orElse (fun _ => (typed.inference.binderSchemes.find? (·.1 == site)).map (·.2)) with
-    | some scheme => pure scheme
+  let schemes ← match RecoveryArtifacts.groupSchemes group typed with
+    | some schemes => pure schemes
     | none => .error (internalError "internal recovery error: missing group export" scope)
   -- Top-level exports must be closed. Never carry a guessed or unresolved
   -- monotype across a recovery boundary, where a later group could constrain it.
