@@ -243,12 +243,16 @@ structure ExprHole where
 structure RecoveryMode where
   enabled : Bool := false
   stops : List Token := []
+  /-- Enclosing/sibling syntax that belongs to the caller, even if a required
+      separator is missing. A child must not recover through these tokens. -/
+  fences : List Token := []
   layout : Option (Nat × Nat) := none
 
 def RecoveryMode.strict : RecoveryMode := {}
 def RecoveryMode.editor : RecoveryMode := { enabled := true }
-def RecoveryMode.inside (mode : RecoveryMode) (stops : List Token) : RecoveryMode :=
-  { mode with stops }
+def RecoveryMode.inside (mode : RecoveryMode) (stops : List Token)
+    (fences : List Token := []) : RecoveryMode :=
+  { mode with stops, fences := (fences ++ mode.stops ++ mode.fences).eraseDups }
 
 def isRecoveryName := Surface.PartialSyntax.isHole
 
@@ -311,11 +315,11 @@ private def isClose : Token → Bool
   | _ => false
 
 private def atBoundary (mode : RecoveryMode) (token : Tok) : Bool :=
-  mode.stops.contains token.token || (mode.layout.map fun (line, col) =>
+  mode.stops.contains token.token || mode.fences.contains token.token || (mode.layout.map fun (line, col) =>
     token.startLine > line && token.startCol ≤ col).getD false
 
-/-- Resynchronise only at this production's follow set and delimiter depth.
-A mismatched closer belongs to an enclosing production; it is never consumed.
+/-- Resynchronise at this production's follow set or caller fences, at the
+appropriate delimiter depth. A mismatched closer belongs to an enclosing production; it is never consumed.
 An unmatched opener cannot swallow the next top-level declaration. -/
 private def synchronise (mode : RecoveryMode) (tokens : Array Tok) (first stop : Nat) : Option Nat :=
   let rec go : Nat → Nat → List Punct → Option Nat
@@ -1109,7 +1113,7 @@ partial def ifExprWith (mode : RecoveryMode) : PE :=
     skipComments
     let ifTok ← keyword .«if»
     skipComments
-    let (c, bsC, sC) ← exprWith (mode.inside [.keyword .«then»])
+    let (c, bsC, sC) ← exprWith (mode.inside [.keyword .«then»] [.keyword .«else»])
     skipComments
     let _ ← keyword .«then»
     skipComments
@@ -1139,7 +1143,7 @@ partial def matchExprWith (mode : RecoveryMode) : PE :=
     skipComments
     let matchTok ← keyword .«match»
     skipComments
-    let (scrut, bsScrut, sScrut) ← exprWith (mode.inside [.keyword .«with»])
+    let (scrut, bsScrut, sScrut) ← exprWith (mode.inside [.keyword .«with»] [.punct .pipe])
     skipComments
     let _ ← keyword .«with»
     skipComments

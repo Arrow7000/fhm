@@ -19,6 +19,13 @@ production supplies its follow tokens: commas and matching closing delimiters,
 nested parentheses, brackets and braces. Delimiter-looking text in strings or
 comments is already opaque to the lexer and cannot introduce a restart point.
 
+Normal continuation tokens are distinct from caller-owned fences. For an `if`
+condition, `then` is expected, while `else` is a fence: `if 6 else 7` must report
+the missing separator at `else`, rather than consume it while searching for
+`then`. Nested expression modes retain their callers' boundaries. Match scrutinees
+similarly stop at an arm separator when `with` is missing. The owning production
+still requires its separator; treating a token as a fence does not insert one.
+
 A failed expression records its original error and token interval. Its owning
 production consumes the boundary token; a zero-length missing operand therefore
 cannot make a repetition loop without advancing. Mismatched delimiters and
@@ -86,8 +93,10 @@ Verification combines several independent checks:
 - 120 generated damage/repair programs exercise the actual diagnose and editor
   resolver APIs. They verify lexical shadowing, healthy types, documentation,
   navigation, absence of internal/lowering cascades, strict execution rejection,
-  and full recovery after repair. Additional cases cover unmatched/mismatched
-  delimiters, later top-level headers and UTF-16 positions.
+  and full recovery after repair. Another 96 deletion cases check missing
+  `then`/`with` boundaries across nesting, wrappers and layout, including the
+  exact scratch-file edit that originally skipped past `else`. Additional cases
+  cover unmatched/mismatched delimiters, later top-level headers and UTF-16 positions.
 - `parseExprPartial_of_strict` and `parseProgramTokensPartial_of_strict` prove
   exact preservation of every successful strict result at the API boundary,
   including sidecars. This follows from the strict-success fast path, without

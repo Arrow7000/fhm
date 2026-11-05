@@ -40,6 +40,19 @@ private def definition (r : HoverReport) (name : String) : Option String :=
       ((definition r "use").map (·.startsWith "type unknown")).getD false
   | none => false
 
+-- Missing separators stop at the sibling keyword, not the next declaration.
+#guard match report "let condition = if 6 else 7\nlet later=7\nlater\n" with
+  | some r => r.diagnostics.length == 1 && r.diagnostics.all (fun d => d.line == 1 && d.col == 22 && d.endCol == 26) &&
+      definition r "later" == some "Int"
+  | none => false
+#guard match report "let condition = (if 6 else 7)\nlet later=7\nlater\n" with
+  | some r => r.diagnostics.length == 1 && r.diagnostics.all (fun d => d.line == 1 && d.col == 23 && d.endCol == 27)
+  | none => false
+#guard match report "let bad = match 1 | x -> x\nlet later=7\nlater\n" with
+  | some r => r.diagnostics.length == 1 && r.diagnostics.all (fun d => d.line == 1 && d.col == 19 && d.endCol == 20) &&
+      definition r "later" == some "Int"
+  | none => false
+
 -- Complete valid syntax uses the exact strict result, including metadata.
 example {source : String} {expr : Surface.Expr} {binders : List BinderSpan} {spanned : SpannedExpr}
     (h : parseExprWithSpans source = .ok (expr, binders, spanned)) :

@@ -109,3 +109,38 @@ assert.equal(unicodeReport.diagnostics[0].col, unicode.split('\n')[1].indexOf(')
 assert.equal(unicodeReport.symbols.find(s => s.def && s.name === '🦄' && s.kind === 'param').type, 'Int');
 assert.equal(unicodeReport.symbols.find(s => s.def && s.name === '🦄' && s.kind === 'val').type, 'Bool');
 console.log('PASS UTF-16 recovery spans and non-BMP lexical shadowing.');
+
+// Deleting a required keyword must not make recovery eat the sibling keyword.
+const keywordOperands = ['True', '6', 'f 1', '(if True then True else False)',
+  'if True then True else False', '(let local = True in local)'];
+const keywordWrappers = [e => e, e => `(${e})`, e => `[${e}, 1]`, e => `(\\parameter -> ${e})`];
+let keywordChecks = 0;
+for (const operand of keywordOperands) for (const wrap of keywordWrappers) {
+  for (const [body, fence] of [[`if ${operand} else 7`, 'else'], [`match ${operand} | captured -> captured`, '|']]) {
+    for (const layout of [' ', '\n  ']) {
+      const expression = wrap(body.replace(` ${fence}`, `${layout}${fence}`));
+      const source = `let bad = ${expression}\nlet later=7\nlater\n`;
+      const result = cli(source);
+      assert.equal(result.status, 1, source);
+      assert.equal(result.payload.diagnostics.length, 1, source);
+      // The outer fence is the last one; nested expressions own their own keywords.
+      const offset = source.lastIndexOf(fence);
+      const prefix = source.slice(0, offset).split('\n');
+      const diagnostic = result.payload.diagnostics[0];
+      assert.deepEqual([diagnostic.line, diagnostic.col, diagnostic.endLine, diagnostic.endCol],
+        [prefix.length, prefix.at(-1).length + 1, prefix.length, prefix.at(-1).length + fence.length + 1], source);
+      assert.equal(result.payload.programTy, 'Int');
+      assert.equal(result.payload.symbols.find(s => s.def && s.name === 'later').type, 'Int');
+      keywordChecks++;
+    }
+  }
+}
+const missingThen = showcase.replace('if then 6 else 7', 'if 6 else 7');
+const missingThenReport = cli(missingThen).payload;
+const conditionLine = missingThen.split('\n').findIndex(line => line.startsWith('let condition'));
+const conditionError = missingThenReport.diagnostics.find(d => d.line === conditionLine + 1);
+assert.ok(conditionError, 'scratch edit lost its local error');
+assert.deepEqual([conditionError.col, conditionError.endCol],
+  [missingThen.split('\n')[conditionLine].indexOf('else') + 1, missingThen.split('\n')[conditionLine].indexOf('else') + 5]);
+assert.ok(missingThenReport.diagnostics.every(d => d.line <= conditionLine + 1));
+console.log(`PASS ${keywordChecks} deleted-keyword boundary cases and the exact scratch-file edit.`);
