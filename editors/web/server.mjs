@@ -2,7 +2,8 @@ import express from "express";
 import fs from "node:fs";
 import path from "node:path";
 import { fileURLToPath } from "node:url";
-import { createRunner } from "./child-runner.mjs";
+import { createWorkerRunner } from "./worker-runner.mjs";
+import { performance } from "node:perf_hooks";
 
 const __dirname = path.dirname(fileURLToPath(import.meta.url));
 const REPO_ROOT = path.resolve(__dirname, "../..");
@@ -15,7 +16,9 @@ const LIVE_TIMEOUT_MS = 3_000;
 
 const PORT = Number(process.env.PORT || 5173);
 const STATIC_ONLY = process.env.FHM_WEB_STATIC === "1" || process.env.NODE_ENV === "production";
-const runBin = createRunner();
+const runBin = createWorkerRunner({
+  onTiming: (timing) => console.log(JSON.stringify({ event: "fhm_worker", ...timing })),
+});
 
 function resolveFhmBin() {
   for (const fromEnv of [
@@ -54,6 +57,14 @@ function readSource(req, res) {
 async function createApp() {
   const app = express();
   app.use(express.json({ limit: "256kb" }));
+  app.use("/api", (req, res, next) => {
+    const started = performance.now();
+    res.on("finish", () => console.log(JSON.stringify({
+      event: "fhm_request", path: req.path, status: res.statusCode,
+      ms: Math.round(performance.now() - started),
+    })));
+    next();
+  });
 
   app.get("/api/health", (_req, res) => {
     const bin = resolveFhmBin();
@@ -164,6 +175,15 @@ async function createApp() {
 }
 
 const app = await createApp();
+// Initialize one worker before the first visitor edits. Health pings alone only
+// exercise Express; they never used to initialize the native executable.
+const warmBin = resolveFhmBin();
+if (warmBin) runBin(warmBin, ["diagnose"], "1", DIAGNOSE_TIMEOUT_MS)
+  .catch(err => console.error("FHM worker warmup:", String(err)));
+for (const sig of ["SIGTERM", "SIGINT"]) process.once(sig, () => {
+  runBin.close();
+  process.exit(0);
+});
 app.listen(PORT, "0.0.0.0", () => {
   const bin = resolveFhmBin();
   console.log(`FHM playground  http://localhost:${PORT}`);
