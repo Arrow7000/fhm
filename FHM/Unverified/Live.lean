@@ -127,6 +127,8 @@ structure CheckedProgram where
   report : ProgramReport
   checkNs : Nat
   runtimeExpr : Expr
+  /-- Optional editor output derived from these same checked artifacts. -/
+  diagnosis? : Option Lean.Json := none
   /-- Entry expression, used to locate runtime resource-limit errors. -/
   evalSpan : Surface.Span.Span := Surface.Span.Span.empty
 
@@ -205,7 +207,7 @@ def diagnosedErr (stage : PipelineStage) (d? : Option HoverDiag) (fallback : Str
 
 /-- Parse → provenance-aware lower → path-keyed HM inference → exhaustiveness →
 fully erased execution. -/
-def checkPipeline (src : String) :
+def checkPipeline (src : String) (withDiagnosis : Bool := false) :
     IO (Except PipelineErr CheckedProgram) := do
   let tCheck0 ← IO.monoNanosNow
   let (p, binders, sp) ← match parseProgramWithSpans src with
@@ -276,6 +278,11 @@ def checkPipeline (src : String) :
     report := report
     checkNs := tCheck1 - tCheck0
     runtimeExpr := e
+    -- Exhaustiveness was established above. Hover rendering consumes the same
+    -- typed/provenance artifacts and must not repeat that traversal or inference.
+    diagnosis? := if withDiagnosis then
+      some (hoverPayload src (collectTypedHover src p binders sp tree typed [] false))
+      else none
     evalSpan := bodyDiagSpan sp.body
   }
 

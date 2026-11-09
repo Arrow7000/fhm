@@ -596,6 +596,17 @@ def collectParseRecoveredHover (src : String) (parsed : FHM.Unverified.ParserRec
     diagnostics := (diagnostics ++ report.diagnostics).mergeSort
       (fun a b => a.line < b.line || (a.line == b.line && a.col ≤ b.col)) }
 
+/-- Serialize an editor report without rerunning parsing or inference. -/
+def hoverPayload (src : String) (r : HoverReport) : Lean.Json :=
+  Lean.Json.mkObj <| [
+    ("version", Lean.Json.num 3),
+    ("diagnostics", Lean.Json.arr (r.diagnostics.map HoverDiag.toJson).toArray),
+    ("symbols", Lean.Json.arr (r.symbols.map RangedSymbol.toJson).toArray),
+    ("tokens", tokensJson src),
+    ("programTy", Lean.Json.str r.programTy)
+  ] ++ (if r.assumptions.isEmpty then [] else [
+    ("programTypeAssumptions", Lean.Json.arr (r.assumptions.map interfaceRefJson).toArray)])
+
 def diagnosePayload (src : String) : Lean.Json :=
   match parseProgramWithSpans src with
   | .error e =>
@@ -607,25 +618,9 @@ def diagnosePayload (src : String) : Lean.Json :=
         ("tokens", tokensJson src)
       ]
     | .ok parsed =>
-      let report := collectParseRecoveredHover src parsed
-      Lean.Json.mkObj <| [
-        ("version", Lean.Json.num 3),
-        ("diagnostics", Lean.Json.arr (report.diagnostics.map HoverDiag.toJson).toArray),
-        ("symbols", Lean.Json.arr (report.symbols.map RangedSymbol.toJson).toArray),
-        ("tokens", tokensJson src),
-        ("programTy", Lean.Json.str report.programTy)
-      ] ++ (if report.assumptions.isEmpty then [] else [
-        ("programTypeAssumptions", Lean.Json.arr (report.assumptions.map interfaceRefJson).toArray)])
+      hoverPayload src (collectParseRecoveredHover src parsed)
   | .ok (p, binders, sp) =>
-    let r := collectHover src p binders sp
-    Lean.Json.mkObj <| [
-      ("version", Lean.Json.num 3),
-      ("diagnostics", Lean.Json.arr (r.diagnostics.map HoverDiag.toJson).toArray),
-      ("symbols", Lean.Json.arr (r.symbols.map RangedSymbol.toJson).toArray),
-      ("tokens", tokensJson src),
-      ("programTy", Lean.Json.str r.programTy)
-    ] ++ (if r.assumptions.isEmpty then [] else [
-      ("programTypeAssumptions", Lean.Json.arr (r.assumptions.map interfaceRefJson).toArray)])
+    hoverPayload src (collectHover src p binders sp)
 
 def binderNames (bs : List BinderSpan) : List String :=
   bs.map (·.name)

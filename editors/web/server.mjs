@@ -17,6 +17,7 @@ const LIVE_TIMEOUT_MS = 3_000;
 const PORT = Number(process.env.PORT || 5173);
 const STATIC_ONLY = process.env.FHM_WEB_STATIC === "1" || process.env.NODE_ENV === "production";
 const runBin = createWorkerRunner({
+  evalTimeoutMs: LIVE_TIMEOUT_MS,
   onTiming: (timing) => console.log(JSON.stringify({ event: "fhm_worker", ...timing })),
 });
 
@@ -108,7 +109,7 @@ async function createApp() {
       }
     } catch (err) {
       // A live run that hits its time budget is a result, not a failure.
-      if (err.status === 504 && args.includes("--fuel")) {
+      if (err.status === 504 && args[0] === "run" && args.includes("--fuel")) {
         return { ok: false, stage: "eval", message: `stopped after ${timeoutMs / 1000} s`, limit: "time" };
       }
       if (!res.headersSent) res.status(err.status || 502).json({ error: String(err) });
@@ -144,14 +145,9 @@ async function createApp() {
   app.post("/api/check", async (req, res) => {
     const source = readSource(req, res);
     if (source === null) return;
-    const signal = cancellation(res);
-    const diagnose = await fhmJson(res, ["diagnose"], source, DIAGNOSE_TIMEOUT_MS, signal);
-    if (!diagnose) return;
-    const failed = (diagnose.diagnostics || []).some((d) => d.severity !== "warning");
-    if (failed) return res.json({ diagnose, run: null });
-    const args = ["run", "--json", "--fuel", String(LIVE_FUEL)];
-    const run = await fhmJson(res, args, source, LIVE_TIMEOUT_MS, signal);
-    if (run) res.json({ diagnose, run });
+    const payload = await fhmJson(res, ["check", "--fuel", String(LIVE_FUEL)],
+      source, DIAGNOSE_TIMEOUT_MS, cancellation(res));
+    if (payload) res.json(payload);
   });
 
   if (STATIC_ONLY) {

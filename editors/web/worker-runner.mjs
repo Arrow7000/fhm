@@ -5,8 +5,11 @@ const failure = (message, status = 502) => Object.assign(new Error(message), { s
 
 // One request per worker. Idle processes retain Lean's initialized modules, but
 // cancelled/timed-out processes are killed so stale work never keeps running.
+// `check` emits an intermediate {phase:"eval", diagnose} frame followed by
+// {run}. Keep the slot and diagnostics across those frames; only evaluation's
+// timeout becomes a successful response containing an evaluation limit.
 export function createWorkerRunner({ maxProcesses = 2, maxOutputBytes = 4 * 1024 * 1024,
-  startupTimeoutMs = 15000, onTiming = () => {} } = {}) {
+  startupTimeoutMs = 15000, evalTimeoutMs = 3000, onTiming = () => {} } = {}) {
   const workers = new Set();
   function start(bin) {
     const child = spawn(bin, ["--worker"], {
@@ -43,6 +46,7 @@ export function createWorkerRunner({ maxProcesses = 2, maxOutputBytes = 4 * 1024
           onTiming({ phase: "startup", ms: performance.now() - started, pid: child.pid });
           worker.pending?.send();
         } else if (worker.pending) {
+          if (worker.pending.frame(payload)) continue;
           worker.pending.resolve({ stdout: line, stderr, code: 0 });
           worker.pending = null;
           stderr = "";
@@ -63,21 +67,45 @@ export function createWorkerRunner({ maxProcesses = 2, maxOutputBytes = 4 * 1024
       worker = start(bin);
     }
     worker.busy = true;
-    const command = args[0] === "diagnose" ? "diagnose" : "run";
+    const command = ["diagnose", "check"].includes(args[0]) ? args[0] : "run";
     const fuelIndex = args.indexOf("--fuel");
     const request = { command, source, ...(fuelIndex < 0 ? {} : { fuel: Number(args[fuelIndex + 1]) }) };
     let timer;
+    let diagnosis;
     const began = performance.now();
     const abort = () => worker.dead(failure("request cancelled", 499));
     try {
       return await new Promise((resolve, reject) => {
-        worker.pending = { resolve, reject, send() {
+        worker.pending = { resolve: result => {
+          if (diagnosis !== undefined) {
+            result.stdout = JSON.stringify({ diagnose: diagnosis, ...JSON.parse(result.stdout) });
+          }
+          resolve(result);
+        }, reject, frame(payload) {
+          if (command !== "check" || payload.phase !== "eval") return false;
+          if (diagnosis !== undefined || !payload.diagnose) {
+            worker.dead(failure("invalid worker evaluation phase"));
+            return true;
+          }
+          diagnosis = payload.diagnose;
+          onTiming({ phase: "check-diagnose", ms: performance.now() - began, pid: worker.child.pid });
+          clearTimeout(timer);
+          timer = setTimeout(() => worker.dead(failure(`timeout after ${evalTimeoutMs}ms`, 504)), evalTimeoutMs);
+          return true;
+        }, send() {
           timer = setTimeout(() => worker.dead(failure(`timeout after ${timeoutMs}ms`, 504)), timeoutMs);
           worker.child.stdin.write(JSON.stringify(request) + "\n");
         } };
         signal?.addEventListener("abort", abort, { once: true });
         if (worker.ready) worker.pending.send();
       });
+    } catch (err) {
+      if (err.status === 504 && diagnosis !== undefined) {
+        return { stdout: JSON.stringify({ diagnose: diagnosis, run: {
+          ok: false, stage: "eval", message: `stopped after ${evalTimeoutMs / 1000} s`, limit: "time",
+        } }), stderr: "", code: 0 };
+      }
+      throw err;
     } finally {
       clearTimeout(timer);
       signal?.removeEventListener("abort", abort);

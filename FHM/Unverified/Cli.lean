@@ -35,15 +35,32 @@ private def workerPayload (request : Lean.Json) : IO Lean.Json := do
   let command ← IO.ofExcept (request.getObjValAs? String "command")
   if command == "diagnose" then
     return diagnosePayload src
-  if command != "run" then
+  if command != "run" && command != "check" then
     throw (IO.userError "unknown worker command")
+  let combined := command == "check"
   let fuel := (request.getObjValAs? Nat "fuel").toOption
-  match ← checkPipeline src with
-  | .error e => return e.toJson
+  match ← checkPipeline src combined with
+  | .error e =>
+    if combined then
+      -- Recovery is editor-only. A rejected strict program is never evaluated.
+      return Lean.Json.mkObj [("diagnose", diagnosePayload src), ("run", .null)]
+    return e.toJson
   | .ok checked =>
-    match ← evalCheckedIO checked fuel with
-    | .error e => return e.toJson
-    | .ok result => return result.toJson
+    if combined then
+      let some diagnosis := checked.diagnosis?
+        | throw (IO.userError "missing checked diagnosis")
+      let diagnostics ← IO.ofExcept (diagnosis.getObjValAs? (Array Lean.Json) "diagnostics")
+      if diagnostics.any (fun d => (d.getObjValAs? String "severity").toOption != some "warning") then
+        return Lean.Json.mkObj [("diagnose", diagnosis), ("run", .null)]
+      -- Flush diagnostics before evaluation so the host can enforce its separate
+      -- time budget and preserve editor results even when evaluation is killed.
+      let stdout ← IO.getStdout
+      stdout.putStrLn (Lean.Json.mkObj [("phase", .str "eval"), ("diagnose", diagnosis)]).compress
+      stdout.flush
+    let result ← match ← evalCheckedIO checked fuel with
+      | .error e => pure e.toJson
+      | .ok result => pure result.toJson
+    return if combined then Lean.Json.mkObj [("run", result)] else result
 
 private def runWorker : IO UInt32 := do
   let stdin ← IO.getStdin
