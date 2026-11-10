@@ -85,3 +85,22 @@ Annotation allocation reserves one metavariable per distinct local `?name`,
 then one per anonymous `_` occurrence. Separate calls rebuild the name table;
 the inference caller must thread `Allocation.next` between calls so distinct
 annotations receive disjoint metavariable ranges.
+
+The public inference entry point validates `Expr.TypeScoped` before allocating
+anything. In particular, authored fixed annotations cannot contain inference
+metavariables or out-of-scope bound/rigid variables and therefore cannot forge
+or capture an allocator-generated ID.
+
+Inference distinguishes ordinary fresh metavariables from obligations. Fresh
+variables used to instantiate a scheme may remain irrelevant when a binder is
+phantom. Holes in authored annotations and omitted lambda parameter types are
+obligations and must have semantic solutions before a successful boundary is
+crossed. This rejects ambiguous lambdas even when hidden in a dead `let`
+without rejecting a valid use of a scheme such as `forall a. Int`.
+
+Checking an explicit scheme uses a lexical metavariable region. The completed
+scheme and all local obligations must be semantic before leaving the region;
+the retained outer substitution is normalized and checked for local rigid or
+metavariable escape. The local frontier is then restored, so its discarded IDs
+can be reused safely. The public `InferenceResult` exposes only its closed,
+well-scoped type, not this internal allocation state.
