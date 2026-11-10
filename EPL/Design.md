@@ -71,3 +71,12 @@ The kernel should establish, without custom axioms:
 
 The first kernel deliberately makes no claim of inference completeness,
 principal types, implicit generalisation, or polymorphic recursion.
+
+## Algorithmic boundary
+
+`Unification` distinguishes its public empty-substitution entry point from its
+internal accumulator. Successful public runs are proved sound and scoped.
+Reachable substitutions are stable under reapplication and are extended only
+with forward bindings. Arbitrary preloaded association lists are deliberately
+outside the soundness contract; inference composes public solver results
+instead of passing hostile initial substitutions to the worker.
