@@ -1,4 +1,6 @@
 import EPL.Examples
+import EPL.AnnotationAllocationTests
+import EPL.Properties.AnnotationAllocation
 import EPL.Properties.Annotations
 import EPL.Properties.Erasure
 import EPL.Properties.Regular
@@ -24,6 +26,8 @@ namespace EPL.Headlines
 #check @RuntimeTyping.preservation
 #check @unify_sound
 #check @unify_scoped
+#check @Template.allocate_fits
+#check @Template.allocate_scoped
 
 #print axioms Typing.regular
 #print axioms Typing.sourceScoped
@@ -35,5 +39,7 @@ namespace EPL.Headlines
 #print axioms RuntimeTyping.preservation
 #print axioms unify_sound
 #print axioms unify_scoped
+#print axioms Template.allocate_fits
+#print axioms Template.allocate_scoped
 
 end EPL.Headlines

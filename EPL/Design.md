@@ -80,3 +80,8 @@ Reachable substitutions are stable under reapplication and are extended only
 with forward bindings. Arbitrary preloaded association lists are deliberately
 outside the soundness contract; inference composes public solver results
 instead of passing hostile initial substitutions to the worker.
+
+Annotation allocation reserves one metavariable per distinct local `?name`,
+then one per anonymous `_` occurrence. Separate calls rebuild the name table;
+the inference caller must thread `Allocation.next` between calls so distinct
+annotations receive disjoint metavariable ranges.
