@@ -56,9 +56,9 @@ const vscode = {
   },
   Location: class Location { constructor(...args) { this.args = args; } },
   Range: class Range { constructor(...args) { this.args = args; } },
-  Diagnostic: class Diagnostic {},
+  Diagnostic: class Diagnostic { constructor(range, message, severity) { Object.assign(this, { range, message, severity }); } },
   DiagnosticSeverity: { Warning: 1, Error: 0 },
-  MarkdownString: class MarkdownString { appendMarkdown() {} },
+  MarkdownString: class MarkdownString { constructor(value) { this.value = value; } appendMarkdown() {} },
   Hover: class Hover { constructor(...args) { this.args = args; } },
 };
 
@@ -122,5 +122,23 @@ const flush = () => new Promise((resolve) => setImmediate(resolve));
   const cache = extension.__test.symbolCache.get(uri.toString());
   assert.equal(cache.documentVersion, 2);
   assert.equal(cache.ranged[0].name, "new");
+  // Diagnostics retain a concise native message alongside the normal type hover.
+  doc.version = 3;
+  const rejected = extension.__test.refreshDiagnostics(doc);
+  const rich = payload("new");
+  rich.diagnostics = [{ message: "expected Bool, got Int", code: "type.annotationMismatch",
+    line: 1, col: 5, endLine: 1, endCol: 10,
+    presentation: { title: "This value does not match its annotation",
+      explanation: "The annotation asks for a different type.", expected: "Bool", actual: "Int" } }];
+  children.at(-1).finish(rich);
+  await rejected;
+  assert.equal(hoverProvider.provideHover(doc, { line: 0, character: 8 }), undefined);
+  assert.equal(hoverProvider.provideHover(doc, { line: 0, character: 4 }).args[0].value,
+    "```fhm\nnew : Int\n```");
+  assert.equal(markerSets.at(-1)[0].message, "Expected Bool, found Int.");
+  assert.equal(markerSets.at(-1)[0].code, undefined);
+  assert.equal(markerSets.at(-1)[0].source, undefined);
+  doc.version = 4;
+  assert.equal(hoverProvider.provideHover(doc, { line: 0, character: 4 }), undefined);
   console.log("VS Code lifecycle regressions: PASS");
 })().catch((err) => { console.error(err); process.exitCode = 1; });

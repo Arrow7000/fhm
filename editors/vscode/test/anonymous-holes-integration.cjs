@@ -97,10 +97,19 @@ const results = [];
   results.push({ case: "didChange same hole solved Bool", hover: hole("Bool") });
 
   const bad = await update("let f : Int -> _ = \\x -> x\nf True\n");
-  assert(bad.some(d => d.severity === 0 && /expected Int, got Bool/.test(d.message)),
+  assert(bad.some(d => d.severity === 0 && d.message === "Expected Int, found Bool."),
     "fixed Int constraint produces actual type mismatch diagnostic");
   assert.deepEqual(bad[0].range.args, [1, 2, 1, 6]);
   results.push({ case: "fixed Int input rejects Bool", diagnostics: bad.map(d => ({ message: d.message, range: d.range.args })) });
+
+  // A type error must not hide the actual type of the rejected argument.
+  assert.equal(hoverProvider.provideHover(doc, { line: 1, character: 2 })?.contents.value,
+    "```fhm\nTrue : Bool\n```");
+  const annotatedError = await update("let answer : Int = True\nanswer\n");
+  assert(annotatedError.some(d => d.message.includes("expected Int, found Bool")));
+  const actualType = hoverProvider.provideHover(doc, { line: 0, character: 19 });
+  assert.equal(actualType?.contents.value, "```fhm\nTrue : Bool\n```");
+  results.push({ case: "rejected argument and annotation retain actual expression type" });
 
   assert.deepEqual(await update("let keep : {element} element -> _ -> element = \\x y -> x\nkeep 1 True\n"), []);
   results.push({ case: "recovery + partial forall", hover: hole("a") });
@@ -144,6 +153,15 @@ const results = [];
   assert((await update("let f {a} (x : a) : _ = if True then 0 else f [x]\nf True\n"))
     .some(d => d.severity === 0), "partial head keeps recursive calls monomorphic");
   results.push({ case: "complete versus partial head polymorphic recursion" });
+
+  const blocked = await update("let bad = 1 True\nlet use = bad\nuse\n");
+  assert.equal(blocked.length, 1);
+  assert.equal(hoverProvider.provideHover(doc, { line: 0, character: 4 }), undefined);
+  assert.equal(hoverProvider.provideHover(doc, { line: 1, character: 4 })?.contents.value,
+    "Type unavailable because [`bad`](<file:///tmp/fhm-editor-anonymous.fhm#L1,5>) has an error.");
+  assert.deepEqual(definitionProvider.provideDefinition(doc, { line: 1, character: 10 })?.range.args,
+    [0, 4, 0, 7], "blocked occurrences retain ordinary definition navigation");
+  results.push({ case: "blocked hover points to the broken definition without duplicating local errors" });
 
   listeners.Close(doc);
   assert.equal(hoverProvider.provideHover(doc, { line: 2, character: 15 }), undefined);

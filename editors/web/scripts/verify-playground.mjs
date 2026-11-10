@@ -60,6 +60,21 @@ try {
   await program(page, "let answer = 42\nanswer True\n");
   await page.locator("#status.err").waitFor();
   assert.ok(await page.locator("#result.stale .result-value").count());
+  // Unavailable types point to the root failure; the link stays inside the editor.
+  const blockedSource = "let bad = 1 True\nlet use = bad\nuse\n";
+  const blockedCheck = page.waitForResponse(response => response.url().endsWith("/api/check") &&
+    response.request().postDataJSON()?.source === blockedSource);
+  await program(page, blockedSource);
+  await blockedCheck;
+  await page.locator("#status.err").waitFor();
+  await page.locator(".view-line").filter({ hasText: /^use$/ }).locator("span > span").first().hover();
+  const failureLink = page.locator(".monaco-hover a").filter({ hasText: "bad" });
+  await failureLink.waitFor();
+  assert.match(await failureLink.getAttribute("data-href"), /#L1,5$/);
+  await failureLink.click();
+  assert.equal(await page.locator("#cursor").innerText(), "Ln 1, Col 5");
+  assert.equal(await page.locator("#types .bindings").count(), 0);
+
   // A program that doesn't finish within the live budget can run without it.
   await program(page, "let loop = \\n -> loop (n + 1)\nloop 0\n");
   await page.locator("#result button", { hasText: "Run without a limit" }).waitFor();

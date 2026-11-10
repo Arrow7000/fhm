@@ -4,7 +4,7 @@
 
 - **Syntax highlighting** for `.fhm` via a TextMate grammar generated from `Surface.Lex`
 - **Language config** — `--` / `/- -/` comments, brackets, auto-close
-- **Parse, lowering, and HM diagnostics on edit** (debounced) via `fhm diagnose`.
+- **Parse, lowering, and HM diagnostics on edit** (debounced) via `fhm diagnose`. Error messages stay concise; the usual syntax-highlighted type hover remains available at errors, without repeating the error explanation. The editor controls the font and colour of native diagnostic messages.
 - **Type-on-hover** (v3) from actual inferred artifacts and a separate source/Core provenance map. Definitions show validated declarations or inferred schemes; occurrences show independently instantiated monotypes. Lambda/pattern binders and authored compound expressions are covered. Exact spans win before name/scope fallback. Comments and indentation have no hover; keywords and punctuation show the expression they belong to.
 - **Doc comments** (`--- …` lines or `/-- … -/`) before a `let`, `type` or constructor appear under the signature when hovering the definition or any use of it.
 - **Go to definition** for values, parameters, pattern variables, types, constructors and type variables (not for built-ins, which have no source location).
@@ -69,6 +69,21 @@ Rebuild `fhm` after compiler changes. By default the extension uses the open wor
   "programTy": "…"
 }
 ```
+
+Unavailable hover symbols carry `typeStatus: "unavailable"` and
+`typeUnavailableCauses`: recovery causes tagged as `binding`, `localBinding`,
+`declaration`, `expression`, or `syntax`. Named causes retain their names;
+local bindings, expressions, and syntax also carry source spans. These are
+presentation metadata, never inference types. The legacy `type unknown (…)`
+string remains in `type` for older clients.
+
+Both editors use that metadata to link to broken dependencies, including
+multiple causes, while omitting redundant explanations at the original error.
+Ambiguous definitions are named without a guessed link. Known local types and
+declared interfaces retain their existing signatures. An exact top-level RHS may also
+carry `typeExpected` from a complete annotation; its hover explicitly labels
+this as expected, not inferred. Bindings whose types are unavailable are omitted
+from the playground's Types list.
 
 Line/col are **1-based UTF-16**, half-open `[start, end)` (same as the lexer/editor). Missing `scope*` fields fall back to the def span (v2 compat).
 

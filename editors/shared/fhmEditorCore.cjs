@@ -331,14 +331,82 @@ function kindBadge(kind) {
   return "val";
 }
 
+// Failure causes are presentation metadata, never candidate inference types.
+function hoverFailureCauses(sym, ranged) {
+  const causes = Array.isArray(sym.typeUnavailableCauses) ? sym.typeUnavailableCauses : [];
+  const refs = [];
+  for (const cause of causes) {
+    if (!cause || typeof cause !== "object") continue;
+    if (["binding", "localBinding", "declaration"].includes(cause.kind)) {
+      if (typeof cause.name !== "string" || cause.name.startsWith("$")) continue;
+      let candidates = ranged.filter(s => s.def && s.name === cause.name &&
+        (cause.kind === "declaration" ? s.kind === "type" : s.kind === "val") && isValidHalfOpenSpan(s));
+      if (cause.kind === "localBinding") {
+        if (!isValidHalfOpenSpan(cause.span || {})) continue;
+        candidates = candidates.filter(s => containsSpan(cause.span, s));
+      }
+      if (candidates.length) {
+        // Nested shadows have narrower scopes. Equally scoped duplicates stay
+        // ambiguous: show the name, but do not invent a navigation target.
+        const widest = Math.max(...candidates.map(s => spanArea(scopeSpan(s))));
+        candidates = candidates.filter(s => spanArea(scopeSpan(s)) === widest);
+      }
+      const unique = [...new Map(candidates.map(s => [`${s.startLine}:${s.startCol}`, s])).values()];
+      const target = unique.length === 1 ? unique[0] : undefined;
+      if (target && sym.def && sym.startLine === target.startLine && sym.startCol === target.startCol) continue;
+      refs.push({ label: cause.name, kind: cause.kind, ...(target ? { line: target.startLine, col: target.startCol } : {}) });
+    } else if (["expression", "syntax"].includes(cause.kind) && isValidHalfOpenSpan(cause.span || {})) {
+      if (containsSpan(cause.span, sym) || containsSpan(sym, cause.span)) continue;
+      refs.push({ label: cause.kind === "syntax" ? "a syntax error" : "another expression",
+        kind: cause.kind, line: cause.span.startLine, col: cause.span.startCol });
+    }
+  }
+  return [...new Map(refs.map(ref => [`${ref.label}:${ref.line}:${ref.col}`, ref])).values()];
+}
+
+function containsSpan(outer, inner) {
+  return (outer.startLine < inner.startLine || (outer.startLine === inner.startLine && outer.startCol <= inner.startCol)) &&
+    (outer.endLine > inner.endLine || (outer.endLine === inner.endLine && outer.endCol >= inner.endCol));
+}
+
+function unavailableHover(hit, { sourceUri, diagnostics = [] } = {}) {
+  // The native error already explains a local failure. Avoid a second message.
+  if (diagnostics.some(d => {
+    const m = diagnosticsToMarkers([d])[0];
+    return (hit.startLine0 < m.endLine0 || (hit.startLine0 === m.endLine0 && hit.startCol0 < m.endCol0)) &&
+      (m.line0 < hit.endLine0 || (m.line0 === hit.endLine0 && m.col0 < hit.endCol0));
+  })) return "";
+  const refs = hit.failureCauses || [];
+  if (!refs.length) return hit.typeStatus === "unavailable" && hit.unavailableCauseCount > 0 ? "" : "Type unavailable.";
+  const code = text => "`" + String(text).replace(/`/g, "'") + "`";
+  const links = refs.map(ref => {
+    const label = ["expression", "syntax"].includes(ref.kind) ? ref.label : code(ref.label);
+    // Use document links, never command links or source-controlled URLs.
+    if (!sourceUri || !/^(file|inmemory|untitled|vscode-remote|vscode-vfs):/.test(sourceUri) || !Number.isInteger(ref.line) || ref.line < 1 || !Number.isInteger(ref.col) || ref.col < 1) return label;
+    const uri = sourceUri.split("#")[0].replace(/</g, "%3C").replace(/>/g, "%3E") + `#L${ref.line},${ref.col}`;
+    return `[${label}](<${uri}>)`;
+  });
+  const subject = links.length > 1 ? links.slice(0, -1).join(", ") + " and " + links.at(-1) : links[0];
+  if (refs.length > 1 && refs.some(ref => ref.kind === "syntax")) return `Type checking is blocked by ${subject}.`;
+  if (refs.length === 1 && refs[0].kind === "syntax") return `Type unavailable because ${subject} blocked type checking.`;
+  return `Type unavailable because ${subject} ${refs.length === 1 ? "has an error" : "have errors"}.`;
+}
+
 /**
  * Markdown for a hover: the signature as an `fhm` code block, which both
  * VS Code and Monaco highlight with the registered FHM grammar, plus a prose
  * line where the payload's `type` is a description rather than a type, then
- * the definition's doc comment and constructor declaration, if any.
+ * the definition's doc comment and constructor declaration, if any. Unavailable
+ * symbols instead use failure provenance or clearly labelled annotation context.
  * @param {any} hit
  */
-function hoverMarkdown(hit) {
+function hoverMarkdown(hit, options = {}) {
+  if (hit?.typeStatus === "unavailable" || hit?.type?.startsWith("type unknown (")) {
+    if (typeof hit.typeExpected === "string" && hit.typeExpected.length) {
+      return "Expected type from annotation:\n\n```fhm\n" + hit.typeExpected.replace(/`/g, "'") + "\n```";
+    }
+    return unavailableHover(hit, options);
+  }
   const doc = typeof hit?.doc === "string" && hit.doc.length > 0 ? hit.doc : "";
   const sections = [hoverSignature(hit)];
   if (hit?.typeStatus === "declared") {
@@ -662,6 +730,12 @@ function resolveHover(ranged, line0, col0, lineText, tokens) {
     name,
     kind: kindBadge(sym.kind || "val"),
     type,
+    ...(sym.typeStatus === "unavailable" ? {
+      typeStatus: "unavailable",
+      failureCauses: hoverFailureCauses(sym, ranged),
+      unavailableCauseCount: Array.isArray(sym.typeUnavailableCauses) ? sym.typeUnavailableCauses.length : 0,
+      ...(typeof sym.typeExpected === "string" ? { typeExpected: sym.typeExpected.slice(0, 2000) } : {}),
+    } : {}),
     ...(["declared", "conditional"].includes(sym.typeStatus) ? { typeStatus: sym.typeStatus,
       typeAssumptions: Array.isArray(sym.typeAssumptions)
         ? sym.typeAssumptions.filter(a => a && typeof a.name === "string") : [] } : {}),
@@ -714,10 +788,29 @@ function resolveDefinition(ranged, line0, col0, lineText, tokens) {
   };
 }
 
+/** Compact editor wording; compiler diagnostics keep their original messages. */
+function diagnosticMessage(d) {
+  let message = d.message || "Unknown error";
+  if (["type.mismatch", "type.annotationMismatch", "type.argumentMismatch", "type.rigidVariable"].includes(d.code)) {
+    message = message.replace(/^type mismatch: /, "").replace(/, got /, ", found ");
+  }
+  message = message.charAt(0).toUpperCase() + message.slice(1);
+  return /[.!?]$/.test(message) ? message : `${message}.`;
+}
+
+// Compiler text is untrusted content. Only single-backtick inline code is styled;
+// HTML, links, commands and other Markdown syntax are never interpreted.
+function diagnosticInlineHtml(text) {
+  return String(text).split(/(`[^`\n]+`)/g).map(part =>
+    part.startsWith("`") && part.endsWith("`")
+      ? `<code>${escapeHtml(part.slice(1, -1))}</code>` : escapeHtml(part)
+  ).join("");
+}
+
 /**
  * Map diagnose diagnostics to 0-based marker-like objects (half-open span).
  * @param {any[]} diagArr
- * @returns {{ line0: number, col0: number, endLine0: number, endCol0: number, message: string, severity: "error" | "warning" }[]}
+ * @returns {{ line0: number, col0: number, endLine0: number, endCol0: number, message: string, severity: "error" | "warning", code?: string }[]}
  */
 function diagnosticsToMarkers(diagArr) {
   if (!Array.isArray(diagArr)) return [];
@@ -740,7 +833,8 @@ function diagnosticsToMarkers(diagArr) {
       col0,
       endLine0,
       endCol0,
-      message: d.message || "error",
+      code: d.code,
+      message: diagnosticMessage(d),
       severity,
     };
   });
@@ -885,6 +979,8 @@ module.exports = {
   clampHoverRange,
   resolveHover,
   resolveDefinition,
+  diagnosticMessage,
+  diagnosticInlineHtml,
   diagnosticsToMarkers,
   formatRunOutput,
   formatRunOutputHtml,

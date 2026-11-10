@@ -70,11 +70,28 @@ structure RangedSymbol where
   declaration : Option String := none
   declared : Bool := false
   assumptions : List FHM.Unverified.RecoveryArtifacts.InterfaceRef := []
+  /-- Failure provenance for editor presentation only; never an inference type. -/
+  unavailableCauses : Option (List FHM.Unverified.RecoveryDependencies.Cause) := none
+  /-- Context from a complete authored annotation, not a successfully inferred type. -/
+  expectedType : Option String := none
   deriving Repr, BEq
 
 def interfaceRefJson (ref : FHM.Unverified.RecoveryArtifacts.InterfaceRef) : Lean.Json :=
   Lean.Json.mkObj [ ("name", Lean.Json.str (prettyValName ref.name)),
     ("line", Lean.Json.num ref.span.startLine), ("col", Lean.Json.num ref.span.startCol) ]
+
+private def hoverCauseJson (cause : FHM.Unverified.RecoveryDependencies.Cause) : Lean.Json :=
+  let (kind, name, span) : String × Option String × Option Span := match cause with
+    | .binding name => ("binding", some (prettyValName name), none)
+    | .localBinding name span => ("localBinding", some (prettyValName name), some span)
+    | .declaration name => ("declaration", some (prettyTyName name), none)
+    | .expression span => ("expression", none, some span)
+    | .syntax span => ("syntax", none, some span)
+  Lean.Json.mkObj <| [("kind", Lean.Json.str kind)] ++
+    (name.map fun name => ("name", Lean.Json.str name)).toList ++
+    (span.map fun span => ("span", Lean.Json.mkObj [
+      ("startLine", Lean.Json.num span.startLine), ("startCol", Lean.Json.num span.startCol),
+      ("endLine", Lean.Json.num span.endLine), ("endCol", Lean.Json.num span.endCol)])).toList
 
 def RangedSymbol.toJson (s : RangedSymbol) : Lean.Json :=
   Lean.Json.mkObj <| [
@@ -92,10 +109,14 @@ def RangedSymbol.toJson (s : RangedSymbol) : Lean.Json :=
     ("def", Lean.Json.bool s.isDef)
   ] ++ (s.doc.map fun d => ("doc", Lean.Json.str d)).toList ++
     (s.declaration.map fun d => ("declaration", Lean.Json.str d)).toList ++
-    (if s.declared then [("typeStatus", Lean.Json.str "declared")] else
+    (if s.unavailableCauses.isSome then [("typeStatus", Lean.Json.str "unavailable")] else
+      if s.declared then [("typeStatus", Lean.Json.str "declared")] else
       if s.assumptions.isEmpty then [] else [("typeStatus", Lean.Json.str "conditional")]) ++
     (if s.assumptions.isEmpty then [] else
-      [("typeAssumptions", Lean.Json.arr (s.assumptions.map interfaceRefJson).toArray)])
+      [("typeAssumptions", Lean.Json.arr (s.assumptions.map interfaceRefJson).toArray)]) ++
+    (s.expectedType.map fun ty => ("typeExpected", Lean.Json.str ty)).toList ++
+    (s.unavailableCauses.map fun causes =>
+      ("typeUnavailableCauses", Lean.Json.arr (causes.map hoverCauseJson).toArray)).toList
 
 def mkSym (name kind type_ : String) (span scope : Span) : RangedSymbol :=
   { name, kind, type_, span, scope }
@@ -436,7 +457,8 @@ def collectUnavailableHover (src : String) (slice : FHM.Unverified.EditorRecover
       some (mkSym reference.name (match reference.kind with
         | .type => "type" | .ctor => "ctor" | .typeVar => "param" | .typeHole => "typeHole")
         label reference.span reference.span)
-  definitions ++ typeBinders ++ occurrences ++ references
+  (definitions ++ typeBinders ++ occurrences ++ references).map fun (symbol : RangedSymbol) =>
+    { symbol with unavailableCauses := some slice.causes }
 
 /-- Invalid declarations keep names and navigation, but contribute no kinds or
 constructor signatures to the recovered inference environment. -/
@@ -454,7 +476,8 @@ def collectUnavailableDeclarationHover (binders : List BinderSpan) (sp : Spanned
   let references := (sp.references.filter fun ref => FHM.Unverified.HMArtifacts.inside ref.span unavailable.span).map
     fun ref => mkSym ref.name (match ref.kind with | .type => "type" | .ctor => "ctor" | .typeVar => "param" | .typeHole => "typeHole")
       label ref.span ref.span
-  definitions ++ references
+  (definitions ++ references).map fun (symbol : RangedSymbol) =>
+    { symbol with unavailableCauses := some unavailable.causes }
 
 /-- Render the editor recovery pass, including names withheld by parsing. -/
 def collectRecoveredHover (src : String) (p : Surface.Program) (binders : List BinderSpan)
@@ -506,6 +529,21 @@ def collectRecoveredHover (src : String) (p : Surface.Program) (binders : List B
         else found) []
     let unknownSymbols := unknownSymbols.map (·.1) ++
       recovered.unavailableDeclarations.flatMap (collectUnavailableDeclarationHover binders sp (programWideScope binders sp))
+    -- A complete annotation supplies an expected type for its exact authored
+    -- RHS. Parameter sugar is excluded: its RHS has a different expected type
+    -- from the full function signature. Never present this as an inferred fact.
+    let unknownSymbols := unknownSymbols.map fun symbol =>
+      if symbol.kind != "expr" then symbol else
+      let binding := (p.groups.flatten.zip sp.groups.flatten).find? fun (binding, rhs) =>
+        binding.params.isEmpty && rhs.span == symbol.span
+      match binding with
+      | none => symbol
+      | some (binding, _) =>
+          let interface := interfaces.find? fun interface =>
+            interface.name == prettyValName binding.name &&
+            interface.scope.contains symbol.span.startLine symbol.span.startCol &&
+            FHM.Unverified.HMArtifacts.before interface.span symbol.span
+          { symbol with expectedType := interface.map (·.type_) }
     let symbols := (unknownSymbols ++ checkedSymbols).eraseDups
     let symbols := symbols.map fun symbol =>
       if symbol.isDef || symbol.doc.isSome then symbol else
@@ -580,7 +618,8 @@ def collectUnparsedHover (src : String) (scope : Span)
           some (mkSym (FHM.Unverified.HMArtifacts.spanText src (Span.ofTok token))
             "unavailable" label (Span.ofTok token) (Span.ofTok token))
       | _ => none
-  definitions ++ tokens
+  (definitions ++ tokens).map fun (symbol : RangedSymbol) =>
+    { symbol with unavailableCauses := some [.syntax unparsed.span] }
 
 def collectParseRecoveredHover (src : String) (parsed : FHM.Unverified.ParserRecovery.Result) : HoverReport :=
   let report := collectRecoveredHover src parsed.program parsed.binders parsed.spanned parsed.seed

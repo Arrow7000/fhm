@@ -412,24 +412,25 @@ pre {
 .problem {
   display: grid;
   grid-template-columns: max-content minmax(0, 1fr);
-  gap: 1ch;
+  gap: 12px;
   width: 100%;
-  padding: 0;
-  border: 0;
-  background: none;
-  color: var(--error);
-  font: inherit;
+  margin-top: 6px;
+  padding: 9px 12px;
+  border: 1px solid var(--border);
+  border-left: 2px solid var(--error);
+  border-radius: 4px;
+  background: var(--bg);
+  color: var(--text);
+  font: 13px/1.5 var(--ui);
   text-align: left;
+  overflow-wrap: anywhere;
   cursor: pointer;
 }
 
-.problem .loc {
-  color: var(--muted);
-}
-
-.problem:hover .msg {
-  text-decoration: underline;
-}
+.problem .loc { color: var(--muted); }
+.problem code { font-family: var(--mono); }
+.problem:hover { background: var(--bg-hover); }
+.problem:focus-visible { outline: 2px solid var(--focus); outline-offset: 2px; }
 
 .run-error {
   padding: 8px 10px;
@@ -568,12 +569,19 @@ kbd:not(.button kbd) {
 }
 
 /* Monaco's hover should use the same fonts as the rest of the page. */
-.monaco-editor .monaco-hover {
+.monaco-editor .monaco-hover,
+.monaco-editor .monaco-hover .hover-row .markdown-hover {
   font-family: var(--ui);
 }
 
 .monaco-editor .monaco-hover code {
   font-family: var(--mono);
+}
+
+/* Monaco applies the editor font inline to native diagnostic messages. */
+.monaco-editor .monaco-hover .marker {
+  font-family: var(--ui) !important;
+  line-height: 1.5 !important;
 }
 
 /* Narrow screens: editor above output. */

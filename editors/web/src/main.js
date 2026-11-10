@@ -7,6 +7,7 @@ import {
   resolveDefinition,
   hoverMarkdown,
   diagnosticsToMarkers,
+  diagnosticInlineHtml,
   formatNs,
 } from "@fhm/editor-core";
 import langConfig from "../../vscode/language-configuration.json";
@@ -179,6 +180,7 @@ function topLevelBindings(symbols, source) {
   return symbols
     .filter((s) => {
       if (s.kind !== "val" || s.endCol <= s.startCol) return false;
+      if (s.typeStatus === "unavailable" || s.type?.startsWith("type unknown (")) return false;
       if (s.scopeEndLine !== last[0] || s.scopeEndCol !== last[1]) return false;
       const before = (lines[s.startLine - 1] || "").slice(0, s.startCol - 1);
       if (!/\b(?:let|and)\s+(?:\(\s*)?$/.test(before)) return false;
@@ -226,10 +228,9 @@ function renderProblems(markers) {
   );
   for (const m of markers) {
     const item = node("button", "problem");
-    item.append(
-      node("span", "loc", `${m.startLineNumber}:${m.startColumn}`),
-      node("span", "msg", m.message),
-    );
+    const message = node("span", "msg");
+    message.innerHTML = diagnosticInlineHtml(m.message);
+    item.append(node("span", "loc", `${m.startLineNumber}:${m.startColumn}`), message);
     item.onclick = () => jump(m.startLineNumber, m.startColumn);
     block.append(item);
   }
@@ -676,8 +677,7 @@ async function main() {
   monaco.languages.setLanguageConfiguration("fhm", langConfig);
   defineThemes();
   editor = monaco.editor.create($("editor"), {
-    value: program.source,
-    language: "fhm",
+    model: monaco.editor.createModel(program.source, "fhm", monaco.Uri.parse("file:///playground.fhm")),
     theme: `fhm-${effectiveTheme()}`,
     automaticLayout: true,
     minimap: { enabled: false },
@@ -725,8 +725,19 @@ async function main() {
         void renderTypes(lastDiagnosis.raw, lastDiagnosis.source);
     })
     .catch((error) => console.warn("Syntax highlighting unavailable", error));
+  monaco.editor.registerLinkOpener({
+    open(resource) {
+      const model = editor.getModel();
+      if (!model || resource.with({ fragment: "" }).toString() !== model.uri.toString()) return false;
+      const target = /^L([1-9]\d*),([1-9]\d*)$/.exec(resource.fragment);
+      if (!target || lastDiagnosis?.source !== model.getValue()) return false;
+      jump(Number(target[1]), Number(target[2]));
+      return true;
+    },
+  });
   monaco.languages.registerHoverProvider("fhm", {
     provideHover(model, position) {
+      if (lastDiagnosis?.source !== model.getValue()) return null;
       const hit = resolveHover(
         ranged,
         position.lineNumber - 1,
@@ -735,6 +746,8 @@ async function main() {
         tokens,
       );
       if (!hit) return null;
+      const markdown = hoverMarkdown(hit, { sourceUri: model.uri.toString(), diagnostics: lastDiagnosis?.raw?.diagnostics });
+      if (!markdown) return null;
       // The range is on one line and contains the cursor (see resolveHover).
       return {
         range: new monaco.Range(
@@ -743,7 +756,7 @@ async function main() {
           hit.endLine0 + 1,
           hit.endCol0 + 1,
         ),
-        contents: [{ value: hoverMarkdown(hit) }],
+        contents: [{ value: markdown }],
       };
     },
   });

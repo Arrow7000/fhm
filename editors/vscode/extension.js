@@ -27,7 +27,7 @@ let nextRequestGeneration = 0;
  * Cached v3 ranged symbols (def span + lexical scope for use-site) and lexer
  * tokens. `documentVersion` prevents stale ranges from serving hovers during
  * debounce.
- * @type {Map<string, { version: number, documentVersion: number, ranged: any[], tokens: any[] }>}
+ * @type {Map<string, { version: number, documentVersion: number, ranged: any[], tokens: any[], diagnostics: any[] }>}
  */
 const symbolCache = new Map();
 
@@ -122,7 +122,7 @@ async function refreshDiagnostics(doc) {
     }
 
     const { diagnostics: diagArr, version, ranged, tokens } = normalizePayload(raw);
-    symbolCache.set(key, { version, documentVersion, ranged, tokens });
+    symbolCache.set(key, { version, documentVersion, ranged, tokens, diagnostics: diagArr });
 
     if (!diagnosticsEnabled) return;
 
@@ -208,6 +208,9 @@ function activate(context) {
         );
         if (!hit) return undefined;
 
+        const markdown = hoverMarkdown(hit, { sourceUri: doc.uri.toString(), diagnostics: cache.diagnostics });
+        if (!markdown) return undefined;
+
         // The range is on one line and contains the cursor (see resolveHover).
         const hoverRange = new vscode.Range(
           hit.startLine0,
@@ -216,7 +219,7 @@ function activate(context) {
           hit.endCol0
         );
         return new vscode.Hover(
-          new vscode.MarkdownString(hoverMarkdown(hit)),
+          new vscode.MarkdownString(markdown),
           hoverRange
         );
       },
