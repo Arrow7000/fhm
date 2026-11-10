@@ -4,6 +4,7 @@ import EPL.Properties.AnnotationAllocation
 import EPL.Properties.Annotations
 import EPL.Properties.Erasure
 import EPL.Properties.InferenceSafety
+import EPL.Properties.InferenceModelAnnotations
 import EPL.Properties.Regular
 import EPL.Properties.RigidWeakening
 import EPL.Properties.RuntimeRegular
@@ -30,6 +31,9 @@ namespace EPL.Headlines
 #check @Template.allocate_fits
 #check @Template.allocate_scoped
 #check @inferFuel_safe
+#check @InferState.has_model
+#check @MStore.Models.realize_apply
+#check @Template.allocate_matches_realize
 
 #print axioms Typing.regular
 #print axioms Typing.sourceScoped
@@ -44,5 +48,8 @@ namespace EPL.Headlines
 #print axioms Template.allocate_fits
 #print axioms Template.allocate_scoped
 #print axioms inferFuel_safe
+#print axioms InferState.has_model
+#print axioms MStore.Models.realize_apply
+#print axioms Template.allocate_matches_realize
 
 end EPL.Headlines
