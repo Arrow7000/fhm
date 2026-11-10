@@ -100,7 +100,15 @@ without rejecting a valid use of a scheme such as `forall a. Int`.
 
 Checking an explicit scheme uses a lexical metavariable region. The completed
 scheme and all local obligations must be semantic before leaving the region;
-the retained outer substitution is normalized and checked for local rigid or
+the retained outer solution-table prefix is checked for local rigid or
 metavariable escape. The local frontier is then restored, so its discarded IDs
 can be reused safely. The public `InferenceResult` exposes only its closed,
 well-scoped type, not this internal allocation state.
+
+Inference state uses a dense canonical solution table rather than carrying the
+unifier's ordered association list between syntax nodes. Entry `i` is the
+current normalized meaning of metavariable `i`, with an unsolved entry equal
+to `mvar i`. A successful constraint maps its short-lived solver substitution
+over the whole table. This makes allocation, semantic lookup, and lexical
+projection ordinary list append, indexing, and prefix operations; ordering and
+duplicate-target concerns remain confined to the separately verified unifier.

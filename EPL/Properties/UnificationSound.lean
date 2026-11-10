@@ -402,6 +402,12 @@ theorem unifyFuel_sound
     result.Solves constraints := by
   exact (unifyFuel_sound_stable stable_nil run).2.2
 
+/-- Successful public unification produces a substitution stable under
+reapplication. -/
+theorem unify_stable (run : unify left right = some result) :
+    result.Stable := by
+  exact (unifyFuel_sound_stable stable_nil run).1
+
 /-- The public unifier equates its two input types whenever it succeeds. -/
 theorem unify_sound (run : unify left right = some result) :
     result.apply left = result.apply right := by

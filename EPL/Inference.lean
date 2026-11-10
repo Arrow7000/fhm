@@ -65,19 +65,33 @@ def Ty.closeRigids (base count : Nat) : Ty → Ty
       else .rigid (level - count)
   | .mvar id => .mvar id
 
-/-- Keep solutions for older metavariables, normalize their images through the
-whole local run, and discard bindings whose targets were allocated locally. -/
-def MSubst.projectBelow (cutoff : Nat) (subst : MSubst) : MSubst :=
-  subst.filterMap fun binding =>
-    if binding.1 < cutoff then some (binding.1, subst.apply binding.2) else none
+/-- A dense canonical solution table. Entry `i` is the current normalized
+meaning of metavariable `i`; an unsolved entry is exactly `mvar i`. The
+unifier's ordered substitutions remain an implementation detail of each
+individual constraint. -/
+abbrev MStore := List Ty
 
-def MSubst.safeToLeave (rigidCount cutoff : Nat) (subst : MSubst) : Bool :=
-  subst.all fun binding =>
-    binding.2.scopedB rigidCount 0 && binding.2.mvarsBelow cutoff
+def MStore.apply (store : MStore) : Ty → Ty
+  | .prim p => .prim p
+  | .arrow domain codomain =>
+      .arrow (store.apply domain) (store.apply codomain)
+  | .bvar index => .bvar index
+  | .rigid level => .rigid level
+  | .mvar id => (store[id]?).getD (.mvar id)
+
+def MStore.applyScheme (store : MStore) (scheme : PolyTy) : PolyTy :=
+  ⟨scheme.paramCount, store.apply scheme.body⟩
+
+def MStore.safeToLeave
+    (rigidCount cutoff : Nat) (store : MStore) : Bool :=
+  store.all fun ty => ty.scopedB rigidCount 0 && ty.mvarsBelow cutoff
+
+def mvarRange (start count : Nat) : List Ty :=
+  (List.range' start count).map .mvar
 
 structure InferState where
   next : Nat
-  subst : MSubst
+  solutions : MStore
   required : List Nat
   deriving Repr
 
@@ -97,19 +111,23 @@ parameter types do. Metavariables local to an explicit-scheme check are
 removed, and its frontier restored, before inference continues. -/
 def InferState.solvedB (rigidCount : Nat) (state : InferState) : Bool :=
   state.required.all fun id =>
-    (state.subst.apply (.mvar id)).wfB rigidCount 0
+    (state.solutions.apply (.mvar id)).wfB rigidCount 0
 
 def InferState.solvedFromB
     (rigidCount cutoff : Nat) (state : InferState) : Bool :=
   state.required.all fun id =>
-    id < cutoff || (state.subst.apply (.mvar id)).wfB rigidCount 0
+    id < cutoff || (state.solutions.apply (.mvar id)).wfB rigidCount 0
 
 def InferState.fresh (state : InferState) : InferState × Ty :=
-  ({ state with next := state.next + 1 }, .mvar state.next)
+  ({ state with
+      next := state.next + 1
+      solutions := state.solutions ++ [.mvar state.next] },
+    .mvar state.next)
 
 def InferState.freshRequired (state : InferState) : InferState × Ty :=
   ({ state with
       next := state.next + 1
+      solutions := state.solutions ++ [.mvar state.next]
       required := state.next :: state.required },
     .mvar state.next)
 
@@ -125,13 +143,18 @@ def InferState.allocate (state : InferState) (template : Template) : InferState 
   let required := List.range' state.next (allocation.next - state.next)
   ({ state with
       next := allocation.next
+      solutions := state.solutions ++
+        mvarRange state.next (allocation.next - state.next)
       required := required ++ state.required },
     allocation.ty)
 
 def InferState.constrain (state : InferState) (left right : Ty) : Option InferState :=
-  match unify (state.subst.apply left) (state.subst.apply right) with
+  let normalizedLeft := state.solutions.apply left
+  let normalizedRight := state.solutions.apply right
+  match unify normalizedLeft normalizedRight with
   | none => none
-  | some delta => some { state with subst := state.subst ++ delta }
+  | some delta =>
+      some { state with solutions := state.solutions.map delta.apply }
 
 def Expr.inferSize : Source → Nat
   | .primLit _ | .primOp _ | .var _ => 1
@@ -149,7 +172,7 @@ def inferFuel : Nat → Nat → Ctx → Source → InferState → Option InferRe
       | .primOp op => some ⟨state, op.ty⟩
       | .var index => do
           let scheme ← ctx[index]?
-          let scheme := state.subst.applyScheme scheme
+          let scheme := state.solutions.applyScheme scheme
           let fresh := state.freshMany scheme.paramCount
           some ⟨fresh.1, scheme.openWith fresh.2⟩
       | .lambda ann body => do
@@ -158,7 +181,7 @@ def inferFuel : Nat → Nat → Ctx → Source → InferState → Option InferRe
             | some template => state.allocate template
           let bodyResult ← inferFuel fuel rigidCount
             (PolyTy.mono seeded.2 :: ctx) body seeded.1
-          let paramTy := bodyResult.state.subst.apply seeded.2
+          let paramTy := bodyResult.state.solutions.apply seeded.2
           some ⟨bodyResult.state, .arrow paramTy bodyResult.ty⟩
       | .app function argument => do
           let functionResult ← inferFuel fuel rigidCount ctx function state
@@ -166,10 +189,10 @@ def inferFuel : Nat → Nat → Ctx → Source → InferState → Option InferRe
           let fresh := argumentResult.state.fresh
           let checked ← fresh.1.constrain functionResult.ty
             (.arrow argumentResult.ty fresh.2)
-          some ⟨checked, checked.subst.apply fresh.2⟩
+          some ⟨checked, checked.solutions.apply fresh.2⟩
       | .letIn none rhs body => do
           let rhsResult ← inferFuel fuel rigidCount ctx rhs state
-          let rhsTy := rhsResult.state.subst.apply rhsResult.ty
+          let rhsTy := rhsResult.state.solutions.apply rhsResult.ty
           inferFuel fuel rigidCount (PolyTy.mono rhsTy :: ctx) body rhsResult.state
       | .letIn (some written) rhs body => do
           let localStart := state.next
@@ -179,7 +202,7 @@ def inferFuel : Nat → Nat → Ctx → Source → InferState → Option InferRe
           let rhsResult ← inferFuel fuel (rigidCount + count) ctx
             (rhs.openRigids rigidCount count) seeded.1
           let checked ← rhsResult.state.constrain rhsResult.ty seeded.2
-          let completedOpen := checked.subst.apply seeded.2
+          let completedOpen := checked.solutions.apply seeded.2
           if !completedOpen.metaFreeB || !completedOpen.scopedB (rigidCount + count) 0 then
             none
           else if !checked.solvedFromB (rigidCount + count) localStart then
@@ -189,12 +212,12 @@ def inferFuel : Nat → Nat → Ctx → Source → InferState → Option InferRe
               ⟨count, completedOpen.closeRigids rigidCount count⟩
             if !completed.wfB rigidCount then none
             else
-              let projected := checked.subst.projectBelow localStart
-              if !projected.safeToLeave rigidCount localStart then none
+              let projected := checked.solutions.take localStart
+              if !MStore.safeToLeave rigidCount localStart projected then none
               else
                 let outerState : InferState :=
                   { next := localStart
-                    subst := projected
+                    solutions := projected
                     required := checked.required.filter (· < localStart) }
                 inferFuel fuel rigidCount (completed :: ctx) body outerState
       | .fix ann body => do
@@ -202,14 +225,14 @@ def inferFuel : Nat → Nat → Ctx → Source → InferState → Option InferRe
           let bodyResult ← inferFuel fuel rigidCount
             (PolyTy.mono seeded.2 :: ctx) body seeded.1
           let checked ← bodyResult.state.constrain bodyResult.ty seeded.2
-          some ⟨checked, checked.subst.apply seeded.2⟩
+          some ⟨checked, checked.solutions.apply seeded.2⟩
 
 end
 
 def infer (input : Source) : Option InferenceResult := do
   if !input.typeScopedB 0 0 then none
   let result ← inferFuel (input.inferSize + 1) 0 [] input ⟨0, [], []⟩
-  let ty := result.state.subst.apply result.ty
+  let ty := result.state.solutions.apply result.ty
   if result.state.solvedB 0 && ty.wfB 0 0 then
     some ⟨ty⟩
   else none

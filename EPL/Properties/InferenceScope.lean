@@ -222,4 +222,51 @@ theorem Expr.typeScopedB_eq_true_iff {input : Source}
         | fix hAnn hBody =>
             exact ⟨Template.scopedB_eq_true_iff.mpr hAnn, ihBody.mpr hBody⟩
 
+/-- The executable frontier check recognizes precisely the metavariables below
+the stated allocation frontier. -/
+theorem Ty.mvarsBelow_eq_true_iff {ty : Ty} {cutoff : Nat} :
+    ty.mvarsBelow cutoff = true ↔
+      ∀ id ∈ ty.mvars, id < cutoff := by
+  simp [Ty.mvarsBelow]
+
+/-- The explicit-scheme escape check says exactly that every retained image is
+outer-scoped and mentions only outer metavariables. -/
+theorem MStore.safeToLeave_eq_true_iff
+    {store : MStore} {rigidCount cutoff : Nat} :
+    store.safeToLeave rigidCount cutoff = true ↔
+      ∀ ty ∈ store,
+        ty.Scoped rigidCount 0 ∧
+          ∀ id ∈ ty.mvars, id < cutoff := by
+  simp [MStore.safeToLeave, Ty.scopedB_eq_true_iff,
+    Ty.mvarsBelow_eq_true_iff]
+
+/-- Public obligation discharge is executable declarative well-formedness of
+every required metavariable's solved image. -/
+theorem InferState.solvedB_eq_true_iff
+    {state : InferState} {rigidCount : Nat} :
+    state.solvedB rigidCount = true ↔
+      ∀ id ∈ state.required,
+        (state.solutions.apply (.mvar id)).WF rigidCount 0 := by
+  simp [InferState.solvedB, Ty.wfB_eq_true_iff]
+
+/-- A lexical scheme boundary discharges precisely the obligations allocated
+inside its local metavariable region. -/
+theorem InferState.solvedFromB_eq_true_iff
+    {state : InferState} {rigidCount cutoff : Nat} :
+    state.solvedFromB rigidCount cutoff = true ↔
+      ∀ id ∈ state.required, cutoff ≤ id →
+        (state.solutions.apply (.mvar id)).WF rigidCount 0 := by
+  simp only [InferState.solvedFromB, List.all_eq_true, Bool.or_eq_true,
+    decide_eq_true_eq, Ty.wfB_eq_true_iff]
+  constructor
+  · intro hall id hmem hcutoff
+    have := hall id hmem
+    rcases this with hlt | hwf
+    · omega
+    · exact hwf
+  · intro hall id hmem
+    by_cases hlt : id < cutoff
+    · exact Or.inl hlt
+    · exact Or.inr (hall id hmem (by omega))
+
 end EPL

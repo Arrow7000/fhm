@@ -3,6 +3,7 @@ import EPL.AnnotationAllocationTests
 import EPL.Properties.AnnotationAllocation
 import EPL.Properties.Annotations
 import EPL.Properties.Erasure
+import EPL.Properties.InferenceSafety
 import EPL.Properties.Regular
 import EPL.Properties.RigidWeakening
 import EPL.Properties.RuntimeRegular
@@ -28,6 +29,7 @@ namespace EPL.Headlines
 #check @unify_scoped
 #check @Template.allocate_fits
 #check @Template.allocate_scoped
+#check @inferFuel_safe
 
 #print axioms Typing.regular
 #print axioms Typing.sourceScoped
@@ -41,5 +43,6 @@ namespace EPL.Headlines
 #print axioms unify_scoped
 #print axioms Template.allocate_fits
 #print axioms Template.allocate_scoped
+#print axioms inferFuel_safe
 
 end EPL.Headlines
