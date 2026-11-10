@@ -67,6 +67,8 @@ roots = [
   "EPL.Properties.InferenceModel",
   "EPL.Properties.InferenceModelCompletion",
   "EPL.Properties.InferenceModelAnnotations",
+  "EPL.Properties.InferenceModelRefinement",
+  "EPL.Properties.InferenceModelProjection",
   "EPL.UnificationTests",
   "EPL.Properties.Regular",
   "EPL.Properties.SourceScope",

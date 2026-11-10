@@ -5,6 +5,7 @@ import EPL.Properties.Annotations
 import EPL.Properties.Erasure
 import EPL.Properties.InferenceSafety
 import EPL.Properties.InferenceModelAnnotations
+import EPL.Properties.InferenceModelProjection
 import EPL.Properties.Regular
 import EPL.Properties.RigidWeakening
 import EPL.Properties.RuntimeRegular
@@ -34,6 +35,8 @@ namespace EPL.Headlines
 #check @InferState.has_model
 #check @MStore.Models.realize_apply
 #check @Template.allocate_matches_realize
+#check @InferState.constrain_refines
+#check @MStore.Models.extend_checkedPrefix
 
 #print axioms Typing.regular
 #print axioms Typing.sourceScoped
@@ -51,5 +54,7 @@ namespace EPL.Headlines
 #print axioms InferState.has_model
 #print axioms MStore.Models.realize_apply
 #print axioms Template.allocate_matches_realize
+#print axioms InferState.constrain_refines
+#print axioms MStore.Models.extend_checkedPrefix
 
 end EPL.Headlines
