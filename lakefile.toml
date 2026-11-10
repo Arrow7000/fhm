@@ -43,6 +43,30 @@ roots = [
 ]
 
 [[lean_lib]]
+name = "EPL"
+# Cleanroom explicit-polymorphism research language. Kept independent of the
+# FHM verified stack so experimental type systems do not inherit HM machinery.
+roots = [
+  "EPL.Core",
+  "EPL.Typing",
+  "EPL.Eval",
+  "EPL.RuntimeTyping",
+  "EPL.Properties.Regular",
+  "EPL.Properties.SourceScope",
+  "EPL.Properties.RigidWeakening",
+  "EPL.Properties.Annotations",
+  "EPL.Properties.Erasure",
+  "EPL.Properties.RuntimeRegular",
+  "EPL.Properties.RuntimeRigidWeakening",
+  "EPL.Properties.RuntimeWeakening",
+  "EPL.Properties.RuntimeSchemes",
+  "EPL.Properties.RuntimeSubstitution",
+  "EPL.Properties.RuntimeSafety",
+  "EPL.Examples",
+  "EPL.Headlines",
+]
+
+[[lean_lib]]
 name = "FHMExamples"
 # Executable examples and audit canaries; build with `lake build FHMExamples`.
 roots = ["FHM.Examples", "FHM.Examples.Programs", "FHM.RuntimeTyping.PolyRecCanary"]
