@@ -8,6 +8,7 @@ import EPL.Properties.InferenceModelAnnotations
 import EPL.Properties.InferenceModelProjection
 import EPL.Properties.InferenceSound
 import EPL.Properties.InferenceRuntimeSafety
+import EPL.Properties.InferenceEvaluation
 import EPL.Properties.Regular
 import EPL.Properties.RigidWeakening
 import EPL.Properties.RuntimeRegular
@@ -47,6 +48,14 @@ namespace EPL.Headlines
 #check @infer_step_preserves
 #check @infer_steps_preserve
 #check @infer_type_safety
+#check @Eval.step?_sound
+#check @Eval.step?_complete
+#check @Eval.Step.deterministic
+#check @Eval.run_steps
+#check @Eval.run_complete
+#check @infer_run_typed
+#check @infer_run_stops_at_value
+#check @evaluate
 
 #print axioms Typing.regular
 #print axioms Typing.sourceScoped
@@ -74,5 +83,13 @@ namespace EPL.Headlines
 #print axioms infer_step_preserves
 #print axioms infer_steps_preserve
 #print axioms infer_type_safety
+#print axioms Eval.step?_sound
+#print axioms Eval.step?_complete
+#print axioms Eval.Step.deterministic
+#print axioms Eval.run_steps
+#print axioms Eval.run_complete
+#print axioms infer_run_typed
+#print axioms infer_run_stops_at_value
+#print axioms evaluate
 
 end EPL.Headlines

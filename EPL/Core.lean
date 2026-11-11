@@ -22,7 +22,7 @@ inductive Ty where
 structure Scheme (T : Type) where
   paramCount : Nat
   body : T
-  deriving Repr
+  deriving DecidableEq, Repr
 
 abbrev PolyTy := Scheme Ty
 
@@ -165,7 +165,7 @@ inductive Expr (T : Type) where
   | app (function argument : Expr T)
   | letIn (ann : Option (Scheme T)) (rhs body : Expr T)
   | fix (selfAnn : T) (body : Expr T)
-  deriving Repr
+  deriving DecidableEq, Repr
 
 abbrev Source := Expr Template
 abbrev RuntimeExpr := Expr Unit

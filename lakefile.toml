@@ -86,6 +86,10 @@ roots = [
   "EPL.Properties.RuntimeSchemes",
   "EPL.Properties.RuntimeSubstitution",
   "EPL.Properties.RuntimeSafety",
+  "EPL.Evaluator",
+  "EPL.Properties.Evaluator",
+  "EPL.Properties.InferenceEvaluation",
+  "EPL.EvaluatorTests",
   "EPL.Examples",
   "EPL.Headlines",
 ]

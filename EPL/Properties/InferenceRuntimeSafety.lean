@@ -1,4 +1,3 @@
-import Mathlib.Logic.Relation
 import EPL.Properties.InferenceSound
 import EPL.Properties.Erasure
 import EPL.Properties.RuntimeSafety
@@ -34,7 +33,7 @@ theorem infer_step_preserves
 theorem infer_steps_preserve
     {input : Source} {result : InferenceResult} {next : RuntimeExpr}
     (run : infer input = some result)
-    (steps : Relation.ReflTransGen Eval.Step input.erase next) :
+    (steps : Eval.Steps input.erase next) :
     RuntimeTyping 0 [] next result.ty := by
   induction steps with
   | refl => exact infer_erases run
@@ -45,7 +44,7 @@ typed and ends at either a value or another reducible term. -/
 theorem infer_type_safety
     {input : Source} {result : InferenceResult} {next : RuntimeExpr}
     (run : infer input = some result)
-    (steps : Relation.ReflTransGen Eval.Step input.erase next) :
+    (steps : Eval.Steps input.erase next) :
     RuntimeTyping 0 [] next result.ty ∧
       (Eval.Value next ∨ ∃ after, Eval.Step next after) := by
   have typed := infer_steps_preserve run steps

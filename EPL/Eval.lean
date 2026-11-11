@@ -1,3 +1,4 @@
+import Mathlib.Logic.Relation
 import EPL.Core
 
 namespace EPL
@@ -35,9 +36,9 @@ inductive Step : RuntimeExpr → RuntimeExpr → Prop
   | fixUnfold :
       Step (.fix () body) (body.subst1 (.fix () body))
 
-inductive Steps : RuntimeExpr → RuntimeExpr → Prop
-  | refl : Steps expr expr
-  | tail : Step first second → Steps second third → Steps first third
+/-- Finite execution: the reflexive-transitive closure of `Step`. -/
+abbrev Steps : RuntimeExpr → RuntimeExpr → Prop :=
+  Relation.ReflTransGen Step
 
 end Eval
 end EPL
