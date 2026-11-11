@@ -45,6 +45,8 @@ namespace EPL.Headlines
 #check @infer_erases
 #check @infer_progress
 #check @infer_step_preserves
+#check @infer_steps_preserve
+#check @infer_type_safety
 
 #print axioms Typing.regular
 #print axioms Typing.sourceScoped
@@ -70,5 +72,7 @@ namespace EPL.Headlines
 #print axioms infer_erases
 #print axioms infer_progress
 #print axioms infer_step_preserves
+#print axioms infer_steps_preserve
+#print axioms infer_type_safety
 
 end EPL.Headlines

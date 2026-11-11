@@ -1,3 +1,4 @@
+import Mathlib.Logic.Relation
 import EPL.Properties.InferenceSound
 import EPL.Properties.Erasure
 import EPL.Properties.RuntimeSafety
@@ -28,5 +29,26 @@ theorem infer_step_preserves
     (step : Eval.Step input.erase next) :
     RuntimeTyping 0 [] next result.ty := by
   exact RuntimeTyping.preservation (infer_erases run) step
+
+/-- The reported type survives every finite runtime execution. -/
+theorem infer_steps_preserve
+    {input : Source} {result : InferenceResult} {next : RuntimeExpr}
+    (run : infer input = some result)
+    (steps : Relation.ReflTransGen Eval.Step input.erase next) :
+    RuntimeTyping 0 [] next result.ty := by
+  induction steps with
+  | refl => exact infer_erases run
+  | tail _ step ih => exact RuntimeTyping.preservation ih step
+
+/-- Every finite execution prefix of a successfully inferred program remains
+typed and ends at either a value or another reducible term. -/
+theorem infer_type_safety
+    {input : Source} {result : InferenceResult} {next : RuntimeExpr}
+    (run : infer input = some result)
+    (steps : Relation.ReflTransGen Eval.Step input.erase next) :
+    RuntimeTyping 0 [] next result.ty ∧
+      (Eval.Value next ∨ ∃ after, Eval.Step next after) := by
+  have typed := infer_steps_preserve run steps
+  exact ⟨typed, RuntimeTyping.progress typed⟩
 
 end EPL
