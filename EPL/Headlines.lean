@@ -7,6 +7,7 @@ import EPL.Properties.InferenceSafety
 import EPL.Properties.InferenceModelAnnotations
 import EPL.Properties.InferenceModelProjection
 import EPL.Properties.InferenceSound
+import EPL.Properties.InferenceRuntimeSafety
 import EPL.Properties.Regular
 import EPL.Properties.RigidWeakening
 import EPL.Properties.RuntimeRegular
@@ -40,6 +41,10 @@ namespace EPL.Headlines
 #check @MStore.Models.extend_checkedPrefix
 #check @inferFuel_sound_model
 #check @infer_sound
+#check @infer_result_wf
+#check @infer_erases
+#check @infer_progress
+#check @infer_step_preserves
 
 #print axioms Typing.regular
 #print axioms Typing.sourceScoped
@@ -61,5 +66,9 @@ namespace EPL.Headlines
 #print axioms MStore.Models.extend_checkedPrefix
 #print axioms inferFuel_sound_model
 #print axioms infer_sound
+#print axioms infer_result_wf
+#print axioms infer_erases
+#print axioms infer_progress
+#print axioms infer_step_preserves
 
 end EPL.Headlines

@@ -73,6 +73,7 @@ roots = [
   "EPL.Properties.InferenceClosing",
   "EPL.Properties.InferenceSound",
   "EPL.InferenceSoundTests",
+  "EPL.Properties.InferenceRuntimeSafety",
   "EPL.UnificationTests",
   "EPL.Properties.Regular",
   "EPL.Properties.SourceScope",

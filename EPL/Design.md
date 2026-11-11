@@ -61,7 +61,7 @@ The kernel should establish, without custom axioms:
 2. opening preserves scope and meta-freedom;
 3. declarative typing produces a well-formed semantic type;
 4. rigid-scope weakening;
-5. term weakening and substitution;
+5. runtime term weakening and substitution;
 6. generic rigid-block checking supports arbitrary well-formed scheme
    instantiations at every larger rigid boundary;
 7. erasure preserves typing;

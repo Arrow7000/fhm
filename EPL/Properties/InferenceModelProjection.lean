@@ -122,8 +122,9 @@ theorem MStore.Models.extend_checkedPrefix
       simpa [prefixLength] using idOuter
     have entryEq : (store.take cutoff)[id] = store[id] := by
       have gets := List.getElem?_take_of_lt (l := store) idOuter
-      simpa [List.getElem?_eq_getElem idPrefix,
-        List.getElem?_eq_getElem idStore] using gets
+      simp only [List.getElem?_eq_getElem idPrefix,
+        List.getElem?_eq_getElem idStore] at gets
+      exact Option.some.inj gets
     have entryMemberPrefix : store[id] ∈ store.take cutoff := by
       rw [← entryEq]
       exact List.getElem_mem ..

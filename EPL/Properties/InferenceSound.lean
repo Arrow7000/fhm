@@ -1,4 +1,5 @@
 import EPL.Properties.InferenceClosing
+import EPL.Properties.Regular
 
 namespace EPL
 
@@ -89,7 +90,7 @@ theorem inferFuel_sound_model
           cases lookup : ctx[index]? with
           | none => simp [lookup] at run
           | some scheme =>
-              simp only [lookup, Option.bind_some] at run
+              simp only [lookup] at run
               let fresh := state.freshMany scheme.paramCount
               have resultEq : result =
                   ⟨fresh.1, (state.solutions.applyScheme scheme).openWith fresh.2⟩ :=
@@ -127,7 +128,7 @@ theorem inferFuel_sound_model
               rw [resultTyEq]
               apply Typing.var (scheme := scheme.realize valuation)
                   (args := fresh.2.map (·.realize valuation))
-              · simpa [Ctx.realize, lookup]
+              · simp [Ctx.realize, lookup]
               · exact PolyTy.realize_wf schemeWF
                   (modelWF stateSafe stateModels)
               · simpa using freshSafe.2.2.1
@@ -659,5 +660,13 @@ theorem infer_sound
           apply False.elim
           apply finalGood
           simpa only [Bool.and_eq_true] using run.1
+
+/-- The public result contains a closed semantic type; in particular it has no
+remaining inference metavariables. -/
+theorem infer_result_wf
+    {input : Source} {result : InferenceResult}
+    (run : infer input = some result) :
+    result.ty.WF 0 0 := by
+  exact Typing.regular (infer_sound run)
 
 end EPL
