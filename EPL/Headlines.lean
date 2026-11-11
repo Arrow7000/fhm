@@ -6,6 +6,7 @@ import EPL.Properties.Erasure
 import EPL.Properties.InferenceSafety
 import EPL.Properties.InferenceModelAnnotations
 import EPL.Properties.InferenceModelProjection
+import EPL.Properties.InferenceSound
 import EPL.Properties.Regular
 import EPL.Properties.RigidWeakening
 import EPL.Properties.RuntimeRegular
@@ -37,6 +38,8 @@ namespace EPL.Headlines
 #check @Template.allocate_matches_realize
 #check @InferState.constrain_refines
 #check @MStore.Models.extend_checkedPrefix
+#check @inferFuel_sound_model
+#check @infer_sound
 
 #print axioms Typing.regular
 #print axioms Typing.sourceScoped
@@ -56,5 +59,7 @@ namespace EPL.Headlines
 #print axioms Template.allocate_matches_realize
 #print axioms InferState.constrain_refines
 #print axioms MStore.Models.extend_checkedPrefix
+#print axioms inferFuel_sound_model
+#print axioms infer_sound
 
 end EPL.Headlines

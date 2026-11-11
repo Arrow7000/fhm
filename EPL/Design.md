@@ -69,6 +69,11 @@ The kernel should establish, without custom axioms:
 9. executable checking/inference is sound;
 10. successful public results contain no unresolved metavariables.
 
+Both claims are now established: `inferFuel_sound_model` connects every
+successful internal run to declarative typing under every semantic model of
+its result state, and `infer_sound` specializes that result to the closed type
+returned by the public entry point.
+
 The first kernel deliberately makes no claim of inference completeness,
 principal types, implicit generalisation, or polymorphic recursion.
 

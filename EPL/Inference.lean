@@ -102,7 +102,7 @@ structure InferResult where
 
 structure InferenceResult where
   ty : Ty
-  deriving Repr
+  deriving DecidableEq, Repr
 
 /-- Every inference obligation still live at the public boundary has a closed
 semantic solution. Ordinary scheme-instantiation metavariables need not be
