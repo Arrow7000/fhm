@@ -1,10 +1,54 @@
 import EPL.Core
 
+/-!
+# Unification against the metavariable store
+
+Inference keeps one dense table of metavariable solutions, `MStore`. Entry `i`
+is `none` while `?i` is unsolved and `some ty` once solved. Solved entries are
+kept *normalized*: they never mention a solved metavariable
+(`MStore.Normalized`). Resolving a type is therefore a single lookup per
+metavariable, with no chains to follow and no possibility of cycles.
+
+Unification is Robinson's algorithm with the store as its solved form. Each
+constraint is kept resolved through the current store. Binding `?id := ty`
+writes the solution into the store and eliminates `?id` from every other
+solution and from the remaining constraints.
+
+Recursion is structural, so `decide` can evaluate unification, and the fuel is
+provably sufficient rather than a heuristic budget:
+
+* `unifyPhase` runs until the first new binding. Every step that does not bind
+  shrinks `Constraints.size`, so that size is enough fuel
+  (`unifyPhase_ne_outOfFuel`).
+* `unifyLoop` runs phases. Each phase that binds solves one previously unsolved
+  metavariable, so `store.unsolved + 1` phases are enough
+  (`unifyPhase_bound_unsolved_lt`).
+-/
+
 namespace EPL
 
-/-- Ordered metavariable substitutions. Applying the list left-to-right makes
-`older ++ newer` the composition that first applies `older`, then `newer`. -/
-abbrev MSubst := List (Nat × Ty)
+/-- The dense metavariable solution table. -/
+abbrev MStore := List (Option Ty)
+
+/-- The current solution of `?id`, if allocated and solved. -/
+def MStore.lookup (store : MStore) (id : Nat) : Option Ty :=
+  (store[id]?).join
+
+/-- Resolve every solved metavariable in a type. -/
+def MStore.apply (store : MStore) : Ty → Ty
+  | .prim p => .prim p
+  | .arrow domain codomain =>
+      .arrow (store.apply domain) (store.apply codomain)
+  | .bvar index => .bvar index
+  | .rigid level => .rigid level
+  | .mvar id => (store.lookup id).getD (.mvar id)
+
+def MStore.applyScheme (store : MStore) (scheme : PolyTy) : PolyTy :=
+  ⟨scheme.paramCount, store.apply scheme.body⟩
+
+/-- The number of allocated but unsolved metavariables. -/
+def MStore.unsolved (store : MStore) : Nat :=
+  store.countP (·.isNone)
 
 def Ty.substMVar (ty : Ty) (target : Nat) (replacement : Ty) : Ty :=
   match ty with
@@ -15,16 +59,6 @@ def Ty.substMVar (ty : Ty) (target : Nat) (replacement : Ty) : Ty :=
   | .bvar index => .bvar index
   | .rigid level => .rigid level
   | .mvar id => if id = target then replacement else .mvar id
-
-def MSubst.apply (subst : MSubst) (ty : Ty) : Ty :=
-  subst.foldl (fun current binding =>
-    current.substMVar binding.1 binding.2) ty
-
-def MSubst.applyScheme (subst : MSubst) (scheme : PolyTy) : PolyTy :=
-  ⟨scheme.paramCount, subst.apply scheme.body⟩
-
-def MSubst.applyCtx (subst : MSubst) (ctx : Ctx) : Ctx :=
-  ctx.map subst.applyScheme
 
 def Ty.occursMVar (ty : Ty) (target : Nat) : Bool :=
   match ty with
@@ -42,61 +76,60 @@ def Ty.mvars : Ty → List Nat
   | .arrow domain codomain => (domain.mvars ++ codomain.mvars).dedup
   | .mvar id => [id]
 
+/-- Record `?id := ty` and eliminate `?id` from every other solution. -/
+def MStore.solve (store : MStore) (id : Nat) (ty : Ty) : MStore :=
+  (store.map (Option.map (·.substMVar id ty))).set id (some ty)
+
 abbrev Constraint := Ty × Ty
 
-def MSubst.Solves (subst : MSubst) (constraints : List Constraint) : Prop :=
-  ∀ constraint ∈ constraints,
-    subst.apply constraint.1 = subst.apply constraint.2
+def Constraint.substMVar (target : Nat) (replacement : Ty)
+    (constraint : Constraint) : Constraint :=
+  (constraint.1.substMVar target replacement,
+    constraint.2.substMVar target replacement)
 
-def MSubst.Scoped (rigidCount : Nat) (subst : MSubst) : Prop :=
-  ∀ binding ∈ subst, binding.2.Scoped rigidCount 0
+def Constraints.size (constraints : List Constraint) : Nat :=
+  (constraints.map fun constraint =>
+    constraint.1.size + constraint.2.size).sum
 
-/-- Applying a reachable substitution twice has no further effect. Public
-unification begins from `[]` and preserves this invariant; arbitrary preloaded
-association lists are not assumed stable. -/
-def MSubst.Stable (subst : MSubst) : Prop :=
-  ∀ ty, subst.apply (subst.apply ty) = subst.apply ty
+/-- How one unification phase ended. -/
+inductive UnifyPhase where
+  /-- Every constraint was discharged without a new binding. -/
+  | finished (store : MStore)
+  /-- One metavariable was bound; these constraints remain. -/
+  | bound (store : MStore) (rest : List Constraint)
+  | failed
+  | outOfFuel
 
-def Constraints.Scoped (rigidCount : Nat)
-    (constraints : List Constraint) : Prop :=
-  ∀ constraint ∈ constraints,
-    constraint.1.Scoped rigidCount 0 ∧ constraint.2.Scoped rigidCount 0
-
-/-- Sound but deliberately fuelled first-order unification. Exhausting fuel is
-ordinary rejection: EPL initially claims soundness, not inference completeness.
-
-Every constraint is normalized by the accumulated substitution. A flexible
-metavariable may be bound only when the occurs check succeeds. Bound variables,
-rigid variables, primitives, and arrows are never mistaken for flexible
-metavariables. -/
-def unifyFuel : Nat → List Constraint → MSubst → Option MSubst
-  | 0, [], subst => some subst
-  | 0, _ :: _, _ => none
-  | _ + 1, [], subst => some subst
-  | fuel + 1, (left, right) :: rest, subst =>
-      let left := subst.apply left
-      let right := subst.apply right
-      if left = right then
-        unifyFuel fuel rest subst
+/-- Simplify resolved constraints until one binds an unsolved metavariable.
+A metavariable may be bound only if it is allocated, unsolved, and passes the
+occurs check. Rigid and bound variables are never bound. -/
+def unifyPhase (store : MStore) : Nat → List Constraint → UnifyPhase
+  | _, [] => .finished store
+  | 0, _ :: _ => .outOfFuel
+  | fuel + 1, (left, right) :: rest =>
+      if left = right then unifyPhase store fuel rest
       else
         match left, right with
         | .mvar id, ty | ty, .mvar id =>
-            if ty.occursMVar id then none
-            else unifyFuel fuel rest (subst ++ [(id, ty)])
+            if store[id]? = some none ∧ ty.occursMVar id = false then
+              .bound (store.solve id ty) (rest.map (Constraint.substMVar id ty))
+            else .failed
         | .arrow leftDomain leftCodomain, .arrow rightDomain rightCodomain =>
-            unifyFuel fuel
+            unifyPhase store fuel
               ((leftDomain, rightDomain) :: (leftCodomain, rightCodomain) :: rest)
-              subst
-        | _, _ => none
+        | _, _ => .failed
 
-/-- A conservative deterministic budget. Failure from budget exhaustion is
-allowed by the initial language contract. -/
-def unifyBudget (left right : Ty) : Nat :=
-  let structural := left.size + right.size + 1
-  let flexible := (left.mvars ++ right.mvars).dedup.length + 1
-  structural * flexible * 2
+/-- Run phases until all constraints are discharged. -/
+def unifyLoop : Nat → MStore → List Constraint → Option MStore
+  | 0, _, _ => none
+  | fuel + 1, store, constraints =>
+      match unifyPhase store (Constraints.size constraints) constraints with
+      | .finished store => some store
+      | .bound store rest => unifyLoop fuel store rest
+      | .failed | .outOfFuel => none
 
-def unify (left right : Ty) : Option MSubst :=
-  unifyFuel (unifyBudget left right) [(left, right)] []
+/-- Extend the store so that `left` and `right` resolve to the same type. -/
+def MStore.unify (store : MStore) (left right : Ty) : Option MStore :=
+  unifyLoop (store.unsolved + 1) store [(store.apply left, store.apply right)]
 
 end EPL

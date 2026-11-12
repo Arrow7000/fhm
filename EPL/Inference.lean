@@ -104,29 +104,13 @@ def Ty.closeRigids (base count : Nat) : Ty → Ty
       else .rigid (level - count)
   | .mvar id => .mvar id
 
-/-- A dense canonical solution table. Entry `i` is the current normalized
-meaning of metavariable `i`; an unsolved entry is exactly `mvar i`. The
-unifier's ordered substitutions remain an implementation detail of each
-individual constraint. -/
-abbrev MStore := List Ty
-
-def MStore.apply (store : MStore) : Ty → Ty
-  | .prim p => .prim p
-  | .arrow domain codomain =>
-      .arrow (store.apply domain) (store.apply codomain)
-  | .bvar index => .bvar index
-  | .rigid level => .rigid level
-  | .mvar id => (store[id]?).getD (.mvar id)
-
-def MStore.applyScheme (store : MStore) (scheme : PolyTy) : PolyTy :=
-  ⟨scheme.paramCount, store.apply scheme.body⟩
-
+/-- Every solved entry is scoped below `rigidCount` and mentions only
+metavariables below `cutoff`, so the table's `cutoff` prefix can be kept
+when a local scheme-checking region is discarded. -/
 def MStore.safeToLeave
     (rigidCount cutoff : Nat) (store : MStore) : Bool :=
-  store.all fun ty => ty.scopedB rigidCount 0 && ty.mvarsBelow cutoff
-
-def mvarRange (start count : Nat) : List Ty :=
-  (List.range' start count).map .mvar
+  store.all fun entry =>
+    entry.all fun ty => ty.scopedB rigidCount 0 && ty.mvarsBelow cutoff
 
 structure InferState where
   next : Nat
@@ -160,13 +144,13 @@ def InferState.solvedFromB
 def InferState.fresh (state : InferState) : InferState × Ty :=
   ({ state with
       next := state.next + 1
-      solutions := state.solutions ++ [.mvar state.next] },
+      solutions := state.solutions ++ [none] },
     .mvar state.next)
 
 def InferState.freshRequired (state : InferState) : InferState × Ty :=
   ({ state with
       next := state.next + 1
-      solutions := state.solutions ++ [.mvar state.next]
+      solutions := state.solutions ++ [none]
       required := state.next :: state.required },
     .mvar state.next)
 
@@ -183,17 +167,12 @@ def InferState.allocate (state : InferState) (template : Template) : InferState 
   ({ state with
       next := allocation.next
       solutions := state.solutions ++
-        mvarRange state.next (allocation.next - state.next)
+        List.replicate (allocation.next - state.next) none
       required := required ++ state.required },
     allocation.ty)
 
 def InferState.constrain (state : InferState) (left right : Ty) : Option InferState :=
-  let normalizedLeft := state.solutions.apply left
-  let normalizedRight := state.solutions.apply right
-  match unify normalizedLeft normalizedRight with
-  | none => none
-  | some delta =>
-      some { state with solutions := state.solutions.map delta.apply }
+  (state.solutions.unify left right).map fun solutions => { state with solutions }
 
 def Expr.inferSize : Source → Nat
   | .primLit _ | .primOp _ | .var _ => 1

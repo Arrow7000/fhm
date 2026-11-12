@@ -19,8 +19,9 @@ namespace EPL.Headlines
 #check @RuntimeTyping.substScheme
 #check @RuntimeTyping.progress
 #check @RuntimeTyping.preservation
-#check @unify_sound
-#check @unify_scoped
+#check @MStore.unify_sound
+#check @MStore.unify_complete
+#check @MStore.unify_scoped
 #check @Template.allocate_fits
 #check @Template.allocate_scoped
 #check @inferFuel_safe
@@ -54,8 +55,9 @@ namespace EPL.Headlines
 #print axioms RuntimeTyping.substScheme
 #print axioms RuntimeTyping.progress
 #print axioms RuntimeTyping.preservation
-#print axioms unify_sound
-#print axioms unify_scoped
+#print axioms MStore.unify_sound
+#print axioms MStore.unify_complete
+#print axioms MStore.unify_scoped
 #print axioms Template.allocate_fits
 #print axioms Template.allocate_scoped
 #print axioms inferFuel_safe

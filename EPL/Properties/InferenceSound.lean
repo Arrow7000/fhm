@@ -3,18 +3,6 @@ import EPL.Properties.Declarative
 
 namespace EPL
 
-abbrev MValuation := Nat → Ty
-
-/-- Interpret every inference metavariable through a semantic valuation. The
-valuation's images are required separately to be well-formed semantic types. -/
-def Ty.realize (valuation : MValuation) : Ty → Ty
-  | .prim p => .prim p
-  | .arrow domain codomain =>
-      .arrow (domain.realize valuation) (codomain.realize valuation)
-  | .bvar index => .bvar index
-  | .rigid level => .rigid level
-  | .mvar id => valuation id
-
 def PolyTy.realize (scheme : PolyTy) (valuation : MValuation) : PolyTy :=
   ⟨scheme.paramCount, scheme.body.realize valuation⟩
 
@@ -24,18 +12,6 @@ def Ctx.realize (ctx : Ctx) (valuation : MValuation) : Ctx :=
 def HoleAssignment.realize
     (holes : HoleAssignment) (valuation : MValuation) : HoleAssignment :=
   holes.map fun entry => (entry.1, entry.2.realize valuation)
-
-def MValuation.WF
-    (valuation : MValuation) (rigidCount frontier : Nat) : Prop :=
-  ∀ id, id < frontier → (valuation id).WF rigidCount 0
-
-/-- A valuation models a dense table when it gives semantic meanings to every
-allocated ID and satisfies every table equation simultaneously. -/
-structure MStore.Models
-    (store : MStore) (rigidCount : Nat) (valuation : MValuation) : Prop where
-  valuationWF : valuation.WF rigidCount store.length
-  equation : ∀ id, (h : id < store.length) →
-    valuation id = (store[id]).realize valuation
 
 def InferState.Models
     (state : InferState) (rigidCount : Nat) (valuation : MValuation) : Prop :=
@@ -239,27 +215,6 @@ theorem Ty.realize_closeRigids
       simpa [Ty.closeRigids, Ty.realize] using
         (close_eq_self (valuationWF id idBounded).1).symm
 
-/-- Looking up algorithmic solutions is semantically invisible in every model
-of the dense table. -/
-theorem MStore.Models.realize_apply
-    {store : MStore} {valuation : MValuation} {rigidCount : Nat}
-    (models : store.Models rigidCount valuation) (ty : Ty) :
-    (store.apply ty).realize valuation = ty.realize valuation := by
-  induction ty with
-  | prim name => rfl
-  | arrow domain codomain ihDomain ihCodomain =>
-      simp only [MStore.apply, Ty.realize, ihDomain, ihCodomain]
-  | bvar index => rfl
-  | rigid level => rfl
-  | mvar id =>
-      by_cases inStore : id < store.length
-      · rw [MStore.apply, List.getElem?_eq_getElem inStore, Option.getD_some,
-          Ty.realize]
-        exact (models.equation id inStore).symm
-      · rw [MStore.apply,
-          List.getElem?_eq_none_iff.mpr (Nat.le_of_not_gt inStore),
-          Option.getD_none]
-
 end EPL
 
 namespace EPL
@@ -274,7 +229,7 @@ def Ty.defaultMVars : Ty → Ty
   | .mvar _ => .prim .unit
 
 def MStore.defaultValuation (store : MStore) : MValuation :=
-  fun id => (store[id]?).map Ty.defaultMVars |>.getD (.prim .unit)
+  fun id => (store.apply (.mvar id)).defaultMVars
 
 theorem Ty.defaultMVars_wf
     {ty : Ty} {rigidCount binderCount : Nat}
@@ -288,6 +243,44 @@ theorem Ty.defaultMVars_wf
   | bvar hlt => exact ⟨.bvar hlt, .bvar⟩
   | rigid hlt => exact ⟨.rigid hlt, .rigid⟩
   | mvar id => exact ⟨.prim, .prim⟩
+
+/-- If every metavariable mentioned by a type is still unsolved, resolving it
+through the store leaves it unchanged. -/
+private theorem MStore.apply_eq_self_of_lookup_none (store : MStore) (ty : Ty)
+    (unsolved : ∀ id ∈ ty.mvars, store.lookup id = none) :
+    store.apply ty = ty := by
+  induction ty with
+  | prim name => rfl
+  | arrow domain codomain ihDomain ihCodomain =>
+      have domainUnsolved : ∀ id ∈ domain.mvars, store.lookup id = none := by
+        intro id inside
+        exact unsolved id (by
+          simp only [Ty.mvars, List.mem_dedup, List.mem_append]
+          exact Or.inl inside)
+      have codomainUnsolved : ∀ id ∈ codomain.mvars, store.lookup id = none := by
+        intro id inside
+        exact unsolved id (by
+          simp only [Ty.mvars, List.mem_dedup, List.mem_append]
+          exact Or.inr inside)
+      simp only [MStore.apply]
+      rw [ihDomain domainUnsolved, ihCodomain codomainUnsolved]
+  | bvar index => rfl
+  | rigid level => rfl
+  | mvar id =>
+      have noneLookup := unsolved id (by simp [Ty.mvars])
+      simp only [MStore.apply, noneLookup]
+      rfl
+
+/-- A solved lookup witnesses a solved entry in the table. -/
+private theorem MStore.entry_of_lookup_eq_some {store : MStore} {id : Nat} {ty : Ty}
+    (lookupEq : store.lookup id = some ty) : store[id]? = some (some ty) := by
+  simp only [MStore.lookup] at lookupEq
+  cases entry : store[id]? with
+  | none => simp [entry] at lookupEq
+  | some option =>
+      cases option with
+      | none => simp [entry] at lookupEq
+      | some ty' => simpa [entry] using lookupEq
 
 /-- Every safe normalized table has a concrete semantic model: solved entries
 keep their semantic structure and genuinely unconstrained variables default to
@@ -319,28 +312,45 @@ theorem MStore.defaultValuation_models
     | bvar index => rfl
     | rigid level => rfl
     | mvar id =>
-        have idBounded : id < frontier :=
-          typeBounded id (by simp [Ty.mvars])
-        have idInStore : id < store.length := by
-          simpa [length] using idBounded
-        have entryIdentity : store[id] = .mvar id := by
-          simpa [MStore.apply, List.getElem?_eq_getElem idInStore] using typeFixed
-        simp [Ty.realize, MStore.defaultValuation,
-          List.getElem?_eq_getElem idInStore, entryIdentity, Ty.defaultMVars]
+        simp only [Ty.realize, MStore.defaultValuation]
+        rw [typeFixed]
   refine ⟨?_, ?_⟩
   · intro id idBounded
-    have entryScoped : store[id].Scoped rigidCount 0 :=
-      storeScoped store[id] (List.getElem_mem ..)
-    simpa [MStore.defaultValuation,
-      List.getElem?_eq_getElem idBounded] using
-        Ty.defaultMVars_wf entryScoped
-  · intro id idBounded
-    have entryMember : store[id] ∈ store := List.getElem_mem ..
-    have entryBounded := storeBounded store[id] entryMember
-    have entryFixed := storeNormalized store[id] entryMember
-    simpa [MStore.defaultValuation,
-      List.getElem?_eq_getElem idBounded] using
-        (realize_eq_default entryBounded entryFixed).symm
+    cases entry : store[id]? with
+    | none =>
+        have lookupNone : store.lookup id = none := by
+          simp [MStore.lookup, entry]
+        simp only [MStore.defaultValuation, MStore.apply, lookupNone,
+          Option.getD_none, Ty.defaultMVars]
+        exact ⟨.prim, .prim⟩
+    | some option =>
+        cases option with
+        | none =>
+            have lookupNone : store.lookup id = none := by
+              simp [MStore.lookup, entry]
+            simp only [MStore.defaultValuation, MStore.apply, lookupNone,
+              Option.getD_none, Ty.defaultMVars]
+            exact ⟨.prim, .prim⟩
+        | some ty =>
+            have solvedEntry : store[id]? = some (some ty) := entry
+            have tyMember : some ty ∈ store := List.mem_of_getElem? solvedEntry
+            have lookupSome : store.lookup id = some ty := by
+              simp [MStore.lookup, entry]
+            simpa [MStore.defaultValuation, MStore.apply, lookupSome] using
+              Ty.defaultMVars_wf (storeScoped ty tyMember)
+  · intro id ty entry
+    have tyMember : some ty ∈ store := List.mem_of_getElem? entry
+    have tyBounded : ty.MVarBounded frontier := storeBounded ty tyMember
+    have tyFixed : store.apply ty = ty :=
+      MStore.apply_eq_self_of_lookup_none store ty
+        (storeNormalized ty tyMember)
+    have realizeEq : ty.realize store.defaultValuation = ty.defaultMVars :=
+      realize_eq_default tyBounded tyFixed
+    have lookupSome : store.lookup id = some ty := by
+      simp [MStore.lookup, entry]
+    simp only [MStore.defaultValuation, MStore.apply, lookupSome,
+      Option.getD_some]
+    rw [realizeEq]
 
 theorem InferState.has_model
     {state : InferState} {rigidCount : Nat}
@@ -474,16 +484,20 @@ theorem MStore.Models.prefix
   constructor
   · intro id idLt
     exact models.valuationWF id (lt_of_lt_of_le idLt lengthLe)
-  · intro id idLt
+  · intro id ty entry
+    have idLt : id < older.length := by
+      by_contra outOfRange
+      have noneEq : older[id]? = none :=
+        List.getElem?_eq_none_iff.mpr (by omega)
+      rw [noneEq] at entry
+      exact Option.noConfusion entry
     have idNewer : id < newer.length := lt_of_lt_of_le idLt lengthLe
-    have entryEq : newer[id] = older[id] := by
-      have gets := congrArg (fun entries => entries[id]?) prefixEq
-      simp only [List.getElem?_take_of_lt idLt,
-        List.getElem?_eq_getElem idNewer,
-        List.getElem?_eq_getElem idLt] at gets
-      exact Option.some.inj gets
-    rw [← entryEq]
-    exact models.equation id idNewer
+    have prefixAt : newer[id]? = older[id]? := by
+      have gets : (newer.take older.length)[id]? = older[id]? :=
+        congrArg (fun entries => entries[id]?) prefixEq
+      rw [List.getElem?_take_of_lt idLt] at gets
+      exact gets
+    exact models.equation id ty (by rw [prefixAt]; exact entry)
 
 theorem InferState.fresh_refines
     {state : InferState} {rigidCount : Nat} :
@@ -525,94 +539,14 @@ theorem InferState.constrain_refines
     (safe : state.Safe rigidCount)
     (run : state.constrain left right = some checked) :
     state.Refines checked rigidCount := by
-  simp only [InferState.constrain] at run
-  cases hdelta : unify (state.solutions.apply left)
-      (state.solutions.apply right) with
-  | none => simp [hdelta] at run
-  | some delta =>
-      rw [hdelta] at run
-      simp only [Option.some.injEq] at run
+  unfold InferState.constrain at run
+  cases hunify : state.solutions.unify left right with
+  | none => simp [hunify] at run
+  | some solutions =>
+      simp only [hunify, Option.map_some, Option.some.injEq] at run
       subst checked
-      have substApplyArrow : ∀ (subst : MSubst) (domain codomain : Ty),
-          subst.apply (.arrow domain codomain) =
-            .arrow (subst.apply domain) (subst.apply codomain) := by
-        intro subst domain codomain
-        induction subst generalizing domain codomain with
-        | nil => rfl
-        | cons binding rest ih =>
-            simp only [MSubst.apply, List.foldl_cons, Ty.substMVar]
-            exact ih _ _
-      have substApplyPrim : ∀ (subst : MSubst) (name : PrimTy),
-          subst.apply (.prim name) = .prim name := by
-        intro subst name
-        induction subst with
-        | nil => rfl
-        | cons binding rest ih =>
-            simpa [MSubst.apply, List.foldl_cons, Ty.substMVar] using ih
-      have substApplyBVar : ∀ (subst : MSubst) (index : Nat),
-          subst.apply (.bvar index) = .bvar index := by
-        intro subst index
-        induction subst with
-        | nil => rfl
-        | cons binding rest ih =>
-            simpa [MSubst.apply, List.foldl_cons, Ty.substMVar] using ih
-      have substApplyRigid : ∀ (subst : MSubst) (level : Nat),
-          subst.apply (.rigid level) = .rigid level := by
-        intro subst level
-        induction subst with
-        | nil => rfl
-        | cons binding rest ih =>
-            simpa [MSubst.apply, List.foldl_cons, Ty.substMVar] using ih
-      have mapApply : ∀ {ty : Ty}, ty.MVarBounded state.next →
-          MStore.apply (state.solutions.map delta.apply) ty =
-            delta.apply (state.solutions.apply ty) := by
-        intro ty bounded
-        induction ty with
-        | prim name =>
-            simpa [MStore.apply] using (substApplyPrim delta name).symm
-        | arrow domain codomain ihDomain ihCodomain =>
-            have domainBounded : domain.MVarBounded state.next := by
-              intro id member
-              exact bounded id (by simp [Ty.mvars, member])
-            have codomainBounded : codomain.MVarBounded state.next := by
-              intro id member
-              exact bounded id (by simp [Ty.mvars, member])
-            simp only [MStore.apply]
-            rw [ihDomain domainBounded, ihCodomain codomainBounded,
-              substApplyArrow]
-        | bvar index =>
-            simpa [MStore.apply] using (substApplyBVar delta index).symm
-        | rigid level =>
-            simpa [MStore.apply] using (substApplyRigid delta level).symm
-        | mvar id =>
-            have idBounded : id < state.next :=
-              bounded id (by simp [Ty.mvars])
-            have idInStore : id < state.solutions.length := by
-              simpa [safe.solutions_length] using idBounded
-            simp only [MStore.apply, List.getElem?_map,
-              List.getElem?_eq_getElem idInStore, Option.map_some,
-              Option.getD_some]
       intro valuation models
-      constructor
-      · intro id idBounded
-        exact models.valuationWF id (by simpa using idBounded)
-      · intro id idBounded
-        have idInStore : id < state.solutions.length := by
-          simpa using idBounded
-        let oldTy := state.solutions[id]
-        have oldMember : oldTy ∈ state.solutions := by
-          exact List.getElem_mem ..
-        have oldBounded : oldTy.MVarBounded state.next :=
-          safe.solutionsBounded oldTy oldMember
-        have oldFixed : state.solutions.apply oldTy = oldTy :=
-          safe.solutionsNormalized oldTy oldMember
-        have semanticFixed := models.realize_apply oldTy
-        rw [mapApply oldBounded, oldFixed] at semanticFixed
-        have checkedEquation := models.equation id (by simpa using idBounded)
-        have checkedEquation' : valuation id =
-            (delta.apply oldTy).realize valuation := by
-          simpa [oldTy] using checkedEquation
-        exact checkedEquation'.trans semanticFixed
+      exact (MStore.unify_sound hunify models).1
 
 end EPL
 
@@ -641,7 +575,7 @@ theorem MStore.Models.extend_checkedPrefix
   let baseValuation : MValuation := fun id =>
     if id < cutoff then outerValuation id else .prim .unit
   let localValuation : MValuation := fun id =>
-    (store[id]?).map (·.realize baseValuation) |>.getD (.prim .unit)
+    ((store.lookup id).map (·.realize baseValuation)).getD (baseValuation id)
   have wf_mono_rigid : ∀ {ty : Ty},
       ty.WF rigidCount 0 → ty.WF (rigidCount + count) 0 := by
     intro ty typeWF
@@ -682,81 +616,72 @@ theorem MStore.Models.extend_checkedPrefix
     | bvar index => rfl
     | rigid level => rfl
     | mvar id => exact agree id (by simp [Ty.mvars])
-  have fixed_mvar : ∀ {ty : Ty} {id : Nat},
-      store.apply ty = ty → id ∈ ty.mvars →
-        store.apply (.mvar id) = .mvar id := by
-    intro ty id typeFixed member
-    induction ty with
-    | prim name => simp [Ty.mvars] at member
-    | arrow domain codomain ihDomain ihCodomain =>
-        simp only [MStore.apply] at typeFixed
-        injection typeFixed with domainFixed codomainFixed
-        simp only [Ty.mvars, List.mem_dedup, List.mem_append] at member
-        rcases member with member | member
-        · exact ihDomain domainFixed member
-        · exact ihCodomain codomainFixed member
-    | bvar index => simp [Ty.mvars] at member
-    | rigid level => simp [Ty.mvars] at member
-    | mvar current =>
-        simp only [Ty.mvars, List.mem_singleton] at member
-        subst current
-        exact typeFixed
-  have local_eq_base_of_mem : ∀ {ty : Ty}, ty ∈ store →
+  have local_eq_base_of_mem : ∀ {ty : Ty}, some ty ∈ store →
       ∀ {id : Nat}, id ∈ ty.mvars → localValuation id = baseValuation id := by
-    intro ty typeMember id idMember
-    have idBounded : id < store.length :=
-      storeBounded ty typeMember id idMember
-    have idFixed : store.apply (.mvar id) = .mvar id :=
-      fixed_mvar (storeNormalized ty typeMember) idMember
-    have entryIdentity : store[id] = .mvar id := by
-      simpa [MStore.apply, List.getElem?_eq_getElem idBounded] using idFixed
-    simp [localValuation, List.getElem?_eq_getElem idBounded,
-      entryIdentity, Ty.realize]
-  have entry_realize_eq : ∀ {ty : Ty}, ty ∈ store →
+    intro ty tyMember id idMember
+    have lookupNone := storeNormalized ty tyMember id idMember
+    simp [localValuation, lookupNone]
+  have entry_realize_eq : ∀ {ty : Ty}, some ty ∈ store →
       ty.realize localValuation = ty.realize baseValuation := by
-    intro ty typeMember
+    intro ty tyMember
     apply realize_congr_on
     intro id idMember
-    exact local_eq_base_of_mem typeMember idMember
+    exact local_eq_base_of_mem tyMember idMember
   refine ⟨localValuation, ?_, ?_⟩
   · constructor
     · intro id idBounded
-      have entryMember : store[id] ∈ store := List.getElem_mem ..
-      have entryWF : store[id].InferWF
-          (rigidCount + count) 0 store.length :=
-        ⟨storeScoped store[id] entryMember,
-          storeBounded store[id] entryMember⟩
-      simpa [localValuation, List.getElem?_eq_getElem idBounded] using
-        Ty.realize_inferWF entryWF baseWF
-    · intro id idBounded
-      have entryMember : store[id] ∈ store := List.getElem_mem ..
-      simpa [localValuation, List.getElem?_eq_getElem idBounded] using
-        (entry_realize_eq entryMember).symm
+      cases lookupEq : store.lookup id with
+      | none =>
+          have localEq : localValuation id = baseValuation id := by
+            simp [localValuation, lookupEq]
+          rw [localEq]
+          exact baseWF id idBounded
+      | some ty =>
+          have entry : store[id]? = some (some ty) := by
+            exact MStore.entry_of_lookup_eq_some lookupEq
+          have tyMember : some ty ∈ store := List.mem_of_getElem? entry
+          have entryWF : ty.InferWF (rigidCount + count) 0 store.length :=
+            ⟨storeScoped ty tyMember, storeBounded ty tyMember⟩
+          have localEq : localValuation id = ty.realize baseValuation := by
+            simp [localValuation, lookupEq]
+          rw [localEq]
+          exact Ty.realize_inferWF entryWF baseWF
+    · intro id ty entry
+      have tyMember : some ty ∈ store := List.mem_of_getElem? entry
+      have lookupSome : store.lookup id = some ty := by
+        simp [MStore.lookup, entry]
+      have localAt : localValuation id = ty.realize baseValuation := by
+        simp [localValuation, lookupSome]
+      rw [localAt]
+      exact (entry_realize_eq tyMember).symm
   · intro id idOuter
-    have idStore : id < store.length := lt_of_lt_of_le idOuter length
-    have idPrefix : id < (store.take cutoff).length := by
-      simpa [prefixLength] using idOuter
-    have entryEq : (store.take cutoff)[id] = store[id] := by
-      have gets := List.getElem?_take_of_lt (l := store) idOuter
-      simp only [List.getElem?_eq_getElem idPrefix,
-        List.getElem?_eq_getElem idStore] at gets
-      exact Option.some.inj gets
-    have entryMemberPrefix : store[id] ∈ store.take cutoff := by
-      rw [← entryEq]
-      exact List.getElem_mem ..
-    have entryBounded : ∀ candidate ∈ store[id].mvars, candidate < cutoff :=
-      (escaped store[id] entryMemberPrefix).2
-    have realizeOuter : store[id].realize baseValuation =
-        store[id].realize outerValuation := by
-      apply realize_congr_on
-      intro candidate candidateMember
-      simp [baseValuation, entryBounded candidate candidateMember]
-    calc
-      localValuation id = store[id].realize baseValuation := by
-        simp [localValuation, List.getElem?_eq_getElem idStore]
-      _ = store[id].realize outerValuation := realizeOuter
-      _ = (store.take cutoff)[id].realize outerValuation := by rw [entryEq]
-      _ = outerValuation id := (outerModels.equation id idPrefix).symm
+    cases lookupEq : store.lookup id with
+    | none =>
+        have localEq : localValuation id = baseValuation id := by
+          simp [localValuation, lookupEq]
+        have baseEq : baseValuation id = outerValuation id := by
+          simp [baseValuation, idOuter]
+        rw [localEq, baseEq]
+    | some ty =>
+        have entry : store[id]? = some (some ty) := by
+          exact MStore.entry_of_lookup_eq_some lookupEq
+        have entryTake : (store.take cutoff)[id]? = some (some ty) := by
+          have gets := List.getElem?_take_of_lt (l := store) idOuter
+          rw [entry] at gets
+          exact gets
+        have outerEq := outerModels.equation id ty entryTake
+        have tyMemberTake : some ty ∈ store.take cutoff :=
+          List.mem_of_getElem? entryTake
+        have tyBoundedCut : ∀ candidate ∈ ty.mvars, candidate < cutoff :=
+          (escaped ty tyMemberTake).2
+        have baseAgree : ty.realize baseValuation =
+            ty.realize outerValuation := by
+          apply realize_congr_on
+          intro candidate candidateMember
+          simp [baseValuation, tyBoundedCut candidate candidateMember]
+        have localEq : localValuation id = ty.realize baseValuation := by
+          simp [localValuation, lookupEq]
+        rw [localEq, baseAgree, ← outerEq]
 
 end EPL
 
@@ -835,14 +760,20 @@ theorem MStore.Models.of_agree
   constructor
   · intro id idBounded
     exact secondWF id (by simpa [length] using idBounded)
-  · intro id idBounded
+  · intro id ty entry
+    have idBounded : id < store.length := by
+      by_contra outOfRange
+      have noneEq : store[id]? = none :=
+        List.getElem?_eq_none_iff.mpr (by omega)
+      rw [noneEq] at entry
+      exact Option.noConfusion entry
     have idFrontier : id < frontier := by simpa [length] using idBounded
-    have entryBounded : store[id].MVarBounded frontier :=
-      storeBounded store[id] (List.getElem_mem ..)
+    have tyMember : some ty ∈ store := List.mem_of_getElem? entry
+    have entryBounded : ty.MVarBounded frontier := storeBounded ty tyMember
     calc
       second id = first id := (agree id idFrontier).symm
-      _ = store[id].realize first := firstModels.equation id idBounded
-      _ = store[id].realize second :=
+      _ = ty.realize first := firstModels.equation id ty entry
+      _ = ty.realize second :=
         Ty.realize_eq_of_agree entryBounded agree
 
 end EPL
@@ -1408,18 +1339,26 @@ theorem inferFuel_sound_model
                             projectedSafe.1] using outerModels.valuationWF
                         constructor
                         · simpa [stateSafe.solutions_length] using outerWF
-                        · intro id idLt
+                        · intro id ty entry
+                          have idLt : id < state.solutions.length := by
+                            by_contra outOfRange
+                            have noneEq : state.solutions[id]? = none :=
+                              List.getElem?_eq_none_iff.mpr (by omega)
+                            rw [noneEq] at entry
+                            exact Option.noConfusion entry
                           have idOuter : id < localStart := by
                             simpa [localStart, stateSafe.solutions_length] using idLt
-                          have localEq := localStateModels.equation id (by
-                            simpa [stateSafe.solutions_length] using idLt)
-                          have entryBounded := stateSafe.solutionsBounded
-                            state.solutions[id] (List.getElem_mem ..)
+                          have localEq := localStateModels.equation id ty entry
+                          have tyMember : some ty ∈ state.solutions :=
+                            List.mem_of_getElem? entry
+                          have entryBounded : ty.MVarBounded state.next :=
+                            stateSafe.solutionsBounded ty tyMember
                           calc
                             outerVal id = localVal id := (agree id idOuter).symm
-                            _ = state.solutions[id].realize localVal := localEq
-                            _ = state.solutions[id].realize outerVal :=
-                              Ty.realize_eq_of_agree entryBounded agree
+                            _ = ty.realize localVal := localEq
+                            _ = ty.realize outerVal :=
+                              Ty.realize_eq_of_agree entryBounded (by
+                                simpa [MValuation.AgreeBelow, localStart] using agree)
                       refine ⟨outerRefines.trans bodySound.1, ?_⟩
                       intro outerVal finalModels
                       have outerModels := bodySound.1 outerVal finalModels

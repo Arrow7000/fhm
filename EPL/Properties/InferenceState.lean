@@ -377,11 +377,27 @@ outer-scoped and mentions only outer metavariables. -/
 theorem MStore.safeToLeave_eq_true_iff
     {store : MStore} {rigidCount cutoff : Nat} :
     store.safeToLeave rigidCount cutoff = true ↔
-      ∀ ty ∈ store,
+      ∀ ty, some ty ∈ store →
         ty.Scoped rigidCount 0 ∧
           ∀ id ∈ ty.mvars, id < cutoff := by
-  simp [MStore.safeToLeave, Ty.scopedB_eq_true_iff,
-    Ty.mvarsBelow_eq_true_iff]
+  constructor
+  · intro h ty hmem
+    rw [MStore.safeToLeave, List.all_eq_true] at h
+    have hentry := h (some ty) hmem
+    rw [Option.all_eq_true] at hentry
+    have hty := hentry ty rfl
+    rw [Bool.and_eq_true] at hty
+    exact ⟨Ty.scopedB_eq_true_iff.mp hty.1,
+      Ty.mvarsBelow_eq_true_iff.mp hty.2⟩
+  · intro h
+    rw [MStore.safeToLeave, List.all_eq_true]
+    intro entry hentry
+    rw [Option.all_eq_true]
+    intro ty hentryEq
+    rw [Bool.and_eq_true]
+    have hmem : some ty ∈ store := by simpa [hentryEq] using hentry
+    exact ⟨Ty.scopedB_eq_true_iff.mpr (h ty hmem).1,
+      Ty.mvarsBelow_eq_true_iff.mpr (h ty hmem).2⟩
 
 /-- Public obligation discharge is executable declarative well-formedness of
 every required metavariable's solved image. -/
@@ -416,227 +432,10 @@ end EPL
 
 namespace EPL
 
-/-- Every metavariable in a type was allocated below `frontier`. -/
-def Ty.MVarBounded (frontier : Nat) (ty : Ty) : Prop :=
-  ∀ id ∈ ty.mvars, id < frontier
-
-/-- Both the targets and images of a substitution stay inside the allocator's
-current namespace. -/
-def MSubst.Bounded (frontier : Nat) (subst : MSubst) : Prop :=
-  ∀ binding ∈ subst,
-    binding.1 < frontier ∧ binding.2.MVarBounded frontier
-
-def Constraints.MVarBounded
-    (frontier : Nat) (constraints : List Constraint) : Prop :=
-  ∀ constraint ∈ constraints,
-    constraint.1.MVarBounded frontier ∧
-      constraint.2.MVarBounded frontier
-
 theorem Ty.mvarBounded_iff_mvarsBelow
     {ty : Ty} {frontier : Nat} :
     ty.MVarBounded frontier ↔ ty.mvarsBelow frontier = true := by
   exact Ty.mvarsBelow_eq_true_iff.symm
-
-/-- Fuelled unification never invents a metavariable outside the namespace of
-its initial substitution and constraints. -/
-theorem unifyFuel_bounded
-    (initialBounded : initial.Bounded frontier)
-    (constraintsBounded : Constraints.MVarBounded frontier constraints)
-    (run : unifyFuel fuel constraints initial = some result) :
-    result.Bounded frontier := by
-  have substMVar_bounded :
-      ∀ {ty replacement : Ty} {target : Nat},
-        ty.MVarBounded frontier →
-        replacement.MVarBounded frontier →
-        (ty.substMVar target replacement).MVarBounded frontier := by
-    intro ty replacement target typeBounded replacementBounded
-    induction ty with
-    | prim name => simp [Ty.MVarBounded, Ty.substMVar, Ty.mvars]
-    | arrow domain codomain ihDomain ihCodomain =>
-        have domainBounded : domain.MVarBounded frontier := by
-          intro id member
-          exact typeBounded id (by simp [Ty.mvars, member])
-        have codomainBounded : codomain.MVarBounded frontier := by
-          intro id member
-          exact typeBounded id (by simp [Ty.mvars, member])
-        intro id member
-        simp only [Ty.substMVar, Ty.mvars, List.mem_dedup,
-          List.mem_append] at member
-        rcases member with member | member
-        · exact ihDomain domainBounded id member
-        · exact ihCodomain codomainBounded id member
-    | bvar index => simp [Ty.MVarBounded, Ty.substMVar, Ty.mvars]
-    | rigid level => simp [Ty.MVarBounded, Ty.substMVar, Ty.mvars]
-    | mvar id =>
-        simp only [Ty.substMVar]
-        split
-        · exact replacementBounded
-        · intro candidate member
-          simp only [Ty.mvars, List.mem_singleton] at member
-          subst candidate
-          exact typeBounded id (by simp [Ty.mvars])
-  have apply_bounded :
-      ∀ {subst : MSubst} {ty : Ty},
-        subst.Bounded frontier →
-        ty.MVarBounded frontier →
-        (subst.apply ty).MVarBounded frontier := by
-    intro subst ty substBounded typeBounded
-    induction subst generalizing ty with
-    | nil => simpa [MSubst.apply] using typeBounded
-    | cons binding rest ih =>
-        have bindingBounded := substBounded binding (by simp)
-        have restBounded : MSubst.Bounded frontier rest := by
-          intro item member
-          exact substBounded item (by simp [member])
-        simpa [MSubst.apply, List.foldl] using
-          ih restBounded (substMVar_bounded typeBounded bindingBounded.2)
-  have append_one_bounded :
-      ∀ {subst : MSubst} {id : Nat} {ty : Ty},
-        subst.Bounded frontier → id < frontier →
-        ty.MVarBounded frontier →
-        (subst ++ [(id, ty)]).Bounded frontier := by
-    intro subst id ty substBounded idBounded typeBounded binding member
-    rcases List.mem_append.mp member with old | new
-    · exact substBounded binding old
-    · simp only [List.mem_singleton] at new
-      subst binding
-      exact ⟨idBounded, typeBounded⟩
-  have arrow_parts :
-      ∀ {domain codomain : Ty},
-        (Ty.arrow domain codomain).MVarBounded frontier →
-        domain.MVarBounded frontier ∧ codomain.MVarBounded frontier := by
-    intro domain codomain bounded
-    constructor <;> intro id member
-    · exact bounded id (by simp [Ty.mvars, member])
-    · exact bounded id (by simp [Ty.mvars, member])
-  induction fuel generalizing constraints initial result with
-  | zero =>
-      cases constraints with
-      | nil =>
-          simp only [unifyFuel, Option.some.injEq] at run
-          subst result
-          exact initialBounded
-      | cons constraint rest => simp [unifyFuel] at run
-  | succ fuel ih =>
-      cases constraints with
-      | nil =>
-          simp only [unifyFuel, Option.some.injEq] at run
-          subst result
-          exact initialBounded
-      | cons constraint rest =>
-          rcases constraint with ⟨left, right⟩
-          have inputBounded := constraintsBounded (left, right) (by simp)
-          have restBounded : Constraints.MVarBounded frontier rest := by
-            intro item member
-            exact constraintsBounded item (List.mem_cons_of_mem _ member)
-          have leftBounded := apply_bounded initialBounded inputBounded.1
-          have rightBounded := apply_bounded initialBounded inputBounded.2
-          simp only [unifyFuel] at run
-          by_cases equal : initial.apply left = initial.apply right
-          · rw [if_pos equal] at run
-            exact ih initialBounded restBounded run
-          · rw [if_neg equal] at run
-            generalize leftEq : initial.apply left = left' at leftBounded run
-            generalize rightEq : initial.apply right = right' at rightBounded run
-            have bindCase (id : Nat) (assigned : Ty)
-                (idBounded : id < frontier)
-                (assignedBounded : assigned.MVarBounded frontier)
-                (bindRun :
-                  (if assigned.occursMVar id = true then none
-                    else unifyFuel fuel rest (initial ++ [(id, assigned)])) =
-                      some result) :
-                result.Bounded frontier := by
-              by_cases occurs : assigned.occursMVar id = true
-              · simp [occurs] at bindRun
-              · apply ih
-                  (append_one_bounded initialBounded idBounded assignedBounded)
-                  restBounded
-                simpa [occurs] using bindRun
-            cases left' with
-            | prim leftPrim =>
-                cases right' with
-                | prim rightPrim => simp at run
-                | arrow _ _ => simp at run
-                | bvar _ => simp at run
-                | rigid _ => simp at run
-                | mvar id =>
-                    exact bindCase id (.prim leftPrim)
-                      (rightBounded id (by simp [Ty.mvars])) leftBounded run
-            | arrow leftDomain leftCodomain =>
-                cases right' with
-                | prim _ => simp at run
-                | arrow rightDomain rightCodomain =>
-                    have leftParts := arrow_parts leftBounded
-                    have rightParts := arrow_parts rightBounded
-                    change unifyFuel fuel
-                      ((leftDomain, rightDomain) ::
-                        (leftCodomain, rightCodomain) :: rest) initial =
-                          some result at run
-                    apply ih (constraints :=
-                      (leftDomain, rightDomain) ::
-                        (leftCodomain, rightCodomain) :: rest) initialBounded
-                    · intro item member
-                      rcases List.mem_cons.mp member with first | member
-                      · simpa [first] using
-                          (And.intro leftParts.1 rightParts.1)
-                      · rcases List.mem_cons.mp member with second | member
-                        · simpa [second] using
-                            (And.intro leftParts.2 rightParts.2)
-                        · exact restBounded item member
-                    · exact run
-                | bvar _ => simp at run
-                | rigid _ => simp at run
-                | mvar id =>
-                    exact bindCase id (.arrow leftDomain leftCodomain)
-                      (rightBounded id (by simp [Ty.mvars])) leftBounded run
-            | bvar leftIndex =>
-                cases right' with
-                | prim _ => simp at run
-                | arrow _ _ => simp at run
-                | bvar _ => simp at run
-                | rigid _ => simp at run
-                | mvar id =>
-                    exact bindCase id (.bvar leftIndex)
-                      (rightBounded id (by simp [Ty.mvars])) leftBounded run
-            | rigid leftLevel =>
-                cases right' with
-                | prim _ => simp at run
-                | arrow _ _ => simp at run
-                | bvar _ => simp at run
-                | rigid _ => simp at run
-                | mvar id =>
-                    exact bindCase id (.rigid leftLevel)
-                      (rightBounded id (by simp [Ty.mvars])) leftBounded run
-            | mvar id =>
-                have idBounded : id < frontier :=
-                  leftBounded id (by simp [Ty.mvars])
-                cases right' with
-                | prim rightPrim =>
-                    exact bindCase id (.prim rightPrim) idBounded rightBounded run
-                | arrow rightDomain rightCodomain =>
-                    exact bindCase id (.arrow rightDomain rightCodomain)
-                      idBounded rightBounded run
-                | bvar rightIndex =>
-                    exact bindCase id (.bvar rightIndex) idBounded rightBounded run
-                | rigid rightLevel =>
-                    exact bindCase id (.rigid rightLevel) idBounded rightBounded run
-                | mvar rightId =>
-                    exact bindCase id (.mvar rightId) idBounded rightBounded run
-
-/-- Public unification preserves a common metavariable frontier. -/
-theorem unify_bounded
-    (leftBounded : left.MVarBounded frontier)
-    (rightBounded : right.MVarBounded frontier)
-    (run : unify left right = some result) :
-    result.Bounded frontier := by
-  apply unifyFuel_bounded (initial := [])
-      (constraints := [(left, right)])
-  · simp [MSubst.Bounded]
-  · intro constraint member
-    simp only [List.mem_singleton] at member
-    subst constraint
-    exact ⟨leftBounded, rightBounded⟩
-  · exact run
 
 end EPL
 
@@ -654,15 +453,6 @@ def PolyTy.InferWF
 
 def Ctx.InferWF (ctx : Ctx) (rigidCount frontier : Nat) : Prop :=
   ∀ scheme ∈ ctx, scheme.InferWF rigidCount frontier
-
-def MStore.Scoped (store : MStore) (rigidCount : Nat) : Prop :=
-  ∀ ty ∈ store, ty.Scoped rigidCount 0
-
-def MStore.Bounded (store : MStore) (frontier : Nat) : Prop :=
-  ∀ ty ∈ store, ty.MVarBounded frontier
-
-def MStore.Normalized (store : MStore) : Prop :=
-  ∀ ty ∈ store, store.apply ty = ty
 
 /-- The dense solution table agrees with its allocation frontier, contains no
 out-of-scope or forged type, and tracks only allocated obligations. -/
@@ -727,12 +517,22 @@ theorem MStore.apply_inferWF
   | mvar id =>
       cases hget : store[id]? with
       | none =>
-          simpa [MStore.apply, hget] using typeWF
-      | some result =>
-          have member : result ∈ store := List.mem_of_getElem? hget
-          simpa [MStore.apply, hget] using
-            And.intro (scoped_mono_binder (storeScoped result member))
-              (storeBounded result member)
+          have hlookup : store.lookup id = none := by
+            simp [MStore.lookup, hget]
+          simpa [MStore.apply, hlookup] using typeWF
+      | some entry =>
+          cases entry with
+          | none =>
+              have hlookup : store.lookup id = none := by
+                simp [MStore.lookup, hget]
+              simpa [MStore.apply, hlookup] using typeWF
+          | some result =>
+              have member : some result ∈ store := List.mem_of_getElem? hget
+              have hlookup : store.lookup id = some result := by
+                simp [MStore.lookup, hget]
+              simpa [MStore.apply, hlookup] using
+                And.intro (scoped_mono_binder (storeScoped result member))
+                  (storeBounded result member)
 
 theorem InferState.initial_safe {rigidCount : Nat} :
     (⟨0, [], []⟩ : InferState).Safe rigidCount := by
@@ -747,7 +547,7 @@ theorem InferState.fresh_safe
   rcases safe with ⟨length, storeScoped, bounded, normalized, required⟩
   have apply_append_identity :
       ∀ {ty : Ty}, ty.MVarBounded state.next →
-        (state.solutions ++ [Ty.mvar state.next]).apply ty =
+        (state.solutions ++ [none]).apply ty =
           state.solutions.apply ty := by
     intro ty typeBounded
     induction ty with
@@ -767,7 +567,7 @@ theorem InferState.fresh_safe
           typeBounded id (by simp [Ty.mvars])
         have idInSolutions : id < state.solutions.length := by
           simpa [length] using idBounded
-        simp only [MStore.apply]
+        simp only [MStore.apply, MStore.lookup]
         rw [List.getElem?_append_left idInSolutions]
   simp only [InferState.fresh]
   refine ⟨?_, ?_, by omega⟩
@@ -776,25 +576,24 @@ theorem InferState.fresh_safe
       rcases List.mem_append.mp member with old | new
       · exact storeScoped ty old
       · simp only [List.mem_singleton] at new
-        subst ty
-        exact .mvar _
+        cases new
     · intro ty member
       rcases List.mem_append.mp member with old | new
       · intro id idMember
         exact Nat.lt_succ_of_lt (bounded ty old id idMember)
       · simp only [List.mem_singleton] at new
-        subst ty
-        intro id idMember
-        simp only [Ty.mvars, List.mem_singleton] at idMember
-        subst id
-        change state.next < state.next + 1
-        omega
+        cases new
     · intro ty member
       rcases List.mem_append.mp member with old | new
-      · rw [apply_append_identity (bounded ty old), normalized ty old]
+      · intro id idMember
+        have idInSolutions : id < state.solutions.length := by
+          rw [length]
+          exact bounded ty old id idMember
+        simp only [MStore.lookup]
+        rw [List.getElem?_append_left idInSolutions]
+        exact normalized ty old id idMember
       · simp only [List.mem_singleton] at new
-        subst ty
-        simp [MStore.apply, length]
+        cases new
     · intro id member
       exact Nat.lt_succ_of_lt (required id member)
   · exact ⟨.mvar _, by
@@ -1060,76 +859,35 @@ theorem InferState.allocate_safe
   have countEq : state.next + count = allocation.next := by
     simp only [count]
     omega
-  have rangeLength : (mvarRange state.next count).length = count := by
-    simp [mvarRange]
-  have rangeMember :
-      ∀ ty ∈ mvarRange state.next count,
-        ∃ offset < count, ty = .mvar (state.next + offset) := by
-    intro ty hmem
-    obtain ⟨id, hid, rfl⟩ := List.mem_map.mp hmem
-    obtain ⟨offset, hlt, hid⟩ := List.mem_range'.mp hid
-    subst id
-    exact ⟨offset, hlt, by simp⟩
-  have apply_append_of_bounded :
-      ∀ {ty : Ty}, ty.MVarBounded state.solutions.length →
-        (state.solutions ++ mvarRange state.next count).apply ty =
-          state.solutions.apply ty := by
-    intro ty bounded
-    induction ty with
-    | prim p => rfl
-    | arrow domain codomain ihDomain ihCodomain =>
-        simp only [MStore.apply]
-        rw [ihDomain, ihCodomain]
-        · intro id hmem
-          exact bounded id (by simp [Ty.mvars, hmem])
-        · intro id hmem
-          exact bounded id (by simp [Ty.mvars, hmem])
-    | bvar index => rfl
-    | rigid level => rfl
-    | mvar id =>
-        simp only [MStore.apply]
-        have hlt : id < state.solutions.length :=
-          bounded id (by simp [Ty.mvars])
-        rw [List.getElem?_append_left hlt]
-  have rangeNormalized :
-      ∀ ty ∈ mvarRange state.next count,
-        (state.solutions ++ mvarRange state.next count).apply ty = ty := by
-    intro ty hmem
-    obtain ⟨offset, hlt, rfl⟩ := rangeMember ty hmem
-    simp only [MStore.apply]
-    rw [List.getElem?_append_right (by
-      rw [safe.solutions_length]
-      omega)]
-    simp [mvarRange, safe.solutions_length, hlt]
   have newSafe :
       ({ next := allocation.next,
-          solutions := state.solutions ++ mvarRange state.next count,
+          solutions := state.solutions ++ List.replicate count none,
           required := List.range' state.next count ++ state.required } :
         InferState).Safe rigidCount := by
     constructor
-    · simp [safe.solutions_length, rangeLength, countEq]
+    · simp [safe.solutions_length, countEq]
     · intro ty hmem
       rcases List.mem_append.mp hmem with hOld | hNew
       · exact safe.solutionsScoped ty hOld
-      · obtain ⟨offset, _, rfl⟩ := rangeMember ty hNew
-        exact .mvar _
+      · simp only [List.mem_replicate] at hNew
+        cases hNew.2
     · intro ty hmem id hid
       rcases List.mem_append.mp hmem with hOld | hNew
       · have oldBound := safe.solutionsBounded ty hOld id hid
         exact lt_of_lt_of_le oldBound nextLe
-      · obtain ⟨offset, hlt, rfl⟩ := rangeMember ty hNew
-        simp only [Ty.mvars, List.mem_singleton] at hid
-        subst id
-        change state.next + offset < allocation.next
-        omega
+      · simp only [List.mem_replicate] at hNew
+        cases hNew.2
     · intro ty hmem
       rcases List.mem_append.mp hmem with hOld | hNew
-      · rw [apply_append_of_bounded]
-        · exact safe.solutionsNormalized ty hOld
-        · intro id hid
+      · intro id hid
+        have idInSolutions : id < state.solutions.length := by
           rw [safe.solutions_length]
           exact safe.solutionsBounded ty hOld id hid
-      · exact rangeNormalized ty hNew
+        simp only [MStore.lookup]
+        rw [List.getElem?_append_left idInSolutions]
+        exact safe.solutionsNormalized ty hOld id hid
+      · simp only [List.mem_replicate] at hNew
+        cases hNew.2
     · intro id hmem
       rcases List.mem_append.mp hmem with hNew | hOld
       · obtain ⟨offset, hlt, hid⟩ := List.mem_range'.mp hNew
@@ -1144,370 +902,6 @@ theorem InferState.allocate_safe
     · intro id hmem
       exact (Template.allocate_mvars templateScoped id hmem).2
 
-/-- A solver run over store-normalized inputs preserves every allocated type
-already fixed by that store. This is the sole compatibility contract between
-the ordered unifier and inference's dense solution table. -/
-theorem MStore.unify_preserves_fixed
-    {store : MStore} {left right : Ty} {delta : MSubst} {frontier : Nat}
-    (length : store.length = frontier)
-    (storeBounded : store.Bounded frontier)
-    (storeNormalized : store.Normalized)
-    (leftBounded : left.MVarBounded frontier)
-    (rightBounded : right.MVarBounded frontier)
-    (run : unify (store.apply left) (store.apply right) = some delta) :
-    ∀ ty, ty.MVarBounded frontier → store.apply ty = ty →
-      store.apply (delta.apply ty) = delta.apply ty := by
-  have _storeBounded := storeBounded
-  have storeApplyFixed : ∀ {ty : Ty}, ty.MVarBounded frontier →
-      store.apply (store.apply ty) = store.apply ty := by
-    intro ty bounded
-    induction ty with
-    | prim name => rfl
-    | arrow domain codomain ihDomain ihCodomain =>
-        have domainBounded : domain.MVarBounded frontier := by
-          intro id member
-          exact bounded id (by simp [Ty.mvars, member])
-        have codomainBounded : codomain.MVarBounded frontier := by
-          intro id member
-          exact bounded id (by simp [Ty.mvars, member])
-        simp only [MStore.apply, ihDomain domainBounded, ihCodomain codomainBounded]
-    | bvar index => rfl
-    | rigid level => rfl
-    | mvar id =>
-        have idBounded : id < frontier := bounded id (by simp [Ty.mvars])
-        have idInStore : id < store.length := by simpa [length] using idBounded
-        rw [MStore.apply, List.getElem?_eq_getElem idInStore, Option.getD_some]
-        exact storeNormalized store[id] (List.getElem_mem ..)
-  have substMVarFixed : ∀ {ty replacement : Ty} {target : Nat},
-      store.apply ty = ty → store.apply replacement = replacement →
-        store.apply (ty.substMVar target replacement) =
-          ty.substMVar target replacement := by
-    intro ty replacement target typeFixed replacementFixed
-    induction ty with
-    | prim name => rfl
-    | arrow domain codomain ihDomain ihCodomain =>
-        simp only [MStore.apply, Ty.substMVar] at typeFixed ⊢
-        injection typeFixed with domainFixed codomainFixed
-        rw [ihDomain domainFixed, ihCodomain codomainFixed]
-    | bvar index => rfl
-    | rigid level => rfl
-    | mvar id =>
-        simp only [Ty.substMVar]
-        split
-        · exact replacementFixed
-        · exact typeFixed
-  have substApplyFixed : ∀ {subst : MSubst} {ty : Ty},
-      (∀ binding ∈ subst, store.apply binding.2 = binding.2) →
-      store.apply ty = ty →
-      store.apply (subst.apply ty) = subst.apply ty := by
-    intro subst ty substFixed typeFixed
-    induction subst generalizing ty with
-    | nil => simpa [MSubst.apply] using typeFixed
-    | cons binding rest ih =>
-        have replacementFixed : store.apply binding.2 = binding.2 :=
-          substFixed binding (by simp)
-        have restFixed : ∀ item ∈ rest, store.apply item.2 = item.2 := by
-          intro item member
-          exact substFixed item (by simp [member])
-        simpa [MSubst.apply, List.foldl] using
-          ih restFixed (substMVarFixed typeFixed replacementFixed)
-  have unifyFuelFixed : ∀ {fuel : Nat} {constraints : List Constraint}
-      {initial result : MSubst},
-      (∀ binding ∈ initial, store.apply binding.2 = binding.2) →
-      (∀ constraint ∈ constraints,
-        store.apply constraint.1 = constraint.1 ∧
-          store.apply constraint.2 = constraint.2) →
-      unifyFuel fuel constraints initial = some result →
-      ∀ binding ∈ result, store.apply binding.2 = binding.2 := by
-    intro fuel
-    induction fuel with
-    | zero =>
-        intro constraints initial result initialFixed constraintsFixed runFuel
-        cases constraints with
-        | nil =>
-            simp only [unifyFuel, Option.some.injEq] at runFuel
-            subst result
-            exact initialFixed
-        | cons constraint rest => simp [unifyFuel] at runFuel
-    | succ fuel ih =>
-        intro constraints initial result initialFixed constraintsFixed runFuel
-        cases constraints with
-        | nil =>
-            simp only [unifyFuel, Option.some.injEq] at runFuel
-            subst result
-            exact initialFixed
-        | cons constraint rest =>
-            rcases constraint with ⟨constraintLeft, constraintRight⟩
-            have headFixed := constraintsFixed
-              (constraintLeft, constraintRight) (by simp)
-            have restFixed : ∀ constraint ∈ rest,
-                store.apply constraint.1 = constraint.1 ∧
-                  store.apply constraint.2 = constraint.2 := by
-              intro constraint member
-              exact constraintsFixed constraint (List.mem_cons_of_mem _ member)
-            have normalizedLeftFixed :
-                store.apply (initial.apply constraintLeft) =
-                  initial.apply constraintLeft :=
-              substApplyFixed initialFixed headFixed.1
-            have normalizedRightFixed :
-                store.apply (initial.apply constraintRight) =
-                  initial.apply constraintRight :=
-              substApplyFixed initialFixed headFixed.2
-            simp only [unifyFuel] at runFuel
-            by_cases equal :
-                initial.apply constraintLeft = initial.apply constraintRight
-            · rw [if_pos equal] at runFuel
-              exact ih initialFixed restFixed runFuel
-            · rw [if_neg equal] at runFuel
-              generalize leftEq : initial.apply constraintLeft = normalizedLeft at normalizedLeftFixed runFuel
-              generalize rightEq : initial.apply constraintRight = normalizedRight at normalizedRightFixed runFuel
-              have bindCase (id : Nat) (assigned : Ty)
-                  (assignedFixed : store.apply assigned = assigned)
-                  (bindRun :
-                    (if assigned.occursMVar id = true then none
-                      else unifyFuel fuel rest (initial ++ [(id, assigned)])) =
-                        some result) :
-                  ∀ binding ∈ result, store.apply binding.2 = binding.2 := by
-                by_cases occurs : assigned.occursMVar id = true
-                · simp [occurs] at bindRun
-                · apply ih
-                    (initial := initial ++ [(id, assigned)])
-                    (result := result)
-                  · intro binding member
-                    rcases List.mem_append.mp member with old | new
-                    · exact initialFixed binding old
-                    · simp only [List.mem_singleton] at new
-                      subst binding
-                      exact assignedFixed
-                  · exact restFixed
-                  · simpa [occurs] using bindRun
-              cases normalizedLeft with
-              | prim leftPrim =>
-                  cases normalizedRight with
-                  | prim rightPrim => simp at runFuel
-                  | arrow _ _ => simp at runFuel
-                  | bvar _ => simp at runFuel
-                  | rigid _ => simp at runFuel
-                  | mvar id =>
-                      exact bindCase id (.prim leftPrim) normalizedLeftFixed runFuel
-              | arrow leftDomain leftCodomain =>
-                  cases normalizedRight with
-                  | prim _ => simp at runFuel
-                  | arrow rightDomain rightCodomain =>
-                      have leftParts := Ty.arrow.inj normalizedLeftFixed
-                      have rightParts := Ty.arrow.inj normalizedRightFixed
-                      have splitFixed : ∀ constraint ∈
-                          ((leftDomain, rightDomain) ::
-                            (leftCodomain, rightCodomain) :: rest),
-                          store.apply constraint.1 = constraint.1 ∧
-                            store.apply constraint.2 = constraint.2 := by
-                        rintro ⟨a, b⟩ member
-                        simp only [List.mem_cons, Prod.mk.injEq] at member
-                        rcases member with ⟨rfl, rfl⟩ | ⟨rfl, rfl⟩ | inRest
-                        · exact ⟨leftParts.1, rightParts.1⟩
-                        · exact ⟨leftParts.2, rightParts.2⟩
-                        · exact restFixed (a, b) inRest
-                      exact ih initialFixed splitFixed runFuel
-                  | bvar _ => simp at runFuel
-                  | rigid _ => simp at runFuel
-                  | mvar id =>
-                      exact bindCase id (.arrow leftDomain leftCodomain)
-                        normalizedLeftFixed runFuel
-              | bvar leftIndex =>
-                  cases normalizedRight with
-                  | prim _ => simp at runFuel
-                  | arrow _ _ => simp at runFuel
-                  | bvar _ => simp at runFuel
-                  | rigid _ => simp at runFuel
-                  | mvar id =>
-                      exact bindCase id (.bvar leftIndex) normalizedLeftFixed runFuel
-              | rigid leftLevel =>
-                  cases normalizedRight with
-                  | prim _ => simp at runFuel
-                  | arrow _ _ => simp at runFuel
-                  | bvar _ => simp at runFuel
-                  | rigid _ => simp at runFuel
-                  | mvar id =>
-                      exact bindCase id (.rigid leftLevel)
-                        normalizedLeftFixed runFuel
-              | mvar id =>
-                  cases normalizedRight with
-                  | prim rightPrim =>
-                      exact bindCase id (.prim rightPrim)
-                        normalizedRightFixed runFuel
-                  | arrow rightDomain rightCodomain =>
-                      exact bindCase id (.arrow rightDomain rightCodomain)
-                        normalizedRightFixed runFuel
-                  | bvar rightIndex =>
-                      exact bindCase id (.bvar rightIndex)
-                        normalizedRightFixed runFuel
-                  | rigid rightLevel =>
-                      exact bindCase id (.rigid rightLevel)
-                        normalizedRightFixed runFuel
-                  | mvar rightId =>
-                      exact bindCase id (.mvar rightId)
-                        normalizedRightFixed runFuel
-  have deltaFixed : ∀ binding ∈ delta,
-      store.apply binding.2 = binding.2 := by
-    apply unifyFuelFixed
-      (fuel := unifyBudget (store.apply left) (store.apply right))
-      (constraints := [(store.apply left, store.apply right)])
-      (initial := []) (result := delta)
-    · simp
-    · intro constraint member
-      have constraintEq := List.mem_singleton.mp member
-      cases constraintEq
-      exact ⟨storeApplyFixed leftBounded, storeApplyFixed rightBounded⟩
-    · simpa [unify] using run
-  intro ty _ typeFixed
-  exact substApplyFixed deltaFixed typeFixed
-
-/-- Unifying types already normalized by a dense solution table and applying
-the solver result pointwise produces another normalized table. -/
-theorem MStore.map_unify_normalized
-    {store : MStore} {left right : Ty} {delta : MSubst} {frontier : Nat}
-    (length : store.length = frontier)
-    (storeBounded : store.Bounded frontier)
-    (storeNormalized : store.Normalized)
-    (leftBounded : left.MVarBounded frontier)
-    (rightBounded : right.MVarBounded frontier)
-    (run : unify (store.apply left) (store.apply right) = some delta) :
-    MStore.Normalized (store.map delta.apply) := by
-  have storeApplyBounded : ∀ {ty : Ty}, ty.MVarBounded frontier →
-      (store.apply ty).MVarBounded frontier := by
-    intro ty bounded
-    induction ty with
-    | prim name => simp [MStore.apply, Ty.MVarBounded, Ty.mvars]
-    | arrow domain codomain ihDomain ihCodomain =>
-        have domainBounded : domain.MVarBounded frontier := by
-          intro id member
-          exact bounded id (by simp [Ty.mvars, member])
-        have codomainBounded : codomain.MVarBounded frontier := by
-          intro id member
-          exact bounded id (by simp [Ty.mvars, member])
-        intro id member
-        simp only [MStore.apply, Ty.mvars, List.mem_dedup,
-          List.mem_append] at member
-        rcases member with member | member
-        · exact ihDomain domainBounded id member
-        · exact ihCodomain codomainBounded id member
-    | bvar index => simp [MStore.apply, Ty.MVarBounded, Ty.mvars]
-    | rigid level => simp [MStore.apply, Ty.MVarBounded, Ty.mvars]
-    | mvar id =>
-        have idBounded : id < frontier := bounded id (by simp [Ty.mvars])
-        have idInStore : id < store.length := by simpa [length] using idBounded
-        rw [MStore.apply, List.getElem?_eq_getElem idInStore, Option.getD_some]
-        exact storeBounded store[id] (List.getElem_mem ..)
-  have substMVarBounded : ∀ {ty replacement : Ty} {target : Nat},
-      ty.MVarBounded frontier → replacement.MVarBounded frontier →
-        (ty.substMVar target replacement).MVarBounded frontier := by
-    intro ty replacement target typeBounded replacementBounded
-    induction ty with
-    | prim name => simpa [Ty.substMVar] using typeBounded
-    | arrow domain codomain ihDomain ihCodomain =>
-        have domainBounded : domain.MVarBounded frontier := by
-          intro id member
-          exact typeBounded id (by simp [Ty.mvars, member])
-        have codomainBounded : codomain.MVarBounded frontier := by
-          intro id member
-          exact typeBounded id (by simp [Ty.mvars, member])
-        intro id member
-        simp only [Ty.substMVar, Ty.mvars, List.mem_dedup,
-          List.mem_append] at member
-        rcases member with member | member
-        · exact ihDomain domainBounded id member
-        · exact ihCodomain codomainBounded id member
-    | bvar index => simpa [Ty.substMVar] using typeBounded
-    | rigid level => simpa [Ty.substMVar] using typeBounded
-    | mvar id =>
-        simp only [Ty.substMVar]
-        split
-        · exact replacementBounded
-        · exact typeBounded
-  have substApplyBounded : ∀ {subst : MSubst} {ty : Ty},
-      subst.Bounded frontier → ty.MVarBounded frontier →
-        (subst.apply ty).MVarBounded frontier := by
-    intro subst ty substBounded typeBounded
-    induction subst generalizing ty with
-    | nil => simpa [MSubst.apply] using typeBounded
-    | cons binding rest ih =>
-        have bindingBounded := substBounded binding (by simp)
-        have restBounded : MSubst.Bounded frontier rest := by
-          intro item member
-          exact substBounded item (by simp [member])
-        simpa [MSubst.apply, List.foldl] using
-          ih restBounded (substMVarBounded typeBounded bindingBounded.2)
-  have leftAppliedBounded := storeApplyBounded leftBounded
-  have rightAppliedBounded := storeApplyBounded rightBounded
-  have deltaBounded : delta.Bounded frontier :=
-    unify_bounded leftAppliedBounded rightAppliedBounded run
-  have deltaStable : delta.Stable := unify_stable run
-  have substApplyArrow : ∀ (subst : MSubst) (domain codomain : Ty),
-      subst.apply (.arrow domain codomain) =
-        .arrow (subst.apply domain) (subst.apply codomain) := by
-    intro subst domain codomain
-    induction subst generalizing domain codomain with
-    | nil => rfl
-    | cons binding rest ih =>
-        simp only [MSubst.apply, List.foldl_cons, Ty.substMVar]
-        exact ih _ _
-  have substApplyPrim : ∀ (subst : MSubst) (name : PrimTy),
-      subst.apply (.prim name) = .prim name := by
-    intro subst name
-    induction subst with
-    | nil => rfl
-    | cons binding rest ih =>
-        simpa [MSubst.apply, List.foldl_cons, Ty.substMVar] using ih
-  have substApplyBVar : ∀ (subst : MSubst) (index : Nat),
-      subst.apply (.bvar index) = .bvar index := by
-    intro subst index
-    induction subst with
-    | nil => rfl
-    | cons binding rest ih =>
-        simpa [MSubst.apply, List.foldl_cons, Ty.substMVar] using ih
-  have substApplyRigid : ∀ (subst : MSubst) (level : Nat),
-      subst.apply (.rigid level) = .rigid level := by
-    intro subst level
-    induction subst with
-    | nil => rfl
-    | cons binding rest ih =>
-        simpa [MSubst.apply, List.foldl_cons, Ty.substMVar] using ih
-  have mapApply : ∀ {ty : Ty}, ty.MVarBounded frontier →
-      MStore.apply (store.map delta.apply) ty =
-        delta.apply (store.apply ty) := by
-    intro ty bounded
-    induction ty with
-    | prim name => simpa [MStore.apply] using (substApplyPrim delta name).symm
-    | arrow domain codomain ihDomain ihCodomain =>
-        have domainBounded : domain.MVarBounded frontier := by
-          intro id member
-          exact bounded id (by simp [Ty.mvars, member])
-        have codomainBounded : codomain.MVarBounded frontier := by
-          intro id member
-          exact bounded id (by simp [Ty.mvars, member])
-        simp only [MStore.apply]
-        rw [ihDomain domainBounded, ihCodomain codomainBounded,
-          substApplyArrow]
-    | bvar index => simpa [MStore.apply] using (substApplyBVar delta index).symm
-    | rigid level => simpa [MStore.apply] using (substApplyRigid delta level).symm
-    | mvar id =>
-        have idBounded : id < frontier := bounded id (by simp [Ty.mvars])
-        have idInStore : id < store.length := by simpa [length] using idBounded
-        simp only [MStore.apply, List.getElem?_map,
-          List.getElem?_eq_getElem idInStore, Option.map_some,
-          Option.getD_some]
-  intro ty member
-  obtain ⟨oldTy, oldMember, rfl⟩ := List.mem_map.mp member
-  have oldBounded := storeBounded oldTy oldMember
-  have updatedBounded : (delta.apply oldTy).MVarBounded frontier :=
-    substApplyBounded deltaBounded oldBounded
-  rw [mapApply updatedBounded]
-  have oldFixed : store.apply oldTy = oldTy := storeNormalized oldTy oldMember
-  have deltaOldFixed : store.apply (delta.apply oldTy) = delta.apply oldTy :=
-    MStore.unify_preserves_fixed length storeBounded storeNormalized
-      leftBounded rightBounded run oldTy oldBounded oldFixed
-  rw [deltaOldFixed, deltaStable]
-
 /-- Constraining two allocated, scoped types preserves state safety and makes
 the equation true in the resulting dense solution table. -/
 theorem InferState.constrain_safe
@@ -1521,168 +915,22 @@ theorem InferState.constrain_safe
       checked.required = state.required ∧
       checked.solutions.apply left = checked.solutions.apply right := by
   unfold InferState.constrain at run
-  cases hdelta : unify (state.solutions.apply left)
-      (state.solutions.apply right) with
-  | none => simp [hdelta] at run
-  | some delta =>
-      simp only [hdelta, Option.some.injEq] at run
+  cases hunify : state.solutions.unify left right with
+  | none => simp [hunify] at run
+  | some solutions =>
+      simp only [hunify, Option.map_some, Option.some.injEq] at run
       subst checked
-      have leftAppliedWF := MStore.apply_inferWF
-        safe.solutionsScoped safe.solutionsBounded leftWF
-      have rightAppliedWF := MStore.apply_inferWF
-        safe.solutionsScoped safe.solutionsBounded rightWF
-      have deltaScoped : delta.Scoped rigidCount :=
-        unify_scoped leftAppliedWF.1 rightAppliedWF.1 hdelta
-      have deltaBounded : delta.Bounded state.next :=
-        unify_bounded leftAppliedWF.2 rightAppliedWF.2 hdelta
-      have substMVarScoped : ∀ {ty replacement : Ty} {target : Nat},
-          ty.Scoped rigidCount 0 → replacement.Scoped rigidCount 0 →
-            (ty.substMVar target replacement).Scoped rigidCount 0 := by
-        intro ty replacement target typeScoped replacementScoped
-        induction typeScoped with
-        | prim => exact .prim
-        | arrow _ _ ihDomain ihCodomain => exact .arrow ihDomain ihCodomain
-        | bvar hlt => omega
-        | rigid hlt => exact .rigid hlt
-        | mvar id =>
-            simp only [Ty.substMVar]
-            split
-            · exact replacementScoped
-            · exact .mvar _
-      have substApplyScoped : ∀ {subst : MSubst} {ty : Ty},
-          subst.Scoped rigidCount → ty.Scoped rigidCount 0 →
-            (subst.apply ty).Scoped rigidCount 0 := by
-        intro subst ty substScoped typeScoped
-        induction subst generalizing ty with
-        | nil => simpa [MSubst.apply] using typeScoped
-        | cons binding rest ih =>
-            have bindingScoped : binding.2.Scoped rigidCount 0 :=
-              substScoped binding (by simp)
-            have restScoped : MSubst.Scoped rigidCount rest := by
-              intro item member
-              exact substScoped item (by simp [member])
-            simpa [MSubst.apply, List.foldl] using
-              ih restScoped (substMVarScoped typeScoped bindingScoped)
-      have substMVarBounded : ∀ {ty replacement : Ty} {target : Nat},
-          ty.MVarBounded state.next → replacement.MVarBounded state.next →
-            (ty.substMVar target replacement).MVarBounded state.next := by
-        intro ty replacement target typeBounded replacementBounded
-        induction ty with
-        | prim name => simpa [Ty.substMVar] using typeBounded
-        | arrow domain codomain ihDomain ihCodomain =>
-            have domainBounded : domain.MVarBounded state.next := by
-              intro id member
-              exact typeBounded id (by simp [Ty.mvars, member])
-            have codomainBounded : codomain.MVarBounded state.next := by
-              intro id member
-              exact typeBounded id (by simp [Ty.mvars, member])
-            intro id member
-            simp only [Ty.substMVar, Ty.mvars, List.mem_dedup,
-              List.mem_append] at member
-            rcases member with member | member
-            · exact ihDomain domainBounded id member
-            · exact ihCodomain codomainBounded id member
-        | bvar index => simpa [Ty.substMVar] using typeBounded
-        | rigid level => simpa [Ty.substMVar] using typeBounded
-        | mvar id =>
-            simp only [Ty.substMVar]
-            split
-            · exact replacementBounded
-            · exact typeBounded
-      have substApplyBounded : ∀ {subst : MSubst} {ty : Ty},
-          subst.Bounded state.next → ty.MVarBounded state.next →
-            (subst.apply ty).MVarBounded state.next := by
-        intro subst ty substBounded typeBounded
-        induction subst generalizing ty with
-        | nil => simpa [MSubst.apply] using typeBounded
-        | cons binding rest ih =>
-            have bindingBounded := substBounded binding (by simp)
-            have restBounded : MSubst.Bounded state.next rest := by
-              intro item member
-              exact substBounded item (by simp [member])
-            simpa [MSubst.apply, List.foldl] using
-              ih restBounded (substMVarBounded typeBounded bindingBounded.2)
-      have substApplyArrow : ∀ (subst : MSubst) (domain codomain : Ty),
-          subst.apply (.arrow domain codomain) =
-            .arrow (subst.apply domain) (subst.apply codomain) := by
-        intro subst domain codomain
-        induction subst generalizing domain codomain with
-        | nil => rfl
-        | cons binding rest ih =>
-            simp only [MSubst.apply, List.foldl_cons, Ty.substMVar]
-            exact ih _ _
-      have substApplyPrim : ∀ (subst : MSubst) (name : PrimTy),
-          subst.apply (.prim name) = .prim name := by
-        intro subst name
-        induction subst with
-        | nil => rfl
-        | cons binding rest ih =>
-            simpa [MSubst.apply, List.foldl_cons, Ty.substMVar] using ih
-      have substApplyBVar : ∀ (subst : MSubst) (index : Nat),
-          subst.apply (.bvar index) = .bvar index := by
-        intro subst index
-        induction subst with
-        | nil => rfl
-        | cons binding rest ih =>
-            simpa [MSubst.apply, List.foldl_cons, Ty.substMVar] using ih
-      have substApplyRigid : ∀ (subst : MSubst) (level : Nat),
-          subst.apply (.rigid level) = .rigid level := by
-        intro subst level
-        induction subst with
-        | nil => rfl
-        | cons binding rest ih =>
-            simpa [MSubst.apply, List.foldl_cons, Ty.substMVar] using ih
-      have mapApply : ∀ {ty : Ty}, ty.MVarBounded state.next →
-          MStore.apply (state.solutions.map delta.apply) ty =
-            delta.apply (state.solutions.apply ty) := by
-        intro ty bounded
-        induction ty with
-        | prim name =>
-            simpa [MStore.apply] using (substApplyPrim delta name).symm
-        | arrow domain codomain ihDomain ihCodomain =>
-            have domainBounded : domain.MVarBounded state.next := by
-              intro id member
-              exact bounded id (by simp [Ty.mvars, member])
-            have codomainBounded : codomain.MVarBounded state.next := by
-              intro id member
-              exact bounded id (by simp [Ty.mvars, member])
-            simp only [MStore.apply]
-            rw [ihDomain domainBounded, ihCodomain codomainBounded,
-              substApplyArrow]
-        | bvar index =>
-            simpa [MStore.apply] using (substApplyBVar delta index).symm
-        | rigid level =>
-            simpa [MStore.apply] using (substApplyRigid delta level).symm
-        | mvar id =>
-            have idBounded : id < state.next := bounded id (by simp [Ty.mvars])
-            have idInStore : id < state.solutions.length := by
-              simpa [safe.solutions_length] using idBounded
-            simp only [MStore.apply, List.getElem?_map,
-              List.getElem?_eq_getElem idInStore, Option.map_some,
-              Option.getD_some]
-      have mappedScoped : MStore.Scoped
-          (state.solutions.map delta.apply) rigidCount := by
-        intro ty member
-        obtain ⟨oldTy, oldMember, rfl⟩ := List.mem_map.mp member
-        exact substApplyScoped deltaScoped
-          (safe.solutionsScoped oldTy oldMember)
-      have mappedBounded : MStore.Bounded
-          (state.solutions.map delta.apply) state.next := by
-        intro ty member
-        obtain ⟨oldTy, oldMember, rfl⟩ := List.mem_map.mp member
-        exact substApplyBounded deltaBounded
-          (safe.solutionsBounded oldTy oldMember)
-      have mappedNormalized : MStore.Normalized
-          (state.solutions.map delta.apply) :=
-        MStore.map_unify_normalized safe.solutions_length
-          safe.solutionsBounded safe.solutionsNormalized
-          leftWF.2 rightWF.2 hdelta
       refine ⟨?_, rfl, rfl, ?_⟩
-      · exact ⟨by simpa using safe.solutions_length,
-          mappedScoped, mappedBounded, mappedNormalized,
-          safe.requiredBounded⟩
-      · rw [mapApply leftWF.2, mapApply rightWF.2,
-          unify_sound hdelta]
+      · refine ⟨?_, ?_, ?_, ?_, ?_⟩
+        · rw [MStore.unify_length hunify, safe.solutions_length]
+        · exact MStore.unify_scoped safe.solutionsScoped
+            leftWF.1 rightWF.1 hunify
+        · exact MStore.unify_bounded safe.solutionsBounded
+            leftWF.2 rightWF.2 hunify
+        · exact MStore.unify_normalized safe.solutionsNormalized hunify
+        · intro id hmem
+          exact safe.requiredBounded id hmem
+      · exact MStore.unify_apply_eq safe.solutionsNormalized hunify
 
 /-- A checked prefix is a safe solution table at the restored outer frontier. -/
 theorem MStore.take_safe
@@ -1694,24 +942,6 @@ theorem MStore.take_safe
       MStore.Scoped (store.take cutoff) rigidCount ∧
       MStore.Bounded (store.take cutoff) cutoff ∧
       MStore.Normalized (store.take cutoff) := by
-  have prefixApply : ∀ {ty : Ty}, ty.MVarBounded cutoff →
-      MStore.apply (store.take cutoff) ty = store.apply ty := by
-    intro ty bounded
-    induction ty with
-    | prim name => rfl
-    | arrow domain codomain ihDomain ihCodomain =>
-        have domainBounded : domain.MVarBounded cutoff := by
-          intro id member
-          exact bounded id (by simp [Ty.mvars, member])
-        have codomainBounded : codomain.MVarBounded cutoff := by
-          intro id member
-          exact bounded id (by simp [Ty.mvars, member])
-        simp only [MStore.apply, ihDomain domainBounded, ihCodomain codomainBounded]
-    | bvar index => rfl
-    | rigid level => rfl
-    | mvar id =>
-        have idBounded : id < cutoff := bounded id (by simp [Ty.mvars])
-        simp only [MStore.apply, List.getElem?_take_of_lt idBounded]
   have escaped := MStore.safeToLeave_eq_true_iff.mp escape
   refine ⟨List.length_take_of_le length, ?_, ?_, ?_⟩
   · intro ty member
@@ -1723,8 +953,13 @@ theorem MStore.take_safe
     have bounded : ty.MVarBounded cutoff :=
       Ty.mvarBounded_iff_mvarsBelow.mpr <|
         Ty.mvarsBelow_eq_true_iff.mpr (escaped ty member).2
-    rw [prefixApply bounded]
-    exact normalized ty (List.mem_of_mem_take member)
+    intro id hid
+    have idBounded : id < cutoff := bounded id hid
+    have lookupTake : MStore.lookup (store.take cutoff) id = MStore.lookup store id := by
+      simp only [MStore.lookup]
+      rw [List.getElem?_take_of_lt idBounded]
+    rw [lookupTake]
+    exact normalized ty (List.mem_of_mem_take member) id hid
 
 end EPL
 

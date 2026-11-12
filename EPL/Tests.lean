@@ -7,18 +7,27 @@ import EPL.Properties.EndToEnd
 
 namespace EPL.UnificationTests
 
-def arrowExample : Option MSubst :=
-  unify
+def arrowExample : Option MStore :=
+  MStore.unify [none, none]
     (.arrow (.mvar 0) (.rigid 0))
     (.arrow (.prim .int) (.mvar 1))
 
-example : arrowExample = some [(0, .prim .int), (1, .rigid 0)] := by
+example : arrowExample = some [some (.prim .int), some (.rigid 0)] := by
   decide
 
-example : unify (.rigid 0) (.prim .int) = none := by
+/-- Solving `?0 := ?1` and then `?1 := Int` rewrites the earlier entry, so the
+store stays normalized. -/
+example :
+    MStore.unify [none, none]
+        (.arrow (.mvar 0) (.mvar 1))
+        (.arrow (.mvar 1) (.prim .int)) =
+      some [some (.prim .int), some (.prim .int)] := by
   decide
 
-example : unify (.mvar 0) (.arrow (.mvar 0) (.prim .int)) = none := by
+example : MStore.unify [] (.rigid 0) (.prim .int) = none := by
+  decide
+
+example : MStore.unify [none] (.mvar 0) (.arrow (.mvar 0) (.prim .int)) = none := by
   decide
 
 end EPL.UnificationTests

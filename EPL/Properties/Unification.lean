@@ -1,426 +1,410 @@
 import EPL.Unification
 
+/-!
+# Unification: invariants, soundness, and completeness
+
+Store invariants are stated over solved entries only; unsolved entries are
+`none` and carry no information.
+
+Semantics is given by valuations. A valuation `models` a store when it gives
+every allocated metavariable a well-formed semantic type and satisfies every
+solved entry's equation. Soundness says every model of the result is a model
+of the input that equates the two types. Completeness says the converse:
+every model of the input that equates the two types is a model of the
+result. Together they say the result's models are exactly the input's
+unifying models, so `MStore.unify` computes a most general unifier.
+-/
+
 namespace EPL
 
-private theorem apply_append (first second : MSubst) (ty : Ty) :
-    (first ++ second).apply ty = second.apply (first.apply ty) := by
-  simp [MSubst.apply, List.foldl_append]
+/-- Every metavariable in a type was allocated below `frontier`. -/
+def Ty.MVarBounded (frontier : Nat) (ty : Ty) : Prop :=
+  ∀ id ∈ ty.mvars, id < frontier
 
-private theorem substMVar_eq_self_of_occurs_false
-    (ty replacement : Ty) (target : Nat)
-    (occurs : ty.occursMVar target = false) :
-    ty.substMVar target replacement = ty := by
-  induction ty with
-  | prim => rfl
-  | arrow domain codomain domainIH codomainIH =>
-      simp only [Ty.occursMVar, Bool.or_eq_false_iff] at occurs
-      simp [Ty.substMVar, domainIH occurs.1, codomainIH occurs.2]
-  | bvar => rfl
-  | rigid => rfl
-  | mvar id =>
-      have unequal : id ≠ target := by
-        intro equal
-        subst target
-        simp [Ty.occursMVar] at occurs
-      simp [Ty.substMVar, unequal]
+def MStore.Scoped (store : MStore) (rigidCount : Nat) : Prop :=
+  ∀ ty, some ty ∈ store → ty.Scoped rigidCount 0
 
-private theorem apply_arrow (subst : MSubst) (domain codomain : Ty) :
-    subst.apply (.arrow domain codomain) =
-      .arrow (subst.apply domain) (subst.apply codomain) := by
-  induction subst generalizing domain codomain with
-  | nil => rfl
-  | cons binding rest ih =>
-      simp only [MSubst.apply, List.foldl_cons, Ty.substMVar]
-      change MSubst.apply rest
-          (.arrow (domain.substMVar binding.1 binding.2)
-            (codomain.substMVar binding.1 binding.2)) = _
-      exact ih _ _
+def MStore.Bounded (store : MStore) (frontier : Nat) : Prop :=
+  ∀ ty, some ty ∈ store → ty.MVarBounded frontier
 
-private theorem stable_nil : MSubst.Stable [] := by
-  intro ty
+/-- Solved entries mention only unsolved metavariables. (In particular no
+entry is `some (.mvar id)` for its own `id`.) -/
+def MStore.Normalized (store : MStore) : Prop :=
+  ∀ ty, some ty ∈ store → ∀ id ∈ ty.mvars, store.lookup id = none
+
+abbrev MValuation := Nat → Ty
+
+/-- Interpret every inference metavariable through a valuation. The
+valuation's images are required separately to be well-formed semantic
+types. -/
+def Ty.realize (valuation : MValuation) : Ty → Ty
+  | .prim p => .prim p
+  | .arrow domain codomain =>
+      .arrow (domain.realize valuation) (codomain.realize valuation)
+  | .bvar index => .bvar index
+  | .rigid level => .rigid level
+  | .mvar id => valuation id
+
+def MValuation.WF
+    (valuation : MValuation) (rigidCount frontier : Nat) : Prop :=
+  ∀ id, id < frontier → (valuation id).WF rigidCount 0
+
+/-- A valuation models a store when it gives semantic meanings to every
+allocated metavariable and satisfies every solved entry. -/
+structure MStore.Models
+    (store : MStore) (rigidCount : Nat) (valuation : MValuation) : Prop where
+  valuationWF : valuation.WF rigidCount store.length
+  equation : ∀ id ty, store[id]? = some (some ty) →
+    valuation id = ty.realize valuation
+
+/-! ## Elementary helpers -/
+
+private theorem Ty.size_pos (ty : Ty) : 0 < ty.size := by
+  cases ty <;> simp [Ty.size] <;> omega
+
+private theorem Constraints.size_cons (constraint : Constraint)
+    (rest : List Constraint) :
+    Constraints.size (constraint :: rest) =
+      constraint.1.size + constraint.2.size + Constraints.size rest := by
+  simp [Constraints.size]
+
+private theorem Constraints.size_tail (constraint : Constraint)
+    (rest : List Constraint) :
+    Constraints.size rest ≤ Constraints.size (constraint :: rest) := by
+  rw [Constraints.size_cons]
+  have left := Ty.size_pos constraint.1
+  have right := Ty.size_pos constraint.2
+  omega
+
+private theorem Constraints.size_nonempty {constraints : List Constraint}
+    (nonempty : constraints ≠ []) : 0 < Constraints.size constraints := by
+  cases constraints with
+  | nil => contradiction
+  | cons constraint rest =>
+      rw [Constraints.size_cons]
+      have left := Ty.size_pos constraint.1
+      have right := Ty.size_pos constraint.2
+      omega
+
+/-- Number of unsolved entries strictly decreases after solving an entry that
+was allocated and unsolved. -/
+private theorem MStore.unsolved_solve_lt (store : MStore) (id : Nat) (ty : Ty)
+    (entry : store[id]? = some none) :
+    (store.solve id ty).unsolved < store.unsolved := by
+  have bound : id < store.length := by
+    by_contra outOfRange
+    have : store[id]? = none := List.getElem?_eq_none_iff.mpr (by omega)
+    rw [entry] at this
+    exact Option.noConfusion this
+  have boundMap : id < (store.map (Option.map (·.substMVar id ty))).length := by
+    simpa using bound
+  have countMap :
+      (store.map (Option.map (·.substMVar id ty))).countP (fun entry =>
+          entry.isNone) = store.countP (fun entry => entry.isNone) := by
+    rw [List.countP_map]
+    apply List.countP_congr
+    intro option _
+    cases option <;> rfl
+  have positive : 0 < store.countP (fun entry => entry.isNone) := by
+    rw [List.countP_pos_iff]
+    refine ⟨none, ?_, rfl⟩
+    exact List.mem_of_getElem? entry
+  have selected :
+      (store.map (Option.map (·.substMVar id ty)))[id] = none := by
+    have h : (store.map (Option.map (·.substMVar id ty)))[id]? = some none := by
+      rw [List.getElem?_map, entry]
+      rfl
+    rw [List.getElem?_eq_getElem boundMap] at h
+    exact Option.some.inj h
+  unfold MStore.unsolved MStore.solve
+  rw [List.countP_set boundMap, countMap, selected]
+  simp
+  omega
+
+/-- The defining equation of one non-final phase step. -/
+private theorem unifyPhase_cons_eq (store : MStore) (fuel : Nat)
+    (left right : Ty) (rest : List Constraint) :
+    unifyPhase store (fuel + 1) ((left, right) :: rest) =
+      if left = right then unifyPhase store fuel rest
+      else
+        match left, right with
+        | .mvar id, ty | ty, .mvar id =>
+            if store[id]? = some none ∧ ty.occursMVar id = false then
+              (UnifyPhase.bound (store.solve id ty)
+                (rest.map (Constraint.substMVar id ty)) : UnifyPhase)
+            else .failed
+        | .arrow leftDomain leftCodomain,
+          .arrow rightDomain rightCodomain =>
+            unifyPhase store fuel
+              ((leftDomain, rightDomain) :: (leftCodomain, rightCodomain) :: rest)
+        | _, _ => .failed := by
   rfl
 
-private theorem bind_fixed
-    {initial : MSubst} {current replacement : Ty} {id : Nat}
-    (currentFixed : initial.apply current = current)
-    (replacementFixed : initial.apply replacement = replacement)
-    (occurs : replacement.occursMVar id = false) :
-    (initial ++ [(id, replacement)]).apply
-        (current.substMVar id replacement) =
-      current.substMVar id replacement := by
-  induction current with
-  | prim =>
-      rw [Ty.substMVar, apply_append, currentFixed]
-      rfl
-  | arrow domain codomain domainIH codomainIH =>
-      rw [apply_arrow] at currentFixed
-      injection currentFixed with domainFixed codomainFixed
-      rw [Ty.substMVar, apply_arrow, domainIH domainFixed,
-        codomainIH codomainFixed]
-  | bvar =>
-      rw [Ty.substMVar, apply_append, currentFixed]
-      rfl
-  | rigid =>
-      rw [Ty.substMVar, apply_append, currentFixed]
-      rfl
-  | mvar currentId =>
-      by_cases selected : currentId = id
-      · subst currentId
-        rw [Ty.substMVar, if_pos rfl, apply_append, replacementFixed]
-        exact substMVar_eq_self_of_occurs_false replacement replacement id occurs
-      · rw [Ty.substMVar, if_neg selected, apply_append, currentFixed]
-        simp [MSubst.apply, Ty.substMVar, selected]
+/-- A successful binding lowers the number of unsolved entries. -/
+private theorem bound_of_guard_if (store result : MStore) (id : Nat) (ty : Ty)
+    (rest rest' : List Constraint)
+    (run : (if store[id]? = some none ∧ ty.occursMVar id = false then
+              (UnifyPhase.bound (store.solve id ty)
+                (rest.map (Constraint.substMVar id ty)) : UnifyPhase)
+            else .failed) = .bound result rest') :
+    result.unsolved < store.unsolved := by
+  by_cases h : store[id]? = some none ∧ ty.occursMVar id = false
+  · rw [if_pos h] at run
+    injection run with resultEq _
+    subst resultEq
+    exact MStore.unsolved_solve_lt store id ty h.1
+  · rw [if_neg h] at run
+    exact nomatch run
 
-private theorem stable_bind
-    {initial : MSubst} {id : Nat} {replacement : Ty}
-    (stable : initial.Stable)
-    (replacementFixed : initial.apply replacement = replacement)
-    (occurs : replacement.occursMVar id = false) :
-    (initial ++ [(id, replacement)]).Stable := by
-  intro ty
-  have normalizedFixed : initial.apply (initial.apply ty) = initial.apply ty :=
-    stable ty
-  have extensionApply (current : Ty) :
-      (initial ++ [(id, replacement)]).apply current =
-        (initial.apply current).substMVar id replacement := by
-    rw [apply_append]
-    rfl
-  calc
-    (initial ++ [(id, replacement)]).apply
-        ((initial ++ [(id, replacement)]).apply ty) =
-      (initial ++ [(id, replacement)]).apply
-        ((initial.apply ty).substMVar id replacement) := by
-          exact congrArg (MSubst.apply (initial ++ [(id, replacement)]))
-            (extensionApply ty)
-    _ = (initial.apply ty).substMVar id replacement :=
-      bind_fixed normalizedFixed replacementFixed occurs
-    _ = (initial ++ [(id, replacement)]).apply ty :=
-      (extensionApply ty).symm
+/-! ## Fuel adequacy -/
 
-private theorem normalized_fixed
-    {initial : MSubst} {source normalized : Ty}
-    (stable : initial.Stable)
-    (normalizedEq : initial.apply source = normalized) :
-    initial.apply normalized = normalized := by
-  simpa [normalizedEq] using stable source
+/-- A phase given at least the constraints' total size as fuel never runs
+out: every step that does not bind removes at least one constructor. -/
+theorem unifyPhase_ne_outOfFuel
+    {store : MStore} {fuel : Nat} {constraints : List Constraint}
+    (enough : Constraints.size constraints ≤ fuel) :
+    unifyPhase store fuel constraints ≠ .outOfFuel := by
+  induction fuel generalizing constraints with
+  | zero =>
+      cases constraints with
+      | nil => simp [unifyPhase]
+      | cons constraint rest =>
+          have positive :=
+            Constraints.size_nonempty (constraints := constraint :: rest) (by simp)
+          omega
+  | succ fuel ih =>
+      cases constraints with
+      | nil => simp [unifyPhase]
+      | cons constraint rest =>
+          obtain ⟨left, right⟩ := constraint
+          rw [unifyPhase_cons_eq]
+          by_cases equal : left = right
+          · rw [if_pos equal]
+            refine ih ?_
+            have h := enough
+            rw [Constraints.size_cons] at h
+            simp only [Prod.fst, Prod.snd] at h
+            have l := Ty.size_pos left
+            have r := Ty.size_pos right
+            omega
+          · rw [if_neg equal]
+            cases left <;> cases right <;> simp only []
+            all_goals first
+              | (exact ih (by
+                  simp only [Constraints.size_cons, Ty.size] at enough ⊢
+                  omega))
+              | (split <;> simp)
+              | (simp)
 
-private theorem bool_eq_false_of_not_true {value : Bool}
-    (notTrue : ¬ value = true) : value = false := by
-  cases value <;> simp_all
+/-- A phase that binds solves a previously unsolved metavariable. -/
+theorem unifyPhase_bound_unsolved_lt
+    {store result : MStore} {fuel : Nat} {constraints rest : List Constraint}
+    (run : unifyPhase store fuel constraints = .bound result rest) :
+    result.unsolved < store.unsolved := by
+  induction fuel generalizing constraints with
+  | zero =>
+      cases constraints with
+      | nil => simp [unifyPhase] at run
+      | cons constraint rest => simp [unifyPhase] at run
+  | succ fuel ih =>
+      cases constraints with
+      | nil => simp [unifyPhase] at run
+      | cons constraint rest =>
+          obtain ⟨left, right⟩ := constraint
+          rw [unifyPhase_cons_eq] at run
+          by_cases equal : left = right
+          · rw [if_pos equal] at run
+            exact ih run
+          · rw [if_neg equal] at run
+            cases left <;> cases right <;> simp only [] at run
+            all_goals first
+              | (exact bound_of_guard_if store result _ _ _ _ run)
+              | (exact ih run)
+              | (exact nomatch run)
 
-private theorem bind_solves
-    {initial : MSubst} {left right ty : Ty} {id : Nat}
-    (leftEq : initial.apply left = .mvar id)
-    (rightEq : initial.apply right = ty)
-    (occurs : ty.occursMVar id = false) (suffix : MSubst) :
-    ((initial ++ [(id, ty)]) ++ suffix).apply left =
-      ((initial ++ [(id, ty)]) ++ suffix).apply right := by
-  rw [apply_append, apply_append, apply_append, apply_append, leftEq, rightEq]
-  simp only [MSubst.apply, List.foldl, Ty.substMVar, ↓reduceIte]
-  rw [substMVar_eq_self_of_occurs_false ty ty id occurs]
+/-! ## Structural invariants -/
 
-private theorem bind_solves_symm
-    {initial : MSubst} {left right ty : Ty} {id : Nat}
-    (leftEq : initial.apply left = ty)
-    (rightEq : initial.apply right = .mvar id)
-    (occurs : ty.occursMVar id = false) (suffix : MSubst) :
-    ((initial ++ [(id, ty)]) ++ suffix).apply left =
-      ((initial ++ [(id, ty)]) ++ suffix).apply right := by
-  exact (bind_solves rightEq leftEq occurs suffix).symm
+private theorem not_finished_of_bound_if {p : Prop} [Decidable p]
+    {store : MStore} {id : Nat} {ty : Ty} {rest : List Constraint}
+    {result : MStore}
+    (run : (if p then
+              (UnifyPhase.bound (store.solve id ty)
+                (rest.map (Constraint.substMVar id ty)) : UnifyPhase)
+            else .failed) = .finished result) : False := by
+  by_cases h : p
+  · rw [if_pos h] at run
+    exact nomatch run
+  · rw [if_neg h] at run
+    exact nomatch run
 
-private theorem finish_bind
-    {initial result : MSubst} {left right ty : Ty} {id : Nat}
-    {rest : List Constraint}
-    (leftEq : initial.apply left = .mvar id)
-    (rightEq : initial.apply right = ty)
-    (occurs : ty.occursMVar id = false)
-    (recursive :
-      (∃ suffix, result = (initial ++ [(id, ty)]) ++ suffix) ∧
-        result.Solves rest) :
-    (∃ suffix, result = initial ++ suffix) ∧
-      result.Solves ((left, right) :: rest) := by
-  rcases recursive with ⟨⟨suffix, resultEq⟩, solvesRest⟩
-  refine ⟨⟨[(id, ty)] ++ suffix, by simpa [List.append_assoc] using resultEq⟩, ?_⟩
-  intro constraint membership
-  rcases List.mem_cons.mp membership with rfl | inRest
-  · rw [resultEq]
-    exact bind_solves leftEq rightEq occurs suffix
-  · exact solvesRest constraint inRest
+private theorem bound_if_length {p : Prop} [Decidable p]
+    {store result : MStore} {id : Nat} {ty : Ty}
+    {rest rest' : List Constraint}
+    (run : (if p then
+              (UnifyPhase.bound (store.solve id ty)
+                (rest.map (Constraint.substMVar id ty)) : UnifyPhase)
+            else .failed) = .bound result rest') :
+    result.length = store.length := by
+  by_cases h : p
+  · rw [if_pos h] at run
+    injection run with resultEq _
+    subst resultEq
+    simp [MStore.solve]
+  · rw [if_neg h] at run
+    exact nomatch run
 
-private theorem finish_bind_symm
-    {initial result : MSubst} {left right ty : Ty} {id : Nat}
-    {rest : List Constraint}
-    (leftEq : initial.apply left = ty)
-    (rightEq : initial.apply right = .mvar id)
-    (occurs : ty.occursMVar id = false)
-    (recursive :
-      (∃ suffix, result = (initial ++ [(id, ty)]) ++ suffix) ∧
-        result.Solves rest) :
-    (∃ suffix, result = initial ++ suffix) ∧
-      result.Solves ((left, right) :: rest) := by
-  rcases recursive with ⟨⟨suffix, resultEq⟩, solvesRest⟩
-  refine ⟨⟨[(id, ty)] ++ suffix, by simpa [List.append_assoc] using resultEq⟩, ?_⟩
-  intro constraint membership
-  rcases List.mem_cons.mp membership with rfl | inRest
-  · rw [resultEq]
-    exact bind_solves_symm leftEq rightEq occurs suffix
-  · exact solvesRest constraint inRest
-
-private theorem finish_arrows
-    {initial result : MSubst} {left right ld lc rd rc : Ty}
-    {rest : List Constraint}
-    (stable : initial.Stable)
-    (leftEq : initial.apply left = .arrow ld lc)
-    (rightEq : initial.apply right = .arrow rd rc)
-    (recursive :
-      (∃ suffix, result = initial ++ suffix) ∧
-        result.Solves ((ld, rd) :: (lc, rc) :: rest)) :
-    (∃ suffix, result = initial ++ suffix) ∧
-      result.Solves ((left, right) :: rest) := by
-  rcases recursive with ⟨⟨suffix, resultEq⟩, solves⟩
-  refine ⟨⟨suffix, resultEq⟩, ?_⟩
-  intro constraint membership
-  rcases List.mem_cons.mp membership with rfl | inRest
-  · have domains : result.apply ld = result.apply rd :=
-      solves (ld, rd) (by simp)
-    have codomains : result.apply lc = result.apply rc :=
-      solves (lc, rc) (by simp)
-    have leftFixed := stable left
-    rw [leftEq, apply_arrow] at leftFixed
-    injection leftFixed with ldFixed lcFixed
-    have rightFixed := stable right
-    rw [rightEq, apply_arrow] at rightFixed
-    injection rightFixed with rdFixed rcFixed
-    rw [resultEq, apply_append, apply_append, ldFixed, rdFixed] at domains
-    rw [resultEq, apply_append, apply_append, lcFixed, rcFixed] at codomains
-    rw [resultEq, apply_append, apply_append, leftEq, rightEq,
-      apply_arrow, apply_arrow, domains, codomains]
-  · exact solves constraint (by simp [inRest])
-
-private theorem unifyFuel_sound_stable
-    (stable : initial.Stable)
-    (run : unifyFuel fuel constraints initial = some result) :
-    result.Stable ∧ (∃ suffix, result = initial ++ suffix) ∧
-      result.Solves constraints := by
-  induction fuel generalizing constraints initial result with
+private theorem unifyPhase_finished_length
+    {store result : MStore} {fuel : Nat} {constraints : List Constraint}
+    (run : unifyPhase store fuel constraints = .finished result) :
+    result.length = store.length := by
+  induction fuel generalizing constraints with
   | zero =>
       cases constraints with
       | nil =>
-          simp [unifyFuel] at run
+          simp only [unifyPhase, UnifyPhase.finished.injEq] at run
           subst result
-          exact ⟨stable, ⟨[], by simp⟩, by simp [MSubst.Solves]⟩
-      | cons constraint rest => simp [unifyFuel] at run
+          rfl
+      | cons constraint rest => simp [unifyPhase] at run
   | succ fuel ih =>
       cases constraints with
       | nil =>
-          simp [unifyFuel] at run
+          simp only [unifyPhase, UnifyPhase.finished.injEq] at run
           subst result
-          exact ⟨stable, ⟨[], by simp⟩, by simp [MSubst.Solves]⟩
+          rfl
       | cons constraint rest =>
-          rcases constraint with ⟨left, right⟩
-          simp only [unifyFuel] at run
-          by_cases equal : initial.apply left = initial.apply right
+          obtain ⟨left, right⟩ := constraint
+          rw [unifyPhase_cons_eq] at run
+          by_cases equal : left = right
           · rw [if_pos equal] at run
-            rcases ih stable run with
-              ⟨resultStable, ⟨suffix, resultEq⟩, solvesRest⟩
-            refine ⟨resultStable, ⟨suffix, resultEq⟩, ?_⟩
-            intro current membership
-            rcases List.mem_cons.mp membership with rfl | inRest
-            · simpa [resultEq, apply_append] using
-                congrArg (MSubst.apply suffix) equal
-            · exact solvesRest current inRest
+            exact ih run
           · rw [if_neg equal] at run
-            generalize leftEq : initial.apply left = normalizedLeft at run equal
-            generalize rightEq : initial.apply right = normalizedRight at run equal
-            cases normalizedLeft <;> cases normalizedRight <;>
-              simp_all only [Ty.occursMVar, Bool.false_eq_true, reduceCtorEq,
-                Bool.or_eq_true, beq_iff_eq]
-            case neg.prim.mvar name id =>
-              simp only [if_false] at run
-              have replacementFixed :
-                  initial.apply (.prim name) = .prim name :=
-                normalized_fixed stable leftEq
-              have extendedStable :
-                  (initial ++ [(id, Ty.prim name)]).Stable :=
-                stable_bind stable replacementFixed (by rfl)
-              rcases ih extendedStable run with
-                ⟨resultStable, extension, solvesRest⟩
-              exact ⟨resultStable,
-                finish_bind_symm leftEq rightEq (by rfl)
-                  ⟨extension, solvesRest⟩⟩
-            case neg.arrow.arrow ld lc rd rc =>
-              rcases ih stable run with
-                ⟨resultStable, extension, solvesDecomposed⟩
-              exact ⟨resultStable,
-                finish_arrows stable leftEq rightEq
-                  ⟨extension, solvesDecomposed⟩⟩
-            case neg.arrow.mvar domain codomain id =>
-              by_cases occursTrue :
-                  domain.occursMVar id = true ∨ codomain.occursMVar id = true
-              · rw [if_pos occursTrue] at run
-                contradiction
-              · rw [if_neg occursTrue] at run
-                have domainOccurs : domain.occursMVar id = false :=
-                  bool_eq_false_of_not_true (fun occurrence =>
-                    occursTrue (Or.inl occurrence))
-                have codomainOccurs : codomain.occursMVar id = false :=
-                  bool_eq_false_of_not_true (fun occurrence =>
-                    occursTrue (Or.inr occurrence))
-                have occurs :
-                    (Ty.arrow domain codomain).occursMVar id = false := by
-                  simp [Ty.occursMVar, domainOccurs, codomainOccurs]
-                have replacementFixed :
-                    initial.apply (.arrow domain codomain) =
-                      .arrow domain codomain :=
-                  normalized_fixed stable leftEq
-                have extendedStable :
-                    (initial ++ [(id, Ty.arrow domain codomain)]).Stable :=
-                  stable_bind stable replacementFixed occurs
-                rcases ih extendedStable run with
-                  ⟨resultStable, extension, solvesRest⟩
-                exact ⟨resultStable,
-                  finish_bind_symm leftEq rightEq occurs
-                    ⟨extension, solvesRest⟩⟩
-            case neg.bvar.mvar index id =>
-              simp only [if_false] at run
-              have replacementFixed :
-                  initial.apply (.bvar index) = .bvar index :=
-                normalized_fixed stable leftEq
-              have extendedStable :
-                  (initial ++ [(id, Ty.bvar index)]).Stable :=
-                stable_bind stable replacementFixed (by rfl)
-              rcases ih extendedStable run with
-                ⟨resultStable, extension, solvesRest⟩
-              exact ⟨resultStable,
-                finish_bind_symm leftEq rightEq (by rfl)
-                  ⟨extension, solvesRest⟩⟩
-            case neg.rigid.mvar level id =>
-              simp only [if_false] at run
-              have replacementFixed :
-                  initial.apply (.rigid level) = .rigid level :=
-                normalized_fixed stable leftEq
-              have extendedStable :
-                  (initial ++ [(id, Ty.rigid level)]).Stable :=
-                stable_bind stable replacementFixed (by rfl)
-              rcases ih extendedStable run with
-                ⟨resultStable, extension, solvesRest⟩
-              exact ⟨resultStable,
-                finish_bind_symm leftEq rightEq (by rfl)
-                  ⟨extension, solvesRest⟩⟩
-            case neg.mvar.prim id name =>
-              simp only [if_false] at run
-              have replacementFixed :
-                  initial.apply (.prim name) = .prim name :=
-                normalized_fixed stable rightEq
-              have extendedStable :
-                  (initial ++ [(id, Ty.prim name)]).Stable :=
-                stable_bind stable replacementFixed (by rfl)
-              rcases ih extendedStable run with
-                ⟨resultStable, extension, solvesRest⟩
-              exact ⟨resultStable,
-                finish_bind leftEq rightEq (by rfl)
-                  ⟨extension, solvesRest⟩⟩
-            case neg.mvar.arrow id domain codomain =>
-              by_cases occursTrue :
-                  domain.occursMVar id = true ∨ codomain.occursMVar id = true
-              · rw [if_pos occursTrue] at run
-                contradiction
-              · rw [if_neg occursTrue] at run
-                have domainOccurs : domain.occursMVar id = false :=
-                  bool_eq_false_of_not_true (fun occurrence =>
-                    occursTrue (Or.inl occurrence))
-                have codomainOccurs : codomain.occursMVar id = false :=
-                  bool_eq_false_of_not_true (fun occurrence =>
-                    occursTrue (Or.inr occurrence))
-                have occurs :
-                    (Ty.arrow domain codomain).occursMVar id = false := by
-                  simp [Ty.occursMVar, domainOccurs, codomainOccurs]
-                have replacementFixed :
-                    initial.apply (.arrow domain codomain) =
-                      .arrow domain codomain :=
-                  normalized_fixed stable rightEq
-                have extendedStable :
-                    (initial ++ [(id, Ty.arrow domain codomain)]).Stable :=
-                  stable_bind stable replacementFixed occurs
-                rcases ih extendedStable run with
-                  ⟨resultStable, extension, solvesRest⟩
-                exact ⟨resultStable,
-                  finish_bind leftEq rightEq occurs
-                    ⟨extension, solvesRest⟩⟩
-            case neg.mvar.bvar id index =>
-              simp only [if_false] at run
-              have replacementFixed :
-                  initial.apply (.bvar index) = .bvar index :=
-                normalized_fixed stable rightEq
-              have extendedStable :
-                  (initial ++ [(id, Ty.bvar index)]).Stable :=
-                stable_bind stable replacementFixed (by rfl)
-              rcases ih extendedStable run with
-                ⟨resultStable, extension, solvesRest⟩
-              exact ⟨resultStable,
-                finish_bind leftEq rightEq (by rfl)
-                  ⟨extension, solvesRest⟩⟩
-            case neg.mvar.rigid id level =>
-              simp only [if_false] at run
-              have replacementFixed :
-                  initial.apply (.rigid level) = .rigid level :=
-                normalized_fixed stable rightEq
-              have extendedStable :
-                  (initial ++ [(id, Ty.rigid level)]).Stable :=
-                stable_bind stable replacementFixed (by rfl)
-              rcases ih extendedStable run with
-                ⟨resultStable, extension, solvesRest⟩
-              exact ⟨resultStable,
-                finish_bind leftEq rightEq (by rfl)
-                  ⟨extension, solvesRest⟩⟩
-            case neg.mvar.mvar leftId rightId =>
-              have idsNe : rightId ≠ leftId := by
-                intro idsEq
-                apply equal
-                cases idsEq
-                rfl
-              rw [if_neg idsNe] at run
-              have occurs : (Ty.mvar rightId).occursMVar leftId = false := by
-                simp [Ty.occursMVar, idsNe]
-              have replacementFixed :
-                  initial.apply (.mvar rightId) = .mvar rightId :=
-                normalized_fixed stable rightEq
-              have extendedStable :
-                  (initial ++ [(leftId, Ty.mvar rightId)]).Stable :=
-                stable_bind stable replacementFixed occurs
-              rcases ih extendedStable run with
-                ⟨resultStable, extension, solvesRest⟩
-              exact ⟨resultStable,
-                finish_bind leftEq rightEq occurs
-                  ⟨extension, solvesRest⟩⟩
+            cases left <;> cases right <;> simp only [] at run
+            all_goals first
+              | (exact ih run)
+              | (exact (not_finished_of_bound_if run).elim)
+              | (cases run)
 
-/-- Every successful fuelled run from the public empty-substitution boundary
-solves all of its original constraints. Arbitrary preloaded substitutions are
-not part of EPL's unifier contract. -/
-theorem unifyFuel_sound
-    (run : unifyFuel fuel constraints [] = some result) :
-    result.Solves constraints := by
-  exact (unifyFuel_sound_stable stable_nil run).2.2
+private theorem unifyPhase_bound_length
+    {store result : MStore} {fuel : Nat}
+    {constraints rest : List Constraint}
+    (run : unifyPhase store fuel constraints = .bound result rest) :
+    result.length = store.length := by
+  induction fuel generalizing constraints with
+  | zero =>
+      cases constraints with
+      | nil => simp [unifyPhase] at run
+      | cons constraint rest => simp [unifyPhase] at run
+  | succ fuel ih =>
+      cases constraints with
+      | nil => simp [unifyPhase] at run
+      | cons constraint rest =>
+          obtain ⟨left, right⟩ := constraint
+          rw [unifyPhase_cons_eq] at run
+          by_cases equal : left = right
+          · rw [if_pos equal] at run
+            exact ih run
+          · rw [if_neg equal] at run
+            cases left <;> cases right <;> simp only [] at run
+            all_goals first
+              | (exact ih run)
+              | (exact bound_if_length run)
+              | (cases run)
 
-/-- Successful public unification produces a substitution stable under
-reapplication. -/
-theorem unify_stable (run : unify left right = some result) :
-    result.Stable := by
-  exact (unifyFuel_sound_stable stable_nil run).1
+private theorem unifyLoop_succ (fuel : Nat) (store : MStore)
+    (constraints : List Constraint) :
+    unifyLoop (fuel + 1) store constraints =
+      match unifyPhase store (Constraints.size constraints) constraints with
+      | .finished result => some result
+      | .bound result rest => unifyLoop fuel result rest
+      | .failed | .outOfFuel => none := by
+  rfl
 
-/-- The public unifier equates its two input types whenever it succeeds. -/
-theorem unify_sound (run : unify left right = some result) :
-    result.apply left = result.apply right := by
-  exact unifyFuel_sound run (left, right) (by simp)
+private theorem unifyLoop_length
+    {fuel : Nat} {store : MStore} {constraints : List Constraint}
+    {result : MStore}
+    (run : unifyLoop fuel store constraints = some result) :
+    result.length = store.length := by
+  induction fuel generalizing store constraints with
+  | zero => simp [unifyLoop] at run
+  | succ fuel ih =>
+      rw [unifyLoop_succ] at run
+      split at run
+      · rename_i finishedRun
+        injection run with resultEq
+        subst resultEq
+        exact unifyPhase_finished_length finishedRun
+      · rename_i boundRun
+        rw [ih run]
+        exact unifyPhase_bound_length boundRun
+      · exact nomatch run
+      · exact nomatch run
 
-end EPL
+theorem MStore.unify_length
+    {store result : MStore} {left right : Ty}
+    (run : store.unify left right = some result) :
+    result.length = store.length := by
+  exact unifyLoop_length run
 
-namespace EPL
+/-! ### Scoping and allocation bounds -/
 
-private theorem scoped_substMVar
-    {ty replacement : Ty} {rigidCount target : Nat}
-    (typeScoped : Ty.Scoped rigidCount 0 ty)
-    (replacementScoped : Ty.Scoped rigidCount 0 replacement) :
+private abbrev ConstraintsScoped (rigidCount : Nat)
+    (constraints : List Constraint) : Prop :=
+  ∀ constraint ∈ constraints,
+    constraint.1.Scoped rigidCount 0 ∧ constraint.2.Scoped rigidCount 0
+
+private abbrev ConstraintsBounded (frontier : Nat)
+    (constraints : List Constraint) : Prop :=
+  ∀ constraint ∈ constraints,
+    constraint.1.MVarBounded frontier ∧ constraint.2.MVarBounded frontier
+
+private theorem ConstraintsScoped.arrows {rigidCount : Nat}
+    {leftDomain leftCodomain rightDomain rightCodomain : Ty}
+    {rest : List Constraint}
+    (head : (Ty.arrow leftDomain leftCodomain).Scoped rigidCount 0 ∧
+      (Ty.arrow rightDomain rightCodomain).Scoped rigidCount 0)
+    (restScoped : ConstraintsScoped rigidCount rest) :
+    ConstraintsScoped rigidCount
+      ((leftDomain, rightDomain) :: (leftCodomain, rightCodomain) :: rest) := by
+  intro constraint member
+  rcases List.mem_cons.mp member with rfl | member
+  · exact ⟨by cases head.1 with | arrow h _ => exact h,
+            by cases head.2 with | arrow h _ => exact h⟩
+  · rcases List.mem_cons.mp member with rfl | member
+    · exact ⟨by cases head.1 with | arrow _ h => exact h,
+              by cases head.2 with | arrow _ h => exact h⟩
+    · exact restScoped constraint member
+
+private theorem Ty.MVarBounded.left {frontier : Nat} {domain codomain : Ty}
+    (bounded : (Ty.arrow domain codomain).MVarBounded frontier) :
+    domain.MVarBounded frontier := by
+  intro id member
+  exact bounded id (by simp [Ty.mvars, List.mem_dedup, member])
+
+private theorem Ty.MVarBounded.right {frontier : Nat} {domain codomain : Ty}
+    (bounded : (Ty.arrow domain codomain).MVarBounded frontier) :
+    codomain.MVarBounded frontier := by
+  intro id member
+  exact bounded id (by simp [Ty.mvars, List.mem_dedup, member])
+
+private theorem ConstraintsBounded.arrows {frontier : Nat}
+    {leftDomain leftCodomain rightDomain rightCodomain : Ty}
+    {rest : List Constraint}
+    (head : (Ty.arrow leftDomain leftCodomain).MVarBounded frontier ∧
+      (Ty.arrow rightDomain rightCodomain).MVarBounded frontier)
+    (restBounded : ConstraintsBounded frontier rest) :
+    ConstraintsBounded frontier
+      ((leftDomain, rightDomain) :: (leftCodomain, rightCodomain) :: rest) := by
+  intro constraint member
+  rcases List.mem_cons.mp member with rfl | member
+  · exact ⟨Ty.MVarBounded.left head.1, Ty.MVarBounded.left head.2⟩
+  · rcases List.mem_cons.mp member with rfl | member
+    · exact ⟨Ty.MVarBounded.right head.1, Ty.MVarBounded.right head.2⟩
+    · exact restBounded constraint member
+
+private theorem Ty.substMVar_scoped {ty replacement : Ty}
+    {rigidCount target : Nat}
+    (typeScoped : ty.Scoped rigidCount 0)
+    (replacementScoped : replacement.Scoped rigidCount 0) :
     (ty.substMVar target replacement).Scoped rigidCount 0 := by
   induction typeScoped with
   | prim => exact .prim
@@ -433,166 +417,2082 @@ private theorem scoped_substMVar
       · exact replacementScoped
       · exact .mvar id
 
-private theorem apply_scoped
-    {subst : MSubst} {ty : Ty} {rigidCount : Nat}
-    (substScoped : MSubst.Scoped rigidCount subst)
-    (typeScoped : Ty.Scoped rigidCount 0 ty) :
-    (subst.apply ty).Scoped rigidCount 0 := by
-  induction subst generalizing ty with
-  | nil => simpa [MSubst.apply] using typeScoped
-  | cons binding rest ih =>
-      have bindingScoped : binding.2.Scoped rigidCount 0 :=
-        substScoped binding (by simp)
-      have restScoped : MSubst.Scoped rigidCount rest := by
-        intro item member
-        exact substScoped item (by simp [member])
-      simpa [MSubst.apply, List.foldl] using
-        ih restScoped (scoped_substMVar typeScoped bindingScoped)
+private theorem Ty.mem_mvars_substMVar {ty replacement : Ty}
+    {target id : Nat}
+    (member : id ∈ (ty.substMVar target replacement).mvars) :
+    id ∈ ty.mvars ∨ id ∈ replacement.mvars := by
+  induction ty with
+  | prim => simp [Ty.substMVar, Ty.mvars] at member
+  | bvar => simp [Ty.substMVar, Ty.mvars] at member
+  | rigid => simp [Ty.substMVar, Ty.mvars] at member
+  | arrow domain codomain domainIH codomainIH =>
+      have split :
+          id ∈ (domain.substMVar target replacement).mvars ∨
+            id ∈ (codomain.substMVar target replacement).mvars := by
+        simpa [Ty.substMVar, Ty.mvars, List.mem_dedup, List.mem_append] using member
+      rcases split with inside | inside
+      · rcases domainIH inside with old | new
+        · exact Or.inl (by simp [Ty.mvars, List.mem_dedup, old])
+        · exact Or.inr new
+      · rcases codomainIH inside with old | new
+        · exact Or.inl (by simp [Ty.mvars, List.mem_dedup, old])
+        · exact Or.inr new
+  | mvar id' =>
+      by_cases selected : id' = target
+      · simp [Ty.substMVar, selected] at member
+        exact Or.inr member
+      · simp [Ty.substMVar, selected, Ty.mvars] at member
+        subst member
+        exact Or.inl (by simp [Ty.mvars])
 
-private theorem scoped_append_one
-    {subst : MSubst} {ty : Ty} {rigidCount id : Nat}
-    (substScoped : MSubst.Scoped rigidCount subst)
-    (typeScoped : Ty.Scoped rigidCount 0 ty) :
-    (subst ++ [(id, ty)]).Scoped rigidCount := by
-  intro binding member
-  rcases List.mem_append.mp member with old | new
-  · exact substScoped binding old
-  · simp only [List.mem_singleton] at new
-    subst binding
-    exact typeScoped
+private theorem Ty.substMVar_mvarBounded {ty replacement : Ty}
+    {target frontier : Nat}
+    (typeBounded : ty.MVarBounded frontier)
+    (replacementBounded : replacement.MVarBounded frontier) :
+    (ty.substMVar target replacement).MVarBounded frontier := by
+  intro id member
+  rcases Ty.mem_mvars_substMVar member with old | new
+  · exact typeBounded id old
+  · exact replacementBounded id new
 
-private theorem constraints_tail
-    {constraint : Constraint} {rest : List Constraint} {rigidCount : Nat}
-    (hscoped : Constraints.Scoped rigidCount (constraint :: rest)) :
-    Constraints.Scoped rigidCount rest := by
-  intro item member
-  exact hscoped item (List.mem_cons_of_mem constraint member)
+private theorem MStore.apply_scoped {store : MStore} {ty : Ty}
+    {rigidCount : Nat}
+    (storeScoped : store.Scoped rigidCount)
+    (typeScoped : ty.Scoped rigidCount 0) :
+    (store.apply ty).Scoped rigidCount 0 := by
+  induction ty with
+  | prim => exact .prim
+  | arrow domain codomain domainIH codomainIH =>
+      cases typeScoped with
+      | arrow domainScoped codomainScoped =>
+          exact .arrow (domainIH domainScoped) (codomainIH codomainScoped)
+  | bvar index => cases typeScoped with | bvar h => omega
+  | rigid level =>
+      cases typeScoped with
+      | rigid h => exact .rigid h
+  | mvar id =>
+      simp only [MStore.apply]
+      cases entry : store[id]? with
+      | none =>
+          simp only [MStore.lookup, entry]
+          exact .mvar id
+      | some option =>
+          cases option with
+          | none =>
+              simp only [MStore.lookup, entry]
+              exact .mvar id
+          | some replacement =>
+              simp only [MStore.lookup, entry, Option.join, Option.getD_some]
+              exact storeScoped replacement (List.mem_of_getElem? entry)
 
-private theorem constraints_head
-    {constraint : Constraint} {rest : List Constraint} {rigidCount : Nat}
-    (hscoped : Constraints.Scoped rigidCount (constraint :: rest)) :
-    constraint.1.Scoped rigidCount 0 ∧ constraint.2.Scoped rigidCount 0 :=
-  hscoped constraint (by simp)
+private theorem MStore.apply_bounded {store : MStore} {ty : Ty}
+    {frontier : Nat}
+    (storeBounded : store.Bounded frontier)
+    (typeBounded : ty.MVarBounded frontier) :
+    (store.apply ty).MVarBounded frontier := by
+  induction ty with
+  | prim => exact typeBounded
+  | arrow domain codomain domainIH codomainIH =>
+      intro id member
+      have split : id ∈ (store.apply domain).mvars ∨
+          id ∈ (store.apply codomain).mvars := by
+        simpa [MStore.apply, Ty.mvars, List.mem_dedup, List.mem_append] using member
+      rcases split with inside | inside
+      · exact domainIH (Ty.MVarBounded.left typeBounded) id inside
+      · exact codomainIH (Ty.MVarBounded.right typeBounded) id inside
+  | bvar index => exact typeBounded
+  | rigid level => exact typeBounded
+  | mvar id =>
+      simp only [MStore.apply]
+      cases entry : store[id]? with
+      | none =>
+          simp only [MStore.lookup, entry]
+          exact typeBounded
+      | some option =>
+          cases option with
+          | none =>
+              simp only [MStore.lookup, entry]
+              exact typeBounded
+          | some replacement =>
+              simp only [MStore.lookup, entry, Option.join, Option.getD_some]
+              exact storeBounded replacement (List.mem_of_getElem? entry)
 
-/-- Unification cannot invent an out-of-scope bound or rigid variable. -/
-theorem unifyFuel_scoped
-    (initialScoped : initial.Scoped rigidCount)
-    (constraintsScoped : Constraints.Scoped rigidCount constraints)
-    (run : unifyFuel fuel constraints initial = some result) :
+private theorem MStore.solve_scoped {store : MStore} {id : Nat} {ty : Ty}
+    {rigidCount : Nat}
+    (storeScoped : store.Scoped rigidCount)
+    (tyScoped : ty.Scoped rigidCount 0) :
+    (store.solve id ty).Scoped rigidCount := by
+  intro entry member
+  rcases List.mem_or_eq_of_mem_set member with old | selected
+  · rcases List.mem_map.mp old with ⟨previous, inStore, mapped⟩
+    cases previous with
+    | none => simp at mapped
+    | some previousTy =>
+        change some (previousTy.substMVar id ty) = some entry at mapped
+        injection mapped with entryEq
+        subst entry
+        exact Ty.substMVar_scoped (storeScoped previousTy inStore) tyScoped
+  · injection selected with entryEq
+    subst entry
+    exact tyScoped
+
+private theorem MStore.solve_bounded {store : MStore} {id : Nat} {ty : Ty}
+    {frontier : Nat}
+    (storeBounded : store.Bounded frontier)
+    (tyBounded : ty.MVarBounded frontier) :
+    (store.solve id ty).Bounded frontier := by
+  intro entry member
+  rcases List.mem_or_eq_of_mem_set member with old | selected
+  · rcases List.mem_map.mp old with ⟨previous, inStore, mapped⟩
+    cases previous with
+    | none => simp at mapped
+    | some previousTy =>
+        change some (previousTy.substMVar id ty) = some entry at mapped
+        injection mapped with entryEq
+        subst entry
+        exact Ty.substMVar_mvarBounded (storeBounded previousTy inStore) tyBounded
+  · injection selected with entryEq
+    subst entry
+    exact tyBounded
+
+private theorem bound_if_eq {p : Prop} [Decidable p]
+    {store result : MStore} {id : Nat} {ty : Ty}
+    {rest rest' : List Constraint}
+    (run : (if p then
+              (UnifyPhase.bound (store.solve id ty)
+                (rest.map (Constraint.substMVar id ty)) : UnifyPhase)
+            else .failed) = .bound result rest') :
+    store.solve id ty = result ∧
+      rest.map (Constraint.substMVar id ty) = rest' := by
+  by_cases h : p
+  · rw [if_pos h] at run
+    injection run with resultEq restEq
+    exact ⟨resultEq, restEq⟩
+  · rw [if_neg h] at run
+    exact nomatch run
+
+private theorem unifyPhase_finished_scoped
+    {store result : MStore} {fuel : Nat} {constraints : List Constraint}
+    {rigidCount : Nat}
+    (storeScoped : store.Scoped rigidCount)
+    (constraintsScoped : ConstraintsScoped rigidCount constraints)
+    (run : unifyPhase store fuel constraints = .finished result) :
     result.Scoped rigidCount := by
-  induction fuel generalizing constraints initial result with
+  induction fuel generalizing constraints with
   | zero =>
       cases constraints with
       | nil =>
-          simp only [unifyFuel, Option.some.injEq] at run
+          simp only [unifyPhase, UnifyPhase.finished.injEq] at run
           subst result
-          exact initialScoped
-      | cons constraint rest => simp [unifyFuel] at run
+          exact storeScoped
+      | cons constraint rest => simp [unifyPhase] at run
   | succ fuel ih =>
       cases constraints with
       | nil =>
-          simp only [unifyFuel, Option.some.injEq] at run
+          simp only [unifyPhase, UnifyPhase.finished.injEq] at run
           subst result
-          exact initialScoped
+          exact storeScoped
       | cons constraint rest =>
-          rcases constraint with ⟨left, right⟩
-          have inputScoped := constraints_head constraintsScoped
-          have restScoped := constraints_tail constraintsScoped
-          have leftScoped := apply_scoped initialScoped inputScoped.1
-          have rightScoped := apply_scoped initialScoped inputScoped.2
-          simp only [unifyFuel] at run
-          by_cases equal : initial.apply left = initial.apply right
+          obtain ⟨left, right⟩ := constraint
+          have head := constraintsScoped (left, right) (by simp)
+          have restScoped : ConstraintsScoped rigidCount rest := by
+            intro current inRest
+            exact constraintsScoped current (by simp [inRest])
+          rw [unifyPhase_cons_eq] at run
+          by_cases equal : left = right
           · rw [if_pos equal] at run
-            exact ih initialScoped restScoped run
+            exact ih restScoped run
           · rw [if_neg equal] at run
-            generalize leftEq : initial.apply left = left' at leftScoped run
-            generalize rightEq : initial.apply right = right' at rightScoped run
-            have bindCase (id : Nat) (assigned : Ty)
-                (assignedScoped : assigned.Scoped rigidCount 0)
-                (bindRun :
-                  (if assigned.occursMVar id = true then none
-                    else unifyFuel fuel rest (initial ++ [(id, assigned)])) =
-                      some result) :
-                result.Scoped rigidCount := by
-              by_cases occurs : assigned.occursMVar id = true
-              · simp [occurs] at bindRun
-              · apply ih (scoped_append_one initialScoped assignedScoped) restScoped
-                simpa [occurs] using bindRun
-            have impossible (h : (none : Option MSubst) = some result) :
-                result.Scoped rigidCount := by
-              cases h
-            cases left' with
-            | prim leftPrim =>
-                cases right' with
-                | prim rightPrim => simp at run
-                | arrow _ _ => simp at run
-                | bvar _ => simp at run
-                | rigid _ => simp at run
-                | mvar id => exact bindCase id (.prim leftPrim) leftScoped run
-            | arrow leftDomain leftCodomain =>
-                cases right' with
-                | prim _ => simp at run
-                | arrow rightDomain rightCodomain =>
-                    cases leftScoped with
-                    | arrow leftDomainScoped leftCodomainScoped =>
-                      cases rightScoped with
-                      | arrow rightDomainScoped rightCodomainScoped =>
-                        change unifyFuel fuel
-                          ((leftDomain, rightDomain) ::
-                            (leftCodomain, rightCodomain) :: rest) initial =
-                              some result at run
-                        apply ih (constraints :=
-                          (leftDomain, rightDomain) ::
-                            (leftCodomain, rightCodomain) :: rest) initialScoped
-                        · intro item member
-                          by_cases first : item = (leftDomain, rightDomain)
-                          · subst item
-                            exact ⟨leftDomainScoped, rightDomainScoped⟩
-                          · by_cases second : item = (leftCodomain, rightCodomain)
-                            · subst item
-                              exact ⟨leftCodomainScoped, rightCodomainScoped⟩
-                            · apply restScoped item
-                              simpa [first, second] using member
-                        · exact run
-                | bvar _ => simp at run
-                | rigid _ => simp at run
-                | mvar id =>
-                    exact bindCase id (.arrow leftDomain leftCodomain) leftScoped run
-            | bvar _ =>
-                cases leftScoped with
-                | bvar h => omega
-            | rigid leftLevel =>
-                cases right' with
-                | prim _ => simp at run
-                | arrow _ _ => simp at run
-                | bvar _ => simp at run
-                | rigid _ =>
-                    apply impossible
-                    change none = some result at run
-                    exact run
-                | mvar id => exact bindCase id (.rigid leftLevel) leftScoped run
-            | mvar id =>
-                cases right' with
-                | prim rightPrim => exact bindCase id (.prim rightPrim) rightScoped run
-                | arrow rightDomain rightCodomain =>
-                    exact bindCase id (.arrow rightDomain rightCodomain) rightScoped run
-                | bvar _ =>
-                    cases rightScoped with
-                    | bvar h => omega
-                | rigid rightLevel => exact bindCase id (.rigid rightLevel) rightScoped run
-                | mvar rightId => exact bindCase id (.mvar rightId) rightScoped run
+            cases left <;> cases right <;> simp only [] at run
+            all_goals first
+              | (exact ih (ConstraintsScoped.arrows head restScoped) run)
+              | (exact (not_finished_of_bound_if run).elim)
+              | (cases run)
 
-theorem unify_scoped
+private theorem unifyPhase_bound_scoped
+    {store result : MStore} {fuel : Nat}
+    {constraints rest : List Constraint} {rigidCount : Nat}
+    (storeScoped : store.Scoped rigidCount)
+    (constraintsScoped : ConstraintsScoped rigidCount constraints)
+    (run : unifyPhase store fuel constraints = .bound result rest) :
+    result.Scoped rigidCount ∧ ConstraintsScoped rigidCount rest := by
+  induction fuel generalizing constraints with
+  | zero =>
+      cases constraints with
+      | nil => simp [unifyPhase] at run
+      | cons constraint rest => simp [unifyPhase] at run
+  | succ fuel ih =>
+      cases constraints with
+      | nil => simp [unifyPhase] at run
+      | cons constraint rest =>
+          obtain ⟨left, right⟩ := constraint
+          have head := constraintsScoped (left, right) (by simp)
+          have restScoped : ConstraintsScoped rigidCount rest := by
+            intro current inRest
+            exact constraintsScoped current (by simp [inRest])
+          rw [unifyPhase_cons_eq] at run
+          by_cases equal : left = right
+          · rw [if_pos equal] at run
+            exact ih restScoped run
+          · rw [if_neg equal] at run
+            cases left <;> cases right <;> simp only [] at run
+            all_goals first
+              | (exact ih (ConstraintsScoped.arrows head restScoped) run)
+              | (obtain ⟨rfl, rfl⟩ := bound_if_eq run
+                 refine ⟨MStore.solve_scoped storeScoped ?_, ?_⟩
+                 · first | exact head.1 | exact head.2
+                 · intro current inRest
+                   rcases List.mem_map.mp inRest with ⟨old, inOld, rfl⟩
+                   exact ⟨Ty.substMVar_scoped (restScoped old inOld).1
+                            (by first | exact head.1 | exact head.2),
+                          Ty.substMVar_scoped (restScoped old inOld).2
+                            (by first | exact head.1 | exact head.2)⟩)
+              | (cases run)
+
+private theorem unifyLoop_scoped
+    {fuel : Nat} {store : MStore} {constraints : List Constraint}
+    {result : MStore} {rigidCount : Nat}
+    (storeScoped : store.Scoped rigidCount)
+    (constraintsScoped : ConstraintsScoped rigidCount constraints)
+    (run : unifyLoop fuel store constraints = some result) :
+    result.Scoped rigidCount := by
+  induction fuel generalizing store constraints with
+  | zero => simp [unifyLoop] at run
+  | succ fuel ih =>
+      rw [unifyLoop_succ] at run
+      split at run
+      · rename_i finishedRun
+        injection run with resultEq
+        subst resultEq
+        exact unifyPhase_finished_scoped storeScoped constraintsScoped finishedRun
+      · rename_i boundRun
+        obtain ⟨resultScoped, restScoped⟩ :=
+          unifyPhase_bound_scoped storeScoped constraintsScoped boundRun
+        exact ih resultScoped restScoped run
+      · exact nomatch run
+      · exact nomatch run
+
+theorem MStore.unify_scoped
+    {store result : MStore} {left right : Ty} {rigidCount : Nat}
+    (storeScoped : store.Scoped rigidCount)
     (leftScoped : left.Scoped rigidCount 0)
     (rightScoped : right.Scoped rigidCount 0)
-    (run : unify left right = some result) :
+    (run : store.unify left right = some result) :
     result.Scoped rigidCount := by
-  apply unifyFuel_scoped (initial := []) (constraints := [(left, right)])
-  · simp [MSubst.Scoped]
-  · intro constraint member
+  change unifyLoop (store.unsolved + 1) store
+    [(store.apply left, store.apply right)] = some result at run
+  refine unifyLoop_scoped storeScoped ?_ run
+  intro constraint member
+  simp only [List.mem_singleton] at member
+  subst member
+  exact ⟨MStore.apply_scoped storeScoped leftScoped,
+    MStore.apply_scoped storeScoped rightScoped⟩
+
+private theorem unifyPhase_finished_bounded
+    {store result : MStore} {fuel : Nat} {constraints : List Constraint}
+    {frontier : Nat}
+    (storeBounded : store.Bounded frontier)
+    (constraintsBounded : ConstraintsBounded frontier constraints)
+    (run : unifyPhase store fuel constraints = .finished result) :
+    result.Bounded frontier := by
+  induction fuel generalizing constraints with
+  | zero =>
+      cases constraints with
+      | nil =>
+          simp only [unifyPhase, UnifyPhase.finished.injEq] at run
+          subst result
+          exact storeBounded
+      | cons constraint rest => simp [unifyPhase] at run
+  | succ fuel ih =>
+      cases constraints with
+      | nil =>
+          simp only [unifyPhase, UnifyPhase.finished.injEq] at run
+          subst result
+          exact storeBounded
+      | cons constraint rest =>
+          obtain ⟨left, right⟩ := constraint
+          have head := constraintsBounded (left, right) (by simp)
+          have restBounded : ConstraintsBounded frontier rest := by
+            intro current inRest
+            exact constraintsBounded current (by simp [inRest])
+          rw [unifyPhase_cons_eq] at run
+          by_cases equal : left = right
+          · rw [if_pos equal] at run
+            exact ih restBounded run
+          · rw [if_neg equal] at run
+            cases left <;> cases right <;> simp only [] at run
+            all_goals first
+              | (exact ih (ConstraintsBounded.arrows head restBounded) run)
+              | (exact (not_finished_of_bound_if run).elim)
+              | (cases run)
+
+private theorem unifyPhase_bound_bounded
+    {store result : MStore} {fuel : Nat}
+    {constraints rest : List Constraint} {frontier : Nat}
+    (storeBounded : store.Bounded frontier)
+    (constraintsBounded : ConstraintsBounded frontier constraints)
+    (run : unifyPhase store fuel constraints = .bound result rest) :
+    result.Bounded frontier ∧ ConstraintsBounded frontier rest := by
+  induction fuel generalizing constraints with
+  | zero =>
+      cases constraints with
+      | nil => simp [unifyPhase] at run
+      | cons constraint rest => simp [unifyPhase] at run
+  | succ fuel ih =>
+      cases constraints with
+      | nil => simp [unifyPhase] at run
+      | cons constraint rest =>
+          obtain ⟨left, right⟩ := constraint
+          have head := constraintsBounded (left, right) (by simp)
+          have restBounded : ConstraintsBounded frontier rest := by
+            intro current inRest
+            exact constraintsBounded current (by simp [inRest])
+          rw [unifyPhase_cons_eq] at run
+          by_cases equal : left = right
+          · rw [if_pos equal] at run
+            exact ih restBounded run
+          · rw [if_neg equal] at run
+            cases left <;> cases right <;> simp only [] at run
+            all_goals first
+              | (exact ih (ConstraintsBounded.arrows head restBounded) run)
+              | (obtain ⟨rfl, rfl⟩ := bound_if_eq run
+                 refine ⟨MStore.solve_bounded storeBounded ?_, ?_⟩
+                 · first | exact head.1 | exact head.2
+                 · intro current inRest
+                   rcases List.mem_map.mp inRest with ⟨old, inOld, rfl⟩
+                   exact ⟨Ty.substMVar_mvarBounded (restBounded old inOld).1
+                            (by first | exact head.1 | exact head.2),
+                          Ty.substMVar_mvarBounded (restBounded old inOld).2
+                            (by first | exact head.1 | exact head.2)⟩)
+              | (cases run)
+
+private theorem unifyLoop_bounded
+    {fuel : Nat} {store : MStore} {constraints : List Constraint}
+    {result : MStore} {frontier : Nat}
+    (storeBounded : store.Bounded frontier)
+    (constraintsBounded : ConstraintsBounded frontier constraints)
+    (run : unifyLoop fuel store constraints = some result) :
+    result.Bounded frontier := by
+  induction fuel generalizing store constraints with
+  | zero => simp [unifyLoop] at run
+  | succ fuel ih =>
+      rw [unifyLoop_succ] at run
+      split at run
+      · rename_i finishedRun
+        injection run with resultEq
+        subst resultEq
+        exact unifyPhase_finished_bounded storeBounded constraintsBounded finishedRun
+      · rename_i boundRun
+        obtain ⟨resultBounded, restBounded⟩ :=
+          unifyPhase_bound_bounded storeBounded constraintsBounded boundRun
+        exact ih resultBounded restBounded run
+      · exact nomatch run
+      · exact nomatch run
+
+theorem MStore.unify_bounded
+    {store result : MStore} {left right : Ty} {frontier : Nat}
+    (storeBounded : store.Bounded frontier)
+    (leftBounded : left.MVarBounded frontier)
+    (rightBounded : right.MVarBounded frontier)
+    (run : store.unify left right = some result) :
+    result.Bounded frontier := by
+  change unifyLoop (store.unsolved + 1) store
+    [(store.apply left, store.apply right)] = some result at run
+  refine unifyLoop_bounded storeBounded ?_ run
+  intro constraint member
+  simp only [List.mem_singleton] at member
+  subst member
+  exact ⟨MStore.apply_bounded storeBounded leftBounded,
+    MStore.apply_bounded storeBounded rightBounded⟩
+
+private theorem bound_guard_data {store result : MStore} {id : Nat} {ty : Ty}
+    {rest rest' : List Constraint}
+    (run : (if store[id]? = some none ∧ ty.occursMVar id = false then
+              (UnifyPhase.bound (store.solve id ty)
+                (rest.map (Constraint.substMVar id ty)) : UnifyPhase)
+            else .failed) = .bound result rest') :
+    (store[id]? = some none ∧ ty.occursMVar id = false) ∧
+      store.solve id ty = result ∧
+      rest.map (Constraint.substMVar id ty) = rest' := by
+  by_cases h : store[id]? = some none ∧ ty.occursMVar id = false
+  · rw [if_pos h] at run
+    injection run with resultEq restEq
+    exact ⟨h, resultEq, restEq⟩
+  · rw [if_neg h] at run
+    exact nomatch run
+
+private theorem MStore.solve_getElem?_eq {store : MStore} {id j : Nat} {ty : Ty}
+    (different : j ≠ id) :
+    (store.solve id ty)[j]? =
+      Option.map (Option.map (·.substMVar id ty)) store[j]? := by
+  simp only [MStore.solve]
+  rw [List.getElem?_set_ne (Ne.symm different), List.getElem?_map]
+
+private theorem MStore.solve_getElem?_self {store : MStore} {id : Nat} {ty : Ty}
+    (bound : id < store.length) :
+    (store.solve id ty)[id]? = some (some ty) := by
+  simp only [MStore.solve]
+  rw [List.getElem?_set_self (by simpa using bound)]
+
+private theorem Ty.occursMVar_iff_mem (ty : Ty) (id : Nat) :
+    ty.occursMVar id = true ↔ id ∈ ty.mvars := by
+  induction ty with
+  | prim => simp [Ty.occursMVar, Ty.mvars]
+  | bvar => simp [Ty.occursMVar, Ty.mvars]
+  | rigid => simp [Ty.occursMVar, Ty.mvars]
+  | arrow domain codomain domainIH codomainIH =>
+      simp only [Ty.occursMVar, Ty.mvars, Bool.or_eq_true, List.mem_dedup,
+        List.mem_append]
+      rw [domainIH, codomainIH]
+  | mvar other =>
+      simp only [Ty.occursMVar, Ty.mvars, List.mem_singleton, beq_iff_eq]
+      exact eq_comm
+
+private theorem Ty.mem_mvars_substMVar' {ty replacement : Ty}
+    {target id : Nat}
+    (member : id ∈ (ty.substMVar target replacement).mvars) :
+    (id ≠ target ∧ id ∈ ty.mvars) ∨ id ∈ replacement.mvars := by
+  induction ty with
+  | prim => simp [Ty.substMVar, Ty.mvars] at member
+  | bvar => simp [Ty.substMVar, Ty.mvars] at member
+  | rigid => simp [Ty.substMVar, Ty.mvars] at member
+  | arrow domain codomain domainIH codomainIH =>
+      have split :
+          id ∈ (domain.substMVar target replacement).mvars ∨
+            id ∈ (codomain.substMVar target replacement).mvars := by
+        simpa [Ty.substMVar, Ty.mvars, List.mem_dedup, List.mem_append] using member
+      rcases split with inside | inside
+      · rcases domainIH inside with ⟨different, old⟩ | new
+        · exact Or.inl ⟨different, by simp [Ty.mvars, List.mem_dedup, old]⟩
+        · exact Or.inr new
+      · rcases codomainIH inside with ⟨different, old⟩ | new
+        · exact Or.inl ⟨different, by simp [Ty.mvars, List.mem_dedup, old]⟩
+        · exact Or.inr new
+  | mvar other =>
+      by_cases selected : other = target
+      · simp [Ty.substMVar, selected] at member
+        exact Or.inr member
+      · simp [Ty.substMVar, selected, Ty.mvars] at member
+        subst member
+        exact Or.inl ⟨selected, by simp [Ty.mvars]⟩
+
+private theorem MStore.lookup_none_of_apply_mvar_eq {store : MStore}
+    (norm : store.Normalized) {id : Nat}
+    (equal : store.apply (.mvar id) = .mvar id) :
+    store.lookup id = none := by
+  cases lookupEq : store.lookup id with
+  | none => rfl
+  | some replacement =>
+      have applied : store.apply (.mvar id) = replacement := by
+        simp only [MStore.apply]
+        rw [lookupEq]
+        rfl
+      have replacementEq : replacement = .mvar id := by
+        rw [applied] at equal
+        exact equal
+      have entry : store[id]? = some (some replacement) := by
+        apply Option.join_eq_some_iff.mp
+        simpa [MStore.lookup] using lookupEq
+      have member : id ∈ replacement.mvars := by
+        rw [replacementEq]
+        simp [Ty.mvars]
+      have noneLookup := norm replacement (List.mem_of_getElem? entry) id member
+      rw [lookupEq] at noneLookup
+      exact nomatch noneLookup
+
+private theorem MStore.lookup_none_of_resolved {store : MStore} {ty : Ty}
+    (norm : store.Normalized) (resolved : store.apply ty = ty)
+    {id : Nat} (member : id ∈ ty.mvars) :
+    store.lookup id = none := by
+  induction ty with
+  | prim => simp [Ty.mvars] at member
+  | bvar => simp [Ty.mvars] at member
+  | rigid => simp [Ty.mvars] at member
+  | arrow domain codomain domainIH codomainIH =>
+      have split : id ∈ domain.mvars ∨ id ∈ codomain.mvars := by
+        simpa [Ty.mvars, List.mem_dedup, List.mem_append] using member
+      have components : store.apply domain = domain ∧
+          store.apply codomain = codomain := by
+        simpa [MStore.apply] using resolved
+      rcases split with inside | inside
+      · exact domainIH components.1 inside
+      · exact codomainIH components.2 inside
+  | mvar other =>
+      have same : id = other := by simpa [Ty.mvars] using member
+      subst same
+      exact MStore.lookup_none_of_apply_mvar_eq norm resolved
+
+private theorem MStore.apply_eq_self_of_mvars_unsolved (store : MStore) (ty : Ty)
+    (unsolved : ∀ id ∈ ty.mvars, store.lookup id = none) :
+    store.apply ty = ty := by
+  induction ty with
+  | prim => rfl
+  | bvar => rfl
+  | rigid => rfl
+  | arrow domain codomain domainIH codomainIH =>
+      have domainUnsolved : ∀ id ∈ domain.mvars, store.lookup id = none := by
+        intro id inside
+        apply unsolved id
+        simp only [Ty.mvars, List.mem_dedup, List.mem_append]
+        exact Or.inl inside
+      have codomainUnsolved : ∀ id ∈ codomain.mvars, store.lookup id = none := by
+        intro id inside
+        apply unsolved id
+        simp only [Ty.mvars, List.mem_dedup, List.mem_append]
+        exact Or.inr inside
+      simp only [MStore.apply]
+      rw [domainIH domainUnsolved, codomainIH codomainUnsolved]
+  | mvar id =>
+      have noneLookup := unsolved id (by simp [Ty.mvars])
+      simp only [MStore.apply, noneLookup]
+      rfl
+
+private theorem MStore.lookup_solve_of_ne (store : MStore) (id k : Nat)
+    (ty : Ty) (different : k ≠ id)
+    (noneLookup : store.lookup k = none) :
+    (store.solve id ty).lookup k = none := by
+  simp only [MStore.lookup] at noneLookup ⊢
+  rw [MStore.solve_getElem?_eq different]
+  cases entry : store[k]? with
+  | none => rfl
+  | some option =>
+      cases option with
+      | none => rfl
+      | some replacement =>
+          rw [entry] at noneLookup
+          exact nomatch noneLookup
+
+private theorem MStore.solve_normalized {store : MStore} {id : Nat} {ty : Ty}
+    (norm : store.Normalized) (guard : store[id]? = some none)
+    (occurs : ty.occursMVar id = false)
+    (resolved : store.apply ty = ty) :
+    (store.solve id ty).Normalized := by
+  intro entry member key keyMember
+  rcases List.mem_or_eq_of_mem_set member with old | selected
+  · rcases List.mem_map.mp old with ⟨previous, inStore, mapped⟩
+    cases previous with
+    | none => simp at mapped
+    | some previousTy =>
+        change some (previousTy.substMVar id ty) = some entry at mapped
+        injection mapped with entryEq
+        subst entry
+        rcases Ty.mem_mvars_substMVar' keyMember with
+          ⟨different, oldMember⟩ | newMember
+        · exact MStore.lookup_solve_of_ne store id key ty different
+            (norm previousTy inStore key oldMember)
+        · have keyLookup := MStore.lookup_none_of_resolved norm resolved newMember
+          have different : key ≠ id := by
+            intro same
+            subst same
+            have occursTrue := (Ty.occursMVar_iff_mem ty key).mpr newMember
+            rw [occurs] at occursTrue
+            exact nomatch occursTrue
+          exact MStore.lookup_solve_of_ne store id key ty different keyLookup
+  · injection selected with entryEq
+    subst entry
+    have keyLookup := MStore.lookup_none_of_resolved norm resolved keyMember
+    have different : key ≠ id := by
+      intro same
+      subst same
+      have occursTrue := (Ty.occursMVar_iff_mem ty key).mpr keyMember
+      rw [occurs] at occursTrue
+      exact nomatch occursTrue
+    exact MStore.lookup_solve_of_ne store id key ty different keyLookup
+
+private theorem MStore.apply_idem {store : MStore} (norm : store.Normalized)
+    (ty : Ty) : store.apply (store.apply ty) = store.apply ty := by
+  induction ty with
+  | prim => rfl
+  | bvar => rfl
+  | rigid => rfl
+  | arrow domain codomain domainIH codomainIH =>
+      simp only [MStore.apply]
+      rw [domainIH, codomainIH]
+  | mvar id =>
+      simp only [MStore.apply]
+      cases lookupEq : store.lookup id with
+      | none => simp [MStore.apply, lookupEq]
+      | some replacement =>
+          change store.apply replacement = replacement
+          apply MStore.apply_eq_self_of_mvars_unsolved
+          intro key member
+          have entry : store[id]? = some (some replacement) := by
+            apply Option.join_eq_some_iff.mp
+            simpa [MStore.lookup] using lookupEq
+          exact norm replacement (List.mem_of_getElem? entry) key member
+
+private abbrev ConstraintsResolved (store : MStore)
+    (constraints : List Constraint) : Prop :=
+  ∀ constraint ∈ constraints,
+    store.apply constraint.1 = constraint.1 ∧
+      store.apply constraint.2 = constraint.2
+
+private theorem ConstraintsResolved.arrows {store : MStore}
+    {leftDomain leftCodomain rightDomain rightCodomain : Ty}
+    {rest : List Constraint}
+    (resolved : ConstraintsResolved store
+      ((Ty.arrow leftDomain leftCodomain,
+        Ty.arrow rightDomain rightCodomain) :: rest)) :
+    ConstraintsResolved store
+      ((leftDomain, rightDomain) :: (leftCodomain, rightCodomain) :: rest) := by
+  intro constraint member
+  have head := resolved
+    (Ty.arrow leftDomain leftCodomain, Ty.arrow rightDomain rightCodomain)
+    (by simp)
+  have leftParts : store.apply leftDomain = leftDomain ∧
+      store.apply leftCodomain = leftCodomain := by
+    simpa [MStore.apply] using head.1
+  have rightParts : store.apply rightDomain = rightDomain ∧
+      store.apply rightCodomain = rightCodomain := by
+    simpa [MStore.apply] using head.2
+  rcases List.mem_cons.mp member with rfl | member
+  · exact ⟨leftParts.1, rightParts.1⟩
+  · rcases List.mem_cons.mp member with rfl | member
+    · exact ⟨leftParts.2, rightParts.2⟩
+    · exact resolved constraint (by simp [member])
+
+private theorem MStore.apply_subst_resolved {store : MStore} {id : Nat} {ty : Ty}
+    (norm : store.Normalized) (occurs : ty.occursMVar id = false)
+    (tyResolved : store.apply ty = ty) {source : Ty}
+    (sourceResolved : store.apply source = source) :
+    (store.solve id ty).apply (source.substMVar id ty) =
+      source.substMVar id ty := by
+  apply MStore.apply_eq_self_of_mvars_unsolved
+  intro key member
+  rcases Ty.mem_mvars_substMVar' member with ⟨different, oldMember⟩ | newMember
+  · exact MStore.lookup_solve_of_ne store id key ty different
+      (MStore.lookup_none_of_resolved norm sourceResolved oldMember)
+  · have keyLookup := MStore.lookup_none_of_resolved norm tyResolved newMember
+    have different : key ≠ id := by
+      intro same
+      subst same
+      have occursTrue := (Ty.occursMVar_iff_mem ty key).mpr newMember
+      rw [occurs] at occursTrue
+      exact nomatch occursTrue
+    exact MStore.lookup_solve_of_ne store id key ty different keyLookup
+
+private theorem unifyPhase_finished_eq
+    {store result : MStore} {fuel : Nat} {constraints : List Constraint}
+    (run : unifyPhase store fuel constraints = .finished result) :
+    result = store := by
+  induction fuel generalizing constraints with
+  | zero =>
+      cases constraints with
+      | nil =>
+          simp only [unifyPhase, UnifyPhase.finished.injEq] at run
+          subst result
+          rfl
+      | cons constraint rest => simp [unifyPhase] at run
+  | succ fuel ih =>
+      cases constraints with
+      | nil =>
+          simp only [unifyPhase, UnifyPhase.finished.injEq] at run
+          subst result
+          rfl
+      | cons constraint rest =>
+          obtain ⟨left, right⟩ := constraint
+          rw [unifyPhase_cons_eq] at run
+          by_cases equal : left = right
+          · rw [if_pos equal] at run
+            exact ih run
+          · rw [if_neg equal] at run
+            cases left <;> cases right <;> simp only [] at run
+            all_goals first
+              | (exact ih run)
+              | (exact (not_finished_of_bound_if run).elim)
+              | (cases run)
+
+private theorem unifyPhase_finished_normalized
+    {store result : MStore} {fuel : Nat} {constraints : List Constraint}
+    (norm : store.Normalized)
+    (resolved : ConstraintsResolved store constraints)
+    (run : unifyPhase store fuel constraints = .finished result) :
+    result.Normalized := by
+  rw [unifyPhase_finished_eq run]
+  exact norm
+
+private theorem bound_branch_normalized
+    {store result : MStore} {id : Nat} {ty : Ty}
+    {rest rest' : List Constraint}
+    (norm : store.Normalized)
+    (run : (if store[id]? = some none ∧ ty.occursMVar id = false then
+              (UnifyPhase.bound (store.solve id ty)
+                (rest.map (Constraint.substMVar id ty)) : UnifyPhase)
+            else .failed) = .bound result rest')
+    (tyResolved : store.apply ty = ty)
+    (restResolved : ConstraintsResolved store rest) :
+    result.Normalized ∧ ConstraintsResolved result rest' := by
+  obtain ⟨guard, resultEq, restEq⟩ := bound_guard_data run
+  subst resultEq
+  subst restEq
+  refine ⟨MStore.solve_normalized norm guard.1 guard.2 tyResolved, ?_⟩
+  intro current inRest
+  rcases List.mem_map.mp inRest with ⟨old, inOld, rfl⟩
+  exact ⟨MStore.apply_subst_resolved norm guard.2 tyResolved
+           (restResolved old inOld).1,
+         MStore.apply_subst_resolved norm guard.2 tyResolved
+           (restResolved old inOld).2⟩
+
+private theorem unifyPhase_bound_normalized
+    {store result : MStore} {fuel : Nat}
+    {constraints rest : List Constraint}
+    (norm : store.Normalized)
+    (resolved : ConstraintsResolved store constraints)
+    (run : unifyPhase store fuel constraints = .bound result rest) :
+    result.Normalized ∧ ConstraintsResolved result rest := by
+  induction fuel generalizing constraints with
+  | zero =>
+      cases constraints with
+      | nil => simp [unifyPhase] at run
+      | cons constraint rest => simp [unifyPhase] at run
+  | succ fuel ih =>
+      cases constraints with
+      | nil => simp [unifyPhase] at run
+      | cons constraint rest =>
+          obtain ⟨left, right⟩ := constraint
+          have head := resolved (left, right) (by simp)
+          have restResolved : ConstraintsResolved store rest := by
+            intro current inRest
+            exact resolved current (by simp [inRest])
+          rw [unifyPhase_cons_eq] at run
+          by_cases equal : left = right
+          · rw [if_pos equal] at run
+            exact ih restResolved run
+          · rw [if_neg equal] at run
+            cases left <;> cases right <;> simp only [] at run
+            all_goals first
+              | (exact ih (ConstraintsResolved.arrows resolved) run)
+              | (exact bound_branch_normalized norm run
+                  (by first | exact head.1 | exact head.2) restResolved)
+              | (cases run)
+
+private theorem unifyLoop_normalized
+    {fuel : Nat} {store : MStore} {constraints : List Constraint}
+    {result : MStore}
+    (norm : store.Normalized)
+    (resolved : ConstraintsResolved store constraints)
+    (run : unifyLoop fuel store constraints = some result) :
+    result.Normalized := by
+  induction fuel generalizing store constraints with
+  | zero => simp [unifyLoop] at run
+  | succ fuel ih =>
+      rw [unifyLoop_succ] at run
+      split at run
+      · rename_i finishedRun
+        injection run with resultEq
+        subst resultEq
+        exact unifyPhase_finished_normalized norm resolved finishedRun
+      · rename_i boundRun
+        obtain ⟨resultNorm, restResolved⟩ :=
+          unifyPhase_bound_normalized norm resolved boundRun
+        exact ih resultNorm restResolved run
+      · exact nomatch run
+      · exact nomatch run
+
+theorem MStore.unify_normalized
+    {store result : MStore} {left right : Ty}
+    (normalized : store.Normalized)
+    (run : store.unify left right = some result) :
+    result.Normalized := by
+  change unifyLoop (store.unsolved + 1) store
+    [(store.apply left, store.apply right)] = some result at run
+  refine unifyLoop_normalized normalized ?_ run
+  intro constraint member
+  simp only [List.mem_singleton] at member
+  subst member
+  exact ⟨MStore.apply_idem normalized left, MStore.apply_idem normalized right⟩
+
+private def MStore.Extends (store result : MStore) : Prop :=
+  ∀ ty, result.apply (store.apply ty) = result.apply ty
+
+private theorem MStore.extends_refl {store : MStore} (norm : store.Normalized) :
+    MStore.Extends store store :=
+  fun ty => MStore.apply_idem norm ty
+
+private theorem MStore.extends_trans {first second third : MStore}
+    (firstSecond : MStore.Extends first second)
+    (secondThird : MStore.Extends second third) :
+    MStore.Extends first third := by
+  intro ty
+  calc
+    third.apply (first.apply ty) =
+        third.apply (second.apply (first.apply ty)) :=
+      (secondThird (first.apply ty)).symm
+    _ = third.apply (second.apply ty) := by rw [firstSecond ty]
+    _ = third.apply ty := secondThird ty
+
+private theorem MStore.solve_apply {store : MStore} (norm : store.Normalized)
+    {id : Nat} {ty : Ty} (guard : store[id]? = some none) (source : Ty) :
+    (store.solve id ty).apply source =
+      (store.apply source).substMVar id ty := by
+  induction source with
+  | prim => rfl
+  | bvar => rfl
+  | rigid => rfl
+  | arrow domain codomain domainIH codomainIH =>
+      simp only [MStore.apply, Ty.substMVar, domainIH, codomainIH]
+  | mvar key =>
+      cases entry : store[key]? with
+      | none =>
+          have different : key ≠ id := by
+            intro same
+            subst same
+            rw [guard] at entry
+            exact nomatch entry
+          have keyLookup : store.lookup key = none := by
+            simp [MStore.lookup, entry]
+          have solveLookup : (store.solve id ty).lookup key = none :=
+            MStore.lookup_solve_of_ne store id key ty different keyLookup
+          simp [MStore.apply, keyLookup, solveLookup, Ty.substMVar, different]
+      | some option =>
+          cases option with
+          | none =>
+              by_cases same : key = id
+              · subst key
+                have bound : id < store.length := by
+                  by_contra outOfRange
+                  have impossible : store[id]? = none :=
+                    List.getElem?_eq_none_iff.mpr (by omega)
+                  rw [guard] at impossible
+                  exact nomatch impossible
+                have solveEntry := MStore.solve_getElem?_self (store := store)
+                  (id := id) (ty := ty) bound
+                have oldLookup : store.lookup id = none := by
+                  simp [MStore.lookup, entry]
+                have solveLookup : (store.solve id ty).lookup id = some ty := by
+                  simp [MStore.lookup, solveEntry]
+                simp only [MStore.apply]
+                rw [solveLookup, oldLookup]
+                simp [Ty.substMVar]
+              · have keyLookup : store.lookup key = none := by
+                  simp [MStore.lookup, entry]
+                have solveLookup : (store.solve id ty).lookup key = none :=
+                  MStore.lookup_solve_of_ne store id key ty same keyLookup
+                simp [MStore.apply, keyLookup, solveLookup, Ty.substMVar, same]
+          | some previous =>
+              have different : key ≠ id := by
+                intro same
+                subst same
+                rw [guard] at entry
+                exact nomatch entry
+              have solveEntry : (store.solve id ty)[key]? =
+                  some (some (previous.substMVar id ty)) := by
+                rw [MStore.solve_getElem?_eq different]
+                rw [entry]
+                rfl
+              simp only [MStore.apply, MStore.lookup]
+              rw [solveEntry]
+              simp [entry, Ty.substMVar]
+
+private theorem MStore.extends_solve {store : MStore} (norm : store.Normalized)
+    {id : Nat} {ty : Ty} (guard : store[id]? = some none) :
+    MStore.Extends store (store.solve id ty) := by
+  intro source
+  rw [MStore.solve_apply norm guard (store.apply source),
+    MStore.solve_apply norm guard source, MStore.apply_idem norm source]
+
+private theorem MStore.solve_apply_eq_self {store : MStore} (norm : store.Normalized)
+    {id : Nat} {ty : Ty} (occurs : ty.occursMVar id = false)
+    (resolved : store.apply ty = ty) :
+    (store.solve id ty).apply ty = ty := by
+  apply MStore.apply_eq_self_of_mvars_unsolved
+  intro key member
+  have keyLookup := MStore.lookup_none_of_resolved norm resolved member
+  have different : key ≠ id := by
+    intro same
+    subst same
+    have occursTrue := (Ty.occursMVar_iff_mem ty key).mpr member
+    rw [occurs] at occursTrue
+    exact nomatch occursTrue
+  exact MStore.lookup_solve_of_ne store id key ty different keyLookup
+
+private theorem MStore.apply_subst_eq {store result : MStore}
+    (extension : MStore.Extends store result) {id : Nat} {ty : Ty}
+    (solveEntry : store.apply (.mvar id) = ty)
+    (tyFixed : store.apply ty = ty) (source : Ty) :
+    result.apply (source.substMVar id ty) = result.apply source := by
+  induction source with
+  | prim => rfl
+  | bvar => rfl
+  | rigid => rfl
+  | arrow domain codomain domainIH codomainIH =>
+      simp only [Ty.substMVar, MStore.apply, domainIH, codomainIH]
+  | mvar key =>
+      by_cases same : key = id
+      · subst key
+        simp only [Ty.substMVar, if_pos rfl]
+        have extended := extension (Ty.mvar id)
+        rw [solveEntry] at extended
+        exact extended
+      · simp only [Ty.substMVar, if_neg same]
+
+private theorem MStore.apply_arrow_eq_of_forall {result : MStore}
+    {leftDomain leftCodomain rightDomain rightCodomain : Ty}
+    {rest : List Constraint}
+    (solves : ∀ constraint ∈
+      ((leftDomain, rightDomain) :: (leftCodomain, rightCodomain) :: rest),
+      result.apply constraint.1 = result.apply constraint.2) :
+    result.apply (Ty.arrow leftDomain leftCodomain) =
+      result.apply (Ty.arrow rightDomain rightCodomain) := by
+  have domainEq := solves (leftDomain, rightDomain) (by simp)
+  have codomainEq := solves (leftCodomain, rightCodomain) (by simp)
+  simp only [MStore.apply, domainEq, codomainEq]
+
+private theorem unifyPhase_finished_solves
+    {store result : MStore} {fuel : Nat} {constraints : List Constraint}
+    (run : unifyPhase store fuel constraints = .finished result) :
+    ∀ constraint ∈ constraints,
+      store.apply constraint.1 = store.apply constraint.2 := by
+  induction fuel generalizing constraints with
+  | zero =>
+      cases constraints with
+      | nil => simp
+      | cons constraint rest => simp [unifyPhase] at run
+  | succ fuel ih =>
+      cases constraints with
+      | nil => simp
+      | cons constraint rest =>
+          obtain ⟨left, right⟩ := constraint
+          rw [unifyPhase_cons_eq] at run
+          by_cases equal : left = right
+          · rw [if_pos equal] at run
+            intro current member
+            rcases List.mem_cons.mp member with rfl | member
+            · rw [equal]
+            · exact ih run current member
+          · rw [if_neg equal] at run
+            cases left <;> cases right <;> simp only [] at run
+            all_goals first
+              | (exact (not_finished_of_bound_if run).elim)
+              | (intro current member
+                 rcases List.mem_cons.mp member with rfl | member
+                 · exact MStore.apply_arrow_eq_of_forall
+                     (result := store) (solves := ih run)
+                 · exact ih run current (by simp [member]))
+              | (cases run)
+
+private theorem bound_branch_solves_left
+    {store current result : MStore} {id : Nat} {ty : Ty}
+    {rest rest' : List Constraint}
+    (norm : store.Normalized)
+    (run : (if store[id]? = some none ∧ ty.occursMVar id = false then
+              (UnifyPhase.bound (store.solve id ty)
+                (rest.map (Constraint.substMVar id ty)) : UnifyPhase)
+            else .failed) = .bound current rest')
+    (tyResolved : store.apply ty = ty)
+    (extension : MStore.Extends current result)
+    (restSolves : ∀ constraint ∈ rest',
+      result.apply constraint.1 = result.apply constraint.2) :
+    ∀ constraint ∈ ((Ty.mvar id, ty) :: rest),
+      result.apply constraint.1 = result.apply constraint.2 := by
+  obtain ⟨guard, currentEq, restEq⟩ := bound_guard_data run
+  subst currentEq
+  subst restEq
+  have bound : id < store.length := by
+    by_contra outOfRange
+    have impossible := guard.1
+    rw [List.getElem?_eq_none_iff.mpr (by omega)] at impossible
+    exact nomatch impossible
+  have fixed := MStore.solve_apply_eq_self norm guard.2 tyResolved
+  have solveEntry : (store.solve id ty).apply (.mvar id) = ty := by
+    simp [MStore.apply, MStore.lookup, MStore.solve_getElem?_self bound]
+  intro constraint member
+  rcases List.mem_cons.mp member with rfl | member
+  · have extended := extension (Ty.mvar id)
+    rw [solveEntry] at extended
+    exact extended.symm
+  · have substituted := restSolves (Constraint.substMVar id ty constraint)
+      (List.mem_map_of_mem member)
+    simp only [Constraint.substMVar] at substituted
+    rw [MStore.apply_subst_eq extension solveEntry fixed constraint.1,
+      MStore.apply_subst_eq extension solveEntry fixed constraint.2]
+      at substituted
+    exact substituted
+
+private theorem bound_branch_solves_right
+    {store current result : MStore} {id : Nat} {ty : Ty}
+    {rest rest' : List Constraint}
+    (norm : store.Normalized)
+    (run : (if store[id]? = some none ∧ ty.occursMVar id = false then
+              (UnifyPhase.bound (store.solve id ty)
+                (rest.map (Constraint.substMVar id ty)) : UnifyPhase)
+            else .failed) = .bound current rest')
+    (tyResolved : store.apply ty = ty)
+    (extension : MStore.Extends current result)
+    (restSolves : ∀ constraint ∈ rest',
+      result.apply constraint.1 = result.apply constraint.2) :
+    ∀ constraint ∈ ((ty, Ty.mvar id) :: rest),
+      result.apply constraint.1 = result.apply constraint.2 := by
+  obtain ⟨guard, currentEq, restEq⟩ := bound_guard_data run
+  subst currentEq
+  subst restEq
+  have bound : id < store.length := by
+    by_contra outOfRange
+    have impossible := guard.1
+    rw [List.getElem?_eq_none_iff.mpr (by omega)] at impossible
+    exact nomatch impossible
+  have fixed := MStore.solve_apply_eq_self norm guard.2 tyResolved
+  have solveEntry : (store.solve id ty).apply (.mvar id) = ty := by
+    simp [MStore.apply, MStore.lookup, MStore.solve_getElem?_self bound]
+  intro constraint member
+  rcases List.mem_cons.mp member with rfl | member
+  · have extended := extension (Ty.mvar id)
+    rw [solveEntry] at extended
+    exact extended
+  · have substituted := restSolves (Constraint.substMVar id ty constraint)
+      (List.mem_map_of_mem member)
+    simp only [Constraint.substMVar] at substituted
+    rw [MStore.apply_subst_eq extension solveEntry fixed constraint.1,
+      MStore.apply_subst_eq extension solveEntry fixed constraint.2]
+      at substituted
+    exact substituted
+
+private theorem unifyPhase_bound_solves
+    {store current : MStore} {fuel : Nat}
+    {constraints rest : List Constraint} {result : MStore}
+    (norm : store.Normalized)
+    (resolved : ConstraintsResolved store constraints)
+    (run : unifyPhase store fuel constraints = .bound current rest)
+    (extension : MStore.Extends current result)
+    (restSolves : ∀ constraint ∈ rest,
+      result.apply constraint.1 = result.apply constraint.2) :
+    ∀ constraint ∈ constraints,
+      result.apply constraint.1 = result.apply constraint.2 := by
+  induction fuel generalizing constraints with
+  | zero =>
+      cases constraints with
+      | nil => simp [unifyPhase] at run
+      | cons constraint rest => simp [unifyPhase] at run
+  | succ fuel ih =>
+      cases constraints with
+      | nil => simp [unifyPhase] at run
+      | cons constraint rest =>
+          obtain ⟨left, right⟩ := constraint
+          have headResolved := resolved (left, right) (by simp)
+          have restResolved : ConstraintsResolved store rest := by
+            intro current inRest
+            exact resolved current (by simp [inRest])
+          rw [unifyPhase_cons_eq] at run
+          by_cases equal : left = right
+          · rw [if_pos equal] at run
+            intro current member
+            rcases List.mem_cons.mp member with rfl | member
+            · rw [equal]
+            · exact ih restResolved run current member
+          · rw [if_neg equal] at run
+            cases left <;> cases right <;> simp only [] at run
+            all_goals first
+              | (intro current member
+                 rcases List.mem_cons.mp member with rfl | member
+                 · exact MStore.apply_arrow_eq_of_forall
+                     (result := result)
+                     (solves := ih (ConstraintsResolved.arrows resolved) run)
+                 · exact ih (ConstraintsResolved.arrows resolved) run
+                     current (by simp [member]))
+              | (exact bound_branch_solves_left norm run
+                  (by first | exact headResolved.1 | exact headResolved.2)
+                  extension restSolves)
+              | (exact bound_branch_solves_right norm run
+                  headResolved.1 extension restSolves)
+              | (cases run)
+
+private theorem unifyPhase_bound_extends
+    {store current : MStore} {fuel : Nat}
+    {constraints rest : List Constraint}
+    (norm : store.Normalized)
+    (resolved : ConstraintsResolved store constraints)
+    (run : unifyPhase store fuel constraints = .bound current rest) :
+    MStore.Extends store current := by
+  induction fuel generalizing constraints with
+  | zero =>
+      cases constraints with
+      | nil => simp [unifyPhase] at run
+      | cons constraint rest => simp [unifyPhase] at run
+  | succ fuel ih =>
+      cases constraints with
+      | nil => simp [unifyPhase] at run
+      | cons constraint rest =>
+          obtain ⟨left, right⟩ := constraint
+          have restResolved : ConstraintsResolved store rest := by
+            intro current inRest
+            exact resolved current (by simp [inRest])
+          rw [unifyPhase_cons_eq] at run
+          by_cases equal : left = right
+          · rw [if_pos equal] at run
+            exact ih restResolved run
+          · rw [if_neg equal] at run
+            cases left <;> cases right <;> simp only [] at run
+            all_goals first
+              | (exact ih (ConstraintsResolved.arrows resolved) run)
+              | (obtain ⟨guard, currentEq, _⟩ := bound_guard_data run
+                 subst currentEq
+                 exact MStore.extends_solve norm guard.1)
+              | (cases run)
+
+private theorem unifyLoop_correct
+    {fuel : Nat} {store : MStore} {constraints : List Constraint}
+    {result : MStore}
+    (norm : store.Normalized)
+    (resolved : ConstraintsResolved store constraints)
+    (run : unifyLoop fuel store constraints = some result) :
+    MStore.Extends store result ∧
+      ∀ constraint ∈ constraints,
+        result.apply constraint.1 = result.apply constraint.2 := by
+  induction fuel generalizing store constraints with
+  | zero => simp [unifyLoop] at run
+  | succ fuel ih =>
+      rw [unifyLoop_succ] at run
+      split at run
+      · rename_i finishedRun
+        injection run with resultEq
+        subst resultEq
+        have storeEq := unifyPhase_finished_eq finishedRun
+        subst storeEq
+        exact ⟨MStore.extends_refl norm,
+          unifyPhase_finished_solves finishedRun⟩
+      · rename_i boundRun
+        obtain ⟨currentNorm, restResolved⟩ :=
+          unifyPhase_bound_normalized norm resolved boundRun
+        have extendsStoreCurrent := unifyPhase_bound_extends norm resolved boundRun
+        obtain ⟨extendsCurrentResult, restSolves⟩ :=
+          ih currentNorm restResolved run
+        exact ⟨MStore.extends_trans extendsStoreCurrent extendsCurrentResult,
+          unifyPhase_bound_solves norm resolved boundRun
+            extendsCurrentResult restSolves⟩
+      · exact nomatch run
+      · exact nomatch run
+
+/-- Solved form: after unifying, both sides resolve to the same type. -/
+theorem MStore.unify_apply_eq
+    {store result : MStore} {left right : Ty}
+    (normalized : store.Normalized)
+    (run : store.unify left right = some result) :
+    result.apply left = result.apply right := by
+  change unifyLoop (store.unsolved + 1) store
+    [(store.apply left, store.apply right)] = some result at run
+  have resolved : ConstraintsResolved store
+      [(store.apply left, store.apply right)] := by
+    intro constraint member
     simp only [List.mem_singleton] at member
-    subst constraint
-    exact ⟨leftScoped, rightScoped⟩
-  · exact run
+    subst member
+    exact ⟨MStore.apply_idem normalized left, MStore.apply_idem normalized right⟩
+  obtain ⟨extension, solves⟩ := unifyLoop_correct normalized resolved run
+  have equation := solves (store.apply left, store.apply right) (by simp)
+  rw [extension left, extension right] at equation
+  exact equation
+
+/-! ## Semantics -/
+
+private theorem Ty.realize_substMVar {valuation : MValuation}
+    {ty replacement : Ty} {target : Nat}
+    (agrees : valuation target = replacement.realize valuation) :
+    (ty.substMVar target replacement).realize valuation =
+      ty.realize valuation := by
+  induction ty with
+  | prim => rfl
+  | arrow domain codomain domainIH codomainIH =>
+      simp only [Ty.substMVar, Ty.realize]
+      rw [domainIH, codomainIH]
+  | bvar => rfl
+  | rigid => rfl
+  | mvar id =>
+      by_cases selected : id = target
+      · subst selected
+        simp only [Ty.substMVar, Ty.realize]
+        exact agrees.symm
+      · simp only [Ty.substMVar, if_neg selected, Ty.realize]
+
+private theorem Ty.realize_apply_eq {store : MStore} {valuation : MValuation}
+    {rigidCount : Nat} (models : store.Models rigidCount valuation)
+    {id : Nat} {replacement : Ty}
+    (entry : store[id]? = some (some replacement)) :
+    replacement.realize valuation = valuation id :=
+  (models.equation id replacement entry).symm
+
+/-- Resolving through the store is invisible in every model of it. -/
+theorem MStore.Models.realize_apply
+    {store : MStore} {valuation : MValuation} {rigidCount : Nat}
+    (models : store.Models rigidCount valuation) (ty : Ty) :
+    (store.apply ty).realize valuation = ty.realize valuation := by
+  induction ty with
+  | prim => rfl
+  | arrow domain codomain domainIH codomainIH =>
+      simp only [MStore.apply, Ty.realize]
+      rw [domainIH, codomainIH]
+  | bvar => rfl
+  | rigid => rfl
+  | mvar id =>
+      simp only [MStore.apply]
+      cases entry : store[id]? with
+      | none => simp [MStore.lookup, entry, Ty.realize]
+      | some option =>
+          cases option with
+          | none => simp [MStore.lookup, entry, Ty.realize]
+          | some replacement =>
+              simp only [MStore.lookup, entry, Option.join, Ty.realize]
+              exact Ty.realize_apply_eq models entry
+
+private abbrev ConstraintsRealized (valuation : MValuation)
+    (constraints : List Constraint) : Prop :=
+  ∀ constraint ∈ constraints,
+    constraint.1.realize valuation = constraint.2.realize valuation
+
+private theorem ConstraintsRealized.cons_of_equal {valuation : MValuation}
+    {left right : Ty} {rest : List Constraint}
+    (equal : left = right)
+    (restRealized : ConstraintsRealized valuation rest) :
+    ConstraintsRealized valuation ((left, right) :: rest) := by
+  intro constraint member
+  rcases List.mem_cons.mp member with rfl | member
+  · simp [equal]
+  · exact restRealized constraint member
+
+private theorem ConstraintsRealized.arrows {valuation : MValuation}
+    {leftDomain leftCodomain rightDomain rightCodomain : Ty}
+    {rest : List Constraint}
+    (realized : ConstraintsRealized valuation
+      ((leftDomain, rightDomain) :: (leftCodomain, rightCodomain) :: rest)) :
+    ConstraintsRealized valuation
+      ((Ty.arrow leftDomain leftCodomain,
+        Ty.arrow rightDomain rightCodomain) :: rest) := by
+  intro constraint member
+  rcases List.mem_cons.mp member with rfl | member
+  · have domainRealized := realized (leftDomain, rightDomain) (by simp)
+    have codomainRealized := realized (leftCodomain, rightCodomain) (by simp)
+    simp only [Ty.realize, domainRealized, codomainRealized]
+  · exact realized constraint (by simp [member])
+
+private theorem MStore.models_solve {store : MStore} {id : Nat} {ty : Ty}
+    {rigidCount : Nat} {valuation : MValuation}
+    (models : store.Models rigidCount valuation)
+    (agrees : valuation id = ty.realize valuation) :
+    (store.solve id ty).Models rigidCount valuation := by
+  refine ⟨?_, ?_⟩
+  · simpa [MStore.solve] using models.valuationWF
+  · intro j entry entryEq
+    by_cases same : j = id
+    · subst j
+      have boundSolve : id < (store.solve id ty).length := by
+        by_contra outOfRange
+        rw [List.getElem?_eq_none_iff.mpr (by omega)] at entryEq
+        exact nomatch entryEq
+      have bound : id < store.length := by simpa [MStore.solve] using boundSolve
+      rw [MStore.solve_getElem?_self bound] at entryEq
+      have entryTy : entry = ty := by
+        simpa using entryEq.symm
+      subst entry
+      exact agrees
+    · have mapped := MStore.solve_getElem?_eq (store := store) (id := id)
+        (ty := ty) (j := j) same
+      rw [mapped] at entryEq
+      rw [Option.map_eq_some_iff] at entryEq
+      obtain ⟨previous, storeEntry, mappedEq⟩ := entryEq
+      cases previous with
+      | none => simp at mappedEq
+      | some previousTy =>
+          have entryEq' : entry = previousTy.substMVar id ty := by
+            change some (previousTy.substMVar id ty) = some entry at mappedEq
+            simpa using mappedEq.symm
+          subst entry
+          have solved := models.equation j previousTy storeEntry
+          rw [Ty.realize_substMVar agrees]
+          exact solved
+
+private theorem MStore.models_of_solve {store : MStore} {id : Nat} {ty : Ty}
+    {rigidCount : Nat} {valuation : MValuation}
+    (models : (store.solve id ty).Models rigidCount valuation)
+    (guard : store[id]? = some none)
+    (agrees : valuation id = ty.realize valuation) :
+    store.Models rigidCount valuation := by
+  refine ⟨?_, ?_⟩
+  · simpa [MStore.solve] using models.valuationWF
+  · intro j entry entryEq
+    by_cases same : j = id
+    · subst j
+      rw [guard] at entryEq
+      exact nomatch entryEq
+    · have solveEntry : (store.solve id ty)[j]? =
+          some (some (entry.substMVar id ty)) := by
+        rw [MStore.solve_getElem?_eq same]
+        rw [entryEq]
+        rfl
+      have solved := models.equation j (entry.substMVar id ty) solveEntry
+      rw [Ty.realize_substMVar agrees] at solved
+      exact solved
+
+private theorem bound_branch_sound_left
+    {store result : MStore} {id : Nat} {ty : Ty}
+    {rest rest' : List Constraint} {rigidCount : Nat}
+    {valuation : MValuation}
+    (run : (if store[id]? = some none ∧ ty.occursMVar id = false then
+              (UnifyPhase.bound (store.solve id ty)
+                (rest.map (Constraint.substMVar id ty)) : UnifyPhase)
+            else .failed) = .bound result rest')
+    (models : result.Models rigidCount valuation)
+    (restRealized : ConstraintsRealized valuation rest') :
+    store.Models rigidCount valuation ∧
+      ConstraintsRealized valuation ((Ty.mvar id, ty) :: rest) := by
+  obtain ⟨allocated, resultEq, restEq⟩ := bound_guard_data run
+  subst resultEq
+  subst restEq
+  have bound : id < store.length := by
+    by_contra outOfRange
+    have impossible := allocated.1
+    rw [List.getElem?_eq_none_iff.mpr (by omega)] at impossible
+    exact nomatch impossible
+  have agrees : valuation id = ty.realize valuation :=
+    models.equation id ty (MStore.solve_getElem?_self bound)
+  refine ⟨MStore.models_of_solve models allocated.1 agrees, ?_⟩
+  intro constraint member
+  rcases List.mem_cons.mp member with rfl | member
+  · simpa [Ty.realize] using agrees
+  · have substituted := restRealized (Constraint.substMVar id ty constraint)
+      (List.mem_map_of_mem member)
+    simp only [Constraint.substMVar] at substituted
+    rw [Ty.realize_substMVar agrees, Ty.realize_substMVar agrees] at substituted
+    exact substituted
+
+private theorem bound_branch_sound_right
+    {store result : MStore} {id : Nat} {ty : Ty}
+    {rest rest' : List Constraint} {rigidCount : Nat}
+    {valuation : MValuation}
+    (run : (if store[id]? = some none ∧ ty.occursMVar id = false then
+              (UnifyPhase.bound (store.solve id ty)
+                (rest.map (Constraint.substMVar id ty)) : UnifyPhase)
+            else .failed) = .bound result rest')
+    (models : result.Models rigidCount valuation)
+    (restRealized : ConstraintsRealized valuation rest') :
+    store.Models rigidCount valuation ∧
+      ConstraintsRealized valuation ((ty, Ty.mvar id) :: rest) := by
+  obtain ⟨allocated, resultEq, restEq⟩ := bound_guard_data run
+  subst resultEq
+  subst restEq
+  have bound : id < store.length := by
+    by_contra outOfRange
+    have impossible := allocated.1
+    rw [List.getElem?_eq_none_iff.mpr (by omega)] at impossible
+    exact nomatch impossible
+  have agrees : valuation id = ty.realize valuation :=
+    models.equation id ty (MStore.solve_getElem?_self bound)
+  refine ⟨MStore.models_of_solve models allocated.1 agrees, ?_⟩
+  intro constraint member
+  rcases List.mem_cons.mp member with rfl | member
+  · simpa [Ty.realize] using agrees.symm
+  · have substituted := restRealized (Constraint.substMVar id ty constraint)
+      (List.mem_map_of_mem member)
+    simp only [Constraint.substMVar] at substituted
+    rw [Ty.realize_substMVar agrees, Ty.realize_substMVar agrees] at substituted
+    exact substituted
+
+private theorem unifyPhase_sound_finished
+    {store result : MStore} {fuel : Nat} {constraints : List Constraint}
+    {rigidCount : Nat} {valuation : MValuation}
+    (run : unifyPhase store fuel constraints = .finished result)
+    (models : result.Models rigidCount valuation) :
+    store.Models rigidCount valuation ∧
+      ConstraintsRealized valuation constraints := by
+  induction fuel generalizing constraints with
+  | zero =>
+      cases constraints with
+      | nil =>
+          simp only [unifyPhase, UnifyPhase.finished.injEq] at run
+          subst result
+          exact ⟨models, by intro constraint member; simp at member⟩
+      | cons constraint rest => simp [unifyPhase] at run
+  | succ fuel ih =>
+      cases constraints with
+      | nil =>
+          simp only [unifyPhase, UnifyPhase.finished.injEq] at run
+          subst result
+          exact ⟨models, by intro constraint member; simp at member⟩
+      | cons constraint rest =>
+          obtain ⟨left, right⟩ := constraint
+          rw [unifyPhase_cons_eq] at run
+          by_cases equal : left = right
+          · rw [if_pos equal] at run
+            obtain ⟨storeModels, restRealized⟩ := ih run
+            exact ⟨storeModels,
+              ConstraintsRealized.cons_of_equal equal restRealized⟩
+          · rw [if_neg equal] at run
+            cases left <;> cases right <;> simp only [] at run
+            all_goals first
+              | (obtain ⟨storeModels, realized⟩ := ih run
+                 exact ⟨storeModels, ConstraintsRealized.arrows realized⟩)
+              | (exact (not_finished_of_bound_if run).elim)
+              | (cases run)
+
+private theorem unifyPhase_sound_bound
+    {store result : MStore} {fuel : Nat}
+    {constraints rest : List Constraint}
+    {rigidCount : Nat} {valuation : MValuation}
+    (run : unifyPhase store fuel constraints = .bound result rest)
+    (models : result.Models rigidCount valuation)
+    (restRealized : ConstraintsRealized valuation rest) :
+    store.Models rigidCount valuation ∧
+      ConstraintsRealized valuation constraints := by
+  induction fuel generalizing constraints with
+  | zero =>
+      cases constraints with
+      | nil => simp [unifyPhase] at run
+      | cons constraint rest => simp [unifyPhase] at run
+  | succ fuel ih =>
+      cases constraints with
+      | nil => simp [unifyPhase] at run
+      | cons constraint rest =>
+          obtain ⟨left, right⟩ := constraint
+          rw [unifyPhase_cons_eq] at run
+          by_cases equal : left = right
+          · rw [if_pos equal] at run
+            obtain ⟨storeModels, restRealized'⟩ := ih run
+            exact ⟨storeModels,
+              ConstraintsRealized.cons_of_equal equal restRealized'⟩
+          · rw [if_neg equal] at run
+            cases left <;> cases right <;> simp only [] at run
+            all_goals first
+              | (obtain ⟨storeModels, realized⟩ := ih run
+                 exact ⟨storeModels, ConstraintsRealized.arrows realized⟩)
+              | (exact bound_branch_sound_left run models restRealized)
+              | (exact bound_branch_sound_right run models restRealized)
+              | (cases run)
+
+private theorem unifyLoop_sound
+    {fuel : Nat} {store : MStore} {constraints : List Constraint}
+    {result : MStore} {rigidCount : Nat} {valuation : MValuation}
+    (run : unifyLoop fuel store constraints = some result)
+    (models : result.Models rigidCount valuation) :
+    store.Models rigidCount valuation ∧
+      ConstraintsRealized valuation constraints := by
+  induction fuel generalizing store constraints with
+  | zero => simp [unifyLoop] at run
+  | succ fuel ih =>
+      rw [unifyLoop_succ] at run
+      split at run
+      · rename_i finishedRun
+        injection run with resultEq
+        subst resultEq
+        exact unifyPhase_sound_finished finishedRun models
+      · rename_i boundRun
+        obtain ⟨boundModels, restRealized⟩ := ih run
+        exact unifyPhase_sound_bound boundRun boundModels restRealized
+      · exact nomatch run
+      · exact nomatch run
+
+/-- Soundness: every model of the result models the input store and equates
+the two types. -/
+theorem MStore.unify_sound
+    {store result : MStore} {left right : Ty}
+    {rigidCount : Nat} {valuation : MValuation}
+    (run : store.unify left right = some result)
+    (models : result.Models rigidCount valuation) :
+    store.Models rigidCount valuation ∧
+      left.realize valuation = right.realize valuation := by
+  change unifyLoop (store.unsolved + 1) store
+    [(store.apply left, store.apply right)] = some result at run
+  obtain ⟨storeModels, realized⟩ := unifyLoop_sound run models
+  refine ⟨storeModels, ?_⟩
+  have equation := realized (store.apply left, store.apply right) (by simp)
+  have leftEq := MStore.Models.realize_apply storeModels left
+  have rightEq := MStore.Models.realize_apply storeModels right
+  rw [leftEq, rightEq] at equation
+  exact equation
+
+private theorem Ty.size_realize_ge_of_mem {ty : Ty} {id : Nat}
+    {valuation : MValuation} (member : id ∈ ty.mvars) :
+    (valuation id).size ≤ (ty.realize valuation).size := by
+  induction ty with
+  | prim => simp [Ty.mvars] at member
+  | bvar => simp [Ty.mvars] at member
+  | rigid => simp [Ty.mvars] at member
+  | mvar other =>
+      have same : id = other := by simpa [Ty.mvars] using member
+      subst same
+      simp [Ty.realize]
+  | arrow domain codomain domainIH codomainIH =>
+      have split : id ∈ domain.mvars ∨ id ∈ codomain.mvars := by
+        simpa [Ty.mvars, List.mem_dedup, List.mem_append] using member
+      rcases split with inside | inside
+      · have bounded := domainIH inside
+        simp only [Ty.realize, Ty.size]
+        omega
+      · have bounded := codomainIH inside
+        simp only [Ty.realize, Ty.size]
+        omega
+
+private theorem Ty.size_realize_gt_of_mem_of_ne {ty : Ty} {id : Nat}
+    {valuation : MValuation} (member : id ∈ ty.mvars)
+    (different : ty ≠ .mvar id) :
+    (valuation id).size < (ty.realize valuation).size := by
+  induction ty with
+  | prim => simp [Ty.mvars] at member
+  | bvar => simp [Ty.mvars] at member
+  | rigid => simp [Ty.mvars] at member
+  | mvar other =>
+      have same : id = other := by simpa [Ty.mvars] using member
+      subst same
+      exact absurd rfl different
+  | arrow domain codomain domainIH codomainIH =>
+      have split : id ∈ domain.mvars ∨ id ∈ codomain.mvars := by
+        simpa [Ty.mvars, List.mem_dedup, List.mem_append] using member
+      have positivity : 0 < (codomain.realize valuation).size := Ty.size_pos _
+      simp only [Ty.realize, Ty.size]
+      rcases split with inside | inside
+      · have bounded := Ty.size_realize_ge_of_mem (valuation := valuation) inside
+        omega
+      · have bounded := Ty.size_realize_ge_of_mem (valuation := valuation) inside
+        omega
+
+private theorem MStore.entry_of_lookup_none {store : MStore} {id : Nat}
+    (bound : id < store.length) (lookup : store.lookup id = none) :
+    store[id]? = some none := by
+  cases entry : store[id]? with
+  | none =>
+      exfalso
+      have outOfRange := List.getElem?_eq_none_iff.mp entry
+      omega
+  | some option =>
+      cases option with
+      | none => rfl
+      | some replacement =>
+          exfalso
+          rw [MStore.lookup, entry] at lookup
+          exact nomatch lookup
+
+private theorem MStore.solve_length (store : MStore) (id : Nat) (ty : Ty) :
+    (store.solve id ty).length = store.length := by
+  simp [MStore.solve]
+
+private theorem ConstraintsRealized.tail {valuation : MValuation}
+    {constraint : Constraint} {rest : List Constraint}
+    (realized : ConstraintsRealized valuation (constraint :: rest)) :
+    ConstraintsRealized valuation rest := by
+  intro current member
+  exact realized current (by simp [member])
+
+private theorem unifyPhase_cons_eq_mvar_left (store : MStore) (fuel : Nat)
+    (id : Nat) (ty : Ty) (rest : List Constraint)
+    (different : (Ty.mvar id) ≠ ty) :
+    unifyPhase store (fuel + 1) ((Ty.mvar id, ty) :: rest) =
+      (if store[id]? = some none ∧ ty.occursMVar id = false then
+        (UnifyPhase.bound (store.solve id ty)
+          (rest.map (Constraint.substMVar id ty)) : UnifyPhase)
+      else .failed) := by
+  rw [unifyPhase_cons_eq, if_neg different]
+
+private theorem unifyPhase_cons_eq_mvar_right (store : MStore) (fuel : Nat)
+    (left : Ty) (id : Nat) (rest : List Constraint)
+    (different : left ≠ .mvar id)
+    (notMVar : ∀ j, left ≠ .mvar j) :
+    unifyPhase store (fuel + 1) ((left, Ty.mvar id) :: rest) =
+      (if store[id]? = some none ∧ left.occursMVar id = false then
+        (UnifyPhase.bound (store.solve id left)
+          (rest.map (Constraint.substMVar id left)) : UnifyPhase)
+      else .failed) := by
+  rw [unifyPhase_cons_eq, if_neg different]
+  cases left with
+  | mvar j => exact absurd rfl (notMVar j)
+  | prim => rfl
+  | bvar => rfl
+  | rigid => rfl
+  | arrow => rfl
+
+private theorem unifyPhase_cons_eq_arrow (store : MStore) (fuel : Nat)
+    (leftDomain leftCodomain rightDomain rightCodomain : Ty)
+    (rest : List Constraint)
+    (different : (Ty.arrow leftDomain leftCodomain) ≠
+      (Ty.arrow rightDomain rightCodomain)) :
+    unifyPhase store (fuel + 1)
+        ((Ty.arrow leftDomain leftCodomain,
+          Ty.arrow rightDomain rightCodomain) :: rest) =
+      unifyPhase store fuel
+        ((leftDomain, rightDomain) :: (leftCodomain, rightCodomain) :: rest) := by
+  rw [unifyPhase_cons_eq, if_neg different]
+
+private theorem mvar_guard_left {store : MStore} {id : Nat} {ty : Ty}
+    {valuation : MValuation}
+    (different : (Ty.mvar id) ≠ ty)
+    (resolvedId : store.apply (.mvar id) = .mvar id)
+    (boundedId : id < store.length)
+    (headSolves : valuation id = ty.realize valuation)
+    (normalized : store.Normalized) :
+    store[id]? = some none ∧ ty.occursMVar id = false := by
+  have allocatedLookup : store.lookup id = none :=
+    MStore.lookup_none_of_apply_mvar_eq normalized resolvedId
+  have allocated : store[id]? = some none :=
+    MStore.entry_of_lookup_none boundedId allocatedLookup
+  have occurs : ty.occursMVar id = false := by
+    cases occurrence : ty.occursMVar id with
+    | false => rfl
+    | true =>
+        exfalso
+        have member : id ∈ ty.mvars :=
+          (Ty.occursMVar_iff_mem ty id).mp occurrence
+        have strict := Ty.size_realize_gt_of_mem_of_ne
+          (valuation := valuation) member (Ne.symm different)
+        rw [← headSolves] at strict
+        exact absurd strict (lt_irrefl _)
+  exact ⟨allocated, occurs⟩
+
+private theorem mvar_guard_right {store : MStore} {id : Nat} {ty : Ty}
+    {valuation : MValuation}
+    (different : ty ≠ (Ty.mvar id))
+    (resolvedId : store.apply (.mvar id) = .mvar id)
+    (boundedId : id < store.length)
+    (headSolves : ty.realize valuation = valuation id)
+    (normalized : store.Normalized) :
+    store[id]? = some none ∧ ty.occursMVar id = false := by
+  have allocatedLookup : store.lookup id = none :=
+    MStore.lookup_none_of_apply_mvar_eq normalized resolvedId
+  have allocated : store[id]? = some none :=
+    MStore.entry_of_lookup_none boundedId allocatedLookup
+  have occurs : ty.occursMVar id = false := by
+    cases occurrence : ty.occursMVar id with
+    | false => rfl
+    | true =>
+        exfalso
+        have member : id ∈ ty.mvars :=
+          (Ty.occursMVar_iff_mem ty id).mp occurrence
+        have strict := Ty.size_realize_gt_of_mem_of_ne
+          (valuation := valuation) member different
+        rw [headSolves] at strict
+        exact absurd strict (lt_irrefl _)
+  exact ⟨allocated, occurs⟩
+
+private theorem phase_bound_left_complete {store : MStore} {fuel : Nat}
+    {id : Nat} {ty : Ty} {rest : List Constraint}
+    {rigidCount : Nat} {valuation : MValuation}
+    (different : (Ty.mvar id) ≠ ty)
+    (resolvedId : store.apply (.mvar id) = .mvar id)
+    (resolvedTy : store.apply ty = ty)
+    (boundedId : id < store.length)
+    (boundedTy : ty.MVarBounded store.length)
+    (headSolves : valuation id = ty.realize valuation)
+    (normalized : store.Normalized)
+    (models : store.Models rigidCount valuation)
+    (storeBounded : store.Bounded store.length)
+    (restResolved : ConstraintsResolved store rest)
+    (restBounded : ConstraintsBounded store.length rest)
+    (restSolves : ConstraintsRealized valuation rest) :
+    ∃ result rest', unifyPhase store (fuel + 1) ((Ty.mvar id, ty) :: rest) =
+        .bound result rest' ∧
+      result.Models rigidCount valuation ∧ result.Normalized ∧
+      result.Bounded result.length ∧ ConstraintsResolved result rest' ∧
+      ConstraintsBounded result.length rest' ∧
+      ConstraintsRealized valuation rest' ∧
+      result.unsolved < store.unsolved := by
+  have allocatedLookup : store.lookup id = none :=
+    MStore.lookup_none_of_apply_mvar_eq normalized resolvedId
+  have allocated : store[id]? = some none :=
+    MStore.entry_of_lookup_none boundedId allocatedLookup
+  have occurs : ty.occursMVar id = false := by
+    cases occurrence : ty.occursMVar id with
+    | false => rfl
+    | true =>
+        exfalso
+        have member : id ∈ ty.mvars :=
+          (Ty.occursMVar_iff_mem ty id).mp occurrence
+        have strict := Ty.size_realize_gt_of_mem_of_ne
+          (valuation := valuation) member (Ne.symm different)
+        rw [← headSolves] at strict
+        exact absurd strict (lt_irrefl _)
+  have guard : store[id]? = some none ∧ ty.occursMVar id = false :=
+    ⟨allocated, occurs⟩
+  refine ⟨store.solve id ty, rest.map (Constraint.substMVar id ty), ?_, ?_, ?_,
+    ?_, ?_, ?_, ?_, ?_⟩
+  · rw [unifyPhase_cons_eq, if_neg different]
+    simp [guard]
+  · exact MStore.models_solve models headSolves
+  · exact MStore.solve_normalized normalized allocated occurs resolvedTy
+  · have boundedSolve := MStore.solve_bounded (id := id) storeBounded boundedTy
+    simpa [MStore.solve_length] using boundedSolve
+  · intro constraint member
+    rcases List.mem_map.mp member with ⟨old, inOld, rfl⟩
+    exact ⟨MStore.apply_subst_resolved normalized occurs resolvedTy
+             (restResolved old inOld).1,
+           MStore.apply_subst_resolved normalized occurs resolvedTy
+             (restResolved old inOld).2⟩
+  · intro constraint member
+    rcases List.mem_map.mp member with ⟨old, inOld, rfl⟩
+    have oldBounded := restBounded old inOld
+    rw [MStore.solve_length]
+    exact ⟨Ty.substMVar_mvarBounded oldBounded.1 boundedTy,
+      Ty.substMVar_mvarBounded oldBounded.2 boundedTy⟩
+  · intro constraint member
+    rcases List.mem_map.mp member with ⟨old, inOld, rfl⟩
+    have oldSolves := restSolves old inOld
+    simpa only [Constraint.substMVar, Ty.realize_substMVar headSolves] using oldSolves
+  · exact MStore.unsolved_solve_lt store id ty allocated
+
+private theorem phase_bound_right_complete {store : MStore} {fuel : Nat}
+    {id : Nat} {ty : Ty} {rest : List Constraint}
+    {rigidCount : Nat} {valuation : MValuation}
+    (different : ty ≠ (Ty.mvar id))
+    (resolvedTy : store.apply ty = ty)
+    (resolvedId : store.apply (.mvar id) = .mvar id)
+    (boundedId : id < store.length)
+    (boundedTy : ty.MVarBounded store.length)
+    (headSolves : ty.realize valuation = valuation id)
+    (phaseBase : unifyPhase store (fuel + 1) ((ty, Ty.mvar id) :: rest) =
+      (if store[id]? = some none ∧ ty.occursMVar id = false then
+        (UnifyPhase.bound (store.solve id ty)
+          (rest.map (Constraint.substMVar id ty)) : UnifyPhase)
+      else .failed))
+    (normalized : store.Normalized)
+    (models : store.Models rigidCount valuation)
+    (storeBounded : store.Bounded store.length)
+    (restResolved : ConstraintsResolved store rest)
+    (restBounded : ConstraintsBounded store.length rest)
+    (restSolves : ConstraintsRealized valuation rest) :
+    ∃ result rest', unifyPhase store (fuel + 1) ((ty, Ty.mvar id) :: rest) =
+        .bound result rest' ∧
+      result.Models rigidCount valuation ∧ result.Normalized ∧
+      result.Bounded result.length ∧ ConstraintsResolved result rest' ∧
+      ConstraintsBounded result.length rest' ∧
+      ConstraintsRealized valuation rest' ∧
+      result.unsolved < store.unsolved := by
+  have allocatedLookup : store.lookup id = none :=
+    MStore.lookup_none_of_apply_mvar_eq normalized resolvedId
+  have allocated : store[id]? = some none :=
+    MStore.entry_of_lookup_none boundedId allocatedLookup
+  have occurs : ty.occursMVar id = false := by
+    cases occurrence : ty.occursMVar id with
+    | false => rfl
+    | true =>
+        exfalso
+        have member : id ∈ ty.mvars :=
+          (Ty.occursMVar_iff_mem ty id).mp occurrence
+        have strict := Ty.size_realize_gt_of_mem_of_ne
+          (valuation := valuation) member different
+        rw [headSolves] at strict
+        exact absurd strict (lt_irrefl _)
+  have agrees : valuation id = ty.realize valuation := headSolves.symm
+  have guard : store[id]? = some none ∧ ty.occursMVar id = false :=
+    ⟨allocated, occurs⟩
+  refine ⟨store.solve id ty, rest.map (Constraint.substMVar id ty), ?_, ?_, ?_,
+    ?_, ?_, ?_, ?_, ?_⟩
+  · rw [phaseBase, if_pos guard]
+  · exact MStore.models_solve models agrees
+  · exact MStore.solve_normalized normalized allocated occurs resolvedTy
+  · have boundedSolve := MStore.solve_bounded (id := id) storeBounded boundedTy
+    simpa [MStore.solve_length] using boundedSolve
+  · intro constraint member
+    rcases List.mem_map.mp member with ⟨old, inOld, rfl⟩
+    exact ⟨MStore.apply_subst_resolved normalized occurs resolvedTy
+             (restResolved old inOld).1,
+           MStore.apply_subst_resolved normalized occurs resolvedTy
+             (restResolved old inOld).2⟩
+  · intro constraint member
+    rcases List.mem_map.mp member with ⟨old, inOld, rfl⟩
+    have oldBounded := restBounded old inOld
+    rw [MStore.solve_length]
+    exact ⟨Ty.substMVar_mvarBounded oldBounded.1 boundedTy,
+      Ty.substMVar_mvarBounded oldBounded.2 boundedTy⟩
+  · intro constraint member
+    rcases List.mem_map.mp member with ⟨old, inOld, rfl⟩
+    have oldSolves := restSolves old inOld
+    simpa only [Constraint.substMVar, Ty.realize_substMVar agrees] using oldSolves
+  · exact MStore.unsolved_solve_lt store id ty allocated
+
+private theorem mvar_right_disjunction {store : MStore} {fuel : Nat}
+    {left : Ty} {id : Nat} {rest : List Constraint}
+    {rigidCount : Nat} {valuation : MValuation}
+    (notMVar : ∀ j, left ≠ .mvar j)
+    (different : left ≠ .mvar id)
+    (resolvedLeft : store.apply left = left)
+    (resolvedId : store.apply (.mvar id) = .mvar id)
+    (boundedId : id < store.length)
+    (boundedLeft : left.MVarBounded store.length)
+    (headSolves : left.realize valuation = valuation id)
+    (normalized : store.Normalized)
+    (models : store.Models rigidCount valuation)
+    (storeBounded : store.Bounded store.length)
+    (restResolved : ConstraintsResolved store rest)
+    (restBounded : ConstraintsBounded store.length rest)
+    (restSolves : ConstraintsRealized valuation rest) :
+    (∃ result, unifyPhase store (fuel + 1) ((left, Ty.mvar id) :: rest) =
+        .finished result ∧ result.Models rigidCount valuation) ∨
+    (∃ result rest',
+        unifyPhase store (fuel + 1) ((left, Ty.mvar id) :: rest) =
+          .bound result rest' ∧
+        result.Models rigidCount valuation ∧ result.Normalized ∧
+        result.Bounded result.length ∧ ConstraintsResolved result rest' ∧
+        ConstraintsBounded result.length rest' ∧
+        ConstraintsRealized valuation rest' ∧
+        result.unsolved < store.unsolved) := by
+  have phaseBase := unifyPhase_cons_eq_mvar_right store fuel left id rest
+    different notMVar
+  exact Or.inr (phase_bound_right_complete different resolvedLeft resolvedId
+    boundedId boundedLeft headSolves phaseBase normalized models storeBounded
+    restResolved restBounded restSolves)
+
+private theorem ConstraintsRealized.arrow_parts {valuation : MValuation}
+    {leftDomain leftCodomain rightDomain rightCodomain : Ty}
+    {rest : List Constraint}
+    (head : (Ty.arrow leftDomain leftCodomain).realize valuation =
+      (Ty.arrow rightDomain rightCodomain).realize valuation)
+    (restSolves : ConstraintsRealized valuation rest) :
+    ConstraintsRealized valuation
+      ((leftDomain, rightDomain) :: (leftCodomain, rightCodomain) :: rest) := by
+  have parts := head
+  simp only [Ty.realize, Ty.arrow.injEq] at parts
+  intro constraint member
+  rcases List.mem_cons.mp member with rfl | member
+  · exact parts.1
+  · rcases List.mem_cons.mp member with rfl | member
+    · exact parts.2
+    · exact restSolves constraint member
+
+private theorem unifyPhase_complete {store : MStore} {fuel : Nat}
+    {constraints : List Constraint} {rigidCount : Nat}
+    {valuation : MValuation}
+    (enough : Constraints.size constraints ≤ fuel)
+    (normalized : store.Normalized)
+    (bounded : store.Bounded store.length)
+    (models : store.Models rigidCount valuation)
+    (resolved : ConstraintsResolved store constraints)
+    (constraintsBounded : ConstraintsBounded store.length constraints)
+    (solves : ConstraintsRealized valuation constraints) :
+    (∃ result, unifyPhase store fuel constraints = .finished result ∧
+        result.Models rigidCount valuation) ∨
+    (∃ result rest, unifyPhase store fuel constraints = .bound result rest ∧
+        result.Models rigidCount valuation ∧ result.Normalized ∧
+        result.Bounded result.length ∧ ConstraintsResolved result rest ∧
+        ConstraintsBounded result.length rest ∧
+        ConstraintsRealized valuation rest ∧
+        result.unsolved < store.unsolved) := by
+  induction fuel generalizing constraints with
+  | zero =>
+      have empty : constraints = [] := by
+        cases constraints with
+        | nil => rfl
+        | cons constraint rest =>
+            have positive := Constraints.size_nonempty
+              (constraints := constraint :: rest) (by simp)
+            omega
+      subst empty
+      exact Or.inl ⟨store, rfl, models⟩
+  | succ fuel ih =>
+      cases constraints with
+      | nil => exact Or.inl ⟨store, rfl, models⟩
+      | cons constraint rest =>
+          obtain ⟨left, right⟩ := constraint
+          have headResolved := resolved (left, right) (by simp)
+          have restResolved : ConstraintsResolved store rest := by
+            intro current member
+            exact resolved current (by simp [member])
+          have headBounded := constraintsBounded (left, right) (by simp)
+          have restBounded : ConstraintsBounded store.length rest := by
+            intro current member
+            exact constraintsBounded current (by simp [member])
+          have headSolves := solves (left, right) (by simp)
+          have restSolves : ConstraintsRealized valuation rest :=
+            ConstraintsRealized.tail solves
+          by_cases equal : left = right
+          · rw [unifyPhase_cons_eq, if_pos equal]
+            refine ih ?_ restResolved restBounded restSolves
+            have h : left.size + right.size + Constraints.size rest ≤ fuel + 1 := by
+              simpa [Constraints.size_cons] using enough
+            have leftPos := Ty.size_pos left
+            have rightPos := Ty.size_pos right
+            omega
+          · cases left with
+            | mvar id =>
+                exact Or.inr (phase_bound_left_complete
+                  (ty := right) (by simpa using equal)
+                  headResolved.1 headResolved.2
+                  (headBounded.1 id (by simp [Ty.mvars])) headBounded.2
+                  (by simpa [Ty.realize] using headSolves)
+                  normalized models bounded restResolved restBounded restSolves)
+            | prim name =>
+                cases right with
+                | mvar id =>
+                    exact mvar_right_disjunction (left := .prim name)
+                      (fun j impossible => nomatch impossible)
+                      (by simpa using equal) headResolved.1 headResolved.2
+                      (headBounded.2 id (by simp [Ty.mvars])) headBounded.1
+                      (by simpa [Ty.realize] using headSolves)
+                      normalized models bounded restResolved restBounded restSolves
+                | prim other =>
+                  exfalso
+                  have head := headSolves
+                  simp only [Ty.realize] at head
+                  exact equal head
+                | bvar index =>
+                  exfalso
+                  have head := headSolves
+                  simp only [Ty.realize] at head
+                  cases head
+                | rigid level =>
+                  exfalso
+                  have head := headSolves
+                  simp only [Ty.realize] at head
+                  cases head
+                | arrow rd rc =>
+                  exfalso
+                  have head := headSolves
+                  simp only [Ty.realize] at head
+                  cases head
+            | bvar index =>
+                cases right with
+                | mvar id =>
+                    exact mvar_right_disjunction (left := .bvar index)
+                      (fun j impossible => nomatch impossible)
+                      (by simpa using equal) headResolved.1 headResolved.2
+                      (headBounded.2 id (by simp [Ty.mvars])) headBounded.1
+                      (by simpa [Ty.realize] using headSolves)
+                      normalized models bounded restResolved restBounded restSolves
+                | prim other =>
+                  exfalso
+                  have head := headSolves
+                  simp only [Ty.realize] at head
+                  cases head
+                | bvar other =>
+                  exfalso
+                  have head := headSolves
+                  simp only [Ty.realize] at head
+                  exact equal head
+                | rigid level =>
+                  exfalso
+                  have head := headSolves
+                  simp only [Ty.realize] at head
+                  cases head
+                | arrow rd rc =>
+                  exfalso
+                  have head := headSolves
+                  simp only [Ty.realize] at head
+                  cases head
+            | rigid level =>
+                cases right with
+                | mvar id =>
+                    exact mvar_right_disjunction (left := .rigid level)
+                      (fun j impossible => nomatch impossible)
+                      (by simpa using equal) headResolved.1 headResolved.2
+                      (headBounded.2 id (by simp [Ty.mvars])) headBounded.1
+                      (by simpa [Ty.realize] using headSolves)
+                      normalized models bounded restResolved restBounded restSolves
+                | prim other =>
+                  exfalso
+                  have head := headSolves
+                  simp only [Ty.realize] at head
+                  cases head
+                | bvar index =>
+                  exfalso
+                  have head := headSolves
+                  simp only [Ty.realize] at head
+                  cases head
+                | rigid other =>
+                  exfalso
+                  have head := headSolves
+                  simp only [Ty.realize] at head
+                  exact equal head
+                | arrow rd rc =>
+                  exfalso
+                  have head := headSolves
+                  simp only [Ty.realize] at head
+                  cases head
+            | arrow ld lc =>
+                cases right with
+                | mvar id =>
+                    exact mvar_right_disjunction (left := .arrow ld lc)
+                      (fun j impossible => nomatch impossible)
+                      (by simpa using equal) headResolved.1 headResolved.2
+                      (headBounded.2 id (by simp [Ty.mvars])) headBounded.1
+                      (by simpa [Ty.realize] using headSolves)
+                      normalized models bounded restResolved restBounded restSolves
+                | prim other =>
+                  exfalso
+                  have head := headSolves
+                  simp only [Ty.realize] at head
+                  cases head
+                | bvar index =>
+                  exfalso
+                  have head := headSolves
+                  simp only [Ty.realize] at head
+                  cases head
+                | rigid level =>
+                  exfalso
+                  have head := headSolves
+                  simp only [Ty.realize] at head
+                  cases head
+                | arrow rd rc =>
+                    have phaseEq := unifyPhase_cons_eq_arrow store fuel
+                      ld lc rd rc rest (by simpa using equal)
+                    rw [phaseEq]
+                    have enoughNew : Constraints.size
+                        ((ld, rd) :: (lc, rc) :: rest) ≤ fuel := by
+                      simp only [Constraints.size_cons, Ty.size] at enough ⊢
+                      omega
+                    exact ih enoughNew (ConstraintsResolved.arrows resolved)
+                      (ConstraintsBounded.arrows headBounded restBounded)
+                      (ConstraintsRealized.arrow_parts headSolves restSolves)
+
+private theorem unifyLoop_complete {fuel : Nat} {store : MStore}
+    {constraints : List Constraint} {rigidCount : Nat}
+    {valuation : MValuation}
+    (fuelEnough : store.unsolved + 1 ≤ fuel)
+    (normalized : store.Normalized)
+    (bounded : store.Bounded store.length)
+    (models : store.Models rigidCount valuation)
+    (resolved : ConstraintsResolved store constraints)
+    (constraintsBounded : ConstraintsBounded store.length constraints)
+    (solves : ConstraintsRealized valuation constraints) :
+    ∃ result, unifyLoop fuel store constraints = some result ∧
+      result.Models rigidCount valuation := by
+  induction fuel generalizing store constraints with
+  | zero => omega
+  | succ fuel ih =>
+      rw [unifyLoop_succ]
+      have phase := unifyPhase_complete (le_refl (Constraints.size constraints))
+        normalized bounded models resolved constraintsBounded solves
+      rcases phase with
+        ⟨result, finishedRun, resultModels⟩ |
+        ⟨result, rest, boundRun, resultModels, resultNorm, resultBounded,
+          restResolved, restBounded, restSolves, resultUnsolved⟩
+      · rw [finishedRun]
+        exact ⟨result, rfl, resultModels⟩
+      · rw [boundRun]
+        refine ih ?_ resultNorm resultBounded resultModels restResolved
+          restBounded restSolves
+        omega
+
+/-- Completeness: if some model of a normalized, allocated store equates the
+two types, unification succeeds and that model also models the result. -/
+theorem MStore.unify_complete
+    {store : MStore} {left right : Ty}
+    {rigidCount : Nat} {valuation : MValuation}
+    (normalized : store.Normalized)
+    (bounded : store.Bounded store.length)
+    (leftBounded : left.MVarBounded store.length)
+    (rightBounded : right.MVarBounded store.length)
+    (models : store.Models rigidCount valuation)
+    (unifies : left.realize valuation = right.realize valuation) :
+    ∃ result, store.unify left right = some result ∧
+      result.Models rigidCount valuation := by
+  change ∃ result, unifyLoop (store.unsolved + 1) store
+    [(store.apply left, store.apply right)] = some result ∧
+      result.Models rigidCount valuation
+  have resolved : ConstraintsResolved store
+      [(store.apply left, store.apply right)] := by
+    intro constraint member
+    simp only [List.mem_singleton] at member
+    subst member
+    exact ⟨MStore.apply_idem normalized left, MStore.apply_idem normalized right⟩
+  have constraintsBounded : ConstraintsBounded store.length
+      [(store.apply left, store.apply right)] := by
+    intro constraint member
+    simp only [List.mem_singleton] at member
+    subst member
+    exact ⟨MStore.apply_bounded bounded leftBounded,
+      MStore.apply_bounded bounded rightBounded⟩
+  have solves : ConstraintsRealized valuation
+      [(store.apply left, store.apply right)] := by
+    intro constraint member
+    simp only [List.mem_singleton] at member
+    subst member
+    have leftEq := MStore.Models.realize_apply models left
+    have rightEq := MStore.Models.realize_apply models right
+    rw [leftEq, rightEq]
+    exact unifies
+  exact unifyLoop_complete le_rfl normalized bounded models resolved
+    constraintsBounded solves
 
 end EPL
