@@ -1,4 +1,171 @@
+import EPL.Core
 import EPL.Typing
+
+namespace EPL
+namespace Template.Fits
+
+/-- Two occurrences of the same local named hole in one assignment have the
+same type. -/
+theorem named_eq
+    (first : Template.Fits holes (.named name) firstTy)
+    (second : Template.Fits holes (.named name) secondTy) :
+    firstTy = secondTy := by
+  cases first with
+  | named firstLookup =>
+      cases second with
+      | named secondLookup =>
+          exact Option.some.inj (firstLookup.symm.trans secondLookup)
+
+end Template.Fits
+end EPL
+
+namespace EPL
+namespace Typing
+
+private theorem scoped_openWith
+    {ty : Ty} {rigidCount binderCount : Nat} {args : List Ty}
+    (hscoped : ty.Scoped rigidCount binderCount)
+    (hlen : args.length = binderCount)
+    (hargs : ∀ arg ∈ args, arg.Scoped rigidCount 0) :
+    (ty.openWith args).Scoped rigidCount 0 := by
+  induction ty generalizing binderCount with
+  | prim p => exact .prim
+  | arrow domain codomain ihDomain ihCodomain =>
+      cases hscoped with
+      | arrow domainScoped codomainScoped =>
+          exact .arrow (ihDomain domainScoped hlen)
+            (ihCodomain codomainScoped hlen)
+  | bvar index =>
+      cases hscoped with
+      | bvar hindex =>
+          have hindex' : index < args.length := by simpa [hlen] using hindex
+          have hget : args[index]? = some args[index] :=
+            List.getElem?_eq_getElem hindex'
+          simp only [Ty.openWith, hget, Option.getD_some]
+          exact hargs args[index] (List.getElem_mem hindex')
+  | rigid level =>
+      cases hscoped with
+      | rigid hlevel => exact .rigid hlevel
+  | mvar id => exact .mvar id
+
+private theorem metaFree_openWith
+    {ty : Ty} {args : List Ty}
+    (free : ty.MetaFree)
+    (hargs : ∀ arg ∈ args, arg.MetaFree) :
+    (ty.openWith args).MetaFree := by
+  induction ty with
+  | prim p => exact .prim
+  | arrow domain codomain ihDomain ihCodomain =>
+      cases free with
+      | arrow domainFree codomainFree =>
+          exact .arrow (ihDomain domainFree) (ihCodomain codomainFree)
+  | bvar index =>
+      simp only [Ty.openWith]
+      cases hget : args[index]? with
+      | none => exact .bvar
+      | some arg =>
+          exact hargs arg (List.mem_of_getElem? hget)
+  | rigid level => exact .rigid
+  | mvar id => cases free
+
+private theorem wf_openWith
+    {ty : Ty} {rigidCount binderCount : Nat} {args : List Ty}
+    (wf : ty.WF rigidCount binderCount)
+    (hlen : args.length = binderCount)
+    (hargs : ∀ arg ∈ args, arg.WF rigidCount 0) :
+    (ty.openWith args).WF rigidCount 0 := by
+  exact ⟨scoped_openWith wf.1 hlen (fun arg harg => (hargs arg harg).1),
+    metaFree_openWith wf.2 (fun arg harg => (hargs arg harg).2)⟩
+
+/-- Every declaratively assigned type is semantic and scoped. -/
+theorem regular (typing : Typing rigidCount ctx expr ty) :
+    ty.WF rigidCount 0 := by
+  induction typing with
+  | primLit => cases_type PrimLit <;> exact ⟨.prim, .prim⟩
+  | primOp =>
+      cases_type PrimOp
+      exact ⟨.arrow .prim (.arrow .prim .prim),
+        .arrow .prim (.arrow .prim .prim)⟩
+  | var _ wf hlen hargs => exact wf_openWith wf hlen hargs
+  | lambda paramWF _ _ bodyRegular =>
+      exact ⟨.arrow paramWF.1 bodyRegular.1,
+        .arrow paramWF.2 bodyRegular.2⟩
+  | app _ _ functionRegular _ =>
+      rcases functionRegular with ⟨functionScoped, functionFree⟩
+      cases functionScoped with
+      | arrow _ resultScoped =>
+          cases functionFree with
+          | arrow _ resultFree => exact ⟨resultScoped, resultFree⟩
+  | letMono => assumption
+  | letPoly => assumption
+  | fix => assumption
+
+end Typing
+end EPL
+
+namespace EPL
+namespace Typing
+
+private theorem fits_scoped
+    (fits : Template.Fits holes template ty)
+    (wf : ty.WF rigidCount binderCount) :
+    template.Scoped rigidCount binderCount := by
+  induction fits with
+  | fixed => exact .fixed wf
+  | hole => exact .hole
+  | named => exact .named
+  | arrow domainFit codomainFit domainIH codomainIH =>
+      rcases wf with ⟨hScoped, hFree⟩
+      cases hScoped with
+      | arrow domainScoped codomainScoped =>
+          cases hFree with
+          | arrow domainFree codomainFree =>
+              exact .arrow (domainIH ⟨domainScoped, domainFree⟩)
+                (codomainIH ⟨codomainScoped, codomainFree⟩)
+
+private theorem matches_scoped
+    {template : Template} {ty : Ty}
+    (hMatches : template.Matches ty)
+    (wf : ty.WF rigidCount binderCount) :
+    template.Scoped rigidCount binderCount := by
+  rcases hMatches with ⟨holes, _, fits⟩
+  exact fits_scoped fits wf
+
+private theorem param_scoped
+    {ann : ParamAnn} {ty : Ty}
+    (hMatches : ParamAnn.Matches ann ty)
+    (wf : ty.WF rigidCount binderCount) :
+    ∀ template, ann = some template → template.Scoped rigidCount binderCount := by
+  intro template hann
+  exact matches_scoped (hMatches template hann) wf
+
+/-- A derivable source expression cannot contain an out-of-scope authored
+rigid, bound type variable, or inference metavariable in its annotations. -/
+theorem sourceScoped (typing : Typing rigidCount ctx expr ty) :
+    expr.TypeScoped rigidCount 0 := by
+  induction typing with
+  | primLit => exact .primLit
+  | primOp => exact .primOp
+  | var => exact .var
+  | lambda paramWF hMatches _ bodyScoped =>
+      exact .lambda (param_scoped hMatches paramWF) bodyScoped
+  | app _ _ functionScoped argumentScoped =>
+      exact .app functionScoped argumentScoped
+  | letMono _ _ _ rhsScoped bodyScoped =>
+      exact .letMono rhsScoped bodyScoped
+  | letPoly hMatches schemeWF _ rhsScoped _ _ _ bodyScoped =>
+      rcases hMatches with ⟨paramCountEq, bodyMatches⟩
+      exact .letPoly
+        (by
+          rw [← paramCountEq]
+          simpa [PolyTy.WF] using matches_scoped bodyMatches schemeWF)
+        (by simpa [paramCountEq] using rhsScoped)
+        bodyScoped
+  | fix selfWF hMatches _ bodyScoped =>
+      exact .fix (matches_scoped hMatches selfWF) bodyScoped
+
+end Typing
+end EPL
 
 namespace EPL
 namespace Typing

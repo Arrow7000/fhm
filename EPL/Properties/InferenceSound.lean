@@ -1,5 +1,955 @@
-import EPL.Properties.InferenceClosing
-import EPL.Properties.Regular
+import EPL.Properties.InferenceState
+import EPL.Properties.Declarative
+
+namespace EPL
+
+abbrev MValuation := Nat → Ty
+
+/-- Interpret every inference metavariable through a semantic valuation. The
+valuation's images are required separately to be well-formed semantic types. -/
+def Ty.realize (valuation : MValuation) : Ty → Ty
+  | .prim p => .prim p
+  | .arrow domain codomain =>
+      .arrow (domain.realize valuation) (codomain.realize valuation)
+  | .bvar index => .bvar index
+  | .rigid level => .rigid level
+  | .mvar id => valuation id
+
+def PolyTy.realize (scheme : PolyTy) (valuation : MValuation) : PolyTy :=
+  ⟨scheme.paramCount, scheme.body.realize valuation⟩
+
+def Ctx.realize (ctx : Ctx) (valuation : MValuation) : Ctx :=
+  ctx.map (·.realize valuation)
+
+def HoleAssignment.realize
+    (holes : HoleAssignment) (valuation : MValuation) : HoleAssignment :=
+  holes.map fun entry => (entry.1, entry.2.realize valuation)
+
+def MValuation.WF
+    (valuation : MValuation) (rigidCount frontier : Nat) : Prop :=
+  ∀ id, id < frontier → (valuation id).WF rigidCount 0
+
+/-- A valuation models a dense table when it gives semantic meanings to every
+allocated ID and satisfies every table equation simultaneously. -/
+structure MStore.Models
+    (store : MStore) (rigidCount : Nat) (valuation : MValuation) : Prop where
+  valuationWF : valuation.WF rigidCount store.length
+  equation : ∀ id, (h : id < store.length) →
+    valuation id = (store[id]).realize valuation
+
+def InferState.Models
+    (state : InferState) (rigidCount : Nat) (valuation : MValuation) : Prop :=
+  state.solutions.Models rigidCount valuation
+
+theorem Ty.realize_eq_self
+    {ty : Ty} (metaFree : ty.MetaFree) (valuation : MValuation) :
+    ty.realize valuation = ty := by
+  induction metaFree with
+  | prim => rfl
+  | arrow _ _ ihDomain ihCodomain =>
+      simp only [Ty.realize, ihDomain, ihCodomain]
+  | bvar => rfl
+  | rigid => rfl
+
+theorem Ty.realize_inferWF
+    {ty : Ty} {valuation : MValuation}
+    {rigidCount binderCount frontier : Nat}
+    (typeWF : ty.InferWF rigidCount binderCount frontier)
+    (valuationWF : valuation.WF rigidCount frontier) :
+    (ty.realize valuation).WF rigidCount binderCount := by
+  induction ty with
+  | prim name =>
+      exact ⟨.prim, .prim⟩
+  | arrow domain codomain ihDomain ihCodomain =>
+      cases typeWF.1 with
+      | arrow domainScoped codomainScoped =>
+        have domainBounded : domain.MVarBounded frontier := by
+          intro id member
+          exact typeWF.2 id (by simp [Ty.mvars, member])
+        have codomainBounded : codomain.MVarBounded frontier := by
+          intro id member
+          exact typeWF.2 id (by simp [Ty.mvars, member])
+        have domainWF := ihDomain ⟨domainScoped, domainBounded⟩
+        have codomainWF := ihCodomain ⟨codomainScoped, codomainBounded⟩
+        exact ⟨.arrow domainWF.1 codomainWF.1,
+          .arrow domainWF.2 codomainWF.2⟩
+  | bvar index =>
+      cases typeWF.1 with
+      | bvar hlt => exact ⟨.bvar hlt, .bvar⟩
+  | rigid level =>
+      cases typeWF.1 with
+      | rigid hlt => exact ⟨.rigid hlt, .rigid⟩
+  | mvar id =>
+      have idBounded : id < frontier :=
+        typeWF.2 id (by simp [Ty.mvars])
+      have realizedWF := valuationWF id idBounded
+      have scoped_mono_binder : ∀ {candidate : Ty},
+          candidate.Scoped rigidCount 0 →
+            candidate.Scoped rigidCount binderCount := by
+        intro candidate candidateScoped
+        induction candidateScoped with
+        | prim => exact .prim
+        | arrow _ _ ihDomain ihCodomain => exact .arrow ihDomain ihCodomain
+        | bvar hlt => omega
+        | rigid hlt => exact .rigid hlt
+        | mvar id => exact .mvar id
+      exact ⟨scoped_mono_binder realizedWF.1, realizedWF.2⟩
+
+theorem PolyTy.realize_wf
+    {scheme : PolyTy} {valuation : MValuation}
+    {rigidCount frontier : Nat}
+    (schemeWF : scheme.InferWF rigidCount frontier)
+    (valuationWF : valuation.WF rigidCount frontier) :
+    (scheme.realize valuation).WF rigidCount := by
+  exact Ty.realize_inferWF schemeWF valuationWF
+
+theorem Ctx.realize_wf
+    {ctx : Ctx} {valuation : MValuation}
+    {rigidCount frontier : Nat}
+    (ctxWF : ctx.InferWF rigidCount frontier)
+    (valuationWF : valuation.WF rigidCount frontier) :
+    (ctx.realize valuation).WF rigidCount := by
+  intro scheme member
+  rcases List.mem_map.mp member with ⟨original, originalMember, rfl⟩
+  exact PolyTy.realize_wf (ctxWF original originalMember) valuationWF
+
+theorem Ty.realize_openWith
+    {ty : Ty} {args : List Ty} {valuation : MValuation}
+    {rigidCount binderCount frontier : Nat}
+    (typeWF : ty.InferWF rigidCount binderCount frontier)
+    (valuationWF : valuation.WF rigidCount frontier) :
+    (ty.openWith args).realize valuation =
+      (ty.realize valuation).openWith (args.map (·.realize valuation)) := by
+  have openWith_eq_self : ∀ {candidate : Ty},
+      candidate.Scoped rigidCount 0 →
+        candidate.openWith (args.map (·.realize valuation)) = candidate := by
+    intro candidate candidateScoped
+    induction candidateScoped with
+    | prim => rfl
+    | arrow _ _ ihDomain ihCodomain =>
+        simp only [Ty.openWith, ihDomain, ihCodomain]
+    | bvar hlt => omega
+    | rigid => rfl
+    | mvar id => rfl
+  induction ty with
+  | prim name => rfl
+  | arrow domain codomain ihDomain ihCodomain =>
+      cases typeWF.1 with
+      | arrow domainScoped codomainScoped =>
+        have domainWF : domain.InferWF rigidCount binderCount frontier :=
+          ⟨domainScoped, fun id member => typeWF.2 id (by
+            simp [Ty.mvars, member])⟩
+        have codomainWF : codomain.InferWF rigidCount binderCount frontier :=
+          ⟨codomainScoped, fun id member => typeWF.2 id (by
+            simp [Ty.mvars, member])⟩
+        simp only [Ty.openWith, Ty.realize, ihDomain domainWF,
+          ihCodomain codomainWF]
+  | bvar index =>
+      simp only [Ty.openWith, Ty.realize, List.getElem?_map]
+      cases args[index]? <;> rfl
+  | rigid level => rfl
+  | mvar id =>
+      have idBounded : id < frontier := typeWF.2 id (by simp [Ty.mvars])
+      simpa [Ty.openWith, Ty.realize] using
+        (openWith_eq_self (valuationWF id idBounded).1).symm
+
+theorem Ty.realize_openRigidsFrom
+    {ty : Ty} {valuation : MValuation}
+    {rigidCount depth count frontier : Nat}
+    (typeWF : ty.InferWF rigidCount (depth + count) frontier)
+    (valuationWF : valuation.WF rigidCount frontier) :
+    (ty.openRigidsFrom depth rigidCount count).realize valuation =
+      (ty.realize valuation).openRigidsFrom depth rigidCount count := by
+  have open_eq_self : ∀ {candidate : Ty},
+      candidate.Scoped rigidCount 0 →
+        candidate.openRigidsFrom depth rigidCount count = candidate := by
+    intro candidate candidateScoped
+    induction candidateScoped with
+    | prim => rfl
+    | arrow _ _ ihDomain ihCodomain =>
+        simp only [Ty.openRigidsFrom, ihDomain, ihCodomain]
+    | bvar hlt => omega
+    | rigid => rfl
+    | mvar id => rfl
+  induction ty with
+  | prim name => rfl
+  | arrow domain codomain ihDomain ihCodomain =>
+      cases typeWF.1 with
+      | arrow domainScoped codomainScoped =>
+        have domainWF : domain.InferWF rigidCount (depth + count) frontier :=
+          ⟨domainScoped, fun id member => typeWF.2 id (by
+            simp [Ty.mvars, member])⟩
+        have codomainWF : codomain.InferWF rigidCount (depth + count) frontier :=
+          ⟨codomainScoped, fun id member => typeWF.2 id (by
+            simp [Ty.mvars, member])⟩
+        simp only [Ty.openRigidsFrom, Ty.realize, ihDomain domainWF,
+          ihCodomain codomainWF]
+  | bvar index =>
+      simp only [Ty.openRigidsFrom, Ty.realize]
+      split
+      · rfl
+      · split <;> rfl
+  | rigid level => rfl
+  | mvar id =>
+      have idBounded : id < frontier := typeWF.2 id (by simp [Ty.mvars])
+      simpa [Ty.openRigidsFrom, Ty.realize] using
+        (open_eq_self (valuationWF id idBounded).1).symm
+
+theorem Ty.realize_closeRigids
+    {ty : Ty} {valuation : MValuation}
+    {rigidCount count frontier : Nat}
+    (typeWF : ty.InferWF (rigidCount + count) 0 frontier)
+    (valuationWF : valuation.WF rigidCount frontier) :
+    (ty.closeRigids rigidCount count).realize valuation =
+      (ty.realize valuation).closeRigids rigidCount count := by
+  have close_eq_self : ∀ {candidate : Ty},
+      candidate.Scoped rigidCount 0 →
+        candidate.closeRigids rigidCount count = candidate := by
+    intro candidate candidateScoped
+    induction candidateScoped with
+    | prim => rfl
+    | arrow _ _ ihDomain ihCodomain =>
+        simp only [Ty.closeRigids, ihDomain, ihCodomain]
+    | bvar hlt => omega
+    | rigid hlt => simp [Ty.closeRigids, hlt]
+    | mvar id => rfl
+  induction ty with
+  | prim name => rfl
+  | arrow domain codomain ihDomain ihCodomain =>
+      cases typeWF.1 with
+      | arrow domainScoped codomainScoped =>
+        have domainWF : domain.InferWF (rigidCount + count) 0 frontier :=
+          ⟨domainScoped, fun id member => typeWF.2 id (by
+            simp [Ty.mvars, member])⟩
+        have codomainWF : codomain.InferWF (rigidCount + count) 0 frontier :=
+          ⟨codomainScoped, fun id member => typeWF.2 id (by
+            simp [Ty.mvars, member])⟩
+        simp only [Ty.closeRigids, Ty.realize, ihDomain domainWF,
+          ihCodomain codomainWF]
+  | bvar index =>
+      cases typeWF.1 with
+      | bvar hlt => omega
+  | rigid level =>
+      simp only [Ty.closeRigids, Ty.realize]
+      split
+      · rfl
+      · split <;> rfl
+  | mvar id =>
+      have idBounded : id < frontier := typeWF.2 id (by simp [Ty.mvars])
+      simpa [Ty.closeRigids, Ty.realize] using
+        (close_eq_self (valuationWF id idBounded).1).symm
+
+/-- Looking up algorithmic solutions is semantically invisible in every model
+of the dense table. -/
+theorem MStore.Models.realize_apply
+    {store : MStore} {valuation : MValuation} {rigidCount : Nat}
+    (models : store.Models rigidCount valuation) (ty : Ty) :
+    (store.apply ty).realize valuation = ty.realize valuation := by
+  induction ty with
+  | prim name => rfl
+  | arrow domain codomain ihDomain ihCodomain =>
+      simp only [MStore.apply, Ty.realize, ihDomain, ihCodomain]
+  | bvar index => rfl
+  | rigid level => rfl
+  | mvar id =>
+      by_cases inStore : id < store.length
+      · rw [MStore.apply, List.getElem?_eq_getElem inStore, Option.getD_some,
+          Ty.realize]
+        exact (models.equation id inStore).symm
+      · rw [MStore.apply,
+          List.getElem?_eq_none_iff.mpr (Nat.le_of_not_gt inStore),
+          Option.getD_none]
+
+end EPL
+
+namespace EPL
+
+/-- A concrete semantic completion for an unconstrained metavariable. -/
+def Ty.defaultMVars : Ty → Ty
+  | .prim p => .prim p
+  | .arrow domain codomain =>
+      .arrow domain.defaultMVars codomain.defaultMVars
+  | .bvar index => .bvar index
+  | .rigid level => .rigid level
+  | .mvar _ => .prim .unit
+
+def MStore.defaultValuation (store : MStore) : MValuation :=
+  fun id => (store[id]?).map Ty.defaultMVars |>.getD (.prim .unit)
+
+theorem Ty.defaultMVars_wf
+    {ty : Ty} {rigidCount binderCount : Nat}
+    (typeScoped : ty.Scoped rigidCount binderCount) :
+    ty.defaultMVars.WF rigidCount binderCount := by
+  induction typeScoped with
+  | prim => exact ⟨.prim, .prim⟩
+  | arrow _ _ ihDomain ihCodomain =>
+      exact ⟨.arrow ihDomain.1 ihCodomain.1,
+        .arrow ihDomain.2 ihCodomain.2⟩
+  | bvar hlt => exact ⟨.bvar hlt, .bvar⟩
+  | rigid hlt => exact ⟨.rigid hlt, .rigid⟩
+  | mvar id => exact ⟨.prim, .prim⟩
+
+/-- Every safe normalized table has a concrete semantic model: solved entries
+keep their semantic structure and genuinely unconstrained variables default to
+`Unit`. -/
+theorem MStore.defaultValuation_models
+    {store : MStore} {rigidCount frontier : Nat}
+    (length : store.length = frontier)
+    (storeScoped : store.Scoped rigidCount)
+    (storeBounded : store.Bounded frontier)
+    (storeNormalized : store.Normalized) :
+    store.Models rigidCount store.defaultValuation := by
+  have realize_eq_default : ∀ {ty : Ty},
+      ty.MVarBounded frontier → store.apply ty = ty →
+        ty.realize store.defaultValuation = ty.defaultMVars := by
+    intro ty typeBounded typeFixed
+    induction ty with
+    | prim name => rfl
+    | arrow domain codomain ihDomain ihCodomain =>
+        have domainBounded : domain.MVarBounded frontier := by
+          intro id member
+          exact typeBounded id (by simp [Ty.mvars, member])
+        have codomainBounded : codomain.MVarBounded frontier := by
+          intro id member
+          exact typeBounded id (by simp [Ty.mvars, member])
+        simp only [MStore.apply, Ty.realize, Ty.defaultMVars] at typeFixed ⊢
+        injection typeFixed with domainFixed codomainFixed
+        rw [ihDomain domainBounded domainFixed,
+          ihCodomain codomainBounded codomainFixed]
+    | bvar index => rfl
+    | rigid level => rfl
+    | mvar id =>
+        have idBounded : id < frontier :=
+          typeBounded id (by simp [Ty.mvars])
+        have idInStore : id < store.length := by
+          simpa [length] using idBounded
+        have entryIdentity : store[id] = .mvar id := by
+          simpa [MStore.apply, List.getElem?_eq_getElem idInStore] using typeFixed
+        simp [Ty.realize, MStore.defaultValuation,
+          List.getElem?_eq_getElem idInStore, entryIdentity, Ty.defaultMVars]
+  refine ⟨?_, ?_⟩
+  · intro id idBounded
+    have entryScoped : store[id].Scoped rigidCount 0 :=
+      storeScoped store[id] (List.getElem_mem ..)
+    simpa [MStore.defaultValuation,
+      List.getElem?_eq_getElem idBounded] using
+        Ty.defaultMVars_wf entryScoped
+  · intro id idBounded
+    have entryMember : store[id] ∈ store := List.getElem_mem ..
+    have entryBounded := storeBounded store[id] entryMember
+    have entryFixed := storeNormalized store[id] entryMember
+    simpa [MStore.defaultValuation,
+      List.getElem?_eq_getElem idBounded] using
+        (realize_eq_default entryBounded entryFixed).symm
+
+theorem InferState.has_model
+    {state : InferState} {rigidCount : Nat}
+    (safe : state.Safe rigidCount) :
+    ∃ valuation, state.Models rigidCount valuation := by
+  refine ⟨state.solutions.defaultValuation, ?_⟩
+  exact MStore.defaultValuation_models safe.solutions_length
+    safe.solutionsScoped safe.solutionsBounded safe.solutionsNormalized
+
+end EPL
+
+namespace EPL
+
+theorem HoleAssignment.realize_unique
+    {holes : HoleAssignment} {valuation : MValuation}
+    (unique : holes.Unique) :
+    (holes.realize valuation).Unique := by
+  simpa [HoleAssignment.Unique, HoleAssignment.realize, List.map_map,
+    Function.comp_def] using unique
+
+/-- Realizing flexible types preserves a fit against an authored, meta-free
+template; named-hole sharing is transported through the same local table. -/
+theorem Template.Fits.realize
+    {holes : HoleAssignment} {template : Template} {ty : Ty}
+    {valuation : MValuation} {rigidCount binderCount : Nat}
+    (templateScoped : template.Scoped rigidCount binderCount)
+    (fits : template.Fits holes ty) :
+    template.Fits (holes.realize valuation) (ty.realize valuation) := by
+  have lookup_realize : ∀ (assignments : HoleAssignment) (name : String),
+      (assignments.realize valuation).lookup name =
+        (assignments.lookup name).map (·.realize valuation) := by
+    intro assignments name
+    induction assignments with
+    | nil => rfl
+    | cons entry rest ih =>
+        rcases entry with ⟨key, value⟩
+        simp only [HoleAssignment.realize, List.map_cons, List.lookup]
+        split
+        · rfl
+        · simpa [HoleAssignment.realize] using ih
+  induction fits with
+  | fixed =>
+      cases templateScoped with
+      | fixed typeWF =>
+          rw [Ty.realize_eq_self typeWF.2 valuation]
+          exact .fixed
+  | hole => exact .hole
+  | named lookup =>
+      cases templateScoped
+      apply Template.Fits.named
+      rw [lookup_realize, lookup]
+      rfl
+  | arrow domainFit codomainFit domainIH codomainIH =>
+      cases templateScoped with
+      | arrow domainScoped codomainScoped =>
+          exact .arrow (domainIH domainScoped) (codomainIH codomainScoped)
+
+theorem Template.matches_realize
+    {template : Template} {ty : Ty} {valuation : MValuation}
+    {rigidCount binderCount : Nat}
+    (templateScoped : template.Scoped rigidCount binderCount)
+    (hMatches : template.Matches ty) :
+    template.Matches (ty.realize valuation) := by
+  have hmatches : template.Matches ty := by assumption
+  rcases hmatches with ⟨holes, unique, fits⟩
+  exact ⟨holes.realize valuation,
+    HoleAssignment.realize_unique unique,
+    Template.Fits.realize templateScoped fits⟩
+
+theorem ParamAnn.matches_realize
+    {ann : ParamAnn} {ty : Ty} {valuation : MValuation}
+    {rigidCount binderCount : Nat}
+    (annScoped : ∀ template, ann = some template →
+      template.Scoped rigidCount binderCount)
+    (hMatches : ann.Matches ty) :
+    ann.Matches (ty.realize valuation) := by
+  have hmatches : ann.Matches ty := by assumption
+  intro template annEq
+  exact Template.matches_realize (annScoped template annEq)
+    (hmatches template annEq)
+
+/-- Allocation followed by any semantic realization is a declarative match of
+the original annotation. -/
+theorem Template.allocate_matches_realize
+    {template : Template} {valuation : MValuation}
+    {rigidCount binderCount frontier : Nat}
+    (templateScoped : template.Scoped rigidCount binderCount) :
+    template.Matches ((template.allocate frontier).ty.realize valuation) := by
+  exact Template.matches_realize templateScoped
+    ⟨(template.allocate frontier).holes,
+      Template.allocate_unique template frontier,
+      Template.allocate_fits template frontier⟩
+
+end EPL
+
+namespace EPL
+
+/-- Every semantic model of `newer` is already a model of `older`. -/
+def MStore.Refines
+    (older newer : MStore) (rigidCount : Nat) : Prop :=
+  ∀ valuation, newer.Models rigidCount valuation →
+    older.Models rigidCount valuation
+
+def InferState.Refines
+    (older newer : InferState) (rigidCount : Nat) : Prop :=
+  older.solutions.Refines newer.solutions rigidCount
+
+theorem MStore.Refines.refl (store : MStore) (rigidCount : Nat) :
+    store.Refines store rigidCount := by
+  intro valuation models
+  exact models
+
+theorem MStore.Refines.trans
+    {first second third : MStore} {rigidCount : Nat}
+    (firstSecond : first.Refines second rigidCount)
+    (secondThird : second.Refines third rigidCount) :
+    first.Refines third rigidCount := by
+  intro valuation thirdModels
+  exact firstSecond valuation (secondThird valuation thirdModels)
+
+/-- A model of a table also models any literal prefix of that table. -/
+theorem MStore.Models.prefix
+    {older newer : MStore} {valuation : MValuation} {rigidCount : Nat}
+    (models : newer.Models rigidCount valuation)
+    (prefixEq : newer.take older.length = older) :
+    older.Models rigidCount valuation := by
+  have lengthLe : older.length ≤ newer.length := by
+    have lengths := congrArg List.length prefixEq
+    simp only [List.length_take] at lengths
+    omega
+  constructor
+  · intro id idLt
+    exact models.valuationWF id (lt_of_lt_of_le idLt lengthLe)
+  · intro id idLt
+    have idNewer : id < newer.length := lt_of_lt_of_le idLt lengthLe
+    have entryEq : newer[id] = older[id] := by
+      have gets := congrArg (fun entries => entries[id]?) prefixEq
+      simp only [List.getElem?_take_of_lt idLt,
+        List.getElem?_eq_getElem idNewer,
+        List.getElem?_eq_getElem idLt] at gets
+      exact Option.some.inj gets
+    rw [← entryEq]
+    exact models.equation id idNewer
+
+theorem InferState.fresh_refines
+    {state : InferState} {rigidCount : Nat} :
+    state.Refines state.fresh.1 rigidCount := by
+  intro valuation models
+  apply models.prefix
+  simp [InferState.fresh]
+
+theorem InferState.freshRequired_refines
+    {state : InferState} {rigidCount : Nat} :
+    state.Refines state.freshRequired.1 rigidCount := by
+  intro valuation models
+  apply models.prefix
+  simp [InferState.freshRequired]
+
+theorem InferState.freshMany_refines
+    {state : InferState} {rigidCount count : Nat} :
+    state.Refines (state.freshMany count).1 rigidCount := by
+  induction count generalizing state with
+  | zero => exact MStore.Refines.refl state.solutions rigidCount
+  | succ count ih =>
+      have first : state.Refines state.fresh.1 rigidCount :=
+        InferState.fresh_refines
+      have rest : state.fresh.1.Refines
+          (state.fresh.1.freshMany count).1 rigidCount := ih
+      simpa [InferState.freshMany] using first.trans rest
+
+theorem InferState.allocate_refines
+    {state : InferState} {template : Template} {rigidCount : Nat} :
+    state.Refines (state.allocate template).1 rigidCount := by
+  intro valuation models
+  apply models.prefix
+  simp [InferState.allocate]
+
+/-- Solving a constraint only restricts the set of semantic models; it never
+changes the meaning of any previously allocated metavariable. -/
+theorem InferState.constrain_refines
+    {state checked : InferState} {left right : Ty} {rigidCount : Nat}
+    (safe : state.Safe rigidCount)
+    (run : state.constrain left right = some checked) :
+    state.Refines checked rigidCount := by
+  simp only [InferState.constrain] at run
+  cases hdelta : unify (state.solutions.apply left)
+      (state.solutions.apply right) with
+  | none => simp [hdelta] at run
+  | some delta =>
+      rw [hdelta] at run
+      simp only [Option.some.injEq] at run
+      subst checked
+      have substApplyArrow : ∀ (subst : MSubst) (domain codomain : Ty),
+          subst.apply (.arrow domain codomain) =
+            .arrow (subst.apply domain) (subst.apply codomain) := by
+        intro subst domain codomain
+        induction subst generalizing domain codomain with
+        | nil => rfl
+        | cons binding rest ih =>
+            simp only [MSubst.apply, List.foldl_cons, Ty.substMVar]
+            exact ih _ _
+      have substApplyPrim : ∀ (subst : MSubst) (name : PrimTy),
+          subst.apply (.prim name) = .prim name := by
+        intro subst name
+        induction subst with
+        | nil => rfl
+        | cons binding rest ih =>
+            simpa [MSubst.apply, List.foldl_cons, Ty.substMVar] using ih
+      have substApplyBVar : ∀ (subst : MSubst) (index : Nat),
+          subst.apply (.bvar index) = .bvar index := by
+        intro subst index
+        induction subst with
+        | nil => rfl
+        | cons binding rest ih =>
+            simpa [MSubst.apply, List.foldl_cons, Ty.substMVar] using ih
+      have substApplyRigid : ∀ (subst : MSubst) (level : Nat),
+          subst.apply (.rigid level) = .rigid level := by
+        intro subst level
+        induction subst with
+        | nil => rfl
+        | cons binding rest ih =>
+            simpa [MSubst.apply, List.foldl_cons, Ty.substMVar] using ih
+      have mapApply : ∀ {ty : Ty}, ty.MVarBounded state.next →
+          MStore.apply (state.solutions.map delta.apply) ty =
+            delta.apply (state.solutions.apply ty) := by
+        intro ty bounded
+        induction ty with
+        | prim name =>
+            simpa [MStore.apply] using (substApplyPrim delta name).symm
+        | arrow domain codomain ihDomain ihCodomain =>
+            have domainBounded : domain.MVarBounded state.next := by
+              intro id member
+              exact bounded id (by simp [Ty.mvars, member])
+            have codomainBounded : codomain.MVarBounded state.next := by
+              intro id member
+              exact bounded id (by simp [Ty.mvars, member])
+            simp only [MStore.apply]
+            rw [ihDomain domainBounded, ihCodomain codomainBounded,
+              substApplyArrow]
+        | bvar index =>
+            simpa [MStore.apply] using (substApplyBVar delta index).symm
+        | rigid level =>
+            simpa [MStore.apply] using (substApplyRigid delta level).symm
+        | mvar id =>
+            have idBounded : id < state.next :=
+              bounded id (by simp [Ty.mvars])
+            have idInStore : id < state.solutions.length := by
+              simpa [safe.solutions_length] using idBounded
+            simp only [MStore.apply, List.getElem?_map,
+              List.getElem?_eq_getElem idInStore, Option.map_some,
+              Option.getD_some]
+      intro valuation models
+      constructor
+      · intro id idBounded
+        exact models.valuationWF id (by simpa using idBounded)
+      · intro id idBounded
+        have idInStore : id < state.solutions.length := by
+          simpa using idBounded
+        let oldTy := state.solutions[id]
+        have oldMember : oldTy ∈ state.solutions := by
+          exact List.getElem_mem ..
+        have oldBounded : oldTy.MVarBounded state.next :=
+          safe.solutionsBounded oldTy oldMember
+        have oldFixed : state.solutions.apply oldTy = oldTy :=
+          safe.solutionsNormalized oldTy oldMember
+        have semanticFixed := models.realize_apply oldTy
+        rw [mapApply oldBounded, oldFixed] at semanticFixed
+        have checkedEquation := models.equation id (by simpa using idBounded)
+        have checkedEquation' : valuation id =
+            (delta.apply oldTy).realize valuation := by
+          simpa [oldTy] using checkedEquation
+        exact checkedEquation'.trans semanticFixed
+
+end EPL
+
+namespace EPL
+
+/-- A model of a checked outer prefix extends to a model of the whole local
+scheme-checking table. The extension agrees on every outer metavariable; only
+discarded local IDs receive fresh semantic meanings. -/
+theorem MStore.Models.extend_checkedPrefix
+    {store : MStore} {outerValuation : MValuation}
+    {rigidCount count cutoff : Nat}
+    (length : cutoff ≤ store.length)
+    (storeScoped : store.Scoped (rigidCount + count))
+    (storeBounded : store.Bounded store.length)
+    (storeNormalized : store.Normalized)
+    (escape : MStore.safeToLeave rigidCount cutoff
+      (store.take cutoff) = true)
+    (outerModels : MStore.Models (store.take cutoff)
+      rigidCount outerValuation) :
+    ∃ localValuation,
+      store.Models (rigidCount + count) localValuation ∧
+        ∀ id, id < cutoff → localValuation id = outerValuation id := by
+  have prefixLength : (store.take cutoff).length = cutoff :=
+    List.length_take_of_le length
+  have escaped := MStore.safeToLeave_eq_true_iff.mp escape
+  let baseValuation : MValuation := fun id =>
+    if id < cutoff then outerValuation id else .prim .unit
+  let localValuation : MValuation := fun id =>
+    (store[id]?).map (·.realize baseValuation) |>.getD (.prim .unit)
+  have wf_mono_rigid : ∀ {ty : Ty},
+      ty.WF rigidCount 0 → ty.WF (rigidCount + count) 0 := by
+    intro ty typeWF
+    have scoped_mono : ∀ {candidate : Ty},
+        candidate.Scoped rigidCount 0 →
+          candidate.Scoped (rigidCount + count) 0 := by
+      intro candidate candidateScoped
+      induction candidateScoped with
+      | prim => exact .prim
+      | arrow _ _ ihDomain ihCodomain => exact .arrow ihDomain ihCodomain
+      | bvar hlt => omega
+      | rigid hlt => exact .rigid (lt_of_lt_of_le hlt (Nat.le_add_right _ _))
+      | mvar id => exact .mvar id
+    exact ⟨scoped_mono typeWF.1, typeWF.2⟩
+  have baseWF : baseValuation.WF (rigidCount + count) store.length := by
+    intro id idBounded
+    dsimp [baseValuation]
+    split
+    · rename_i idOuter
+      apply wf_mono_rigid
+      apply outerModels.valuationWF id
+      simpa [prefixLength] using idOuter
+    · exact ⟨.prim, .prim⟩
+  have realize_congr_on : ∀ (ty : Ty) (first second : MValuation),
+      (∀ id ∈ ty.mvars, first id = second id) →
+        ty.realize first = ty.realize second := by
+    intro ty first second agree
+    induction ty with
+    | prim name => rfl
+    | arrow domain codomain ihDomain ihCodomain =>
+        have domainAgree : ∀ id ∈ domain.mvars, first id = second id := by
+          intro id member
+          exact agree id (by simp [Ty.mvars, member])
+        have codomainAgree : ∀ id ∈ codomain.mvars, first id = second id := by
+          intro id member
+          exact agree id (by simp [Ty.mvars, member])
+        simp only [Ty.realize, ihDomain domainAgree, ihCodomain codomainAgree]
+    | bvar index => rfl
+    | rigid level => rfl
+    | mvar id => exact agree id (by simp [Ty.mvars])
+  have fixed_mvar : ∀ {ty : Ty} {id : Nat},
+      store.apply ty = ty → id ∈ ty.mvars →
+        store.apply (.mvar id) = .mvar id := by
+    intro ty id typeFixed member
+    induction ty with
+    | prim name => simp [Ty.mvars] at member
+    | arrow domain codomain ihDomain ihCodomain =>
+        simp only [MStore.apply] at typeFixed
+        injection typeFixed with domainFixed codomainFixed
+        simp only [Ty.mvars, List.mem_dedup, List.mem_append] at member
+        rcases member with member | member
+        · exact ihDomain domainFixed member
+        · exact ihCodomain codomainFixed member
+    | bvar index => simp [Ty.mvars] at member
+    | rigid level => simp [Ty.mvars] at member
+    | mvar current =>
+        simp only [Ty.mvars, List.mem_singleton] at member
+        subst current
+        exact typeFixed
+  have local_eq_base_of_mem : ∀ {ty : Ty}, ty ∈ store →
+      ∀ {id : Nat}, id ∈ ty.mvars → localValuation id = baseValuation id := by
+    intro ty typeMember id idMember
+    have idBounded : id < store.length :=
+      storeBounded ty typeMember id idMember
+    have idFixed : store.apply (.mvar id) = .mvar id :=
+      fixed_mvar (storeNormalized ty typeMember) idMember
+    have entryIdentity : store[id] = .mvar id := by
+      simpa [MStore.apply, List.getElem?_eq_getElem idBounded] using idFixed
+    simp [localValuation, List.getElem?_eq_getElem idBounded,
+      entryIdentity, Ty.realize]
+  have entry_realize_eq : ∀ {ty : Ty}, ty ∈ store →
+      ty.realize localValuation = ty.realize baseValuation := by
+    intro ty typeMember
+    apply realize_congr_on
+    intro id idMember
+    exact local_eq_base_of_mem typeMember idMember
+  refine ⟨localValuation, ?_, ?_⟩
+  · constructor
+    · intro id idBounded
+      have entryMember : store[id] ∈ store := List.getElem_mem ..
+      have entryWF : store[id].InferWF
+          (rigidCount + count) 0 store.length :=
+        ⟨storeScoped store[id] entryMember,
+          storeBounded store[id] entryMember⟩
+      simpa [localValuation, List.getElem?_eq_getElem idBounded] using
+        Ty.realize_inferWF entryWF baseWF
+    · intro id idBounded
+      have entryMember : store[id] ∈ store := List.getElem_mem ..
+      simpa [localValuation, List.getElem?_eq_getElem idBounded] using
+        (entry_realize_eq entryMember).symm
+  · intro id idOuter
+    have idStore : id < store.length := lt_of_lt_of_le idOuter length
+    have idPrefix : id < (store.take cutoff).length := by
+      simpa [prefixLength] using idOuter
+    have entryEq : (store.take cutoff)[id] = store[id] := by
+      have gets := List.getElem?_take_of_lt (l := store) idOuter
+      simp only [List.getElem?_eq_getElem idPrefix,
+        List.getElem?_eq_getElem idStore] at gets
+      exact Option.some.inj gets
+    have entryMemberPrefix : store[id] ∈ store.take cutoff := by
+      rw [← entryEq]
+      exact List.getElem_mem ..
+    have entryBounded : ∀ candidate ∈ store[id].mvars, candidate < cutoff :=
+      (escaped store[id] entryMemberPrefix).2
+    have realizeOuter : store[id].realize baseValuation =
+        store[id].realize outerValuation := by
+      apply realize_congr_on
+      intro candidate candidateMember
+      simp [baseValuation, entryBounded candidate candidateMember]
+    calc
+      localValuation id = store[id].realize baseValuation := by
+        simp [localValuation, List.getElem?_eq_getElem idStore]
+      _ = store[id].realize outerValuation := realizeOuter
+      _ = (store.take cutoff)[id].realize outerValuation := by rw [entryEq]
+      _ = outerValuation id := (outerModels.equation id idPrefix).symm
+
+end EPL
+
+namespace EPL
+
+def MValuation.AgreeBelow
+    (first second : MValuation) (frontier : Nat) : Prop :=
+  ∀ id, id < frontier → first id = second id
+
+theorem MValuation.AgreeBelow.refl
+    (valuation : MValuation) (frontier : Nat) :
+    valuation.AgreeBelow valuation frontier := by
+  intro id _
+  rfl
+
+theorem Ty.realize_eq_of_agree
+    {ty : Ty} {first second : MValuation} {frontier : Nat}
+    (bounded : ty.MVarBounded frontier)
+    (agree : first.AgreeBelow second frontier) :
+    ty.realize first = ty.realize second := by
+  induction ty with
+  | prim name => rfl
+  | arrow domain codomain ihDomain ihCodomain =>
+      have domainBounded : domain.MVarBounded frontier := by
+        intro id member
+        exact bounded id (by simp [Ty.mvars, member])
+      have codomainBounded : codomain.MVarBounded frontier := by
+        intro id member
+        exact bounded id (by simp [Ty.mvars, member])
+      simp only [Ty.realize, ihDomain domainBounded, ihCodomain codomainBounded]
+  | bvar index => rfl
+  | rigid level => rfl
+  | mvar id =>
+      exact agree id (bounded id (by simp [Ty.mvars]))
+
+theorem PolyTy.realize_eq_of_agree
+    {scheme : PolyTy} {first second : MValuation} {frontier : Nat}
+    (bounded : scheme.body.MVarBounded frontier)
+    (agree : first.AgreeBelow second frontier) :
+    scheme.realize first = scheme.realize second := by
+  cases scheme with
+  | mk count body =>
+      simp only [PolyTy.realize, Scheme.mk.injEq, true_and]
+      exact Ty.realize_eq_of_agree bounded agree
+
+theorem Ctx.realize_eq_of_agree
+    {ctx : Ctx} {first second : MValuation} {frontier : Nat}
+    (bounded : ∀ scheme ∈ ctx, scheme.body.MVarBounded frontier)
+    (agree : first.AgreeBelow second frontier) :
+    ctx.realize first = ctx.realize second := by
+  induction ctx with
+  | nil => rfl
+  | cons scheme tail ih =>
+      have schemeBounded : scheme.body.MVarBounded frontier :=
+        bounded scheme (by simp)
+      have tailBounded : ∀ candidate ∈ tail,
+          candidate.body.MVarBounded frontier := by
+        intro candidate member
+        exact bounded candidate (by simp [member])
+      have tailEq := ih tailBounded
+      simp only [Ctx.realize] at tailEq
+      simp only [Ctx.realize, List.map_cons]
+      rw [PolyTy.realize_eq_of_agree schemeBounded agree, tailEq]
+
+/-- A model can be transported to an agreeing semantic valuation when the
+table itself is bounded by the agreement frontier. -/
+theorem MStore.Models.of_agree
+    {store : MStore} {first second : MValuation}
+    {rigidCount frontier : Nat}
+    (length : store.length = frontier)
+    (storeBounded : store.Bounded frontier)
+    (firstModels : store.Models rigidCount first)
+    (secondWF : second.WF rigidCount frontier)
+    (agree : first.AgreeBelow second frontier) :
+    store.Models rigidCount second := by
+  constructor
+  · intro id idBounded
+    exact secondWF id (by simpa [length] using idBounded)
+  · intro id idBounded
+    have idFrontier : id < frontier := by simpa [length] using idBounded
+    have entryBounded : store[id].MVarBounded frontier :=
+      storeBounded store[id] (List.getElem_mem ..)
+    calc
+      second id = first id := (agree id idFrontier).symm
+      _ = store[id].realize first := firstModels.equation id idBounded
+      _ = store[id].realize second :=
+        Ty.realize_eq_of_agree entryBounded agree
+
+end EPL
+
+namespace EPL
+
+/-- Closing the fresh rigid block used to check a written scheme is inverse to
+opening the resulting scheme at that same outer boundary. -/
+theorem PolyTy.openRigids_closeRigids
+    {openTy : Ty} {rigidCount count : Nat}
+    (openScoped : openTy.Scoped (rigidCount + count) 0) :
+    PolyTy.openRigids
+      (⟨count, openTy.closeRigids rigidCount count⟩ : PolyTy)
+      rigidCount = openTy := by
+  change (openTy.closeRigids rigidCount count).openWith
+    (rigidBlock rigidCount count) = openTy
+  induction openScoped with
+  | prim => rfl
+  | arrow _ _ ihDomain ihCodomain =>
+      simp only [Ty.closeRigids, Ty.openWith, ihDomain, ihCodomain]
+  | bvar hlt => omega
+  | rigid hlt =>
+      rename_i level
+      simp only [Ty.closeRigids]
+      by_cases hOuter : level < rigidCount
+      · rw [if_pos hOuter]
+        rfl
+      · rw [if_neg hOuter]
+        have hLocal : level - rigidCount < count := by omega
+        rw [if_pos hLocal]
+        simp only [Ty.openWith, rigidBlock, List.getElem?_map]
+        have hIndex : level - rigidCount < (List.range count).length := by
+          simpa using hLocal
+        rw [List.getElem?_eq_getElem hIndex, Option.map_some,
+          Option.getD_some, List.getElem_range]
+        congr
+        omega
+  | mvar id => rfl
+
+/-- A match against an opened written template closes back to a match against
+the original template, preserving local named-hole coherence. -/
+theorem Template.matches_closeRigids
+    {template : Template} {openTy : Ty} {rigidCount count : Nat}
+    (templateScoped : template.Scoped rigidCount count)
+    (openScoped : openTy.Scoped (rigidCount + count) 0)
+    (openedMatches :
+      (template.openRigidsFrom 0 rigidCount count).Matches openTy) :
+    template.Matches (openTy.closeRigids rigidCount count) := by
+  let closeHoles : HoleAssignment → HoleAssignment :=
+    List.map fun entry =>
+      (entry.1, entry.2.closeRigids rigidCount count)
+  have closeHoles_unique : ∀ {holes : HoleAssignment},
+      holes.Unique → (closeHoles holes).Unique := by
+    intro holes unique
+    simpa [HoleAssignment.Unique, closeHoles, List.map_map,
+      Function.comp_def] using unique
+  have closeHoles_lookup : ∀ (holes : HoleAssignment) (name : String),
+      (closeHoles holes).lookup name =
+        (holes.lookup name).map (Ty.closeRigids rigidCount count) := by
+    intro holes name
+    induction holes with
+    | nil => rfl
+    | cons entry rest ih =>
+        rcases entry with ⟨key, ty⟩
+        simp only [closeHoles, List.map_cons, List.lookup]
+        split
+        · rfl
+        · simpa [closeHoles] using ih
+  have close_open : ∀ {ty : Ty}, ty.Scoped rigidCount count →
+      (ty.openRigidsFrom 0 rigidCount count).closeRigids
+        rigidCount count = ty := by
+    intro ty typeScoped
+    induction typeScoped with
+    | prim => rfl
+    | arrow _ _ ihDomain ihCodomain =>
+        simp only [Ty.openRigidsFrom, Ty.closeRigids, ihDomain, ihCodomain]
+    | bvar hlt =>
+        simp [Ty.openRigidsFrom, Ty.closeRigids, hlt]
+    | rigid hlt =>
+        simp [Ty.openRigidsFrom, Ty.closeRigids, hlt]
+    | mvar id => rfl
+  rcases openedMatches with ⟨holes, holesUnique, fits⟩
+  refine ⟨closeHoles holes, closeHoles_unique holesUnique, ?_⟩
+  induction templateScoped generalizing openTy holes with
+  | fixed typeWF =>
+      cases fits
+      rw [close_open typeWF.1]
+      exact .fixed
+  | hole =>
+      cases fits
+      exact .hole
+  | named =>
+      cases fits with
+      | named lookup =>
+          apply Template.Fits.named
+          rw [closeHoles_lookup, lookup]
+          rfl
+  | arrow _ _ ihDomain ihCodomain =>
+      cases fits with
+      | arrow domainFits codomainFits =>
+          cases openScoped with
+          | arrow domainOpenScoped codomainOpenScoped =>
+              exact .arrow
+                (ihDomain domainOpenScoped holes holesUnique domainFits)
+                (ihCodomain codomainOpenScoped holes holesUnique codomainFits)
+
+end EPL
 
 namespace EPL
 

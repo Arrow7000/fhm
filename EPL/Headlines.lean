@@ -1,22 +1,11 @@
 import EPL.Examples
-import EPL.AnnotationAllocationTests
-import EPL.Properties.AnnotationAllocation
-import EPL.Properties.Annotations
-import EPL.Properties.Erasure
-import EPL.Properties.InferenceSafety
-import EPL.Properties.InferenceModelAnnotations
-import EPL.Properties.InferenceModelProjection
+import EPL.Tests
+import EPL.Properties.InferenceState
+import EPL.Properties.Declarative
+import EPL.Properties.Runtime
 import EPL.Properties.InferenceSound
-import EPL.Properties.InferenceRuntimeSafety
-import EPL.Properties.InferenceEvaluation
-import EPL.Properties.Regular
-import EPL.Properties.RigidWeakening
-import EPL.Properties.RuntimeRegular
-import EPL.Properties.RuntimeSafety
-import EPL.Properties.SourceScope
-import EPL.Properties.UnificationScope
-import EPL.Properties.UnificationSound
-import EPL.UnificationTests
+import EPL.Properties.EndToEnd
+import EPL.Properties.Unification
 
 namespace EPL.Headlines
 
