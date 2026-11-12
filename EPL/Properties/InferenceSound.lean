@@ -552,30 +552,45 @@ end EPL
 
 namespace EPL
 
-/-- A model of a checked outer prefix extends to a model of the whole local
-scheme-checking table. The extension agrees on every outer metavariable; only
-discarded local IDs receive fresh semantic meanings. -/
-theorem MStore.Models.extend_checkedPrefix
+/-- Realizing two valuations that agree on all metavariables mentioned by a
+type yields the same semantic type. -/
+private theorem Ty.realize_eq_of_mvars {ty : Ty}
+    {first second : MValuation}
+    (agree : ∀ id ∈ ty.mvars, first id = second id) :
+    ty.realize first = ty.realize second := by
+  induction ty with
+  | prim name => rfl
+  | arrow domain codomain ihDomain ihCodomain =>
+      have domainAgree : ∀ id ∈ domain.mvars, first id = second id := by
+        intro id member
+        exact agree id (by simp [Ty.mvars, member])
+      have codomainAgree : ∀ id ∈ codomain.mvars, first id = second id := by
+        intro id member
+        exact agree id (by simp [Ty.mvars, member])
+      simp only [Ty.realize, ihDomain domainAgree, ihCodomain codomainAgree]
+  | bvar index => rfl
+  | rigid level => rfl
+  | mvar id => exact agree id (by simp [Ty.mvars])
+
+/-- A model of the table after leaving a region extends to a model of the
+table inside it. The extension agrees on every metavariable that survives
+the exit (outer ones and unsolved region ones); only forgotten region
+solutions are reinterpreted. -/
+theorem MStore.Models.extend_forgotten
     {store : MStore} {outerValuation : MValuation}
     {rigidCount count cutoff : Nat}
-    (length : cutoff ≤ store.length)
     (storeScoped : store.Scoped (rigidCount + count))
     (storeBounded : store.Bounded store.length)
     (storeNormalized : store.Normalized)
-    (escape : MStore.safeToLeave rigidCount cutoff
-      (store.take cutoff) = true)
-    (outerModels : MStore.Models (store.take cutoff)
-      rigidCount outerValuation) :
+    (outerModels : (store.forgetFrom cutoff).Models rigidCount outerValuation) :
     ∃ localValuation,
       store.Models (rigidCount + count) localValuation ∧
-        ∀ id, id < cutoff → localValuation id = outerValuation id := by
-  have prefixLength : (store.take cutoff).length = cutoff :=
-    List.length_take_of_le length
-  have escaped := MStore.safeToLeave_eq_true_iff.mp escape
-  let baseValuation : MValuation := fun id =>
-    if id < cutoff then outerValuation id else .prim .unit
-  let localValuation : MValuation := fun id =>
-    ((store.lookup id).map (·.realize baseValuation)).getD (baseValuation id)
+        ∀ id, (id < cutoff ∨ store.lookup id = none) →
+          localValuation id = outerValuation id := by
+  have forgetLength : (store.forgetFrom cutoff).length = store.length := by
+    simp only [MStore.forgetFrom, List.length_append, List.length_take,
+      List.length_replicate]
+    omega
   have wf_mono_rigid : ∀ {ty : Ty},
       ty.WF rigidCount 0 → ty.WF (rigidCount + count) 0 := by
     intro ty typeWF
@@ -590,98 +605,85 @@ theorem MStore.Models.extend_checkedPrefix
       | rigid hlt => exact .rigid (lt_of_lt_of_le hlt (Nat.le_add_right _ _))
       | mvar id => exact .mvar id
     exact ⟨scoped_mono typeWF.1, typeWF.2⟩
-  have baseWF : baseValuation.WF (rigidCount + count) store.length := by
+  have outerWF : outerValuation.WF (rigidCount + count) store.length := by
     intro id idBounded
-    dsimp [baseValuation]
-    split
-    · rename_i idOuter
-      apply wf_mono_rigid
-      apply outerModels.valuationWF id
-      simpa [prefixLength] using idOuter
-    · exact ⟨.prim, .prim⟩
-  have realize_congr_on : ∀ (ty : Ty) (first second : MValuation),
-      (∀ id ∈ ty.mvars, first id = second id) →
-        ty.realize first = ty.realize second := by
-    intro ty first second agree
-    induction ty with
-    | prim name => rfl
-    | arrow domain codomain ihDomain ihCodomain =>
-        have domainAgree : ∀ id ∈ domain.mvars, first id = second id := by
-          intro id member
-          exact agree id (by simp [Ty.mvars, member])
-        have codomainAgree : ∀ id ∈ codomain.mvars, first id = second id := by
-          intro id member
-          exact agree id (by simp [Ty.mvars, member])
-        simp only [Ty.realize, ihDomain domainAgree, ihCodomain codomainAgree]
-    | bvar index => rfl
-    | rigid level => rfl
-    | mvar id => exact agree id (by simp [Ty.mvars])
-  have local_eq_base_of_mem : ∀ {ty : Ty}, some ty ∈ store →
-      ∀ {id : Nat}, id ∈ ty.mvars → localValuation id = baseValuation id := by
-    intro ty tyMember id idMember
-    have lookupNone := storeNormalized ty tyMember id idMember
-    simp [localValuation, lookupNone]
-  have entry_realize_eq : ∀ {ty : Ty}, some ty ∈ store →
-      ty.realize localValuation = ty.realize baseValuation := by
-    intro ty tyMember
-    apply realize_congr_on
-    intro id idMember
-    exact local_eq_base_of_mem tyMember idMember
+    apply wf_mono_rigid
+    apply outerModels.valuationWF id
+    simpa [forgetLength] using idBounded
+  let localValuation : MValuation := fun id =>
+    if cutoff ≤ id then
+      match store.lookup id with
+      | some ty => ty.realize outerValuation
+      | none => outerValuation id
+    else outerValuation id
+  have local_prefix : ∀ id, id < cutoff →
+      localValuation id = outerValuation id := by
+    intro id hid
+    simp only [localValuation, Nat.not_le.mpr hid, if_false]
+  have local_unsolved : ∀ id, store.lookup id = none →
+      localValuation id = outerValuation id := by
+    intro id hnone
+    by_cases hcut : cutoff ≤ id
+    · simp only [localValuation, hcut, if_true, hnone]
+    · exact local_prefix id (by omega)
+  have local_solved : ∀ id ty, store.lookup id = some ty →
+      localValuation id = ty.realize outerValuation := by
+    intro id ty hsome
+    by_cases hcut : cutoff ≤ id
+    · simp only [localValuation, hcut, if_true, hsome]
+    · have hid : id < cutoff := by omega
+      rw [local_prefix id hid]
+      have entry : store[id]? = some (some ty) :=
+        MStore.entry_of_lookup_eq_some hsome
+      have idLength : id < store.length := by
+        by_contra outOfRange
+        have noneEq : store[id]? = none :=
+          List.getElem?_eq_none_iff.mpr (by omega)
+        rw [noneEq] at entry
+        exact Option.noConfusion entry
+      have takeEntry : (store.take cutoff)[id]? = some (some ty) := by
+        rw [List.getElem?_take_of_lt hid]
+        exact entry
+      have projectEntry : (store.forgetFrom cutoff)[id]? = some (some ty) := by
+        simp only [MStore.forgetFrom]
+        rw [List.getElem?_append_left (by rw [List.length_take]; omega)]
+        exact takeEntry
+      exact outerModels.equation id ty projectEntry
+  have realize_eq : ∀ {ty : Ty}, some ty ∈ store →
+      ty.realize localValuation = ty.realize outerValuation := by
+    intro ty member
+    apply Ty.realize_eq_of_mvars
+    intro id hid
+    exact local_unsolved id (storeNormalized ty member id hid)
   refine ⟨localValuation, ?_, ?_⟩
   · constructor
     · intro id idBounded
-      cases lookupEq : store.lookup id with
-      | none =>
-          have localEq : localValuation id = baseValuation id := by
-            simp [localValuation, lookupEq]
-          rw [localEq]
-          exact baseWF id idBounded
-      | some ty =>
-          have entry : store[id]? = some (some ty) := by
-            exact MStore.entry_of_lookup_eq_some lookupEq
-          have tyMember : some ty ∈ store := List.mem_of_getElem? entry
-          have entryWF : ty.InferWF (rigidCount + count) 0 store.length :=
-            ⟨storeScoped ty tyMember, storeBounded ty tyMember⟩
-          have localEq : localValuation id = ty.realize baseValuation := by
-            simp [localValuation, lookupEq]
-          rw [localEq]
-          exact Ty.realize_inferWF entryWF baseWF
+      by_cases hcut : cutoff ≤ id
+      · cases hlookup : store.lookup id with
+        | none =>
+            rw [local_unsolved id hlookup]
+            exact outerWF id idBounded
+        | some ty =>
+            rw [local_solved id ty hlookup]
+            have entry : store[id]? = some (some ty) :=
+              MStore.entry_of_lookup_eq_some hlookup
+            have tyMember : some ty ∈ store := List.mem_of_getElem? entry
+            have entryWF : ty.InferWF (rigidCount + count) 0 store.length :=
+              ⟨storeScoped ty tyMember, storeBounded ty tyMember⟩
+            exact Ty.realize_inferWF entryWF outerWF
+      · rw [local_prefix id (by omega)]
+        exact outerWF id idBounded
     · intro id ty entry
-      have tyMember : some ty ∈ store := List.mem_of_getElem? entry
-      have lookupSome : store.lookup id = some ty := by
+      have hlookup : store.lookup id = some ty := by
         simp [MStore.lookup, entry]
-      have localAt : localValuation id = ty.realize baseValuation := by
-        simp [localValuation, lookupSome]
-      rw [localAt]
-      exact (entry_realize_eq tyMember).symm
-  · intro id idOuter
-    cases lookupEq : store.lookup id with
-    | none =>
-        have localEq : localValuation id = baseValuation id := by
-          simp [localValuation, lookupEq]
-        have baseEq : baseValuation id = outerValuation id := by
-          simp [baseValuation, idOuter]
-        rw [localEq, baseEq]
-    | some ty =>
-        have entry : store[id]? = some (some ty) := by
-          exact MStore.entry_of_lookup_eq_some lookupEq
-        have entryTake : (store.take cutoff)[id]? = some (some ty) := by
-          have gets := List.getElem?_take_of_lt (l := store) idOuter
-          rw [entry] at gets
-          exact gets
-        have outerEq := outerModels.equation id ty entryTake
-        have tyMemberTake : some ty ∈ store.take cutoff :=
-          List.mem_of_getElem? entryTake
-        have tyBoundedCut : ∀ candidate ∈ ty.mvars, candidate < cutoff :=
-          (escaped ty tyMemberTake).2
-        have baseAgree : ty.realize baseValuation =
-            ty.realize outerValuation := by
-          apply realize_congr_on
-          intro candidate candidateMember
-          simp [baseValuation, tyBoundedCut candidate candidateMember]
-        have localEq : localValuation id = ty.realize baseValuation := by
-          simp [localValuation, lookupEq]
-        rw [localEq, baseAgree, ← outerEq]
+      have tyMember : some ty ∈ store := List.mem_of_getElem? entry
+      rw [local_solved id ty hlookup]
+      rw [realize_eq tyMember]
+  · intro id hagree
+    rcases hagree with hid | hnone
+    · exact local_prefix id hid
+    · exact local_unsolved id hnone
+
 
 end EPL
 
@@ -1273,28 +1275,33 @@ theorem inferFuel_sound_model
                       let completedOpen := checked.solutions.apply seeded.2
                       let completed : PolyTy :=
                         ⟨count, completedOpen.closeRigids rigidCount count⟩
-                      let projected := checked.solutions.take localStart
-                      have escape : MStore.safeToLeave rigidCount
-                          localStart projected = true := by
-                        simpa [projected, localStart] using escapeRaw
-                      have localStartLe : localStart ≤ checked.solutions.length := by
-                        rw [checkedSafe.1.solutions_length, checkedSafe.2.1]
+                      let projected := checked.solutions.forgetFrom localStart
+                      have escape : projected.safeToLeave rigidCount = true := by
+                        simpa [projected] using escapeRaw
+                      have projectedSafe := MStore.forgetFrom_safe
+                        checkedSafe.1.solutionsNormalized
+                        (by simpa [checkedSafe.1.solutions_length] using
+                          checkedSafe.1.solutionsBounded)
+                        escape
+                      have localStartLe : localStart ≤ checked.next := by
+                        rw [checkedSafe.2.1]
                         exact le_trans seededSafe.2.2 rhsSafe.2.2
-                      have projectedSafe := MStore.take_safe localStartLe
-                        checkedSafe.1.solutionsNormalized escape
                       let outerState : InferState :=
-                        { next := localStart
+                        { next := checked.next
                           solutions := projected
                           required := checked.required.filter (· < localStart) }
                       have outerSafe : outerState.Safe rigidCount := by
                         refine ⟨?_, ?_, ?_, ?_, ?_⟩
-                        · simpa [outerState, projected] using projectedSafe.1
+                        · simpa [outerState, projected,
+                            checkedSafe.1.solutions_length] using projectedSafe.1
                         · simpa [outerState, projected] using projectedSafe.2.1
-                        · simpa [outerState, projected] using projectedSafe.2.2.1
+                        · simpa [outerState, projected,
+                            checkedSafe.1.solutions_length] using projectedSafe.2.2.1
                         · simpa [outerState, projected] using projectedSafe.2.2.2
                         · intro id member
                           have filtered := List.mem_filter.mp member
-                          simpa [outerState] using filtered.2
+                          exact lt_of_lt_of_le (of_decide_eq_true filtered.2)
+                            localStartLe
                       have completedWFB : completed.wfB rigidCount = true := by
                         simpa [completed, completedOpen, count] using schemeWFB
                       have completedParts :
@@ -1315,7 +1322,8 @@ theorem inferFuel_sound_model
                         simp only [List.mem_cons] at member
                         rcases member with rfl | member
                         · exact wf_inferWF completedWF
-                        · simpa [outerState, localStart] using ctxWF scheme member
+                        · simpa [outerState] using ctx_mono ctxWF
+                            (by simpa [localStart] using localStartLe) scheme member
                       have bodyRun : inferFuel fuel rigidCount
                           (completed :: ctx) body outerState = some result := by
                         simpa [completed, completedOpen, count, outerState,
@@ -1324,21 +1332,28 @@ theorem inferFuel_sound_model
                       have outerRefines : state.Refines outerState rigidCount := by
                         intro outerVal outerModels
                         obtain ⟨localVal, localModels, agree⟩ :=
-                          MStore.Models.extend_checkedPrefix localStartLe
+                          MStore.Models.extend_forgotten
                             checkedSafe.1.solutionsScoped
                             (by simpa [checkedSafe.1.solutions_length] using
                               checkedSafe.1.solutionsBounded)
-                            checkedSafe.1.solutionsNormalized escape outerModels
+                            checkedSafe.1.solutionsNormalized outerModels
+                        have agreeBelow : localVal.AgreeBelow outerVal localStart := by
+                          intro id hid
+                          exact agree id (Or.inl hid)
                         have checkedToState : state.Refines checked
                             (rigidCount + count) :=
                           InferState.allocate_refines.trans <|
                             rhsSound.1.trans checkedRefines
                         have localStateModels := checkedToState localVal localModels
-                        have outerWF : outerVal.WF rigidCount state.next := by
-                          simpa [outerState, projected, localStart,
-                            projectedSafe.1] using outerModels.valuationWF
+                        have outerWF : outerVal.WF rigidCount checked.next := by
+                          simpa [outerState, projected, checkedSafe.1.solutions_length,
+                            projectedSafe.1] using
+                            outerModels.valuationWF
                         constructor
-                        · simpa [stateSafe.solutions_length] using outerWF
+                        · intro id hid
+                          exact outerWF id (lt_of_lt_of_le
+                            (by simpa [stateSafe.solutions_length] using hid)
+                            localStartLe)
                         · intro id ty entry
                           have idLt : id < state.solutions.length := by
                             by_contra outOfRange
@@ -1354,25 +1369,28 @@ theorem inferFuel_sound_model
                           have entryBounded : ty.MVarBounded state.next :=
                             stateSafe.solutionsBounded ty tyMember
                           calc
-                            outerVal id = localVal id := (agree id idOuter).symm
+                            outerVal id = localVal id :=
+                              (agreeBelow id idOuter).symm
                             _ = ty.realize localVal := localEq
                             _ = ty.realize outerVal :=
-                              Ty.realize_eq_of_agree entryBounded (by
-                                simpa [MValuation.AgreeBelow, localStart] using agree)
+                              Ty.realize_eq_of_agree entryBounded agreeBelow
                       refine ⟨outerRefines.trans bodySound.1, ?_⟩
                       intro outerVal finalModels
                       have outerModels := bodySound.1 outerVal finalModels
                       obtain ⟨localVal, localModels, agree⟩ :=
-                        MStore.Models.extend_checkedPrefix localStartLe
+                        MStore.Models.extend_forgotten
                           checkedSafe.1.solutionsScoped
                           (by simpa [checkedSafe.1.solutions_length] using
                             checkedSafe.1.solutionsBounded)
-                          checkedSafe.1.solutionsNormalized escape outerModels
+                          checkedSafe.1.solutionsNormalized outerModels
+                      have agreeBelow : localVal.AgreeBelow outerVal localStart := by
+                        intro id hid
+                        exact agree id (Or.inl hid)
                       have rhsModels := checkedRefines localVal localModels
                       have rhsTyping := rhsSound.2 localVal rhsModels
                       have ctxEq : ctx.realize localVal = ctx.realize outerVal :=
                         Ctx.realize_eq_of_agree
-                          (fun scheme member => (ctxWF scheme member).2) agree
+                          (fun scheme member => (ctxWF scheme member).2) agreeBelow
                       rw [ctxEq] at rhsTyping
                       have checkedEq := checkedSafe.2.2.2
                       have semanticEq := congrArg (Ty.realize localVal) checkedEq
@@ -1415,9 +1433,10 @@ theorem inferFuel_sound_model
                       have bodyTyping := bodySound.2 outerVal finalModels
                       apply Typing.letPoly schemeMatches completedWF
                       · apply Ctx.realize_wf ctxWF
-                        have outerValWF : outerVal.WF rigidCount outerState.next :=
+                        have outerValWF : outerVal.WF rigidCount checked.next :=
                           modelWF (candidate := outerState) outerSafe outerModels
-                        simpa [outerState, localStart] using outerValWF
+                        exact fun id hid =>
+                          outerValWF id (lt_of_lt_of_le hid localStartLe)
                       · simpa [completed, count] using rhsScoped
                       · exact rhsExpected
                       · simpa [Ctx.realize, PolyTy.realize,

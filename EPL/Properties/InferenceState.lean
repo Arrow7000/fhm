@@ -375,29 +375,23 @@ theorem Ty.mvarsBelow_eq_true_iff {ty : Ty} {cutoff : Nat} :
 /-- The explicit-scheme escape check says exactly that every retained image is
 outer-scoped and mentions only outer metavariables. -/
 theorem MStore.safeToLeave_eq_true_iff
-    {store : MStore} {rigidCount cutoff : Nat} :
-    store.safeToLeave rigidCount cutoff = true ↔
-      ∀ ty, some ty ∈ store →
-        ty.Scoped rigidCount 0 ∧
-          ∀ id ∈ ty.mvars, id < cutoff := by
+    {store : MStore} {rigidCount : Nat} :
+    store.safeToLeave rigidCount = true ↔
+      ∀ ty, some ty ∈ store → ty.Scoped rigidCount 0 := by
   constructor
   · intro h ty hmem
     rw [MStore.safeToLeave, List.all_eq_true] at h
     have hentry := h (some ty) hmem
     rw [Option.all_eq_true] at hentry
-    have hty := hentry ty rfl
-    rw [Bool.and_eq_true] at hty
-    exact ⟨Ty.scopedB_eq_true_iff.mp hty.1,
-      Ty.mvarsBelow_eq_true_iff.mp hty.2⟩
+    exact Ty.scopedB_eq_true_iff.mp (hentry ty rfl)
   · intro h
     rw [MStore.safeToLeave, List.all_eq_true]
     intro entry hentry
     rw [Option.all_eq_true]
     intro ty hentryEq
-    rw [Bool.and_eq_true]
     have hmem : some ty ∈ store := by simpa [hentryEq] using hentry
-    exact ⟨Ty.scopedB_eq_true_iff.mpr (h ty hmem).1,
-      Ty.mvarsBelow_eq_true_iff.mpr (h ty hmem).2⟩
+    exact Ty.scopedB_eq_true_iff.mpr (h ty hmem)
+
 
 /-- Public obligation discharge is executable declarative well-formedness of
 every required metavariable's solved image. -/
@@ -932,34 +926,66 @@ theorem InferState.constrain_safe
           exact safe.requiredBounded id hmem
       · exact MStore.unify_apply_eq safe.solutionsNormalized hunify
 
-/-- A checked prefix is a safe solution table at the restored outer frontier. -/
-theorem MStore.take_safe
+/-- Forgetting preserves the table's length. -/
+private theorem MStore.forgetFrom_length (store : MStore) (cutoff : Nat) :
+    (store.forgetFrom cutoff).length = store.length := by
+  simp only [MStore.forgetFrom, List.length_append, List.length_take,
+    List.length_replicate]
+  omega
+
+/-- Looking up a forgotten allocated metavariable is the original lookup below
+the cutoff and `none` from the cutoff on. -/
+private theorem MStore.lookup_forgetFrom (store : MStore) (cutoff id : Nat)
+    (hid : id < store.length) :
+    (store.forgetFrom cutoff).lookup id =
+      if id < cutoff then store.lookup id else none := by
+  by_cases h : id < cutoff
+  · simp only [h, if_true]
+    simp only [MStore.forgetFrom, MStore.lookup]
+    rw [List.getElem?_append_left (by rw [List.length_take]; omega)]
+    rw [List.getElem?_take_of_lt h]
+  · simp only [h, if_false]
+    simp only [MStore.forgetFrom, MStore.lookup]
+    rw [List.getElem?_append_right (by rw [List.length_take]; omega)]
+    rw [List.getElem?_replicate]
+    by_cases hin : id - (store.take cutoff).length < store.length - cutoff
+    · rw [if_pos hin]
+      rfl
+    · rw [if_neg hin]
+      rfl
+
+/-- Forgetting a region's solutions leaves a safe table at the outer rigid
+boundary, provided no remaining solution mentions a region rigid. -/
+theorem MStore.forgetFrom_safe
     {store : MStore} {rigidCount cutoff : Nat}
-    (length : cutoff ≤ store.length)
     (normalized : store.Normalized)
-    (escape : MStore.safeToLeave rigidCount cutoff (store.take cutoff) = true) :
-    (store.take cutoff).length = cutoff ∧
-      MStore.Scoped (store.take cutoff) rigidCount ∧
-      MStore.Bounded (store.take cutoff) cutoff ∧
-      MStore.Normalized (store.take cutoff) := by
+    (bounded : store.Bounded store.length)
+    (escape : (store.forgetFrom cutoff).safeToLeave rigidCount = true) :
+    (store.forgetFrom cutoff).length = store.length ∧
+      (store.forgetFrom cutoff).Scoped rigidCount ∧
+      (store.forgetFrom cutoff).Bounded store.length ∧
+      (store.forgetFrom cutoff).Normalized := by
   have escaped := MStore.safeToLeave_eq_true_iff.mp escape
-  refine ⟨List.length_take_of_le length, ?_, ?_, ?_⟩
+  have memStore : ∀ {ty : Ty},
+      some ty ∈ store.forgetFrom cutoff → some ty ∈ store := by
+    intro ty member
+    have memTake : some ty ∈ store.take cutoff := by
+      simpa [MStore.forgetFrom] using member
+    exact List.mem_of_mem_take memTake
+  refine ⟨MStore.forgetFrom_length store cutoff, ?_, ?_, ?_⟩
   · intro ty member
-    exact (escaped ty member).1
-  · intro ty member
-    exact (Ty.mvarBounded_iff_mvarsBelow.mpr <| by
-      exact Ty.mvarsBelow_eq_true_iff.mpr (escaped ty member).2)
-  · intro ty member
-    have bounded : ty.MVarBounded cutoff :=
-      Ty.mvarBounded_iff_mvarsBelow.mpr <|
-        Ty.mvarsBelow_eq_true_iff.mpr (escaped ty member).2
-    intro id hid
-    have idBounded : id < cutoff := bounded id hid
-    have lookupTake : MStore.lookup (store.take cutoff) id = MStore.lookup store id := by
-      simp only [MStore.lookup]
-      rw [List.getElem?_take_of_lt idBounded]
-    rw [lookupTake]
-    exact normalized ty (List.mem_of_mem_take member) id hid
+    exact escaped ty member
+  · intro ty member id hid
+    exact bounded ty (memStore member) id hid
+  · intro ty member id hid
+    have boundedEntry := bounded ty (memStore member) id hid
+    have normalizedNone : store.lookup id = none :=
+      normalized ty (memStore member) id hid
+    rw [MStore.lookup_forgetFrom store cutoff id boundedEntry]
+    split
+    · exact normalizedNone
+    · rfl
+
 
 end EPL
 
@@ -1482,31 +1508,34 @@ theorem inferFuel_safe
                         let completedOpen := checked.solutions.apply seeded.2
                         let completed : PolyTy :=
                           ⟨count, completedOpen.closeRigids rigidCount count⟩
-                        let projected := checked.solutions.take localStart
-                        have escape : MStore.safeToLeave rigidCount
-                            localStart projected = true := by
-                          simpa [projected, localStart] using escapeRaw
-                        have localStartLe :
-                            localStart ≤ checked.solutions.length := by
-                          rw [checkedSafe.1.solutions_length,
-                            checkedSafe.2.1]
+                        let projected := checked.solutions.forgetFrom localStart
+                        have escape : projected.safeToLeave rigidCount = true := by
+                          simpa [projected] using escapeRaw
+                        have projectedSafe := MStore.forgetFrom_safe
+                          checkedSafe.1.solutionsNormalized
+                          (by simpa [checkedSafe.1.solutions_length] using
+                            checkedSafe.1.solutionsBounded)
+                          escape
+                        have localStartLe : localStart ≤ checked.next := by
+                          rw [checkedSafe.2.1]
                           exact le_trans seededSafe.2.2 rhsSafe.2.2
-                        have projectedSafe := MStore.take_safe
-                          localStartLe checkedSafe.1.solutionsNormalized escape
                         let outerState : InferState :=
-                          { next := localStart
+                          { next := checked.next
                             solutions := projected
                             required := checked.required.filter
                               (· < localStart) }
                         have outerSafe : outerState.Safe rigidCount := by
                           refine ⟨?_, ?_, ?_, ?_, ?_⟩
-                          · simpa [outerState, projected] using projectedSafe.1
+                          · simpa [outerState, projected,
+                              checkedSafe.1.solutions_length] using projectedSafe.1
                           · simpa [outerState, projected] using projectedSafe.2.1
-                          · simpa [outerState, projected] using projectedSafe.2.2.1
+                          · simpa [outerState, projected,
+                              checkedSafe.1.solutions_length] using projectedSafe.2.2.1
                           · simpa [outerState, projected] using projectedSafe.2.2.2
                           · intro id member
                             have filtered := List.mem_filter.mp member
-                            simpa [outerState] using filtered.2
+                            exact lt_of_lt_of_le (of_decide_eq_true filtered.2)
+                              localStartLe
                         have completedWFB : completed.wfB rigidCount = true := by
                           simpa [completed, completedOpen, count] using schemeWFB
                         have completedParts :
@@ -1527,14 +1556,15 @@ theorem inferFuel_safe
                           simp only [List.mem_cons] at member
                           rcases member with rfl | member
                           · exact wf_inferWF completedWF
-                          · simpa [outerState, localStart] using ctxWF scheme member
+                          · simpa [outerState] using ctx_mono ctxWF
+                              (by simpa [localStart] using localStartLe) scheme member
                         have bodyRun : inferFuel fuel rigidCount
                             (completed :: ctx) body outerState = some result := by
                           simpa [completed, completedOpen, count, outerState,
                             projected, localStart] using bodyRunRaw
                         have bodySafe := ih outerSafe bodyCtxWF bodyScoped bodyRun
                         refine ⟨bodySafe.1, bodySafe.2.1, ?_⟩
-                        simpa [outerState, localStart] using bodySafe.2.2
+                        exact le_trans localStartLe bodySafe.2.2
       | fix ann body =>
           cases inputScoped with
           | fix annScoped bodyScoped =>

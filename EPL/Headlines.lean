@@ -29,7 +29,7 @@ namespace EPL.Headlines
 #check @MStore.Models.realize_apply
 #check @Template.allocate_matches_realize
 #check @InferState.constrain_refines
-#check @MStore.Models.extend_checkedPrefix
+#check @MStore.Models.extend_forgotten
 #check @inferFuel_sound_model
 #check @infer_sound
 #check @infer_result_wf
@@ -65,7 +65,7 @@ namespace EPL.Headlines
 #print axioms MStore.Models.realize_apply
 #print axioms Template.allocate_matches_realize
 #print axioms InferState.constrain_refines
-#print axioms MStore.Models.extend_checkedPrefix
+#print axioms MStore.Models.extend_forgotten
 #print axioms inferFuel_sound_model
 #print axioms infer_sound
 #print axioms infer_result_wf

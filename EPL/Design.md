@@ -17,8 +17,10 @@ import the FHM language or inference stack.
   within their enclosing annotation.
 - Recursive binding groups do not exist. A separately typed `fix` binder will
   provide monomorphic general recursion.
-- Completeness and principality are not initial goals. Sound inference and
-  runtime type safety are.
+- Inference should be sound and complete: it accepts exactly the typable
+  programs whose implicit types (omitted lambda parameter types and
+  annotation holes) are uniquely determined. Unknowns introduced only to
+  instantiate a scheme need not be determined.
 
 ## Variable classes
 
@@ -74,17 +76,10 @@ successful internal run to declarative typing under every semantic model of
 its result state, and `infer_sound` specializes that result to the closed type
 returned by the public entry point.
 
-The first kernel deliberately makes no claim of inference completeness,
-principal types, implicit generalisation, or polymorphic recursion.
+The kernel deliberately makes no claim of
+implicit generalisation or polymorphic recursion. Completeness is in progress.
 
 ## Algorithmic boundary
-
-`Unification` distinguishes its public empty-substitution entry point from its
-internal accumulator. Successful public runs are proved sound and scoped.
-Reachable substitutions are stable under reapplication and are extended only
-with forward bindings. Arbitrary preloaded association lists are deliberately
-outside the soundness contract; inference composes public solver results
-instead of passing hostile initial substitutions to the worker.
 
 Annotation allocation reserves one metavariable per distinct local `?name`,
 then one per anonymous `_` occurrence. Separate calls rebuild the name table;
@@ -104,16 +99,22 @@ crossed. This rejects ambiguous lambdas even when hidden in a dead `let`
 without rejecting a valid use of a scheme such as `forall a. Int`.
 
 Checking an explicit scheme uses a lexical metavariable region. The completed
-scheme and all local obligations must be semantic before leaving the region;
-the retained outer solution-table prefix is checked for local rigid or
-metavariable escape. The local frontier is then restored, so its discarded IDs
-can be reused safely. The public `InferenceResult` exposes only its closed,
+scheme and all local obligations must be semantic before leaving the region.
+On exit the region's *solutions* are forgotten (their entries reset to
+`none`), because they may mention the region's rigid variables, but its
+metavariables stay allocated: an outer solution may legitimately mention an
+unknown created inside the region (`fun x => let f : forall a. a -> a =
+(let _ = x 1 in fun y => y) in x 1 + 1`). Normalization guarantees nothing
+refers to a forgotten solution. The remaining solutions are checked for
+rigid escape. Metavariable IDs are never reused. The public `InferenceResult` exposes only its closed,
 well-scoped type, not this internal allocation state.
 
-Inference state uses a dense canonical solution table rather than carrying the
-unifier's ordered association list between syntax nodes. Entry `i` is the
-current normalized meaning of metavariable `i`, with an unsolved entry equal
-to `mvar i`. A successful constraint maps its short-lived solver substitution
-over the whole table. This makes allocation, semantic lookup, and lexical
-projection ordinary list append, indexing, and prefix operations; ordering and
-duplicate-target concerns remain confined to the separately verified unifier.
+Inference state is a dense solution table `MStore := List (Option Ty)`:
+entry `i` is `none` while `?i` is unsolved and `some ty` once solved, and
+solved entries mention only unsolved metavariables. Resolving a type is one
+lookup per metavariable. Unification is Robinson's algorithm with this table
+as its solved form: binding `?i := ty` writes entry `i` and eliminates `?i`
+from every other entry and from the pending constraints. It recurses
+structurally (so `decide` evaluates it) with fuel that is proved sufficient,
+and it is proved sound and complete: its result's models are exactly the
+input's models that equate the two types.

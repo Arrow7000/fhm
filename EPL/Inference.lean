@@ -104,13 +104,17 @@ def Ty.closeRigids (base count : Nat) : Ty → Ty
       else .rigid (level - count)
   | .mvar id => .mvar id
 
-/-- Every solved entry is scoped below `rigidCount` and mentions only
-metavariables below `cutoff`, so the table's `cutoff` prefix can be kept
-when a local scheme-checking region is discarded. -/
-def MStore.safeToLeave
-    (rigidCount cutoff : Nat) (store : MStore) : Bool :=
-  store.all fun entry =>
-    entry.all fun ty => ty.scopedB rigidCount 0 && ty.mvarsBelow cutoff
+/-- Forget the solutions of every metavariable from `cutoff` on, keeping the
+metavariables themselves. Used when leaving an explicit-scheme region: its
+unknowns may still be mentioned by outer solutions, but its solutions may
+mention its rigid variables, which are going out of scope. -/
+def MStore.forgetFrom (cutoff : Nat) (store : MStore) : MStore :=
+  store.take cutoff ++ List.replicate (store.length - cutoff) none
+
+/-- Every solved entry is scoped below `rigidCount`: no solution mentions a
+rigid variable that is going out of scope. -/
+def MStore.safeToLeave (rigidCount : Nat) (store : MStore) : Bool :=
+  store.all fun entry => entry.all fun ty => ty.scopedB rigidCount 0
 
 structure InferState where
   next : Nat
@@ -230,11 +234,11 @@ def inferFuel : Nat → Nat → Ctx → Source → InferState → Option InferRe
               ⟨count, completedOpen.closeRigids rigidCount count⟩
             if !completed.wfB rigidCount then none
             else
-              let projected := checked.solutions.take localStart
-              if !MStore.safeToLeave rigidCount localStart projected then none
+              let projected := checked.solutions.forgetFrom localStart
+              if !projected.safeToLeave rigidCount then none
               else
                 let outerState : InferState :=
-                  { next := localStart
+                  { next := checked.next
                     solutions := projected
                     required := checked.required.filter (· < localStart) }
                 inferFuel fuel rigidCount (completed :: ctx) body outerState

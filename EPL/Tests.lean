@@ -151,6 +151,22 @@ def hiddenBadRigidAnnotation : Source :=
 example : (infer hiddenBadBoundAnnotation).map (·.ty) = none := by decide
 example : (infer hiddenBadRigidAnnotation).map (·.ty) = none := by decide
 
+/-- An unknown created while checking an explicit scheme may survive it: here
+`x : Int -> ?r` is constrained inside `f`'s region, and `?r` is only
+determined (as `Int`) after leaving it.
+
+`fun x => let f : forall a. a -> a = (let _ = x 1 in fun y => y) in x 1 + 1` -/
+def regionUnknownEscapes : Source :=
+  .lambda none
+    (.letIn (some polyIdentityAnnotation)
+      (.letIn none (.app (.var 0) (.primLit (.int 1))) (.lambda none (.var 0)))
+      (.app (.app (.primOp .intAdd) (.app (.var 1) (.primLit (.int 1))))
+        (.primLit (.int 1))))
+
+example : (infer regionUnknownEscapes).map (·.ty) =
+    some (.arrow (.arrow intTy intTy) intTy) := by
+  decide
+
 def inferredHoleLambda : Source :=
   .lambda (some .hole)
     (.app
