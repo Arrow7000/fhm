@@ -7,27 +7,38 @@ import EPL.Properties.EndToEnd
 
 namespace EPL.UnificationTests
 
+/-- `?0` and `?1` both live at level 1, so `?1` may be solved to rigid 0. -/
 def arrowExample : Option MStore :=
-  MStore.unify [none, none]
+  MStore.unify [⟨1, none⟩, ⟨1, none⟩]
     (.arrow (.mvar 0) (.rigid 0))
     (.arrow (.prim .int) (.mvar 1))
 
-example : arrowExample = some [some (.prim .int), some (.rigid 0)] := by
+example : arrowExample = some [⟨1, some (.prim .int)⟩, ⟨1, some (.rigid 0)⟩] := by
   decide
 
 /-- Solving `?0 := ?1` and then `?1 := Int` rewrites the earlier entry, so the
 store stays normalized. -/
 example :
-    MStore.unify [none, none]
+    MStore.unify [⟨0, none⟩, ⟨0, none⟩]
         (.arrow (.mvar 0) (.mvar 1))
         (.arrow (.mvar 1) (.prim .int)) =
-      some [some (.prim .int), some (.prim .int)] := by
+      some [⟨0, some (.prim .int)⟩, ⟨0, some (.prim .int)⟩] := by
+  decide
+
+/-- A level-0 metavariable cannot be solved to rigid 0: it would escape. -/
+example : MStore.unify [⟨0, none⟩] (.mvar 0) (.rigid 0) = none := by
+  decide
+
+/-- Binding a level-0 metavariable lowers the metavariables of its solution. -/
+example :
+    MStore.unify [⟨0, none⟩, ⟨1, none⟩] (.mvar 0) (.arrow (.mvar 1) (.prim .int)) =
+      some [⟨0, some (.arrow (.mvar 1) (.prim .int))⟩, ⟨0, none⟩] := by
   decide
 
 example : MStore.unify [] (.rigid 0) (.prim .int) = none := by
   decide
 
-example : MStore.unify [none] (.mvar 0) (.arrow (.mvar 0) (.prim .int)) = none := by
+example : MStore.unify [⟨0, none⟩] (.mvar 0) (.arrow (.mvar 0) (.prim .int)) = none := by
   decide
 
 end EPL.UnificationTests
@@ -217,6 +228,41 @@ example : (infer deferredSchemeHole).map (·.elaborated) =
 example : infer (.lambda (some (.fixed intTy))
     (.letIn (some holeFirstScheme) (.lambda none (.lambda none (.var 0)))
       (.primLit (.int 0)))) = none := by
+  decide
+
+/-- A hole that only uses could determine is rejected: `_ := a` and
+`_ := Bool` both elaborate.
+
+`let f : forall a. _ -> a -> a = fun z y => y in f true true` -/
+example : infer (.letIn (some holeFirstScheme) (.lambda none (.lambda none (.var 0)))
+    (.app (.app (.var 0) (.primLit (.bool true))) (.primLit (.bool true)))) = none := by
+  decide
+
+/-- Holes are completed from the definition and its context, not from uses:
+this is rejected even though only `_ := Int` would typecheck.
+
+`let f : forall a. _ -> a -> a = fun z y => y in f 1 true` -/
+example : infer (.letIn (some holeFirstScheme) (.lambda none (.lambda none (.var 0)))
+    (.app (.app (.var 0) (.primLit (.int 1))) (.primLit (.bool true)))) = none := by
+  decide
+
+/-- A hole fixed to the scheme's own binder by its definition.
+
+`let f : forall a. _ -> a -> a = fun (z : a) y => y in 0` -/
+example : (infer (.letIn (some holeFirstScheme)
+    (.lambda (some (.fixed (.bvar 0))) (.lambda none (.var 0)))
+    (.primLit (.int 0)))).map (·.elaborated) =
+    some (.letIn (some ⟨1, .arrow (.bvar 0) (.arrow (.bvar 0) (.bvar 0))⟩)
+      (.lambda (some (.rigid 0)) (.lambda (some (.rigid 0)) (.var 0)))
+      (.primLit (.int 0))) := by
+  decide
+
+/-- A rigid variable may not escape through an outer unknown.
+
+`fun x => let f : forall a. a -> a = fun y => (let _ = x y in y) in 0` -/
+example : infer (.lambda none (.letIn (some polyIdentityAnnotation)
+    (.lambda none (.letIn none (.app (.var 1) (.var 0)) (.var 1)))
+    (.primLit (.int 0)))) = none := by
   decide
 
 def inferredHoleLambda : Source :=

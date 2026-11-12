@@ -372,27 +372,6 @@ theorem Ty.mvarsBelow_eq_true_iff {ty : Ty} {cutoff : Nat} :
       ∀ id ∈ ty.mvars, id < cutoff := by
   simp [Ty.mvarsBelow]
 
-/-- The explicit-scheme escape check says exactly that every retained image is
-outer-scoped and mentions only outer metavariables. -/
-theorem MStore.safeToLeave_eq_true_iff
-    {store : MStore} {rigidCount : Nat} :
-    store.safeToLeave rigidCount = true ↔
-      ∀ ty, some ty ∈ store → ty.Scoped rigidCount 0 := by
-  constructor
-  · intro h ty hmem
-    rw [MStore.safeToLeave, List.all_eq_true] at h
-    have hentry := h (some ty) hmem
-    rw [Option.all_eq_true] at hentry
-    exact Ty.scopedB_eq_true_iff.mp (hentry ty rfl)
-  · intro h
-    rw [MStore.safeToLeave, List.all_eq_true]
-    intro entry hentry
-    rw [Option.all_eq_true]
-    intro ty hentryEq
-    have hmem : some ty ∈ store := by simpa [hentryEq] using hentry
-    exact Ty.scopedB_eq_true_iff.mpr (h ty hmem)
-
-
 end EPL
 
 namespace EPL
@@ -419,158 +398,375 @@ def PolyTy.InferWF
 def Ctx.InferWF (ctx : Ctx) (rigidCount frontier : Nat) : Prop :=
   ∀ scheme ∈ ctx, scheme.InferWF rigidCount frontier
 
-/-- The dense solution table agrees with its allocation frontier and contains
-no out-of-scope, forged, or unnormalized solution. -/
-structure InferState.Safe (state : InferState) (rigidCount : Nat) : Prop where
+/-- The dense solution table agrees with its allocation frontier, and every
+solution is normalized, allocated, and respects its metavariable's level. -/
+structure InferState.Safe (state : InferState) : Prop where
   solutions_length : state.solutions.length = state.next
-  solutionsScoped : state.solutions.Scoped rigidCount
+  solutionsLeveled : state.solutions.Leveled
   solutionsBounded : state.solutions.Bounded state.next
   solutionsNormalized : state.solutions.Normalized
 
+private theorem Ty.Scoped.mono_rigid {ty : Ty} {rigid rigid' binder : Nat}
+    (typeScoped : ty.Scoped rigid binder) (le : rigid ≤ rigid') :
+    ty.Scoped rigid' binder := by
+  induction typeScoped with
+  | prim => exact .prim
+  | arrow _ _ ihDomain ihCodomain => exact .arrow ihDomain ihCodomain
+  | bvar hlt => exact .bvar hlt
+  | rigid hlt => exact .rigid (lt_of_lt_of_le hlt le)
+  | mvar id => exact .mvar id
+
+private theorem Ty.Scoped.mono_binder {ty : Ty} {rigid binder binder' : Nat}
+    (typeScoped : ty.Scoped rigid binder) (le : binder ≤ binder') :
+    ty.Scoped rigid binder' := by
+  induction typeScoped with
+  | prim => exact .prim
+  | arrow _ _ ihDomain ihCodomain => exact .arrow ihDomain ihCodomain
+  | bvar hlt => exact .bvar (lt_of_lt_of_le hlt le)
+  | rigid hlt => exact .rigid hlt
+  | mvar id => exact .mvar id
+
+private theorem Ty.LevelBounded.mono_le {ty : Ty} {store store' : MStore} {level : Nat}
+    (bounded : ty.LevelBounded store level)
+    (le : ∀ id, store'.levelOf id ≤ store.levelOf id) :
+    ty.LevelBounded store' level := by
+  intro id member
+  exact le_trans (le id) (bounded id member)
+
+private theorem Ty.LevelBounded.congr {ty : Ty} {store store' : MStore} {level : Nat}
+    (bounded : ty.LevelBounded store level)
+    (eq : ∀ id ∈ ty.mvars, store'.levelOf id = store.levelOf id) :
+    ty.LevelBounded store' level := by
+  intro id member
+  rw [eq id member]
+  exact bounded id member
+
+private theorem Ty.LevelBounded.mono_level {ty : Ty} {store : MStore} {level level' : Nat}
+    (bounded : ty.LevelBounded store level) (le : level ≤ level') :
+    ty.LevelBounded store level' := by
+  intro id member
+  exact le_trans (bounded id member) le
+
+private theorem Ty.LevelBounded.mono_le_on {ty : Ty} {store store' : MStore} {level : Nat}
+    (bounded : ty.LevelBounded store level)
+    (le : ∀ id ∈ ty.mvars, store'.levelOf id ≤ store.levelOf id) :
+    ty.LevelBounded store' level := by
+  intro id member
+  exact le_trans (le id member) (bounded id member)
+
+private theorem MStore.lookup_append_left {store extra : MStore} {id : Nat}
+    (h : id < store.length) :
+    (store ++ extra).lookup id = store.lookup id := by
+  unfold MStore.lookup
+  rw [List.getElem?_append_left h]
+
+private theorem MStore.levelOf_append_left {store extra : MStore} {id : Nat}
+    (h : id < store.length) :
+    (store ++ extra).levelOf id = store.levelOf id := by
+  unfold MStore.levelOf
+  rw [List.getElem?_append_left h]
+
+private theorem MStore.levelOf_append_replicate {store : MStore} {count level id : Nat}
+    (hlo : store.length ≤ id) (hhi : id < store.length + count) :
+    (store ++ List.replicate count (⟨level, none⟩ : MEntry)).levelOf id = level := by
+  unfold MStore.levelOf
+  rw [List.getElem?_append_right hlo]
+  have hlt : id - store.length < count := by omega
+  rw [List.getElem?_replicate]
+  simp only [hlt, if_true, Option.map_some, Option.getD_some]
+
+private theorem MStore.lookup_append_unsolved {store extra : MStore} {id : Nat} {ty : Ty}
+    (unsolved : ∀ entry ∈ extra, entry.solution = none)
+    (lookup : (store ++ extra).lookup id = some ty) :
+    store.lookup id = some ty := by
+  unfold MStore.lookup at lookup ⊢
+  by_cases hid : id < store.length
+  · rwa [List.getElem?_append_left hid] at lookup
+  · have hge : store.length ≤ id := by omega
+    rw [List.getElem?_append_right hge] at lookup
+    cases hget : extra[id - store.length]? with
+    | none => simp [hget] at lookup
+    | some entry =>
+        simp only [hget, Option.bind] at lookup
+        have mem : entry ∈ extra := List.mem_of_getElem? hget
+        rw [unsolved entry mem] at lookup
+        exact absurd lookup (by simp)
+
+private theorem MStore.leveled_append_unsolved
+    {store extra : MStore}
+    (leveled : store.Leveled)
+    (bounded : store.Bounded store.length)
+    (unsolved : ∀ entry ∈ extra, entry.solution = none) :
+    (store ++ extra).Leveled := by
+  intro id entry ty hentry solution
+  by_cases hid : id < store.length
+  · have oldEntry : store[id]? = some entry := by
+      rwa [List.getElem?_append_left hid] at hentry
+    obtain ⟨scopedTy, levels⟩ := leveled id entry ty oldEntry solution
+    refine ⟨scopedTy, ?_⟩
+    intro m mem
+    have oldLookup : store.lookup id = some ty := by
+      simp [MStore.lookup, oldEntry, solution]
+    have mbound : m < store.length := bounded id ty oldLookup m mem
+    rw [MStore.levelOf_append_left mbound]
+    exact levels m mem
+  · have hge : store.length ≤ id := by omega
+    rw [List.getElem?_append_right hge] at hentry
+    have mem : entry ∈ extra := List.mem_of_getElem? hentry
+    rw [unsolved entry mem] at solution
+    exact absurd solution (by simp)
+
+private theorem MStore.bounded_append_unsolved
+    {store extra : MStore} {frontier : Nat}
+    (bounded : store.Bounded frontier)
+    (unsolved : ∀ entry ∈ extra, entry.solution = none) :
+    (store ++ extra).Bounded frontier := by
+  intro id ty lookup
+  exact bounded id ty (MStore.lookup_append_unsolved unsolved lookup)
+
+private theorem MStore.normalized_append_unsolved
+    {store extra : MStore}
+    (normalized : store.Normalized)
+    (bounded : store.Bounded store.length)
+    (unsolved : ∀ entry ∈ extra, entry.solution = none) :
+    (store ++ extra).Normalized := by
+  intro id ty lookup m mem
+  have oldLookup := MStore.lookup_append_unsolved unsolved lookup
+  have mbound : m < store.length := bounded id ty oldLookup m mem
+  rw [MStore.lookup_append_left mbound]
+  exact normalized id ty oldLookup m mem
+
+/-- Resolving a type through a safe store preserves its scope and boundedness,
+and preserves the level bound of its metavariables. -/
 theorem MStore.apply_inferWF
     {store : MStore} {ty : Ty} {rigidCount binderCount frontier : Nat}
-    (storeScoped : store.Scoped rigidCount)
+    (storeLeveled : store.Leveled)
     (storeBounded : store.Bounded frontier)
-    (typeWF : ty.InferWF rigidCount binderCount frontier) :
-    (store.apply ty).InferWF rigidCount binderCount frontier := by
-  have scoped_mono_binder :
-      ∀ {candidate : Ty}, candidate.Scoped rigidCount 0 →
-        candidate.Scoped rigidCount binderCount := by
-    intro candidate h
-    induction h with
-    | prim => exact .prim
-    | arrow _ _ ihDomain ihCodomain => exact .arrow ihDomain ihCodomain
-    | bvar hlt => omega
-    | rigid hlt => exact .rigid hlt
-    | mvar id => exact .mvar id
-  induction ty generalizing binderCount with
-  | prim name =>
-      exact ⟨.prim, by
-        intro id member
-        simp [MStore.apply, Ty.mvars] at member⟩
-  | arrow domain codomain ihDomain ihCodomain =>
-      have scopedParts :
-          domain.Scoped rigidCount binderCount ∧
-            codomain.Scoped rigidCount binderCount := by
-        cases typeWF.1 with
-        | arrow hDomain hCodomain => exact ⟨hDomain, hCodomain⟩
-      have domainWF : domain.InferWF rigidCount binderCount frontier := by
-        exact ⟨scopedParts.1, fun id member =>
-          typeWF.2 id (by simp [Ty.mvars, member])⟩
-      have codomainWF : codomain.InferWF rigidCount binderCount frontier := by
-        exact ⟨scopedParts.2, fun id member =>
-          typeWF.2 id (by simp [Ty.mvars, member])⟩
-      have domainResult := ihDomain domainWF scoped_mono_binder
-      have codomainResult := ihCodomain codomainWF scoped_mono_binder
-      constructor
-      · exact .arrow domainResult.1 codomainResult.1
-      · intro id member
-        simp only [MStore.apply, Ty.mvars, List.mem_dedup,
-          List.mem_append] at member
-        rcases member with member | member
-        · exact domainResult.2 id member
-        · exact codomainResult.2 id member
-  | bvar index =>
-      exact ⟨typeWF.1, by
-        intro id member
-        simp [MStore.apply, Ty.mvars] at member⟩
-  | rigid level =>
-      exact ⟨typeWF.1, by
-        intro id member
-        simp [MStore.apply, Ty.mvars] at member⟩
-  | mvar id =>
-      cases hget : store[id]? with
-      | none =>
-          have hlookup : store.lookup id = none := by
-            simp [MStore.lookup, hget]
-          simpa [MStore.apply, hlookup] using typeWF
-      | some entry =>
-          cases entry with
-          | none =>
-              have hlookup : store.lookup id = none := by
-                simp [MStore.lookup, hget]
-              simpa [MStore.apply, hlookup] using typeWF
-          | some result =>
-              have member : some result ∈ store := List.mem_of_getElem? hget
-              have hlookup : store.lookup id = some result := by
-                simp [MStore.lookup, hget]
-              simpa [MStore.apply, hlookup] using
-                And.intro (scoped_mono_binder (storeScoped result member))
-                  (storeBounded result member)
+    (typeWF : ty.InferWF rigidCount binderCount frontier)
+    (typeLevels : ty.LevelBounded store rigidCount) :
+    (store.apply ty).InferWF rigidCount binderCount frontier ∧
+      (store.apply ty).LevelBounded store rigidCount := by
+  have main : ∀ (ty : Ty),
+      ty.InferWF rigidCount binderCount frontier →
+      ty.LevelBounded store rigidCount →
+      (store.apply ty).InferWF rigidCount binderCount frontier ∧
+        (store.apply ty).LevelBounded store rigidCount := by
+    intro ty
+    induction ty with
+    | prim name =>
+        intro typeWF typeLevels
+        exact ⟨⟨.prim, by
+            intro id member
+            simp [MStore.apply, Ty.mvars] at member⟩, by
+            intro id member
+            simp [MStore.apply, Ty.mvars] at member⟩
+    | arrow domain codomain ihDomain ihCodomain =>
+        intro typeWF typeLevels
+        have scopedParts :
+            domain.Scoped rigidCount binderCount ∧
+              codomain.Scoped rigidCount binderCount := by
+          cases typeWF.1 with
+          | arrow hDomain hCodomain => exact ⟨hDomain, hCodomain⟩
+        have domainWF : domain.InferWF rigidCount binderCount frontier := by
+          exact ⟨scopedParts.1, fun id member =>
+            typeWF.2 id (by simp [Ty.mvars, member])⟩
+        have codomainWF : codomain.InferWF rigidCount binderCount frontier := by
+          exact ⟨scopedParts.2, fun id member =>
+            typeWF.2 id (by simp [Ty.mvars, member])⟩
+        have domainLevels : domain.LevelBounded store rigidCount := by
+          intro id member
+          exact typeLevels id (by simp [Ty.mvars, member])
+        have codomainLevels : codomain.LevelBounded store rigidCount := by
+          intro id member
+          exact typeLevels id (by simp [Ty.mvars, member])
+        obtain ⟨domainResult, domainLevels'⟩ :=
+          ihDomain domainWF domainLevels
+        obtain ⟨codomainResult, codomainLevels'⟩ :=
+          ihCodomain codomainWF codomainLevels
+        constructor
+        · exact ⟨.arrow domainResult.1 codomainResult.1, by
+            intro id member
+            simp only [MStore.apply, Ty.mvars, List.mem_dedup,
+              List.mem_append] at member
+            rcases member with member | member
+            · exact domainResult.2 id member
+            · exact codomainResult.2 id member⟩
+        · intro id member
+          simp only [MStore.apply, Ty.mvars, List.mem_dedup,
+            List.mem_append] at member
+          rcases member with member | member
+          · exact domainLevels' id member
+          · exact codomainLevels' id member
+    | bvar index =>
+        intro typeWF typeLevels
+        exact ⟨⟨typeWF.1, by
+          intro id member
+          simp [MStore.apply, Ty.mvars] at member⟩, by
+          intro id member
+          simp [MStore.apply, Ty.mvars] at member⟩
+    | rigid level =>
+        intro typeWF typeLevels
+        exact ⟨⟨typeWF.1, by
+          intro id member
+          simp [MStore.apply, Ty.mvars] at member⟩, by
+          intro id member
+          simp [MStore.apply, Ty.mvars] at member⟩
+    | mvar id =>
+        intro typeWF typeLevels
+        simp only [MStore.apply]
+        cases hget : store[id]? with
+        | none =>
+            have hlookup : store.lookup id = none := by
+              simp [MStore.lookup, hget]
+            rw [hlookup]
+            simp only [Option.getD_none]
+            exact ⟨⟨.mvar id, typeWF.2⟩, typeLevels⟩
+        | some entry =>
+            cases solution : entry.solution with
+            | none =>
+                have hlookup : store.lookup id = none := by
+                  simp [MStore.lookup, hget, solution]
+                rw [hlookup]
+                simp only [Option.getD_none]
+                exact ⟨⟨.mvar id, typeWF.2⟩, typeLevels⟩
+            | some result =>
+                have hlookup : store.lookup id = some result := by
+                  simp [MStore.lookup, hget, solution]
+                rw [hlookup]
+                simp only [Option.getD_some]
+                have hlevel : store.levelOf id = entry.level := by
+                  simp [MStore.levelOf, hget]
+                have hlevelLe : entry.level ≤ rigidCount := by
+                  rw [← hlevel]
+                  exact typeLevels id (by simp [Ty.mvars])
+                obtain ⟨scopedTy, levels⟩ :=
+                  storeLeveled id entry result hget solution
+                have resultScoped : result.Scoped rigidCount binderCount := by
+                  exact Ty.Scoped.mono_binder
+                    (Ty.Scoped.mono_rigid scopedTy hlevelLe) (Nat.zero_le _)
+                constructor
+                · exact ⟨resultScoped, storeBounded id result hlookup⟩
+                · intro m member
+                  exact le_trans (levels m member) hlevelLe
+  exact main ty typeWF typeLevels
 
-theorem InferState.initial_safe {rigidCount : Nat} :
-    (⟨0, []⟩ : InferState).Safe rigidCount := by
-  constructor <;> simp [MStore.Scoped, MStore.Bounded, MStore.Normalized]
+theorem InferState.initial_safe :
+    (⟨0, []⟩ : InferState).Safe := by
+  constructor <;>
+    simp [MStore.Bounded, MStore.Normalized, MStore.Leveled, MStore.lookup]
 
 theorem InferState.fresh_safe
-    {state : InferState} {rigidCount : Nat}
-    (safe : state.Safe rigidCount) :
-    state.fresh.1.Safe rigidCount ∧
-      state.fresh.2.InferWF rigidCount 0 state.fresh.1.next ∧
-      state.next ≤ state.fresh.1.next := by
-  rcases safe with ⟨length, storeScoped, bounded, normalized⟩
+    {state : InferState} {level : Nat}
+    (safe : state.Safe) :
+    (state.fresh level).1.Safe ∧
+      (state.fresh level).2.InferWF level 0 (state.fresh level).1.next ∧
+      (state.fresh level).2.LevelBounded (state.fresh level).1.solutions level ∧
+      state.next ≤ (state.fresh level).1.next ∧
+      (∀ id, id < state.next →
+        (state.fresh level).1.solutions.levelOf id = state.solutions.levelOf id) := by
+  rcases safe with ⟨length, leveled, bounded, normalized⟩
   simp only [InferState.fresh]
-  refine ⟨?_, ?_, by omega⟩
-  · refine ⟨by simp [length], ?_, ?_, ?_⟩
-    · intro ty member
-      rcases List.mem_append.mp member with old | new
-      · exact storeScoped ty old
-      · simp only [List.mem_singleton] at new
-        cases new
-    · intro ty member
-      rcases List.mem_append.mp member with old | new
-      · intro id idMember
-        exact Nat.lt_succ_of_lt (bounded ty old id idMember)
-      · simp only [List.mem_singleton] at new
-        cases new
-    · intro ty member
-      rcases List.mem_append.mp member with old | new
-      · intro id idMember
-        have idInSolutions : id < state.solutions.length := by
-          rw [length]
-          exact bounded ty old id idMember
-        simp only [MStore.lookup]
-        rw [List.getElem?_append_left idInSolutions]
-        exact normalized ty old id idMember
-      · simp only [List.mem_singleton] at new
-        cases new
-  · exact ⟨.mvar _, by
-      intro id member
+  have boundedLength : state.solutions.Bounded state.solutions.length := by
+    simpa [length] using bounded
+  have unsolvedNew :
+      ∀ entry ∈ ([(⟨level, none⟩ : MEntry)] : MStore), entry.solution = none := by
+    intro entry member
+    simp only [List.mem_singleton] at member
+    subst member
+    rfl
+  refine ⟨?_, ?_, ?_, ?_, ?_⟩
+  · refine ⟨?_, ?_, ?_, ?_⟩
+    · simp [length]
+    · exact MStore.leveled_append_unsolved leveled boundedLength unsolvedNew
+    · intro id ty lookup m member
+      have := MStore.bounded_append_unsolved bounded unsolvedNew id ty lookup
+        m member
+      show m < state.next + 1
+      omega
+    · exact MStore.normalized_append_unsolved normalized boundedLength unsolvedNew
+  · constructor
+    · exact .mvar _
+    · intro id member
       simp only [Ty.mvars, List.mem_singleton] at member
       subst id
-      omega⟩
+      omega
+  · intro id member
+    simp only [Ty.mvars, List.mem_singleton] at member
+    subst id
+    have := MStore.levelOf_append_replicate
+      (store := state.solutions) (count := 1) (level := level)
+      (id := state.next) (by simp [length]) (by simp [length])
+    simpa [List.replicate_one] using this.le
+  · show state.next ≤ state.next + 1
+    omega
+  · intro id hid
+    exact MStore.levelOf_append_left (store := state.solutions)
+      (extra := [(⟨level, none⟩ : MEntry)]) (by simpa [length] using hid)
 
 theorem InferState.freshMany_safe
-    {state : InferState} {rigidCount count : Nat}
-    (safe : state.Safe rigidCount) :
-    (state.freshMany count).1.Safe rigidCount ∧
-      (∀ ty ∈ (state.freshMany count).2,
-        ty.InferWF rigidCount 0 (state.freshMany count).1.next) ∧
-      (state.freshMany count).2.length = count ∧
-      state.next ≤ (state.freshMany count).1.next := by
+    {state : InferState} {level count : Nat}
+    (safe : state.Safe) :
+    (state.freshMany level count).1.Safe ∧
+      (∀ ty ∈ (state.freshMany level count).2,
+        ty.InferWF level 0 (state.freshMany level count).1.next) ∧
+      (∀ ty ∈ (state.freshMany level count).2,
+        ty.LevelBounded (state.freshMany level count).1.solutions level) ∧
+      (state.freshMany level count).2.length = count ∧
+      state.next ≤ (state.freshMany level count).1.next ∧
+      (∀ id, id < state.next →
+        (state.freshMany level count).1.solutions.levelOf id =
+          state.solutions.levelOf id) := by
   have inferWF_mono :
       ∀ {ty : Ty} {smaller larger : Nat},
-        ty.InferWF rigidCount 0 smaller → smaller ≤ larger →
-          ty.InferWF rigidCount 0 larger := by
+        ty.InferWF level 0 smaller → smaller ≤ larger →
+          ty.InferWF level 0 larger := by
     intro ty smaller larger wf le
     exact ⟨wf.1, fun id member => lt_of_lt_of_le (wf.2 id member) le⟩
-  induction count generalizing state with
-  | zero =>
-      simp only [InferState.freshMany]
-      refine ⟨safe, ?_, rfl, le_refl state.next⟩
-      intro ty member
-      simp at member
-  | succ count ih =>
-      have first := InferState.fresh_safe safe
-      have rest := ih first.1
-      simp only [InferState.freshMany]
-      refine ⟨rest.1, ?_, ?_, le_trans first.2.2 rest.2.2.2⟩
-      · intro ty member
-        simp only [List.mem_cons] at member
-        rcases member with rfl | member
-        · exact inferWF_mono first.2.1 rest.2.2.2
-        · exact rest.2.1 ty member
-      · simp [rest.2.2.1]
+  have main : ∀ (count : Nat) (state : InferState), state.Safe →
+      (state.freshMany level count).1.Safe ∧
+        (∀ ty ∈ (state.freshMany level count).2,
+          ty.InferWF level 0 (state.freshMany level count).1.next) ∧
+        (∀ ty ∈ (state.freshMany level count).2,
+          ty.LevelBounded (state.freshMany level count).1.solutions level) ∧
+        (state.freshMany level count).2.length = count ∧
+        state.next ≤ (state.freshMany level count).1.next ∧
+        (∀ id, id < state.next →
+          (state.freshMany level count).1.solutions.levelOf id =
+            state.solutions.levelOf id) := by
+    intro count
+    induction count with
+    | zero =>
+        intro state safe
+        simp only [InferState.freshMany]
+        exact ⟨safe, by simp, by simp, rfl, le_rfl, by
+          intro id hid
+          trivial⟩
+    | succ count ih =>
+        intro state safe
+        have first := InferState.fresh_safe (level := level) safe
+        have rest := ih (state.fresh level).1 first.1
+        have headLevel : (state.fresh level).2.LevelBounded
+            (InferState.freshMany level count (state.fresh level).1).1.solutions level :=
+          Ty.LevelBounded.congr first.2.2.1 (fun id member =>
+            rest.2.2.2.2.2 id (first.2.1.2 id member))
+        simp only [InferState.freshMany]
+        refine ⟨rest.1, ?_, ?_, ?_,
+          le_trans first.2.2.2.1 rest.2.2.2.2.1, ?_⟩
+        · intro ty member
+          simp only [List.mem_cons] at member
+          rcases member with rfl | member
+          · exact inferWF_mono first.2.1 rest.2.2.2.2.1
+          · exact rest.2.1 ty member
+        · intro ty member
+          simp only [List.mem_cons] at member
+          rcases member with rfl | member
+          · exact headLevel
+          · exact rest.2.2.1 ty member
+        · simp [rest.2.2.2.1]
+        · intro id hid
+          rw [rest.2.2.2.2.2 id (lt_of_lt_of_le hid first.2.2.2.1)]
+          exact first.2.2.2.2 id hid
+  exact main count state safe
 
 /-- Allocation never moves its frontier backwards. -/
 theorem Template.allocate_next_le
@@ -756,13 +952,18 @@ theorem Template.allocate_mvars
   simpa [Template.allocate, keys, holes, start] using resultBounds
 
 theorem InferState.allocate_safe
-    {state : InferState} {template : Template} {rigidCount : Nat}
-    (safe : state.Safe rigidCount)
+    {state : InferState} {template : Template} {level rigidCount : Nat}
+    (safe : state.Safe)
     (templateScoped : template.Scoped rigidCount 0) :
-    (state.allocate template).1.Safe rigidCount ∧
-      (state.allocate template).2.InferWF rigidCount 0
-        (state.allocate template).1.next ∧
-      state.next ≤ (state.allocate template).1.next := by
+    (state.allocate level template).1.Safe ∧
+      (state.allocate level template).2.InferWF rigidCount 0
+        (state.allocate level template).1.next ∧
+      (state.allocate level template).2.LevelBounded
+        (state.allocate level template).1.solutions level ∧
+      state.next ≤ (state.allocate level template).1.next ∧
+      (∀ id, id < state.next →
+        (state.allocate level template).1.solutions.levelOf id =
+          state.solutions.levelOf id) := by
   simp only [InferState.allocate]
   let allocation := template.allocate state.next
   let count := allocation.next - state.next
@@ -771,128 +972,76 @@ theorem InferState.allocate_safe
   have countEq : state.next + count = allocation.next := by
     simp only [count]
     omega
+  have lengthEq : state.solutions.length = state.next := safe.solutions_length
+  have boundedLength : state.solutions.Bounded state.solutions.length := by
+    simpa [lengthEq] using safe.solutionsBounded
+  have unsolvedNew :
+      ∀ entry ∈ (List.replicate count (⟨level, none⟩ : MEntry)),
+        entry.solution = none := by
+    intro entry member
+    simp only [List.mem_replicate] at member
+    rw [member.2]
   have newSafe :
       ({ next := allocation.next,
-          solutions := state.solutions ++ List.replicate count none } :
-        InferState).Safe rigidCount := by
-    constructor
+          solutions := state.solutions ++
+            List.replicate count (⟨level, none⟩ : MEntry) } :
+        InferState).Safe := by
+    refine ⟨?_, ?_, ?_, ?_⟩
     · simp [safe.solutions_length, countEq]
-    · intro ty hmem
-      rcases List.mem_append.mp hmem with hOld | hNew
-      · exact safe.solutionsScoped ty hOld
-      · simp only [List.mem_replicate] at hNew
-        cases hNew.2
-    · intro ty hmem id hid
-      rcases List.mem_append.mp hmem with hOld | hNew
-      · have oldBound := safe.solutionsBounded ty hOld id hid
-        exact lt_of_lt_of_le oldBound nextLe
-      · simp only [List.mem_replicate] at hNew
-        cases hNew.2
-    · intro ty hmem
-      rcases List.mem_append.mp hmem with hOld | hNew
-      · intro id hid
-        have idInSolutions : id < state.solutions.length := by
-          rw [safe.solutions_length]
-          exact safe.solutionsBounded ty hOld id hid
-        simp only [MStore.lookup]
-        rw [List.getElem?_append_left idInSolutions]
-        exact safe.solutionsNormalized ty hOld id hid
-      · simp only [List.mem_replicate] at hNew
-        cases hNew.2
-  refine ⟨?_, ?_, nextLe⟩
+    · exact MStore.leveled_append_unsolved safe.solutionsLeveled
+        boundedLength unsolvedNew
+    · intro id ty lookup m member
+      have := MStore.bounded_append_unsolved safe.solutionsBounded
+        unsolvedNew id ty lookup m member
+      show m < allocation.next
+      omega
+    · exact MStore.normalized_append_unsolved safe.solutionsNormalized
+        boundedLength unsolvedNew
+  refine ⟨?_, ?_, ?_, nextLe, ?_⟩
   · simpa [allocation, count] using newSafe
   · constructor
     · exact Template.allocate_scoped templateScoped
-    · intro id hmem
-      exact (Template.allocate_mvars templateScoped id hmem).2
+    · intro id member
+      exact (Template.allocate_mvars templateScoped id member).2
+  · intro id member
+    obtain ⟨hbase, hbound⟩ := Template.allocate_mvars templateScoped id member
+    have := MStore.levelOf_append_replicate (store := state.solutions)
+      (count := count) (level := level) (id := id)
+      (by simpa [lengthEq] using hbase)
+      (by rw [lengthEq, countEq]; exact hbound)
+    simpa [allocation, count] using this.le
+  · intro id hid
+    exact MStore.levelOf_append_left (store := state.solutions)
+      (extra := List.replicate count (⟨level, none⟩ : MEntry))
+      (by simpa [safe.solutions_length] using hid)
 
-/-- Constraining two allocated, scoped types preserves state safety and makes
-the equation true in the resulting dense solution table. -/
+/-- Constraining two allocated, scoped types preserves state safety, makes the
+equation true in the resulting dense solution table, and only lowers levels. -/
 theorem InferState.constrain_safe
     {state checked : InferState} {left right : Ty} {rigidCount : Nat}
-    (safe : state.Safe rigidCount)
+    (safe : state.Safe)
     (leftWF : left.InferWF rigidCount 0 state.next)
     (rightWF : right.InferWF rigidCount 0 state.next)
     (run : state.constrain left right = some checked) :
-    checked.Safe rigidCount ∧
+    checked.Safe ∧
       checked.next = state.next ∧
-      checked.solutions.apply left = checked.solutions.apply right := by
+      checked.solutions.apply left = checked.solutions.apply right ∧
+      (∀ id, checked.solutions.levelOf id ≤ state.solutions.levelOf id) := by
   unfold InferState.constrain at run
   cases hunify : state.solutions.unify left right with
   | none => simp [hunify] at run
   | some solutions =>
       simp only [hunify, Option.map_some, Option.some.injEq] at run
       subst checked
-      refine ⟨?_, rfl, ?_⟩
-      · refine ⟨?_, ?_, ?_, ?_⟩
-        · rw [MStore.unify_length hunify, safe.solutions_length]
-        · exact MStore.unify_scoped safe.solutionsScoped
-            leftWF.1 rightWF.1 hunify
-        · exact MStore.unify_bounded safe.solutionsBounded
-            leftWF.2 rightWF.2 hunify
-        · exact MStore.unify_normalized safe.solutionsNormalized hunify
+      refine ⟨?_, rfl, ?_, ?_⟩
+      · exact ⟨by rw [MStore.unify_length hunify, safe.solutions_length],
+          MStore.unify_leveled safe.solutionsLeveled
+            safe.solutionsNormalized hunify,
+          MStore.unify_bounded safe.solutionsBounded
+            leftWF.2 rightWF.2 hunify,
+          MStore.unify_normalized safe.solutionsNormalized hunify⟩
       · exact MStore.unify_apply_eq safe.solutionsNormalized hunify
-
-/-- Forgetting preserves the table's length. -/
-private theorem MStore.forgetFrom_length (store : MStore) (cutoff : Nat) :
-    (store.forgetFrom cutoff).length = store.length := by
-  simp only [MStore.forgetFrom, List.length_append, List.length_take,
-    List.length_replicate]
-  omega
-
-/-- Looking up a forgotten allocated metavariable is the original lookup below
-the cutoff and `none` from the cutoff on. -/
-private theorem MStore.lookup_forgetFrom (store : MStore) (cutoff id : Nat)
-    (hid : id < store.length) :
-    (store.forgetFrom cutoff).lookup id =
-      if id < cutoff then store.lookup id else none := by
-  by_cases h : id < cutoff
-  · simp only [h, if_true]
-    simp only [MStore.forgetFrom, MStore.lookup]
-    rw [List.getElem?_append_left (by rw [List.length_take]; omega)]
-    rw [List.getElem?_take_of_lt h]
-  · simp only [h, if_false]
-    simp only [MStore.forgetFrom, MStore.lookup]
-    rw [List.getElem?_append_right (by rw [List.length_take]; omega)]
-    rw [List.getElem?_replicate]
-    by_cases hin : id - (store.take cutoff).length < store.length - cutoff
-    · rw [if_pos hin]
-      rfl
-    · rw [if_neg hin]
-      rfl
-
-/-- Forgetting a region's solutions leaves a safe table at the outer rigid
-boundary, provided no remaining solution mentions a region rigid. -/
-theorem MStore.forgetFrom_safe
-    {store : MStore} {rigidCount cutoff : Nat}
-    (normalized : store.Normalized)
-    (bounded : store.Bounded store.length)
-    (escape : (store.forgetFrom cutoff).safeToLeave rigidCount = true) :
-    (store.forgetFrom cutoff).length = store.length ∧
-      (store.forgetFrom cutoff).Scoped rigidCount ∧
-      (store.forgetFrom cutoff).Bounded store.length ∧
-      (store.forgetFrom cutoff).Normalized := by
-  have escaped := MStore.safeToLeave_eq_true_iff.mp escape
-  have memStore : ∀ {ty : Ty},
-      some ty ∈ store.forgetFrom cutoff → some ty ∈ store := by
-    intro ty member
-    have memTake : some ty ∈ store.take cutoff := by
-      simpa [MStore.forgetFrom] using member
-    exact List.mem_of_mem_take memTake
-  refine ⟨MStore.forgetFrom_length store cutoff, ?_, ?_, ?_⟩
-  · intro ty member
-    exact escaped ty member
-  · intro ty member id hid
-    exact bounded ty (memStore member) id hid
-  · intro ty member id hid
-    have boundedEntry := bounded ty (memStore member) id hid
-    have normalizedNone : store.lookup id = none :=
-      normalized ty (memStore member) id hid
-    rw [MStore.lookup_forgetFrom store cutoff id boundedEntry]
-    split
-    · exact normalizedNone
-    · rfl
-
+      · exact MStore.unify_levelOf_le hunify
 
 end EPL
 
@@ -1068,19 +1217,71 @@ private theorem Ty.closeRigids_mvarBounded
   rw [Ty.mvars_closeRigids] at member
   exact bounded id member
 
-/-- Successful internal inference preserves the dense-state invariant, returns
-an allocated/scoped algorithmic type, and never moves the caller's outer
-frontier backwards. This is the structural precursor to semantic soundness. -/
+/-- Closing rigid levels preserves level bounds. -/
+private theorem Ty.closeRigids_levelBounded
+    {ty : Ty} {base count : Nat} {store : MStore} {level : Nat}
+    (bounded : ty.LevelBounded store level) :
+    (ty.closeRigids base count).LevelBounded store level := by
+  intro id member
+  rw [Ty.mvars_closeRigids] at member
+  exact bounded id member
+
+/-- Every metavariable of an opened type comes from the body or one of the
+substituted arguments. -/
+private theorem Ty.mem_mvars_openWith {ty : Ty} {args : List Ty} {id : Nat}
+    (member : id ∈ (ty.openWith args).mvars) :
+    id ∈ ty.mvars ∨ ∃ arg ∈ args, id ∈ arg.mvars := by
+  induction ty with
+  | prim name => simp [Ty.openWith, Ty.mvars] at member
+  | arrow domain codomain ihDomain ihCodomain =>
+      simp only [Ty.openWith, Ty.mvars, List.mem_dedup, List.mem_append] at member
+      rcases member with member | member
+      · rcases ihDomain member with old | new
+        · exact Or.inl (by simp [Ty.mvars, List.mem_dedup, old])
+        · exact Or.inr new
+      · rcases ihCodomain member with old | new
+        · exact Or.inl (by simp [Ty.mvars, List.mem_dedup, old])
+        · exact Or.inr new
+  | bvar index =>
+      simp only [Ty.openWith] at member
+      cases hget : args[index]? with
+      | none => simp [hget, Ty.mvars] at member
+      | some arg =>
+          simp only [hget, Option.getD_some] at member
+          exact Or.inr ⟨arg, List.mem_of_getElem? hget, member⟩
+  | rigid level => simp [Ty.openWith, Ty.mvars] at member
+  | mvar id' =>
+      exact Or.inl (by simpa [Ty.openWith, Ty.mvars] using member)
+
+/-- Opening a scheme body by argument types preserves level bounds when both
+the body and every argument satisfy the same bound. -/
+private theorem Ty.openWith_levelBounded
+    {ty : Ty} {args : List Ty} {store : MStore} {level : Nat}
+    (bodyBounded : ty.LevelBounded store level)
+    (argsBounded : ∀ arg ∈ args, arg.LevelBounded store level) :
+    (ty.openWith args).LevelBounded store level := by
+  intro id member
+  rcases Ty.mem_mvars_openWith member with old | ⟨arg, argMem, argMember⟩
+  · exact bodyBounded id old
+  · exact argsBounded arg argMem id argMember
+
+/-- Inference preserves state safety, returns an allocated type scoped and
+levelled at the current rigid count, never moves the frontier backwards, and
+only ever lowers the levels of existing metavariables. -/
 theorem inferFuel_safe
     {fuel rigidCount : Nat} {ctx : Ctx} {input : Source}
     {state : InferState} {result : InferResult}
-    (stateSafe : state.Safe rigidCount)
+    (stateSafe : state.Safe)
     (ctxWF : ctx.InferWF rigidCount state.next)
+    (ctxLevels : ∀ scheme ∈ ctx, scheme.body.LevelBounded state.solutions rigidCount)
     (inputScoped : input.TypeScoped rigidCount 0)
     (run : inferFuel fuel rigidCount ctx input state = some result) :
-    result.state.Safe rigidCount ∧
+    result.state.Safe ∧
       result.ty.InferWF rigidCount 0 result.state.next ∧
-      state.next ≤ result.state.next := by
+      result.ty.LevelBounded result.state.solutions rigidCount ∧
+      state.next ≤ result.state.next ∧
+      ∀ id, id < state.next →
+        result.state.solutions.levelOf id ≤ state.solutions.levelOf id := by
   have scoped_mono_rigid :
       ∀ {ty : Ty} {rigid smaller larger : Nat},
         ty.Scoped smaller rigid → smaller ≤ larger → ty.Scoped larger rigid := by
@@ -1115,13 +1316,6 @@ theorem inferFuel_safe
           context.InferWF larger frontier := by
     intro context frontier smaller larger h le scheme member
     exact inferWF_mono_rigid (h scheme member) le
-  have state_mono_rigid :
-      ∀ {candidate : InferState} {smaller larger : Nat},
-        candidate.Safe smaller → smaller ≤ larger → candidate.Safe larger := by
-    intro candidate smaller larger h le
-    exact ⟨h.solutions_length,
-      (fun ty member => scoped_mono_rigid (h.solutionsScoped ty member) le),
-      h.solutionsBounded, h.solutionsNormalized⟩
   have metaFree_bounded :
       ∀ {ty : Ty} {frontier : Nat}, ty.MetaFree → ty.MVarBounded frontier := by
     intro ty frontier h
@@ -1186,16 +1380,25 @@ theorem inferFuel_safe
       | primLit literal =>
           simp only [inferFuel, Option.some.injEq] at run
           subst result
-          refine ⟨stateSafe, ?_, le_rfl⟩
-          cases literal <;> exact wf_inferWF ⟨.prim, .prim⟩
+          refine ⟨stateSafe, ?_, ?_, le_rfl, ?_⟩
+          · cases literal <;> exact wf_inferWF ⟨.prim, .prim⟩
+          · cases literal <;>
+              (intro id member; simp [Ty.mvars, PrimLit.ty] at member)
+          · intro id hid
+            exact le_rfl
       | primOp op =>
           simp only [inferFuel, Option.some.injEq] at run
           subst result
-          refine ⟨stateSafe, ?_, le_rfl⟩
-          cases op
-          exact wf_inferWF
-            ⟨.arrow .prim (.arrow .prim .prim),
-              .arrow .prim (.arrow .prim .prim)⟩
+          refine ⟨stateSafe, ?_, ?_, le_rfl, ?_⟩
+          · cases op
+            exact wf_inferWF
+              ⟨.arrow .prim (.arrow .prim .prim),
+                .arrow .prim (.arrow .prim .prim)⟩
+          · cases op
+            intro id member
+            simp [Ty.mvars, PrimOp.ty] at member
+          · intro id hid
+            exact le_rfl
       | var index =>
           simp only [inferFuel] at run
           cases lookup : ctx[index]? with
@@ -1204,36 +1407,46 @@ theorem inferFuel_safe
               simp only [lookup] at run
               have schemeMember : scheme ∈ ctx := List.mem_of_getElem? lookup
               have schemeWF := ctxWF scheme schemeMember
-              have appliedWF :
-                  (state.solutions.applyScheme scheme).InferWF
-                    rigidCount state.next := by
-                exact MStore.apply_inferWF stateSafe.solutionsScoped
-                  stateSafe.solutionsBounded schemeWF
-              let fresh := state.freshMany scheme.paramCount
+              have schemeLevels := ctxLevels scheme schemeMember
+              have applied := MStore.apply_inferWF stateSafe.solutionsLeveled
+                stateSafe.solutionsBounded schemeWF schemeLevels
+              let fresh := state.freshMany rigidCount scheme.paramCount
               have freshSafe := InferState.freshMany_safe
-                (count := scheme.paramCount) stateSafe
+                (level := rigidCount) (count := scheme.paramCount) stateSafe
               have appliedMono :
                   (state.solutions.applyScheme scheme).InferWF
                     rigidCount fresh.1.next :=
-                inferWF_mono appliedWF freshSafe.2.2.2
+                inferWF_mono applied.1 freshSafe.2.2.2.2.1
+              have appliedLevels :
+                  (state.solutions.apply scheme.body).LevelBounded
+                    fresh.1.solutions rigidCount :=
+                Ty.LevelBounded.congr applied.2 (fun id member =>
+                  freshSafe.2.2.2.2.2 id (applied.1.2 id member))
               have openedWF :
                   ((state.solutions.applyScheme scheme).openWith fresh.2).InferWF
                     rigidCount 0 fresh.1.next :=
-                openWith_inferWF appliedMono freshSafe.2.2.1 freshSafe.2.1
+                openWith_inferWF appliedMono freshSafe.2.2.2.1 freshSafe.2.1
+              have openedLevels :
+                  ((state.solutions.applyScheme scheme).openWith fresh.2).LevelBounded
+                    fresh.1.solutions rigidCount :=
+                Ty.openWith_levelBounded appliedLevels freshSafe.2.2.1
               have resultEq : result =
                   ⟨fresh.1, (state.solutions.applyScheme scheme).openWith fresh.2,
                     .var index⟩ := by
                 exact Option.some.inj run.symm
               subst result
-              exact ⟨freshSafe.1, openedWF, freshSafe.2.2.2⟩
+              exact ⟨freshSafe.1, openedWF, openedLevels,
+                freshSafe.2.2.2.2.1,
+                fun id hid => le_of_eq (freshSafe.2.2.2.2.2 id hid)⟩
       | lambda ann body =>
           cases inputScoped with
           | lambda annScoped bodyScoped =>
             cases ann with
             | none =>
                 simp only [inferFuel] at run
-                let seeded := state.fresh
-                have seededSafe := InferState.fresh_safe stateSafe
+                let seeded := state.fresh rigidCount
+                have seededSafe := InferState.fresh_safe
+                  (level := rigidCount) stateSafe
                 have bodyCtxWF :
                     Ctx.InferWF (PolyTy.mono seeded.2 :: ctx)
                       rigidCount seeded.1.next := by
@@ -1241,7 +1454,19 @@ theorem inferFuel_safe
                   simp only [List.mem_cons] at member
                   rcases member with rfl | member
                   · exact seededSafe.2.1
-                  · exact ctx_mono ctxWF seededSafe.2.2 scheme member
+                  · exact ctx_mono ctxWF seededSafe.2.2.2.1 scheme member
+                have bodyCtxLevels :
+                    ∀ scheme ∈ PolyTy.mono seeded.2 :: ctx,
+                      scheme.body.LevelBounded seeded.1.solutions rigidCount := by
+                  intro scheme member
+                  simp only [List.mem_cons] at member
+                  rcases member with rfl | member
+                  · exact seededSafe.2.2.1
+                  · intro id hid
+                    have idBound : id < state.next :=
+                      (ctxWF scheme member).2 id hid
+                    rw [seededSafe.2.2.2.2 id idBound]
+                    exact ctxLevels scheme member id hid
                 cases bodyRun : inferFuel fuel rigidCount
                     (PolyTy.mono seeded.2 :: ctx) body seeded.1 with
                 | none =>
@@ -1250,13 +1475,18 @@ theorem inferFuel_safe
                 | some bodyResult =>
                     dsimp [seeded] at bodyRun
                     simp [bodyRun] at run
-                    have bodySafe := ih seededSafe.1 bodyCtxWF bodyScoped bodyRun
+                    have bodySafe := ih seededSafe.1 bodyCtxWF bodyCtxLevels
+                      bodyScoped bodyRun
                     have paramBefore : seeded.2.InferWF rigidCount 0
                         bodyResult.state.next :=
-                      inferWF_mono seededSafe.2.1 bodySafe.2.2
+                      inferWF_mono seededSafe.2.1 bodySafe.2.2.2.1
+                    have paramLevels : seeded.2.LevelBounded
+                        bodyResult.state.solutions rigidCount :=
+                      Ty.LevelBounded.mono_le_on seededSafe.2.2.1 (fun id member =>
+                        bodySafe.2.2.2.2 id (seededSafe.2.1.2 id member))
                     have paramAfter := MStore.apply_inferWF
-                      bodySafe.1.solutionsScoped bodySafe.1.solutionsBounded
-                      paramBefore
+                      bodySafe.1.solutionsLeveled bodySafe.1.solutionsBounded
+                      paramBefore paramLevels
                     have resultEq : result =
                         ⟨bodyResult.state,
                           .arrow (bodyResult.state.solutions.apply seeded.2)
@@ -1264,21 +1494,36 @@ theorem inferFuel_safe
                           .lambda (some seeded.2) bodyResult.elaborated⟩ := by
                       simpa [seeded] using run.symm
                     subst result
-                    exact ⟨bodySafe.1,
-                      ⟨.arrow paramAfter.1 bodySafe.2.1.1,
+                    refine ⟨bodySafe.1,
+                      ⟨.arrow paramAfter.1.1 bodySafe.2.1.1,
                         by
                           intro id member
                           simp only [Ty.mvars, List.mem_dedup,
                             List.mem_append] at member
                           rcases member with member | member
-                          · exact paramAfter.2 id member
+                          · exact paramAfter.1.2 id member
                           · exact bodySafe.2.1.2 id member⟩,
-                      le_trans seededSafe.2.2 bodySafe.2.2⟩
+                      by
+                        intro id member
+                        simp only [Ty.mvars, List.mem_dedup,
+                          List.mem_append] at member
+                        rcases member with member | member
+                        · exact paramAfter.2 id member
+                        · exact bodySafe.2.2.1 id member,
+                      le_trans seededSafe.2.2.2.1 bodySafe.2.2.2.1,
+                      ?_⟩
+                    intro id hid
+                    have hidSeeded : id < seeded.1.next :=
+                      lt_of_lt_of_le hid seededSafe.2.2.2.1
+                    exact le_trans (bodySafe.2.2.2.2 id hidSeeded)
+                      (le_of_eq (seededSafe.2.2.2.2 id hid))
             | some template =>
                 have templateScoped := annScoped template rfl
                 simp only [inferFuel] at run
-                let seeded := state.allocate template
-                have seededSafe := InferState.allocate_safe stateSafe templateScoped
+                let seeded := state.allocate rigidCount template
+                have seededSafe := InferState.allocate_safe
+                  (level := rigidCount) (rigidCount := rigidCount)
+                  stateSafe templateScoped
                 have bodyCtxWF :
                     Ctx.InferWF (PolyTy.mono seeded.2 :: ctx)
                       rigidCount seeded.1.next := by
@@ -1286,7 +1531,19 @@ theorem inferFuel_safe
                   simp only [List.mem_cons] at member
                   rcases member with rfl | member
                   · exact seededSafe.2.1
-                  · exact ctx_mono ctxWF seededSafe.2.2 scheme member
+                  · exact ctx_mono ctxWF seededSafe.2.2.2.1 scheme member
+                have bodyCtxLevels :
+                    ∀ scheme ∈ PolyTy.mono seeded.2 :: ctx,
+                      scheme.body.LevelBounded seeded.1.solutions rigidCount := by
+                  intro scheme member
+                  simp only [List.mem_cons] at member
+                  rcases member with rfl | member
+                  · exact seededSafe.2.2.1
+                  · intro id hid
+                    have idBound : id < state.next :=
+                      (ctxWF scheme member).2 id hid
+                    rw [seededSafe.2.2.2.2 id idBound]
+                    exact ctxLevels scheme member id hid
                 cases bodyRun : inferFuel fuel rigidCount
                     (PolyTy.mono seeded.2 :: ctx) body seeded.1 with
                 | none =>
@@ -1295,13 +1552,18 @@ theorem inferFuel_safe
                 | some bodyResult =>
                     dsimp [seeded] at bodyRun
                     simp [bodyRun] at run
-                    have bodySafe := ih seededSafe.1 bodyCtxWF bodyScoped bodyRun
+                    have bodySafe := ih seededSafe.1 bodyCtxWF bodyCtxLevels
+                      bodyScoped bodyRun
                     have paramBefore : seeded.2.InferWF rigidCount 0
                         bodyResult.state.next :=
-                      inferWF_mono seededSafe.2.1 bodySafe.2.2
+                      inferWF_mono seededSafe.2.1 bodySafe.2.2.2.1
+                    have paramLevels : seeded.2.LevelBounded
+                        bodyResult.state.solutions rigidCount :=
+                      Ty.LevelBounded.mono_le_on seededSafe.2.2.1 (fun id member =>
+                        bodySafe.2.2.2.2 id (seededSafe.2.1.2 id member))
                     have paramAfter := MStore.apply_inferWF
-                      bodySafe.1.solutionsScoped bodySafe.1.solutionsBounded
-                      paramBefore
+                      bodySafe.1.solutionsLeveled bodySafe.1.solutionsBounded
+                      paramBefore paramLevels
                     have resultEq : result =
                         ⟨bodyResult.state,
                           .arrow (bodyResult.state.solutions.apply seeded.2)
@@ -1309,16 +1571,29 @@ theorem inferFuel_safe
                           .lambda (some seeded.2) bodyResult.elaborated⟩ := by
                       simpa [seeded] using run.symm
                     subst result
-                    exact ⟨bodySafe.1,
-                      ⟨.arrow paramAfter.1 bodySafe.2.1.1,
+                    refine ⟨bodySafe.1,
+                      ⟨.arrow paramAfter.1.1 bodySafe.2.1.1,
                         by
                           intro id member
                           simp only [Ty.mvars, List.mem_dedup,
                             List.mem_append] at member
                           rcases member with member | member
-                          · exact paramAfter.2 id member
+                          · exact paramAfter.1.2 id member
                           · exact bodySafe.2.1.2 id member⟩,
-                      le_trans seededSafe.2.2 bodySafe.2.2⟩
+                      by
+                        intro id member
+                        simp only [Ty.mvars, List.mem_dedup,
+                          List.mem_append] at member
+                        rcases member with member | member
+                        · exact paramAfter.2 id member
+                        · exact bodySafe.2.2.1 id member,
+                      le_trans seededSafe.2.2.2.1 bodySafe.2.2.2.1,
+                      ?_⟩
+                    intro id hid
+                    have hidSeeded : id < seeded.1.next :=
+                      lt_of_lt_of_le hid seededSafe.2.2.2.1
+                    exact le_trans (bodySafe.2.2.2.2 id hidSeeded)
+                      (le_of_eq (seededSafe.2.2.2.2 id hid))
       | app function argument =>
           cases inputScoped with
           | app functionScoped argumentScoped =>
@@ -1326,23 +1601,56 @@ theorem inferFuel_safe
             cases functionRun : inferFuel fuel rigidCount ctx function state with
             | none => simp [functionRun] at run
             | some functionResult =>
-                have functionSafe := ih stateSafe ctxWF functionScoped functionRun
-                have argumentCtxWF := ctx_mono ctxWF functionSafe.2.2
+                have functionSafe := ih stateSafe ctxWF ctxLevels
+                  functionScoped functionRun
+                have argumentCtxWF := ctx_mono ctxWF functionSafe.2.2.2.1
+                have argumentCtxLevels :
+                    ∀ scheme ∈ ctx,
+                      scheme.body.LevelBounded
+                        functionResult.state.solutions rigidCount := by
+                  intro scheme member id hid
+                  have idBound : id < state.next :=
+                    (ctxWF scheme member).2 id hid
+                  exact le_trans (functionSafe.2.2.2.2 id idBound)
+                    (ctxLevels scheme member id hid)
                 cases argumentRun : inferFuel fuel rigidCount ctx argument
                     functionResult.state with
                 | none => simp [functionRun, argumentRun] at run
                 | some argumentResult =>
                     have argumentSafe := ih functionSafe.1 argumentCtxWF
-                      argumentScoped argumentRun
-                    let fresh := argumentResult.state.fresh
-                    have freshSafe := InferState.fresh_safe argumentSafe.1
+                      argumentCtxLevels argumentScoped argumentRun
+                    let fresh := argumentResult.state.fresh rigidCount
+                    have freshSafe := InferState.fresh_safe
+                      (level := rigidCount) argumentSafe.1
                     have functionTyWF : functionResult.ty.InferWF rigidCount 0
                         fresh.1.next :=
                       inferWF_mono functionSafe.2.1
-                        (le_trans argumentSafe.2.2 freshSafe.2.2)
+                        (le_trans argumentSafe.2.2.2.1 freshSafe.2.2.2.1)
                     have argumentTyWF : argumentResult.ty.InferWF rigidCount 0
                         fresh.1.next :=
-                      inferWF_mono argumentSafe.2.1 freshSafe.2.2
+                      inferWF_mono argumentSafe.2.1 freshSafe.2.2.2.1
+                    have functionTyLevels : functionResult.ty.LevelBounded
+                        fresh.1.solutions rigidCount := by
+                      intro id hid
+                      have hidFunction : id < functionResult.state.next :=
+                        functionSafe.2.1.2 id hid
+                      have hidArgument : id < argumentResult.state.next :=
+                        lt_of_lt_of_le hidFunction argumentSafe.2.2.2.1
+                      calc fresh.1.solutions.levelOf id
+                          = argumentResult.state.solutions.levelOf id :=
+                            freshSafe.2.2.2.2 id hidArgument
+                        _ ≤ functionResult.state.solutions.levelOf id :=
+                            argumentSafe.2.2.2.2 id hidFunction
+                        _ ≤ rigidCount := functionSafe.2.2.1 id hid
+                    have argumentTyLevels : argumentResult.ty.LevelBounded
+                        fresh.1.solutions rigidCount := by
+                      intro id hid
+                      have hidArgument : id < argumentResult.state.next :=
+                        argumentSafe.2.1.2 id hid
+                      calc fresh.1.solutions.levelOf id
+                          = argumentResult.state.solutions.levelOf id :=
+                            freshSafe.2.2.2.2 id hidArgument
+                        _ ≤ rigidCount := argumentSafe.2.2.1 id hid
                     have arrowWF :
                         (Ty.arrow argumentResult.ty fresh.2).InferWF
                           rigidCount 0 fresh.1.next := by
@@ -1354,6 +1662,15 @@ theorem inferFuel_safe
                           rcases member with member | member
                           · exact argumentTyWF.2 id member
                           · exact freshSafe.2.1.2 id member⟩
+                    have arrowLevels :
+                        (Ty.arrow argumentResult.ty fresh.2).LevelBounded
+                          fresh.1.solutions rigidCount := by
+                      intro id member
+                      simp only [Ty.mvars, List.mem_dedup,
+                        List.mem_append] at member
+                      rcases member with member | member
+                      · exact argumentTyLevels id member
+                      · exact freshSafe.2.2.1 id member
                     cases checkedRun : fresh.1.constrain functionResult.ty
                         (.arrow argumentResult.ty fresh.2) with
                     | none =>
@@ -1368,19 +1685,36 @@ theorem inferFuel_safe
                             checked.next := by
                           rw [checkedSafe.2.1]
                           exact freshSafe.2.1
-                        have resultTyWF := MStore.apply_inferWF
-                          checkedSafe.1.solutionsScoped
-                          checkedSafe.1.solutionsBounded freshTyAtChecked
+                        have freshLevelsAtChecked : fresh.2.LevelBounded
+                            checked.solutions rigidCount :=
+                          Ty.LevelBounded.mono_le freshSafe.2.2.1
+                            (fun id => checkedSafe.2.2.2 id)
+                        have resultApplied := MStore.apply_inferWF
+                          checkedSafe.1.solutionsLeveled
+                          checkedSafe.1.solutionsBounded
+                          freshTyAtChecked freshLevelsAtChecked
                         have resultEq : result =
                             ⟨checked, checked.solutions.apply fresh.2,
                               .app functionResult.elaborated
                                 argumentResult.elaborated⟩ := by
                           simpa [fresh] using run.symm
                         subst result
-                        refine ⟨checkedSafe.1, resultTyWF, ?_⟩
-                        rw [checkedSafe.2.1]
-                        exact le_trans functionSafe.2.2
-                          (le_trans argumentSafe.2.2 freshSafe.2.2)
+                        refine ⟨checkedSafe.1, resultApplied.1,
+                          resultApplied.2, ?_, ?_⟩
+                        · rw [checkedSafe.2.1]
+                          exact le_trans functionSafe.2.2.2.1
+                            (le_trans argumentSafe.2.2.2.1 freshSafe.2.2.2.1)
+                        · intro id hid
+                          have hidFunction : id < functionResult.state.next :=
+                            lt_of_lt_of_le hid functionSafe.2.2.2.1
+                          have hidArgument : id < argumentResult.state.next :=
+                            lt_of_lt_of_le hidFunction argumentSafe.2.2.2.1
+                          have hidFresh : id < fresh.1.next :=
+                            lt_of_lt_of_le hidArgument freshSafe.2.2.2.1
+                          exact le_trans (checkedSafe.2.2.2 id)
+                            (le_trans (le_of_eq (freshSafe.2.2.2.2 id hidArgument))
+                              (le_trans (argumentSafe.2.2.2.2 id hidFunction)
+                                (functionSafe.2.2.2.2 id hid)))
       | letIn ann rhs body =>
           cases ann with
           | none =>
@@ -1390,12 +1724,15 @@ theorem inferFuel_safe
                 cases rhsRun : inferFuel fuel rigidCount ctx rhs state with
                 | none => simp [rhsRun] at run
                 | some rhsResult =>
-                    have rhsSafe := ih stateSafe ctxWF rhsScoped rhsRun
+                    have rhsSafe := ih stateSafe ctxWF ctxLevels rhsScoped rhsRun
                     let rhsTy := rhsResult.state.solutions.apply rhsResult.ty
+                    have rhsApplied := MStore.apply_inferWF
+                      rhsSafe.1.solutionsLeveled rhsSafe.1.solutionsBounded
+                      rhsSafe.2.1 rhsSafe.2.2.1
                     have rhsTyWF : rhsTy.InferWF rigidCount 0
-                        rhsResult.state.next :=
-                      MStore.apply_inferWF rhsSafe.1.solutionsScoped
-                        rhsSafe.1.solutionsBounded rhsSafe.2.1
+                        rhsResult.state.next := rhsApplied.1
+                    have rhsTyLevels : rhsTy.LevelBounded
+                        rhsResult.state.solutions rigidCount := rhsApplied.2
                     have bodyCtxWF :
                         Ctx.InferWF (PolyTy.mono rhsTy :: ctx)
                           rigidCount rhsResult.state.next := by
@@ -1403,13 +1740,27 @@ theorem inferFuel_safe
                       simp only [List.mem_cons] at member
                       rcases member with rfl | member
                       · exact rhsTyWF
-                      · exact ctx_mono ctxWF rhsSafe.2.2 scheme member
+                      · exact ctx_mono ctxWF rhsSafe.2.2.2.1 scheme member
+                    have bodyCtxLevels :
+                        ∀ scheme ∈ PolyTy.mono rhsTy :: ctx,
+                          scheme.body.LevelBounded
+                            rhsResult.state.solutions rigidCount := by
+                      intro scheme member
+                      simp only [List.mem_cons] at member
+                      rcases member with rfl | member
+                      · exact rhsTyLevels
+                      · intro id hid
+                        have idBound : id < state.next :=
+                          (ctxWF scheme member).2 id hid
+                        exact le_trans (rhsSafe.2.2.2.2 id idBound)
+                          (ctxLevels scheme member id hid)
                     cases bodyRun : inferFuel fuel rigidCount
                         (PolyTy.mono rhsTy :: ctx) body rhsResult.state with
                     | none =>
                         simp [rhsTy, rhsRun, bodyRun] at run
                     | some bodyResult =>
-                        have bodySafe := ih rhsSafe.1 bodyCtxWF bodyScoped bodyRun
+                        have bodySafe := ih rhsSafe.1 bodyCtxWF bodyCtxLevels
+                          bodyScoped bodyRun
                         simp [rhsTy, rhsRun, bodyRun] at run
                         have resultEq : result =
                             ⟨bodyResult.state, bodyResult.ty,
@@ -1417,143 +1768,209 @@ theorem inferFuel_safe
                                 bodyResult.elaborated⟩ := by
                           exact run.symm
                         subst result
-                        exact ⟨bodySafe.1, bodySafe.2.1,
-                          le_trans rhsSafe.2.2 bodySafe.2.2⟩
+                        refine ⟨bodySafe.1, bodySafe.2.1, bodySafe.2.2.1,
+                          le_trans rhsSafe.2.2.2.1 bodySafe.2.2.2.1, ?_⟩
+                        intro id hid
+                        have hidRhs : id < rhsResult.state.next :=
+                          lt_of_lt_of_le hid rhsSafe.2.2.2.1
+                        exact le_trans (bodySafe.2.2.2.2 id hidRhs)
+                          (rhsSafe.2.2.2.2 id hid)
           | some written =>
               cases inputScoped with
               | letPoly writtenScoped rhsScoped bodyScoped =>
                 simp only [inferFuel] at run
                 let localStart := state.next
                 let count := written.paramCount
+                let inner := rigidCount + count
                 let openedTemplate :=
                   written.body.openRigidsFrom 0 rigidCount count
                 have openedTemplateScoped :
-                    openedTemplate.Scoped (rigidCount + count) 0 := by
-                  simpa [openedTemplate, Nat.zero_add] using
+                    openedTemplate.Scoped inner 0 := by
+                  simpa [openedTemplate, inner, Nat.zero_add] using
                     (Template.openRigidsFrom_scoped
                       (rigidCount := rigidCount) (depth := 0)
                       (count := count) writtenScoped)
-                have localStateSafe : state.Safe (rigidCount + count) :=
-                  state_mono_rigid stateSafe (by omega)
-                let seeded := state.allocate openedTemplate
-                have seededSafe := InferState.allocate_safe localStateSafe
-                  openedTemplateScoped
+                let seeded := state.allocate inner openedTemplate
+                have seededSafe := InferState.allocate_safe
+                  (level := inner) (rigidCount := inner)
+                  stateSafe openedTemplateScoped
                 have openedRhsScoped :
-                    (rhs.openRigids rigidCount count).TypeScoped
-                      (rigidCount + count) 0 := by
-                  simpa [Expr.openRigids, count, Nat.zero_add] using
+                    (rhs.openRigids rigidCount count).TypeScoped inner 0 := by
+                  simpa [Expr.openRigids, inner, count, Nat.zero_add] using
                     (Expr.openRigidsFrom_typeScoped
                       (rigidCount := rigidCount) (depth := 0)
                       (count := count) rhsScoped)
-                have rhsCtxWF : ctx.InferWF (rigidCount + count)
-                    seeded.1.next :=
-                  ctx_mono (ctx_mono_rigid ctxWF (by omega)) seededSafe.2.2
-                cases rhsRun : inferFuel fuel (rigidCount + count) ctx
+                have rhsCtxWF : ctx.InferWF inner seeded.1.next :=
+                  ctx_mono (ctx_mono_rigid ctxWF (by omega)) seededSafe.2.2.2.1
+                have rhsCtxLevels :
+                    ∀ scheme ∈ ctx,
+                      scheme.body.LevelBounded seeded.1.solutions inner := by
+                  intro scheme member id hid
+                  have idBound : id < state.next :=
+                    (ctxWF scheme member).2 id hid
+                  rw [seededSafe.2.2.2.2 id idBound]
+                  exact le_trans (ctxLevels scheme member id hid) (by omega)
+                cases rhsRun : inferFuel fuel inner ctx
                     (rhs.openRigids rigidCount count) seeded.1 with
                 | none =>
-                    dsimp [seeded, openedTemplate, count] at rhsRun
+                    dsimp [seeded, openedTemplate, count, inner] at rhsRun
                     simp [rhsRun] at run
                 | some rhsResult =>
-                    dsimp [seeded, openedTemplate, count] at rhsRun
-                    have rhsSafe := ih seededSafe.1 rhsCtxWF openedRhsScoped rhsRun
-                    have seededTyAtRhs : seeded.2.InferWF
-                        (rigidCount + count) 0 rhsResult.state.next :=
-                      inferWF_mono seededSafe.2.1 rhsSafe.2.2
+                    dsimp [seeded, openedTemplate, count, inner] at rhsRun
+                    have rhsSafe := ih seededSafe.1 rhsCtxWF rhsCtxLevels
+                      openedRhsScoped rhsRun
+                    have seededTyAtRhs : seeded.2.InferWF inner 0
+                        rhsResult.state.next :=
+                      inferWF_mono seededSafe.2.1 rhsSafe.2.2.2.1
+                    have seededLevelsRhs : seeded.2.LevelBounded
+                        rhsResult.state.solutions inner :=
+                      Ty.LevelBounded.mono_le_on seededSafe.2.2.1 (fun id member =>
+                        rhsSafe.2.2.2.2 id (seededSafe.2.1.2 id member))
                     cases checkedRun : rhsResult.state.constrain
                         rhsResult.ty seeded.2 with
                     | none =>
-                        dsimp [seeded, openedTemplate, count] at checkedRun
+                        dsimp [seeded, openedTemplate, count, inner] at checkedRun
                         simp [rhsRun, checkedRun] at run
                     | some checked =>
-                        dsimp [seeded, openedTemplate, count] at checkedRun
+                        dsimp [seeded, openedTemplate, count, inner] at checkedRun
                         have checkedSafe := InferState.constrain_safe rhsSafe.1
                           rhsSafe.2.1 seededTyAtRhs checkedRun
                         let completedOpen := checked.solutions.apply seeded.2
                         let completed : PolyTy :=
                           ⟨count, completedOpen.closeRigids rigidCount count⟩
-                        let projected := checked.solutions.forgetFrom state.next
-                        have escape : projected.safeToLeave rigidCount = true := by
-                          by_contra h
-                          have hfalse : projected.safeToLeave rigidCount = false := by
-                            cases hv : projected.safeToLeave rigidCount <;> simp_all
-                          simp [rhsRun, checkedRun, projected, hfalse] at run
-                        have projectedSafe := MStore.forgetFrom_safe
-                          checkedSafe.1.solutionsNormalized
-                          (by simpa [checkedSafe.1.solutions_length] using
-                            checkedSafe.1.solutionsBounded)
-                          escape
+                        simp [rhsRun, checkedRun] at run
+                        have good :
+                            completedOpen.mvars.all
+                              (fun id => checked.solutions.levelOf id ≤ rigidCount) = true := by
+                          refine List.all_eq_true.mpr ?_
+                          intro id mem
+                          simpa [completedOpen] using run.1 id mem
                         have localStartLe : localStart ≤ checked.next := by
                           rw [checkedSafe.2.1]
-                          exact le_trans seededSafe.2.2 rhsSafe.2.2
-                        let outerState : InferState :=
-                          { next := checked.next
-                            solutions := projected }
-                        have outerSafe : outerState.Safe rigidCount := by
-                          refine ⟨?_, ?_, ?_, ?_⟩
-                          · simpa [outerState, projected,
-                              checkedSafe.1.solutions_length] using projectedSafe.1
-                          · simpa [outerState, projected] using projectedSafe.2.1
-                          · simpa [outerState, projected,
-                              checkedSafe.1.solutions_length] using projectedSafe.2.2.1
-                          · simpa [outerState, projected] using projectedSafe.2.2.2
-                        have seededAtChecked : seeded.2.InferWF
-                            (rigidCount + count) 0 checked.next := by
+                          exact le_trans seededSafe.2.2.2.1 rhsSafe.2.2.2.1
+                        have checkedLevelLeState :
+                            ∀ id, id < state.next →
+                              checked.solutions.levelOf id ≤
+                                state.solutions.levelOf id := by
+                          intro id hid
+                          have hidSeeded : id < seeded.1.next :=
+                            lt_of_lt_of_le hid seededSafe.2.2.2.1
+                          have hidRhs : id < rhsResult.state.next :=
+                            lt_of_lt_of_le hidSeeded rhsSafe.2.2.2.1
+                          calc checked.solutions.levelOf id
+                              ≤ rhsResult.state.solutions.levelOf id :=
+                                checkedSafe.2.2.2 id
+                            _ ≤ seeded.1.solutions.levelOf id :=
+                                rhsSafe.2.2.2.2 id hidSeeded
+                            _ = state.solutions.levelOf id :=
+                                seededSafe.2.2.2.2 id hid
+                        have seededAtChecked : seeded.2.InferWF inner 0
+                            checked.next := by
                           rw [checkedSafe.2.1]
                           exact seededTyAtRhs
-                        have completedOpenWF := MStore.apply_inferWF
-                          checkedSafe.1.solutionsScoped
-                          checkedSafe.1.solutionsBounded seededAtChecked
+                        have seededLevelsChecked : seeded.2.LevelBounded
+                            checked.solutions inner :=
+                          Ty.LevelBounded.mono_le seededLevelsRhs
+                            (fun id => checkedSafe.2.2.2 id)
+                        have completedOpenApplied := MStore.apply_inferWF
+                          checkedSafe.1.solutionsLeveled
+                          checkedSafe.1.solutionsBounded
+                          seededAtChecked seededLevelsChecked
                         have completedBodyScoped :
                             completed.body.Scoped rigidCount count := by
-                          simpa [completed] using
-                            Ty.closeRigids_scoped_zero completedOpenWF.1
+                          simpa [completed, inner] using
+                            Ty.closeRigids_scoped_zero completedOpenApplied.1.1
                         have completedBodyBounded :
                             completed.body.MVarBounded checked.next := by
                           simpa [completed] using
-                            Ty.closeRigids_mvarBounded completedOpenWF.2
+                            Ty.closeRigids_mvarBounded completedOpenApplied.1.2
                         have completedWF : completed.InferWF rigidCount checked.next :=
                           ⟨completedBodyScoped, completedBodyBounded⟩
+                        have completedOpenLevels : completedOpen.LevelBounded
+                            checked.solutions rigidCount := by
+                          simpa [Ty.LevelBounded] using (List.all_eq_true.mp good)
+                        have completedLevels : completed.body.LevelBounded
+                            checked.solutions rigidCount := by
+                          simpa [completed] using
+                            Ty.closeRigids_levelBounded completedOpenLevels
                         have bodyCtxWF : Ctx.InferWF (completed :: ctx)
-                            rigidCount outerState.next := by
+                            rigidCount checked.next := by
                           intro scheme member
                           simp only [List.mem_cons] at member
                           rcases member with rfl | member
-                          · simpa [outerState] using completedWF
-                          · have ctxAtChecked : Ctx.InferWF ctx rigidCount checked.next :=
-                              ctx_mono ctxWF (by simpa [localStart] using localStartLe)
-                            simpa [outerState] using ctxAtChecked scheme member
-                        simp [rhsRun, checkedRun, projected, escape] at run
+                          · exact completedWF
+                          · exact ctx_mono ctxWF localStartLe scheme member
+                        have bodyCtxLevels :
+                            ∀ scheme ∈ completed :: ctx,
+                              scheme.body.LevelBounded
+                                checked.solutions rigidCount := by
+                          intro scheme member
+                          simp only [List.mem_cons] at member
+                          rcases member with rfl | member
+                          · exact completedLevels
+                          · intro id hid
+                            have idBound : id < state.next :=
+                              (ctxWF scheme member).2 id hid
+                            exact le_trans (checkedLevelLeState id idBound)
+                              (ctxLevels scheme member id hid)
                         cases bodyRun : inferFuel fuel rigidCount
-                            (completed :: ctx) body outerState with
+                            (completed :: ctx) body checked with
                         | none =>
-                            simp [completed, completedOpen, count, outerState,
-                              projected, seeded, openedTemplate, bodyRun] at run
+                            simp [completed, completedOpen, count, inner,
+                              seeded, openedTemplate, bodyRun] at run
                         | some bodyResult =>
-                            have bodySafe := ih outerSafe bodyCtxWF bodyScoped bodyRun
-                            simp [completed, completedOpen, count, outerState,
-                              projected, seeded, openedTemplate, bodyRun] at run
+                            have bodySafe := ih checkedSafe.1 bodyCtxWF
+                              bodyCtxLevels bodyScoped bodyRun
+                            simp [completed, completedOpen, count, inner,
+                              seeded, openedTemplate, bodyRun] at run
                             have resultEq : result =
                                 ⟨bodyResult.state, bodyResult.ty,
                                   .letIn (some completed)
-                                    (checked.solutions.applyExpr rhsResult.elaborated)
+                                    rhsResult.elaborated
                                     bodyResult.elaborated⟩ := by
-                              exact run.symm
+                              have h : some result = some
+                                  ⟨bodyResult.state, bodyResult.ty,
+                                    .letIn (some completed)
+                                      rhsResult.elaborated
+                                      bodyResult.elaborated⟩ := by
+                                simpa [completed, completedOpen, count, inner,
+                                  seeded, openedTemplate, bodyRun] using run.2.symm
+                              exact Option.some.inj h
                             subst result
-                            exact ⟨bodySafe.1, bodySafe.2.1,
-                              le_trans localStartLe bodySafe.2.2⟩
+                            refine ⟨bodySafe.1, bodySafe.2.1,
+                              bodySafe.2.2.1,
+                              le_trans localStartLe bodySafe.2.2.2.1, ?_⟩
+                            intro id hid
+                            have hidChecked : id < checked.next :=
+                              lt_of_lt_of_le hid localStartLe
+                            exact le_trans (bodySafe.2.2.2.2 id hidChecked)
+                              (checkedLevelLeState id hid)
       | fix ann body =>
           cases inputScoped with
           | fix annScoped bodyScoped =>
             simp only [inferFuel] at run
-            let seeded := state.allocate ann
-            have seededSafe := InferState.allocate_safe stateSafe annScoped
+            let seeded := state.allocate rigidCount ann
+            have seededSafe := InferState.allocate_safe
+              (level := rigidCount) (rigidCount := rigidCount)
+              stateSafe annScoped
             have bodyCtxWF : Ctx.InferWF (PolyTy.mono seeded.2 :: ctx)
                 rigidCount seeded.1.next := by
               intro scheme member
               simp only [List.mem_cons] at member
               rcases member with rfl | member
               · exact seededSafe.2.1
-              · exact ctx_mono ctxWF seededSafe.2.2 scheme member
+              · exact ctx_mono ctxWF seededSafe.2.2.2.1 scheme member
+            have bodyCtxLevels :
+                ∀ scheme ∈ PolyTy.mono seeded.2 :: ctx,
+                  scheme.body.LevelBounded seeded.1.solutions rigidCount := by
+              intro scheme member
+              simp only [List.mem_cons] at member
+              rcases member with rfl | member
+              · exact seededSafe.2.2.1
+              · intro id hid
+                have idBound : id < state.next := (ctxWF scheme member).2 id hid
+                rw [seededSafe.2.2.2.2 id idBound]
+                exact ctxLevels scheme member id hid
             cases bodyRun : inferFuel fuel rigidCount
                 (PolyTy.mono seeded.2 :: ctx) body seeded.1 with
             | none =>
@@ -1561,10 +1978,15 @@ theorem inferFuel_safe
                 simp [bodyRun] at run
             | some bodyResult =>
                 dsimp [seeded] at bodyRun
-                have bodySafe := ih seededSafe.1 bodyCtxWF bodyScoped bodyRun
+                have bodySafe := ih seededSafe.1 bodyCtxWF bodyCtxLevels
+                  bodyScoped bodyRun
                 have selfAtBody : seeded.2.InferWF rigidCount 0
                     bodyResult.state.next :=
-                  inferWF_mono seededSafe.2.1 bodySafe.2.2
+                  inferWF_mono seededSafe.2.1 bodySafe.2.2.2.1
+                have selfLevelsBody : seeded.2.LevelBounded
+                    bodyResult.state.solutions rigidCount :=
+                  Ty.LevelBounded.mono_le_on seededSafe.2.2.1 (fun id member =>
+                    bodySafe.2.2.2.2 id (seededSafe.2.1.2 id member))
                 cases checkedRun : bodyResult.state.constrain
                     bodyResult.ty seeded.2 with
                 | none =>
@@ -1579,16 +2001,28 @@ theorem inferFuel_safe
                         checked.next := by
                       rw [checkedSafe.2.1]
                       exact selfAtBody
-                    have resultTyWF := MStore.apply_inferWF
-                      checkedSafe.1.solutionsScoped
-                      checkedSafe.1.solutionsBounded selfAtChecked
+                    have selfLevelsChecked : seeded.2.LevelBounded
+                        checked.solutions rigidCount :=
+                      Ty.LevelBounded.mono_le selfLevelsBody
+                        (fun id => checkedSafe.2.2.2 id)
+                    have resultApplied := MStore.apply_inferWF
+                      checkedSafe.1.solutionsLeveled
+                      checkedSafe.1.solutionsBounded
+                      selfAtChecked selfLevelsChecked
                     have resultEq : result =
                         ⟨checked, checked.solutions.apply seeded.2,
                           .fix seeded.2 bodyResult.elaborated⟩ := by
                       simpa [seeded] using run.symm
                     subst result
-                    refine ⟨checkedSafe.1, resultTyWF, ?_⟩
-                    rw [checkedSafe.2.1]
-                    exact le_trans seededSafe.2.2 bodySafe.2.2
+                    refine ⟨checkedSafe.1, resultApplied.1,
+                      resultApplied.2, ?_, ?_⟩
+                    · rw [checkedSafe.2.1]
+                      exact le_trans seededSafe.2.2.2.1 bodySafe.2.2.2.1
+                    · intro id hid
+                      have hidSeeded : id < seeded.1.next :=
+                        lt_of_lt_of_le hid seededSafe.2.2.2.1
+                      exact le_trans (checkedSafe.2.2.2 id)
+                        (le_trans (bodySafe.2.2.2.2 id hidSeeded)
+                          (le_of_eq (seededSafe.2.2.2.2 id hid)))
 
 end EPL

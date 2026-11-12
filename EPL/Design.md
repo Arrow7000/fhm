@@ -91,30 +91,37 @@ anything. In particular, authored fixed annotations cannot contain inference
 metavariables or out-of-scope bound/rigid variables and therefore cannot forge
 or capture an allocator-generated ID.
 
-Inference distinguishes ordinary fresh metavariables from obligations. Fresh
-variables used to instantiate a scheme may remain irrelevant when a binder is
-phantom. Holes in authored annotations and omitted lambda parameter types are
-obligations and must have semantic solutions before a successful boundary is
-crossed. This rejects ambiguous lambdas even when hidden in a dead `let`
-without rejecting a valid use of a scheme such as `forall a. Int`.
+Inference returns, besides the type, an elaboration of the program: the same
+expression with every lambda parameter type, `fix` type and explicit scheme
+filled in (`Elaborates` is the declarative counterpart). A program is accepted
+exactly when its type and its elaboration are fully determined. Unknowns that
+only instantiate a scheme are not part of the elaboration, so they need not
+be determined (a valid use of `forall a. Int` is accepted).
 
-Checking an explicit scheme uses a lexical metavariable region. The completed
-scheme and all local obligations must be semantic before leaving the region.
-On exit the region's *solutions* are forgotten (their entries reset to
-`none`), because they may mention the region's rigid variables, but its
-metavariables stay allocated: an outer solution may legitimately mention an
-unknown created inside the region (`fun x => let f : forall a. a -> a =
-(let _ = x 1 in fun y => y) in x 1 + 1`). Normalization guarantees nothing
-refers to a forgotten solution. The remaining solutions are checked for
-rigid escape. Metavariable IDs are never reused. The public `InferenceResult` exposes only its closed,
-well-scoped type, not this internal allocation state.
+Inference state is a dense table `MStore := List MEntry`: entry `i` holds
+`?i`'s level and, once solved, its solution; solutions mention only unsolved
+metavariables. Resolving a type is one lookup per metavariable. Unification
+is Robinson's algorithm with this table as its solved form: binding
+`?i := ty` writes entry `i`, eliminates `?i` from every other entry and from
+the pending constraints, and lowers levels (below). It recurses structurally
+(so `decide` evaluates it) with fuel that is proved sufficient, and it is
+proved sound and complete: its result's models are exactly the input's
+models that equate the two types. A model gives each metavariable a type
+well-formed at that metavariable's level.
 
-Inference state is a dense solution table `MStore := List (Option Ty)`:
-entry `i` is `none` while `?i` is unsolved and `some ty` once solved, and
-solved entries mention only unsolved metavariables. Resolving a type is one
-lookup per metavariable. Unification is Robinson's algorithm with this table
-as its solved form: binding `?i := ty` writes entry `i` and eliminates `?i`
-from every other entry and from the pending constraints. It recurses
-structurally (so `decide` evaluates it) with fuel that is proved sufficient,
-and it is proved sound and complete: its result's models are exactly the
-input's models that equate the two types.
+Checking an explicit scheme opens its binders as a fresh block of rigid
+levels. Metavariables carry Rémy-style *levels* (as in OCaml): a metavariable
+at level `L` may only be solved to a type whose rigid variables are below
+`L`, and binding it lowers the metavariables of its solution to `L`. Holes in
+the written scheme, and unknowns created while checking its right-hand side,
+start at the inner level and are lowered as soon as they become part of an
+outer unknown's solution. This is the whole rigid-escape check.
+
+Partial signatures are completed from their definition and its context,
+never from later uses: after checking, every metavariable left in the
+completed scheme must be at the outer level. A hole still at the inner level
+could equally have been one of the scheme's own binders, so the signature is
+ambiguous (`let f : forall a. _ -> a -> a = fun z y => y in f true true` is
+rejected). Other unknowns are simply kept: an unannotated parameter inside
+the definition may be determined by later code (`fun x => let f : forall a.
+a -> a = (let _ = (fun z => x z) in fun y => y) in x 1 + 1`).

@@ -42,15 +42,6 @@ end EPL
 
 namespace EPL
 
-def Ty.scopedB (rigidCount binderCount : Nat) : Ty → Bool
-  | .prim _ => true
-  | .arrow domain codomain =>
-      domain.scopedB rigidCount binderCount &&
-        codomain.scopedB rigidCount binderCount
-  | .bvar index => index < binderCount
-  | .rigid level => level < rigidCount
-  | .mvar _ => true
-
 def Ty.metaFreeB : Ty → Bool
   | .prim _ | .bvar _ | .rigid _ => true
   | .arrow domain codomain => domain.metaFreeB && codomain.metaFreeB
@@ -104,18 +95,6 @@ def Ty.closeRigids (base count : Nat) : Ty → Ty
       else .rigid (level - count)
   | .mvar id => .mvar id
 
-/-- Forget the solutions of every metavariable from `cutoff` on, keeping the
-metavariables themselves. Used when leaving an explicit-scheme region: its
-unknowns may still be mentioned by outer solutions, but its solutions may
-mention its rigid variables, which are going out of scope. -/
-def MStore.forgetFrom (cutoff : Nat) (store : MStore) : MStore :=
-  store.take cutoff ++ List.replicate (store.length - cutoff) none
-
-/-- Every solved entry is scoped below `rigidCount`: no solution mentions a
-rigid variable that is going out of scope. -/
-def MStore.safeToLeave (rigidCount : Nat) (store : MStore) : Bool :=
-  store.all fun entry => entry.all fun ty => ty.scopedB rigidCount 0
-
 structure InferState where
   next : Nat
   solutions : MStore
@@ -140,23 +119,26 @@ structure InferenceResult where
   elaborated : Expr Ty
   deriving DecidableEq, Repr
 
-def InferState.fresh (state : InferState) : InferState × Ty :=
+/-- Allocate an unsolved metavariable at `level`. -/
+def InferState.fresh (state : InferState) (level : Nat) : InferState × Ty :=
   ({ next := state.next + 1
-     solutions := state.solutions ++ [none] },
+     solutions := state.solutions ++ [⟨level, none⟩] },
     .mvar state.next)
 
-def InferState.freshMany : Nat → InferState → InferState × List Ty
+def InferState.freshMany (level : Nat) : Nat → InferState → InferState × List Ty
   | 0, state => (state, [])
   | count + 1, state =>
-      let first := state.fresh
-      let rest := freshMany count first.1
+      let first := state.fresh level
+      let rest := freshMany level count first.1
       (rest.1, first.2 :: rest.2)
 
-def InferState.allocate (state : InferState) (template : Template) : InferState × Ty :=
+/-- Resolve a template's holes to fresh metavariables at `level`. -/
+def InferState.allocate (state : InferState) (level : Nat) (template : Template) :
+    InferState × Ty :=
   let allocation := template.allocate state.next
   ({ next := allocation.next
      solutions := state.solutions ++
-       List.replicate (allocation.next - state.next) none },
+       List.replicate (allocation.next - state.next) ⟨level, none⟩ },
     allocation.ty)
 
 def InferState.constrain (state : InferState) (left right : Ty) : Option InferState :=
@@ -180,12 +162,12 @@ def inferFuel : Nat → Nat → Ctx → Source → InferState → Option InferRe
       | .var index => do
           let scheme ← ctx[index]?
           let scheme := state.solutions.applyScheme scheme
-          let fresh := state.freshMany scheme.paramCount
+          let fresh := state.freshMany rigidCount scheme.paramCount
           some ⟨fresh.1, scheme.openWith fresh.2, .var index⟩
       | .lambda ann body => do
           let seeded := match ann with
-            | none => state.fresh
-            | some template => state.allocate template
+            | none => state.fresh rigidCount
+            | some template => state.allocate rigidCount template
           let bodyResult ← inferFuel fuel rigidCount
             (PolyTy.mono seeded.2 :: ctx) body seeded.1
           let paramTy := bodyResult.state.solutions.apply seeded.2
@@ -194,7 +176,7 @@ def inferFuel : Nat → Nat → Ctx → Source → InferState → Option InferRe
       | .app function argument => do
           let functionResult ← inferFuel fuel rigidCount ctx function state
           let argumentResult ← inferFuel fuel rigidCount ctx argument functionResult.state
-          let fresh := argumentResult.state.fresh
+          let fresh := argumentResult.state.fresh rigidCount
           let checked ← fresh.1.constrain functionResult.ty
             (.arrow argumentResult.ty fresh.2)
           some ⟨checked, checked.solutions.apply fresh.2,
@@ -208,28 +190,28 @@ def inferFuel : Nat → Nat → Ctx → Source → InferState → Option InferRe
             .letIn none rhsResult.elaborated bodyResult.elaborated⟩
       | .letIn (some written) rhs body => do
           -- Check the right-hand side generically, at a fresh block of rigid
-          -- levels standing for the scheme's binders.
+          -- levels standing for the scheme's binders. The template's holes
+          -- live at the inner level, since they may mention those binders.
           let count := written.paramCount
+          let inner := rigidCount + count
           let openedTemplate := written.body.openRigidsFrom 0 rigidCount count
-          let seeded := state.allocate openedTemplate
-          let rhsResult ← inferFuel fuel (rigidCount + count) ctx
+          let seeded := state.allocate inner openedTemplate
+          let rhsResult ← inferFuel fuel inner ctx
             (rhs.openRigids rigidCount count) seeded.1
           let checked ← rhsResult.state.constrain rhsResult.ty seeded.2
-          -- Resolve everything the region produced before forgetting the
-          -- region's solutions, which may mention its rigid variables.
-          let completed : PolyTy :=
-            ⟨count, (checked.solutions.apply seeded.2).closeRigids rigidCount count⟩
-          let rhsElab := checked.solutions.applyExpr rhsResult.elaborated
-          let projected := checked.solutions.forgetFrom state.next
-          -- No surviving solution may mention a region rigid variable.
-          if !projected.safeToLeave rigidCount then none
+          let completedOpen := checked.solutions.apply seeded.2
+          -- An unknown still at the inner level is undetermined by the
+          -- definition and its context: it could equally be a binder.
+          if !(completedOpen.mvars.all fun id =>
+              checked.solutions.levelOf id ≤ rigidCount) then none
           else
-            let bodyResult ← inferFuel fuel rigidCount (completed :: ctx) body
-              { next := checked.next, solutions := projected }
+            let completed : PolyTy :=
+              ⟨count, completedOpen.closeRigids rigidCount count⟩
+            let bodyResult ← inferFuel fuel rigidCount (completed :: ctx) body checked
             some ⟨bodyResult.state, bodyResult.ty,
-              .letIn (some completed) rhsElab bodyResult.elaborated⟩
+              .letIn (some completed) rhsResult.elaborated bodyResult.elaborated⟩
       | .fix ann body => do
-          let seeded := state.allocate ann
+          let seeded := state.allocate rigidCount ann
           let bodyResult ← inferFuel fuel rigidCount
             (PolyTy.mono seeded.2 :: ctx) body seeded.1
           let checked ← bodyResult.state.constrain bodyResult.ty seeded.2

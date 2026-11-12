@@ -17,9 +17,8 @@ def HoleAssignment.realize
 def Expr.realize (expr : Expr Ty) (valuation : MValuation) : Expr Ty :=
   expr.mapAnn (·.realize valuation)
 
-def InferState.Models
-    (state : InferState) (rigidCount : Nat) (valuation : MValuation) : Prop :=
-  state.solutions.Models rigidCount valuation
+def InferState.Models (state : InferState) (valuation : MValuation) : Prop :=
+  state.solutions.Models valuation
 
 theorem Ty.realize_eq_self
     {ty : Ty} (metaFree : ty.MetaFree) (valuation : MValuation) :
@@ -31,11 +30,84 @@ theorem Ty.realize_eq_self
   | bvar => rfl
   | rigid => rfl
 
-theorem Ty.realize_inferWF
-    {ty : Ty} {valuation : MValuation}
-    {rigidCount binderCount frontier : Nat}
+/-- Monotonicity of algorithmic scope in the rigid count. -/
+private theorem Ty.Scoped.mono_rigid {ty : Ty} {rigid rigid' binder : Nat}
+    (hscoped : ty.Scoped rigid binder) (le : rigid ≤ rigid') :
+    ty.Scoped rigid' binder := by
+  induction hscoped with
+  | prim => exact .prim
+  | arrow _ _ ihDomain ihCodomain => exact .arrow ihDomain ihCodomain
+  | bvar hlt => exact .bvar hlt
+  | rigid hlt => exact .rigid (lt_of_lt_of_le hlt le)
+  | mvar id => exact .mvar id
+
+/-- Monotonicity of semantic well-formedness in the rigid count. -/
+private theorem Ty.WF.mono_rigid {ty : Ty} {rigid rigid' binder : Nat}
+    (wf : ty.WF rigid binder) (le : rigid ≤ rigid') : ty.WF rigid' binder :=
+  ⟨Ty.Scoped.mono_rigid wf.1 le, wf.2⟩
+
+private theorem Ty.Scoped.mono_binder {ty : Ty} {rigid binder binder' : Nat}
+    (typeScoped : ty.Scoped rigid binder) (le : binder ≤ binder') :
+    ty.Scoped rigid binder' := by
+  induction typeScoped with
+  | prim => exact .prim
+  | arrow _ _ ihDomain ihCodomain => exact .arrow ihDomain ihCodomain
+  | bvar hlt => exact .bvar (lt_of_lt_of_le hlt le)
+  | rigid hlt => exact .rigid hlt
+  | mvar id => exact .mvar id
+
+private theorem Ty.LevelBounded.mono_le
+    {ty : Ty} {store store' : MStore} {level : Nat}
+    (bounded : ty.LevelBounded store level)
+    (le : ∀ id, store'.levelOf id ≤ store.levelOf id) :
+    ty.LevelBounded store' level := by
+  intro id member
+  exact le_trans (le id) (bounded id member)
+
+private theorem Ty.LevelBounded.mono_le_on
+    {ty : Ty} {store store' : MStore} {level : Nat}
+    (bounded : ty.LevelBounded store level)
+    (le : ∀ id ∈ ty.mvars, store'.levelOf id ≤ store.levelOf id) :
+    ty.LevelBounded store' level := by
+  intro id member
+  exact le_trans (le id member) (bounded id member)
+
+/-- The images of a type's metavariables under a model are scoped at the type's
+rigid count, provided those metavariables are allocated below the table's
+frontier and their levels are bounded by the rigid count. -/
+theorem MStore.Models.images_scoped
+    {store : MStore} {valuation : MValuation} {ty : Ty}
+    {rigidCount frontier : Nat}
+    (models : store.Models valuation)
+    (length : store.length = frontier)
+    (bounded : ty.MVarBounded frontier)
+    (levels : ty.LevelBounded store rigidCount) :
+    ∀ id ∈ ty.mvars, (valuation id).Scoped rigidCount 0 := by
+  intro id member
+  have idBounded : id < frontier := bounded id member
+  have idIn : id < store.length := by omega
+  cases entryEq : store[id]? with
+  | none =>
+      have := List.getElem?_eq_none_iff.mp entryEq
+      omega
+  | some entry =>
+      have wf := models.valuationWF id entry entryEq
+      have levelEq : store.levelOf id = entry.level := by
+        simp [MStore.levelOf, entryEq]
+      have levelLe : entry.level ≤ rigidCount := by
+        rw [← levelEq]
+        exact levels id member
+      exact (Ty.WF.mono_rigid wf levelLe).1
+
+/-- A scoped, allocated, level-bounded type realizes under a model to a
+well-formed semantic type. -/
+theorem Ty.realize_inferWF_model
+    {store : MStore} {valuation : MValuation}
+    {ty : Ty} {rigidCount binderCount frontier : Nat}
+    (models : store.Models valuation)
+    (length : store.length = frontier)
     (typeWF : ty.InferWF rigidCount binderCount frontier)
-    (valuationWF : valuation.WF rigidCount frontier) :
+    (levels : ty.LevelBounded store rigidCount) :
     (ty.realize valuation).WF rigidCount binderCount := by
   induction ty with
   | prim name =>
@@ -49,8 +121,15 @@ theorem Ty.realize_inferWF
         have codomainBounded : codomain.MVarBounded frontier := by
           intro id member
           exact typeWF.2 id (by simp [Ty.mvars, member])
-        have domainWF := ihDomain ⟨domainScoped, domainBounded⟩
+        have domainLevels : domain.LevelBounded store rigidCount := by
+          intro id member
+          exact levels id (by simp [Ty.mvars, member])
+        have codomainLevels : codomain.LevelBounded store rigidCount := by
+          intro id member
+          exact levels id (by simp [Ty.mvars, member])
+        have domainWF := ihDomain ⟨domainScoped, domainBounded⟩ domainLevels
         have codomainWF := ihCodomain ⟨codomainScoped, codomainBounded⟩
+          codomainLevels
         exact ⟨.arrow domainWF.1 codomainWF.1,
           .arrow domainWF.2 codomainWF.2⟩
   | bvar index =>
@@ -62,42 +141,48 @@ theorem Ty.realize_inferWF
   | mvar id =>
       have idBounded : id < frontier :=
         typeWF.2 id (by simp [Ty.mvars])
-      have realizedWF := valuationWF id idBounded
-      have scoped_mono_binder : ∀ {candidate : Ty},
-          candidate.Scoped rigidCount 0 →
-            candidate.Scoped rigidCount binderCount := by
-        intro candidate candidateScoped
-        induction candidateScoped with
-        | prim => exact .prim
-        | arrow _ _ ihDomain ihCodomain => exact .arrow ihDomain ihCodomain
-        | bvar hlt => omega
-        | rigid hlt => exact .rigid hlt
-        | mvar id => exact .mvar id
-      exact ⟨scoped_mono_binder realizedWF.1, realizedWF.2⟩
+      have idIn : id < store.length := by omega
+      cases entryEq : store[id]? with
+      | none =>
+          have := List.getElem?_eq_none_iff.mp entryEq
+          omega
+      | some entry =>
+          have wf := models.valuationWF id entry entryEq
+          have levelEq : store.levelOf id = entry.level := by
+            simp [MStore.levelOf, entryEq]
+          have levelLe : entry.level ≤ rigidCount := by
+            rw [← levelEq]
+            exact levels id (by simp [Ty.mvars])
+          have wfMono := Ty.WF.mono_rigid wf levelLe
+          exact ⟨Ty.Scoped.mono_binder wfMono.1 (Nat.zero_le _), wfMono.2⟩
 
-theorem PolyTy.realize_wf
-    {scheme : PolyTy} {valuation : MValuation}
+theorem PolyTy.realize_wf_model
+    {store : MStore} {scheme : PolyTy} {valuation : MValuation}
     {rigidCount frontier : Nat}
+    (models : store.Models valuation)
+    (length : store.length = frontier)
     (schemeWF : scheme.InferWF rigidCount frontier)
-    (valuationWF : valuation.WF rigidCount frontier) :
+    (levels : scheme.body.LevelBounded store rigidCount) :
     (scheme.realize valuation).WF rigidCount := by
-  exact Ty.realize_inferWF schemeWF valuationWF
+  exact Ty.realize_inferWF_model models length schemeWF levels
 
-theorem Ctx.realize_wf
-    {ctx : Ctx} {valuation : MValuation}
+theorem Ctx.realize_wf_model
+    {store : MStore} {ctx : Ctx} {valuation : MValuation}
     {rigidCount frontier : Nat}
+    (models : store.Models valuation)
+    (length : store.length = frontier)
     (ctxWF : ctx.InferWF rigidCount frontier)
-    (valuationWF : valuation.WF rigidCount frontier) :
+    (levels : ∀ scheme ∈ ctx, scheme.body.LevelBounded store rigidCount) :
     (ctx.realize valuation).WF rigidCount := by
   intro scheme member
   rcases List.mem_map.mp member with ⟨original, originalMember, rfl⟩
-  exact PolyTy.realize_wf (ctxWF original originalMember) valuationWF
+  exact PolyTy.realize_wf_model models length
+    (ctxWF original originalMember) (levels original originalMember)
 
 theorem Ty.realize_openWith
     {ty : Ty} {args : List Ty} {valuation : MValuation}
-    {rigidCount binderCount frontier : Nat}
-    (typeWF : ty.InferWF rigidCount binderCount frontier)
-    (valuationWF : valuation.WF rigidCount frontier) :
+    {rigidCount : Nat}
+    (imagesScoped : ∀ id ∈ ty.mvars, (valuation id).Scoped rigidCount 0) :
     (ty.openWith args).realize valuation =
       (ty.realize valuation).openWith (args.map (·.realize valuation)) := by
   have openWith_eq_self : ∀ {candidate : Ty},
@@ -114,30 +199,28 @@ theorem Ty.realize_openWith
   induction ty with
   | prim name => rfl
   | arrow domain codomain ihDomain ihCodomain =>
-      cases typeWF.1 with
-      | arrow domainScoped codomainScoped =>
-        have domainWF : domain.InferWF rigidCount binderCount frontier :=
-          ⟨domainScoped, fun id member => typeWF.2 id (by
-            simp [Ty.mvars, member])⟩
-        have codomainWF : codomain.InferWF rigidCount binderCount frontier :=
-          ⟨codomainScoped, fun id member => typeWF.2 id (by
-            simp [Ty.mvars, member])⟩
-        simp only [Ty.openWith, Ty.realize, ihDomain domainWF,
-          ihCodomain codomainWF]
+      have domainScoped : ∀ id ∈ domain.mvars,
+          (valuation id).Scoped rigidCount 0 := by
+        intro id member
+        exact imagesScoped id (by simp [Ty.mvars, member])
+      have codomainScoped : ∀ id ∈ codomain.mvars,
+          (valuation id).Scoped rigidCount 0 := by
+        intro id member
+        exact imagesScoped id (by simp [Ty.mvars, member])
+      simp only [Ty.openWith, Ty.realize, ihDomain domainScoped,
+        ihCodomain codomainScoped]
   | bvar index =>
       simp only [Ty.openWith, Ty.realize, List.getElem?_map]
       cases args[index]? <;> rfl
   | rigid level => rfl
   | mvar id =>
-      have idBounded : id < frontier := typeWF.2 id (by simp [Ty.mvars])
       simpa [Ty.openWith, Ty.realize] using
-        (openWith_eq_self (valuationWF id idBounded).1).symm
+        (openWith_eq_self (imagesScoped id (by simp [Ty.mvars]))).symm
 
 theorem Ty.realize_openRigidsFrom
     {ty : Ty} {valuation : MValuation}
-    {rigidCount depth count frontier : Nat}
-    (typeWF : ty.InferWF rigidCount (depth + count) frontier)
-    (valuationWF : valuation.WF rigidCount frontier) :
+    {rigidCount depth count : Nat}
+    (imagesScoped : ∀ id ∈ ty.mvars, (valuation id).Scoped rigidCount 0) :
     (ty.openRigidsFrom depth rigidCount count).realize valuation =
       (ty.realize valuation).openRigidsFrom depth rigidCount count := by
   have open_eq_self : ∀ {candidate : Ty},
@@ -154,16 +237,16 @@ theorem Ty.realize_openRigidsFrom
   induction ty with
   | prim name => rfl
   | arrow domain codomain ihDomain ihCodomain =>
-      cases typeWF.1 with
-      | arrow domainScoped codomainScoped =>
-        have domainWF : domain.InferWF rigidCount (depth + count) frontier :=
-          ⟨domainScoped, fun id member => typeWF.2 id (by
-            simp [Ty.mvars, member])⟩
-        have codomainWF : codomain.InferWF rigidCount (depth + count) frontier :=
-          ⟨codomainScoped, fun id member => typeWF.2 id (by
-            simp [Ty.mvars, member])⟩
-        simp only [Ty.openRigidsFrom, Ty.realize, ihDomain domainWF,
-          ihCodomain codomainWF]
+      have domainScoped : ∀ id ∈ domain.mvars,
+          (valuation id).Scoped rigidCount 0 := by
+        intro id member
+        exact imagesScoped id (by simp [Ty.mvars, member])
+      have codomainScoped : ∀ id ∈ codomain.mvars,
+          (valuation id).Scoped rigidCount 0 := by
+        intro id member
+        exact imagesScoped id (by simp [Ty.mvars, member])
+      simp only [Ty.openRigidsFrom, Ty.realize, ihDomain domainScoped,
+        ihCodomain codomainScoped]
   | bvar index =>
       simp only [Ty.openRigidsFrom, Ty.realize]
       split
@@ -171,15 +254,13 @@ theorem Ty.realize_openRigidsFrom
       · split <;> rfl
   | rigid level => rfl
   | mvar id =>
-      have idBounded : id < frontier := typeWF.2 id (by simp [Ty.mvars])
       simpa [Ty.openRigidsFrom, Ty.realize] using
-        (open_eq_self (valuationWF id idBounded).1).symm
+        (open_eq_self (imagesScoped id (by simp [Ty.mvars]))).symm
 
 theorem Ty.realize_closeRigids
     {ty : Ty} {valuation : MValuation}
-    {rigidCount count frontier : Nat}
-    (typeWF : ty.InferWF (rigidCount + count) 0 frontier)
-    (valuationWF : valuation.WF rigidCount frontier) :
+    {rigidCount count : Nat}
+    (imagesScoped : ∀ id ∈ ty.mvars, (valuation id).Scoped rigidCount 0) :
     (ty.closeRigids rigidCount count).realize valuation =
       (ty.realize valuation).closeRigids rigidCount count := by
   have close_eq_self : ∀ {candidate : Ty},
@@ -196,28 +277,25 @@ theorem Ty.realize_closeRigids
   induction ty with
   | prim name => rfl
   | arrow domain codomain ihDomain ihCodomain =>
-      cases typeWF.1 with
-      | arrow domainScoped codomainScoped =>
-        have domainWF : domain.InferWF (rigidCount + count) 0 frontier :=
-          ⟨domainScoped, fun id member => typeWF.2 id (by
-            simp [Ty.mvars, member])⟩
-        have codomainWF : codomain.InferWF (rigidCount + count) 0 frontier :=
-          ⟨codomainScoped, fun id member => typeWF.2 id (by
-            simp [Ty.mvars, member])⟩
-        simp only [Ty.closeRigids, Ty.realize, ihDomain domainWF,
-          ihCodomain codomainWF]
-  | bvar index =>
-      cases typeWF.1 with
-      | bvar hlt => omega
+      have domainScoped : ∀ id ∈ domain.mvars,
+          (valuation id).Scoped rigidCount 0 := by
+        intro id member
+        exact imagesScoped id (by simp [Ty.mvars, member])
+      have codomainScoped : ∀ id ∈ codomain.mvars,
+          (valuation id).Scoped rigidCount 0 := by
+        intro id member
+        exact imagesScoped id (by simp [Ty.mvars, member])
+      simp only [Ty.closeRigids, Ty.realize, ihDomain domainScoped,
+        ihCodomain codomainScoped]
+  | bvar index => rfl
   | rigid level =>
       simp only [Ty.closeRigids, Ty.realize]
       split
       · rfl
       · split <;> rfl
   | mvar id =>
-      have idBounded : id < frontier := typeWF.2 id (by simp [Ty.mvars])
       simpa [Ty.closeRigids, Ty.realize] using
-        (close_eq_self (valuationWF id idBounded).1).symm
+        (close_eq_self (imagesScoped id (by simp [Ty.mvars]))).symm
 
 end EPL
 
@@ -275,27 +353,16 @@ private theorem MStore.apply_eq_self_of_lookup_none (store : MStore) (ty : Ty)
       simp only [MStore.apply, noneLookup]
       rfl
 
-/-- A solved lookup witnesses a solved entry in the table. -/
-private theorem MStore.entry_of_lookup_eq_some {store : MStore} {id : Nat} {ty : Ty}
-    (lookupEq : store.lookup id = some ty) : store[id]? = some (some ty) := by
-  simp only [MStore.lookup] at lookupEq
-  cases entry : store[id]? with
-  | none => simp [entry] at lookupEq
-  | some option =>
-      cases option with
-      | none => simp [entry] at lookupEq
-      | some ty' => simpa [entry] using lookupEq
-
 /-- Every safe normalized table has a concrete semantic model: solved entries
 keep their semantic structure and genuinely unconstrained variables default to
 `Unit`. -/
 theorem MStore.defaultValuation_models
-    {store : MStore} {rigidCount frontier : Nat}
-    (length : store.length = frontier)
-    (storeScoped : store.Scoped rigidCount)
+    {store : MStore} {frontier : Nat}
+    (_length : store.length = frontier)
+    (storeLeveled : store.Leveled)
     (storeBounded : store.Bounded frontier)
     (storeNormalized : store.Normalized) :
-    store.Models rigidCount store.defaultValuation := by
+    store.Models store.defaultValuation := by
   have realize_eq_default : ∀ {ty : Ty},
       ty.MVarBounded frontier → store.apply ty = ty →
         ty.realize store.defaultValuation = ty.defaultMVars := by
@@ -319,50 +386,37 @@ theorem MStore.defaultValuation_models
         simp only [Ty.realize, MStore.defaultValuation]
         rw [typeFixed]
   refine ⟨?_, ?_⟩
-  · intro id idBounded
-    cases entry : store[id]? with
+  · intro id entry entryEq
+    cases solution : entry.solution with
     | none =>
         have lookupNone : store.lookup id = none := by
-          simp [MStore.lookup, entry]
+          simp [MStore.lookup, entryEq, solution]
         simp only [MStore.defaultValuation, MStore.apply, lookupNone,
           Option.getD_none, Ty.defaultMVars]
         exact ⟨.prim, .prim⟩
-    | some option =>
-        cases option with
-        | none =>
-            have lookupNone : store.lookup id = none := by
-              simp [MStore.lookup, entry]
-            simp only [MStore.defaultValuation, MStore.apply, lookupNone,
-              Option.getD_none, Ty.defaultMVars]
-            exact ⟨.prim, .prim⟩
-        | some ty =>
-            have solvedEntry : store[id]? = some (some ty) := entry
-            have tyMember : some ty ∈ store := List.mem_of_getElem? solvedEntry
-            have lookupSome : store.lookup id = some ty := by
-              simp [MStore.lookup, entry]
-            simpa [MStore.defaultValuation, MStore.apply, lookupSome] using
-              Ty.defaultMVars_wf (storeScoped ty tyMember)
+    | some ty =>
+        have lookupSome : store.lookup id = some ty := by
+          simp [MStore.lookup, entryEq, solution]
+        simpa [MStore.defaultValuation, MStore.apply, lookupSome] using
+          Ty.defaultMVars_wf (storeLeveled id entry ty entryEq solution).1
   · intro id ty entry
-    have tyMember : some ty ∈ store := List.mem_of_getElem? entry
-    have tyBounded : ty.MVarBounded frontier := storeBounded ty tyMember
+    have tyBounded : ty.MVarBounded frontier := storeBounded id ty entry
     have tyFixed : store.apply ty = ty :=
       MStore.apply_eq_self_of_lookup_none store ty
-        (storeNormalized ty tyMember)
+        (storeNormalized id ty entry)
     have realizeEq : ty.realize store.defaultValuation = ty.defaultMVars :=
       realize_eq_default tyBounded tyFixed
-    have lookupSome : store.lookup id = some ty := by
-      simp [MStore.lookup, entry]
+    have lookupSome : store.lookup id = some ty := entry
     simp only [MStore.defaultValuation, MStore.apply, lookupSome,
       Option.getD_some]
     rw [realizeEq]
 
 theorem InferState.has_model
-    {state : InferState} {rigidCount : Nat}
-    (safe : state.Safe rigidCount) :
-    ∃ valuation, state.Models rigidCount valuation := by
+    {state : InferState} (safe : state.Safe) :
+    ∃ valuation, state.Models valuation := by
   refine ⟨state.solutions.defaultValuation, ?_⟩
   exact MStore.defaultValuation_models safe.solutions_length
-    safe.solutionsScoped safe.solutionsBounded safe.solutionsNormalized
+    safe.solutionsLeveled safe.solutionsBounded safe.solutionsNormalized
 
 end EPL
 
@@ -453,78 +507,89 @@ end EPL
 namespace EPL
 
 /-- Every semantic model of `newer` is already a model of `older`. -/
-def MStore.Refines
-    (older newer : MStore) (rigidCount : Nat) : Prop :=
-  ∀ valuation, newer.Models rigidCount valuation →
-    older.Models rigidCount valuation
+def MStore.Refines (older newer : MStore) : Prop :=
+  ∀ valuation, newer.Models valuation → older.Models valuation
 
-def InferState.Refines
-    (older newer : InferState) (rigidCount : Nat) : Prop :=
-  older.solutions.Refines newer.solutions rigidCount
+def InferState.Refines (older newer : InferState) : Prop :=
+  older.solutions.Refines newer.solutions
 
-theorem MStore.Refines.refl (store : MStore) (rigidCount : Nat) :
-    store.Refines store rigidCount := by
+theorem MStore.Refines.refl (store : MStore) :
+    store.Refines store := by
   intro valuation models
   exact models
 
 theorem MStore.Refines.trans
-    {first second third : MStore} {rigidCount : Nat}
-    (firstSecond : first.Refines second rigidCount)
-    (secondThird : second.Refines third rigidCount) :
-    first.Refines third rigidCount := by
+    {first second third : MStore}
+    (firstSecond : first.Refines second)
+    (secondThird : second.Refines third) :
+    first.Refines third := by
   intro valuation thirdModels
   exact firstSecond valuation (secondThird valuation thirdModels)
 
 /-- A model of a table also models any literal prefix of that table. -/
 theorem MStore.Models.prefix
-    {older newer : MStore} {valuation : MValuation} {rigidCount : Nat}
-    (models : newer.Models rigidCount valuation)
+    {older newer : MStore} {valuation : MValuation}
+    (models : newer.Models valuation)
     (prefixEq : newer.take older.length = older) :
-    older.Models rigidCount valuation := by
+    older.Models valuation := by
   have lengthLe : older.length ≤ newer.length := by
     have lengths := congrArg List.length prefixEq
     simp only [List.length_take] at lengths
     omega
   constructor
-  · intro id idLt
-    exact models.valuationWF id (lt_of_lt_of_le idLt lengthLe)
-  · intro id ty entry
+  · intro id entry entryOlder
     have idLt : id < older.length := by
       by_contra outOfRange
       have noneEq : older[id]? = none :=
         List.getElem?_eq_none_iff.mpr (by omega)
-      rw [noneEq] at entry
-      exact Option.noConfusion entry
-    have idNewer : id < newer.length := lt_of_lt_of_le idLt lengthLe
+      rw [noneEq] at entryOlder
+      exact Option.noConfusion entryOlder
     have prefixAt : newer[id]? = older[id]? := by
       have gets : (newer.take older.length)[id]? = older[id]? :=
         congrArg (fun entries => entries[id]?) prefixEq
       rw [List.getElem?_take_of_lt idLt] at gets
       exact gets
-    exact models.equation id ty (by rw [prefixAt]; exact entry)
+    exact models.valuationWF id entry (by rw [prefixAt]; exact entryOlder)
+  · intro id ty lookup
+    have idLt : id < older.length := by
+      by_contra outOfRange
+      have noneEq : older[id]? = none :=
+        List.getElem?_eq_none_iff.mpr (by omega)
+      have lookupNone : older.lookup id = none := by
+        simp [MStore.lookup, noneEq]
+      rw [lookupNone] at lookup
+      exact Option.noConfusion lookup
+    have prefixAt : newer[id]? = older[id]? := by
+      have gets : (newer.take older.length)[id]? = older[id]? :=
+        congrArg (fun entries => entries[id]?) prefixEq
+      rw [List.getElem?_take_of_lt idLt] at gets
+      exact gets
+    have lookupEq : newer.lookup id = older.lookup id := by
+      simp [MStore.lookup, prefixAt]
+    exact models.equation id ty (by rw [lookupEq]; exact lookup)
 
 theorem InferState.fresh_refines
-    {state : InferState} {rigidCount : Nat} :
-    state.Refines state.fresh.1 rigidCount := by
+    {state : InferState} {level : Nat} :
+    state.Refines (state.fresh level).1 := by
   intro valuation models
   apply models.prefix
   simp [InferState.fresh]
 
 theorem InferState.freshMany_refines
-    {state : InferState} {rigidCount count : Nat} :
-    state.Refines (state.freshMany count).1 rigidCount := by
+    {state : InferState} {level count : Nat} :
+    state.Refines (state.freshMany level count).1 := by
   induction count generalizing state with
-  | zero => exact MStore.Refines.refl state.solutions rigidCount
+  | zero => exact MStore.Refines.refl state.solutions
   | succ count ih =>
-      have first : state.Refines state.fresh.1 rigidCount :=
+      have first : state.Refines (state.fresh level).1 :=
         InferState.fresh_refines
-      have rest : state.fresh.1.Refines
-          (state.fresh.1.freshMany count).1 rigidCount := ih
+      have rest : (state.fresh level).1.Refines
+          ((state.fresh level).1.freshMany level count).1 := ih
       simpa [InferState.freshMany] using first.trans rest
 
 theorem InferState.allocate_refines
-    {state : InferState} {template : Template} {rigidCount : Nat} :
-    state.Refines (state.allocate template).1 rigidCount := by
+    {state : InferState} {template : Template} {level : Nat} :
+    state.Refines (state.allocate level template).1 := by
   intro valuation models
   apply models.prefix
   simp [InferState.allocate]
@@ -532,10 +597,10 @@ theorem InferState.allocate_refines
 /-- Solving a constraint only restricts the set of semantic models; it never
 changes the meaning of any previously allocated metavariable. -/
 theorem InferState.constrain_refines
-    {state checked : InferState} {left right : Ty} {rigidCount : Nat}
-    (safe : state.Safe rigidCount)
+    {state checked : InferState} {left right : Ty}
+    (_safe : state.Safe)
     (run : state.constrain left right = some checked) :
-    state.Refines checked rigidCount := by
+    state.Refines checked := by
   unfold InferState.constrain at run
   cases hunify : state.solutions.unify left right with
   | none => simp [hunify] at run
@@ -544,236 +609,6 @@ theorem InferState.constrain_refines
       subst checked
       intro valuation models
       exact (MStore.unify_sound hunify models).1
-
-end EPL
-
-namespace EPL
-
-/-- Realizing two valuations that agree on all metavariables mentioned by a
-type yields the same semantic type. -/
-private theorem Ty.realize_eq_of_mvars {ty : Ty}
-    {first second : MValuation}
-    (agree : ∀ id ∈ ty.mvars, first id = second id) :
-    ty.realize first = ty.realize second := by
-  induction ty with
-  | prim name => rfl
-  | arrow domain codomain ihDomain ihCodomain =>
-      have domainAgree : ∀ id ∈ domain.mvars, first id = second id := by
-        intro id member
-        exact agree id (by simp [Ty.mvars, member])
-      have codomainAgree : ∀ id ∈ codomain.mvars, first id = second id := by
-        intro id member
-        exact agree id (by simp [Ty.mvars, member])
-      simp only [Ty.realize, ihDomain domainAgree, ihCodomain codomainAgree]
-  | bvar index => rfl
-  | rigid level => rfl
-  | mvar id => exact agree id (by simp [Ty.mvars])
-
-/-- A model of the table after leaving a region extends to a model of the
-table inside it. The extension agrees on every metavariable that survives
-the exit (outer ones and unsolved region ones); only forgotten region
-solutions are reinterpreted. -/
-theorem MStore.Models.extend_forgotten
-    {store : MStore} {outerValuation : MValuation}
-    {rigidCount count cutoff : Nat}
-    (storeScoped : store.Scoped (rigidCount + count))
-    (storeBounded : store.Bounded store.length)
-    (storeNormalized : store.Normalized)
-    (outerModels : (store.forgetFrom cutoff).Models rigidCount outerValuation) :
-    ∃ localValuation,
-      store.Models (rigidCount + count) localValuation ∧
-        ∀ id, (id < cutoff ∨ store.lookup id = none) →
-          localValuation id = outerValuation id := by
-  have forgetLength : (store.forgetFrom cutoff).length = store.length := by
-    simp only [MStore.forgetFrom, List.length_append, List.length_take,
-      List.length_replicate]
-    omega
-  have wf_mono_rigid : ∀ {ty : Ty},
-      ty.WF rigidCount 0 → ty.WF (rigidCount + count) 0 := by
-    intro ty typeWF
-    have scoped_mono : ∀ {candidate : Ty},
-        candidate.Scoped rigidCount 0 →
-          candidate.Scoped (rigidCount + count) 0 := by
-      intro candidate candidateScoped
-      induction candidateScoped with
-      | prim => exact .prim
-      | arrow _ _ ihDomain ihCodomain => exact .arrow ihDomain ihCodomain
-      | bvar hlt => omega
-      | rigid hlt => exact .rigid (lt_of_lt_of_le hlt (Nat.le_add_right _ _))
-      | mvar id => exact .mvar id
-    exact ⟨scoped_mono typeWF.1, typeWF.2⟩
-  have outerWF : outerValuation.WF (rigidCount + count) store.length := by
-    intro id idBounded
-    apply wf_mono_rigid
-    apply outerModels.valuationWF id
-    simpa [forgetLength] using idBounded
-  let localValuation : MValuation := fun id =>
-    if cutoff ≤ id then
-      match store.lookup id with
-      | some ty => ty.realize outerValuation
-      | none => outerValuation id
-    else outerValuation id
-  have local_prefix : ∀ id, id < cutoff →
-      localValuation id = outerValuation id := by
-    intro id hid
-    simp only [localValuation, Nat.not_le.mpr hid, if_false]
-  have local_unsolved : ∀ id, store.lookup id = none →
-      localValuation id = outerValuation id := by
-    intro id hnone
-    by_cases hcut : cutoff ≤ id
-    · simp only [localValuation, hcut, if_true, hnone]
-    · exact local_prefix id (by omega)
-  have local_solved : ∀ id ty, store.lookup id = some ty →
-      localValuation id = ty.realize outerValuation := by
-    intro id ty hsome
-    by_cases hcut : cutoff ≤ id
-    · simp only [localValuation, hcut, if_true, hsome]
-    · have hid : id < cutoff := by omega
-      rw [local_prefix id hid]
-      have entry : store[id]? = some (some ty) :=
-        MStore.entry_of_lookup_eq_some hsome
-      have idLength : id < store.length := by
-        by_contra outOfRange
-        have noneEq : store[id]? = none :=
-          List.getElem?_eq_none_iff.mpr (by omega)
-        rw [noneEq] at entry
-        exact Option.noConfusion entry
-      have takeEntry : (store.take cutoff)[id]? = some (some ty) := by
-        rw [List.getElem?_take_of_lt hid]
-        exact entry
-      have projectEntry : (store.forgetFrom cutoff)[id]? = some (some ty) := by
-        simp only [MStore.forgetFrom]
-        rw [List.getElem?_append_left (by rw [List.length_take]; omega)]
-        exact takeEntry
-      exact outerModels.equation id ty projectEntry
-  have realize_eq : ∀ {ty : Ty}, some ty ∈ store →
-      ty.realize localValuation = ty.realize outerValuation := by
-    intro ty member
-    apply Ty.realize_eq_of_mvars
-    intro id hid
-    exact local_unsolved id (storeNormalized ty member id hid)
-  refine ⟨localValuation, ?_, ?_⟩
-  · constructor
-    · intro id idBounded
-      by_cases hcut : cutoff ≤ id
-      · cases hlookup : store.lookup id with
-        | none =>
-            rw [local_unsolved id hlookup]
-            exact outerWF id idBounded
-        | some ty =>
-            rw [local_solved id ty hlookup]
-            have entry : store[id]? = some (some ty) :=
-              MStore.entry_of_lookup_eq_some hlookup
-            have tyMember : some ty ∈ store := List.mem_of_getElem? entry
-            have entryWF : ty.InferWF (rigidCount + count) 0 store.length :=
-              ⟨storeScoped ty tyMember, storeBounded ty tyMember⟩
-            exact Ty.realize_inferWF entryWF outerWF
-      · rw [local_prefix id (by omega)]
-        exact outerWF id idBounded
-    · intro id ty entry
-      have hlookup : store.lookup id = some ty := by
-        simp [MStore.lookup, entry]
-      have tyMember : some ty ∈ store := List.mem_of_getElem? entry
-      rw [local_solved id ty hlookup]
-      rw [realize_eq tyMember]
-  · intro id hagree
-    rcases hagree with hid | hnone
-    · exact local_prefix id hid
-    · exact local_unsolved id hnone
-
-
-end EPL
-
-namespace EPL
-
-def MValuation.AgreeBelow
-    (first second : MValuation) (frontier : Nat) : Prop :=
-  ∀ id, id < frontier → first id = second id
-
-theorem MValuation.AgreeBelow.refl
-    (valuation : MValuation) (frontier : Nat) :
-    valuation.AgreeBelow valuation frontier := by
-  intro id _
-  rfl
-
-theorem Ty.realize_eq_of_agree
-    {ty : Ty} {first second : MValuation} {frontier : Nat}
-    (bounded : ty.MVarBounded frontier)
-    (agree : first.AgreeBelow second frontier) :
-    ty.realize first = ty.realize second := by
-  induction ty with
-  | prim name => rfl
-  | arrow domain codomain ihDomain ihCodomain =>
-      have domainBounded : domain.MVarBounded frontier := by
-        intro id member
-        exact bounded id (by simp [Ty.mvars, member])
-      have codomainBounded : codomain.MVarBounded frontier := by
-        intro id member
-        exact bounded id (by simp [Ty.mvars, member])
-      simp only [Ty.realize, ihDomain domainBounded, ihCodomain codomainBounded]
-  | bvar index => rfl
-  | rigid level => rfl
-  | mvar id =>
-      exact agree id (bounded id (by simp [Ty.mvars]))
-
-theorem PolyTy.realize_eq_of_agree
-    {scheme : PolyTy} {first second : MValuation} {frontier : Nat}
-    (bounded : scheme.body.MVarBounded frontier)
-    (agree : first.AgreeBelow second frontier) :
-    scheme.realize first = scheme.realize second := by
-  cases scheme with
-  | mk count body =>
-      simp only [PolyTy.realize, Scheme.mk.injEq, true_and]
-      exact Ty.realize_eq_of_agree bounded agree
-
-theorem Ctx.realize_eq_of_agree
-    {ctx : Ctx} {first second : MValuation} {frontier : Nat}
-    (bounded : ∀ scheme ∈ ctx, scheme.body.MVarBounded frontier)
-    (agree : first.AgreeBelow second frontier) :
-    ctx.realize first = ctx.realize second := by
-  induction ctx with
-  | nil => rfl
-  | cons scheme tail ih =>
-      have schemeBounded : scheme.body.MVarBounded frontier :=
-        bounded scheme (by simp)
-      have tailBounded : ∀ candidate ∈ tail,
-          candidate.body.MVarBounded frontier := by
-        intro candidate member
-        exact bounded candidate (by simp [member])
-      have tailEq := ih tailBounded
-      simp only [Ctx.realize] at tailEq
-      simp only [Ctx.realize, List.map_cons]
-      rw [PolyTy.realize_eq_of_agree schemeBounded agree, tailEq]
-
-/-- A model can be transported to an agreeing semantic valuation when the
-table itself is bounded by the agreement frontier. -/
-theorem MStore.Models.of_agree
-    {store : MStore} {first second : MValuation}
-    {rigidCount frontier : Nat}
-    (length : store.length = frontier)
-    (storeBounded : store.Bounded frontier)
-    (firstModels : store.Models rigidCount first)
-    (secondWF : second.WF rigidCount frontier)
-    (agree : first.AgreeBelow second frontier) :
-    store.Models rigidCount second := by
-  constructor
-  · intro id idBounded
-    exact secondWF id (by simpa [length] using idBounded)
-  · intro id ty entry
-    have idBounded : id < store.length := by
-      by_contra outOfRange
-      have noneEq : store[id]? = none :=
-        List.getElem?_eq_none_iff.mpr (by omega)
-      rw [noneEq] at entry
-      exact Option.noConfusion entry
-    have idFrontier : id < frontier := by simpa [length] using idBounded
-    have tyMember : some ty ∈ store := List.mem_of_getElem? entry
-    have entryBounded : ty.MVarBounded frontier := storeBounded ty tyMember
-    calc
-      second id = first id := (agree id idFrontier).symm
-      _ = ty.realize first := firstModels.equation id ty entry
-      _ = ty.realize second :=
-        Ty.realize_eq_of_agree entryBounded agree
 
 end EPL
 
@@ -883,47 +718,6 @@ end EPL
 
 namespace EPL
 
-/-- A type obtained by resolving a normalized table only mentions metavariables
-that are still unsolved in that table. -/
-private theorem MStore.apply_mvars_unsolved {store : MStore}
-    (normalized : store.Normalized) (ty : Ty) :
-    ∀ id ∈ (store.apply ty).mvars, store.lookup id = none := by
-  induction ty with
-  | prim name => simp [MStore.apply, Ty.mvars]
-  | arrow domain codomain ihDomain ihCodomain =>
-      intro id member
-      simp only [MStore.apply, Ty.mvars, List.mem_dedup, List.mem_append] at member
-      rcases member with member | member
-      · exact ihDomain id member
-      · exact ihCodomain id member
-  | bvar index => simp [MStore.apply, Ty.mvars]
-  | rigid level => simp [MStore.apply, Ty.mvars]
-  | mvar id =>
-      intro other member
-      cases hlookup : store.lookup id with
-      | none =>
-          simp only [MStore.apply, hlookup, Option.getD_none, Ty.mvars,
-            List.mem_singleton] at member
-          subst other
-          exact hlookup
-      | some replacement =>
-          simp only [MStore.apply, hlookup, Option.getD_some] at member
-          have entry : store[id]? = some (some replacement) := by
-            apply Option.join_eq_some_iff.mp
-            simpa [MStore.lookup] using hlookup
-          exact normalized replacement (List.mem_of_getElem? entry) other member
-
-/-- Resolving a type through a normalized table does not distinguish two
-valuations that agree on the table's unsolved metavariables. -/
-private theorem Ty.realize_apply_eq_of_unsolved {store : MStore} {ty : Ty}
-    {first second : MValuation}
-    (normalized : store.Normalized)
-    (agree : ∀ id, store.lookup id = none → first id = second id) :
-    (store.apply ty).realize first = (store.apply ty).realize second := by
-  apply Ty.realize_eq_of_mvars
-  intro id member
-  exact agree id (MStore.apply_mvars_unsolved normalized ty id member)
-
 private theorem Expr.mapAnn_mapAnn (expr : Expr Ty) (f g : Ty → Ty) :
     (expr.mapAnn f).mapAnn g = expr.mapAnn fun ty => g (f ty) := by
   induction expr with
@@ -1030,7 +824,7 @@ private theorem Expr.mapAnn_congr {expr : Expr Ty} {f g : Ty → Ty}
 /-- Realizing a resolved expression under a model is the same as realizing the
 original expression. -/
 private theorem Expr.realize_applyExpr {store : MStore} {valuation : MValuation}
-    {rigidCount : Nat} (models : store.Models rigidCount valuation)
+    (models : store.Models valuation)
     (expr : Expr Ty) :
     (store.applyExpr expr).realize valuation = expr.realize valuation := by
   change (expr.mapAnn store.apply).mapAnn (fun ty => ty.realize valuation) =
@@ -1039,21 +833,6 @@ private theorem Expr.realize_applyExpr {store : MStore} {valuation : MValuation}
   apply Expr.mapAnn_congr
   intro ty _
   exact MStore.Models.realize_apply models ty
-
-/-- Two valuations that agree on a table's unsolved metavariables realize every
-resolved expression identically. -/
-private theorem Expr.realize_applyExpr_eq_of_unsolved {store : MStore}
-    {expr : Expr Ty} {first second : MValuation}
-    (normalized : store.Normalized)
-    (agree : ∀ id, store.lookup id = none → first id = second id) :
-    (store.applyExpr expr).realize first =
-      (store.applyExpr expr).realize second := by
-  change (expr.mapAnn store.apply).mapAnn (fun ty => ty.realize first) =
-    (expr.mapAnn store.apply).mapAnn (fun ty => ty.realize second)
-  rw [Expr.mapAnn_mapAnn, Expr.mapAnn_mapAnn]
-  apply Expr.mapAnn_congr
-  intro ty _
-  exact Ty.realize_apply_eq_of_unsolved normalized agree
 
 /-- An expression all of whose annotations are semantic realizes to itself. -/
 private theorem Expr.realize_eq_self_of_annotations {expr : Expr Ty}
@@ -1112,25 +891,30 @@ private theorem Ty.closeRigids_mvarBounded
   rw [Ty.mvars_closeRigids] at member
   exact bounded id member
 
+/-- Closing rigid levels preserves level bounds. -/
+private theorem Ty.closeRigids_levelBounded
+    {ty : Ty} {base count : Nat} {store : MStore} {level : Nat}
+    (bounded : ty.LevelBounded store level) :
+    (ty.closeRigids base count).LevelBounded store level := by
+  intro id member
+  rw [Ty.mvars_closeRigids] at member
+  exact bounded id member
+
 /-- Strong semantic soundness of the internal engine. A successful run both
 refines its input state and yields a declarative typing derivation under every
 semantic model of the result state. -/
 theorem inferFuel_sound_model
     {fuel rigidCount : Nat} {ctx : Ctx} {input : Source}
     {state : InferState} {result : InferResult}
-    (stateSafe : state.Safe rigidCount)
+    (stateSafe : state.Safe)
     (ctxWF : ctx.InferWF rigidCount state.next)
+    (ctxLevels : ∀ scheme ∈ ctx, scheme.body.LevelBounded state.solutions rigidCount)
     (inputScoped : input.TypeScoped rigidCount 0)
     (run : inferFuel fuel rigidCount ctx input state = some result) :
-    state.Refines result.state rigidCount ∧
-      ∀ valuation, result.state.Models rigidCount valuation →
+    state.Refines result.state ∧
+      ∀ valuation, result.state.Models valuation →
         Elaborates rigidCount (ctx.realize valuation) input
           (result.elaborated.realize valuation) (result.ty.realize valuation) := by
-  have modelWF : ∀ {candidate : InferState} {valuation : MValuation}
-      {rigid : Nat}, candidate.Safe rigid → candidate.Models rigid valuation →
-        valuation.WF rigid candidate.next := by
-    intro candidate valuation rigid safe models
-    simpa [safe.solutions_length] using models.valuationWF
   have ctx_mono : ∀ {context : Ctx} {rigid smaller larger : Nat},
       context.InferWF rigid smaller → smaller ≤ larger →
         context.InferWF rigid larger := by
@@ -1156,12 +940,6 @@ theorem inferFuel_sound_model
         context.InferWF larger frontier := by
     intro context frontier smaller larger h le scheme member
     exact ⟨scoped_mono_rigid (h scheme member).1 le, (h scheme member).2⟩
-  have state_mono_rigid : ∀ {candidate : InferState} {smaller larger : Nat},
-      candidate.Safe smaller → smaller ≤ larger → candidate.Safe larger := by
-    intro candidate smaller larger h le
-    exact ⟨h.solutions_length,
-      (fun ty member => scoped_mono_rigid (h.solutionsScoped ty member) le),
-      h.solutionsBounded, h.solutionsNormalized⟩
   have metaFree_bounded : ∀ {ty : Ty} {frontier : Nat},
       ty.MetaFree → ty.MVarBounded frontier := by
     intro ty frontier h
@@ -1184,13 +962,13 @@ theorem inferFuel_sound_model
       | primLit literal =>
           simp only [inferFuel, Option.some.injEq] at run
           subst result
-          refine ⟨MStore.Refines.refl _ _, ?_⟩
+          refine ⟨MStore.Refines.refl _, ?_⟩
           intro valuation models
           cases literal <;> exact Elaborates.primLit
       | primOp op =>
           simp only [inferFuel, Option.some.injEq] at run
           subst result
-          refine ⟨MStore.Refines.refl _ _, ?_⟩
+          refine ⟨MStore.Refines.refl _, ?_⟩
           intro valuation models
           cases op
           exact Elaborates.primOp
@@ -1200,38 +978,40 @@ theorem inferFuel_sound_model
           | none => simp [lookup] at run
           | some scheme =>
               simp only [lookup] at run
-              let fresh := state.freshMany scheme.paramCount
+              let fresh := state.freshMany rigidCount scheme.paramCount
               have resultEq : result =
                   ⟨fresh.1, (state.solutions.applyScheme scheme).openWith fresh.2,
                     .var index⟩ :=
                 Option.some.inj run.symm
               subst result
               have freshSafe := InferState.freshMany_safe
-                (count := scheme.paramCount) stateSafe
+                (level := rigidCount) (count := scheme.paramCount) stateSafe
               refine ⟨InferState.freshMany_refines, ?_⟩
               intro valuation models
-              have stateModels : state.Models rigidCount valuation :=
+              have stateModels : state.Models valuation :=
                 InferState.freshMany_refines valuation models
-              have valuationWF : valuation.WF rigidCount fresh.1.next :=
-                modelWF freshSafe.1 models
               have schemeMember : scheme ∈ ctx := List.mem_of_getElem? lookup
               have schemeWF := ctxWF scheme schemeMember
-              have appliedWF : (state.solutions.applyScheme scheme).InferWF
-                  rigidCount state.next :=
-                MStore.apply_inferWF stateSafe.solutionsScoped
-                  stateSafe.solutionsBounded schemeWF
+              have schemeLevels := ctxLevels scheme schemeMember
+              have applied := MStore.apply_inferWF stateSafe.solutionsLeveled
+                stateSafe.solutionsBounded schemeWF schemeLevels
+              have appliedWF : (state.solutions.apply scheme.body).InferWF
+                  rigidCount scheme.paramCount state.next := applied.1
+              have appliedLevels : (state.solutions.apply scheme.body).LevelBounded
+                  state.solutions rigidCount := applied.2
               have argsWF : ∀ arg ∈ fresh.2,
                   (arg.realize valuation).WF rigidCount 0 := by
                 intro arg member
-                exact Ty.realize_inferWF
-                  (freshSafe.2.1 arg member) valuationWF
+                exact Ty.realize_inferWF_model models freshSafe.1.solutions_length
+                  (freshSafe.2.1 arg member) (freshSafe.2.2.1 arg member)
               have resultTyEq :
                   ((state.solutions.applyScheme scheme).openWith fresh.2).realize
                       valuation =
                     (scheme.realize valuation).openWith
                       (fresh.2.map (·.realize valuation)) := by
-                have opened := Ty.realize_openWith (args := fresh.2) appliedWF
-                  (modelWF stateSafe stateModels)
+                have opened := Ty.realize_openWith (args := fresh.2)
+                  (MStore.Models.images_scoped stateModels
+                    stateSafe.solutions_length appliedWF.2 appliedLevels)
                 have appliedEq := stateModels.realize_apply scheme.body
                 simpa [PolyTy.openWith, PolyTy.realize, MStore.applyScheme,
                   appliedEq] using opened
@@ -1239,9 +1019,9 @@ theorem inferFuel_sound_model
               apply Elaborates.var (scheme := scheme.realize valuation)
                   (args := fresh.2.map (·.realize valuation))
               · simp [Ctx.realize, lookup]
-              · exact PolyTy.realize_wf schemeWF
-                  (modelWF stateSafe stateModels)
-              · simpa using freshSafe.2.2.1
+              · exact PolyTy.realize_wf_model stateModels
+                  stateSafe.solutions_length schemeWF schemeLevels
+              · simpa using freshSafe.2.2.2.1
               · intro arg member
                 rcases List.mem_map.mp member with ⟨original, originalMem, rfl⟩
                 exact argsWF original originalMem
@@ -1251,30 +1031,45 @@ theorem inferFuel_sound_model
             cases ann with
             | none =>
                 simp only [inferFuel] at run
-                let seeded := state.fresh
+                let seeded := state.fresh rigidCount
                 cases bodyRun : inferFuel fuel rigidCount
                     (PolyTy.mono seeded.2 :: ctx) body seeded.1 with
                 | none => simp [seeded, bodyRun] at run
                 | some bodyResult =>
-                    have seededSafe := InferState.fresh_safe stateSafe
+                    have seededSafe := InferState.fresh_safe
+                      (level := rigidCount) stateSafe
                     have bodyCtxWF : Ctx.InferWF
                         (PolyTy.mono seeded.2 :: ctx) rigidCount seeded.1.next := by
                       intro scheme member
                       simp only [List.mem_cons] at member
                       rcases member with rfl | member
                       · exact seededSafe.2.1
-                      · exact ctx_mono ctxWF seededSafe.2.2 scheme member
-                    have bodySound := ih seededSafe.1 bodyCtxWF bodyScoped bodyRun
+                      · exact ctx_mono ctxWF seededSafe.2.2.2.1 scheme member
+                    have bodyCtxLevels :
+                        ∀ scheme ∈ PolyTy.mono seeded.2 :: ctx,
+                          scheme.body.LevelBounded seeded.1.solutions rigidCount := by
+                      intro scheme member
+                      simp only [List.mem_cons] at member
+                      rcases member with rfl | member
+                      · exact seededSafe.2.2.1
+                      · intro id hid
+                        have idBound : id < state.next :=
+                          (ctxWF scheme member).2 id hid
+                        rw [seededSafe.2.2.2.2 id idBound]
+                        exact ctxLevels scheme member id hid
+                    have bodySound := ih seededSafe.1 bodyCtxWF bodyCtxLevels
+                      bodyScoped bodyRun
                     dsimp [seeded] at bodyRun
                     rw [bodyRun] at run
                     have run := Option.some.inj run
                     subst result
                     refine ⟨InferState.fresh_refines.trans bodySound.1, ?_⟩
                     intro valuation models
-                    have seededModels : seeded.1.Models rigidCount valuation :=
+                    have seededModels : seeded.1.Models valuation :=
                       bodySound.1 valuation models
-                    have paramWF := Ty.realize_inferWF seededSafe.2.1
-                      (modelWF seededSafe.1 seededModels)
+                    have paramWF := Ty.realize_inferWF_model seededModels
+                      seededSafe.1.solutions_length seededSafe.2.1
+                      seededSafe.2.2.1
                     have bodyTyping := bodySound.2 valuation models
                     have annMatches : ParamAnn.Matches none
                         (seeded.2.realize valuation) := by
@@ -1295,30 +1090,46 @@ theorem inferFuel_sound_model
             | some template =>
                 have templateScoped := annScoped template rfl
                 simp only [inferFuel] at run
-                let seeded := state.allocate template
+                let seeded := state.allocate rigidCount template
                 cases bodyRun : inferFuel fuel rigidCount
                     (PolyTy.mono seeded.2 :: ctx) body seeded.1 with
                 | none => simp [seeded, bodyRun] at run
                 | some bodyResult =>
-                    have seededSafe := InferState.allocate_safe stateSafe templateScoped
+                    have seededSafe := InferState.allocate_safe
+                      (level := rigidCount) (rigidCount := rigidCount)
+                      stateSafe templateScoped
                     have bodyCtxWF : Ctx.InferWF
                         (PolyTy.mono seeded.2 :: ctx) rigidCount seeded.1.next := by
                       intro scheme member
                       simp only [List.mem_cons] at member
                       rcases member with rfl | member
                       · exact seededSafe.2.1
-                      · exact ctx_mono ctxWF seededSafe.2.2 scheme member
-                    have bodySound := ih seededSafe.1 bodyCtxWF bodyScoped bodyRun
+                      · exact ctx_mono ctxWF seededSafe.2.2.2.1 scheme member
+                    have bodyCtxLevels :
+                        ∀ scheme ∈ PolyTy.mono seeded.2 :: ctx,
+                          scheme.body.LevelBounded seeded.1.solutions rigidCount := by
+                      intro scheme member
+                      simp only [List.mem_cons] at member
+                      rcases member with rfl | member
+                      · exact seededSafe.2.2.1
+                      · intro id hid
+                        have idBound : id < state.next :=
+                          (ctxWF scheme member).2 id hid
+                        rw [seededSafe.2.2.2.2 id idBound]
+                        exact ctxLevels scheme member id hid
+                    have bodySound := ih seededSafe.1 bodyCtxWF bodyCtxLevels
+                      bodyScoped bodyRun
                     dsimp [seeded] at bodyRun
                     rw [bodyRun] at run
                     have run := Option.some.inj run
                     subst result
                     refine ⟨InferState.allocate_refines.trans bodySound.1, ?_⟩
                     intro valuation models
-                    have seededModels : seeded.1.Models rigidCount valuation :=
+                    have seededModels : seeded.1.Models valuation :=
                       bodySound.1 valuation models
-                    have paramWF := Ty.realize_inferWF seededSafe.2.1
-                      (modelWF seededSafe.1 seededModels)
+                    have paramWF := Ty.realize_inferWF_model seededModels
+                      seededSafe.1.solutions_length seededSafe.2.1
+                      seededSafe.2.2.1
                     have bodyTyping := bodySound.2 valuation models
                     have annMatches : ParamAnn.Matches (some template)
                         (seeded.2.realize valuation) := by
@@ -1344,25 +1155,36 @@ theorem inferFuel_sound_model
             cases functionRun : inferFuel fuel rigidCount ctx function state with
             | none => simp [functionRun] at run
             | some functionResult =>
-              have functionSafe := inferFuel_safe stateSafe ctxWF
+              have functionSafe := inferFuel_safe stateSafe ctxWF ctxLevels
                 functionScoped functionRun
-              have functionSound := ih stateSafe ctxWF functionScoped functionRun
-              have argumentCtxWF := ctx_mono ctxWF functionSafe.2.2
+              have functionSound := ih stateSafe ctxWF ctxLevels
+                functionScoped functionRun
+              have argumentCtxWF := ctx_mono ctxWF functionSafe.2.2.2.1
+              have argumentCtxLevels :
+                  ∀ scheme ∈ ctx,
+                    scheme.body.LevelBounded
+                      functionResult.state.solutions rigidCount := by
+                intro scheme member id hid
+                have idBound : id < state.next :=
+                  (ctxWF scheme member).2 id hid
+                exact le_trans (functionSafe.2.2.2.2 id idBound)
+                  (ctxLevels scheme member id hid)
               cases argumentRun : inferFuel fuel rigidCount ctx argument
                   functionResult.state with
               | none => simp [functionRun, argumentRun] at run
               | some argumentResult =>
                 have argumentSafe := inferFuel_safe functionSafe.1 argumentCtxWF
-                  argumentScoped argumentRun
+                  argumentCtxLevels argumentScoped argumentRun
                 have argumentSound := ih functionSafe.1 argumentCtxWF
-                  argumentScoped argumentRun
-                let fresh := argumentResult.state.fresh
-                have freshSafe := InferState.fresh_safe argumentSafe.1
+                  argumentCtxLevels argumentScoped argumentRun
+                let fresh := argumentResult.state.fresh rigidCount
+                have freshSafe := InferState.fresh_safe
+                  (level := rigidCount) argumentSafe.1
                 have functionTyWF : functionResult.ty.InferWF rigidCount 0
                     fresh.1.next := inferWF_mono functionSafe.2.1
-                      (le_trans argumentSafe.2.2 freshSafe.2.2)
+                      (le_trans argumentSafe.2.2.2.1 freshSafe.2.2.2.1)
                 have argumentTyWF : argumentResult.ty.InferWF rigidCount 0
-                    fresh.1.next := inferWF_mono argumentSafe.2.1 freshSafe.2.2
+                    fresh.1.next := inferWF_mono argumentSafe.2.1 freshSafe.2.2.2.1
                 have arrowWF : (Ty.arrow argumentResult.ty fresh.2).InferWF
                     rigidCount 0 fresh.1.next := by
                   exact ⟨.arrow argumentTyWF.1 freshSafe.2.1.1,
@@ -1385,19 +1207,18 @@ theorem inferFuel_sound_model
                             argumentResult.elaborated⟩ := by
                       simpa [functionRun, argumentRun, checkedRun] using run.symm
                     subst result
-                    have checkedRefines : fresh.1.Refines checked rigidCount :=
+                    have checkedRefines : fresh.1.Refines checked :=
                       InferState.constrain_refines freshSafe.1 checkedRun
                     refine ⟨functionSound.1.trans <| argumentSound.1.trans <|
                       InferState.fresh_refines.trans checkedRefines, ?_⟩
                     intro valuation models
-                    have argumentModels : argumentResult.state.Models
-                        rigidCount valuation :=
+                    have argumentModels : argumentResult.state.Models valuation :=
                       (InferState.fresh_refines.trans checkedRefines) valuation models
-                    have functionModels : functionResult.state.Models
-                        rigidCount valuation := argumentSound.1 valuation argumentModels
+                    have functionModels : functionResult.state.Models valuation :=
+                      argumentSound.1 valuation argumentModels
                     have functionTyping := functionSound.2 valuation functionModels
                     have argumentTyping := argumentSound.2 valuation argumentModels
-                    have checkedEq := checkedSafe.2.2
+                    have checkedEq := checkedSafe.2.2.1
                     have semanticEq := congrArg (Ty.realize valuation) checkedEq
                     rw [models.realize_apply functionResult.ty,
                       models.realize_apply (.arrow argumentResult.ty fresh.2)] at semanticEq
@@ -1416,24 +1237,42 @@ theorem inferFuel_sound_model
               cases rhsRun : inferFuel fuel rigidCount ctx rhs state with
               | none => simp [rhsRun] at run
               | some rhsResult =>
-                have rhsSafe := inferFuel_safe stateSafe ctxWF rhsScoped rhsRun
-                have rhsSound := ih stateSafe ctxWF rhsScoped rhsRun
+                have rhsSafe := inferFuel_safe stateSafe ctxWF ctxLevels
+                  rhsScoped rhsRun
+                have rhsSound := ih stateSafe ctxWF ctxLevels rhsScoped rhsRun
                 let rhsTy := rhsResult.state.solutions.apply rhsResult.ty
+                have rhsApplied := MStore.apply_inferWF rhsSafe.1.solutionsLeveled
+                  rhsSafe.1.solutionsBounded rhsSafe.2.1 rhsSafe.2.2.1
                 have rhsTyWF : rhsTy.InferWF rigidCount 0 rhsResult.state.next :=
-                  MStore.apply_inferWF rhsSafe.1.solutionsScoped
-                    rhsSafe.1.solutionsBounded rhsSafe.2.1
+                  rhsApplied.1
+                have rhsTyLevels : rhsTy.LevelBounded
+                    rhsResult.state.solutions rigidCount := rhsApplied.2
                 have bodyCtxWF : Ctx.InferWF (PolyTy.mono rhsTy :: ctx)
                     rigidCount rhsResult.state.next := by
                   intro scheme member
                   simp only [List.mem_cons] at member
                   rcases member with rfl | member
                   · exact rhsTyWF
-                  · exact ctx_mono ctxWF rhsSafe.2.2 scheme member
+                  · exact ctx_mono ctxWF rhsSafe.2.2.2.1 scheme member
+                have bodyCtxLevels :
+                    ∀ scheme ∈ PolyTy.mono rhsTy :: ctx,
+                      scheme.body.LevelBounded
+                        rhsResult.state.solutions rigidCount := by
+                  intro scheme member
+                  simp only [List.mem_cons] at member
+                  rcases member with rfl | member
+                  · exact rhsTyLevels
+                  · intro id hid
+                    have idBound : id < state.next :=
+                      (ctxWF scheme member).2 id hid
+                    exact le_trans (rhsSafe.2.2.2.2 id idBound)
+                      (ctxLevels scheme member id hid)
                 cases bodyRun : inferFuel fuel rigidCount
                     (PolyTy.mono rhsTy :: ctx) body rhsResult.state with
                 | none => simp [rhsTy, rhsRun, bodyRun] at run
                 | some bodyResult =>
-                    have bodySound := ih rhsSafe.1 bodyCtxWF bodyScoped bodyRun
+                    have bodySound := ih rhsSafe.1 bodyCtxWF bodyCtxLevels
+                      bodyScoped bodyRun
                     have resultEq : result =
                         ⟨bodyResult.state, bodyResult.ty,
                           .letIn none rhsResult.elaborated
@@ -1445,8 +1284,8 @@ theorem inferFuel_sound_model
                     have rhsModels := bodySound.1 valuation models
                     have rhsTyping := rhsSound.2 valuation rhsModels
                     have bodyTyping := bodySound.2 valuation models
-                    have rhsSemanticWF := Ty.realize_inferWF rhsSafe.2.1
-                      (modelWF rhsSafe.1 rhsModels)
+                    have rhsSemanticWF := Ty.realize_inferWF_model rhsModels
+                      rhsSafe.1.solutions_length rhsSafe.2.1 rhsSafe.2.2.1
                     apply Elaborates.letMono rhsSemanticWF
                     · exact rhsTyping
                     · have rhsEq := rhsModels.realize_apply rhsResult.ty
@@ -1458,319 +1297,290 @@ theorem inferFuel_sound_model
               simp only [inferFuel] at run
               let localStart := state.next
               let count := written.paramCount
+              let inner := rigidCount + count
               let openedTemplate :=
                 written.body.openRigidsFrom 0 rigidCount count
               have openedTemplateScoped :
-                  openedTemplate.Scoped (rigidCount + count) 0 := by
-                simpa [openedTemplate, Nat.zero_add] using
+                  openedTemplate.Scoped inner 0 := by
+                simpa [openedTemplate, inner, Nat.zero_add] using
                   (Template.openRigidsFrom_scoped
                     (rigidCount := rigidCount) (depth := 0)
                     (count := count) writtenScoped)
-              have localStateSafe : state.Safe (rigidCount + count) :=
-                state_mono_rigid stateSafe (by omega)
-              let seeded := state.allocate openedTemplate
-              have seededSafe := InferState.allocate_safe localStateSafe
-                openedTemplateScoped
+              let seeded := state.allocate inner openedTemplate
+              have seededSafe := InferState.allocate_safe
+                (level := inner) (rigidCount := inner)
+                stateSafe openedTemplateScoped
               have openedRhsScoped :
-                  (rhs.openRigids rigidCount count).TypeScoped
-                    (rigidCount + count) 0 := by
-                simpa [Expr.openRigids, count, Nat.zero_add] using
+                  (rhs.openRigids rigidCount count).TypeScoped inner 0 := by
+                simpa [Expr.openRigids, inner, count, Nat.zero_add] using
                   (Expr.openRigidsFrom_typeScoped
                     (rigidCount := rigidCount) (depth := 0)
                     (count := count) rhsScoped)
-              have rhsCtxWF : ctx.InferWF (rigidCount + count) seeded.1.next :=
-                ctx_mono (ctx_mono_rigid ctxWF (by omega)) seededSafe.2.2
-              cases rhsRun : inferFuel fuel (rigidCount + count) ctx
+              have rhsCtxWF : ctx.InferWF inner seeded.1.next :=
+                ctx_mono (ctx_mono_rigid ctxWF (by omega)) seededSafe.2.2.2.1
+              have rhsCtxLevels :
+                  ∀ scheme ∈ ctx,
+                    scheme.body.LevelBounded seeded.1.solutions inner := by
+                intro scheme member id hid
+                have idBound : id < state.next :=
+                  (ctxWF scheme member).2 id hid
+                rw [seededSafe.2.2.2.2 id idBound]
+                exact le_trans (ctxLevels scheme member id hid) (by omega)
+              cases rhsRun : inferFuel fuel inner ctx
                   (rhs.openRigids rigidCount count) seeded.1 with
               | none =>
-                  dsimp [seeded, openedTemplate, count] at rhsRun
+                  dsimp [seeded, openedTemplate, count, inner] at rhsRun
                   simp [rhsRun] at run
               | some rhsResult =>
-                  dsimp [seeded, openedTemplate, count] at rhsRun
+                  dsimp [seeded, openedTemplate, count, inner] at rhsRun
                   have rhsSafe := inferFuel_safe seededSafe.1 rhsCtxWF
+                    rhsCtxLevels openedRhsScoped rhsRun
+                  have rhsSound := ih seededSafe.1 rhsCtxWF rhsCtxLevels
                     openedRhsScoped rhsRun
-                  have rhsSound := ih seededSafe.1 rhsCtxWF openedRhsScoped rhsRun
-                  have seededTyAtRhs : seeded.2.InferWF
-                      (rigidCount + count) 0 rhsResult.state.next :=
-                    inferWF_mono seededSafe.2.1 rhsSafe.2.2
+                  have seededTyAtRhs : seeded.2.InferWF inner 0
+                      rhsResult.state.next :=
+                    inferWF_mono seededSafe.2.1 rhsSafe.2.2.2.1
+                  have seededLevelsRhs : seeded.2.LevelBounded
+                      rhsResult.state.solutions inner :=
+                    Ty.LevelBounded.mono_le_on seededSafe.2.2.1 (fun id member =>
+                      rhsSafe.2.2.2.2 id (seededSafe.2.1.2 id member))
                   cases checkedRun : rhsResult.state.constrain
                       rhsResult.ty seeded.2 with
                   | none =>
-                      dsimp [seeded, openedTemplate, count] at checkedRun
+                      dsimp [seeded, openedTemplate, count, inner] at checkedRun
                       simp [rhsRun, checkedRun] at run
                   | some checked =>
-                      dsimp [seeded, openedTemplate, count] at checkedRun
+                      dsimp [seeded, openedTemplate, count, inner] at checkedRun
                       have checkedSafe := InferState.constrain_safe rhsSafe.1
                         rhsSafe.2.1 seededTyAtRhs checkedRun
-                      have checkedRefines : rhsResult.state.Refines checked
-                          (rigidCount + count) :=
+                      have checkedRefines : rhsResult.state.Refines checked :=
                         InferState.constrain_refines rhsSafe.1 checkedRun
                       let completedOpen := checked.solutions.apply seeded.2
                       let completed : PolyTy :=
                         ⟨count, completedOpen.closeRigids rigidCount count⟩
-                      let projected := checked.solutions.forgetFrom localStart
-                      cases escapeEq : projected.safeToLeave rigidCount with
-                      | false =>
-                          simp [rhsRun, checkedRun, projected, localStart,
-                            escapeEq] at run
-                      | true =>
-                        have escape : projected.safeToLeave rigidCount = true := escapeEq
-                        have projectedSafe := MStore.forgetFrom_safe
-                          checkedSafe.1.solutionsNormalized
-                          (by simpa [checkedSafe.1.solutions_length] using
-                            checkedSafe.1.solutionsBounded)
-                          escape
-                        have localStartLe : localStart ≤ checked.next := by
-                          rw [checkedSafe.2.1]
-                          exact le_trans seededSafe.2.2 rhsSafe.2.2
-                        let outerState : InferState :=
-                          { next := checked.next
-                            solutions := projected }
-                        have outerSafe : outerState.Safe rigidCount := by
-                          refine ⟨?_, ?_, ?_, ?_⟩
-                          · simpa [outerState, projected,
-                              checkedSafe.1.solutions_length] using projectedSafe.1
-                          · simpa [outerState, projected] using projectedSafe.2.1
-                          · simpa [outerState, projected,
-                              checkedSafe.1.solutions_length] using projectedSafe.2.2.1
-                          · simpa [outerState, projected] using projectedSafe.2.2.2
-                        have completedOpenWF : completedOpen.InferWF
-                            (rigidCount + count) 0 checked.next := by
-                          have seededAtChecked : seeded.2.InferWF
-                              (rigidCount + count) 0 checked.next := by
-                            rw [checkedSafe.2.1]
-                            exact seededTyAtRhs
-                          exact MStore.apply_inferWF checkedSafe.1.solutionsScoped
-                            checkedSafe.1.solutionsBounded seededAtChecked
-                        have completedBodyScoped :
-                            completed.body.Scoped rigidCount count := by
-                          simpa [completed] using
-                            Ty.closeRigids_scoped_zero completedOpenWF.1
-                        have completedBodyBounded :
-                            completed.body.MVarBounded checked.next := by
-                          simpa [completed] using
-                            Ty.closeRigids_mvarBounded completedOpenWF.2
-                        have completedInferWF : completed.InferWF
-                            rigidCount checked.next :=
-                          ⟨completedBodyScoped, completedBodyBounded⟩
-                        have bodyCtxWF : Ctx.InferWF (completed :: ctx)
-                            rigidCount outerState.next := by
-                          intro scheme member
-                          simp only [List.mem_cons] at member
-                          rcases member with rfl | member
-                          · simpa [outerState] using completedInferWF
-                          · simpa [outerState] using ctx_mono ctxWF
-                              (by simpa [localStart] using localStartLe) scheme member
-                        cases bodyRun : inferFuel fuel rigidCount
-                            (completed :: ctx) body outerState with
-                        | none =>
-                            simp [completed, completedOpen, count, outerState,
-                              projected, localStart, seeded, openedTemplate,
-                              rhsRun, checkedRun, escapeEq, bodyRun] at run
-                        | some bodyResult =>
-                            have resultEq : result =
+                      simp [rhsRun, checkedRun] at run
+                      have good :
+                          completedOpen.mvars.all
+                            (fun id => checked.solutions.levelOf id ≤ rigidCount) = true := by
+                        refine List.all_eq_true.mpr ?_
+                        intro id mem
+                        simpa [completedOpen] using run.1 id mem
+                      have completedOpenLevelsRigid : completedOpen.LevelBounded
+                          checked.solutions rigidCount := by
+                        simpa [Ty.LevelBounded] using (List.all_eq_true.mp good)
+                      have localStartLe : localStart ≤ checked.next := by
+                        rw [checkedSafe.2.1]
+                        exact le_trans seededSafe.2.2.2.1 rhsSafe.2.2.2.1
+                      have checkedLevelLeState :
+                          ∀ id, id < state.next →
+                            checked.solutions.levelOf id ≤
+                              state.solutions.levelOf id := by
+                        intro id hid
+                        have hidSeeded : id < seeded.1.next :=
+                          lt_of_lt_of_le hid seededSafe.2.2.2.1
+                        have hidRhs : id < rhsResult.state.next :=
+                          lt_of_lt_of_le hidSeeded rhsSafe.2.2.2.1
+                        calc checked.solutions.levelOf id
+                            ≤ rhsResult.state.solutions.levelOf id :=
+                              checkedSafe.2.2.2 id
+                          _ ≤ seeded.1.solutions.levelOf id :=
+                              rhsSafe.2.2.2.2 id hidSeeded
+                          _ = state.solutions.levelOf id :=
+                              seededSafe.2.2.2.2 id hid
+                      have seededAtChecked : seeded.2.InferWF inner 0
+                          checked.next := by
+                        rw [checkedSafe.2.1]
+                        exact seededTyAtRhs
+                      have seededLevelsChecked : seeded.2.LevelBounded
+                          checked.solutions inner :=
+                        Ty.LevelBounded.mono_le seededLevelsRhs
+                          (fun id => checkedSafe.2.2.2 id)
+                      have completedOpenApplied := MStore.apply_inferWF
+                        checkedSafe.1.solutionsLeveled
+                        checkedSafe.1.solutionsBounded
+                        seededAtChecked seededLevelsChecked
+                      have completedOpenWF : completedOpen.InferWF inner 0
+                          checked.next := completedOpenApplied.1
+                      have completedOpenLevelsInner : completedOpen.LevelBounded
+                          checked.solutions inner := completedOpenApplied.2
+                      have completedBodyScoped :
+                          completed.body.Scoped rigidCount count := by
+                        simpa [completed, inner] using
+                          Ty.closeRigids_scoped_zero completedOpenWF.1
+                      have completedBodyBounded :
+                          completed.body.MVarBounded checked.next := by
+                        simpa [completed] using
+                          Ty.closeRigids_mvarBounded completedOpenWF.2
+                      have completedInferWF : completed.InferWF
+                          rigidCount checked.next :=
+                        ⟨completedBodyScoped, completedBodyBounded⟩
+                      have completedLevels : completed.body.LevelBounded
+                          checked.solutions rigidCount := by
+                        simpa [completed] using
+                          Ty.closeRigids_levelBounded completedOpenLevelsRigid
+                      have ctxWFChecked : ctx.InferWF rigidCount checked.next :=
+                        ctx_mono ctxWF localStartLe
+                      have ctxLevelsChecked :
+                          ∀ scheme ∈ ctx, scheme.body.LevelBounded
+                            checked.solutions rigidCount := by
+                        intro scheme member id hid
+                        have idBound : id < state.next :=
+                          (ctxWF scheme member).2 id hid
+                        exact le_trans (checkedLevelLeState id idBound)
+                          (ctxLevels scheme member id hid)
+                      have bodyCtxWF : Ctx.InferWF (completed :: ctx)
+                          rigidCount checked.next := by
+                        intro scheme member
+                        simp only [List.mem_cons] at member
+                        rcases member with rfl | member
+                        · exact completedInferWF
+                        · exact ctxWFChecked scheme member
+                      have bodyCtxLevels :
+                          ∀ scheme ∈ completed :: ctx,
+                            scheme.body.LevelBounded
+                              checked.solutions rigidCount := by
+                        intro scheme member
+                        simp only [List.mem_cons] at member
+                        rcases member with rfl | member
+                        · exact completedLevels
+                        · exact ctxLevelsChecked scheme member
+                      cases bodyRun : inferFuel fuel rigidCount
+                          (completed :: ctx) body checked with
+                      | none =>
+                          simp [completed, completedOpen, count, inner,
+                            seeded, openedTemplate, bodyRun] at run
+                      | some bodyResult =>
+                          have bodySound := ih checkedSafe.1 bodyCtxWF
+                            bodyCtxLevels bodyScoped bodyRun
+                          simp [completed, completedOpen, count, inner,
+                            seeded, openedTemplate, bodyRun] at run
+                          have resultEq : result =
+                              ⟨bodyResult.state, bodyResult.ty,
+                                .letIn (some completed)
+                                  rhsResult.elaborated
+                                  bodyResult.elaborated⟩ := by
+                            have h : some result = some
                                 ⟨bodyResult.state, bodyResult.ty,
                                   .letIn (some completed)
-                                    (checked.solutions.applyExpr
-                                      rhsResult.elaborated)
+                                    rhsResult.elaborated
                                     bodyResult.elaborated⟩ := by
-                              simpa [completed, completedOpen, count, outerState,
-                                projected, localStart, seeded, openedTemplate,
-                                rhsRun, checkedRun, escapeEq, bodyRun] using run.symm
-                            subst result
-                            have bodySound := ih outerSafe bodyCtxWF bodyScoped bodyRun
-                            have outerRefines : state.Refines outerState rigidCount := by
-                              intro outerVal outerModels
-                              obtain ⟨localVal, localModels, agree⟩ :=
-                                MStore.Models.extend_forgotten
-                                  checkedSafe.1.solutionsScoped
-                                  (by simpa [checkedSafe.1.solutions_length] using
-                                    checkedSafe.1.solutionsBounded)
-                                  checkedSafe.1.solutionsNormalized outerModels
-                              have agreeBelow : localVal.AgreeBelow outerVal localStart := by
-                                intro id hid
-                                exact agree id (Or.inl hid)
-                              have checkedToState : state.Refines checked
-                                  (rigidCount + count) :=
-                                InferState.allocate_refines.trans <|
-                                  rhsSound.1.trans checkedRefines
-                              have localStateModels := checkedToState localVal localModels
-                              have outerWF : outerVal.WF rigidCount checked.next := by
-                                simpa [outerState, projected,
-                                  checkedSafe.1.solutions_length,
-                                  projectedSafe.1] using
-                                  outerModels.valuationWF
-                              constructor
-                              · intro id hid
-                                exact outerWF id (lt_of_lt_of_le
-                                  (by simpa [stateSafe.solutions_length] using hid)
-                                  localStartLe)
-                              · intro id ty entry
-                                have idLt : id < state.solutions.length := by
-                                  by_contra outOfRange
-                                  have noneEq : state.solutions[id]? = none :=
-                                    List.getElem?_eq_none_iff.mpr (by omega)
-                                  rw [noneEq] at entry
-                                  exact Option.noConfusion entry
-                                have idOuter : id < localStart := by
-                                  simpa [localStart, stateSafe.solutions_length] using idLt
-                                have localEq := localStateModels.equation id ty entry
-                                have tyMember : some ty ∈ state.solutions :=
-                                  List.mem_of_getElem? entry
-                                have entryBounded : ty.MVarBounded state.next :=
-                                  stateSafe.solutionsBounded ty tyMember
-                                calc
-                                  outerVal id = localVal id :=
-                                    (agreeBelow id idOuter).symm
-                                  _ = ty.realize localVal := localEq
-                                  _ = ty.realize outerVal :=
-                                    Ty.realize_eq_of_agree entryBounded agreeBelow
-                            refine ⟨outerRefines.trans bodySound.1, ?_⟩
-                            intro outerVal finalModels
-                            have outerModels := bodySound.1 outerVal finalModels
-                            obtain ⟨localVal, localModels, agree⟩ :=
-                              MStore.Models.extend_forgotten
-                                checkedSafe.1.solutionsScoped
-                                (by simpa [checkedSafe.1.solutions_length] using
-                                  checkedSafe.1.solutionsBounded)
-                                checkedSafe.1.solutionsNormalized outerModels
-                            have agreeBelow : localVal.AgreeBelow
-                                outerVal localStart := by
-                              intro id hid
-                              exact agree id (Or.inl hid)
-                            have agreeUnsolved : ∀ id,
-                                checked.solutions.lookup id = none →
-                                  localVal id = outerVal id := by
-                              intro id hnone
-                              exact agree id (Or.inr hnone)
-                            have rhsModels := checkedRefines localVal localModels
-                            have rhsTyping := rhsSound.2 localVal rhsModels
-                            have ctxEq : ctx.realize localVal =
-                                ctx.realize outerVal :=
-                              Ctx.realize_eq_of_agree
-                                (fun scheme member => (ctxWF scheme member).2)
-                                agreeBelow
-                            rw [ctxEq] at rhsTyping
-                            have checkedEq := checkedSafe.2.2
-                            have semanticEq :=
-                              congrArg (Ty.realize localVal) checkedEq
-                            rw [localModels.realize_apply rhsResult.ty,
-                              localModels.realize_apply seeded.2] at semanticEq
-                            rw [semanticEq] at rhsTyping
-                            have outerValWF : outerVal.WF
-                                rigidCount checked.next :=
-                              modelWF (candidate := outerState) outerSafe outerModels
-                            have outerValWF' : outerVal.WF
-                                (rigidCount + count) checked.next := by
-                              intro id hid
-                              exact ⟨scoped_mono_rigid
-                                (outerValWF id hid).1 (by omega),
-                                (outerValWF id hid).2⟩
-                            have completedOpenRealizedWF :=
-                              Ty.realize_inferWF completedOpenWF outerValWF'
-                            have completedRealize :
-                                completed.realize outerVal =
-                                  ⟨count,
-                                    (completedOpen.realize outerVal).closeRigids
-                                      rigidCount count⟩ := by
-                              simp only [completed, PolyTy.realize]
-                              rw [Ty.realize_closeRigids
-                                completedOpenWF outerValWF]
-                            have openEq :
-                                (completed.realize outerVal).openRigids
-                                    rigidCount =
-                                  completedOpen.realize outerVal := by
-                              rw [completedRealize]
-                              exact PolyTy.openRigids_closeRigids
-                                completedOpenRealizedWF.1
-                            have seedOpenEq : completedOpen.realize localVal =
-                                completedOpen.realize outerVal := by
-                              simpa [completedOpen] using
-                                Ty.realize_apply_eq_of_unsolved
-                                  (store := checked.solutions)
-                                  (ty := seeded.2)
-                                  checkedSafe.1.solutionsNormalized
-                                  agreeUnsolved
-                            have seedEq : completedOpen.realize outerVal =
-                                seeded.2.realize localVal := by
-                              calc
-                                completedOpen.realize outerVal =
-                                    completedOpen.realize localVal :=
-                                  seedOpenEq.symm
-                                _ = seeded.2.realize localVal := by
-                                  simpa [completedOpen] using
-                                    localModels.realize_apply seeded.2
-                            have typeEq :
-                                (completed.realize outerVal).openRigids
-                                    rigidCount =
-                                  seeded.2.realize localVal := by
-                              rw [openEq, seedEq]
-                            have elabEq :
-                                (checked.solutions.applyExpr
-                                    rhsResult.elaborated).realize outerVal =
-                                  rhsResult.elaborated.realize localVal := by
-                              rw [Expr.realize_applyExpr_eq_of_unsolved
-                                checkedSafe.1.solutionsNormalized
-                                (fun id h => (agreeUnsolved id h).symm)]
-                              exact Expr.realize_applyExpr localModels
-                                rhsResult.elaborated
-                            rw [← elabEq, ← typeEq] at rhsTyping
-                            have openedMatches : openedTemplate.Matches
-                                (seeded.2.realize localVal) :=
-                              Template.allocate_matches_realize
-                                (valuation := localVal) (frontier := localStart)
-                                openedTemplateScoped
-                            have seedLocalEq : seeded.2.realize localVal =
-                                completedOpen.realize localVal :=
-                              (localModels.realize_apply seeded.2).symm
-                            rw [seedLocalEq, seedOpenEq] at openedMatches
-                            have writtenBodyScoped : written.body.Scoped
-                                rigidCount count := by
-                              simpa [count] using writtenScoped
-                            have closedMatches := Template.matches_closeRigids
-                              writtenBodyScoped completedOpenRealizedWF.1
-                              openedMatches
-                            have schemeMatches : SchemeTemplateMatches written
-                                (completed.realize outerVal) := by
-                              constructor
-                              · simp [completed, count, PolyTy.realize]
-                              · rw [completedRealize]
-                                exact closedMatches
-                            have bodyTyping := bodySound.2 outerVal finalModels
-                            change Elaborates rigidCount
-                              (ctx.realize outerVal)
-                              (.letIn (some written) rhs body)
-                              (.letIn (some (completed.realize outerVal))
-                                ((checked.solutions.applyExpr
-                                  rhsResult.elaborated).realize outerVal)
-                                (bodyResult.elaborated.realize outerVal))
-                              (bodyResult.ty.realize outerVal)
-                            apply Elaborates.letPoly
-                              (scheme := completed.realize outerVal)
-                              (rhsElab := (checked.solutions.applyExpr
-                                rhsResult.elaborated).realize outerVal)
-                              (bodyElab := bodyResult.elaborated.realize outerVal)
-                              (bodyTy := bodyResult.ty.realize outerVal)
-                            · exact schemeMatches
-                            · exact PolyTy.realize_wf completedInferWF outerValWF
-                            · exact Ctx.realize_wf ctxWF (fun id hid =>
-                                outerValWF id (lt_of_lt_of_le hid localStartLe))
-                            · simpa [completed, count, PolyTy.realize] using rhsScoped
-                            · exact rhsTyping
-                            · simpa [Ctx.realize, PolyTy.realize] using bodyTyping
+                              simpa [completed, completedOpen, count, inner,
+                                seeded, openedTemplate, bodyRun] using run.2.symm
+                            exact Option.some.inj h
+                          subst result
+                          refine ⟨(InferState.allocate_refines.trans <|
+                            rhsSound.1.trans checkedRefines).trans
+                            bodySound.1, ?_⟩
+                          intro valuation models
+                          have checkedModels : checked.Models valuation :=
+                            bodySound.1 valuation models
+                          have rhsModels : rhsResult.state.Models valuation :=
+                            checkedRefines valuation checkedModels
+                          have rhsTyping := rhsSound.2 valuation rhsModels
+                          have checkedEq := checkedSafe.2.2.1
+                          have semanticEq :=
+                            congrArg (Ty.realize valuation) checkedEq
+                          rw [checkedModels.realize_apply rhsResult.ty,
+                            checkedModels.realize_apply seeded.2] at semanticEq
+                          have seedEq : completedOpen.realize valuation =
+                              seeded.2.realize valuation :=
+                            checkedModels.realize_apply seeded.2
+                          have completedOpenRealizedWF :
+                              (completedOpen.realize valuation).WF inner 0 :=
+                            Ty.realize_inferWF_model checkedModels
+                              checkedSafe.1.solutions_length completedOpenWF
+                              completedOpenLevelsInner
+                          have imagesScoped : ∀ id ∈ completedOpen.mvars,
+                              (valuation id).Scoped rigidCount 0 :=
+                            MStore.Models.images_scoped checkedModels
+                              checkedSafe.1.solutions_length completedOpenWF.2
+                              completedOpenLevelsRigid
+                          have completedRealize :
+                              completed.realize valuation =
+                                ⟨count,
+                                  (completedOpen.realize valuation).closeRigids
+                                    rigidCount count⟩ := by
+                            simp only [completed, PolyTy.realize]
+                            rw [Ty.realize_closeRigids imagesScoped]
+                          have openEq :
+                              (completed.realize valuation).openRigids
+                                  rigidCount =
+                                completedOpen.realize valuation := by
+                            rw [completedRealize]
+                            exact PolyTy.openRigids_closeRigids
+                              completedOpenRealizedWF.1
+                          have typeEq :
+                              (completed.realize valuation).openRigids
+                                  rigidCount = seeded.2.realize valuation := by
+                            rw [openEq, seedEq]
+                          rw [semanticEq, ← typeEq] at rhsTyping
+                          have openedMatches : openedTemplate.Matches
+                              (seeded.2.realize valuation) :=
+                            Template.allocate_matches_realize
+                              (valuation := valuation) (frontier := localStart)
+                              openedTemplateScoped
+                          rw [← seedEq] at openedMatches
+                          have writtenBodyScoped : written.body.Scoped
+                              rigidCount count := by
+                            simpa [count] using writtenScoped
+                          have closedMatches := Template.matches_closeRigids
+                            writtenBodyScoped completedOpenRealizedWF.1
+                            openedMatches
+                          have schemeMatches : SchemeTemplateMatches written
+                              (completed.realize valuation) := by
+                            constructor
+                            · simp [completed, count, PolyTy.realize]
+                            · rw [completedRealize]
+                              exact closedMatches
+                          have bodyTyping := bodySound.2 valuation models
+                          change Elaborates rigidCount
+                            (ctx.realize valuation)
+                            (.letIn (some written) rhs body)
+                            (.letIn (some (completed.realize valuation))
+                              (rhsResult.elaborated.realize valuation)
+                              (bodyResult.elaborated.realize valuation))
+                            (bodyResult.ty.realize valuation)
+                          apply Elaborates.letPoly
+                            (scheme := completed.realize valuation)
+                            (rhsElab := rhsResult.elaborated.realize valuation)
+                            (bodyElab := bodyResult.elaborated.realize valuation)
+                            (bodyTy := bodyResult.ty.realize valuation)
+                          · exact schemeMatches
+                          · exact PolyTy.realize_wf_model checkedModels
+                              checkedSafe.1.solutions_length completedInferWF
+                              completedLevels
+                          · exact Ctx.realize_wf_model checkedModels
+                              checkedSafe.1.solutions_length ctxWFChecked
+                              ctxLevelsChecked
+                          · simpa [completed, count, PolyTy.realize] using rhsScoped
+                          · exact rhsTyping
+                          · simpa [Ctx.realize, PolyTy.realize] using bodyTyping
       | fix ann body =>
           cases inputScoped with
           | fix annScoped bodyScoped =>
             simp only [inferFuel] at run
-            let seeded := state.allocate ann
-            have seededSafe := InferState.allocate_safe stateSafe annScoped
+            let seeded := state.allocate rigidCount ann
+            have seededSafe := InferState.allocate_safe
+              (level := rigidCount) (rigidCount := rigidCount)
+              stateSafe annScoped
             have bodyCtxWF : Ctx.InferWF (PolyTy.mono seeded.2 :: ctx)
                 rigidCount seeded.1.next := by
               intro scheme member
               simp only [List.mem_cons] at member
               rcases member with rfl | member
               · exact seededSafe.2.1
-              · exact ctx_mono ctxWF seededSafe.2.2 scheme member
+              · exact ctx_mono ctxWF seededSafe.2.2.2.1 scheme member
+            have bodyCtxLevels :
+                ∀ scheme ∈ PolyTy.mono seeded.2 :: ctx,
+                  scheme.body.LevelBounded seeded.1.solutions rigidCount := by
+              intro scheme member
+              simp only [List.mem_cons] at member
+              rcases member with rfl | member
+              · exact seededSafe.2.2.1
+              · intro id hid
+                have idBound : id < state.next := (ctxWF scheme member).2 id hid
+                rw [seededSafe.2.2.2.2 id idBound]
+                exact ctxLevels scheme member id hid
             cases bodyRun : inferFuel fuel rigidCount
                 (PolyTy.mono seeded.2 :: ctx) body seeded.1 with
             | none =>
@@ -1780,35 +1590,35 @@ theorem inferFuel_sound_model
                 dsimp [seeded] at bodyRun
                 rw [bodyRun] at run
                 change (bodyResult.state.constrain bodyResult.ty
-                  (state.allocate ann).2).bind (fun checked =>
-                    some ⟨checked, checked.solutions.apply (state.allocate ann).2,
-                      .fix (state.allocate ann).2 bodyResult.elaborated⟩) =
+                  seeded.2).bind (fun checked =>
+                    some ⟨checked, checked.solutions.apply seeded.2,
+                      .fix seeded.2 bodyResult.elaborated⟩) =
                       some result at run
                 have bodySafe := inferFuel_safe seededSafe.1 bodyCtxWF
+                  bodyCtxLevels bodyScoped bodyRun
+                have bodySound := ih seededSafe.1 bodyCtxWF bodyCtxLevels
                   bodyScoped bodyRun
-                have bodySound := ih seededSafe.1 bodyCtxWF bodyScoped bodyRun
                 have selfWF : seeded.2.InferWF rigidCount 0 bodyResult.state.next :=
-                  inferWF_mono seededSafe.2.1 bodySafe.2.2
+                  inferWF_mono seededSafe.2.1 bodySafe.2.2.2.1
                 cases checkedRun : bodyResult.state.constrain
-                    bodyResult.ty (state.allocate ann).2 with
+                    bodyResult.ty seeded.2 with
                 | none =>
                     rw [checkedRun] at run
                     simp at run
                 | some checked =>
                     have checkedSafe := InferState.constrain_safe bodySafe.1
-                      bodySafe.2.1 selfWF (by simpa [seeded] using checkedRun)
+                      bodySafe.2.1 selfWF checkedRun
                     rw [checkedRun] at run
                     simp only [Option.bind_some, Option.some.injEq] at run
                     subst result
-                    have checkedRefines : bodyResult.state.Refines checked rigidCount :=
-                      InferState.constrain_refines bodySafe.1 (by
-                        simpa [seeded] using checkedRun)
+                    have checkedRefines : bodyResult.state.Refines checked :=
+                      InferState.constrain_refines bodySafe.1 checkedRun
                     refine ⟨InferState.allocate_refines.trans <|
                       bodySound.1.trans checkedRefines, ?_⟩
                     intro valuation models
                     have bodyModels := checkedRefines valuation models
                     have bodyTyping := bodySound.2 valuation bodyModels
-                    have checkedEq := checkedSafe.2.2
+                    have checkedEq := checkedSafe.2.2.1
                     have semanticEq := congrArg (Ty.realize valuation) checkedEq
                     rw [models.realize_apply bodyResult.ty,
                       models.realize_apply seeded.2] at semanticEq
@@ -1816,8 +1626,16 @@ theorem inferFuel_sound_model
                     have selfAtChecked : seeded.2.InferWF rigidCount 0 checked.next := by
                       rw [checkedSafe.2.1]
                       exact selfWF
-                    have selfSemanticWF := Ty.realize_inferWF selfAtChecked
-                      (modelWF checkedSafe.1 models)
+                    have selfLevelsBody : seeded.2.LevelBounded
+                        bodyResult.state.solutions rigidCount :=
+                      Ty.LevelBounded.mono_le_on seededSafe.2.2.1 (fun id member =>
+                        bodySafe.2.2.2.2 id (seededSafe.2.1.2 id member))
+                    have selfLevelsChecked : seeded.2.LevelBounded
+                        checked.solutions rigidCount :=
+                      Ty.LevelBounded.mono_le selfLevelsBody
+                        (fun id => checkedSafe.2.2.2 id)
+                    have selfSemanticWF := Ty.realize_inferWF_model models
+                      checkedSafe.1.solutions_length selfAtChecked selfLevelsChecked
                     have annMatches : ann.Matches
                         (seeded.2.realize valuation) := by
                       exact Template.allocate_matches_realize
@@ -1862,16 +1680,20 @@ theorem infer_sound
             cases sourceEq : input.typeScopedB 0 0 <;> simp_all
           have inputScoped : input.TypeScoped 0 0 :=
             Expr.typeScopedB_eq_true_iff.mp sourceScopedB
-          have initialSafe : (⟨0, []⟩ : InferState).Safe 0 :=
+          have initialSafe : (⟨0, []⟩ : InferState).Safe :=
             InferState.initial_safe
           have emptyCtxWF : Ctx.InferWF [] 0 0 := by
             simp [Ctx.InferWF]
+          have emptyCtxLevels : ∀ scheme ∈ ([] : Ctx),
+              scheme.body.LevelBounded (⟨0, []⟩ : InferState).solutions 0 := by
+            intro scheme member
+            simp at member
           have internalSafe := inferFuel_safe initialSafe emptyCtxWF
-            inputScoped internalRun
+            emptyCtxLevels inputScoped internalRun
           obtain ⟨valuation, models⟩ :=
             InferState.has_model internalSafe.1
           have typing := (inferFuel_sound_model initialSafe emptyCtxWF
-            inputScoped internalRun).2 valuation models
+            emptyCtxLevels inputScoped internalRun).2 valuation models
           have publicTyWF :
               (internal.state.solutions.apply internal.ty).WF 0 0 :=
             Ty.wfB_eq_true_iff.mp guardParts.1

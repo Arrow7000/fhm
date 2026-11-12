@@ -21,15 +21,9 @@ namespace EPL.Headlines
 #check @RuntimeTyping.preservation
 #check @MStore.unify_sound
 #check @MStore.unify_complete
-#check @MStore.unify_scoped
-#check @Template.allocate_fits
-#check @Template.allocate_scoped
+#check @MStore.unify_leveled
 #check @inferFuel_safe
 #check @InferState.has_model
-#check @MStore.Models.realize_apply
-#check @Template.allocate_matches_realize
-#check @InferState.constrain_refines
-#check @MStore.Models.extend_forgotten
 #check @inferFuel_sound_model
 #check @Elaborates.typing
 #check @Typing.elaborates
@@ -60,15 +54,9 @@ namespace EPL.Headlines
 #print axioms RuntimeTyping.preservation
 #print axioms MStore.unify_sound
 #print axioms MStore.unify_complete
-#print axioms MStore.unify_scoped
-#print axioms Template.allocate_fits
-#print axioms Template.allocate_scoped
+#print axioms MStore.unify_leveled
 #print axioms inferFuel_safe
 #print axioms InferState.has_model
-#print axioms MStore.Models.realize_apply
-#print axioms Template.allocate_matches_realize
-#print axioms InferState.constrain_refines
-#print axioms MStore.Models.extend_forgotten
 #print axioms inferFuel_sound_model
 #print axioms Elaborates.typing
 #print axioms Typing.elaborates
