@@ -706,3 +706,54 @@ theorem weakenRigids (typing : Typing rigidCount ctx expr ty)
 
 end Typing
 end EPL
+
+namespace EPL
+
+/-- Forgetting the recorded implicit types of an elaboration gives a typing. -/
+theorem Elaborates.typing
+    {rigidCount : Nat} {ctx : Ctx} {input : Source} {elaborated : Expr Ty}
+    {ty : Ty}
+    (elaborates : Elaborates rigidCount ctx input elaborated ty) :
+    Typing rigidCount ctx input ty := by
+  induction elaborates with
+  | primLit => exact .primLit
+  | primOp => exact .primOp
+  | var hlookup hwf hlen hargs => exact .var hlookup hwf hlen hargs
+  | lambda hwf hmatch _ ih => exact .lambda hwf hmatch ih
+  | app _ _ ihf iha => exact .app ihf iha
+  | letMono hwf _ _ ihr ihb => exact .letMono hwf ihr ihb
+  | letPoly hmatch hwf hctx hscoped _ _ rhsIH ihb =>
+      exact .letPoly hmatch hwf hctx hscoped rhsIH ihb
+  | fix hwf hmatch _ ih => exact .fix hwf hmatch ih
+
+/-- Every typing records some choice of implicit types. -/
+theorem Typing.elaborates
+    {rigidCount : Nat} {ctx : Ctx} {input : Source} {ty : Ty}
+    (typing : Typing rigidCount ctx input ty) :
+    ∃ elaborated, Elaborates rigidCount ctx input elaborated ty := by
+  induction typing with
+  | primLit => exact ⟨.primLit _, .primLit⟩
+  | primOp => exact ⟨.primOp _, .primOp⟩
+  | var hlookup hwf hlen hargs =>
+      exact ⟨.var _, .var hlookup hwf hlen hargs⟩
+  | lambda hwf hmatch _ ih =>
+      rcases ih with ⟨bodyElab, hbody⟩
+      exact ⟨.lambda (some _) bodyElab, .lambda hwf hmatch hbody⟩
+  | app _ _ ihf iha =>
+      rcases ihf with ⟨functionElab, hfunction⟩
+      rcases iha with ⟨argumentElab, hargument⟩
+      exact ⟨.app functionElab argumentElab, .app hfunction hargument⟩
+  | letMono hwf _ _ ihr ihb =>
+      rcases ihr with ⟨rhsElab, hrhs⟩
+      rcases ihb with ⟨bodyElab, hbody⟩
+      exact ⟨.letIn none rhsElab bodyElab, .letMono hwf hrhs hbody⟩
+  | letPoly hmatch hwf hctx hscoped hrhs hbody ihrhs ihb =>
+      rcases ihrhs with ⟨rhsElab, hrhsElab⟩
+      rcases ihb with ⟨bodyElab, hbodyElab⟩
+      exact ⟨.letIn (some _) rhsElab bodyElab,
+        .letPoly hmatch hwf hctx hscoped hrhsElab hbodyElab⟩
+  | fix hwf hmatch _ ih =>
+      rcases ih with ⟨bodyElab, hbody⟩
+      exact ⟨.fix _ bodyElab, .fix hwf hmatch hbody⟩
+
+end EPL

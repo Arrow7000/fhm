@@ -167,6 +167,58 @@ example : (infer regionUnknownEscapes).map (·.ty) =
     some (.arrow (.arrow intTy intTy) intTy) := by
   decide
 
+/-- `x 1 + 1`, with `x` at de Bruijn index 1. -/
+def applyXPlusOne : Source :=
+  .app (.app (.primOp .intAdd) (.app (.var 1) (.primLit (.int 1))))
+    (.primLit (.int 1))
+
+/-- An implicit type inside an explicit scheme's region may be determined only
+after the region: `z`'s type becomes `Int` through the later `x 1`.
+
+`fun x => let f : forall a. a -> a = (let _ = (fun z => x z) in fun y => y) in x 1 + 1` -/
+def deferredParameter : Source :=
+  .lambda none (.letIn (some polyIdentityAnnotation)
+    (.letIn none (.lambda none (.app (.var 1) (.var 0))) (.lambda none (.var 0)))
+    applyXPlusOne)
+
+example : (infer deferredParameter).map (·.ty) =
+    some (.arrow (.arrow intTy intTy) intTy) := by
+  decide
+
+/-- `forall a. _ -> a -> a` -/
+def holeFirstScheme : Scheme Template :=
+  ⟨1, .arrow .hole (.arrow (.fixed (.bvar 0)) (.fixed (.bvar 0)))⟩
+
+/-- A hole in a written scheme may likewise be determined after its region.
+
+`fun x => let f : forall a. _ -> a -> a = fun z y => (let _ = x z in y) in x 1 + 1` -/
+def deferredSchemeHole : Source :=
+  .lambda none (.letIn (some holeFirstScheme)
+    (.lambda none (.lambda none (.letIn none (.app (.var 2) (.var 1)) (.var 1))))
+    applyXPlusOne)
+
+example : (infer deferredSchemeHole).map (·.ty) =
+    some (.arrow (.arrow intTy intTy) intTy) := by
+  decide
+
+/-- The completed scheme is recorded in the elaboration. -/
+example : (infer deferredSchemeHole).map (·.elaborated) =
+    some (.lambda (some (.arrow intTy intTy))
+      (.letIn (some ⟨1, .arrow intTy (.arrow (.bvar 0) (.bvar 0))⟩)
+        (.lambda (some intTy) (.lambda (some (.rigid 0))
+          (.letIn none (.app (.var 2) (.var 1)) (.var 1))))
+        (.app (.app (.primOp .intAdd) (.app (.var 1) (.primLit (.int 1))))
+          (.primLit (.int 1))))) := by
+  decide
+
+/-- A scheme hole that nothing determines is still rejected.
+
+`fun (x : Int) => let f : forall a. _ -> a -> a = fun z y => y in 0` -/
+example : infer (.lambda (some (.fixed intTy))
+    (.letIn (some holeFirstScheme) (.lambda none (.lambda none (.var 0)))
+      (.primLit (.int 0)))) = none := by
+  decide
+
 def inferredHoleLambda : Source :=
   .lambda (some .hole)
     (.app
@@ -256,20 +308,16 @@ open EPL EPL.Examples EPL.InferenceTests
 /-- End-to-end canaries: these declarative derivations are obtained solely
 from successful execution of the public inference function. -/
 example : Typing 0 [] inferredIntLambda (.arrow intTy intTy) := by
-  apply infer_sound (result := ⟨.arrow intTy intTy⟩)
-  decide
+  exact infer_typing_of_ty (by decide)
 
 example : Typing 0 [] explicitPolyProgram boolTy := by
-  apply infer_sound (result := ⟨boolTy⟩)
-  decide
+  exact infer_typing_of_ty (by decide)
 
 example : Typing 0 [] partlyInferredPolyProgram boolTy := by
-  apply infer_sound (result := ⟨boolTy⟩)
-  decide
+  exact infer_typing_of_ty (by decide)
 
 example : Typing 0 [] inferredIntegerFix intTy := by
-  apply infer_sound (result := ⟨intTy⟩)
-  decide
+  exact infer_typing_of_ty (by decide)
 
 end EPL.InferenceSoundTests
 

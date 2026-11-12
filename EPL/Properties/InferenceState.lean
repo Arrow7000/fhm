@@ -393,35 +393,6 @@ theorem MStore.safeToLeave_eq_true_iff
     exact Ty.scopedB_eq_true_iff.mpr (h ty hmem)
 
 
-/-- Public obligation discharge is executable declarative well-formedness of
-every required metavariable's solved image. -/
-theorem InferState.solvedB_eq_true_iff
-    {state : InferState} {rigidCount : Nat} :
-    state.solvedB rigidCount = true ↔
-      ∀ id ∈ state.required,
-        (state.solutions.apply (.mvar id)).WF rigidCount 0 := by
-  simp [InferState.solvedB, Ty.wfB_eq_true_iff]
-
-/-- A lexical scheme boundary discharges precisely the obligations allocated
-inside its local metavariable region. -/
-theorem InferState.solvedFromB_eq_true_iff
-    {state : InferState} {rigidCount cutoff : Nat} :
-    state.solvedFromB rigidCount cutoff = true ↔
-      ∀ id ∈ state.required, cutoff ≤ id →
-        (state.solutions.apply (.mvar id)).WF rigidCount 0 := by
-  simp only [InferState.solvedFromB, List.all_eq_true, Bool.or_eq_true,
-    decide_eq_true_eq, Ty.wfB_eq_true_iff]
-  constructor
-  · intro hall id hmem hcutoff
-    have := hall id hmem
-    rcases this with hlt | hwf
-    · omega
-    · exact hwf
-  · intro hall id hmem
-    by_cases hlt : id < cutoff
-    · exact Or.inl hlt
-    · exact Or.inr (hall id hmem (by omega))
-
 end EPL
 
 namespace EPL
@@ -448,14 +419,13 @@ def PolyTy.InferWF
 def Ctx.InferWF (ctx : Ctx) (rigidCount frontier : Nat) : Prop :=
   ∀ scheme ∈ ctx, scheme.InferWF rigidCount frontier
 
-/-- The dense solution table agrees with its allocation frontier, contains no
-out-of-scope or forged type, and tracks only allocated obligations. -/
+/-- The dense solution table agrees with its allocation frontier and contains
+no out-of-scope, forged, or unnormalized solution. -/
 structure InferState.Safe (state : InferState) (rigidCount : Nat) : Prop where
   solutions_length : state.solutions.length = state.next
   solutionsScoped : state.solutions.Scoped rigidCount
   solutionsBounded : state.solutions.Bounded state.next
   solutionsNormalized : state.solutions.Normalized
-  requiredBounded : ∀ id ∈ state.required, id < state.next
 
 theorem MStore.apply_inferWF
     {store : MStore} {ty : Ty} {rigidCount binderCount frontier : Nat}
@@ -529,7 +499,7 @@ theorem MStore.apply_inferWF
                   (storeBounded result member)
 
 theorem InferState.initial_safe {rigidCount : Nat} :
-    (⟨0, [], []⟩ : InferState).Safe rigidCount := by
+    (⟨0, []⟩ : InferState).Safe rigidCount := by
   constructor <;> simp [MStore.Scoped, MStore.Bounded, MStore.Normalized]
 
 theorem InferState.fresh_safe
@@ -538,34 +508,10 @@ theorem InferState.fresh_safe
     state.fresh.1.Safe rigidCount ∧
       state.fresh.2.InferWF rigidCount 0 state.fresh.1.next ∧
       state.next ≤ state.fresh.1.next := by
-  rcases safe with ⟨length, storeScoped, bounded, normalized, required⟩
-  have apply_append_identity :
-      ∀ {ty : Ty}, ty.MVarBounded state.next →
-        (state.solutions ++ [none]).apply ty =
-          state.solutions.apply ty := by
-    intro ty typeBounded
-    induction ty with
-    | prim name => rfl
-    | arrow domain codomain ihDomain ihCodomain =>
-        simp only [MStore.apply]
-        rw [ihDomain (by
-          intro id member
-          exact typeBounded id (by simp [Ty.mvars, member]))]
-        rw [ihCodomain (by
-          intro id member
-          exact typeBounded id (by simp [Ty.mvars, member]))]
-    | bvar index => rfl
-    | rigid level => rfl
-    | mvar id =>
-        have idBounded : id < state.next :=
-          typeBounded id (by simp [Ty.mvars])
-        have idInSolutions : id < state.solutions.length := by
-          simpa [length] using idBounded
-        simp only [MStore.apply, MStore.lookup]
-        rw [List.getElem?_append_left idInSolutions]
+  rcases safe with ⟨length, storeScoped, bounded, normalized⟩
   simp only [InferState.fresh]
   refine ⟨?_, ?_, by omega⟩
-  · refine ⟨by simp [length], ?_, ?_, ?_, ?_⟩
+  · refine ⟨by simp [length], ?_, ?_, ?_⟩
     · intro ty member
       rcases List.mem_append.mp member with old | new
       · exact storeScoped ty old
@@ -588,39 +534,11 @@ theorem InferState.fresh_safe
         exact normalized ty old id idMember
       · simp only [List.mem_singleton] at new
         cases new
-    · intro id member
-      exact Nat.lt_succ_of_lt (required id member)
   · exact ⟨.mvar _, by
       intro id member
       simp only [Ty.mvars, List.mem_singleton] at member
       subst id
       omega⟩
-
-theorem InferState.freshRequired_safe
-    {state : InferState} {rigidCount : Nat}
-    (safe : state.Safe rigidCount) :
-    state.freshRequired.1.Safe rigidCount ∧
-      state.freshRequired.2.InferWF rigidCount 0
-        state.freshRequired.1.next ∧
-      state.next ≤ state.freshRequired.1.next := by
-  have ordinary := InferState.fresh_safe safe
-  refine ⟨?_, ?_, ?_⟩
-  · refine ⟨?_, ?_, ?_, ?_, ?_⟩
-    · simpa [InferState.freshRequired, InferState.fresh] using
-        ordinary.1.solutions_length
-    · simpa [InferState.freshRequired, InferState.fresh] using
-        ordinary.1.solutionsScoped
-    · simpa [InferState.freshRequired, InferState.fresh] using
-        ordinary.1.solutionsBounded
-    · simpa [InferState.freshRequired, InferState.fresh] using
-        ordinary.1.solutionsNormalized
-    · intro id member
-      simp only [InferState.freshRequired, List.mem_cons] at member ⊢
-      rcases member with rfl | old
-      · omega
-      · exact Nat.lt_succ_of_lt (safe.requiredBounded id old)
-  · simpa [InferState.freshRequired, InferState.fresh] using ordinary.2.1
-  · simp [InferState.freshRequired]
 
 theorem InferState.freshMany_safe
     {state : InferState} {rigidCount count : Nat}
@@ -855,8 +773,7 @@ theorem InferState.allocate_safe
     omega
   have newSafe :
       ({ next := allocation.next,
-          solutions := state.solutions ++ List.replicate count none,
-          required := List.range' state.next count ++ state.required } :
+          solutions := state.solutions ++ List.replicate count none } :
         InferState).Safe rigidCount := by
     constructor
     · simp [safe.solutions_length, countEq]
@@ -882,13 +799,6 @@ theorem InferState.allocate_safe
         exact safe.solutionsNormalized ty hOld id hid
       · simp only [List.mem_replicate] at hNew
         cases hNew.2
-    · intro id hmem
-      rcases List.mem_append.mp hmem with hNew | hOld
-      · obtain ⟨offset, hlt, hid⟩ := List.mem_range'.mp hNew
-        subst id
-        change state.next + 1 * offset < allocation.next
-        omega
-      · exact lt_of_lt_of_le (safe.requiredBounded id hOld) nextLe
   refine ⟨?_, ?_, nextLe⟩
   · simpa [allocation, count] using newSafe
   · constructor
@@ -906,7 +816,6 @@ theorem InferState.constrain_safe
     (run : state.constrain left right = some checked) :
     checked.Safe rigidCount ∧
       checked.next = state.next ∧
-      checked.required = state.required ∧
       checked.solutions.apply left = checked.solutions.apply right := by
   unfold InferState.constrain at run
   cases hunify : state.solutions.unify left right with
@@ -914,16 +823,14 @@ theorem InferState.constrain_safe
   | some solutions =>
       simp only [hunify, Option.map_some, Option.some.injEq] at run
       subst checked
-      refine ⟨?_, rfl, rfl, ?_⟩
-      · refine ⟨?_, ?_, ?_, ?_, ?_⟩
+      refine ⟨?_, rfl, ?_⟩
+      · refine ⟨?_, ?_, ?_, ?_⟩
         · rw [MStore.unify_length hunify, safe.solutions_length]
         · exact MStore.unify_scoped safe.solutionsScoped
             leftWF.1 rightWF.1 hunify
         · exact MStore.unify_bounded safe.solutionsBounded
             leftWF.2 rightWF.2 hunify
         · exact MStore.unify_normalized safe.solutionsNormalized hunify
-        · intro id hmem
-          exact safe.requiredBounded id hmem
       · exact MStore.unify_apply_eq safe.solutionsNormalized hunify
 
 /-- Forgetting preserves the table's length. -/
@@ -1115,6 +1022,52 @@ end EPL
 
 namespace EPL
 
+/-- Closing a block of rigid levels into bound variables preserves algorithmic
+type scope: a type scoped at `base + count` with no enclosing binders becomes
+one scoped at `base` with `count` binders. -/
+private theorem Ty.closeRigids_scoped_zero
+    {ty : Ty} {base count : Nat}
+    (typeScoped : ty.Scoped (base + count) 0) :
+    (ty.closeRigids base count).Scoped base count := by
+  induction typeScoped with
+  | prim => exact .prim
+  | arrow _ _ ihDomain ihCodomain =>
+      exact .arrow ihDomain ihCodomain
+  | bvar hlt => exact .bvar (by omega)
+  | rigid hlt =>
+      simp only [Ty.closeRigids]
+      split
+      next hbase => exact .rigid hbase
+      next hbase =>
+        split
+        next hin => exact .bvar hin
+        next hout => omega
+  | mvar id => exact .mvar id
+
+/-- Closing rigid levels leaves the metavariables of a type unchanged. -/
+private theorem Ty.mvars_closeRigids (ty : Ty) (base count : Nat) :
+    (ty.closeRigids base count).mvars = ty.mvars := by
+  induction ty with
+  | prim name => rfl
+  | arrow domain codomain ihDomain ihCodomain =>
+      simp [Ty.closeRigids, Ty.mvars, ihDomain, ihCodomain]
+  | bvar index => rfl
+  | rigid level =>
+      simp only [Ty.closeRigids]
+      split
+      · rfl
+      · split <;> rfl
+  | mvar id => rfl
+
+/-- Closing rigid levels preserves metavariable bounds. -/
+private theorem Ty.closeRigids_mvarBounded
+    {ty : Ty} {base count frontier : Nat}
+    (bounded : ty.MVarBounded frontier) :
+    (ty.closeRigids base count).MVarBounded frontier := by
+  intro id member
+  rw [Ty.mvars_closeRigids] at member
+  exact bounded id member
+
 /-- Successful internal inference preserves the dense-state invariant, returns
 an allocated/scoped algorithmic type, and never moves the caller's outer
 frontier backwards. This is the structural precursor to semantic soundness. -/
@@ -1168,7 +1121,7 @@ theorem inferFuel_safe
     intro candidate smaller larger h le
     exact ⟨h.solutions_length,
       (fun ty member => scoped_mono_rigid (h.solutionsScoped ty member) le),
-      h.solutionsBounded, h.solutionsNormalized, h.requiredBounded⟩
+      h.solutionsBounded, h.solutionsNormalized⟩
   have metaFree_bounded :
       ∀ {ty : Ty} {frontier : Nat}, ty.MetaFree → ty.MVarBounded frontier := by
     intro ty frontier h
@@ -1268,7 +1221,8 @@ theorem inferFuel_safe
                     rigidCount 0 fresh.1.next :=
                 openWith_inferWF appliedMono freshSafe.2.2.1 freshSafe.2.1
               have resultEq : result =
-                  ⟨fresh.1, (state.solutions.applyScheme scheme).openWith fresh.2⟩ := by
+                  ⟨fresh.1, (state.solutions.applyScheme scheme).openWith fresh.2,
+                    .var index⟩ := by
                 exact Option.some.inj run.symm
               subst result
               exact ⟨freshSafe.1, openedWF, freshSafe.2.2.2⟩
@@ -1278,8 +1232,8 @@ theorem inferFuel_safe
             cases ann with
             | none =>
                 simp only [inferFuel] at run
-                let seeded := state.freshRequired
-                have seededSafe := InferState.freshRequired_safe stateSafe
+                let seeded := state.fresh
+                have seededSafe := InferState.fresh_safe stateSafe
                 have bodyCtxWF :
                     Ctx.InferWF (PolyTy.mono seeded.2 :: ctx)
                       rigidCount seeded.1.next := by
@@ -1306,7 +1260,8 @@ theorem inferFuel_safe
                     have resultEq : result =
                         ⟨bodyResult.state,
                           .arrow (bodyResult.state.solutions.apply seeded.2)
-                            bodyResult.ty⟩ := by
+                            bodyResult.ty,
+                          .lambda (some seeded.2) bodyResult.elaborated⟩ := by
                       simpa [seeded] using run.symm
                     subst result
                     exact ⟨bodySafe.1,
@@ -1350,7 +1305,8 @@ theorem inferFuel_safe
                     have resultEq : result =
                         ⟨bodyResult.state,
                           .arrow (bodyResult.state.solutions.apply seeded.2)
-                            bodyResult.ty⟩ := by
+                            bodyResult.ty,
+                          .lambda (some seeded.2) bodyResult.elaborated⟩ := by
                       simpa [seeded] using run.symm
                     subst result
                     exact ⟨bodySafe.1,
@@ -1416,7 +1372,9 @@ theorem inferFuel_safe
                           checkedSafe.1.solutionsScoped
                           checkedSafe.1.solutionsBounded freshTyAtChecked
                         have resultEq : result =
-                            ⟨checked, checked.solutions.apply fresh.2⟩ := by
+                            ⟨checked, checked.solutions.apply fresh.2,
+                              .app functionResult.elaborated
+                                argumentResult.elaborated⟩ := by
                           simpa [fresh] using run.symm
                         subst result
                         refine ⟨checkedSafe.1, resultTyWF, ?_⟩
@@ -1446,13 +1404,21 @@ theorem inferFuel_safe
                       rcases member with rfl | member
                       · exact rhsTyWF
                       · exact ctx_mono ctxWF rhsSafe.2.2 scheme member
-                    have bodyRun : inferFuel fuel rigidCount
-                        (PolyTy.mono rhsTy :: ctx) body rhsResult.state =
-                          some result := by
-                      simpa [rhsTy, rhsRun] using run
-                    have bodySafe := ih rhsSafe.1 bodyCtxWF bodyScoped bodyRun
-                    exact ⟨bodySafe.1, bodySafe.2.1,
-                      le_trans rhsSafe.2.2 bodySafe.2.2⟩
+                    cases bodyRun : inferFuel fuel rigidCount
+                        (PolyTy.mono rhsTy :: ctx) body rhsResult.state with
+                    | none =>
+                        simp [rhsTy, rhsRun, bodyRun] at run
+                    | some bodyResult =>
+                        have bodySafe := ih rhsSafe.1 bodyCtxWF bodyScoped bodyRun
+                        simp [rhsTy, rhsRun, bodyRun] at run
+                        have resultEq : result =
+                            ⟨bodyResult.state, bodyResult.ty,
+                              .letIn none rhsResult.elaborated
+                                bodyResult.elaborated⟩ := by
+                          exact run.symm
+                        subst result
+                        exact ⟨bodySafe.1, bodySafe.2.1,
+                          le_trans rhsSafe.2.2 bodySafe.2.2⟩
           | some written =>
               cases inputScoped with
               | letPoly writtenScoped rhsScoped bodyScoped =>
@@ -1502,15 +1468,15 @@ theorem inferFuel_safe
                         dsimp [seeded, openedTemplate, count] at checkedRun
                         have checkedSafe := InferState.constrain_safe rhsSafe.1
                           rhsSafe.2.1 seededTyAtRhs checkedRun
-                        simp [rhsRun, checkedRun] at run
-                        rcases run with ⟨completionProof, obligationsProof,
-                          schemeWFB, escapeRaw, bodyRunRaw⟩
                         let completedOpen := checked.solutions.apply seeded.2
                         let completed : PolyTy :=
                           ⟨count, completedOpen.closeRigids rigidCount count⟩
-                        let projected := checked.solutions.forgetFrom localStart
+                        let projected := checked.solutions.forgetFrom state.next
                         have escape : projected.safeToLeave rigidCount = true := by
-                          simpa [projected] using escapeRaw
+                          by_contra h
+                          have hfalse : projected.safeToLeave rigidCount = false := by
+                            cases hv : projected.safeToLeave rigidCount <;> simp_all
+                          simp [rhsRun, checkedRun, projected, hfalse] at run
                         have projectedSafe := MStore.forgetFrom_safe
                           checkedSafe.1.solutionsNormalized
                           (by simpa [checkedSafe.1.solutions_length] using
@@ -1521,50 +1487,60 @@ theorem inferFuel_safe
                           exact le_trans seededSafe.2.2 rhsSafe.2.2
                         let outerState : InferState :=
                           { next := checked.next
-                            solutions := projected
-                            required := checked.required.filter
-                              (· < localStart) }
+                            solutions := projected }
                         have outerSafe : outerState.Safe rigidCount := by
-                          refine ⟨?_, ?_, ?_, ?_, ?_⟩
+                          refine ⟨?_, ?_, ?_, ?_⟩
                           · simpa [outerState, projected,
                               checkedSafe.1.solutions_length] using projectedSafe.1
                           · simpa [outerState, projected] using projectedSafe.2.1
                           · simpa [outerState, projected,
                               checkedSafe.1.solutions_length] using projectedSafe.2.2.1
                           · simpa [outerState, projected] using projectedSafe.2.2.2
-                          · intro id member
-                            have filtered := List.mem_filter.mp member
-                            exact lt_of_lt_of_le (of_decide_eq_true filtered.2)
-                              localStartLe
-                        have completedWFB : completed.wfB rigidCount = true := by
-                          simpa [completed, completedOpen, count] using schemeWFB
-                        have completedParts :
-                            completed.body.scopedB rigidCount
-                                completed.paramCount = true ∧
-                              completed.body.metaFreeB = true := by
-                          simpa [PolyTy.wfB, Bool.and_eq_true] using completedWFB
-                        have completedScoped :
-                            completed.body.Scoped rigidCount completed.paramCount :=
-                          Ty.scopedB_eq_true_iff.mp completedParts.1
-                        have completedFree : completed.body.MetaFree :=
-                          Ty.metaFreeB_eq_true_iff.mp completedParts.2
-                        have completedWF : completed.WF rigidCount :=
-                          ⟨completedScoped, completedFree⟩
+                        have seededAtChecked : seeded.2.InferWF
+                            (rigidCount + count) 0 checked.next := by
+                          rw [checkedSafe.2.1]
+                          exact seededTyAtRhs
+                        have completedOpenWF := MStore.apply_inferWF
+                          checkedSafe.1.solutionsScoped
+                          checkedSafe.1.solutionsBounded seededAtChecked
+                        have completedBodyScoped :
+                            completed.body.Scoped rigidCount count := by
+                          simpa [completed] using
+                            Ty.closeRigids_scoped_zero completedOpenWF.1
+                        have completedBodyBounded :
+                            completed.body.MVarBounded checked.next := by
+                          simpa [completed] using
+                            Ty.closeRigids_mvarBounded completedOpenWF.2
+                        have completedWF : completed.InferWF rigidCount checked.next :=
+                          ⟨completedBodyScoped, completedBodyBounded⟩
                         have bodyCtxWF : Ctx.InferWF (completed :: ctx)
                             rigidCount outerState.next := by
                           intro scheme member
                           simp only [List.mem_cons] at member
                           rcases member with rfl | member
-                          · exact wf_inferWF completedWF
-                          · simpa [outerState] using ctx_mono ctxWF
-                              (by simpa [localStart] using localStartLe) scheme member
-                        have bodyRun : inferFuel fuel rigidCount
-                            (completed :: ctx) body outerState = some result := by
-                          simpa [completed, completedOpen, count, outerState,
-                            projected, localStart] using bodyRunRaw
-                        have bodySafe := ih outerSafe bodyCtxWF bodyScoped bodyRun
-                        refine ⟨bodySafe.1, bodySafe.2.1, ?_⟩
-                        exact le_trans localStartLe bodySafe.2.2
+                          · simpa [outerState] using completedWF
+                          · have ctxAtChecked : Ctx.InferWF ctx rigidCount checked.next :=
+                              ctx_mono ctxWF (by simpa [localStart] using localStartLe)
+                            simpa [outerState] using ctxAtChecked scheme member
+                        simp [rhsRun, checkedRun, projected, escape] at run
+                        cases bodyRun : inferFuel fuel rigidCount
+                            (completed :: ctx) body outerState with
+                        | none =>
+                            simp [completed, completedOpen, count, outerState,
+                              projected, seeded, openedTemplate, bodyRun] at run
+                        | some bodyResult =>
+                            have bodySafe := ih outerSafe bodyCtxWF bodyScoped bodyRun
+                            simp [completed, completedOpen, count, outerState,
+                              projected, seeded, openedTemplate, bodyRun] at run
+                            have resultEq : result =
+                                ⟨bodyResult.state, bodyResult.ty,
+                                  .letIn (some completed)
+                                    (checked.solutions.applyExpr rhsResult.elaborated)
+                                    bodyResult.elaborated⟩ := by
+                              exact run.symm
+                            subst result
+                            exact ⟨bodySafe.1, bodySafe.2.1,
+                              le_trans localStartLe bodySafe.2.2⟩
       | fix ann body =>
           cases inputScoped with
           | fix annScoped bodyScoped =>
@@ -1607,7 +1583,8 @@ theorem inferFuel_safe
                       checkedSafe.1.solutionsScoped
                       checkedSafe.1.solutionsBounded selfAtChecked
                     have resultEq : result =
-                        ⟨checked, checked.solutions.apply seeded.2⟩ := by
+                        ⟨checked, checked.solutions.apply seeded.2,
+                          .fix seeded.2 bodyResult.elaborated⟩ := by
                       simpa [seeded] using run.symm
                     subst result
                     refine ⟨checkedSafe.1, resultTyWF, ?_⟩

@@ -31,7 +31,10 @@ namespace EPL.Headlines
 #check @InferState.constrain_refines
 #check @MStore.Models.extend_forgotten
 #check @inferFuel_sound_model
+#check @Elaborates.typing
+#check @Typing.elaborates
 #check @infer_sound
+#check @infer_typing
 #check @infer_result_wf
 #check @infer_erases
 #check @infer_progress
@@ -67,7 +70,10 @@ namespace EPL.Headlines
 #print axioms InferState.constrain_refines
 #print axioms MStore.Models.extend_forgotten
 #print axioms inferFuel_sound_model
+#print axioms Elaborates.typing
+#print axioms Typing.elaborates
 #print axioms infer_sound
+#print axioms infer_typing
 #print axioms infer_result_wf
 #print axioms infer_erases
 #print axioms infer_progress

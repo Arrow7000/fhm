@@ -119,43 +119,30 @@ def MStore.safeToLeave (rigidCount : Nat) (store : MStore) : Bool :=
 structure InferState where
   next : Nat
   solutions : MStore
-  required : List Nat
   deriving Repr
 
+/-- Resolve every annotation of an elaborated expression through the store. -/
+def MStore.applyExpr (store : MStore) (expr : Expr Ty) : Expr Ty :=
+  expr.mapAnn store.apply
+
+/-- The internal result: the type and the elaboration may still mention
+metavariables, to be resolved by later constraints. -/
 structure InferResult where
   state : InferState
   ty : Ty
+  elaborated : Expr Ty
   deriving Repr
 
+/-- A successful public result: a closed type and the source program with
+every implicit type filled in. -/
 structure InferenceResult where
   ty : Ty
+  elaborated : Expr Ty
   deriving DecidableEq, Repr
 
-/-- Every inference obligation still live at the public boundary has a closed
-semantic solution. Ordinary scheme-instantiation metavariables need not be
-solved when their binders are phantom; annotation holes and omitted lambda
-parameter types do. Metavariables local to an explicit-scheme check are
-removed, and its frontier restored, before inference continues. -/
-def InferState.solvedB (rigidCount : Nat) (state : InferState) : Bool :=
-  state.required.all fun id =>
-    (state.solutions.apply (.mvar id)).wfB rigidCount 0
-
-def InferState.solvedFromB
-    (rigidCount cutoff : Nat) (state : InferState) : Bool :=
-  state.required.all fun id =>
-    id < cutoff || (state.solutions.apply (.mvar id)).wfB rigidCount 0
-
 def InferState.fresh (state : InferState) : InferState × Ty :=
-  ({ state with
-      next := state.next + 1
-      solutions := state.solutions ++ [none] },
-    .mvar state.next)
-
-def InferState.freshRequired (state : InferState) : InferState × Ty :=
-  ({ state with
-      next := state.next + 1
-      solutions := state.solutions ++ [none]
-      required := state.next :: state.required },
+  ({ next := state.next + 1
+     solutions := state.solutions ++ [none] },
     .mvar state.next)
 
 def InferState.freshMany : Nat → InferState → InferState × List Ty
@@ -167,12 +154,9 @@ def InferState.freshMany : Nat → InferState → InferState × List Ty
 
 def InferState.allocate (state : InferState) (template : Template) : InferState × Ty :=
   let allocation := template.allocate state.next
-  let required := List.range' state.next (allocation.next - state.next)
-  ({ state with
-      next := allocation.next
-      solutions := state.solutions ++
-        List.replicate (allocation.next - state.next) none
-      required := required ++ state.required },
+  ({ next := allocation.next
+     solutions := state.solutions ++
+       List.replicate (allocation.next - state.next) none },
     allocation.ty)
 
 def InferState.constrain (state : InferState) (left right : Ty) : Option InferState :=
@@ -184,79 +168,83 @@ def Expr.inferSize : Source → Nat
   | .app function argument => function.inferSize + argument.inferSize + 1
   | .letIn _ rhs body => rhs.inferSize + body.inferSize + 1
 
-mutual
-
+/-- Infer a type and an elaboration. `fuel` bounds the recursion depth;
+`input.inferSize + 1` is always enough, since opening a scheme's rigid
+variables does not change an expression's size. -/
 def inferFuel : Nat → Nat → Ctx → Source → InferState → Option InferResult
   | 0, _, _, _, _ => none
   | fuel + 1, rigidCount, ctx, input, state =>
       match input with
-      | .primLit literal => some ⟨state, literal.ty⟩
-      | .primOp op => some ⟨state, op.ty⟩
+      | .primLit literal => some ⟨state, literal.ty, .primLit literal⟩
+      | .primOp op => some ⟨state, op.ty, .primOp op⟩
       | .var index => do
           let scheme ← ctx[index]?
           let scheme := state.solutions.applyScheme scheme
           let fresh := state.freshMany scheme.paramCount
-          some ⟨fresh.1, scheme.openWith fresh.2⟩
+          some ⟨fresh.1, scheme.openWith fresh.2, .var index⟩
       | .lambda ann body => do
           let seeded := match ann with
-            | none => state.freshRequired
+            | none => state.fresh
             | some template => state.allocate template
           let bodyResult ← inferFuel fuel rigidCount
             (PolyTy.mono seeded.2 :: ctx) body seeded.1
           let paramTy := bodyResult.state.solutions.apply seeded.2
-          some ⟨bodyResult.state, .arrow paramTy bodyResult.ty⟩
+          some ⟨bodyResult.state, .arrow paramTy bodyResult.ty,
+            .lambda (some seeded.2) bodyResult.elaborated⟩
       | .app function argument => do
           let functionResult ← inferFuel fuel rigidCount ctx function state
           let argumentResult ← inferFuel fuel rigidCount ctx argument functionResult.state
           let fresh := argumentResult.state.fresh
           let checked ← fresh.1.constrain functionResult.ty
             (.arrow argumentResult.ty fresh.2)
-          some ⟨checked, checked.solutions.apply fresh.2⟩
+          some ⟨checked, checked.solutions.apply fresh.2,
+            .app functionResult.elaborated argumentResult.elaborated⟩
       | .letIn none rhs body => do
           let rhsResult ← inferFuel fuel rigidCount ctx rhs state
           let rhsTy := rhsResult.state.solutions.apply rhsResult.ty
-          inferFuel fuel rigidCount (PolyTy.mono rhsTy :: ctx) body rhsResult.state
+          let bodyResult ← inferFuel fuel rigidCount
+            (PolyTy.mono rhsTy :: ctx) body rhsResult.state
+          some ⟨bodyResult.state, bodyResult.ty,
+            .letIn none rhsResult.elaborated bodyResult.elaborated⟩
       | .letIn (some written) rhs body => do
-          let localStart := state.next
+          -- Check the right-hand side generically, at a fresh block of rigid
+          -- levels standing for the scheme's binders.
           let count := written.paramCount
           let openedTemplate := written.body.openRigidsFrom 0 rigidCount count
           let seeded := state.allocate openedTemplate
           let rhsResult ← inferFuel fuel (rigidCount + count) ctx
             (rhs.openRigids rigidCount count) seeded.1
           let checked ← rhsResult.state.constrain rhsResult.ty seeded.2
-          let completedOpen := checked.solutions.apply seeded.2
-          if !completedOpen.metaFreeB || !completedOpen.scopedB (rigidCount + count) 0 then
-            none
-          else if !checked.solvedFromB (rigidCount + count) localStart then
-            none
+          -- Resolve everything the region produced before forgetting the
+          -- region's solutions, which may mention its rigid variables.
+          let completed : PolyTy :=
+            ⟨count, (checked.solutions.apply seeded.2).closeRigids rigidCount count⟩
+          let rhsElab := checked.solutions.applyExpr rhsResult.elaborated
+          let projected := checked.solutions.forgetFrom state.next
+          -- No surviving solution may mention a region rigid variable.
+          if !projected.safeToLeave rigidCount then none
           else
-            let completed : PolyTy :=
-              ⟨count, completedOpen.closeRigids rigidCount count⟩
-            if !completed.wfB rigidCount then none
-            else
-              let projected := checked.solutions.forgetFrom localStart
-              if !projected.safeToLeave rigidCount then none
-              else
-                let outerState : InferState :=
-                  { next := checked.next
-                    solutions := projected
-                    required := checked.required.filter (· < localStart) }
-                inferFuel fuel rigidCount (completed :: ctx) body outerState
+            let bodyResult ← inferFuel fuel rigidCount (completed :: ctx) body
+              { next := checked.next, solutions := projected }
+            some ⟨bodyResult.state, bodyResult.ty,
+              .letIn (some completed) rhsElab bodyResult.elaborated⟩
       | .fix ann body => do
           let seeded := state.allocate ann
           let bodyResult ← inferFuel fuel rigidCount
             (PolyTy.mono seeded.2 :: ctx) body seeded.1
           let checked ← bodyResult.state.constrain bodyResult.ty seeded.2
-          some ⟨checked, checked.solutions.apply seeded.2⟩
+          some ⟨checked, checked.solutions.apply seeded.2,
+            .fix seeded.2 bodyResult.elaborated⟩
 
-end
-
+/-- Infer a closed program. It is accepted exactly when its type and every
+implicit type in its elaboration are fully determined. -/
 def infer (input : Source) : Option InferenceResult := do
   if !input.typeScopedB 0 0 then none
-  let result ← inferFuel (input.inferSize + 1) 0 [] input ⟨0, [], []⟩
+  let result ← inferFuel (input.inferSize + 1) 0 [] input ⟨0, []⟩
   let ty := result.state.solutions.apply result.ty
-  if result.state.solvedB 0 && ty.wfB 0 0 then
-    some ⟨ty⟩
+  let elaborated := result.state.solutions.applyExpr result.elaborated
+  if ty.wfB 0 0 && elaborated.annotations.all Ty.metaFreeB then
+    some ⟨ty, elaborated⟩
   else none
 
 end EPL

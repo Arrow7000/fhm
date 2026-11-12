@@ -9,7 +9,7 @@ theorem infer_erases
     {input : Source} {result : InferenceResult}
     (run : infer input = some result) :
     RuntimeTyping 0 [] input.erase result.ty := by
-  exact Typing.erase (infer_sound run)
+  exact Typing.erase (infer_typing run)
 
 /-- A successfully inferred closed program is either already a runtime value
 after erasure or can take a step. -/

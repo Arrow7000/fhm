@@ -171,6 +171,26 @@ abbrev Source := Expr Template
 abbrev RuntimeExpr := Expr Unit
 abbrev Ctx := List PolyTy
 
+/-- Map every type annotation of an elaborated expression. -/
+def Expr.mapAnn (f : Ty → Ty) : Expr Ty → Expr Ty
+  | .primLit lit => .primLit lit
+  | .primOp op => .primOp op
+  | .var index => .var index
+  | .lambda paramTy body => .lambda (paramTy.map f) (body.mapAnn f)
+  | .app function argument => .app (function.mapAnn f) (argument.mapAnn f)
+  | .letIn scheme rhs body =>
+      .letIn (scheme.map (Scheme.map f)) (rhs.mapAnn f) (body.mapAnn f)
+  | .fix selfTy body => .fix (f selfTy) (body.mapAnn f)
+
+/-- Every type annotation of an elaborated expression, in source order. -/
+def Expr.annotations : Expr Ty → List Ty
+  | .primLit _ | .primOp _ | .var _ => []
+  | .lambda paramTy body => paramTy.toList ++ body.annotations
+  | .app function argument => function.annotations ++ argument.annotations
+  | .letIn scheme rhs body =>
+      (scheme.map Scheme.body).toList ++ rhs.annotations ++ body.annotations
+  | .fix selfTy body => selfTy :: body.annotations
+
 def Ctx.WF (rigidCount : Nat) (ctx : Ctx) : Prop :=
   ∀ scheme ∈ ctx, scheme.WF rigidCount
 
