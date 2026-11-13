@@ -44,6 +44,9 @@ private theorem openWith_nil_of_scoped_zero {ty : Ty} (h : ty.Scoped rigidCount 
   | bvar hlt => omega
   | rigid => rfl
   | mvar => rfl
+  | con => rfl
+  | app _ _ ihDomain ihCodomain =>
+      simp only [Ty.openWith, ihDomain, ihCodomain]
 
 private theorem mono_var_inv
     (lookup : ctx[index]? = some (PolyTy.mono expected))

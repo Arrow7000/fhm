@@ -76,6 +76,12 @@ private theorem scoped_openWith
       cases hscoped with
       | rigid hlevel => exact .rigid hlevel
   | mvar id => exact .mvar id
+  | con id => exact .con id
+  | app function argument ihFunction ihArgument =>
+      cases hscoped with
+      | app functionScoped argumentScoped =>
+          exact .app (ihFunction functionScoped hlen)
+            (ihArgument argumentScoped hlen)
 
 private theorem metaFree_openWith
     {ty : Ty} {args : List Ty}
@@ -95,6 +101,11 @@ private theorem metaFree_openWith
       | some arg => exact hargs arg (List.mem_of_getElem? hget)
   | rigid level => exact .rigid
   | mvar id => cases free
+  | con id => exact .con
+  | app function argument ihFunction ihArgument =>
+      cases free with
+      | app functionFree argumentFree =>
+          exact .app (ihFunction functionFree) (ihArgument argumentFree)
 
 private theorem wf_openWith
     {ty : Ty} {rigidCount binderCount : Nat} {args : List Ty}
@@ -143,6 +154,8 @@ private def shiftTy (cutoff delta : Nat) : Ty → Ty
   | .bvar i => .bvar i
   | .rigid i => .rigid (shiftLevel cutoff delta i)
   | .mvar i => .mvar i
+  | .con i => .con i
+  | .app a b => .app (shiftTy cutoff delta a) (shiftTy cutoff delta b)
 
 private def shiftScheme (cutoff delta : Nat) (scheme : PolyTy) : PolyTy :=
   ⟨scheme.paramCount, shiftTy cutoff delta scheme.body⟩
@@ -159,6 +172,8 @@ private theorem scoped_monoRigids {ty : Ty}
   | bvar hi => exact .bvar hi
   | rigid hi => exact .rigid (Nat.lt_of_lt_of_le hi hle)
   | mvar id => exact .mvar id
+  | con id => exact .con id
+  | app _ _ iha ihb => exact .app iha ihb
 
 private theorem wf_monoRigids {ty : Ty}
     (h : Ty.WF rigidCount binderCount ty) (hle : rigidCount ≤ larger) :
@@ -184,6 +199,8 @@ private theorem shiftTy_eq_self {ty : Ty} (h : Ty.Scoped cutoff binderCount ty) 
   | bvar => rfl
   | rigid hi => simp [shiftTy, shiftLevel, Nat.not_le.mpr hi]
   | mvar => rfl
+  | con => rfl
+  | app _ _ iha ihb => simp [shiftTy, iha, ihb]
 
 private theorem shiftScheme_eq_self {scheme : PolyTy} (h : PolyTy.WF cutoff scheme) :
     shiftScheme cutoff delta scheme = scheme := by
@@ -218,6 +235,8 @@ private theorem shiftTy_scoped {ty : Ty}
       · exact .rigid (by omega)
       · exact .rigid (by omega)
   | mvar id => exact .mvar id
+  | con id => exact .con id
+  | app _ _ iha ihb => exact .app iha ihb
 
 private theorem shiftTy_metaFree (h : Ty.MetaFree ty) :
     Ty.MetaFree (shiftTy cutoff delta ty) := by
@@ -226,6 +245,8 @@ private theorem shiftTy_metaFree (h : Ty.MetaFree ty) :
   | arrow _ _ iha ihb => exact .arrow iha ihb
   | bvar => exact .bvar
   | rigid => exact .rigid
+  | con => exact .con
+  | app _ _ iha ihb => exact .app iha ihb
 
 private theorem shiftTy_wf {ty : Ty}
     (h : Ty.WF rigidCount binderCount ty) :
@@ -254,6 +275,8 @@ private theorem shiftTy_openWith (ty : Ty) (args : List Ty) :
       cases args[index]? <;> simp [shiftTy]
   | rigid => rfl
   | mvar => rfl
+  | con => rfl
+  | app a b iha ihb => simp [Ty.openWith, shiftTy, iha, ihb]
 
 private theorem shiftRigidBlock (hcut : cutoff ≤ base) :
     (rigidBlock base count).map (shiftTy cutoff delta) =
@@ -392,6 +415,8 @@ private theorem scoped_weakenRigids
   | bvar hindex => exact .bvar hindex
   | rigid hlevel => exact .rigid (hlevel.trans_le hscope)
   | mvar id => exact .mvar id
+  | con id => exact .con id
+  | app _ _ domainIH codomainIH => exact .app domainIH codomainIH
 
 private theorem schemeWF_weakenRigids
     {scheme : PolyTy}
@@ -514,6 +539,9 @@ private theorem openWith_nil_of_scoped_zero
   | bvar h => omega
   | rigid => rfl
   | mvar => rfl
+  | con => rfl
+  | app _ _ ihDomain ihCodomain =>
+      simp only [Ty.openWith, ihDomain, ihCodomain]
 
 private theorem openWith_eq_self_of_scoped_zero
     {ty : Ty} {rigidCount : Nat}
@@ -526,6 +554,9 @@ private theorem openWith_eq_self_of_scoped_zero
   | bvar h => omega
   | rigid => rfl
   | mvar => rfl
+  | con => rfl
+  | app _ _ ihDomain ihCodomain =>
+      simp only [Ty.openWith, ihDomain, ihCodomain]
 
 /-- A monomorphic runtime typing derivation is the unique instance of its
 zero-binder scheme. -/
@@ -555,6 +586,10 @@ private def instantiateRigids (base count : Nat) (args : List Ty) : Ty → Ty
         (args[level - base]?).getD (.rigid level)
       else .rigid (level - count)
   | .mvar id => .mvar id
+  | .con id => .con id
+  | .app function argument =>
+      .app (instantiateRigids base count args function)
+        (instantiateRigids base count args argument)
 
 private def instantiateSchemeRigids (base count : Nat) (args : List Ty)
     (scheme : PolyTy) : PolyTy :=
@@ -576,6 +611,8 @@ private theorem scoped_mono
   | bvar h => exact .bvar (Nat.lt_of_lt_of_le h hbinders)
   | rigid h => exact .rigid (Nat.lt_of_lt_of_le h hrigid)
   | mvar id => exact .mvar id
+  | con id => exact .con id
+  | app _ _ ihDomain ihCodomain => exact .app ihDomain ihCodomain
 
 private theorem instantiateRigids_scoped
     (hscoped : ty.Scoped (base + count + extra) binderCount)
@@ -588,6 +625,11 @@ private theorem instantiateRigids_scoped
       cases hscoped with
       | arrow domainScoped codomainScoped =>
           exact .arrow (domainIH domainScoped) (codomainIH codomainScoped)
+  | con id => exact .con id
+  | app function argument functionIH argumentIH =>
+      cases hscoped with
+      | app functionScoped argumentScoped =>
+          exact .app (functionIH functionScoped) (argumentIH argumentScoped)
   | bvar index =>
       cases hscoped with
       | bvar h => exact .bvar h
@@ -617,6 +659,11 @@ private theorem instantiateRigids_metaFree
       cases free with
       | arrow domainFree codomainFree =>
           exact .arrow (domainIH domainFree) (codomainIH codomainFree)
+  | con id => exact .con
+  | app function argument functionIH argumentIH =>
+      cases free with
+      | app functionFree argumentFree =>
+          exact .app (functionIH functionFree) (argumentIH argumentFree)
   | bvar => exact .bvar
   | rigid level =>
       simp only [instantiateRigids]
@@ -662,6 +709,9 @@ private theorem instantiateRigids_openWith (ty : Ty)
   induction ty with
   | prim => rfl
   | arrow domain codomain domainIH codomainIH =>
+      simp only [Ty.openWith, instantiateRigids, domainIH, codomainIH]
+  | con => rfl
+  | app domain codomain domainIH codomainIH =>
       simp only [Ty.openWith, instantiateRigids, domainIH, codomainIH]
   | bvar index =>
       simp only [Ty.openWith, instantiateRigids, List.getElem?_map]
@@ -713,6 +763,9 @@ private theorem instantiateRigids_eq_self
   | bvar => rfl
   | rigid hlevel => simp [instantiateRigids, hlevel]
   | mvar => rfl
+  | con => rfl
+  | app _ _ domainIH codomainIH =>
+      simp only [instantiateRigids, domainIH, codomainIH]
 
 private theorem instantiateSchemeRigids_eq_self
     (wf : scheme.WF base) :
@@ -744,6 +797,10 @@ private def instantiateRigidsTo (source target count : Nat) (args : List Ty) : T
         (args[level - source]?).getD (.rigid level)
       else .rigid (target + (level - (source + count)))
   | .mvar id => .mvar id
+  | .con id => .con id
+  | .app function argument =>
+      .app (instantiateRigidsTo source target count args function)
+        (instantiateRigidsTo source target count args argument)
 
 private def instantiateSchemeRigidsTo (source target count : Nat) (args : List Ty)
     (scheme : PolyTy) : PolyTy :=
@@ -766,6 +823,11 @@ private theorem instantiateRigidsTo_scoped
       cases hscoped with
       | arrow domainScoped codomainScoped =>
           exact .arrow (domainIH domainScoped) (codomainIH codomainScoped)
+  | con id => exact .con id
+  | app function argument functionIH argumentIH =>
+      cases hscoped with
+      | app functionScoped argumentScoped =>
+          exact .app (functionIH functionScoped) (argumentIH argumentScoped)
   | bvar index =>
       cases hscoped with
       | bvar h => exact .bvar h
@@ -795,6 +857,11 @@ private theorem instantiateRigidsTo_metaFree
       cases free with
       | arrow domainFree codomainFree =>
           exact .arrow (domainIH domainFree) (codomainIH codomainFree)
+  | con id => exact .con
+  | app function argument functionIH argumentIH =>
+      cases free with
+      | app functionFree argumentFree =>
+          exact .app (functionIH functionFree) (argumentIH argumentFree)
   | bvar => exact .bvar
   | rigid level =>
       simp only [instantiateRigidsTo]
@@ -845,6 +912,9 @@ private theorem instantiateRigidsTo_openWith (ty : Ty)
   induction ty with
   | prim => rfl
   | arrow domain codomain domainIH codomainIH =>
+      simp only [Ty.openWith, instantiateRigidsTo, domainIH, codomainIH]
+  | con => rfl
+  | app domain codomain domainIH codomainIH =>
       simp only [Ty.openWith, instantiateRigidsTo, domainIH, codomainIH]
   | bvar index =>
       simp only [Ty.openWith, instantiateRigidsTo, List.getElem?_map]
@@ -926,6 +996,9 @@ private theorem instantiateRigidsTo_eq_self
   | bvar => rfl
   | rigid hlevel => simp [instantiateRigidsTo, hlevel]
   | mvar => rfl
+  | con => rfl
+  | app _ _ domainIH codomainIH =>
+      simp only [instantiateRigidsTo, domainIH, codomainIH]
 
 private theorem instantiateSchemeRigidsTo_eq_self
     (wf : scheme.WF source) :
@@ -1084,6 +1157,8 @@ private theorem scoped_monoRigids_2
   | bvar hindex => exact .bvar hindex
   | rigid hlevel => exact .rigid (hlevel.trans_le hscope)
   | mvar id => exact .mvar id
+  | con id => exact .con id
+  | app _ _ domainIH codomainIH => exact .app domainIH codomainIH
 
 private theorem wf_monoRigids_2
     {ty : Ty} {rigidCount binderCount larger : Nat}

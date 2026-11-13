@@ -16,6 +16,11 @@ inductive Ty where
   | bvar (index : Nat)
   | rigid (level : Nat)
   | mvar (id : Nat)
+  /-- A declared data type, by its index in the program's signature. -/
+  | con (id : Nat)
+  /-- Type application. Kinds are not checked: an ill-kinded application such
+  as `Bool Int` is simply a type without values. -/
+  | app (function argument : Ty)
   deriving DecidableEq, Repr
 
 /-- A scheme body uses `bvar 0 ... bvar (paramCount - 1)`. -/
@@ -42,6 +47,11 @@ inductive Ty.Scoped (rigidCount binderCount : Nat) : Ty → Prop
   | bvar : index < binderCount → Ty.Scoped rigidCount binderCount (.bvar index)
   | rigid : level < rigidCount → Ty.Scoped rigidCount binderCount (.rigid level)
   | mvar (id : Nat) : Ty.Scoped rigidCount binderCount (.mvar id)
+  | con (id : Nat) : Ty.Scoped rigidCount binderCount (.con id)
+  | app :
+      Ty.Scoped rigidCount binderCount function →
+      Ty.Scoped rigidCount binderCount argument →
+      Ty.Scoped rigidCount binderCount (.app function argument)
 
 /-- A semantic type contains no flexible inference metavariables. -/
 inductive Ty.MetaFree : Ty → Prop
@@ -51,6 +61,10 @@ inductive Ty.MetaFree : Ty → Prop
       Ty.MetaFree (.arrow domain codomain)
   | bvar : Ty.MetaFree (.bvar index)
   | rigid : Ty.MetaFree (.rigid level)
+  | con : Ty.MetaFree (.con name)
+  | app :
+      Ty.MetaFree function → Ty.MetaFree argument →
+      Ty.MetaFree (.app function argument)
 
 /-- Declarative well-formedness. -/
 def Ty.WF (rigidCount binderCount : Nat) (ty : Ty) : Prop :=
@@ -67,6 +81,8 @@ def Ty.openWith (args : List Ty) : Ty → Ty
   | .bvar i => (args[i]?).getD (.bvar i)
   | .rigid i => .rigid i
   | .mvar i => .mvar i
+  | .con i => .con i
+  | .app f a => .app (f.openWith args) (a.openWith args)
 
 def PolyTy.openWith (scheme : PolyTy) (args : List Ty) : Ty :=
   scheme.body.openWith args
@@ -91,6 +107,10 @@ def Ty.openRigidsFrom (depth base count : Nat) : Ty → Ty
       else .bvar (i - count)
   | .rigid i => .rigid i
   | .mvar i => .mvar i
+  | .con i => .con i
+  | .app f a =>
+      .app (f.openRigidsFrom depth base count)
+        (a.openRigidsFrom depth base count)
 
 /-- Partial annotations. Named-hole scope is one `Template.Matches` witness. -/
 inductive Template where
@@ -98,6 +118,7 @@ inductive Template where
   | hole
   | named (name : String)
   | arrow (domain codomain : Template)
+  | app (function argument : Template)
   deriving DecidableEq, Repr
 abbrev HoleAssignment := List (String × Ty)
 
@@ -112,6 +133,10 @@ inductive Template.Fits (holes : HoleAssignment) : Template → Ty → Prop
       Template.Fits holes domain domainTy →
       Template.Fits holes codomain codomainTy →
       Template.Fits holes (.arrow domain codomain) (.arrow domainTy codomainTy)
+  | app :
+      Template.Fits holes function functionTy →
+      Template.Fits holes argument argumentTy →
+      Template.Fits holes (.app function argument) (.app functionTy argumentTy)
 
 def Template.Matches (template : Template) (ty : Ty) : Prop :=
   ∃ holes, holes.Unique ∧ template.Fits holes ty
@@ -128,6 +153,9 @@ def Template.openRigidsFrom (depth base count : Nat) : Template → Template
   | .arrow a b =>
       .arrow (a.openRigidsFrom depth base count)
         (b.openRigidsFrom depth base count)
+  | .app f a =>
+      .app (f.openRigidsFrom depth base count)
+        (a.openRigidsFrom depth base count)
 
 /-- Source-annotation scope before a written scheme is opened. -/
 inductive Template.Scoped (rigidCount binderCount : Nat) : Template → Prop
@@ -139,6 +167,10 @@ inductive Template.Scoped (rigidCount binderCount : Nat) : Template → Prop
       Template.Scoped rigidCount binderCount domain →
       Template.Scoped rigidCount binderCount codomain →
       Template.Scoped rigidCount binderCount (.arrow domain codomain)
+  | app :
+      Template.Scoped rigidCount binderCount function →
+      Template.Scoped rigidCount binderCount argument →
+      Template.Scoped rigidCount binderCount (.app function argument)
 
 /-- A written scheme matches exactly the completed scheme's binder count. -/
 structure SchemeTemplateMatches (written : Scheme Template)

@@ -47,6 +47,12 @@ private theorem scoped_openWith
       cases hscoped with
       | rigid hlevel => exact .rigid hlevel
   | mvar id => exact .mvar id
+  | con id => exact .con id
+  | app function argument ihFunction ihArgument =>
+      cases hscoped with
+      | app functionScoped argumentScoped =>
+          exact .app (ihFunction functionScoped hlen)
+            (ihArgument argumentScoped hlen)
 
 private theorem metaFree_openWith
     {ty : Ty} {args : List Ty}
@@ -67,6 +73,11 @@ private theorem metaFree_openWith
           exact hargs arg (List.mem_of_getElem? hget)
   | rigid level => exact .rigid
   | mvar id => cases free
+  | con id => exact .con
+  | app function argument ihFunction ihArgument =>
+      cases free with
+      | app functionFree argumentFree =>
+          exact .app (ihFunction functionFree) (ihArgument argumentFree)
 
 private theorem wf_openWith
     {ty : Ty} {rigidCount binderCount : Nat} {args : List Ty}
@@ -122,6 +133,14 @@ private theorem fits_scoped
           | arrow domainFree codomainFree =>
               exact .arrow (domainIH ⟨domainScoped, domainFree⟩)
                 (codomainIH ⟨codomainScoped, codomainFree⟩)
+  | app functionFit argumentFit functionIH argumentIH =>
+      rcases wf with ⟨hScoped, hFree⟩
+      cases hScoped with
+      | app functionScoped argumentScoped =>
+          cases hFree with
+          | app functionFree argumentFree =>
+              exact .app (functionIH ⟨functionScoped, functionFree⟩)
+                (argumentIH ⟨argumentScoped, argumentFree⟩)
 
 private theorem matches_scoped
     {template : Template} {ty : Ty}
@@ -179,6 +198,8 @@ private def shiftTy (cutoff delta : Nat) : Ty → Ty
   | .bvar i => .bvar i
   | .rigid i => .rigid (shiftLevel cutoff delta i)
   | .mvar i => .mvar i
+  | .con i => .con i
+  | .app a b => .app (shiftTy cutoff delta a) (shiftTy cutoff delta b)
 
 private def shiftScheme (cutoff delta : Nat) (scheme : PolyTy) : PolyTy :=
   ⟨scheme.paramCount, shiftTy cutoff delta scheme.body⟩
@@ -188,6 +209,7 @@ private def shiftTemplate (cutoff delta : Nat) : Template → Template
   | .hole => .hole
   | .named name => .named name
   | .arrow a b => .arrow (shiftTemplate cutoff delta a) (shiftTemplate cutoff delta b)
+  | .app a b => .app (shiftTemplate cutoff delta a) (shiftTemplate cutoff delta b)
 
 private def shiftWritten (cutoff delta : Nat)
     (scheme : Scheme Template) : Scheme Template :=
@@ -227,6 +249,8 @@ private theorem scoped_monoRigids {ty : Ty}
   | bvar hi => exact .bvar hi
   | rigid hi => exact .rigid (Nat.lt_of_lt_of_le hi hle)
   | mvar id => exact .mvar id
+  | con id => exact .con id
+  | app _ _ iha ihb => exact .app iha ihb
 
 private theorem wf_monoRigids {ty : Ty}
     (h : Ty.WF rigidCount binderCount ty) (hle : rigidCount ≤ larger) :
@@ -252,6 +276,7 @@ private theorem templateScoped_monoRigids {template : Template}
   | hole => exact .hole
   | named => exact .named
   | arrow _ _ iha ihb => exact .arrow iha ihb
+  | app _ _ iha ihb => exact .app iha ihb
 
 private theorem typeScoped_monoRigids {expr : Source}
     (h : Expr.TypeScoped rigidCount binderCount expr) (hle : rigidCount ≤ larger) :
@@ -276,6 +301,8 @@ private theorem shiftTy_eq_self {ty : Ty} (h : Ty.Scoped cutoff binderCount ty) 
   | bvar hi => rfl
   | rigid hi => simp [shiftTy, shiftLevel, Nat.not_le.mpr hi]
   | mvar id => rfl
+  | con id => rfl
+  | app _ _ iha ihb => simp [shiftTy, iha, ihb]
 
 private theorem shiftScheme_eq_self {scheme : PolyTy} (h : PolyTy.WF cutoff scheme) :
     shiftScheme cutoff delta scheme = scheme := by
@@ -292,6 +319,7 @@ private theorem shiftTemplate_eq_self {template : Template}
   | hole => rfl
   | named => rfl
   | arrow _ _ iha ihb => simp [shiftTemplate, iha, ihb]
+  | app _ _ iha ihb => simp [shiftTemplate, iha, ihb]
 
 private theorem shiftSource_eq_self {expr : Source}
     (h : Expr.TypeScoped cutoff binderCount expr) :
@@ -355,6 +383,8 @@ private theorem shiftTy_scoped {ty : Ty}
       · exact .rigid (by omega)
       · exact .rigid (by omega)
   | mvar id => exact .mvar id
+  | con id => exact .con id
+  | app _ _ iha ihb => exact .app iha ihb
 
 private theorem shiftTy_metaFree (h : Ty.MetaFree ty) :
     Ty.MetaFree (shiftTy cutoff delta ty) := by
@@ -363,6 +393,8 @@ private theorem shiftTy_metaFree (h : Ty.MetaFree ty) :
   | arrow _ _ iha ihb => exact .arrow iha ihb
   | bvar => exact .bvar
   | rigid => exact .rigid
+  | con => exact .con
+  | app _ _ iha ihb => exact .app iha ihb
 
 private theorem shiftTy_wf {ty : Ty}
     (h : Ty.WF rigidCount binderCount ty) (hcut : cutoff ≤ rigidCount) :
@@ -384,6 +416,7 @@ private theorem shiftTemplate_scoped {template : Template}
   | hole => exact .hole
   | named => exact .named
   | arrow _ _ iha ihb => exact .arrow iha ihb
+  | app _ _ iha ihb => exact .app iha ihb
 
 private theorem shiftTypeScoped {expr : Source}
     (h : Expr.TypeScoped rigidCount binderCount expr)
@@ -456,6 +489,7 @@ private theorem shiftFits (h : Template.Fits holes template ty) :
       rw [shiftHoles_lookup, hlookup]
       rfl
   | arrow _ _ iha ihb => exact .arrow iha ihb
+  | app _ _ iha ihb => exact .app iha ihb
 
 private theorem shiftMatches (h : Template.Matches template ty) :
     Template.Matches (shiftTemplate cutoff delta template)
@@ -493,6 +527,8 @@ private theorem shiftTy_openWith (ty : Ty) (args : List Ty) :
       cases args[index]? <;> simp [shiftTy]
   | rigid => rfl
   | mvar => rfl
+  | con => rfl
+  | app a b iha ihb => simp [Ty.openWith, shiftTy, iha, ihb]
 
 private theorem shiftRigidBlock (hcut : cutoff ≤ base) :
     (rigidBlock base count).map (shiftTy cutoff delta) =
@@ -534,6 +570,9 @@ private theorem shiftTy_openRigidsFrom (ty : Ty) (hcut : cutoff ≤ base) :
         · rfl
   | rigid => rfl
   | mvar => rfl
+  | con => rfl
+  | app a b iha ihb =>
+      simp [Ty.openRigidsFrom, shiftTy, iha, ihb]
 
 private theorem shiftTemplate_openRigidsFrom (template : Template)
     (hcut : cutoff ≤ base) :
@@ -548,6 +587,8 @@ private theorem shiftTemplate_openRigidsFrom (template : Template)
   | hole => rfl
   | named => rfl
   | arrow a b iha ihb =>
+      simp [Template.openRigidsFrom, shiftTemplate, iha, ihb]
+  | app a b iha ihb =>
       simp [Template.openRigidsFrom, shiftTemplate, iha, ihb]
 
 private theorem shiftWritten_openRigidsFrom (written : Scheme Template)

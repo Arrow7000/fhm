@@ -64,6 +64,8 @@ def MStore.apply (store : MStore) : Ty → Ty
   | .bvar index => .bvar index
   | .rigid level => .rigid level
   | .mvar id => (store.lookup id).getD (.mvar id)
+  | .con id => .con id
+  | .app function argument => .app (store.apply function) (store.apply argument)
 
 def MStore.applyScheme (store : MStore) (scheme : PolyTy) : PolyTy :=
   ⟨scheme.paramCount, store.apply scheme.body⟩
@@ -82,6 +84,10 @@ def Ty.scopedB (rigidCount binderCount : Nat) : Ty → Bool
   | .bvar index => index < binderCount
   | .rigid level => level < rigidCount
   | .mvar _ => true
+  | .con _ => true
+  | .app function argument =>
+      function.scopedB rigidCount binderCount &&
+        argument.scopedB rigidCount binderCount
 
 def Ty.substMVar (ty : Ty) (target : Nat) (replacement : Ty) : Ty :=
   match ty with
@@ -92,22 +98,30 @@ def Ty.substMVar (ty : Ty) (target : Nat) (replacement : Ty) : Ty :=
   | .bvar index => .bvar index
   | .rigid level => .rigid level
   | .mvar id => if id = target then replacement else .mvar id
+  | .con id => .con id
+  | .app function argument =>
+      .app (function.substMVar target replacement)
+        (argument.substMVar target replacement)
 
 def Ty.occursMVar (ty : Ty) (target : Nat) : Bool :=
   match ty with
-  | .prim _ | .bvar _ | .rigid _ => false
+  | .prim _ | .bvar _ | .rigid _ | .con _ => false
   | .arrow domain codomain =>
       domain.occursMVar target || codomain.occursMVar target
   | .mvar id => id == target
+  | .app function argument =>
+      function.occursMVar target || argument.occursMVar target
 
 def Ty.size : Ty → Nat
-  | .prim _ | .bvar _ | .rigid _ | .mvar _ => 1
+  | .prim _ | .bvar _ | .rigid _ | .mvar _ | .con _ => 1
   | .arrow domain codomain => 1 + domain.size + codomain.size
+  | .app function argument => 1 + function.size + argument.size
 
 def Ty.mvars : Ty → List Nat
-  | .prim _ | .bvar _ | .rigid _ => []
+  | .prim _ | .bvar _ | .rigid _ | .con _ => []
   | .arrow domain codomain => (domain.mvars ++ codomain.mvars).dedup
   | .mvar id => [id]
+  | .app function argument => (function.mvars ++ argument.mvars).dedup
 
 /-- `?id` may be bound to `ty`: it is allocated and unsolved, `ty` does not
 mention it, and `ty` only mentions rigid variables visible at its level. -/
@@ -163,6 +177,9 @@ def unifyPhase (store : MStore) : Nat → List Constraint → UnifyPhase
         | .arrow leftDomain leftCodomain, .arrow rightDomain rightCodomain =>
             unifyPhase store fuel
               ((leftDomain, rightDomain) :: (leftCodomain, rightCodomain) :: rest)
+        | .app leftFunction leftArgument, .app rightFunction rightArgument =>
+            unifyPhase store fuel
+              ((leftFunction, rightFunction) :: (leftArgument, rightArgument) :: rest)
         | _, _ => .failed
 
 /-- Run phases until all constraints are discharged. -/

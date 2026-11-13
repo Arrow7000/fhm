@@ -51,6 +51,12 @@ private theorem allocateWith_fits (template : Template) (holes : HoleAssignment)
           hcover name (List.mem_append_left _ hmem))
         (ihCodomain (domain.allocateWith holes frontier).1 fun name hmem =>
           hcover name (List.mem_append_right _ hmem))
+  | app function argument ihFunction ihArgument =>
+      exact .app
+        (ihFunction frontier fun name hmem =>
+          hcover name (List.mem_append_left _ hmem))
+        (ihArgument (function.allocateWith holes frontier).1 fun name hmem =>
+          hcover name (List.mem_append_right _ hmem))
 
 private theorem lookup_scoped {holes : HoleAssignment} {name : String} {ty : Ty}
     {rigidCount binderCount : Nat}
@@ -117,6 +123,8 @@ private theorem allocateWith_scoped {template : Template} {holes : HoleAssignmen
           exact lookup_scoped hholes hlookup
   | arrow _ _ ihDomain ihCodomain =>
       exact .arrow ihDomain ihCodomain
+  | app _ _ ihFunction ihArgument =>
+      exact .app ihFunction ihArgument
 
 /-- The allocator's local named-hole table has no duplicate keys. -/
 theorem Template.allocate_unique (template : Template) (frontier : Nat) :
@@ -182,6 +190,21 @@ theorem Ty.scopedB_eq_true_iff {ty : Ty} {rigidCount binderCount : Nat} :
       · intro h
         cases h with
         | rigid hlt => simpa using hlt
+  | con id =>
+      constructor
+      · intro _
+        exact .con id
+      · intro _
+        rfl
+  | app function argument ihFunction ihArgument =>
+      simp only [Ty.scopedB, Bool.and_eq_true]
+      constructor
+      · rintro ⟨hFunction, hArgument⟩
+        exact .app (ihFunction.mp hFunction) (ihArgument.mp hArgument)
+      · intro h
+        cases h with
+        | app hFunction hArgument =>
+            exact ⟨ihFunction.mpr hFunction, ihArgument.mpr hArgument⟩
   | mvar id =>
       constructor
       · intro _
@@ -221,6 +244,21 @@ theorem Ty.metaFreeB_eq_true_iff {ty : Ty} :
         exact .rigid
       · intro _
         rfl
+  | con id =>
+      constructor
+      · intro _
+        exact .con
+      · intro _
+        rfl
+  | app function argument ihFunction ihArgument =>
+      simp only [Ty.metaFreeB, Bool.and_eq_true]
+      constructor
+      · rintro ⟨hFunction, hArgument⟩
+        exact .app (ihFunction.mp hFunction) (ihArgument.mp hArgument)
+      · intro h
+        cases h with
+        | app hFunction hArgument =>
+            exact ⟨ihFunction.mpr hFunction, ihArgument.mpr hArgument⟩
   | mvar id =>
       constructor
       · intro h
@@ -271,6 +309,15 @@ theorem Template.scopedB_eq_true_iff {template : Template}
         cases h with
         | arrow hDomain hCodomain =>
             exact ⟨ihDomain.mpr hDomain, ihCodomain.mpr hCodomain⟩
+  | app function argument ihFunction ihArgument =>
+      simp only [Template.scopedB, Bool.and_eq_true]
+      constructor
+      · rintro ⟨hFunction, hArgument⟩
+        exact .app (ihFunction.mp hFunction) (ihArgument.mp hArgument)
+      · intro h
+        cases h with
+        | app hFunction hArgument =>
+            exact ⟨ihFunction.mpr hFunction, ihArgument.mpr hArgument⟩
 
 /-- The public inference guard accepts exactly the declaratively scoped source
 language. -/
@@ -415,6 +462,8 @@ private theorem Ty.Scoped.mono_rigid {ty : Ty} {rigid rigid' binder : Nat}
   | bvar hlt => exact .bvar hlt
   | rigid hlt => exact .rigid (lt_of_lt_of_le hlt le)
   | mvar id => exact .mvar id
+  | con id => exact .con id
+  | app _ _ ihFunction ihArgument => exact .app ihFunction ihArgument
 
 private theorem Ty.Scoped.mono_binder {ty : Ty} {rigid binder binder' : Nat}
     (typeScoped : ty.Scoped rigid binder) (le : binder ≤ binder') :
@@ -425,6 +474,8 @@ private theorem Ty.Scoped.mono_binder {ty : Ty} {rigid binder binder' : Nat}
   | bvar hlt => exact .bvar (lt_of_lt_of_le hlt le)
   | rigid hlt => exact .rigid hlt
   | mvar id => exact .mvar id
+  | con id => exact .con id
+  | app _ _ ihFunction ihArgument => exact .app ihFunction ihArgument
 
 private theorem Ty.LevelBounded.mono_le {ty : Ty} {store store' : MStore} {level : Nat}
     (bounded : ty.LevelBounded store level)
@@ -597,6 +648,50 @@ theorem MStore.apply_inferWF
           rcases member with member | member
           · exact domainLevels' id member
           · exact codomainLevels' id member
+    | con id =>
+        intro typeWF typeLevels
+        exact ⟨⟨typeWF.1, by
+          intro id member
+          simp [MStore.apply, Ty.mvars] at member⟩, by
+          intro id member
+          simp [MStore.apply, Ty.mvars] at member⟩
+    | app function argument ihFunction ihArgument =>
+        intro typeWF typeLevels
+        have scopedParts :
+            function.Scoped rigidCount binderCount ∧
+              argument.Scoped rigidCount binderCount := by
+          cases typeWF.1 with
+          | app hFunction hArgument => exact ⟨hFunction, hArgument⟩
+        have functionWF : function.InferWF rigidCount binderCount frontier := by
+          exact ⟨scopedParts.1, fun id member =>
+            typeWF.2 id (by simp [Ty.mvars, member])⟩
+        have argumentWF : argument.InferWF rigidCount binderCount frontier := by
+          exact ⟨scopedParts.2, fun id member =>
+            typeWF.2 id (by simp [Ty.mvars, member])⟩
+        have functionLevels : function.LevelBounded store rigidCount := by
+          intro id member
+          exact typeLevels id (by simp [Ty.mvars, member])
+        have argumentLevels : argument.LevelBounded store rigidCount := by
+          intro id member
+          exact typeLevels id (by simp [Ty.mvars, member])
+        obtain ⟨functionResult, functionLevels'⟩ :=
+          ihFunction functionWF functionLevels
+        obtain ⟨argumentResult, argumentLevels'⟩ :=
+          ihArgument argumentWF argumentLevels
+        constructor
+        · exact ⟨.app functionResult.1 argumentResult.1, by
+            intro id member
+            simp only [MStore.apply, Ty.mvars, List.mem_dedup,
+              List.mem_append] at member
+            rcases member with member | member
+            · exact functionResult.2 id member
+            · exact argumentResult.2 id member⟩
+        · intro id member
+          simp only [MStore.apply, Ty.mvars, List.mem_dedup,
+            List.mem_append] at member
+          rcases member with member | member
+          · exact functionLevels' id member
+          · exact argumentLevels' id member
     | bvar index =>
         intro typeWF typeLevels
         exact ⟨⟨typeWF.1, by
@@ -791,6 +886,11 @@ theorem Template.allocate_next_le
         simp only [Template.allocateWith]
         exact le_trans (ihDomain holes start)
           (ihCodomain holes (domain.allocateWith holes start).1)
+    | app function argument ihFunction ihArgument =>
+        intro holes start
+        simp only [Template.allocateWith]
+        exact le_trans (ihFunction holes start)
+          (ihArgument holes (function.allocateWith holes start).1)
   simp only [Template.allocate]
   exact le_trans (Nat.le_add_right frontier _)
     (allocateWith_next_le template
@@ -811,6 +911,8 @@ theorem Template.allocate_mvars
     | arrow _ _ ihDomain ihCodomain => simp [Ty.mvars, ihDomain, ihCodomain]
     | bvar => rfl
     | rigid => rfl
+    | con => rfl
+    | app _ _ ihFunction ihArgument => simp [Ty.mvars, ihFunction, ihArgument]
   have lookup_bound :
       ∀ {holes : HoleAssignment} {name : String} {ty : Ty} {limit : Nat},
         (∀ entry ∈ holes, ∀ id ∈ entry.2.mvars,
@@ -917,6 +1019,38 @@ theorem Template.allocate_mvars
             · obtain ⟨hbase, hlt⟩ := hDomainBounds id hmem
               exact ⟨hbase, lt_of_lt_of_le hlt hCodomainNext⟩
             · exact hCodomainBounds id hmem
+    | app function argument ihFunction ihArgument =>
+        cases hs with
+        | app hFunction hArgument =>
+          have functionCover : ∀ name ∈ function.names,
+              ∃ ty, holes.lookup name = some ty := by
+            intro name hmem
+            exact hcover name (List.mem_append_left _ hmem)
+          obtain ⟨hFunctionNext, hFunctionBounds⟩ :=
+            ihFunction hFunction hholes functionCover hcurrent
+          have holesLater :
+              ∀ entry ∈ holes, ∀ id ∈ entry.2.mvars,
+                frontier ≤ id ∧
+                  id < (function.allocateWith holes current).1 := by
+            intro entry hentry id hid
+            obtain ⟨hbase, hlt⟩ := hholes entry hentry id hid
+            exact ⟨hbase, lt_of_lt_of_le hlt hFunctionNext⟩
+          have argumentCover : ∀ name ∈ argument.names,
+              ∃ ty, holes.lookup name = some ty := by
+            intro name hmem
+            exact hcover name (List.mem_append_right _ hmem)
+          obtain ⟨hArgumentNext, hArgumentBounds⟩ :=
+            ihArgument hArgument holesLater argumentCover
+              (le_trans hcurrent hFunctionNext)
+          constructor
+          · exact le_trans hFunctionNext hArgumentNext
+          · intro id hmem
+            simp only [Template.allocateWith, Ty.mvars,
+              List.mem_dedup, List.mem_append] at hmem ⊢
+            rcases hmem with hmem | hmem
+            · obtain ⟨hbase, hlt⟩ := hFunctionBounds id hmem
+              exact ⟨hbase, lt_of_lt_of_le hlt hArgumentNext⟩
+            · exact hArgumentBounds id hmem
   let keys := template.names.dedup
   let holes := namedHoleTable keys frontier
   let start := frontier + keys.length
@@ -1069,6 +1203,9 @@ theorem Ty.openRigidsFrom_scoped
   | rigid hlt =>
       exact .rigid (by omega)
   | mvar id => exact .mvar id
+  | con id => exact .con id
+  | app _ _ ihFunction ihArgument =>
+      exact .app ihFunction ihArgument
 
 theorem Ty.openRigidsFrom_metaFree
     {ty : Ty} {depth base count : Nat}
@@ -1086,6 +1223,8 @@ theorem Ty.openRigidsFrom_metaFree
         · exact .rigid
         · exact .bvar
   | rigid => exact .rigid
+  | con => exact .con
+  | app _ _ ihFunction ihArgument => exact .app ihFunction ihArgument
 
 /-- Opening preserves declarative type well-formedness while replacing the
 selected bound block by fresh rigid levels. -/
@@ -1108,6 +1247,8 @@ theorem Template.openRigidsFrom_scoped
   | named => exact .named
   | arrow _ _ ihDomain ihCodomain =>
       exact .arrow ihDomain ihCodomain
+  | app _ _ ihFunction ihArgument =>
+      exact .app ihFunction ihArgument
 
 /-- Source opening respects nested written schemes: their own binders remain
 protected while the selected enclosing block becomes fresh rigid levels. -/
@@ -1192,6 +1333,8 @@ private theorem Ty.closeRigids_scoped_zero
         next hin => exact .bvar hin
         next hout => omega
   | mvar id => exact .mvar id
+  | con id => exact .con id
+  | app _ _ ihFunction ihArgument => exact .app ihFunction ihArgument
 
 /-- Closing rigid levels leaves the metavariables of a type unchanged. -/
 private theorem Ty.mvars_closeRigids (ty : Ty) (base count : Nat) :
@@ -1207,6 +1350,9 @@ private theorem Ty.mvars_closeRigids (ty : Ty) (base count : Nat) :
       · rfl
       · split <;> rfl
   | mvar id => rfl
+  | con id => rfl
+  | app _ _ ihFunction ihArgument =>
+      simp [Ty.closeRigids, Ty.mvars, ihFunction, ihArgument]
 
 /-- Closing rigid levels preserves metavariable bounds. -/
 private theorem Ty.closeRigids_mvarBounded
@@ -1252,6 +1398,16 @@ private theorem Ty.mem_mvars_openWith {ty : Ty} {args : List Ty} {id : Nat}
   | rigid level => simp [Ty.openWith, Ty.mvars] at member
   | mvar id' =>
       exact Or.inl (by simpa [Ty.openWith, Ty.mvars] using member)
+  | con => simp [Ty.openWith, Ty.mvars] at member
+  | app function argument ihFunction ihArgument =>
+      simp only [Ty.openWith, Ty.mvars, List.mem_dedup, List.mem_append] at member
+      rcases member with member | member
+      · rcases ihFunction member with old | new
+        · exact Or.inl (by simp [Ty.mvars, List.mem_dedup, old])
+        · exact Or.inr new
+      · rcases ihArgument member with old | new
+        · exact Or.inl (by simp [Ty.mvars, List.mem_dedup, old])
+        · exact Or.inr new
 
 /-- Opening a scheme body by argument types preserves level bounds when both
 the body and every argument satisfy the same bound. -/
@@ -1292,6 +1448,8 @@ theorem inferFuel_safe
     | bvar hlt => exact .bvar hlt
     | rigid hlt => exact .rigid (lt_of_lt_of_le hlt le)
     | mvar id => exact .mvar id
+    | con id => exact .con id
+    | app _ _ ihFunction ihArgument => exact .app ihFunction ihArgument
   have inferWF_mono :
       ∀ {ty : Ty} {rigid binder smaller larger : Nat},
         ty.InferWF rigid binder smaller → smaller ≤ larger →
@@ -1327,6 +1485,11 @@ theorem inferFuel_safe
         exact member.elim (ihDomain id) (ihCodomain id)
     | bvar => simp [Ty.MVarBounded, Ty.mvars]
     | rigid => simp [Ty.MVarBounded, Ty.mvars]
+    | con => simp [Ty.MVarBounded, Ty.mvars]
+    | app _ _ ihFunction ihArgument =>
+        intro id member
+        simp only [Ty.mvars, List.mem_dedup, List.mem_append] at member
+        exact member.elim (ihFunction id) (ihArgument id)
   have wf_inferWF :
       ∀ {ty : Ty} {rigid binder frontier : Nat},
         ty.WF rigid binder → ty.InferWF rigid binder frontier := by
@@ -1373,6 +1536,27 @@ theorem inferFuel_safe
             by simp [Ty.openWith, Ty.MVarBounded, Ty.mvars]⟩
     | mvar id =>
         exact ⟨.mvar id, typeWF.2⟩
+    | con id =>
+        exact ⟨.con id, by simp [Ty.openWith, Ty.MVarBounded, Ty.mvars]⟩
+    | app function argument ihFunction ihArgument =>
+        cases typeWF.1 with
+        | app functionScoped argumentScoped =>
+          have functionWF : function.InferWF rigid count frontier :=
+            ⟨functionScoped, fun id member => typeWF.2 id (by
+              simp [Ty.mvars, member])⟩
+          have argumentWF : argument.InferWF rigid count frontier :=
+            ⟨argumentScoped, fun id member => typeWF.2 id (by
+              simp [Ty.mvars, member])⟩
+          have functionResult := ihFunction functionWF
+          have argumentResult := ihArgument argumentWF
+          exact ⟨Ty.Scoped.app functionResult.1 argumentResult.1,
+            by
+              intro id member
+              simp only [Ty.openWith, Ty.mvars, List.mem_dedup,
+                List.mem_append] at member
+              rcases member with member | member
+              · exact functionResult.2 id member
+              · exact argumentResult.2 id member⟩
   induction fuel generalizing rigidCount ctx input state result with
   | zero => simp [inferFuel] at run
   | succ fuel ih =>

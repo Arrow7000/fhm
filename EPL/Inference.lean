@@ -7,6 +7,7 @@ def Template.names : Template → List String
   | .fixed _ | .hole => []
   | .named name => [name]
   | .arrow domain codomain => domain.names ++ codomain.names
+  | .app function argument => function.names ++ argument.names
 
 def namedHoleTable (names : List String) (frontier : Nat) : HoleAssignment :=
   let keys := names.dedup
@@ -23,6 +24,10 @@ def Template.allocateWith (holes : HoleAssignment) : Nat → Template → Nat ×
       let domainResult := domain.allocateWith holes frontier
       let codomainResult := codomain.allocateWith holes domainResult.1
       (codomainResult.1, .arrow domainResult.2 codomainResult.2)
+  | frontier, .app function argument =>
+      let functionResult := function.allocateWith holes frontier
+      let argumentResult := argument.allocateWith holes functionResult.1
+      (argumentResult.1, .app functionResult.2 argumentResult.2)
 
 structure Template.Allocation where
   next : Nat
@@ -43,9 +48,10 @@ end EPL
 namespace EPL
 
 def Ty.metaFreeB : Ty → Bool
-  | .prim _ | .bvar _ | .rigid _ => true
+  | .prim _ | .bvar _ | .rigid _ | .con _ => true
   | .arrow domain codomain => domain.metaFreeB && codomain.metaFreeB
   | .mvar _ => false
+  | .app function argument => function.metaFreeB && argument.metaFreeB
 
 def Ty.wfB (rigidCount binderCount : Nat) (ty : Ty) : Bool :=
   ty.scopedB rigidCount binderCount && ty.metaFreeB
@@ -56,6 +62,9 @@ def Template.scopedB (rigidCount binderCount : Nat) : Template → Bool
   | .arrow domain codomain =>
       domain.scopedB rigidCount binderCount &&
         codomain.scopedB rigidCount binderCount
+  | .app function argument =>
+      function.scopedB rigidCount binderCount &&
+        argument.scopedB rigidCount binderCount
 
 def Expr.typeScopedB (rigidCount binderCount : Nat) : Source → Bool
   | .primLit _ | .primOp _ | .var _ => true
@@ -94,6 +103,9 @@ def Ty.closeRigids (base count : Nat) : Ty → Ty
       else if level - base < count then .bvar (level - base)
       else .rigid (level - count)
   | .mvar id => .mvar id
+  | .con id => .con id
+  | .app function argument =>
+      .app (function.closeRigids base count) (argument.closeRigids base count)
 
 structure InferState where
   next : Nat

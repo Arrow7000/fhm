@@ -52,6 +52,9 @@ def Ty.realize (valuation : MValuation) : Ty → Ty
   | .bvar index => .bvar index
   | .rigid level => .rigid level
   | .mvar id => valuation id
+  | .con id => .con id
+  | .app function argument =>
+      .app (function.realize valuation) (argument.realize valuation)
 
 def MValuation.WF
     (valuation : MValuation) (rigidCount frontier : Nat) : Prop :=
@@ -112,6 +115,11 @@ private theorem Ty.scopedB_iff_scoped (ty : Ty) (rigidCount binderCount : Nat) :
       simp only [Ty.scopedB, Bool.and_eq_true, ihd, ihc]
       exact ⟨fun h => Ty.Scoped.arrow h.1 h.2,
         fun h => by cases h with | arrow hd hc => exact ⟨hd, hc⟩⟩
+  | con id => exact ⟨fun _ => Ty.Scoped.con id, fun _ => rfl⟩
+  | app function argument ihf iha =>
+      simp only [Ty.scopedB, Bool.and_eq_true, ihf, iha]
+      exact ⟨fun h => Ty.Scoped.app h.1 h.2,
+        fun h => by cases h with | app hf ha => exact ⟨hf, ha⟩⟩
 
 private theorem Ty.Scoped.mono {ty : Ty} {rigidCount rigidCount' binderCount : Nat}
     (h : ty.Scoped rigidCount binderCount) (le : rigidCount ≤ rigidCount') :
@@ -122,6 +130,8 @@ private theorem Ty.Scoped.mono {ty : Ty} {rigidCount rigidCount' binderCount : N
   | bvar h => exact Ty.Scoped.bvar h
   | rigid h => exact Ty.Scoped.rigid (by omega)
   | mvar id => exact Ty.Scoped.mvar id
+  | con id => exact Ty.Scoped.con id
+  | app _ _ functionIH argumentIH => exact Ty.Scoped.app functionIH argumentIH
 
 private theorem Ty.MVarBounded.left {frontier : Nat} {domain codomain : Ty}
     (bounded : (Ty.arrow domain codomain).MVarBounded frontier) :
@@ -132,6 +142,18 @@ private theorem Ty.MVarBounded.left {frontier : Nat} {domain codomain : Ty}
 private theorem Ty.MVarBounded.right {frontier : Nat} {domain codomain : Ty}
     (bounded : (Ty.arrow domain codomain).MVarBounded frontier) :
     codomain.MVarBounded frontier := by
+  intro id member
+  exact bounded id (by simp [Ty.mvars, List.mem_dedup, member])
+
+private theorem Ty.MVarBounded.appLeft {frontier : Nat} {function argument : Ty}
+    (bounded : (Ty.app function argument).MVarBounded frontier) :
+    function.MVarBounded frontier := by
+  intro id member
+  exact bounded id (by simp [Ty.mvars, List.mem_dedup, member])
+
+private theorem Ty.MVarBounded.appRight {frontier : Nat} {function argument : Ty}
+    (bounded : (Ty.app function argument).MVarBounded frontier) :
+    argument.MVarBounded frontier := by
   intro id member
   exact bounded id (by simp [Ty.mvars, List.mem_dedup, member])
 
@@ -150,6 +172,8 @@ private theorem Ty.substMVar_scoped {ty replacement : Ty}
       split
       · exact replacementScoped
       · exact Ty.Scoped.mvar id
+  | con id => exact Ty.Scoped.con id
+  | app _ _ functionIH argumentIH => exact Ty.Scoped.app functionIH argumentIH
 
 private theorem Ty.mem_mvars_substMVar {ty replacement : Ty}
     {target id : Nat}
@@ -169,6 +193,19 @@ private theorem Ty.mem_mvars_substMVar {ty replacement : Ty}
         · exact Or.inl (by simp [Ty.mvars, List.mem_dedup, old])
         · exact Or.inr new
       · rcases codomainIH inside with old | new
+        · exact Or.inl (by simp [Ty.mvars, List.mem_dedup, old])
+        · exact Or.inr new
+  | con => simp [Ty.substMVar, Ty.mvars] at member
+  | app function argument functionIH argumentIH =>
+      have split :
+          id ∈ (function.substMVar target replacement).mvars ∨
+            id ∈ (argument.substMVar target replacement).mvars := by
+        simpa [Ty.substMVar, Ty.mvars, List.mem_dedup, List.mem_append] using member
+      rcases split with inside | inside
+      · rcases functionIH inside with old | new
+        · exact Or.inl (by simp [Ty.mvars, List.mem_dedup, old])
+        · exact Or.inr new
+      · rcases argumentIH inside with old | new
         · exact Or.inl (by simp [Ty.mvars, List.mem_dedup, old])
         · exact Or.inr new
   | mvar id' =>
@@ -197,6 +234,19 @@ private theorem Ty.mem_mvars_substMVar' {ty replacement : Ty}
         · exact Or.inl ⟨different, by simp [Ty.mvars, List.mem_dedup, old]⟩
         · exact Or.inr new
       · rcases codomainIH inside with ⟨different, old⟩ | new
+        · exact Or.inl ⟨different, by simp [Ty.mvars, List.mem_dedup, old]⟩
+        · exact Or.inr new
+  | con => simp [Ty.substMVar, Ty.mvars] at member
+  | app function argument functionIH argumentIH =>
+      have split :
+          id ∈ (function.substMVar target replacement).mvars ∨
+            id ∈ (argument.substMVar target replacement).mvars := by
+        simpa [Ty.substMVar, Ty.mvars, List.mem_dedup, List.mem_append] using member
+      rcases split with inside | inside
+      · rcases functionIH inside with ⟨different, old⟩ | new
+        · exact Or.inl ⟨different, by simp [Ty.mvars, List.mem_dedup, old]⟩
+        · exact Or.inr new
+      · rcases argumentIH inside with ⟨different, old⟩ | new
         · exact Or.inl ⟨different, by simp [Ty.mvars, List.mem_dedup, old]⟩
         · exact Or.inr new
   | mvar other =>
@@ -234,6 +284,18 @@ private theorem Ty.mem_mvars_substMVar_subset {previous replacement : Ty}
       · rcases ihc inside with old | ⟨targetIn, replacementIn⟩
         · exact Or.inl (by simp [Ty.mvars, List.mem_dedup, old])
         · exact Or.inr ⟨by simp [Ty.mvars, List.mem_dedup, targetIn], replacementIn⟩
+  | con => simp [Ty.substMVar, Ty.mvars] at member
+  | app function argument functionIH argumentIH =>
+      have split : id ∈ (function.substMVar target replacement).mvars ∨
+          id ∈ (argument.substMVar target replacement).mvars := by
+        simpa [Ty.substMVar, Ty.mvars, List.mem_dedup, List.mem_append] using member
+      rcases split with inside | inside
+      · rcases functionIH inside with old | ⟨targetIn, replacementIn⟩
+        · exact Or.inl (by simp [Ty.mvars, List.mem_dedup, old])
+        · exact Or.inr ⟨by simp [Ty.mvars, List.mem_dedup, targetIn], replacementIn⟩
+      · rcases argumentIH inside with old | ⟨targetIn, replacementIn⟩
+        · exact Or.inl (by simp [Ty.mvars, List.mem_dedup, old])
+        · exact Or.inr ⟨by simp [Ty.mvars, List.mem_dedup, targetIn], replacementIn⟩
 
 private theorem Ty.substMVar_eq_self_of_not_mem {ty : Ty} {target : Nat} {replacement : Ty}
     (absent : target ∉ ty.mvars) :
@@ -250,6 +312,10 @@ private theorem Ty.substMVar_eq_self_of_not_mem {ty : Ty} {target : Nat} {replac
   | arrow domain codomain ihd ihc =>
       simp only [Ty.mvars, List.mem_dedup, List.mem_append, not_or] at absent
       rw [Ty.substMVar, ihd absent.1, ihc absent.2]
+  | con => rfl
+  | app function argument functionIH argumentIH =>
+      simp only [Ty.mvars, List.mem_dedup, List.mem_append, not_or] at absent
+      rw [Ty.substMVar, functionIH absent.1, argumentIH absent.2]
 
 private theorem Ty.substMVar_mvarBounded {ty replacement : Ty}
     {target frontier : Nat}
@@ -271,6 +337,11 @@ private theorem Ty.occursMVar_iff_mem (ty : Ty) (id : Nat) :
       simp only [Ty.occursMVar, Ty.mvars, Bool.or_eq_true, List.mem_dedup,
         List.mem_append]
       rw [domainIH, codomainIH]
+  | con => simp [Ty.occursMVar, Ty.mvars]
+  | app function argument functionIH argumentIH =>
+      simp only [Ty.occursMVar, Ty.mvars, Bool.or_eq_true, List.mem_dedup,
+        List.mem_append]
+      rw [functionIH, argumentIH]
   | mvar other =>
       simp only [Ty.occursMVar, Ty.mvars, List.mem_singleton, beq_iff_eq]
       exact eq_comm
@@ -290,6 +361,10 @@ private theorem Ty.scoped_of_realize_scoped {ty : Ty} {valuation : MValuation} {
   | arrow domain codomain ihd ihc =>
       cases hscoped with
       | arrow hd hc => exact Ty.Scoped.arrow (ihd hd) (ihc hc)
+  | con id => exact Ty.Scoped.con id
+  | app function argument ihf iha =>
+      cases hscoped with
+      | app hf ha => exact Ty.Scoped.app (ihf hf) (iha ha)
 
 /-! ## Solving: elementary structure -/
 
@@ -331,6 +406,16 @@ private theorem MStore.lookup_none_of_resolved {store : MStore} {ty : Ty}
       rcases split with inside | inside
       · exact domainIH components.1 inside
       · exact codomainIH components.2 inside
+  | con => simp [Ty.mvars] at member
+  | app function argument functionIH argumentIH =>
+      have split : id ∈ function.mvars ∨ id ∈ argument.mvars := by
+        simpa [Ty.mvars, List.mem_dedup, List.mem_append] using member
+      have components : store.apply function = function ∧
+          store.apply argument = argument := by
+        simpa [MStore.apply] using resolved
+      rcases split with inside | inside
+      · exact functionIH components.1 inside
+      · exact argumentIH components.2 inside
   | mvar other =>
       have same : id = other := by simpa [Ty.mvars] using member
       subst same
@@ -630,6 +715,10 @@ private theorem unifyPhase_cons_eq (store : MStore) (fuel : Nat)
           .arrow rightDomain rightCodomain =>
             unifyPhase store fuel
               ((leftDomain, rightDomain) :: (leftCodomain, rightCodomain) :: rest)
+        | .app leftFunction leftArgument,
+          .app rightFunction rightArgument =>
+            unifyPhase store fuel
+              ((leftFunction, rightFunction) :: (leftArgument, rightArgument) :: rest)
         | _, _ => .failed := by
   rfl
 
@@ -900,6 +989,30 @@ private theorem ConstraintsResolved.arrows {store : MStore}
     · exact ⟨leftParts.2, rightParts.2⟩
     · exact resolved constraint (by simp [member])
 
+private theorem ConstraintsResolved.apps {store : MStore}
+    {leftFunction leftArgument rightFunction rightArgument : Ty}
+    {rest : List Constraint}
+    (resolved : ConstraintsResolved store
+      ((Ty.app leftFunction leftArgument,
+        Ty.app rightFunction rightArgument) :: rest)) :
+    ConstraintsResolved store
+      ((leftFunction, rightFunction) :: (leftArgument, rightArgument) :: rest) := by
+  intro constraint member
+  have head := resolved
+    (Ty.app leftFunction leftArgument, Ty.app rightFunction rightArgument)
+    (by simp)
+  have leftParts : store.apply leftFunction = leftFunction ∧
+      store.apply leftArgument = leftArgument := by
+    simpa [MStore.apply] using head.1
+  have rightParts : store.apply rightFunction = rightFunction ∧
+      store.apply rightArgument = rightArgument := by
+    simpa [MStore.apply] using head.2
+  rcases List.mem_cons.mp member with rfl | member
+  · exact ⟨leftParts.1, rightParts.1⟩
+  · rcases List.mem_cons.mp member with rfl | member
+    · exact ⟨leftParts.2, rightParts.2⟩
+    · exact resolved constraint (by simp [member])
+
 private theorem MStore.apply_eq_self_of_mvars_unsolved (store : MStore) (ty : Ty)
     (unsolved : ∀ id ∈ ty.mvars, store.lookup id = none) :
     store.apply ty = ty := by
@@ -920,6 +1033,20 @@ private theorem MStore.apply_eq_self_of_mvars_unsolved (store : MStore) (ty : Ty
         exact Or.inr inside
       simp only [MStore.apply]
       rw [domainIH domainUnsolved, codomainIH codomainUnsolved]
+  | con => rfl
+  | app function argument functionIH argumentIH =>
+      have functionUnsolved : ∀ id ∈ function.mvars, store.lookup id = none := by
+        intro id inside
+        apply unsolved id
+        simp only [Ty.mvars, List.mem_dedup, List.mem_append]
+        exact Or.inl inside
+      have argumentUnsolved : ∀ id ∈ argument.mvars, store.lookup id = none := by
+        intro id inside
+        apply unsolved id
+        simp only [Ty.mvars, List.mem_dedup, List.mem_append]
+        exact Or.inr inside
+      simp only [MStore.apply]
+      rw [functionIH functionUnsolved, argumentIH argumentUnsolved]
   | mvar id =>
       have noneLookup := unsolved id (by simp [Ty.mvars])
       simp only [MStore.apply, noneLookup]
@@ -934,6 +1061,10 @@ private theorem MStore.apply_idem {store : MStore} (norm : store.Normalized)
   | arrow domain codomain domainIH codomainIH =>
       simp only [MStore.apply]
       rw [domainIH, codomainIH]
+  | con => rfl
+  | app function argument functionIH argumentIH =>
+      simp only [MStore.apply]
+      rw [functionIH, argumentIH]
   | mvar id =>
       simp only [MStore.apply]
       cases lookupEq : store.lookup id with
@@ -1031,6 +1162,7 @@ private theorem unifyPhase_bound_normalized
             cases left <;> cases right <;> simp only [] at run
             all_goals first
               | (exact ih (ConstraintsResolved.arrows resolved) run)
+              | (exact ih (ConstraintsResolved.apps resolved) run)
               | (exact bound_branch_normalized norm run
                   (by first | exact head.1 | exact head.2) restResolved)
               | (cases run)
@@ -1093,6 +1225,21 @@ private theorem ConstraintsBounded.arrows {frontier : Nat}
     · exact ⟨Ty.MVarBounded.right head.1, Ty.MVarBounded.right head.2⟩
     · exact restBounded constraint member
 
+private theorem ConstraintsBounded.apps {frontier : Nat}
+    {leftFunction leftArgument rightFunction rightArgument : Ty}
+    {rest : List Constraint}
+    (head : (Ty.app leftFunction leftArgument).MVarBounded frontier ∧
+      (Ty.app rightFunction rightArgument).MVarBounded frontier)
+    (restBounded : ConstraintsBounded frontier rest) :
+    ConstraintsBounded frontier
+      ((leftFunction, rightFunction) :: (leftArgument, rightArgument) :: rest) := by
+  intro constraint member
+  rcases List.mem_cons.mp member with rfl | member
+  · exact ⟨Ty.MVarBounded.appLeft head.1, Ty.MVarBounded.appLeft head.2⟩
+  · rcases List.mem_cons.mp member with rfl | member
+    · exact ⟨Ty.MVarBounded.appRight head.1, Ty.MVarBounded.appRight head.2⟩
+    · exact restBounded constraint member
+
 private theorem MStore.apply_bounded {store : MStore} {ty : Ty}
     {frontier : Nat}
     (storeBounded : store.Bounded frontier)
@@ -1108,6 +1255,15 @@ private theorem MStore.apply_bounded {store : MStore} {ty : Ty}
       rcases split with inside | inside
       · exact domainIH (Ty.MVarBounded.left typeBounded) id inside
       · exact codomainIH (Ty.MVarBounded.right typeBounded) id inside
+  | con => exact typeBounded
+  | app function argument functionIH argumentIH =>
+      intro id member
+      have split : id ∈ (store.apply function).mvars ∨
+          id ∈ (store.apply argument).mvars := by
+        simpa [MStore.apply, Ty.mvars, List.mem_dedup, List.mem_append] using member
+      rcases split with inside | inside
+      · exact functionIH (Ty.MVarBounded.appLeft typeBounded) id inside
+      · exact argumentIH (Ty.MVarBounded.appRight typeBounded) id inside
   | bvar => exact typeBounded
   | rigid => exact typeBounded
   | mvar id =>
@@ -1175,6 +1331,7 @@ private theorem unifyPhase_bound_bounded
             cases left <;> cases right <;> simp only [] at run
             all_goals first
               | (exact ih (ConstraintsBounded.arrows head restBounded) run)
+              | (exact ih (ConstraintsBounded.apps head restBounded) run)
               | (obtain ⟨rfl, rfl⟩ := bound_if_eq run
                  refine ⟨MStore.solve_bounded storeBounded ?_, ?_⟩
                  · first | exact head.1 | exact head.2
@@ -1346,6 +1503,7 @@ private theorem unifyPhase_bound_leveled
             cases left <;> cases right <;> simp only [] at run
             all_goals first
               | (exact ih (ConstraintsResolved.arrows resolved) run)
+              | (exact ih (ConstraintsResolved.apps resolved) run)
               | (obtain ⟨guard, resultEq, _⟩ := bound_guard_data run
                  subst resultEq
                  exact MStore.solve_leveled leveled norm guard
@@ -1423,6 +1581,9 @@ private theorem MStore.solve_apply {store : MStore}
   | rigid => rfl
   | arrow domain codomain domainIH codomainIH =>
       simp only [MStore.apply, Ty.substMVar, domainIH, codomainIH]
+  | con => rfl
+  | app function argument functionIH argumentIH =>
+      simp only [MStore.apply, Ty.substMVar, functionIH, argumentIH]
   | mvar key =>
       by_cases same : key = id
       · subst key
@@ -1480,6 +1641,9 @@ private theorem MStore.apply_subst_eq {store result : MStore}
   | rigid => rfl
   | arrow domain codomain domainIH codomainIH =>
       simp only [Ty.substMVar, MStore.apply, domainIH, codomainIH]
+  | con => rfl
+  | app function argument functionIH argumentIH =>
+      simp only [Ty.substMVar, MStore.apply, functionIH, argumentIH]
   | mvar key =>
       by_cases same : key = id
       · subst key
@@ -1500,6 +1664,18 @@ private theorem MStore.apply_arrow_eq_of_forall {result : MStore}
   have domainEq := solves (leftDomain, rightDomain) (by simp)
   have codomainEq := solves (leftCodomain, rightCodomain) (by simp)
   simp only [MStore.apply, domainEq, codomainEq]
+
+private theorem MStore.apply_app_eq_of_forall {result : MStore}
+    {leftFunction leftArgument rightFunction rightArgument : Ty}
+    {rest : List Constraint}
+    (solves : ∀ constraint ∈
+      ((leftFunction, rightFunction) :: (leftArgument, rightArgument) :: rest),
+      result.apply constraint.1 = result.apply constraint.2) :
+    result.apply (Ty.app leftFunction leftArgument) =
+      result.apply (Ty.app rightFunction rightArgument) := by
+  have functionEq := solves (leftFunction, rightFunction) (by simp)
+  have argumentEq := solves (leftArgument, rightArgument) (by simp)
+  simp only [MStore.apply, functionEq, argumentEq]
 
 private theorem unifyPhase_finished_solves
     {store result : MStore} {fuel : Nat} {constraints : List Constraint}
@@ -1530,6 +1706,11 @@ private theorem unifyPhase_finished_solves
               | (intro current member
                  rcases List.mem_cons.mp member with rfl | member
                  · exact MStore.apply_arrow_eq_of_forall
+                     (result := store) (solves := ih run)
+                 · exact ih run current (by simp [member]))
+              | (intro current member
+                 rcases List.mem_cons.mp member with rfl | member
+                 · exact MStore.apply_app_eq_of_forall
                      (result := store) (solves := ih run)
                  · exact ih run current (by simp [member]))
               | (cases run)
@@ -1642,6 +1823,13 @@ private theorem unifyPhase_bound_solves
                      (solves := ih (ConstraintsResolved.arrows resolved) run)
                  · exact ih (ConstraintsResolved.arrows resolved) run
                      current (by simp [member]))
+              | (intro current member
+                 rcases List.mem_cons.mp member with rfl | member
+                 · exact MStore.apply_app_eq_of_forall
+                     (result := result)
+                     (solves := ih (ConstraintsResolved.apps resolved) run)
+                 · exact ih (ConstraintsResolved.apps resolved) run
+                     current (by simp [member]))
               | (exact bound_branch_solves_left norm run
                   (by first | exact headResolved.1 | exact headResolved.2)
                   extension restSolves)
@@ -1677,6 +1865,7 @@ private theorem unifyPhase_bound_extends
             cases left <;> cases right <;> simp only [] at run
             all_goals first
               | (exact ih (ConstraintsResolved.arrows resolved) run)
+              | (exact ih (ConstraintsResolved.apps resolved) run)
               | (obtain ⟨guard, currentEq, _⟩ := bound_guard_data run
                  subst currentEq
                  exact MStore.extends_solve norm guard)
@@ -1752,6 +1941,10 @@ private theorem Ty.realize_substMVar {valuation : MValuation}
   | arrow domain codomain domainIH codomainIH =>
       simp only [Ty.substMVar, Ty.realize]
       rw [domainIH, codomainIH]
+  | con => rfl
+  | app function argument functionIH argumentIH =>
+      simp only [Ty.substMVar, Ty.realize]
+      rw [functionIH, argumentIH]
   | bvar => rfl
   | rigid => rfl
   | mvar id =>
@@ -1777,6 +1970,10 @@ theorem MStore.Models.realize_apply
   | arrow domain codomain domainIH codomainIH =>
       simp only [MStore.apply, Ty.realize]
       rw [domainIH, codomainIH]
+  | con => rfl
+  | app function argument functionIH argumentIH =>
+      simp only [MStore.apply, Ty.realize]
+      rw [functionIH, argumentIH]
   | bvar => rfl
   | rigid => rfl
   | mvar id =>
@@ -1817,6 +2014,21 @@ private theorem ConstraintsRealized.arrows {valuation : MValuation}
     simp only [Ty.realize, domainRealized, codomainRealized]
   · exact realized constraint (by simp [member])
 
+private theorem ConstraintsRealized.apps {valuation : MValuation}
+    {leftFunction leftArgument rightFunction rightArgument : Ty}
+    {rest : List Constraint}
+    (realized : ConstraintsRealized valuation
+      ((leftFunction, rightFunction) :: (leftArgument, rightArgument) :: rest)) :
+    ConstraintsRealized valuation
+      ((Ty.app leftFunction leftArgument,
+        Ty.app rightFunction rightArgument) :: rest) := by
+  intro constraint member
+  rcases List.mem_cons.mp member with rfl | member
+  · have functionRealized := realized (leftFunction, rightFunction) (by simp)
+    have argumentRealized := realized (leftArgument, rightArgument) (by simp)
+    simp only [Ty.realize, functionRealized, argumentRealized]
+  · exact realized constraint (by simp [member])
+
 private theorem ConstraintsRealized.tail {valuation : MValuation}
     {constraint : Constraint} {rest : List Constraint}
     (realized : ConstraintsRealized valuation (constraint :: rest)) :
@@ -1832,6 +2044,15 @@ private theorem Ty.WF.arrow_parts {level binderCount : Nat} {domain codomain : T
   | arrow hd hc =>
       cases hfree with
       | arrow fd fc => exact ⟨⟨hd, fd⟩, ⟨hc, fc⟩⟩
+
+private theorem Ty.WF.app_parts {level binderCount : Nat} {function argument : Ty}
+    (wf : (Ty.app function argument).WF level binderCount) :
+    function.WF level binderCount ∧ argument.WF level binderCount := by
+  obtain ⟨hscoped, hfree⟩ := wf
+  cases hscoped with
+  | app hf ha =>
+      cases hfree with
+      | app ff fa => exact ⟨⟨hf, ff⟩, ⟨ha, fa⟩⟩
 
 private theorem Ty.realize_wf_subterm {ty : Ty} {valuation : MValuation} {level : Nat}
     (wf : (ty.realize valuation).WF level 0) {id : Nat} (member : id ∈ ty.mvars) :
@@ -1851,6 +2072,14 @@ private theorem Ty.realize_wf_subterm {ty : Ty} {valuation : MValuation} {level 
       rcases split with inside | inside
       · exact ihd parts.1 inside
       · exact ihc parts.2 inside
+  | con => simp [Ty.mvars] at member
+  | app function argument functionIH argumentIH =>
+      have split : id ∈ function.mvars ∨ id ∈ argument.mvars := by
+        simpa [Ty.mvars, List.mem_dedup, List.mem_append] using member
+      have parts := Ty.WF.app_parts wf
+      rcases split with inside | inside
+      · exact functionIH parts.1 inside
+      · exact argumentIH parts.2 inside
 
 private theorem MStore.models_solve {store : MStore} {id : Nat} {ty : Ty}
     {valuation : MValuation}
@@ -2057,6 +2286,8 @@ private theorem unifyPhase_sound_finished
             all_goals first
               | (obtain ⟨storeModels, realized⟩ := ih run
                  exact ⟨storeModels, ConstraintsRealized.arrows realized⟩)
+              | (obtain ⟨storeModels, realized⟩ := ih run
+                 exact ⟨storeModels, ConstraintsRealized.apps realized⟩)
               | (exact (not_finished_of_bound_if run).elim)
               | (cases run)
 
@@ -2090,6 +2321,8 @@ private theorem unifyPhase_sound_bound
             all_goals first
               | (obtain ⟨storeModels, realized⟩ := ih run
                  exact ⟨storeModels, ConstraintsRealized.arrows realized⟩)
+              | (obtain ⟨storeModels, realized⟩ := ih run
+                 exact ⟨storeModels, ConstraintsRealized.apps realized⟩)
               | (exact bound_branch_sound_left run models restRealized)
               | (exact bound_branch_sound_right run models restRealized)
               | (cases run)
@@ -2157,6 +2390,17 @@ private theorem Ty.size_realize_ge_of_mem {ty : Ty} {id : Nat}
       · have bounded := codomainIH inside
         simp only [Ty.realize, Ty.size]
         omega
+  | con => simp [Ty.mvars] at member
+  | app function argument functionIH argumentIH =>
+      have split : id ∈ function.mvars ∨ id ∈ argument.mvars := by
+        simpa [Ty.mvars, List.mem_dedup, List.mem_append] using member
+      rcases split with inside | inside
+      · have bounded := functionIH inside
+        simp only [Ty.realize, Ty.size]
+        omega
+      · have bounded := argumentIH inside
+        simp only [Ty.realize, Ty.size]
+        omega
 
 private theorem Ty.size_realize_gt_of_mem_of_ne {ty : Ty} {id : Nat}
     {valuation : MValuation} (member : id ∈ ty.mvars)
@@ -2174,6 +2418,17 @@ private theorem Ty.size_realize_gt_of_mem_of_ne {ty : Ty} {id : Nat}
       have split : id ∈ domain.mvars ∨ id ∈ codomain.mvars := by
         simpa [Ty.mvars, List.mem_dedup, List.mem_append] using member
       have positivity : 0 < (codomain.realize valuation).size := Ty.size_pos _
+      simp only [Ty.realize, Ty.size]
+      rcases split with inside | inside
+      · have bounded := Ty.size_realize_ge_of_mem (valuation := valuation) inside
+        omega
+      · have bounded := Ty.size_realize_ge_of_mem (valuation := valuation) inside
+        omega
+  | con => simp [Ty.mvars] at member
+  | app function argument functionIH argumentIH =>
+      have split : id ∈ function.mvars ∨ id ∈ argument.mvars := by
+        simpa [Ty.mvars, List.mem_dedup, List.mem_append] using member
+      have positivity : 0 < (argument.realize valuation).size := Ty.size_pos _
       simp only [Ty.realize, Ty.size]
       rcases split with inside | inside
       · have bounded := Ty.size_realize_ge_of_mem (valuation := valuation) inside
@@ -2224,6 +2479,8 @@ private theorem unifyPhase_cons_eq_mvar_right (store : MStore) (fuel : Nat)
   | bvar => rfl
   | rigid => rfl
   | arrow => rfl
+  | con => rfl
+  | app => rfl
 
 private theorem unifyPhase_cons_eq_arrow (store : MStore) (fuel : Nat)
     (leftDomain leftCodomain rightDomain rightCodomain : Ty)
@@ -2235,6 +2492,18 @@ private theorem unifyPhase_cons_eq_arrow (store : MStore) (fuel : Nat)
           Ty.arrow rightDomain rightCodomain) :: rest) =
       unifyPhase store fuel
         ((leftDomain, rightDomain) :: (leftCodomain, rightCodomain) :: rest) := by
+  rw [unifyPhase_cons_eq, if_neg different]
+
+private theorem unifyPhase_cons_eq_app (store : MStore) (fuel : Nat)
+    (leftFunction leftArgument rightFunction rightArgument : Ty)
+    (rest : List Constraint)
+    (different : (Ty.app leftFunction leftArgument) ≠
+      (Ty.app rightFunction rightArgument)) :
+    unifyPhase store (fuel + 1)
+        ((Ty.app leftFunction leftArgument,
+          Ty.app rightFunction rightArgument) :: rest) =
+      unifyPhase store fuel
+        ((leftFunction, rightFunction) :: (leftArgument, rightArgument) :: rest) := by
   rw [unifyPhase_cons_eq, if_neg different]
 
 private theorem mvar_guard_left {store : MStore} {id : Nat} {ty : Ty}
@@ -2425,6 +2694,23 @@ private theorem ConstraintsRealized.arrow_parts {valuation : MValuation}
     · exact parts.2
     · exact restSolves constraint member
 
+private theorem ConstraintsRealized.app_parts {valuation : MValuation}
+    {leftFunction leftArgument rightFunction rightArgument : Ty}
+    {rest : List Constraint}
+    (head : (Ty.app leftFunction leftArgument).realize valuation =
+      (Ty.app rightFunction rightArgument).realize valuation)
+    (restSolves : ConstraintsRealized valuation rest) :
+    ConstraintsRealized valuation
+      ((leftFunction, rightFunction) :: (leftArgument, rightArgument) :: rest) := by
+  have parts := head
+  simp only [Ty.realize, Ty.app.injEq] at parts
+  intro constraint member
+  rcases List.mem_cons.mp member with rfl | member
+  · exact parts.1
+  · rcases List.mem_cons.mp member with rfl | member
+    · exact parts.2
+    · exact restSolves constraint member
+
 private theorem unifyPhase_complete {store : MStore} {fuel : Nat}
     {constraints : List Constraint}
     {valuation : MValuation}
@@ -2519,6 +2805,16 @@ private theorem unifyPhase_complete {store : MStore} {fuel : Nat}
                   have head := headSolves
                   simp only [Ty.realize] at head
                   cases head
+                | con other =>
+                  exfalso
+                  have head := headSolves
+                  simp only [Ty.realize] at head
+                  cases head
+                | app rf ra =>
+                  exfalso
+                  have head := headSolves
+                  simp only [Ty.realize] at head
+                  cases head
             | bvar index =>
                 cases right with
                 | mvar id =>
@@ -2552,6 +2848,16 @@ private theorem unifyPhase_complete {store : MStore} {fuel : Nat}
                   have head := headSolves
                   simp only [Ty.realize] at head
                   cases head
+                | con other =>
+                  exfalso
+                  have head := headSolves
+                  simp only [Ty.realize] at head
+                  cases head
+                | app rf ra =>
+                  exfalso
+                  have head := headSolves
+                  simp only [Ty.realize] at head
+                  cases head
             | rigid level =>
                 cases right with
                 | mvar id =>
@@ -2581,6 +2887,16 @@ private theorem unifyPhase_complete {store : MStore} {fuel : Nat}
                   simp only [Ty.realize] at head
                   exact equal head
                 | arrow rd rc =>
+                  exfalso
+                  have head := headSolves
+                  simp only [Ty.realize] at head
+                  cases head
+                | con other =>
+                  exfalso
+                  have head := headSolves
+                  simp only [Ty.realize] at head
+                  cases head
+                | app rf ra =>
                   exfalso
                   have head := headSolves
                   simp only [Ty.realize] at head
@@ -2624,6 +2940,108 @@ private theorem unifyPhase_complete {store : MStore} {fuel : Nat}
                     exact ih enoughNew (ConstraintsResolved.arrows resolved)
                       (ConstraintsBounded.arrows headBounded restBounded)
                       (ConstraintsRealized.arrow_parts headSolves restSolves)
+                | con other =>
+                  exfalso
+                  have head := headSolves
+                  simp only [Ty.realize] at head
+                  cases head
+                | app rf ra =>
+                  exfalso
+                  have head := headSolves
+                  simp only [Ty.realize] at head
+                  cases head
+            | con id =>
+                cases right with
+                | mvar other =>
+                    have phaseBase := unifyPhase_cons_eq_mvar_right store fuel
+                      (.con id) other rest (by simpa using equal)
+                      (fun j impossible => nomatch impossible)
+                    exact Or.inr (phase_bound_right_complete
+                      (ty := .con id) (by simpa using equal)
+                      headResolved.1 headResolved.2
+                      (headBounded.2 other (by simp [Ty.mvars])) headBounded.1
+                      (by simpa [Ty.realize] using headSolves)
+                      phaseBase normalized models bounded restResolved
+                      restBounded restSolves)
+                | prim other =>
+                  exfalso
+                  have head := headSolves
+                  simp only [Ty.realize] at head
+                  cases head
+                | bvar index =>
+                  exfalso
+                  have head := headSolves
+                  simp only [Ty.realize] at head
+                  cases head
+                | rigid level =>
+                  exfalso
+                  have head := headSolves
+                  simp only [Ty.realize] at head
+                  cases head
+                | con other =>
+                  exfalso
+                  have head := headSolves
+                  simp only [Ty.realize] at head
+                  exact equal head
+                | arrow rd rc =>
+                  exfalso
+                  have head := headSolves
+                  simp only [Ty.realize] at head
+                  cases head
+                | app rf ra =>
+                  exfalso
+                  have head := headSolves
+                  simp only [Ty.realize] at head
+                  cases head
+            | app lf la =>
+                cases right with
+                | mvar id =>
+                    have phaseBase := unifyPhase_cons_eq_mvar_right store fuel
+                      (.app lf la) id rest (by simpa using equal)
+                      (fun j impossible => nomatch impossible)
+                    exact Or.inr (phase_bound_right_complete
+                      (ty := .app lf la) (by simpa using equal)
+                      headResolved.1 headResolved.2
+                      (headBounded.2 id (by simp [Ty.mvars])) headBounded.1
+                      (by simpa [Ty.realize] using headSolves)
+                      phaseBase normalized models bounded restResolved
+                      restBounded restSolves)
+                | prim other =>
+                  exfalso
+                  have head := headSolves
+                  simp only [Ty.realize] at head
+                  cases head
+                | bvar index =>
+                  exfalso
+                  have head := headSolves
+                  simp only [Ty.realize] at head
+                  cases head
+                | rigid level =>
+                  exfalso
+                  have head := headSolves
+                  simp only [Ty.realize] at head
+                  cases head
+                | con other =>
+                  exfalso
+                  have head := headSolves
+                  simp only [Ty.realize] at head
+                  cases head
+                | arrow rd rc =>
+                  exfalso
+                  have head := headSolves
+                  simp only [Ty.realize] at head
+                  cases head
+                | app rf ra =>
+                    have phaseEq := unifyPhase_cons_eq_app store fuel
+                      lf la rf ra rest (by simpa using equal)
+                    rw [phaseEq]
+                    have enoughNew : Constraints.size
+                        ((lf, rf) :: (la, ra) :: rest) ≤ fuel := by
+                      simp only [Constraints.size_cons, Ty.size] at enough ⊢
+                      omega
+                    exact ih enoughNew (ConstraintsResolved.apps resolved)
+                      (ConstraintsBounded.apps headBounded restBounded)
+                      (ConstraintsRealized.app_parts headSolves restSolves)
 
 private theorem unifyLoop_complete {fuel : Nat} {store : MStore}
     {constraints : List Constraint}

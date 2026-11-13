@@ -38,6 +38,23 @@ example :
 example : MStore.unify [] (.rigid 0) (.prim .int) = none := by
   decide
 
+/-- Type applications decompose: `List ?0 ~ List Int` solves `?0 := Int`. -/
+example :
+    MStore.unify [⟨0, none⟩] (.app (.con 0) (.mvar 0)) (.app (.con 0) (.prim .int)) =
+      some [⟨0, some (.prim .int)⟩] := by
+  decide
+
+/-- Distinct type constructors do not unify, even at the same arguments. -/
+example :
+    MStore.unify [] (.app (.con 0) (.prim .int)) (.app (.con 1) (.prim .int)) = none := by
+  decide
+
+/-- A higher-kinded unknown may be solved to a type constructor. -/
+example :
+    MStore.unify [⟨0, none⟩] (.app (.mvar 0) (.prim .int)) (.app (.con 3) (.prim .int)) =
+      some [⟨0, some (.con 3)⟩] := by
+  decide
+
 example : MStore.unify [⟨0, none⟩] (.mvar 0) (.arrow (.mvar 0) (.prim .int)) = none := by
   decide
 

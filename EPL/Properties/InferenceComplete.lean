@@ -29,6 +29,11 @@ private theorem Ty.realize_congr {ty : Ty} {first second : MValuation}
   | bvar index => rfl
   | rigid level => rfl
   | mvar id => simpa [Ty.realize] using agree id (by simp [Ty.mvars])
+  | con id => rfl
+  | app function argument ihFunction ihArgument =>
+      simp only [Ty.realize]
+      rw [ihFunction (fun id member => agree id (by simp [Ty.mvars, member])),
+        ihArgument (fun id member => agree id (by simp [Ty.mvars, member]))]
 
 private theorem Ty.WF.arrow_parts {domain codomain : Ty} {rigidCount binderCount : Nat}
     (wf : (Ty.arrow domain codomain).WF rigidCount binderCount) :
@@ -39,6 +44,17 @@ private theorem Ty.WF.arrow_parts {domain codomain : Ty} {rigidCount binderCount
       cases hfree with
       | arrow domainFree codomainFree =>
           exact ⟨⟨domainScoped, domainFree⟩, ⟨codomainScoped, codomainFree⟩⟩
+
+private theorem Ty.WF.app_parts {function argument : Ty} {rigidCount binderCount : Nat}
+    (wf : (Ty.app function argument).WF rigidCount binderCount) :
+    function.WF rigidCount binderCount ∧ argument.WF rigidCount binderCount := by
+  rcases wf with ⟨hscoped, hfree⟩
+  cases hscoped with
+  | app functionScoped argumentScoped =>
+      cases hfree with
+      | app functionFree argumentFree =>
+          exact ⟨⟨functionScoped, functionFree⟩,
+            ⟨argumentScoped, argumentFree⟩⟩
 
 private theorem Ty.WF.mono_rigid {ty : Ty} {rigid rigid' binder : Nat}
     (wf : ty.WF rigid binder) (le : rigid ≤ rigid') : ty.WF rigid' binder := by
@@ -51,6 +67,8 @@ private theorem Ty.WF.mono_rigid {ty : Ty} {rigid rigid' binder : Nat}
     | bvar hlt => exact .bvar hlt
     | rigid hlt => exact .rigid (lt_of_lt_of_le hlt le)
     | mvar id => exact .mvar id
+    | con id => exact .con id
+    | app _ _ ihFunction ihArgument => exact .app ihFunction ihArgument
   exact ⟨scopedMono wf.1, wf.2⟩
 
 private theorem MStore.lookup_append_new_none {store extra : MStore} {id : Nat}
@@ -304,6 +322,9 @@ private theorem Ty.MetaFree.mvars_eq_nil {ty : Ty} (free : ty.MetaFree) :
       simp [Ty.mvars, ihDomain, ihCodomain]
   | bvar => rfl
   | rigid => rfl
+  | con => rfl
+  | app _ _ ihFunction ihArgument =>
+      simp [Ty.mvars, ihFunction, ihArgument]
 
 private theorem List.lookup_deterministic {entries : List (String × Ty)}
     {name : String} {first second : Ty}
@@ -363,6 +384,14 @@ private theorem Template.Fits.names_lookup
           rcases member with member | member
           · exact ihDomain domainFit name member
           · exact ihCodomain codomainFit name member
+  | app function argument ihFunction ihArgument =>
+      cases fits with
+      | app functionFit argumentFit =>
+          intro name member
+          simp only [Template.names, List.mem_append] at member
+          rcases member with member | member
+          · exact ihFunction functionFit name member
+          · exact ihArgument argumentFit name member
 
 private theorem Template.Fits.lookup_wf
     {template : Template} {holes : HoleAssignment} {target : Ty}
@@ -396,6 +425,15 @@ private theorem Template.Fits.lookup_wf
           rcases member with member | member
           · exact ihDomain domainFit domainWF name member ty lookup
           · exact ihCodomain codomainFit codomainWF name member ty lookup
+  | app function argument ihFunction ihArgument =>
+      cases fits with
+      | app functionFit argumentFit =>
+          obtain ⟨functionWF, argumentWF⟩ := Ty.WF.app_parts targetWF
+          intro name member ty lookup
+          simp only [Template.names, List.mem_append] at member
+          rcases member with member | member
+          · exact ihFunction functionFit functionWF name member ty lookup
+          · exact ihArgument argumentFit argumentWF name member ty lookup
 
 private theorem Template.Fits.openRigidsFrom
     {template : Template} {holes : HoleAssignment} {target : Ty}
@@ -420,6 +458,10 @@ private theorem Template.Fits.openRigidsFrom
       cases fits with
       | arrow domainFit codomainFit =>
           exact .arrow (ihDomain domainFit) (ihCodomain codomainFit)
+  | app function argument ihFunction ihArgument =>
+      cases fits with
+      | app functionFit argumentFit =>
+          exact .app (ihFunction functionFit) (ihArgument argumentFit)
 
 private theorem Template.Matches.openRigidsFrom
     {template : Template} {target : Ty}
@@ -442,6 +484,10 @@ private theorem Template.allocateWith_next_le
       simp only [Template.allocateWith]
       exact le_trans (ihDomain start)
         (ihCodomain (domain.allocateWith holes start).1)
+  | app function argument ihFunction ihArgument =>
+      simp only [Template.allocateWith]
+      exact le_trans (ihFunction start)
+        (ihArgument (function.allocateWith holes start).1)
 
 /-- Realizing an allocated template at a target type it fits. Named holes use
 their values from the fitting assignment; anonymous holes take the target
@@ -589,6 +635,68 @@ private theorem Template.allocateWith_realizes
                     (by simpa [start'] using
                       Template.allocateWith_next_le codomain holes start')
                 · exact codomainBound id member
+  | app function argument ihFunction ihArgument =>
+      cases fits with
+      | app functionFit argumentFit =>
+          cases templateScoped with
+          | app functionScoped argumentScoped =>
+              obtain ⟨functionTargetWF, argumentTargetWF⟩ :=
+                Ty.WF.app_parts targetWF
+              obtain ⟨functionUpdated, functionAgree, functionRealize, functionWFResult,
+                functionBound⟩ := ihFunction functionFit functionScoped functionTargetWF
+                  (by
+                    intro name member
+                    exact holesCover name (List.mem_append_left _ member))
+                  start holesBefore namedValue
+              let start' := (function.allocateWith holes start).1
+              have startLe : start ≤ start' := by
+                simpa [start'] using Template.allocateWith_next_le function holes start
+              have namedValue' : ∀ (name : String) (ty : Ty) (id : Nat),
+                  holes.lookup name = some (.mvar id) → assign.lookup name = some ty →
+                    functionUpdated id = ty ∧ (functionUpdated id).WF rigid 0 := by
+                intro name ty id holeLookup assignLookup
+                obtain ⟨valueEq, valueWF⟩ :=
+                  namedValue name ty id holeLookup assignLookup
+                have idBefore : id < start := holesBefore name ty id holeLookup
+                have agree := functionAgree id idBefore
+                exact ⟨agree.trans valueEq, agree ▸ valueWF⟩
+              have holesBefore' : ∀ (name : String) (ty : Ty) (id : Nat),
+                  holes.lookup name = some (.mvar id) → id < start' := by
+                intro name ty id holeLookup
+                exact lt_of_lt_of_le (holesBefore name ty id holeLookup) startLe
+              obtain ⟨updated, argumentAgree, argumentRealize, argumentWFResult,
+                argumentBound⟩ := ihArgument (base := functionUpdated)
+                  argumentFit argumentScoped argumentTargetWF
+                  (by
+                    intro name member
+                    exact holesCover name (List.mem_append_right _ member))
+                  start' holesBefore' namedValue'
+              refine ⟨updated, ?_, ?_, ?_, ?_⟩
+              · intro id hid
+                have idStart' : id < start' := lt_of_lt_of_le hid startLe
+                exact (argumentAgree id idStart').trans (functionAgree id hid)
+              · simp only [Template.allocateWith, Ty.realize]
+                rw [Ty.realize_congr (first := updated) (second := functionUpdated)
+                  (ty := (function.allocateWith holes start).2)]
+                · rw [functionRealize, argumentRealize]
+                · intro id member
+                  exact argumentAgree id (functionBound id member)
+              · intro id member
+                simp only [Template.allocateWith, Ty.mvars, List.mem_dedup,
+                  List.mem_append] at member
+                rcases member with member | member
+                · have idBefore : id < start' := functionBound id member
+                  rw [argumentAgree id idBefore]
+                  exact functionWFResult id member
+                · exact argumentWFResult id member
+              · intro id member
+                simp only [Template.allocateWith, Ty.mvars, List.mem_dedup,
+                  List.mem_append] at member
+                rcases member with member | member
+                · exact lt_of_lt_of_le (functionBound id member)
+                    (by simpa [start'] using
+                      Template.allocateWith_next_le argument holes start')
+                · exact argumentBound id member
 
 private theorem namedHoleTable_lookup_mvar {names : List String} {frontier : Nat}
     {name : String} {id : Nat}
@@ -774,6 +882,14 @@ private theorem Ty.openWith_scoped
       cases hscoped with
       | rigid hlevel => exact .rigid hlevel
   | mvar id => exact .mvar id
+  | con id =>
+      cases hscoped with
+      | con _ => exact .con id
+  | app function argument ihFunction ihArgument =>
+      cases hscoped with
+      | app functionScoped argumentScoped =>
+          exact .app (ihFunction functionScoped hlen)
+            (ihArgument argumentScoped hlen)
 
 private theorem Ty.openWith_metaFree
     {ty : Ty} {args : List Ty}
@@ -794,6 +910,11 @@ private theorem Ty.openWith_metaFree
           exact hargs arg (List.mem_of_getElem? hget)
   | rigid level => exact .rigid
   | mvar id => cases free
+  | con id => exact .con
+  | app function argument ihFunction ihArgument =>
+      cases free with
+      | app functionFree argumentFree =>
+          exact .app (ihFunction functionFree) (ihArgument argumentFree)
 
 private theorem Ty.openWith_wf
     {ty : Ty} {rigidCount binderCount : Nat} {args : List Ty}
@@ -819,6 +940,9 @@ private theorem Ty.openWith_rigidBlock_eq_openRigidsFrom {ty : Ty}
       simp [hlt]
   | rigid => rfl
   | mvar => rfl
+  | con => rfl
+  | app _ _ ihFunction ihArgument =>
+      simp only [Ty.openWith, Ty.openRigidsFrom, ihFunction, ihArgument]
 
 private theorem PolyTy.openRigids_eq_openRigidsFrom {scheme : PolyTy} {rigid : Nat}
     (wf : scheme.WF rigid) :
@@ -858,6 +982,8 @@ private theorem Ty.InferWF.mono_rigid {ty : Ty} {rigidCount rigidCount' binder f
     | bvar hlt => exact .bvar hlt
     | rigid hlt => exact .rigid (lt_of_lt_of_le hlt le)
     | mvar id => exact .mvar id
+    | con id => exact .con id
+    | app _ _ ihFunction ihArgument => exact .app ihFunction ihArgument
   exact ⟨scopedMono wf.1, wf.2⟩
 
 private theorem PolyTy.InferWF.mono_frontier {scheme : PolyTy}
@@ -897,6 +1023,8 @@ private theorem Ty.closeRigids_scoped_zero {ty : Ty} {base count : Nat}
         next hin => exact .bvar hin
         next hout => omega
   | mvar id => exact .mvar id
+  | con id => exact .con id
+  | app _ _ ihFunction ihArgument => exact .app ihFunction ihArgument
 
 private theorem Ty.closeRigids_openRigids {ty : Ty} {base count : Nat}
     (typeScoped : ty.Scoped base count) :
@@ -910,6 +1038,9 @@ private theorem Ty.closeRigids_openRigids {ty : Ty} {base count : Nat}
   | rigid hlt =>
       simp [Ty.openRigidsFrom, Ty.closeRigids, hlt]
   | mvar id => rfl
+  | con id => rfl
+  | app _ _ ihFunction ihArgument =>
+      simp only [Ty.openRigidsFrom, Ty.closeRigids, ihFunction, ihArgument]
 
 private theorem Ty.closeRigids_metaFree {ty : Ty} {base count : Nat}
     (free : ty.MetaFree) :
@@ -926,6 +1057,8 @@ private theorem Ty.closeRigids_metaFree {ty : Ty} {base count : Nat}
       · split
         · exact .bvar
         · exact .rigid
+  | con => exact .con
+  | app _ _ ihFunction ihArgument => exact .app ihFunction ihArgument
 
 private theorem Ty.mvars_closeRigids (ty : Ty) (base count : Nat) :
     (ty.closeRigids base count).mvars = ty.mvars := by
@@ -940,6 +1073,9 @@ private theorem Ty.mvars_closeRigids (ty : Ty) (base count : Nat) :
       · rfl
       · split <;> rfl
   | mvar id => rfl
+  | con id => rfl
+  | app function argument ihFunction ihArgument =>
+      simp [Ty.closeRigids, Ty.mvars, ihFunction, ihArgument]
 
 private theorem Ty.closeRigids_mvarBounded
     {ty : Ty} {base count frontier : Nat}
@@ -995,6 +1131,15 @@ private theorem MStore.apply_mvarBounded {store : MStore} {ty : Ty} {frontier : 
       | some replacement =>
           simp only [lookupEq, Option.getD_some]
           exact storeBounded id replacement lookupEq
+  | con id => exact typeBounded
+  | app function argument ihFunction ihArgument =>
+      intro id member
+      have split : id ∈ (store.apply function).mvars ∨
+          id ∈ (store.apply argument).mvars := by
+        simpa [MStore.apply, Ty.mvars, List.mem_dedup, List.mem_append] using member
+      rcases split with inside | inside
+      · exact ihFunction (fun m h => typeBounded m (by simp [Ty.mvars, h])) id inside
+      · exact ihArgument (fun m h => typeBounded m (by simp [Ty.mvars, h])) id inside
 
 private theorem Expr.inferSize_openRigidsFrom (expr : Source) (depth base count : Nat) :
     (expr.openRigidsFrom depth base count).inferSize = expr.inferSize := by
@@ -1035,6 +1180,14 @@ private theorem Ty.realize_wf_subterm {ty : Ty} {valuation : MValuation} {level 
       rcases split with inside | inside
       · exact ihDomain domainWF inside
       · exact ihCodomain codomainWF inside
+  | con => simp [Ty.mvars] at member
+  | app function argument ihFunction ihArgument =>
+      have split : id ∈ function.mvars ∨ id ∈ argument.mvars := by
+        simpa [Ty.mvars, List.mem_dedup, List.mem_append] using member
+      rcases Ty.WF.app_parts wf with ⟨functionWF, argumentWF⟩
+      rcases split with inside | inside
+      · exact ihFunction functionWF inside
+      · exact ihArgument argumentWF inside
 
 private theorem Ty.realize_ne_of_mem_mvars {ty : Ty} {first second : MValuation}
     {id : Nat} (member : id ∈ ty.mvars) (different : first id ≠ second id) :
@@ -1056,6 +1209,16 @@ private theorem Ty.realize_ne_of_mem_mvars {ty : Ty} {first second : MValuation}
       rcases split with inside | inside
       · exact ihDomain inside domainEq
       · exact ihCodomain inside codomainEq
+  | con index => simp [Ty.mvars] at member
+  | app function argument ihFunction ihArgument =>
+      have split : id ∈ function.mvars ∨ id ∈ argument.mvars := by
+        simpa [Ty.mvars, List.mem_dedup, List.mem_append] using member
+      intro equal
+      simp only [Ty.realize] at equal
+      injection equal with functionEq argumentEq
+      rcases split with inside | inside
+      · exact ihFunction inside functionEq
+      · exact ihArgument inside argumentEq
 
 private theorem MStore.lookup_none_of_mem_apply_mvars {store : MStore} {ty : Ty}
     {id : Nat} (normalized : store.Normalized)
@@ -1085,6 +1248,12 @@ private theorem MStore.lookup_none_of_mem_apply_mvars {store : MStore} {ty : Ty}
             simp [MStore.apply, lookup]
           rw [applied] at member
           exact normalized other solution lookup id member
+  | con index => simp [MStore.apply, Ty.mvars] at member
+  | app function argument ihFunction ihArgument =>
+      simp only [MStore.apply, Ty.mvars, List.mem_dedup, List.mem_append] at member
+      rcases member with member | member
+      · exact ihFunction member
+      · exact ihArgument member
 
 private theorem MStore.Models.agree_of_unsolved_agree
     {store : MStore} {first second : MValuation} {level : Nat}
@@ -1232,6 +1401,18 @@ private theorem Ty.metaFree_of_mvars_eq_nil {ty : Ty} (empty : ty.mvars = []) :
         exact List.not_mem_nil this
       have parts := List.append_eq_nil_iff.mp appendNil
       exact .arrow (ihDomain parts.1) (ihCodomain parts.2)
+  | con => exact .con
+  | app function argument ihFunction ihArgument =>
+      simp only [Ty.mvars] at empty
+      have appendNil : function.mvars ++ argument.mvars = [] := by
+        apply List.eq_nil_iff_forall_not_mem.mpr
+        intro x member
+        have : x ∈ (function.mvars ++ argument.mvars).dedup :=
+          List.mem_dedup.mpr member
+        rw [empty] at this
+        exact List.not_mem_nil this
+      have parts := List.append_eq_nil_iff.mp appendNil
+      exact .app (ihFunction parts.1) (ihArgument parts.2)
 
 private theorem Expr.annotations_mapAnn (expr : Expr Ty) (f : Ty → Ty) :
     (expr.mapAnn f).annotations = expr.annotations.map f := by
