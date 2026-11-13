@@ -87,23 +87,23 @@ namespace EPL.InferenceTests
 
 open EPL EPL.Examples
 
-example : (infer inferredIntLambda).map (·.ty) =
+example : (infer boolSig inferredIntLambda).map (·.ty) =
     some (.arrow intTy intTy) := by
   decide
 
-example : (infer explicitPolyProgram).map (·.ty) = some boolTy := by
+example : (infer boolSig explicitPolyProgram).map (·.ty) = some boolTy := by
   decide
 
-example : (infer implicitPolyProgram).map (·.ty) = none := by
+example : (infer boolSig implicitPolyProgram).map (·.ty) = none := by
   decide
 
-example : (infer identityRhs).map (·.ty) = none := by
+example : (infer boolSig identityRhs).map (·.ty) = none := by
   decide
 
 def deadAmbiguousLambda : Source :=
   .letIn none identityRhs (.primLit .unit)
 
-example : (infer deadAmbiguousLambda).map (·.ty) = none := by
+example : (infer boolSig deadAmbiguousLambda).map (·.ty) = none := by
   decide
 
 def deadAmbiguousLambdaInScheme : Source :=
@@ -111,10 +111,10 @@ def deadAmbiguousLambdaInScheme : Source :=
     deadAmbiguousLambda
     (.primLit .unit)
 
-example : (infer deadAmbiguousLambdaInScheme).map (·.ty) = none := by
+example : (infer boolSig deadAmbiguousLambdaInScheme).map (·.ty) = none := by
   decide
 
-example : (infer integerLoop).map (·.ty) =
+example : (infer boolSig integerLoop).map (·.ty) =
     some (.arrow intTy intTy) := by
   decide
 
@@ -124,7 +124,7 @@ def skolemEscape : Source :=
       (.var 0)
       (.primLit .unit))
 
-example : (infer skolemEscape).map (·.ty) = none := by
+example : (infer boolSig skolemEscape).map (·.ty) = none := by
   decide
 
 def outerConstraint : Source :=
@@ -133,7 +133,7 @@ def outerConstraint : Source :=
       (.var 0)
       (.var 1))
 
-example : (infer outerConstraint).map (·.ty) =
+example : (infer boolSig outerConstraint).map (·.ty) =
     some (.arrow intTy intTy) := by
   decide
 
@@ -142,7 +142,7 @@ def solvedSignatureHole : Source :=
     (.primLit (.int 5))
     (.var 0)
 
-example : (infer solvedSignatureHole).map (·.ty) = some intTy := by
+example : (infer boolSig solvedSignatureHole).map (·.ty) = some intTy := by
   decide
 
 def namedIdentityAnnotation : Scheme Template :=
@@ -153,7 +153,7 @@ def namedIdentity : Source :=
     identityRhs
     (.app (.var 0) (.primLit (.int 5)))
 
-example : (infer namedIdentity).map (·.ty) = some intTy := by
+example : (infer boolSig namedIdentity).map (·.ty) = some intTy := by
   decide
 
 /-- Authored annotations cannot forge or capture inference metavariables. -/
@@ -163,7 +163,7 @@ def forgedMetaAnnotation : Source :=
       (.app (.primOp .intAdd) (.var 0))
       (.primLit (.int 1)))
 
-example : (infer forgedMetaAnnotation).map (·.ty) = none := by
+example : (infer boolSig forgedMetaAnnotation).map (·.ty) = none := by
   decide
 
 def hiddenBadBoundAnnotation : Source :=
@@ -176,8 +176,8 @@ def hiddenBadRigidAnnotation : Source :=
     (.lambda (some (.fixed (.rigid 0))) (.primLit .unit))
     (.primLit .unit)
 
-example : (infer hiddenBadBoundAnnotation).map (·.ty) = none := by decide
-example : (infer hiddenBadRigidAnnotation).map (·.ty) = none := by decide
+example : (infer boolSig hiddenBadBoundAnnotation).map (·.ty) = none := by decide
+example : (infer boolSig hiddenBadRigidAnnotation).map (·.ty) = none := by decide
 
 /-- An unknown created while checking an explicit scheme may survive it: here
 `x : Int -> ?r` is constrained inside `f`'s region, and `?r` is only
@@ -191,7 +191,7 @@ def regionUnknownEscapes : Source :=
       (.app (.app (.primOp .intAdd) (.app (.var 1) (.primLit (.int 1))))
         (.primLit (.int 1))))
 
-example : (infer regionUnknownEscapes).map (·.ty) =
+example : (infer boolSig regionUnknownEscapes).map (·.ty) =
     some (.arrow (.arrow intTy intTy) intTy) := by
   decide
 
@@ -209,7 +209,7 @@ def deferredParameter : Source :=
     (.letIn none (.lambda none (.app (.var 1) (.var 0))) (.lambda none (.var 0)))
     applyXPlusOne)
 
-example : (infer deferredParameter).map (·.ty) =
+example : (infer boolSig deferredParameter).map (·.ty) =
     some (.arrow (.arrow intTy intTy) intTy) := by
   decide
 
@@ -225,12 +225,12 @@ def deferredSchemeHole : Source :=
     (.lambda none (.lambda none (.letIn none (.app (.var 2) (.var 1)) (.var 1))))
     applyXPlusOne)
 
-example : (infer deferredSchemeHole).map (·.ty) =
+example : (infer boolSig deferredSchemeHole).map (·.ty) =
     some (.arrow (.arrow intTy intTy) intTy) := by
   decide
 
 /-- The completed scheme is recorded in the elaboration. -/
-example : (infer deferredSchemeHole).map (·.elaborated) =
+example : (infer boolSig deferredSchemeHole).map (·.elaborated) =
     some (.lambda (some (.arrow intTy intTy))
       (.letIn (some ⟨1, .arrow intTy (.arrow (.bvar 0) (.bvar 0))⟩)
         (.lambda (some intTy) (.lambda (some (.rigid 0))
@@ -242,7 +242,7 @@ example : (infer deferredSchemeHole).map (·.elaborated) =
 /-- A scheme hole that nothing determines is still rejected.
 
 `fun (x : Int) => let f : forall a. _ -> a -> a = fun z y => y in 0` -/
-example : infer (.lambda (some (.fixed intTy))
+example : infer boolSig (.lambda (some (.fixed intTy))
     (.letIn (some holeFirstScheme) (.lambda none (.lambda none (.var 0)))
       (.primLit (.int 0)))) = none := by
   decide
@@ -251,22 +251,22 @@ example : infer (.lambda (some (.fixed intTy))
 `_ := Bool` both elaborate.
 
 `let f : forall a. _ -> a -> a = fun z y => y in f true true` -/
-example : infer (.letIn (some holeFirstScheme) (.lambda none (.lambda none (.var 0)))
-    (.app (.app (.var 0) (.primLit (.bool true))) (.primLit (.bool true)))) = none := by
+example : infer boolSig (.letIn (some holeFirstScheme) (.lambda none (.lambda none (.var 0)))
+    (.app (.app (.var 0) trueExpr) trueExpr)) = none := by
   decide
 
 /-- Holes are completed from the definition and its context, not from uses:
 this is rejected even though only `_ := Int` would typecheck.
 
 `let f : forall a. _ -> a -> a = fun z y => y in f 1 true` -/
-example : infer (.letIn (some holeFirstScheme) (.lambda none (.lambda none (.var 0)))
-    (.app (.app (.var 0) (.primLit (.int 1))) (.primLit (.bool true)))) = none := by
+example : infer boolSig (.letIn (some holeFirstScheme) (.lambda none (.lambda none (.var 0)))
+    (.app (.app (.var 0) (.primLit (.int 1))) trueExpr)) = none := by
   decide
 
 /-- A hole fixed to the scheme's own binder by its definition.
 
 `let f : forall a. _ -> a -> a = fun (z : a) y => y in 0` -/
-example : (infer (.letIn (some holeFirstScheme)
+example : (infer boolSig (.letIn (some holeFirstScheme)
     (.lambda (some (.fixed (.bvar 0))) (.lambda none (.var 0)))
     (.primLit (.int 0)))).map (·.elaborated) =
     some (.letIn (some ⟨1, .arrow (.bvar 0) (.arrow (.bvar 0) (.bvar 0))⟩)
@@ -277,7 +277,7 @@ example : (infer (.letIn (some holeFirstScheme)
 /-- A rigid variable may not escape through an outer unknown.
 
 `fun x => let f : forall a. a -> a = fun y => (let _ = x y in y) in 0` -/
-example : infer (.lambda none (.letIn (some polyIdentityAnnotation)
+example : infer boolSig (.lambda none (.letIn (some polyIdentityAnnotation)
     (.lambda none (.letIn none (.app (.var 1) (.var 0)) (.var 1)))
     (.primLit (.int 0)))) = none := by
   decide
@@ -289,14 +289,14 @@ def monoHoleScheme : Scheme Template :=
 /-- Its hole may be determined by a later use.
 
 `let f : _ -> Int = fun x => 1 in f 3` -/
-example : (infer (.letIn (some monoHoleScheme) (.lambda none (.primLit (.int 1)))
+example : (infer boolSig (.letIn (some monoHoleScheme) (.lambda none (.primLit (.int 1)))
     (.app (.var 0) (.primLit (.int 3))))).map (·.ty) = some intTy := by
   decide
 
 /-- If nothing determines it, the program is ambiguous.
 
 `let f : _ -> Int = fun x => 1 in 0` -/
-example : infer (.letIn (some monoHoleScheme) (.lambda none (.primLit (.int 1)))
+example : infer boolSig (.letIn (some monoHoleScheme) (.lambda none (.primLit (.int 1)))
     (.primLit (.int 0))) = none := by
   decide
 
@@ -306,14 +306,14 @@ def inferredHoleLambda : Source :=
       (.app (.primOp .intAdd) (.var 0))
       (.primLit (.int 1)))
 
-example : (infer inferredHoleLambda).map (·.ty) =
+example : (infer boolSig inferredHoleLambda).map (·.ty) =
     some (.arrow intTy intTy) := by
   decide
 
 def ambiguousHoleLambda : Source :=
   .lambda (some .hole) (.var 0)
 
-example : (infer ambiguousHoleLambda).map (·.ty) = none := by
+example : (infer boolSig ambiguousHoleLambda).map (·.ty) = none := by
   decide
 
 def partlyInferredPolyAnnotation : Scheme Template :=
@@ -321,9 +321,9 @@ def partlyInferredPolyAnnotation : Scheme Template :=
 
 def partlyInferredPolyProgram : Source :=
   .letIn (some partlyInferredPolyAnnotation) identityRhs
-    (.app (.var 0) (.primLit (.bool true)))
+    (.app (.var 0) trueExpr)
 
-example : (infer partlyInferredPolyProgram).map (·.ty) = some boolTy := by
+example : (infer boolSig partlyInferredPolyProgram).map (·.ty) = some boolTy := by
   decide
 
 def falsePolyAnnotation : Scheme Template :=
@@ -333,7 +333,7 @@ def falsePolyProgram : Source :=
   .letIn (some falsePolyAnnotation) identityRhs
     (.primLit .unit)
 
-example : (infer falsePolyProgram).map (·.ty) = none := by
+example : (infer boolSig falsePolyProgram).map (·.ty) = none := by
   decide
 
 def inferredIntegerFix : Source :=
@@ -342,7 +342,7 @@ def inferredIntegerFix : Source :=
       (.app (.primOp .intAdd) (.var 0))
       (.primLit (.int 1)))
 
-example : (infer inferredIntegerFix).map (·.ty) = some intTy := by
+example : (infer boolSig inferredIntegerFix).map (·.ty) = some intTy := by
   decide
 
 def incoherentNamedHole : Source :=
@@ -350,9 +350,9 @@ def incoherentNamedHole : Source :=
     (.lambda
       (some (.arrow (.named "shared") (.named "shared")))
       (.var 0))
-    (.lambda (some (.fixed intTy)) (.primLit (.bool true)))
+    (.lambda (some (.fixed intTy)) trueExpr)
 
-example : (infer incoherentNamedHole).map (·.ty) = none := by decide
+example : (infer boolSig incoherentNamedHole).map (·.ty) = none := by decide
 
 def namedIntegerLambda : Source :=
   .lambda (some (.named "local"))
@@ -369,14 +369,14 @@ def namedBooleanLambda : Source :=
 def independentNamedHoles : Source :=
   .letIn none namedIntegerLambda namedBooleanLambda
 
-example : (infer independentNamedHoles).map (·.ty) =
+example : (infer boolSig independentNamedHoles).map (·.ty) =
     some (.arrow boolTy intTy) := by
   decide
 
 def reuseAfterPolyCheck : Source :=
   .letIn (some polyIdentityAnnotation) identityRhs inferredIntLambda
 
-example : (infer reuseAfterPolyCheck).map (·.ty) =
+example : (infer boolSig reuseAfterPolyCheck).map (·.ty) =
     some (.arrow intTy intTy) := by
   decide
 
@@ -388,16 +388,16 @@ open EPL EPL.Examples EPL.InferenceTests
 
 /-- End-to-end canaries: these declarative derivations are obtained solely
 from successful execution of the public inference function. -/
-example : Typing 0 [] inferredIntLambda (.arrow intTy intTy) := by
+example : Typing boolSig 0 [] inferredIntLambda (.arrow intTy intTy) := by
   exact infer_typing_of_ty (by decide)
 
-example : Typing 0 [] explicitPolyProgram boolTy := by
+example : Typing boolSig 0 [] explicitPolyProgram boolTy := by
   exact infer_typing_of_ty (by decide)
 
-example : Typing 0 [] partlyInferredPolyProgram boolTy := by
+example : Typing boolSig 0 [] partlyInferredPolyProgram boolTy := by
   exact infer_typing_of_ty (by decide)
 
-example : Typing 0 [] inferredIntegerFix intTy := by
+example : Typing boolSig 0 [] inferredIntegerFix intTy := by
   exact infer_typing_of_ty (by decide)
 
 end EPL.InferenceSoundTests
@@ -418,17 +418,126 @@ def letAdd : Source :=
 /-- Final value of `evaluate`, or `none` if inference rejected the program or
 fuel ran out. -/
 def finalValue (input : Source) (fuel : Nat) : Option RuntimeExpr :=
-  (evaluate input fuel).bind (·.2.value?)
+  (evaluate boolSig input fuel).bind (·.2.value?)
 
 #guard finalValue incrementApplied 10 = some (.primLit (.int 42))
 #guard finalValue letAdd 10 = some (.primLit (.int 42))
-#guard finalValue explicitPolyProgram 50 = some (.primLit (.bool true))
+#guard finalValue explicitPolyProgram 50 = some trueExpr
 
 -- Divergent programs are well-typed but never finish.
 #guard finalValue (.app integerLoop (.primLit (.int 0))) 100 = none
 #guard finalValue inferredIntegerFix 100 = none
 
 -- Rejected programs never run.
-#guard (evaluate deadAmbiguousLambda 10).isNone
+#guard (evaluate boolSig deadAmbiguousLambda 10).isNone
 
 end EPL.EvaluatorTests
+
+namespace EPL.DataTests
+
+open EPL EPL.Examples
+
+-- sig: Bool = con 0 (True | False); List = con 1 (Nil | Cons a (List a))
+def listSig : Signature := [⟨0, [[], []]⟩, ⟨1, [[], [.bvar 0, .app (.con 1) (.bvar 0)]]⟩]
+
+def ifThen (c a b : Source) : Source :=
+  .app (.app (.app (.const (.elim 0 2)) c) (.lambda none a)) (.lambda none b)
+
+def nil : Source := .const (.ctor 1 0 0)
+def cons (h t : Source) : Source := .app (.app (.const (.ctor 1 1 2)) h) t
+
+def listTy : Ty := .app (.con 1) intTy
+
+/-- `if False then 1 else 2 : Int`, evaluating to `2`. -/
+def ifFalse : Source :=
+  ifThen falseExpr (.primLit (.int 1)) (.primLit (.int 2))
+
+example : (infer listSig ifFalse).map (·.ty) = some intTy := by
+  decide
+
+#guard ((evaluate listSig ifFalse 50).bind (·.2.value?)) =
+  some (.primLit (.int 2))
+
+/-- `match Cons 5 Nil with Nil => 0 | Cons x xs => x : Int`, evaluating to
+`5`, and annotating `x : Int` and `xs : List Int`. -/
+def matchCons : Source :=
+  .app (.app (.app (.const (.elim 1 2))
+      (cons (.primLit (.int 5)) nil))
+    (.lambda none (.primLit (.int 0))))
+    (.lambda none (.lambda none (.lambda none (.var 1))))
+
+example : (infer listSig matchCons).map (·.ty) = some intTy := by
+  decide
+
+example : (infer listSig matchCons).map (·.elaborated) =
+    some (.app (.app (.app (.const (.elim 1 2))
+        (.app (.app (.const (.ctor 1 1 2)) (.primLit (.int 5)))
+          (.const (.ctor 1 0 0))))
+      (.lambda (some (.prim .unit)) (.primLit (.int 0))))
+      (.lambda (some (.prim .unit))
+        (.lambda (some intTy) (.lambda (some listTy) (.var 1))))) := by
+  decide
+
+#guard ((evaluate listSig matchCons 50).bind (·.2.value?)) =
+  some (.primLit (.int 5))
+
+/-- `if 1 then True else False` is rejected: the scrutinee must be `Bool`. -/
+def ifInt : Source :=
+  ifThen (.primLit (.int 1)) trueExpr falseExpr
+
+example : infer listSig ifInt = none := by
+  decide
+
+/-- Constructors and eliminators of the wrong arity are rejected. -/
+example : infer listSig (.const (.ctor 1 1 3)) = none := by
+  decide
+
+example : infer listSig (.const (.elim 0 3)) = none := by
+  decide
+
+/-- A partial constructor application is a value of function type. -/
+def partialCons : Source :=
+  .app (.const (.ctor 1 1 2)) (.primLit (.int 1))
+
+example : (infer listSig partialCons).map (·.ty) =
+    some (.arrow listTy listTy) := by
+  decide
+
+example : Eval.Value partialCons.erase :=
+  Eval.Value.const (c := .ctor 1 1 2) (args := [.primLit (.int 1)]) rfl
+    (by decide) (by
+      intro arg h
+      rcases List.mem_singleton.mp h with rfl
+      exact .primLit)
+
+#guard ((evaluate listSig partialCons 10).bind (·.2.value?)) =
+  some (.app (.const (.ctor 1 1 2)) (.primLit (.int 1)))
+
+/-- Recursive list length via `fix`, over `listSig`. -/
+def listInt : Source :=
+  cons (.primLit (.int 1))
+    (cons (.primLit (.int 2)) (cons (.primLit (.int 3)) nil))
+
+def listNilBranch : Source :=
+  .lambda none (.primLit (.int 0))
+
+def listConsBranch : Source :=
+  .lambda none (.lambda none (.lambda none
+    (.app (.app (.primOp .intAdd) (.primLit (.int 1)))
+      (.app (.var 4) (.var 0)))))
+
+def listMatch (scrutinee : Source) : Source :=
+  .app (.app (.app (.const (.elim 1 2)) scrutinee) listNilBranch)
+    listConsBranch
+
+def listLength : Source :=
+  .fix (.fixed (.arrow listTy intTy))
+    (.lambda (some (.fixed listTy)) (listMatch (.var 0)))
+
+example : (infer listSig (.app listLength listInt)).map (·.ty) = some intTy := by
+  decide
+
+#guard ((evaluate listSig (.app listLength listInt) 200).bind (·.2.value?)) =
+  some (.primLit (.int 3))
+
+end EPL.DataTests

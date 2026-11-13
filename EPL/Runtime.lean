@@ -2,7 +2,40 @@ import Mathlib.Logic.Relation
 import EPL.Typing
 
 namespace EPL
+
+/-- The head of an application spine and its arguments, in order. -/
+def Expr.spine : Expr T → Expr T × List (Expr T)
+  | .app function argument =>
+      let headArgs := function.spine
+      (headArgs.1, headArgs.2 ++ [argument])
+  | expr => (expr, [])
+
+def Expr.apps (head : Expr T) (args : List (Expr T)) : Expr T :=
+  args.foldl .app head
+
+/-- How many arguments a constant takes while still a value: all of a
+constructor's fields, or every argument of an eliminator but its last
+branch. -/
+def DataConst.valueArity : DataConst → Nat
+  | .ctor _ _ arity => arity
+  | .elim _ ctorCount => ctorCount
+
 namespace Eval
+
+/-- Contract a saturated eliminator whose scrutinee is a saturated
+constructor: the chosen branch receives `()` and then the fields. -/
+def reduceConst : DataConst → List RuntimeExpr → Option RuntimeExpr
+  | .elim _ ctorCount, scrutinee :: branches =>
+      if branches.length = ctorCount then
+        match scrutinee.spine with
+        | (.const (.ctor _ ctor arity), fields) =>
+            if fields.length = arity then
+              (branches[ctor]?).map fun branch =>
+                Expr.apps branch (.primLit .unit :: fields)
+            else none
+        | _ => none
+      else none
+  | _, _ => none
 
 /-- Runtime values for strict left-to-right evaluation. -/
 inductive Value : RuntimeExpr → Prop
@@ -10,6 +43,12 @@ inductive Value : RuntimeExpr → Prop
   | primOp : Value (.primOp op)
   | lambda : Value (.lambda ann body)
   | intAddPartial : Value (.app (.primOp .intAdd) (.primLit (.int value)))
+  /-- A constant applied to values, short of a redex. -/
+  | const :
+      expr.spine = (.const c, args) →
+      args.length ≤ c.valueArity →
+      (∀ arg ∈ args, Value arg) →
+      Value expr
 
 inductive Step : RuntimeExpr → RuntimeExpr → Prop
   | beta :
@@ -35,6 +74,11 @@ inductive Step : RuntimeExpr → RuntimeExpr → Prop
       Step (.letIn ann rhs body) (body.subst1 rhs)
   | fixUnfold :
       Step (.fix () body) (body.subst1 (.fix () body))
+  | const :
+      (Expr.app function argument).spine = (.const c, args) →
+      (∀ arg ∈ args, Value arg) →
+      reduceConst c args = some result →
+      Step (.app function argument) result
 
 /-- Finite execution: the reflexive-transitive closure of `Step`. -/
 abbrev Steps : RuntimeExpr → RuntimeExpr → Prop :=
@@ -48,57 +92,64 @@ namespace EPL
 /-- Typing after annotations have been erased. Runtime syntax does not retain
 whether a source let was monomorphic or carried an explicit scheme, so the
 relation has separate derivations for the same erased constructor. -/
-inductive RuntimeTyping : Nat → Ctx → RuntimeExpr → Ty → Prop
+inductive RuntimeTyping (sig : Signature) : Nat → Ctx → RuntimeExpr → Ty → Prop
   | primLit :
-      RuntimeTyping rigidCount ctx (.primLit literal) literal.ty
+      RuntimeTyping sig rigidCount ctx (.primLit literal) literal.ty
 
   | primOp :
-      RuntimeTyping rigidCount ctx (.primOp op) op.ty
+      RuntimeTyping sig rigidCount ctx (.primOp op) op.ty
 
   | var :
       ctx[index]? = some scheme →
       scheme.WF rigidCount →
       args.length = scheme.paramCount →
       (∀ arg ∈ args, arg.WF rigidCount 0) →
-      RuntimeTyping rigidCount ctx (.var index) (scheme.openWith args)
+      RuntimeTyping sig rigidCount ctx (.var index) (scheme.openWith args)
 
   | lambda :
       paramTy.WF rigidCount 0 →
-      RuntimeTyping rigidCount (PolyTy.mono paramTy :: ctx) body bodyTy →
-      RuntimeTyping rigidCount ctx (.lambda ann body) (.arrow paramTy bodyTy)
+      RuntimeTyping sig rigidCount (PolyTy.mono paramTy :: ctx) body bodyTy →
+      RuntimeTyping sig rigidCount ctx (.lambda ann body) (.arrow paramTy bodyTy)
 
   | app :
-      RuntimeTyping rigidCount ctx function (.arrow argumentTy resultTy) →
-      RuntimeTyping rigidCount ctx argument argumentTy →
-      RuntimeTyping rigidCount ctx (.app function argument) resultTy
+      RuntimeTyping sig rigidCount ctx function (.arrow argumentTy resultTy) →
+      RuntimeTyping sig rigidCount ctx argument argumentTy →
+      RuntimeTyping sig rigidCount ctx (.app function argument) resultTy
 
   | letMono :
       rhsTy.WF rigidCount 0 →
-      RuntimeTyping rigidCount ctx rhs rhsTy →
-      RuntimeTyping rigidCount (PolyTy.mono rhsTy :: ctx) body bodyTy →
-      RuntimeTyping rigidCount ctx (.letIn ann rhs body) bodyTy
+      RuntimeTyping sig rigidCount ctx rhs rhsTy →
+      RuntimeTyping sig rigidCount (PolyTy.mono rhsTy :: ctx) body bodyTy →
+      RuntimeTyping sig rigidCount ctx (.letIn ann rhs body) bodyTy
 
   | letPoly :
       scheme.WF rigidCount →
       ctx.WF rigidCount →
-      RuntimeTyping (rigidCount + scheme.paramCount) ctx rhs
+      RuntimeTyping sig (rigidCount + scheme.paramCount) ctx rhs
         (scheme.openRigids rigidCount) →
-      RuntimeTyping rigidCount (scheme :: ctx) body bodyTy →
-      RuntimeTyping rigidCount ctx (.letIn ann rhs body) bodyTy
+      RuntimeTyping sig rigidCount (scheme :: ctx) body bodyTy →
+      RuntimeTyping sig rigidCount ctx (.letIn ann rhs body) bodyTy
 
   | fix :
       selfTy.WF rigidCount 0 →
-      RuntimeTyping rigidCount (PolyTy.mono selfTy :: ctx) body selfTy →
-      RuntimeTyping rigidCount ctx (.fix () body) selfTy
+      RuntimeTyping sig rigidCount (PolyTy.mono selfTy :: ctx) body selfTy →
+      RuntimeTyping sig rigidCount ctx (.fix () body) selfTy
+
+  | const :
+      sig.schemeOf c = some scheme →
+      scheme.WF 0 →
+      args.length = scheme.paramCount →
+      (∀ arg ∈ args, arg.WF rigidCount 0) →
+      RuntimeTyping sig rigidCount ctx (.const c) (scheme.openWith args)
 
 /-- A runtime expression inhabits every semantic instance of a scheme. -/
-structure RuntimeHasScheme (rigidCount : Nat) (ctx : Ctx)
+structure RuntimeHasScheme (sig : Signature) (rigidCount : Nat) (ctx : Ctx)
     (expr : RuntimeExpr) (scheme : PolyTy) : Prop where
   schemeWF : scheme.WF rigidCount
   typed : ∀ larger, rigidCount ≤ larger → ∀ args,
     args.length = scheme.paramCount →
     (∀ arg ∈ args, arg.WF larger 0) →
-    RuntimeTyping larger ctx expr (scheme.openWith args)
+    RuntimeTyping sig larger ctx expr (scheme.openWith args)
 
 end EPL
 
@@ -119,16 +170,26 @@ def isValue : RuntimeExpr → Bool
   | .primLit _ => true
   | .primOp _ => true
   | .lambda _ _ => true
+  | .const _ => true
   | .app (.primOp .intAdd) (.primLit (.int _)) => true
+  | .app function argument =>
+      isValue function && isValue argument &&
+        match (Expr.app function argument).spine with
+        | (.const c, args) => decide (args.length ≤ c.valueArity)
+        | _ => false
   | _ => false
 
 /-- Contract an application whose function and argument are both values:
-beta reduction or saturated integer addition. `none` if neither applies. -/
+beta reduction, saturated integer addition, or an eliminator meeting a
+constructor. `none` if none applies. -/
 def reduceApp : RuntimeExpr → RuntimeExpr → Option RuntimeExpr
   | .lambda _ body, argument => some (body.subst1 argument)
   | .app (.primOp .intAdd) (.primLit (.int left)), .primLit (.int right) =>
       some (.primLit (.int (left + right)))
-  | _, _ => none
+  | function, argument =>
+      match (Expr.app function argument).spine with
+      | (.const c, args) => reduceConst c args
+      | _ => none
 
 /-- One step of strict left-to-right evaluation. Returns `none` exactly when
 the expression has no `Step` successor (it is a value or stuck). -/

@@ -868,6 +868,7 @@ private theorem Expr.mapAnn_mapAnn (expr : Expr Ty) (f g : Ty → Ty) :
   | fix selfTy body ih =>
       simp only [Expr.mapAnn]
       rw [ih]
+  | const c => rfl
 
 private theorem Expr.mapAnn_id (expr : Expr Ty) : expr.mapAnn id = expr := by
   induction expr with
@@ -893,6 +894,7 @@ private theorem Expr.mapAnn_id (expr : Expr Ty) : expr.mapAnn id = expr := by
       simp only [Expr.mapAnn]
       rw [ih]
       rfl
+  | const c => rfl
 
 private theorem Expr.mapAnn_congr {expr : Expr Ty} {f g : Ty → Ty}
     (pointwise : ∀ ty ∈ expr.annotations, f ty = g ty) :
@@ -945,6 +947,7 @@ private theorem Expr.mapAnn_congr {expr : Expr Ty} {f g : Ty → Ty}
       simp only [Expr.mapAnn, ih bodyPoint]
       have selfEq := pointwise selfTy (by simp [Expr.annotations])
       simp [selfEq]
+  | const c => rfl
 
 /-- Realizing a resolved expression under a model is the same as realizing the
 original expression. -/
@@ -1761,7 +1764,7 @@ theorem inferFuel_anchored
     (below : level < rigidCount)
     (startLe : start ≤ state.next)
     (anchored : state.solutions.Anchored start level)
-    (run : inferFuel fuel rigidCount ctx input state = some result) :
+    (run : inferFuel sig fuel rigidCount ctx input state = some result) :
     result.state.solutions.Anchored start level := by
   have ctx_mono : ∀ {context : Ctx} {rigid smaller larger : Nat},
       context.InferWF rigid smaller → smaller ≤ larger →
@@ -1838,7 +1841,7 @@ theorem inferFuel_anchored
                       (ctxWF scheme member).2 id hid
                     rw [seededSafe.2.2.2.2 id idBound]
                     exact ctxLevels scheme member id hid
-                cases bodyRun : inferFuel fuel rigidCount
+                cases bodyRun : inferFuel sig fuel rigidCount
                     (PolyTy.mono seeded.2 :: ctx) body seeded.1 with
                 | none => simp [seeded, bodyRun] at run
                 | some bodyResult =>
@@ -1889,7 +1892,7 @@ theorem inferFuel_anchored
                       (ctxWF scheme member).2 id hid
                     rw [seededSafe.2.2.2.2 id idBound]
                     exact ctxLevels scheme member id hid
-                cases bodyRun : inferFuel fuel rigidCount
+                cases bodyRun : inferFuel sig fuel rigidCount
                     (PolyTy.mono seeded.2 :: ctx) body seeded.1 with
                 | none => simp [seeded, bodyRun] at run
                 | some bodyResult =>
@@ -1910,7 +1913,7 @@ theorem inferFuel_anchored
           cases inputScoped with
           | app functionScoped argumentScoped =>
             simp only [inferFuel] at run
-            cases functionRun : inferFuel fuel rigidCount ctx function state with
+            cases functionRun : inferFuel sig fuel rigidCount ctx function state with
             | none => simp [functionRun] at run
             | some functionResult =>
               have functionAnchored := ih (result := functionResult)
@@ -1928,7 +1931,7 @@ theorem inferFuel_anchored
                   (ctxWF scheme member).2 id hid
                 exact le_trans (functionSafe.2.2.2.2 id idBound)
                   (ctxLevels scheme member id hid)
-              cases argumentRun : inferFuel fuel rigidCount ctx argument
+              cases argumentRun : inferFuel sig fuel rigidCount ctx argument
                   functionResult.state with
               | none => simp [functionRun, argumentRun] at run
               | some argumentResult =>
@@ -1988,7 +1991,7 @@ theorem inferFuel_anchored
             cases inputScoped with
             | letMono rhsScoped bodyScoped =>
               simp only [inferFuel] at run
-              cases rhsRun : inferFuel fuel rigidCount ctx rhs state with
+              cases rhsRun : inferFuel sig fuel rigidCount ctx rhs state with
               | none => simp [rhsRun] at run
               | some rhsResult =>
                 have rhsAnchored := ih (result := rhsResult)
@@ -2019,7 +2022,7 @@ theorem inferFuel_anchored
                       (ctxWF scheme member).2 id hid
                     exact le_trans (rhsSafe.2.2.2.2 id idBound)
                       (ctxLevels scheme member id hid)
-                cases bodyRun : inferFuel fuel rigidCount
+                cases bodyRun : inferFuel sig fuel rigidCount
                     (PolyTy.mono rhsTy :: ctx) body rhsResult.state with
                 | none => simp [rhsTy, rhsRun, bodyRun] at run
                 | some bodyResult =>
@@ -2075,7 +2078,7 @@ theorem inferFuel_anchored
                   (ctxWF scheme member).2 id hid
                 rw [seededSafe.2.2.2.2 id idBound]
                 exact le_trans (ctxLevels scheme member id hid) (by omega)
-              cases rhsRun : inferFuel fuel inner ctx
+              cases rhsRun : inferFuel sig fuel inner ctx
                   (rhs.openRigids rigidCount count) seeded.1 with
               | none =>
                   dsimp [seeded, openedTemplate, count, inner] at rhsRun
@@ -2189,7 +2192,7 @@ theorem inferFuel_anchored
                               (by simpa [Ty.LevelBounded] using
                                 (List.all_eq_true.mp good)))
                         · exact ctxLevelsChecked scheme member
-                      cases bodyRun : inferFuel fuel rigidCount
+                      cases bodyRun : inferFuel sig fuel rigidCount
                           (completed :: ctx) body checked with
                       | none =>
                           simp [completed, completedOpen, count, inner,
@@ -2246,7 +2249,7 @@ theorem inferFuel_anchored
                 have idBound : id < state.next := (ctxWF scheme member).2 id hid
                 rw [seededSafe.2.2.2.2 id idBound]
                 exact ctxLevels scheme member id hid
-            cases bodyRun : inferFuel fuel rigidCount
+            cases bodyRun : inferFuel sig fuel rigidCount
                 (PolyTy.mono seeded.2 :: ctx) body seeded.1 with
             | none =>
                 dsimp [seeded] at bodyRun
@@ -2285,6 +2288,27 @@ theorem inferFuel_anchored
                       (store := bodyResult.state.solutions)
                       (result := checked.solutions)
                       bodySafe.1.solutionsNormalized bodyAnchored hunify
+      | const c =>
+          simp only [inferFuel] at run
+          cases lookup : sig.schemeOf c with
+          | none => simp [lookup] at run
+          | some scheme =>
+              simp only [lookup] at run
+              cases hb : scheme.wfB 0 with
+              | false => simp [hb] at run
+              | true =>
+                  let fresh := state.freshMany rigidCount scheme.paramCount
+                  have resultEq : result =
+                      ⟨fresh.1, scheme.openWith fresh.2, .const c⟩ := by
+                    simpa [fresh, hb] using run.symm
+                  subst result
+                  have appended : fresh.1.solutions =
+                      state.solutions ++ List.replicate scheme.paramCount
+                        (⟨rigidCount, none⟩ : MEntry) := by
+                    simpa [fresh] using InferState.freshMany_solutions rigidCount
+                      scheme.paramCount state
+                  rw [appended]
+                  exact MStore.Anchored.append_replicate anchored below
 
 private theorem Ty.WF.arrow_parts {domain codomain : Ty} {rigidCount binderCount : Nat}
     (wf : (Ty.arrow domain codomain).WF rigidCount binderCount) :
@@ -3243,9 +3267,9 @@ theorem inferFuel_principal
     (ctxWF : ctx.InferWF rigidCount state.next)
     (ctxLevels : ∀ scheme ∈ ctx, scheme.body.LevelBounded state.solutions rigidCount)
     (inputScoped : input.TypeScoped rigidCount 0)
-    (run : inferFuel fuel rigidCount ctx input state = some result)
+    (run : inferFuel sig fuel rigidCount ctx input state = some result)
     (models : state.Models valuation)
-    (typing : Typing rigidCount (ctx.realize valuation) input ty) :
+    (typing : Typing sig rigidCount (ctx.realize valuation) input ty) :
     ∃ extended, result.state.Models extended ∧
       (∀ id, id < state.next → extended id = valuation id) ∧
       result.ty.realize extended = ty := by
@@ -3329,6 +3353,58 @@ theorem inferFuel_principal
                       appliedEq] using opened
                   refine ⟨extended, extModels, extAgree, ?_⟩
                   rw [resultTyEq, ← schemeDEq]
+      | const c =>
+          simp only [inferFuel] at run
+          cases lookup : sig.schemeOf c with
+          | none => simp [lookup] at run
+          | some scheme =>
+              simp only [lookup] at run
+              cases hb : scheme.wfB 0 with
+              | false =>
+                  cases typing with
+                  | const hlookupD hwfD hlenD hargsD =>
+                      rename_i schemeD argsD
+                      rw [lookup] at hlookupD
+                      have schemeDEq : schemeD = scheme :=
+                        (Option.some.inj hlookupD).symm
+                      subst schemeD
+                      have hwfTrue : scheme.wfB 0 = true :=
+                        Ty.wfB_eq_true_iff.mpr hwfD
+                      rw [hb] at hwfTrue
+                      exact Bool.noConfusion hwfTrue
+              | true =>
+                  let fresh := state.freshMany rigidCount scheme.paramCount
+                  have resultEq : result =
+                      ⟨fresh.1, scheme.openWith fresh.2, .const c⟩ := by
+                    simpa [fresh, hb] using run.symm
+                  subst result
+                  cases typing with
+                  | const hlookupD hwfD hlenD hargsD =>
+                      rename_i schemeD argsD
+                      rw [lookup] at hlookupD
+                      have schemeDEq : schemeD = scheme :=
+                        (Option.some.inj hlookupD).symm
+                      subst schemeD
+                      obtain ⟨extended, extModels, extAgree, extMap⟩ :=
+                        InferState.freshMany_models (state := state)
+                          (valuation := valuation) (level := rigidCount)
+                          (count := scheme.paramCount) stateSafe models
+                          argsD hlenD hargsD
+                      have imagesScoped : ∀ id ∈ scheme.body.mvars,
+                          (extended id).Scoped rigidCount 0 := by
+                        intro id member
+                        rw [Ty.MetaFree.mvars_eq_nil hwfD.2] at member
+                        exact absurd member (List.not_mem_nil)
+                      have opened := Ty.realize_openWith (ty := scheme.body)
+                        (args := fresh.2) (valuation := extended) imagesScoped
+                      have bodyRealize : scheme.body.realize extended =
+                          scheme.body :=
+                        Ty.realize_eq_self hwfD.2 extended
+                      have resultTyEq :
+                          (scheme.openWith fresh.2).realize extended =
+                            scheme.openWith argsD := by
+                        simpa [PolyTy.openWith, bodyRealize, extMap, fresh] using opened
+                      exact ⟨extended, extModels, extAgree, resultTyEq⟩
       | lambda ann body =>
           cases inputScoped with
           | lambda annScoped bodyScoped =>
@@ -3338,7 +3414,7 @@ theorem inferFuel_principal
                 let seeded := state.fresh rigidCount
                 have seededSafe := InferState.fresh_safe
                   (level := rigidCount) stateSafe
-                cases bodyRun : inferFuel fuel rigidCount
+                cases bodyRun : inferFuel sig fuel rigidCount
                     (PolyTy.mono seeded.2 :: ctx) body seeded.1 with
                 | none => simp [seeded, bodyRun] at run
                 | some bodyResult =>
@@ -3387,7 +3463,7 @@ theorem inferFuel_principal
                             Ctx.realize ctx valuation :=
                           Ctx.realize_congr (fun scheme member id idMem =>
                             firstAgree id ((ctxWF scheme member).2 id idMem))
-                        have bodyTyping' : Typing rigidCount
+                        have bodyTyping' : Typing sig rigidCount
                             (Ctx.realize (PolyTy.mono seeded.2 :: ctx) firstValuation)
                             body bodyTy := by
                           have ctxEq : Ctx.realize (PolyTy.mono seeded.2 :: ctx)
@@ -3424,7 +3500,7 @@ theorem inferFuel_principal
                 have seededSafe := InferState.allocate_safe
                   (level := rigidCount) (rigidCount := rigidCount)
                   stateSafe templateScoped
-                cases bodyRun : inferFuel fuel rigidCount
+                cases bodyRun : inferFuel sig fuel rigidCount
                     (PolyTy.mono seeded.2 :: ctx) body seeded.1 with
                 | none => simp [seeded, bodyRun] at run
                 | some bodyResult =>
@@ -3471,7 +3547,7 @@ theorem inferFuel_principal
                               (ctxWF scheme member).2 id hid
                             rw [seededSafe.2.2.2.2 id idBound]
                             exact ctxLevels scheme member id hid
-                        have bodyTyping' : Typing rigidCount
+                        have bodyTyping' : Typing sig rigidCount
                             (Ctx.realize (PolyTy.mono seeded.2 :: ctx) firstValuation)
                             body bodyTy := by
                           have ctxEq : Ctx.realize (PolyTy.mono seeded.2 :: ctx)
@@ -3512,7 +3588,7 @@ theorem inferFuel_principal
           cases inputScoped with
           | app functionScoped argumentScoped =>
             simp only [inferFuel] at run
-            cases functionRun : inferFuel fuel rigidCount ctx function state with
+            cases functionRun : inferFuel sig fuel rigidCount ctx function state with
             | none => simp [functionRun] at run
             | some functionResult =>
               cases typing with
@@ -3535,11 +3611,11 @@ theorem inferFuel_principal
                       (ctxWF scheme member).2 id hid
                     exact le_trans (functionSafe.2.2.2.2 id idBound)
                       (ctxLevels scheme member id hid)
-                  cases argumentRun : inferFuel fuel rigidCount ctx argument
+                  cases argumentRun : inferFuel sig fuel rigidCount ctx argument
                       functionResult.state with
                   | none => simp [functionRun, argumentRun] at run
                   | some argumentResult =>
-                    have argumentTyping' : Typing rigidCount
+                    have argumentTyping' : Typing sig rigidCount
                         (ctx.realize ext1) argument argumentTyD := by
                       have ctxEq := Ctx.realize_congr (ctx := ctx)
                         (first := ext1) (second := valuation)
@@ -3661,7 +3737,7 @@ theorem inferFuel_principal
             cases inputScoped with
             | letMono rhsScoped bodyScoped =>
               simp only [inferFuel] at run
-              cases rhsRun : inferFuel fuel rigidCount ctx rhs state with
+              cases rhsRun : inferFuel sig fuel rigidCount ctx rhs state with
               | none => simp [rhsRun] at run
               | some rhsResult =>
                 cases typing with
@@ -3695,11 +3771,11 @@ theorem inferFuel_principal
                           (ctxWF scheme member).2 id hid
                         exact le_trans (rhsSafe.2.2.2.2 id idBound)
                           (ctxLevels scheme member id hid)
-                    cases bodyRun : inferFuel fuel rigidCount
+                    cases bodyRun : inferFuel sig fuel rigidCount
                         (PolyTy.mono rhsTy :: ctx) body rhsResult.state with
                     | none => simp [rhsTy, rhsRun, bodyRun] at run
                     | some bodyResult =>
-                        have bodyTyping' : Typing rigidCount
+                        have bodyTyping' : Typing sig rigidCount
                             (Ctx.realize (PolyTy.mono rhsTy :: ctx) ext1)
                             body ty := by
                           have ctxEq : Ctx.realize (PolyTy.mono rhsTy :: ctx) ext1 =
@@ -3795,7 +3871,7 @@ theorem inferFuel_principal
                   have seedRealize : seeded.2.realize firstValuation =
                       scheme.openRigids rigidCount := by
                     simpa [seeded] using seedRealizeEq.trans holeRealize
-                  cases rhsRun : inferFuel fuel inner ctx
+                  cases rhsRun : inferFuel sig fuel inner ctx
                       (rhs.openRigids rigidCount count) seeded.1 with
                   | none =>
                       dsimp [seeded, openedTemplate, count, inner] at rhsRun
@@ -3804,7 +3880,7 @@ theorem inferFuel_principal
                       dsimp [seeded, openedTemplate, count, inner] at rhsRun
                       have rhsSafe := inferFuel_safe seededSafe.1 rhsCtxWF
                         rhsCtxLevels openedRhsScoped rhsRun
-                      have rhsTyping' : Typing inner (ctx.realize firstValuation)
+                      have rhsTyping' : Typing sig inner (ctx.realize firstValuation)
                           (rhs.openRigids rigidCount count)
                           (scheme.openRigids rigidCount) := by
                         have ctxEq : Ctx.realize ctx firstValuation =
@@ -3993,13 +4069,13 @@ theorem inferFuel_principal
                             rcases member with rfl | member
                             · exact completedLevels
                             · exact ctxLevelsChecked scheme member
-                          cases bodyRun : inferFuel fuel rigidCount
+                          cases bodyRun : inferFuel sig fuel rigidCount
                               (completed :: ctx) body checked with
                           | none =>
                               simp [completed, completedOpen, count, inner,
                                 seeded, openedTemplate, bodyRun] at run
                           | some bodyResult =>
-                              have bodyTyping' : Typing rigidCount
+                              have bodyTyping' : Typing sig rigidCount
                                   (Ctx.realize (completed :: ctx) ext1)
                                   body ty := by
                                 have ctxEq : Ctx.realize (completed :: ctx) ext1 =
@@ -4070,7 +4146,7 @@ theorem inferFuel_principal
                       (ctxWF scheme member).2 id hid
                     rw [seededSafe.2.2.2.2 id idBound]
                     exact ctxLevels scheme member id hid
-                cases bodyRun : inferFuel fuel rigidCount
+                cases bodyRun : inferFuel sig fuel rigidCount
                     (PolyTy.mono seeded.2 :: ctx) body seeded.1 with
                 | none =>
                     dsimp [seeded] at bodyRun
@@ -4107,7 +4183,7 @@ theorem inferFuel_principal
                             (assigned := holeVal) holeWF
                         have seedRealize : seeded.2.realize firstValuation = ty := by
                           simpa [seeded] using seedRealizeEq.trans holeRealize
-                        have bodyTyping' : Typing rigidCount
+                        have bodyTyping' : Typing sig rigidCount
                             (Ctx.realize (PolyTy.mono seeded.2 :: ctx) firstValuation)
                             body ty := by
                           have ctxEq : Ctx.realize (PolyTy.mono seeded.2 :: ctx)
@@ -4181,10 +4257,10 @@ theorem inferFuel_sound_model
     (ctxWF : ctx.InferWF rigidCount state.next)
     (ctxLevels : ∀ scheme ∈ ctx, scheme.body.LevelBounded state.solutions rigidCount)
     (inputScoped : input.TypeScoped rigidCount 0)
-    (run : inferFuel fuel rigidCount ctx input state = some result) :
+    (run : inferFuel sig fuel rigidCount ctx input state = some result) :
     state.Refines result.state ∧
       ∀ valuation, result.state.Models valuation →
-        Elaborates rigidCount (ctx.realize valuation) input
+        Elaborates sig rigidCount (ctx.realize valuation) input
           (result.elaborated.realize valuation) (result.ty.realize valuation) := by
   have ctx_mono : ∀ {context : Ctx} {rigid smaller larger : Nat},
       context.InferWF rigid smaller → smaller ≤ larger →
@@ -4303,6 +4379,51 @@ theorem inferFuel_sound_model
               · intro arg member
                 rcases List.mem_map.mp member with ⟨original, originalMem, rfl⟩
                 exact argsWF original originalMem
+      | const c =>
+          simp only [inferFuel] at run
+          cases lookup : sig.schemeOf c with
+          | none => simp [lookup] at run
+          | some scheme =>
+              simp only [lookup] at run
+              cases hb : scheme.wfB 0 with
+              | false => simp [hb] at run
+              | true =>
+                  have schemeWF0 : scheme.WF 0 := Ty.wfB_eq_true_iff.mp hb
+                  let fresh := state.freshMany rigidCount scheme.paramCount
+                  have resultEq : result =
+                      ⟨fresh.1, scheme.openWith fresh.2, .const c⟩ := by
+                    simpa [fresh, hb] using run.symm
+                  subst result
+                  have freshSafe := InferState.freshMany_safe
+                    (level := rigidCount) (count := scheme.paramCount) stateSafe
+                  refine ⟨InferState.freshMany_refines, ?_⟩
+                  intro valuation models
+                  have argsWF : ∀ arg ∈ fresh.2,
+                      (arg.realize valuation).WF rigidCount 0 := by
+                    intro arg member
+                    exact Ty.realize_inferWF_model models
+                      freshSafe.1.solutions_length
+                      (freshSafe.2.1 arg member) (freshSafe.2.2.1 arg member)
+                  have imagesScoped : ∀ id ∈ scheme.body.mvars,
+                      (valuation id).Scoped rigidCount 0 := by
+                    intro id member
+                    rw [Ty.MetaFree.mvars_eq_nil schemeWF0.2] at member
+                    exact absurd member (List.not_mem_nil)
+                  have opened := Ty.realize_openWith (ty := scheme.body)
+                    (args := fresh.2) (valuation := valuation) imagesScoped
+                  have bodyRealize : scheme.body.realize valuation = scheme.body :=
+                    Ty.realize_eq_self schemeWF0.2 valuation
+                  have resultTyEq :
+                      (scheme.openWith fresh.2).realize valuation =
+                        scheme.openWith (fresh.2.map (·.realize valuation)) := by
+                    simpa [PolyTy.openWith, bodyRealize] using opened
+                  rw [resultTyEq]
+                  exact Elaborates.const lookup schemeWF0
+                    (by simpa using freshSafe.2.2.2.1)
+                    (by
+                      intro arg member
+                      rcases List.mem_map.mp member with ⟨original, hmem, rfl⟩
+                      exact argsWF original hmem)
       | lambda ann body =>
           cases inputScoped with
           | lambda annScoped bodyScoped =>
@@ -4310,7 +4431,7 @@ theorem inferFuel_sound_model
             | none =>
                 simp only [inferFuel] at run
                 let seeded := state.fresh rigidCount
-                cases bodyRun : inferFuel fuel rigidCount
+                cases bodyRun : inferFuel sig fuel rigidCount
                     (PolyTy.mono seeded.2 :: ctx) body seeded.1 with
                 | none => simp [seeded, bodyRun] at run
                 | some bodyResult =>
@@ -4353,7 +4474,7 @@ theorem inferFuel_sound_model
                         (seeded.2.realize valuation) := by
                       intro template impossible
                       cases impossible
-                    change Elaborates rigidCount (ctx.realize valuation)
+                    change Elaborates sig rigidCount (ctx.realize valuation)
                       (.lambda none body)
                       (.lambda (some (seeded.2.realize valuation))
                         (bodyResult.elaborated.realize valuation))
@@ -4369,7 +4490,7 @@ theorem inferFuel_sound_model
                 have templateScoped := annScoped template rfl
                 simp only [inferFuel] at run
                 let seeded := state.allocate rigidCount template
-                cases bodyRun : inferFuel fuel rigidCount
+                cases bodyRun : inferFuel sig fuel rigidCount
                     (PolyTy.mono seeded.2 :: ctx) body seeded.1 with
                 | none => simp [seeded, bodyRun] at run
                 | some bodyResult =>
@@ -4414,7 +4535,7 @@ theorem inferFuel_sound_model
                       intro candidate annEq
                       cases annEq
                       exact Template.allocate_matches_realize templateScoped
-                    change Elaborates rigidCount (ctx.realize valuation)
+                    change Elaborates sig rigidCount (ctx.realize valuation)
                       (.lambda (some template) body)
                       (.lambda (some (seeded.2.realize valuation))
                         (bodyResult.elaborated.realize valuation))
@@ -4430,7 +4551,7 @@ theorem inferFuel_sound_model
           cases inputScoped with
           | app functionScoped argumentScoped =>
             simp only [inferFuel] at run
-            cases functionRun : inferFuel fuel rigidCount ctx function state with
+            cases functionRun : inferFuel sig fuel rigidCount ctx function state with
             | none => simp [functionRun] at run
             | some functionResult =>
               have functionSafe := inferFuel_safe stateSafe ctxWF ctxLevels
@@ -4447,7 +4568,7 @@ theorem inferFuel_sound_model
                   (ctxWF scheme member).2 id hid
                 exact le_trans (functionSafe.2.2.2.2 id idBound)
                   (ctxLevels scheme member id hid)
-              cases argumentRun : inferFuel fuel rigidCount ctx argument
+              cases argumentRun : inferFuel sig fuel rigidCount ctx argument
                   functionResult.state with
               | none => simp [functionRun, argumentRun] at run
               | some argumentResult =>
@@ -4512,7 +4633,7 @@ theorem inferFuel_sound_model
             cases inputScoped with
             | letMono rhsScoped bodyScoped =>
               simp only [inferFuel] at run
-              cases rhsRun : inferFuel fuel rigidCount ctx rhs state with
+              cases rhsRun : inferFuel sig fuel rigidCount ctx rhs state with
               | none => simp [rhsRun] at run
               | some rhsResult =>
                 have rhsSafe := inferFuel_safe stateSafe ctxWF ctxLevels
@@ -4545,7 +4666,7 @@ theorem inferFuel_sound_model
                       (ctxWF scheme member).2 id hid
                     exact le_trans (rhsSafe.2.2.2.2 id idBound)
                       (ctxLevels scheme member id hid)
-                cases bodyRun : inferFuel fuel rigidCount
+                cases bodyRun : inferFuel sig fuel rigidCount
                     (PolyTy.mono rhsTy :: ctx) body rhsResult.state with
                 | none => simp [rhsTy, rhsRun, bodyRun] at run
                 | some bodyResult =>
@@ -4604,7 +4725,7 @@ theorem inferFuel_sound_model
                   (ctxWF scheme member).2 id hid
                 rw [seededSafe.2.2.2.2 id idBound]
                 exact le_trans (ctxLevels scheme member id hid) (by omega)
-              cases rhsRun : inferFuel fuel inner ctx
+              cases rhsRun : inferFuel sig fuel inner ctx
                   (rhs.openRigids rigidCount count) seeded.1 with
               | none =>
                   dsimp [seeded, openedTemplate, count, inner] at rhsRun
@@ -4722,7 +4843,7 @@ theorem inferFuel_sound_model
                         rcases member with rfl | member
                         · exact completedLevels
                         · exact ctxLevelsChecked scheme member
-                      cases bodyRun : inferFuel fuel rigidCount
+                      cases bodyRun : inferFuel sig fuel rigidCount
                           (completed :: ctx) body checked with
                       | none =>
                           simp [completed, completedOpen, count, inner,
@@ -4811,7 +4932,7 @@ theorem inferFuel_sound_model
                             · rw [completedRealize]
                               exact closedMatches
                           have bodyTyping := bodySound.2 valuation models
-                          change Elaborates rigidCount
+                          change Elaborates sig rigidCount
                             (ctx.realize valuation)
                             (.letIn (some written) rhs body)
                             (.letIn (some (completed.realize valuation))
@@ -4880,7 +5001,7 @@ theorem inferFuel_sound_model
                                   seeded.2.realize seedValuation =
                                     other.openRigids rigidCount := by
                                 simpa [seeded] using seedRealizeEq.trans holeRealize
-                              have otherTyping' : Typing inner
+                              have otherTyping' : Typing sig inner
                                   (ctx.realize seedValuation)
                                   (rhs.openRigids rigidCount count)
                                   (other.openRigids rigidCount) := by
@@ -5052,7 +5173,7 @@ theorem inferFuel_sound_model
                 have idBound : id < state.next := (ctxWF scheme member).2 id hid
                 rw [seededSafe.2.2.2.2 id idBound]
                 exact ctxLevels scheme member id hid
-            cases bodyRun : inferFuel fuel rigidCount
+            cases bodyRun : inferFuel sig fuel rigidCount
                 (PolyTy.mono seeded.2 :: ctx) body seeded.1 with
             | none =>
                 dsimp [seeded] at bodyRun
@@ -5111,14 +5232,14 @@ theorem inferFuel_sound_model
                         (seeded.2.realize valuation) := by
                       exact Template.allocate_matches_realize
                         (valuation := valuation) (frontier := state.next) annScoped
-                    have realizedBody : Elaborates rigidCount
+                    have realizedBody : Elaborates sig rigidCount
                         (PolyTy.mono (seeded.2.realize valuation) ::
                           ctx.realize valuation) body
                         (bodyResult.elaborated.realize valuation)
                         (seeded.2.realize valuation) := by
                       simpa [Ctx.realize, PolyTy.realize, PolyTy.mono] using
                         bodyTyping
-                    change Elaborates rigidCount (ctx.realize valuation)
+                    change Elaborates sig rigidCount (ctx.realize valuation)
                       (.fix ann body)
                       ((Expr.fix seeded.2 bodyResult.elaborated).realize valuation)
                       ((checked.solutions.apply seeded.2).realize valuation)
@@ -5129,14 +5250,14 @@ theorem inferFuel_sound_model
 typing relation. -/
 theorem infer_sound
     {input : Source} {result : InferenceResult}
-    (run : infer input = some result) :
-    Elaborates 0 [] input result.elaborated result.ty := by
+    (run : infer sig input = some result) :
+    Elaborates sig 0 [] input result.elaborated result.ty := by
   unfold infer at run
   by_cases sourceBad : (!input.typeScopedB 0 0) = true
   · rw [if_pos sourceBad] at run
     simp at run
   · rw [if_neg sourceBad] at run
-    cases internalRun : inferFuel (input.inferSize + 1) 0 [] input
+    cases internalRun : inferFuel sig (input.inferSize + 1) 0 [] input
         ⟨0, []⟩ with
     | none => simp [internalRun] at run
     | some internal =>
@@ -5199,16 +5320,16 @@ theorem infer_sound
 /-- Successful inference produces an ordinary typing at the reported type. -/
 theorem infer_typing
     {input : Source} {result : InferenceResult}
-    (run : infer input = some result) :
-    Typing 0 [] input result.ty :=
+    (run : infer sig input = some result) :
+    Typing sig 0 [] input result.ty :=
   (infer_sound run).typing
 
 /-- Convenience form for tests: a reported type is a declarative type. -/
 theorem infer_typing_of_ty
     {input : Source} {ty : Ty}
-    (run : (infer input).map (·.ty) = some ty) :
-    Typing 0 [] input ty := by
-  cases h : infer input with
+    (run : (infer sig input).map (·.ty) = some ty) :
+    Typing sig 0 [] input ty := by
+  cases h : infer sig input with
   | none => simp [h] at run
   | some result =>
       simp only [h, Option.map_some, Option.some.injEq] at run
@@ -5218,7 +5339,7 @@ theorem infer_typing_of_ty
 remaining inference metavariables. -/
 theorem infer_result_wf
     {input : Source} {result : InferenceResult}
-    (run : infer input = some result) :
+    (run : infer sig input = some result) :
     result.ty.WF 0 0 := by
   exact Typing.regular (infer_sound run).typing
 

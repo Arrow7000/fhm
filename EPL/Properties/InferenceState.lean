@@ -344,6 +344,12 @@ theorem Expr.typeScopedB_eq_true_iff {input : Source}
         exact .var
       · intro _
         rfl
+  | const c =>
+      constructor
+      · intro _
+        exact .const
+      · intro _
+        rfl
   | lambda ann body ihBody =>
       cases ann with
       | none =>
@@ -1307,6 +1313,7 @@ theorem Expr.openRigidsFrom_typeScoped
           exact .fix
             (Template.openRigidsFrom_scoped annotationScoped)
             (ihBody bodyScoped)
+  | const c => exact .const
 
 end EPL
 
@@ -1431,7 +1438,7 @@ theorem inferFuel_safe
     (ctxWF : ctx.InferWF rigidCount state.next)
     (ctxLevels : ∀ scheme ∈ ctx, scheme.body.LevelBounded state.solutions rigidCount)
     (inputScoped : input.TypeScoped rigidCount 0)
-    (run : inferFuel fuel rigidCount ctx input state = some result) :
+    (run : inferFuel sig fuel rigidCount ctx input state = some result) :
     result.state.Safe ∧
       result.ty.InferWF rigidCount 0 result.state.next ∧
       result.ty.LevelBounded result.state.solutions rigidCount ∧
@@ -1651,7 +1658,7 @@ theorem inferFuel_safe
                       (ctxWF scheme member).2 id hid
                     rw [seededSafe.2.2.2.2 id idBound]
                     exact ctxLevels scheme member id hid
-                cases bodyRun : inferFuel fuel rigidCount
+                cases bodyRun : inferFuel sig fuel rigidCount
                     (PolyTy.mono seeded.2 :: ctx) body seeded.1 with
                 | none =>
                     dsimp [seeded] at bodyRun
@@ -1728,7 +1735,7 @@ theorem inferFuel_safe
                       (ctxWF scheme member).2 id hid
                     rw [seededSafe.2.2.2.2 id idBound]
                     exact ctxLevels scheme member id hid
-                cases bodyRun : inferFuel fuel rigidCount
+                cases bodyRun : inferFuel sig fuel rigidCount
                     (PolyTy.mono seeded.2 :: ctx) body seeded.1 with
                 | none =>
                     dsimp [seeded] at bodyRun
@@ -1782,7 +1789,7 @@ theorem inferFuel_safe
           cases inputScoped with
           | app functionScoped argumentScoped =>
             simp only [inferFuel] at run
-            cases functionRun : inferFuel fuel rigidCount ctx function state with
+            cases functionRun : inferFuel sig fuel rigidCount ctx function state with
             | none => simp [functionRun] at run
             | some functionResult =>
                 have functionSafe := ih stateSafe ctxWF ctxLevels
@@ -1797,7 +1804,7 @@ theorem inferFuel_safe
                     (ctxWF scheme member).2 id hid
                   exact le_trans (functionSafe.2.2.2.2 id idBound)
                     (ctxLevels scheme member id hid)
-                cases argumentRun : inferFuel fuel rigidCount ctx argument
+                cases argumentRun : inferFuel sig fuel rigidCount ctx argument
                     functionResult.state with
                 | none => simp [functionRun, argumentRun] at run
                 | some argumentResult =>
@@ -1905,7 +1912,7 @@ theorem inferFuel_safe
               cases inputScoped with
               | letMono rhsScoped bodyScoped =>
                 simp only [inferFuel] at run
-                cases rhsRun : inferFuel fuel rigidCount ctx rhs state with
+                cases rhsRun : inferFuel sig fuel rigidCount ctx rhs state with
                 | none => simp [rhsRun] at run
                 | some rhsResult =>
                     have rhsSafe := ih stateSafe ctxWF ctxLevels rhsScoped rhsRun
@@ -1938,7 +1945,7 @@ theorem inferFuel_safe
                           (ctxWF scheme member).2 id hid
                         exact le_trans (rhsSafe.2.2.2.2 id idBound)
                           (ctxLevels scheme member id hid)
-                    cases bodyRun : inferFuel fuel rigidCount
+                    cases bodyRun : inferFuel sig fuel rigidCount
                         (PolyTy.mono rhsTy :: ctx) body rhsResult.state with
                     | none =>
                         simp [rhsTy, rhsRun, bodyRun] at run
@@ -1994,7 +2001,7 @@ theorem inferFuel_safe
                     (ctxWF scheme member).2 id hid
                   rw [seededSafe.2.2.2.2 id idBound]
                   exact le_trans (ctxLevels scheme member id hid) (by omega)
-                cases rhsRun : inferFuel fuel inner ctx
+                cases rhsRun : inferFuel sig fuel inner ctx
                     (rhs.openRigids rigidCount count) seeded.1 with
                 | none =>
                     dsimp [seeded, openedTemplate, count, inner] at rhsRun
@@ -2097,7 +2104,7 @@ theorem inferFuel_safe
                               (ctxWF scheme member).2 id hid
                             exact le_trans (checkedLevelLeState id idBound)
                               (ctxLevels scheme member id hid)
-                        cases bodyRun : inferFuel fuel rigidCount
+                        cases bodyRun : inferFuel sig fuel rigidCount
                             (completed :: ctx) body checked with
                         | none =>
                             simp [completed, completedOpen, count, inner,
@@ -2155,7 +2162,7 @@ theorem inferFuel_safe
                 have idBound : id < state.next := (ctxWF scheme member).2 id hid
                 rw [seededSafe.2.2.2.2 id idBound]
                 exact ctxLevels scheme member id hid
-            cases bodyRun : inferFuel fuel rigidCount
+            cases bodyRun : inferFuel sig fuel rigidCount
                 (PolyTy.mono seeded.2 :: ctx) body seeded.1 with
             | none =>
                 dsimp [seeded] at bodyRun
@@ -2208,5 +2215,42 @@ theorem inferFuel_safe
                       exact le_trans (checkedSafe.2.2.2 id)
                         (le_trans (bodySafe.2.2.2.2 id hidSeeded)
                           (le_of_eq (seededSafe.2.2.2.2 id hid)))
+      | const c =>
+          simp only [inferFuel] at run
+          cases lookup : sig.schemeOf c with
+          | none => simp [lookup] at run
+          | some scheme =>
+              simp only [lookup] at run
+              cases hb : scheme.wfB 0 with
+              | false => simp [hb] at run
+              | true =>
+                  have schemeWF0 : scheme.WF 0 := Ty.wfB_eq_true_iff.mp hb
+                  let fresh := state.freshMany rigidCount scheme.paramCount
+                  have freshSafe := InferState.freshMany_safe
+                    (level := rigidCount) (count := scheme.paramCount) stateSafe
+                  have bodyWF : scheme.body.InferWF rigidCount
+                      scheme.paramCount fresh.1.next :=
+                    wf_inferWF
+                      ⟨scoped_mono_rigid schemeWF0.1 (Nat.zero_le rigidCount),
+                        schemeWF0.2⟩
+                  have bodyLevels : scheme.body.LevelBounded
+                      fresh.1.solutions rigidCount := by
+                    intro id member
+                    have hlt := metaFree_bounded (frontier := 0)
+                      schemeWF0.2 id member
+                    omega
+                  have openedWF : (scheme.openWith fresh.2).InferWF
+                      rigidCount 0 fresh.1.next :=
+                    openWith_inferWF bodyWF freshSafe.2.2.2.1 freshSafe.2.1
+                  have openedLevels : (scheme.openWith fresh.2).LevelBounded
+                      fresh.1.solutions rigidCount :=
+                    Ty.openWith_levelBounded bodyLevels freshSafe.2.2.1
+                  have resultEq : result =
+                      ⟨fresh.1, scheme.openWith fresh.2, .const c⟩ := by
+                    simpa [fresh, hb] using run.symm
+                  subst result
+                  exact ⟨freshSafe.1, openedWF, openedLevels,
+                    freshSafe.2.2.2.2.1,
+                    fun id hid => le_of_eq (freshSafe.2.2.2.2.2 id hid)⟩
 
 end EPL

@@ -5,7 +5,12 @@ namespace EPL.Examples
 open EPL
 
 def intTy : Ty := .prim .int
-def boolTy : Ty := .prim .bool
+
+/-- `data Bool = True | False`, as type `con 0`. -/
+def boolSig : Signature := [⟨0, [[], []]⟩]
+def boolTy : Ty := .con 0
+def trueExpr : Expr T := .const (.ctor 0 0 0)
+def falseExpr : Expr T := .const (.ctor 0 1 0)
 
 def polyIdentityScheme : PolyTy :=
   ⟨1, .arrow (.bvar 0) (.bvar 0)⟩
@@ -18,6 +23,9 @@ def identityRhs : Source :=
 
 private theorem prim_wf (p : PrimTy) : (Ty.prim p).WF rigidCount 0 :=
   ⟨.prim, .prim⟩
+
+private theorem con_wf (id : Nat) : (Ty.con id).WF rigidCount 0 :=
+  ⟨.con id, .con⟩
 
 private theorem rigid_wf (h : level < rigidCount) :
     (Ty.rigid level).WF rigidCount 0 :=
@@ -50,7 +58,7 @@ private theorem openWith_nil_of_scoped_zero {ty : Ty} (h : ty.Scoped rigidCount 
 
 private theorem mono_var_inv
     (lookup : ctx[index]? = some (PolyTy.mono expected))
-    (typing : Typing rigidCount ctx (.var index) actual) :
+    (typing : Typing sig rigidCount ctx (.var index) actual) :
     actual = expected := by
   cases typing with
   | var =>
@@ -65,7 +73,7 @@ private theorem mono_var_inv
         openWith_nil_of_scoped_zero inferredWF.1
 
 private theorem identity_type
-    (typing : Typing rigidCount ctx identityRhs ty) :
+    (typing : Typing sig rigidCount ctx identityRhs ty) :
     ∃ param, ty = .arrow param param := by
   cases typing with
   | lambda =>
@@ -75,16 +83,81 @@ private theorem identity_type
       exact ⟨paramTy, rfl⟩
 
 private theorem int_literal_type
-    (typing : Typing rigidCount ctx (.primLit (.int value)) ty) :
+    (typing : Typing sig rigidCount ctx (.primLit (.int value)) ty) :
     ty = intTy := by
   cases typing
   rfl
 
-private theorem bool_literal_type
-    (typing : Typing rigidCount ctx (.primLit (.bool value)) ty) :
-    ty = boolTy := by
-  cases typing
-  rfl
+/-- Opening a `con`-headed type application can never produce a primitive
+type. -/
+private theorem apps_openWith_not_prim (head : Ty) (args : List Ty) (p : PrimTy)
+    (hhead : ∀ targs, head.openWith targs ≠ .prim p) (targs : List Ty) :
+    (Ty.apps head args).openWith targs ≠ .prim p := by
+  induction args generalizing head with
+  | nil => simpa [Ty.apps] using hhead targs
+  | cons a t ih =>
+      apply ih (.app head a)
+      intro targs' h
+      simp only [Ty.openWith] at h
+      cases h
+
+private theorem selfTy_openWith_not_prim (decl : DataDecl) (type : Nat)
+    (args : List Ty) (p : PrimTy) :
+    (decl.selfTy type).openWith args ≠ .prim p := by
+  unfold DataDecl.selfTy
+  apply apps_openWith_not_prim
+  intro targs h
+  simp only [Ty.openWith] at h
+  cases h
+
+private theorem arrows_openWith_not_prim (fields : List Ty) (result : Ty)
+    (args : List Ty) (p : PrimTy) (hresult : result.openWith args ≠ .prim p) :
+    (Ty.arrows fields result).openWith args ≠ .prim p := by
+  induction fields with
+  | nil => simpa [Ty.arrows] using hresult
+  | cons a t _ =>
+      simp only [Ty.arrows, List.foldr_cons, Ty.openWith]
+      intro h
+      cases h
+
+private theorem ctor_scheme_eq {sig : Signature} {type ctor arity : Nat}
+    {scheme : PolyTy}
+    (h : sig.schemeOf (.ctor type ctor arity) = some scheme) :
+    ∃ (decl : DataDecl) (fields : List Ty),
+      fields.length = arity ∧ scheme = decl.ctorScheme type fields := by
+  unfold Signature.schemeOf at h
+  cases hdecl : sig[type]? with
+  | none => simp [hdecl] at h
+  | some decl =>
+      cases hfields : decl.ctors[ctor]? with
+      | none => simp [hdecl, hfields] at h
+      | some fields =>
+          by_cases hlen : fields.length = arity
+          · simp [hdecl, hfields, hlen] at h
+            exact ⟨decl, fields, hlen, h.symm⟩
+          · simp [hdecl, hfields, hlen] at h
+
+private theorem ctor_const_type_head {sig : Signature} {rigidCount : Nat}
+    {ctx : Ctx} {type ctor arity : Nat} {ty : Ty}
+    (typing : Typing sig rigidCount ctx (.const (.ctor type ctor arity)) ty) :
+    ∃ scheme args, sig.schemeOf (.ctor type ctor arity) = some scheme ∧
+      ty = scheme.openWith args := by
+  cases typing with
+  | const hscheme _ _ _ => exact ⟨_, _, hscheme, rfl⟩
+
+/-- No constructor constant can have a primitive type, since its scheme is
+headed by a declared type. -/
+private theorem ctor_const_not_prim {sig : Signature} {rigidCount : Nat}
+    {ctx : Ctx} {type ctor arity : Nat} {p : PrimTy}
+    (typing : Typing sig rigidCount ctx (.const (.ctor type ctor arity)) (.prim p)) :
+    False := by
+  obtain ⟨scheme, args, hscheme, hty⟩ := ctor_const_type_head typing
+  obtain ⟨decl, fields, _, hsch⟩ := ctor_scheme_eq hscheme
+  subst scheme
+  have hty' : (Ty.arrows fields (decl.selfTy type)).openWith args = .prim p := by
+    simpa [DataDecl.ctorScheme, PolyTy.openWith] using hty.symm
+  exact arrows_openWith_not_prim fields (decl.selfTy type) args p
+    (selfTy_openWith_not_prim decl type args p) hty'
 
 /-- The outer identity is explicitly polymorphic. The nested monomorphic let
 uses it at `Int`, then the continuation uses it independently at `Bool`. -/
@@ -92,10 +165,10 @@ def explicitPolyProgram : Source :=
   .letIn (some polyIdentityAnnotation) identityRhs
     (.letIn none
       (.app (.var 0) (.primLit (.int 5)))
-      (.app (.var 1) (.primLit (.bool true))))
+      (.app (.var 1) trueExpr))
 
 theorem explicitPolyProgram_typed :
-    Typing 0 [] explicitPolyProgram boolTy := by
+    Typing boolSig 0 [] explicitPolyProgram boolTy := by
   apply Typing.letPoly (scheme := polyIdentityScheme)
   · exact ⟨rfl, ⟨[], by simp [HoleAssignment.Unique], .arrow .fixed .fixed⟩⟩
   · exact ⟨.arrow (.bvar (by decide)) (.bvar (by decide)), .arrow .bvar .bvar⟩
@@ -129,8 +202,9 @@ theorem explicitPolyProgram_typed :
             intro arg h
             simp only [List.mem_singleton] at h
             subst arg
-            exact prim_wf .bool)
-      · exact .primLit
+            exact con_wf 0)
+      · exact Typing.const (c := .ctor 0 0 0) (scheme := PolyTy.mono boolTy)
+          (args := []) (by decide) (con_wf 0) rfl (by simp)
 
 /-- Without the written `forall`, the same identity has one monotype and
 cannot be used at both `Int` and `Bool`. -/
@@ -138,10 +212,10 @@ def implicitPolyProgram : Source :=
   .letIn none identityRhs
     (.letIn none
       (.app (.var 0) (.primLit (.int 5)))
-      (.app (.var 1) (.primLit (.bool true))))
+      (.app (.var 1) trueExpr))
 
 theorem implicitPolyProgram_untypable :
-    ¬ ∃ ty, Typing 0 [] implicitPolyProgram ty := by
+    ¬ ∃ ty, Typing sig 0 [] implicitPolyProgram ty := by
   rintro ⟨ty, typing⟩
   cases typing with
   | letMono =>
@@ -174,13 +248,10 @@ theorem implicitPolyProgram_untypable :
                       (ctx := [PolyTy.mono intTy, PolyTy.mono (.arrow intTy intTy)])
                       (index := 1) (expected := .arrow intTy intTy)
                       (by simp [PolyTy.mono]) finalArgumentTyping
-                  have finalArgumentEq : finalArgumentTy = boolTy :=
-                    bool_literal_type finalFunctionTyping
-                  have intEqBool : intTy = boolTy := by
-                    injection finalFunctionEq with domainEq _
-                    exact domainEq.symm.trans finalArgumentEq
-                  have : PrimTy.int = PrimTy.bool := Ty.prim.inj intEqBool
-                  cases this
+                  have finalArgumentEq : finalArgumentTy = intTy :=
+                    (Ty.arrow.inj finalFunctionEq).1
+                  subst finalArgumentTy
+                  exact ctor_const_not_prim finalFunctionTyping
 
 /-- An omitted lambda annotation is constrained by how its parameter is used
 inside the body. -/
@@ -189,7 +260,7 @@ def inferredIntLambda : Source :=
     (.app (.app (.primOp .intAdd) (.var 0)) (.primLit (.int 1)))
 
 theorem inferredIntLambda_typed :
-    Typing 0 [] inferredIntLambda (.arrow intTy intTy) := by
+    Typing sig 0 [] inferredIntLambda (.arrow intTy intTy) := by
   apply Typing.lambda (paramTy := intTy) (prim_wf .int) (absent_matches intTy)
   apply Typing.app (argumentTy := intTy)
   · apply Typing.app (argumentTy := intTy)
@@ -206,7 +277,7 @@ def integerLoop : Source :=
       (.app (.var 1) (.var 0)))
 
 theorem integerLoop_typed :
-    Typing 0 [] integerLoop (.arrow intTy intTy) := by
+    Typing sig 0 [] integerLoop (.arrow intTy intTy) := by
   apply Typing.fix (selfTy := .arrow intTy intTy)
   · exact arrow_wf (prim_wf .int) (prim_wf .int)
   · exact fixed_matches (.arrow intTy intTy)

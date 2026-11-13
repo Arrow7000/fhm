@@ -1161,6 +1161,7 @@ private theorem Expr.inferSize_openRigidsFrom (expr : Source) (depth base count 
             ihRhs, ihBody]
   | fix ann body ih =>
       simp only [Expr.openRigidsFrom, Expr.inferSize, ih]
+  | const c => rfl
 
 private theorem Ty.realize_wf_subterm {ty : Ty} {valuation : MValuation} {level : Nat}
     (wf : (ty.realize valuation).WF level 0) {id : Nat} (member : id ∈ ty.mvars) :
@@ -1350,6 +1351,7 @@ private theorem Expr.mapAnn_congr {expr : Expr Ty} {f g : Ty → Ty}
       simp only [Expr.mapAnn, ih bodyPoint]
       have selfEq := pointwise ty (by simp [Expr.annotations])
       simp [selfEq]
+  | const c => rfl
 
 private theorem MStore.exists_different_model
     {store : MStore} {valuation : MValuation} {u : Nat}
@@ -1360,10 +1362,10 @@ private theorem MStore.exists_different_model
       ∀ other, store.lookup other = none → other ≠ u →
         updated other = valuation other := by
   let newTy : Ty :=
-    if valuation u = .prim .int then .prim .bool else .prim .int
+    if valuation u = .prim .int then .prim .unit else .prim .int
   have zeroWF : newTy.WF 0 0 := by
     by_cases same : valuation u = .prim .int
-    · have newEq : newTy = .prim .bool := by simp [newTy, same]
+    · have newEq : newTy = .prim .unit := by simp [newTy, same]
       rw [newEq]
       exact ⟨.prim, .prim⟩
     · have newEq : newTy = .prim .int := by simp [newTy, same]
@@ -1376,7 +1378,7 @@ private theorem MStore.exists_different_model
   refine ⟨updated, updatedModels, ?_, updatedAgree⟩
   rw [updatedU]
   by_cases same : valuation u = .prim .int
-  · have newEq : newTy = .prim .bool := by simp [newTy, same]
+  · have newEq : newTy = .prim .unit := by simp [newTy, same]
     rw [newEq]
     simp [same]
   · have newEq : newTy = .prim .int := by simp [newTy, same]
@@ -1437,6 +1439,7 @@ private theorem Expr.annotations_mapAnn (expr : Expr Ty) (f : Ty → Ty) :
             Scheme.map]
   | fix selfTy body ih =>
       simp [Expr.mapAnn, Expr.annotations, ih]
+  | const c => rfl
 
 private theorem Expr.realize_ne_of_annotation_mvars {expr : Expr Ty}
     {first second : MValuation} {u : Nat}
@@ -1511,6 +1514,7 @@ private theorem Expr.realize_ne_of_annotation_mvars {expr : Expr Ty}
       rcases annotationMem with rfl | bodyMem
       · exact (Ty.realize_ne_of_mem_mvars uMem different) selfEq
       · exact ih ⟨annotation, bodyMem, uMem⟩ bodyEq
+  | const c => simp [Expr.annotations] at member
 
 private theorem Expr.mapAnn_mapAnn (expr : Expr Ty) (f g : Ty → Ty) :
     (expr.mapAnn f).mapAnn g = expr.mapAnn fun ty => g (f ty) := by
@@ -1537,6 +1541,7 @@ private theorem Expr.mapAnn_mapAnn (expr : Expr Ty) (f g : Ty → Ty) :
   | fix selfTy body ih =>
       simp only [Expr.mapAnn]
       rw [ih]
+  | const c => rfl
 
 private theorem Expr.mapAnn_id (expr : Expr Ty) : expr.mapAnn id = expr := by
   induction expr with
@@ -1562,6 +1567,7 @@ private theorem Expr.mapAnn_id (expr : Expr Ty) : expr.mapAnn id = expr := by
       simp only [Expr.mapAnn]
       rw [ih]
       rfl
+  | const c => rfl
 
 private theorem Expr.realize_eq_self_of_annotations {expr : Expr Ty}
     {valuation : MValuation}
@@ -1601,9 +1607,9 @@ private theorem inferFuel_principal_elab_aux
     (ctxWF : ctx.InferWF rigidCount state.next)
     (ctxLevels : ∀ scheme ∈ ctx, scheme.body.LevelBounded state.solutions rigidCount)
     (inputScoped : input.TypeScoped rigidCount 0)
-    (run : inferFuel fuel rigidCount ctx input state = some result)
+    (run : inferFuel sig fuel rigidCount ctx input state = some result)
     (models : state.Models valuation)
-    (elaborates : Elaborates rigidCount (ctx.realize valuation) input elaborated ty) :
+    (elaborates : Elaborates sig rigidCount (ctx.realize valuation) input elaborated ty) :
     ∃ extended, result.state.Models extended ∧
       (∀ id, id < state.next → extended id = valuation id) ∧
       result.elaborated.realize extended = elaborated ∧
@@ -1623,9 +1629,6 @@ private theorem inferFuel_principal_elab_aux
               exact ⟨valuation, models, by intro id hid; rfl, rfl, rfl,
                 by intro annotation member; simp [Expr.annotations] at member⟩
           | int value =>
-              exact ⟨valuation, models, by intro id hid; rfl, rfl, rfl,
-                by intro annotation member; simp [Expr.annotations] at member⟩
-          | bool value =>
               exact ⟨valuation, models, by intro id hid; rfl, rfl, rfl,
                 by intro annotation member; simp [Expr.annotations] at member⟩
       | primOp op =>
@@ -1700,7 +1703,7 @@ private theorem inferFuel_principal_elab_aux
             | none =>
                 simp only [inferFuel] at run
                 let seeded := state.fresh rigidCount
-                cases bodyRun : inferFuel fuel rigidCount
+                cases bodyRun : inferFuel sig fuel rigidCount
                     (PolyTy.mono seeded.2 :: ctx) body seeded.1 with
                 | none => simp [seeded, bodyRun] at run
                 | some bodyResult =>
@@ -1754,7 +1757,7 @@ private theorem inferFuel_principal_elab_aux
                             Ctx.realize ctx valuation :=
                           Ctx.realize_congr (fun scheme member id idMem =>
                             firstAgree id ((ctxWF scheme member).2 id idMem))
-                        have bodyElaborates' : Elaborates rigidCount
+                        have bodyElaborates' : Elaborates sig rigidCount
                             (Ctx.realize (PolyTy.mono seeded.2 :: ctx) firstValuation)
                             body bodyElabD bodyTy := by
                           have ctxEq : Ctx.realize (PolyTy.mono seeded.2 :: ctx)
@@ -1801,7 +1804,7 @@ private theorem inferFuel_principal_elab_aux
                 have templateScoped := annScoped template rfl
                 simp only [inferFuel] at run
                 let seeded := state.allocate rigidCount template
-                cases bodyRun : inferFuel fuel rigidCount
+                cases bodyRun : inferFuel sig fuel rigidCount
                     (PolyTy.mono seeded.2 :: ctx) body seeded.1 with
                 | none => simp [seeded, bodyRun] at run
                 | some bodyResult =>
@@ -1857,7 +1860,7 @@ private theorem inferFuel_principal_elab_aux
                             exact ctxLevels scheme member id hid
                         have bodySafe := inferFuel_safe seededSafe.1 bodyCtxWF
                           bodyCtxLevels bodyScoped bodyRun
-                        have bodyElaborates' : Elaborates rigidCount
+                        have bodyElaborates' : Elaborates sig rigidCount
                             (Ctx.realize (PolyTy.mono seeded.2 :: ctx) firstValuation)
                             body bodyElabD bodyTy := by
                           have ctxEq : Ctx.realize (PolyTy.mono seeded.2 :: ctx)
@@ -1909,7 +1912,7 @@ private theorem inferFuel_principal_elab_aux
           cases inputScoped with
           | app functionScoped argumentScoped =>
             simp only [inferFuel] at run
-            cases functionRun : inferFuel fuel rigidCount ctx function state with
+            cases functionRun : inferFuel sig fuel rigidCount ctx function state with
             | none => simp [functionRun] at run
             | some functionResult =>
               have functionSafe := inferFuel_safe stateSafe ctxWF ctxLevels
@@ -1925,7 +1928,7 @@ private theorem inferFuel_principal_elab_aux
                   (ctxWF scheme member).2 id hid
                 exact le_trans (functionSafe.2.2.2.2 id idBound)
                   (ctxLevels scheme member id hid)
-              cases argumentRun : inferFuel fuel rigidCount ctx argument
+              cases argumentRun : inferFuel sig fuel rigidCount ctx argument
                   functionResult.state with
               | none => simp [functionRun, argumentRun] at run
               | some argumentResult =>
@@ -1956,7 +1959,7 @@ private theorem inferFuel_principal_elab_aux
                           functionTyEq, functionAnnBound⟩ :=
                           ih stateSafe ctxWF ctxLevels functionScoped functionRun
                             models functionElaborates
-                        have argumentElaborates' : Elaborates rigidCount
+                        have argumentElaborates' : Elaborates sig rigidCount
                             (Ctx.realize ctx ext1) argument argumentElabED argumentTyD := by
                           have ctxEq := Ctx.realize_congr
                             (ctx := ctx)
@@ -2101,13 +2104,13 @@ private theorem inferFuel_principal_elab_aux
               cases inputScoped with
               | letMono rhsScoped bodyScoped =>
                   simp only [inferFuel] at run
-                  cases rhsRun : inferFuel fuel rigidCount ctx rhs state with
+                  cases rhsRun : inferFuel sig fuel rigidCount ctx rhs state with
                   | none => simp [rhsRun] at run
                   | some rhsResult =>
                       have rhsSafe := inferFuel_safe stateSafe ctxWF ctxLevels
                         rhsScoped rhsRun
                       let rhsTy := rhsResult.state.solutions.apply rhsResult.ty
-                      cases bodyRun : inferFuel fuel rigidCount
+                      cases bodyRun : inferFuel sig fuel rigidCount
                           (PolyTy.mono rhsTy :: ctx) body rhsResult.state with
                       | none => simp [rhsTy, rhsRun, bodyRun] at run
                       | some bodyResult =>
@@ -2150,7 +2153,7 @@ private theorem inferFuel_principal_elab_aux
                                     (ctxLevels scheme member id hid)
                               have bodySafe := inferFuel_safe rhsSafe.1 bodyCtxWF
                                 bodyCtxLevels bodyScoped bodyRun
-                              have bodyElaborates' : Elaborates rigidCount
+                              have bodyElaborates' : Elaborates sig rigidCount
                                   (Ctx.realize (PolyTy.mono rhsTy :: ctx) ext1)
                                   body bodyElabD ty := by
                                 have ctxEq : Ctx.realize (PolyTy.mono rhsTy :: ctx) ext1 =
@@ -2264,7 +2267,7 @@ private theorem inferFuel_principal_elab_aux
                       have seedRealize : seeded.2.realize firstValuation =
                           scheme.openRigids rigidCount := by
                         simpa [seeded] using seedRealizeEq.trans holeRealize
-                      cases rhsRun : inferFuel fuel inner ctx
+                      cases rhsRun : inferFuel sig fuel inner ctx
                           (rhs.openRigids rigidCount count) seeded.1 with
                       | none =>
                           dsimp [seeded, openedTemplate, count, inner] at rhsRun
@@ -2273,7 +2276,7 @@ private theorem inferFuel_principal_elab_aux
                           dsimp [seeded, openedTemplate, count, inner] at rhsRun
                           have rhsSafe := inferFuel_safe seededSafe.1 rhsCtxWF
                             rhsCtxLevels openedRhsScoped rhsRun
-                          have rhsElaborates' : Elaborates inner (ctx.realize firstValuation)
+                          have rhsElaborates' : Elaborates sig inner (ctx.realize firstValuation)
                               (rhs.openRigids rigidCount count) rhsElabD
                               (scheme.openRigids rigidCount) := by
                             have ctxEq : Ctx.realize ctx firstValuation =
@@ -2458,7 +2461,7 @@ private theorem inferFuel_principal_elab_aux
                               have completedWF : (completed.realize ext1).WF rigidCount := by
                                 rw [completedRealize]
                                 exact Ty.closeRigids_wf completedOpenRealizedWF
-                              have completedTyping : Typing inner (ctx.realize valuation)
+                              have completedTyping : Typing sig inner (ctx.realize valuation)
                                   (rhs.openRigids rigidCount count)
                                   ((completed.realize ext1).openRigids rigidCount) := by
                                 have base := Elaborates.typing rhsElaborates
@@ -2499,7 +2502,7 @@ private theorem inferFuel_principal_elab_aux
                                 rcases member with rfl | member
                                 · exact completedLevels
                                 · exact ctxLevelsChecked scheme member
-                              cases bodyRun : inferFuel fuel rigidCount
+                              cases bodyRun : inferFuel sig fuel rigidCount
                                   (completed :: ctx) body checked with
                               | none =>
                                   simp [completed, completedOpen, count, inner,
@@ -2519,7 +2522,7 @@ private theorem inferFuel_principal_elab_aux
                                   subst result
                                   have bodySafe := inferFuel_safe checkedSafe.1 bodyCtxWF
                                     bodyCtxLevels bodyScoped bodyRun
-                                  have bodyElaborates' : Elaborates rigidCount
+                                  have bodyElaborates' : Elaborates sig rigidCount
                                       (Ctx.realize (completed :: ctx) ext1)
                                       body bodyElabD ty := by
                                     have ctxEq : Ctx.realize (completed :: ctx) ext1 =
@@ -2591,7 +2594,7 @@ private theorem inferFuel_principal_elab_aux
               have seededSafe := InferState.allocate_safe
                 (level := rigidCount) (rigidCount := rigidCount)
                 stateSafe annScoped
-              cases bodyRun : inferFuel fuel rigidCount
+              cases bodyRun : inferFuel sig fuel rigidCount
                   (PolyTy.mono seeded.2 :: ctx) body seeded.1 with
               | none =>
                   dsimp [seeded] at bodyRun
@@ -2652,7 +2655,7 @@ private theorem inferFuel_principal_elab_aux
                               (assigned := holeVal) holeWF
                           have seedRealize : seeded.2.realize firstValuation = ty := by
                             simpa [seeded] using seedRealizeEq.trans holeRealize
-                          have bodyElaborates' : Elaborates rigidCount
+                          have bodyElaborates' : Elaborates sig rigidCount
                               (Ctx.realize (PolyTy.mono seeded.2 :: ctx) firstValuation)
                               body bodyElabD ty := by
                             have ctxEq : Ctx.realize (PolyTy.mono seeded.2 :: ctx)
@@ -2736,6 +2739,60 @@ private theorem inferFuel_principal_elab_aux
                             · exact lt_of_lt_of_le
                                 (bodyAnnBound annotation member id idMem)
                                 (le_of_eq checkedSafe.2.1.symm)
+      | const c =>
+          simp only [inferFuel] at run
+          cases lookup : sig.schemeOf c with
+          | none => simp [lookup] at run
+          | some scheme =>
+              simp only [lookup] at run
+              cases hb : scheme.wfB 0 with
+              | false =>
+                  cases elaborates with
+                  | const hlookupD hwfD hlenD hargsD =>
+                      rename_i schemeD argsD
+                      rw [lookup] at hlookupD
+                      have schemeDEq : schemeD = scheme :=
+                        (Option.some.inj hlookupD).symm
+                      subst schemeD
+                      have hwfTrue : scheme.wfB 0 = true :=
+                        Ty.wfB_eq_true_iff.mpr hwfD
+                      rw [hb] at hwfTrue
+                      exact Bool.noConfusion hwfTrue
+              | true =>
+                  have schemeWF0 : scheme.WF 0 := Ty.wfB_eq_true_iff.mp hb
+                  let fresh := state.freshMany rigidCount scheme.paramCount
+                  have resultEq : result =
+                      ⟨fresh.1, scheme.openWith fresh.2, .const c⟩ := by
+                    simpa [fresh, hb] using run.symm
+                  subst result
+                  cases elaborates with
+                  | const hlookupD hwfD hlenD hargsD =>
+                      rename_i schemeD argsD
+                      rw [lookup] at hlookupD
+                      have schemeDEq : schemeD = scheme :=
+                        (Option.some.inj hlookupD).symm
+                      subst schemeD
+                      obtain ⟨extended, extModels, extAgree, extMap⟩ :=
+                        InferState.freshMany_models (state := state)
+                          (valuation := valuation) (level := rigidCount)
+                          (count := scheme.paramCount) stateSafe models
+                          argsD hlenD hargsD
+                      have imagesScoped : ∀ id ∈ scheme.body.mvars,
+                          (extended id).Scoped rigidCount 0 := by
+                        intro id member
+                        rw [Ty.MetaFree.mvars_eq_nil schemeWF0.2] at member
+                        exact absurd member (List.not_mem_nil)
+                      have opened := Ty.realize_openWith (ty := scheme.body)
+                        (args := fresh.2) (valuation := extended) imagesScoped
+                      have bodyRealize : scheme.body.realize extended = scheme.body :=
+                        Ty.realize_eq_self schemeWF0.2 extended
+                      have resultTyEq :
+                          (scheme.openWith fresh.2).realize extended =
+                            scheme.openWith argsD := by
+                        simpa [PolyTy.openWith, bodyRealize, extMap, fresh] using opened
+                      refine ⟨extended, extModels, extAgree, rfl, resultTyEq, ?_⟩
+                      intro annotation member
+                      simp [Expr.annotations] at member
 
 /-- Principality with elaborations: when inference succeeds, every
 elaboration of the input is an instance of the inferred elaboration and
@@ -2748,9 +2805,9 @@ theorem inferFuel_principal_elab
     (ctxWF : ctx.InferWF rigidCount state.next)
     (ctxLevels : ∀ scheme ∈ ctx, scheme.body.LevelBounded state.solutions rigidCount)
     (inputScoped : input.TypeScoped rigidCount 0)
-    (run : inferFuel fuel rigidCount ctx input state = some result)
+    (run : inferFuel sig fuel rigidCount ctx input state = some result)
     (models : state.Models valuation)
-    (elaborates : Elaborates rigidCount (ctx.realize valuation) input elaborated ty) :
+    (elaborates : Elaborates sig rigidCount (ctx.realize valuation) input elaborated ty) :
     ∃ extended, result.state.Models extended ∧
       (∀ id, id < state.next → extended id = valuation id) ∧
       result.elaborated.realize extended = elaborated ∧
@@ -2771,8 +2828,8 @@ theorem inferFuel_complete
     (inputScoped : input.TypeScoped rigidCount 0)
     (enough : input.inferSize < fuel)
     (models : state.Models valuation)
-    (elaborates : Elaborates rigidCount (ctx.realize valuation) input elaborated ty) :
-    ∃ result, inferFuel fuel rigidCount ctx input state = some result := by
+    (elaborates : Elaborates sig rigidCount (ctx.realize valuation) input elaborated ty) :
+    ∃ result, inferFuel sig fuel rigidCount ctx input state = some result := by
   induction fuel generalizing rigidCount ctx input state valuation elaborated ty with
   | zero => omega
   | succ fuel ih =>
@@ -2833,7 +2890,7 @@ theorem inferFuel_complete
                         exact ctxLevels scheme member id hid
                     have seedRealize : seeded.2.realize firstValuation = paramTy := by
                       simp [seeded, firstValuation, InferState.fresh, Ty.realize]
-                    have bodyElaborates' : Elaborates rigidCount
+                    have bodyElaborates' : Elaborates sig rigidCount
                         (Ctx.realize (PolyTy.mono seeded.2 :: ctx) firstValuation)
                         body bodyElabD bodyTy := by
                       have ctxEq : Ctx.realize (PolyTy.mono seeded.2 :: ctx)
@@ -2895,7 +2952,7 @@ theorem inferFuel_complete
                           (ctxWF scheme member).2 id hid
                         rw [seededSafe.2.2.2.2 id idBound]
                         exact ctxLevels scheme member id hid
-                    have bodyElaborates' : Elaborates rigidCount
+                    have bodyElaborates' : Elaborates sig rigidCount
                         (Ctx.realize (PolyTy.mono seeded.2 :: ctx) firstValuation)
                         body bodyElabD bodyTy := by
                       have ctxEq : Ctx.realize (PolyTy.mono seeded.2 :: ctx)
@@ -2916,6 +2973,24 @@ theorem inferFuel_complete
                       .arrow (bodyResult.state.solutions.apply seeded.2) bodyResult.ty,
                       .lambda (some seeded.2) bodyResult.elaborated⟩, ?_⟩
                     simp [inferFuel, seeded, bodyRun]
+      | const c =>
+          cases elaborates with
+          | const hlookupD hwfD hlenD hargsD =>
+              rename_i schemeD argsD
+              cases lookup : sig.schemeOf c with
+              | none =>
+                  rw [lookup] at hlookupD
+                  cases hlookupD
+              | some scheme =>
+                  rw [lookup] at hlookupD
+                  have schemeDEq : schemeD = scheme :=
+                    (Option.some.inj hlookupD).symm
+                  subst schemeD
+                  have hb : scheme.wfB 0 = true := Ty.wfB_eq_true_iff.mpr hwfD
+                  refine ⟨⟨(state.freshMany rigidCount scheme.paramCount).1,
+                    scheme.openWith (state.freshMany rigidCount scheme.paramCount).2,
+                    .const c⟩, ?_⟩
+                  simp [inferFuel, lookup, hb]
       | app function argument =>
           cases inputScoped with
           | app functionScoped argumentScoped =>
@@ -2949,7 +3024,7 @@ theorem inferFuel_complete
                     (ctxWF scheme member).2 id hid
                   exact le_trans (functionSafe.2.2.2.2 id idBound)
                     (ctxLevels scheme member id hid)
-                have argumentElaborates' : Elaborates rigidCount
+                have argumentElaborates' : Elaborates sig rigidCount
                     (Ctx.realize ctx ext1) argument argumentElabED argumentTyD := by
                   have ctxEq := Ctx.realize_congr (ctx := ctx)
                     (first := ext1) (second := valuation)
@@ -3095,7 +3170,7 @@ theorem inferFuel_complete
                             (ctxWF scheme member).2 id hid
                           exact le_trans (rhsSafe.2.2.2.2 id idBound)
                             (ctxLevels scheme member id hid)
-                      have bodyElaborates' : Elaborates rigidCount
+                      have bodyElaborates' : Elaborates sig rigidCount
                           (Ctx.realize (PolyTy.mono rhsTy :: ctx) ext1)
                           body bodyElabD ty := by
                         have ctxEq : Ctx.realize (PolyTy.mono rhsTy :: ctx) ext1 =
@@ -3189,7 +3264,7 @@ theorem inferFuel_complete
                       have seedRealize : seeded.2.realize firstValuation =
                           scheme.openRigids rigidCount := by
                         simpa [seeded] using seedRealizeEq.trans holeRealize
-                      have rhsElaborates' : Elaborates inner (ctx.realize firstValuation)
+                      have rhsElaborates' : Elaborates sig inner (ctx.realize firstValuation)
                           (rhs.openRigids rigidCount count) rhsElabD
                           (scheme.openRigids rigidCount) := by
                         have ctxEq : Ctx.realize ctx firstValuation =
@@ -3333,10 +3408,10 @@ theorem inferFuel_complete
                           have idBound := applyBounded u hu
                           simpa [checkedSafe.solutions_length] using idBound
                         let newTy : Ty :=
-                          if ext1 u = .prim .int then .prim .bool else .prim .int
+                          if ext1 u = .prim .int then .prim .unit else .prim .int
                         have newTyZero : newTy.WF 0 0 := by
                           by_cases same : ext1 u = .prim .int
-                          · have newEq : newTy = .prim .bool := by simp [newTy, same]
+                          · have newEq : newTy = .prim .unit := by simp [newTy, same]
                             rw [newEq]
                             exact ⟨.prim, .prim⟩
                           · have newEq : newTy = .prim .int := by simp [newTy, same]
@@ -3346,7 +3421,7 @@ theorem inferFuel_complete
                           Ty.WF.mono_rigid newTyZero (Nat.zero_le _)
                         have newTyDifferent : ext1 u ≠ newTy := by
                           by_cases same : ext1 u = .prim .int
-                          · have newEq : newTy = .prim .bool := by simp [newTy, same]
+                          · have newEq : newTy = .prim .unit := by simp [newTy, same]
                             rw [newEq]
                             simp [same]
                           · have newEq : newTy = .prim .int := by simp [newTy, same]
@@ -3435,7 +3510,7 @@ theorem inferFuel_complete
                             completedOpen.realize updated := by
                           simpa [other] using
                             PolyTy.openRigids_closeRigids completedOpenRealizedWFUpdated.1
-                        have otherTyping : Typing inner (ctx.realize valuation)
+                        have otherTyping : Typing sig inner (ctx.realize valuation)
                             (rhs.openRigids rigidCount count)
                             (other.openRigids rigidCount) := by
                           have base := rhsTypingUpdated
@@ -3557,7 +3632,7 @@ theorem inferFuel_complete
                       have completedWFExt1 : (completed.realize ext1).WF rigidCount := by
                         rw [completedRealizeExt1]
                         exact Ty.closeRigids_wf completedOpenRealizedWF
-                      have completedTypingExt1 : Typing inner (ctx.realize valuation)
+                      have completedTypingExt1 : Typing sig inner (ctx.realize valuation)
                           (rhs.openRigids rigidCount count)
                           ((completed.realize ext1).openRigids rigidCount) := by
                         have base := Elaborates.typing rhsElaborates
@@ -3582,7 +3657,7 @@ theorem inferFuel_complete
                             constructor
                             · exact countEq'
                             · simpa [countEq'] using closeOpen
-                      have bodyElaborates' : Elaborates rigidCount
+                      have bodyElaborates' : Elaborates sig rigidCount
                           (Ctx.realize (completed :: ctx) ext1)
                           body bodyElabD ty := by
                         have ctxEq : Ctx.realize (completed :: ctx) ext1 =
@@ -3650,7 +3725,7 @@ theorem inferFuel_complete
                         (ctxWF scheme member).2 id hid
                       rw [seededSafe.2.2.2.2 id idBound]
                       exact ctxLevels scheme member id hid
-                  have bodyElaborates' : Elaborates rigidCount
+                  have bodyElaborates' : Elaborates sig rigidCount
                       (Ctx.realize (PolyTy.mono seeded.2 :: ctx) firstValuation)
                       body bodyElabD ty := by
                     have ctxEq : Ctx.realize (PolyTy.mono seeded.2 :: ctx)
@@ -3708,9 +3783,9 @@ theorem inferFuel_complete
                   simp [inferFuel, seeded, bodyRun, InferState.constrain, unifiedRun]
 
 private theorem infer_run_data {input : Source} {result : InferenceResult}
-    (run : infer input = some result) :
+    (run : infer sig input = some result) :
     ∃ internal : InferResult,
-      inferFuel (input.inferSize + 1) 0 [] input ⟨0, []⟩ = some internal ∧
+      inferFuel sig (input.inferSize + 1) 0 [] input ⟨0, []⟩ = some internal ∧
       result.ty = internal.state.solutions.apply internal.ty ∧
       result.elaborated =
         internal.state.solutions.applyExpr internal.elaborated ∧
@@ -3727,7 +3802,7 @@ private theorem infer_run_data {input : Source} {result : InferenceResult}
       cases h : input.typeScopedB 0 0 <;> simp_all
     have inputScoped : input.TypeScoped 0 0 :=
       Expr.typeScopedB_eq_true_iff.mp sourceScopedB
-    cases internalRun : inferFuel (input.inferSize + 1) 0 [] input ⟨0, []⟩ with
+    cases internalRun : inferFuel sig (input.inferSize + 1) 0 [] input ⟨0, []⟩ with
     | none => simp [internalRun] at run
     | some internal =>
         rw [internalRun] at run
@@ -3748,8 +3823,8 @@ private theorem infer_run_data {input : Source} {result : InferenceResult}
 /-- An accepted program has exactly one type. -/
 theorem infer_type_unique
     {input : Source} {result : InferenceResult} {ty : Ty}
-    (run : infer input = some result)
-    (typing : Typing 0 [] input ty) :
+    (run : infer sig input = some result)
+    (typing : Typing sig 0 [] input ty) :
     ty = result.ty := by
   obtain ⟨internal, internalRun, publicTyEq, _, publicWFb, _, inputScoped⟩ :=
     infer_run_data run
@@ -3775,9 +3850,9 @@ theorem infer_type_unique
 /-- Soundness and completeness: `infer` accepts exactly the programs with a
 unique elaboration and type, and returns them. -/
 theorem infer_eq_some_iff {input : Source} {result : InferenceResult} :
-    infer input = some result ↔
-      Elaborates 0 [] input result.elaborated result.ty ∧
-        ∀ elaborated ty, Elaborates 0 [] input elaborated ty →
+    infer sig input = some result ↔
+      Elaborates sig 0 [] input result.elaborated result.ty ∧
+        ∀ elaborated ty, Elaborates sig 0 [] input elaborated ty →
           elaborated = result.elaborated ∧ ty = result.ty := by
   constructor
   · intro run
@@ -3931,19 +4006,19 @@ theorem infer_eq_some_iff {input : Source} {result : InferenceResult} :
 
 /-- `infer` rejects exactly the programs without a unique elaboration. -/
 theorem infer_eq_none_iff {input : Source} :
-    infer input = none ↔
-      ¬ ∃ elaborated ty, Elaborates 0 [] input elaborated ty ∧
-        ∀ elaborated' ty', Elaborates 0 [] input elaborated' ty' →
+    infer sig input = none ↔
+      ¬ ∃ elaborated ty, Elaborates sig 0 [] input elaborated ty ∧
+        ∀ elaborated' ty', Elaborates sig 0 [] input elaborated' ty' →
           elaborated' = elaborated ∧ ty' = ty := by
   constructor
   · intro noneRun
     rintro ⟨elaborated, ty, elaborates, unique⟩
-    have someRun : infer input = some ⟨ty, elaborated⟩ :=
+    have someRun : infer sig input = some ⟨ty, elaborated⟩ :=
       infer_eq_some_iff.mpr ⟨elaborates, unique⟩
     rw [noneRun] at someRun
     exact Option.noConfusion someRun
   · intro notExists
-    cases run : infer input with
+    cases run : infer sig input with
     | none => rfl
     | some result =>
         have data := infer_eq_some_iff.mp run

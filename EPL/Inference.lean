@@ -67,7 +67,7 @@ def Template.scopedB (rigidCount binderCount : Nat) : Template → Bool
         argument.scopedB rigidCount binderCount
 
 def Expr.typeScopedB (rigidCount binderCount : Nat) : Source → Bool
-  | .primLit _ | .primOp _ | .var _ => true
+  | .primLit _ | .primOp _ | .var _ | .const _ => true
   | .lambda ann body =>
       ann.all (Template.scopedB rigidCount binderCount) &&
         body.typeScopedB rigidCount binderCount
@@ -157,7 +157,7 @@ def InferState.constrain (state : InferState) (left right : Ty) : Option InferSt
   (state.solutions.unify left right).map fun solutions => { state with solutions }
 
 def Expr.inferSize : Source → Nat
-  | .primLit _ | .primOp _ | .var _ => 1
+  | .primLit _ | .primOp _ | .var _ | .const _ => 1
   | .lambda _ body | .fix _ body => body.inferSize + 1
   | .app function argument => function.inferSize + argument.inferSize + 1
   | .letIn _ rhs body => rhs.inferSize + body.inferSize + 1
@@ -165,7 +165,7 @@ def Expr.inferSize : Source → Nat
 /-- Infer a type and an elaboration. `fuel` bounds the recursion depth;
 `input.inferSize + 1` is always enough, since opening a scheme's rigid
 variables does not change an expression's size. -/
-def inferFuel : Nat → Nat → Ctx → Source → InferState → Option InferResult
+def inferFuel (sig : Signature) : Nat → Nat → Ctx → Source → InferState → Option InferResult
   | 0, _, _, _, _ => none
   | fuel + 1, rigidCount, ctx, input, state =>
       match input with
@@ -180,23 +180,23 @@ def inferFuel : Nat → Nat → Ctx → Source → InferState → Option InferRe
           let seeded := match ann with
             | none => state.fresh rigidCount
             | some template => state.allocate rigidCount template
-          let bodyResult ← inferFuel fuel rigidCount
+          let bodyResult ← inferFuel sig fuel rigidCount
             (PolyTy.mono seeded.2 :: ctx) body seeded.1
           let paramTy := bodyResult.state.solutions.apply seeded.2
           some ⟨bodyResult.state, .arrow paramTy bodyResult.ty,
             .lambda (some seeded.2) bodyResult.elaborated⟩
       | .app function argument => do
-          let functionResult ← inferFuel fuel rigidCount ctx function state
-          let argumentResult ← inferFuel fuel rigidCount ctx argument functionResult.state
+          let functionResult ← inferFuel sig fuel rigidCount ctx function state
+          let argumentResult ← inferFuel sig fuel rigidCount ctx argument functionResult.state
           let fresh := argumentResult.state.fresh rigidCount
           let checked ← fresh.1.constrain functionResult.ty
             (.arrow argumentResult.ty fresh.2)
           some ⟨checked, checked.solutions.apply fresh.2,
             .app functionResult.elaborated argumentResult.elaborated⟩
       | .letIn none rhs body => do
-          let rhsResult ← inferFuel fuel rigidCount ctx rhs state
+          let rhsResult ← inferFuel sig fuel rigidCount ctx rhs state
           let rhsTy := rhsResult.state.solutions.apply rhsResult.ty
-          let bodyResult ← inferFuel fuel rigidCount
+          let bodyResult ← inferFuel sig fuel rigidCount
             (PolyTy.mono rhsTy :: ctx) body rhsResult.state
           some ⟨bodyResult.state, bodyResult.ty,
             .letIn none rhsResult.elaborated bodyResult.elaborated⟩
@@ -208,7 +208,7 @@ def inferFuel : Nat → Nat → Ctx → Source → InferState → Option InferRe
           let inner := rigidCount + count
           let openedTemplate := written.body.openRigidsFrom 0 rigidCount count
           let seeded := state.allocate inner openedTemplate
-          let rhsResult ← inferFuel fuel inner ctx
+          let rhsResult ← inferFuel sig fuel inner ctx
             (rhs.openRigids rigidCount count) seeded.1
           let checked ← rhsResult.state.constrain rhsResult.ty seeded.2
           let completedOpen := checked.solutions.apply seeded.2
@@ -219,22 +219,27 @@ def inferFuel : Nat → Nat → Ctx → Source → InferState → Option InferRe
           else
             let completed : PolyTy :=
               ⟨count, completedOpen.closeRigids rigidCount count⟩
-            let bodyResult ← inferFuel fuel rigidCount (completed :: ctx) body checked
+            let bodyResult ← inferFuel sig fuel rigidCount (completed :: ctx) body checked
             some ⟨bodyResult.state, bodyResult.ty,
               .letIn (some completed) rhsResult.elaborated bodyResult.elaborated⟩
       | .fix ann body => do
           let seeded := state.allocate rigidCount ann
-          let bodyResult ← inferFuel fuel rigidCount
+          let bodyResult ← inferFuel sig fuel rigidCount
             (PolyTy.mono seeded.2 :: ctx) body seeded.1
           let checked ← bodyResult.state.constrain bodyResult.ty seeded.2
           some ⟨checked, checked.solutions.apply seeded.2,
             .fix seeded.2 bodyResult.elaborated⟩
+      | .const c => do
+          let scheme ← sig.schemeOf c
+          if !scheme.wfB 0 then none
+          let fresh := state.freshMany rigidCount scheme.paramCount
+          some ⟨fresh.1, scheme.openWith fresh.2, .const c⟩
 
 /-- Infer a closed program. It is accepted exactly when its type and every
 implicit type in its elaboration are fully determined. -/
-def infer (input : Source) : Option InferenceResult := do
+def infer (sig : Signature) (input : Source) : Option InferenceResult := do
   if !input.typeScopedB 0 0 then none
-  let result ← inferFuel (input.inferSize + 1) 0 [] input ⟨0, []⟩
+  let result ← inferFuel sig (input.inferSize + 1) 0 [] input ⟨0, []⟩
   let ty := result.state.solutions.apply result.ty
   let elaborated := result.state.solutions.applyExpr result.elaborated
   if ty.wfB 0 0 && elaborated.annotations.all Ty.metaFreeB then

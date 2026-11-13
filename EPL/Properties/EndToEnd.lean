@@ -7,15 +7,15 @@ namespace EPL
 runtime program at exactly the reported type. -/
 theorem infer_erases
     {input : Source} {result : InferenceResult}
-    (run : infer input = some result) :
-    RuntimeTyping 0 [] input.erase result.ty := by
+    (run : infer sig input = some result) :
+    RuntimeTyping sig 0 [] input.erase result.ty := by
   exact Typing.erase (infer_typing run)
 
 /-- A successfully inferred closed program is either already a runtime value
 after erasure or can take a step. -/
 theorem infer_progress
     {input : Source} {result : InferenceResult}
-    (run : infer input = some result) :
+    (run : infer sig input = some result) :
     Eval.Value input.erase ∨ ∃ next, Eval.Step input.erase next := by
   exact RuntimeTyping.progress (infer_erases run)
 
@@ -23,17 +23,17 @@ theorem infer_progress
 type reported by inference. -/
 theorem infer_step_preserves
     {input : Source} {result : InferenceResult} {next : RuntimeExpr}
-    (run : infer input = some result)
+    (run : infer sig input = some result)
     (step : Eval.Step input.erase next) :
-    RuntimeTyping 0 [] next result.ty := by
+    RuntimeTyping sig 0 [] next result.ty := by
   exact RuntimeTyping.preservation (infer_erases run) step
 
 /-- The reported type survives every finite runtime execution. -/
 theorem infer_steps_preserve
     {input : Source} {result : InferenceResult} {next : RuntimeExpr}
-    (run : infer input = some result)
+    (run : infer sig input = some result)
     (steps : Eval.Steps input.erase next) :
-    RuntimeTyping 0 [] next result.ty := by
+    RuntimeTyping sig 0 [] next result.ty := by
   induction steps with
   | refl => exact infer_erases run
   | tail _ step ih => exact RuntimeTyping.preservation ih step
@@ -42,9 +42,9 @@ theorem infer_steps_preserve
 typed and ends at either a value or another reducible term. -/
 theorem infer_type_safety
     {input : Source} {result : InferenceResult} {next : RuntimeExpr}
-    (run : infer input = some result)
+    (run : infer sig input = some result)
     (steps : Eval.Steps input.erase next) :
-    RuntimeTyping 0 [] next result.ty ∧
+    RuntimeTyping sig 0 [] next result.ty ∧
       (Eval.Value next ∨ ∃ after, Eval.Step next after) := by
   have typed := infer_steps_preserve run steps
   exact ⟨typed, RuntimeTyping.progress typed⟩
@@ -66,15 +66,15 @@ namespace EPL
 exactly the inferred type. -/
 theorem infer_run_typed
     {input : Source} {result : InferenceResult}
-    (inferred : infer input = some result) (fuel : Nat) :
-    RuntimeTyping 0 [] (Eval.run fuel input.erase) result.ty := by
+    (inferred : infer sig input = some result) (fuel : Nat) :
+    RuntimeTyping sig 0 [] (Eval.run fuel input.erase) result.ty := by
   exact infer_steps_preserve inferred (Eval.run_steps fuel input.erase)
 
 /-- The evaluator never gets stuck on an inferred program: if it has no next
 step, it has reached a value. -/
 theorem infer_run_stops_at_value
     {input : Source} {result : InferenceResult} {fuel : Nat}
-    (inferred : infer input = some result)
+    (inferred : infer sig input = some result)
     (stopped : Eval.step? (Eval.run fuel input.erase) = none) :
     Eval.Value (Eval.run fuel input.erase) := by
   have typed := infer_run_typed inferred fuel
@@ -91,11 +91,11 @@ inductive Outcome (start : RuntimeExpr) (ty : Ty) : Type
   | value (result : RuntimeExpr)
       (steps : Steps start result)
       (isValue : Value result)
-      (typed : RuntimeTyping 0 [] result ty)
+      (typed : RuntimeTyping sig 0 [] result ty)
   /-- Fuel ran out at a typed term that can still step. -/
   | running (current next : RuntimeExpr)
       (steps : Steps start current)
-      (typed : RuntimeTyping 0 [] current ty)
+      (typed : RuntimeTyping sig 0 [] current ty)
       (step : Step current next)
 
 /-- The final value, or `none` if fuel ran out. -/
@@ -108,9 +108,9 @@ end Eval
 /-- Infer `input`, then evaluate its erasure for at most `fuel` steps.
 Rejected programs yield `none`; accepted programs never get stuck, by
 construction of `Eval.Outcome`. -/
-def evaluate (input : Source) (fuel : Nat) :
+def evaluate (sig : Signature) (input : Source) (fuel : Nat) :
     Option ((result : InferenceResult) × Eval.Outcome input.erase result.ty) :=
-  match inferred : infer input with
+  match inferred : infer sig input with
   | none => none
   | some result =>
       some ⟨result,

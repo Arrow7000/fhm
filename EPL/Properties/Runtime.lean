@@ -2,6 +2,628 @@ import EPL.Runtime
 
 namespace EPL
 
+namespace Expr
+
+private theorem apps_append (head : Expr T) (first second : List (Expr T)) :
+    Expr.apps head (first ++ second) = Expr.apps (Expr.apps head first) second := by
+  induction first generalizing head with
+  | nil => rfl
+  | cons a as ih =>
+      simp only [List.cons_append, Expr.apps, List.foldl_cons]
+      exact ih (.app head a)
+
+private theorem spine_apps (head : Expr T) (args : List (Expr T)) :
+    (Expr.apps head args).spine = (head.spine.1, head.spine.2 ++ args) := by
+  induction args generalizing head with
+  | nil =>
+      change head.spine = (head.spine.1, head.spine.2 ++ [])
+      cases head.spine
+      simp
+  | cons a as ih =>
+      have step : Expr.apps head (a :: as) = Expr.apps (.app head a) as := rfl
+      rw [step, ih]
+      simp [Expr.spine, List.append_assoc]
+
+private theorem apps_spine (expr : Expr T) :
+    Expr.apps expr.spine.1 expr.spine.2 = expr := by
+  induction expr with
+  | primLit => rfl
+  | primOp => rfl
+  | var => rfl
+  | lambda => rfl
+  | app f a ihf =>
+      change Expr.apps f.spine.1 (f.spine.2 ++ [a]) = Expr.app f a
+      rw [Expr.apps_append, ihf]
+      rfl
+  | letIn => rfl
+  | fix => rfl
+  | const => rfl
+
+private theorem spine_app_spine {f a : Expr T} {h : Expr T} {args : List (Expr T)}
+    (hs : f.spine = (h, args)) :
+    (Expr.app f a).spine = (h, args ++ [a]) := by
+  simp only [Expr.spine, hs]
+
+end Expr
+
+namespace Ty
+
+private theorem arrows_cons (d : Ty) (ds : List Ty) (c : Ty) :
+    Ty.arrows (d :: ds) c = .arrow d (Ty.arrows ds c) := rfl
+
+private theorem arrows_nil (c : Ty) : Ty.arrows [] c = c := rfl
+
+private theorem apps_cons (head : Ty) (a : Ty) (as : List Ty) :
+    Ty.apps head (a :: as) = Ty.apps (.app head a) as := rfl
+
+private theorem openWith_arrows (args domains : List Ty) (codomain : Ty) :
+    Ty.openWith args (Ty.arrows domains codomain) =
+      Ty.arrows (domains.map (fun d => Ty.openWith args d)) (Ty.openWith args codomain) := by
+  induction domains with
+  | nil => rfl
+  | cons d ds ih =>
+      change Ty.arrow (Ty.openWith args d) (Ty.openWith args (Ty.arrows ds codomain)) =
+        Ty.arrow (Ty.openWith args d)
+          (Ty.arrows (ds.map (fun d => Ty.openWith args d)) (Ty.openWith args codomain))
+      rw [ih]
+
+private theorem openWith_apps (args : List Ty) (head : Ty) (rest : List Ty) :
+    Ty.openWith args (Ty.apps head rest) =
+      Ty.apps (Ty.openWith args head) (rest.map (fun t => Ty.openWith args t)) := by
+  induction rest generalizing head with
+  | nil => rfl
+  | cons a as ih =>
+      change Ty.openWith args (Ty.apps (.app head a) as) =
+        Ty.apps (.app (Ty.openWith args head) (Ty.openWith args a))
+          (as.map (fun t => Ty.openWith args t))
+      rw [ih (.app head a)]
+      rfl
+
+private theorem openWith_append_of_scoped {ty : Ty} {n : Nat}
+    (h : ty.Scoped 0 n) {args extra : List Ty} (hlen : args.length = n) :
+    ty.openWith (args ++ extra) = ty.openWith args := by
+  induction h with
+  | prim => rfl
+  | arrow _ _ ihd ihc => simp [Ty.openWith, ihd, ihc]
+  | bvar hi =>
+      simp only [Ty.openWith]
+      rw [List.getElem?_append_left (by omega)]
+  | rigid => rfl
+  | mvar => rfl
+  | con => rfl
+  | app _ _ ihf iha => simp [Ty.openWith, ihf, iha]
+
+private theorem arrows_scoped_inv {domains : List Ty} {codomain : Ty} {rc bc : Nat}
+    (h : (Ty.arrows domains codomain).Scoped rc bc) :
+    ∀ d ∈ domains, d.Scoped rc bc := by
+  induction domains with
+  | nil => simp
+  | cons d ds ih =>
+      intro x hx
+      change Ty.Scoped rc bc (Ty.arrow d (Ty.arrows ds codomain)) at h
+      cases h with
+      | arrow hd hr =>
+          rcases List.mem_cons.mp hx with rfl | hmem
+          · exact hd
+          · exact ih hr x hmem
+
+private theorem arrows_eq_arrows_append {as bs : List Ty} {s t : Ty}
+    (h : Ty.arrows as s = Ty.arrows bs t) (hlen : as.length ≤ bs.length) :
+    ∃ rest, bs = as ++ rest ∧ s = Ty.arrows rest t := by
+  induction as generalizing bs with
+  | nil => exact ⟨bs, by simp, h⟩
+  | cons a as ih =>
+      cases bs with
+      | nil => simp at hlen
+      | cons b bs =>
+          change Ty.arrow a (Ty.arrows as s) = Ty.arrow b (Ty.arrows bs t) at h
+          injection h with hb htail
+          subst hb
+          have hlen' : as.length ≤ bs.length := by simpa using hlen
+          obtain ⟨rest, hbs, hs⟩ := ih htail hlen'
+          exact ⟨rest, by simp [hbs], hs⟩
+
+private theorem arrows_cancel {as bs : List Ty} {s t : Ty}
+    (h : Ty.arrows as s = Ty.arrows bs t) (hlen : as.length = bs.length) :
+    as = bs ∧ s = t := by
+  induction as generalizing bs with
+  | nil =>
+      cases bs with
+      | nil => exact ⟨rfl, h⟩
+      | cons => simp at hlen
+  | cons a as ih =>
+      cases bs with
+      | nil => simp at hlen
+      | cons b bs =>
+          change Ty.arrow a (Ty.arrows as s) = Ty.arrow b (Ty.arrows bs t) at h
+          injection h with hb htail
+          subst hb
+          have hlen' : as.length = bs.length := by simpa using hlen
+          obtain ⟨habs, ht⟩ := ih htail hlen'
+          exact ⟨by simp [habs], ht⟩
+
+private theorem apps_append_singleton (head : Ty) (xs : List Ty) (x : Ty) :
+    Ty.apps head (xs ++ [x]) = .app (Ty.apps head xs) x := by
+  induction xs generalizing head with
+  | nil => rfl
+  | cons a as ih =>
+      change Ty.apps (.app head a) (as ++ [x]) =
+        .app (Ty.apps (.app head a) as) x
+      exact ih (.app head a)
+
+private theorem list_reverse_induction {α : Type} {motive : List α → Prop}
+    (nil : motive [])
+    (step : ∀ (xs : List α) (x : α), motive xs → motive (xs ++ [x])) :
+    ∀ l, motive l := by
+  intro l
+  suffices ∀ n (l : List α), l.length = n → motive l by exact this _ l rfl
+  intro n
+  induction n with
+  | zero =>
+      intro l hl
+      cases l with
+      | nil => exact nil
+      | cons => simp at hl
+  | succ n ih =>
+      intro l hl
+      cases l with
+      | nil => exact nil
+      | cons a l' =>
+          have hne : (a :: l') ≠ [] := by simp
+          have hsplit : a :: l' = (a :: l').dropLast ++ [(a :: l').getLast hne] :=
+            (List.dropLast_append_getLast hne).symm
+          rw [hsplit]
+          apply step
+          apply ih (a :: l').dropLast
+          rw [hsplit] at hl
+          simp only [List.length_append, List.length_singleton] at hl
+          omega
+
+private theorem apps_con_inj {t t' : Nat} {as bs : List Ty}
+    (h : Ty.apps (.con t) as = Ty.apps (.con t') bs) : t = t' ∧ as = bs := by
+  have main : ∀ (as : List Ty) (bs : List Ty),
+      Ty.apps (.con t) as = Ty.apps (.con t') bs → t = t' ∧ as = bs := by
+    intro as
+    refine Ty.list_reverse_induction (motive := fun as => ∀ bs,
+      Ty.apps (.con t) as = Ty.apps (.con t') bs → t = t' ∧ as = bs) ?_ ?_ as
+    · intro bs
+      refine Ty.list_reverse_induction (motive := fun bs =>
+        Ty.apps (.con t) [] = Ty.apps (.con t') bs → t = t' ∧ ([] : List Ty) = bs) ?_ ?_ bs
+      · intro h
+        simpa [Ty.apps] using h
+      · intro ys y ih2 h
+        rw [Ty.apps_append_singleton] at h
+        cases h
+    · intro xs x ih bs
+      refine Ty.list_reverse_induction (motive := fun bs =>
+        Ty.apps (.con t) (xs ++ [x]) = Ty.apps (.con t') bs →
+          t = t' ∧ xs ++ [x] = bs) ?_ ?_ bs
+      · intro h
+        rw [Ty.apps_append_singleton] at h
+        cases h
+      · intro ys y ih2 h
+        rw [Ty.apps_append_singleton, Ty.apps_append_singleton] at h
+        injection h with hhead hlast
+        obtain ⟨htt, hxs⟩ := ih ys hhead
+        subst htt hxs hlast
+        exact ⟨rfl, rfl⟩
+  exact main as bs h
+
+private theorem apps_con_ne_arrow {t : Nat} {params : List Ty} {a b : Ty} :
+    Ty.apps (.con t) params ≠ .arrow a b := by
+  induction params using Ty.list_reverse_induction with
+  | nil => intro h; cases h
+  | step xs x ih =>
+      intro h
+      rw [Ty.apps_append_singleton] at h
+      cases h
+
+private theorem apps_con_ne_prim {t : Nat} {params : List Ty} {p : PrimTy} :
+    Ty.apps (.con t) params ≠ .prim p := by
+  induction params using Ty.list_reverse_induction with
+  | nil => intro h; cases h
+  | step xs x ih =>
+      intro h
+      rw [Ty.apps_append_singleton] at h
+      cases h
+
+private theorem arrow_ne_prim {a b : Ty} {p : PrimTy} : Ty.arrow a b ≠ .prim p := by
+  intro h; cases h
+
+end Ty
+
+private theorem bvar_openWith_append_singleton {n : Nat} {params : List Ty} {r : Ty}
+    (hlen : params.length = n) :
+    Ty.openWith (params ++ [r]) (Ty.bvar n) = r := by
+  simp only [Ty.openWith]
+  rw [List.getElem?_append_right (by omega)]
+  simp [hlen]
+
+namespace DataDecl
+
+private theorem selfTy_openWith (decl : DataDecl) (type : Nat) (params extra : List Ty)
+    (hlen : params.length = decl.paramCount) :
+    Ty.openWith (params ++ extra) (decl.selfTy type) = Ty.apps (.con type) params := by
+  unfold DataDecl.selfTy
+  rw [Ty.openWith_apps]
+  have hmap : (List.range decl.paramCount).map
+      (fun i => (params ++ extra)[i]?.getD (Ty.bvar i)) = params := by
+    apply List.ext_getElem
+    · simp [hlen]
+    · intro i hi hi'
+      simp only [List.getElem_map, List.getElem_range]
+      have hi' : i < params.length := by simpa [hlen] using hi
+      have hget : (params ++ extra)[i]? = some params[i] := by
+        rw [List.getElem?_append_left hi']
+        exact List.getElem?_eq_getElem hi'
+      simp [hget]
+  congr 1
+  simpa only [Ty.openWith, List.map_map, Function.comp_apply] using hmap
+
+private theorem ctorScheme_openWith (decl : DataDecl) (type : Nat) (fields params : List Ty)
+    (hlen : params.length = decl.paramCount) :
+    (decl.ctorScheme type fields).openWith params =
+      Ty.arrows (fields.map (fun ft => Ty.openWith params ft)) (Ty.apps (.con type) params) := by
+  unfold DataDecl.ctorScheme
+  simp only [PolyTy.openWith]
+  rw [Ty.openWith_arrows]
+  have hself : Ty.openWith params (decl.selfTy type) = Ty.apps (.con type) params := by
+    have h := selfTy_openWith decl type params [] hlen
+    simpa using h
+  rw [hself]
+
+private theorem elimScheme_openWith (decl : DataDecl) (type : Nat) {params : List Ty} {r : Ty}
+    (hlen : params.length = decl.paramCount) :
+    (decl.elimScheme type).openWith (params ++ [r]) =
+      Ty.arrows
+        ((Ty.apps (.con type) params) ::
+          decl.ctors.map (fun fields =>
+            .arrow (.prim .unit)
+              (Ty.arrows (fields.map (fun ft => Ty.openWith (params ++ [r]) ft)) r)))
+        r := by
+  have hself : Ty.openWith (params ++ [r]) (decl.selfTy type) =
+      Ty.apps (.con type) params := by
+    have h := selfTy_openWith decl type params [r] hlen
+    simpa using h
+  have hbvar : Ty.openWith (params ++ [r]) (Ty.bvar decl.paramCount) = r :=
+    bvar_openWith_append_singleton hlen
+  unfold DataDecl.elimScheme
+  simp only [PolyTy.openWith]
+  change Ty.arrow (Ty.openWith (params ++ [r]) (decl.selfTy type))
+      (Ty.openWith (params ++ [r])
+        (Ty.arrows (decl.ctors.map (fun fields => branchTy fields (Ty.bvar decl.paramCount)))
+          (Ty.bvar decl.paramCount))) =
+    Ty.arrow (Ty.apps (.con type) params)
+      (Ty.arrows (decl.ctors.map (fun fields =>
+          Ty.arrow (.prim .unit)
+            (Ty.arrows (fields.map (fun ft => Ty.openWith (params ++ [r]) ft)) r))) r)
+  rw [hself, Ty.openWith_arrows, hbvar]
+  congr 1
+  rw [List.map_map]
+  congr 1
+  apply List.map_congr_left
+  intro fields _
+  change Ty.arrow (Ty.openWith (params ++ [r]) (.prim .unit))
+      (Ty.openWith (params ++ [r]) (Ty.arrows fields (Ty.bvar decl.paramCount))) =
+    Ty.arrow (.prim .unit) (Ty.arrows (fields.map (fun ft => Ty.openWith (params ++ [r]) ft)) r)
+  rw [Ty.openWith_arrows, hbvar]
+  rfl
+
+end DataDecl
+
+private theorem exists_append_singleton_of_length {α : Type} {n : Nat} :
+    ∀ {xs : List α}, xs.length = n + 1 → ∃ ys x, xs = ys ++ [x] ∧ ys.length = n := by
+  induction n with
+  | zero =>
+      intro xs h
+      obtain ⟨x, rfl⟩ := List.length_eq_one_iff.mp (by simpa using h)
+      exact ⟨[], x, rfl, rfl⟩
+  | succ n ih =>
+      intro xs h
+      cases xs with
+      | nil => simp at h
+      | cons x xs =>
+          have hlen : xs.length = n + 1 := by simpa using h
+          obtain ⟨ys, y, hys, hlenys⟩ := ih hlen
+          exact ⟨x :: ys, y, by simp [hys], by simp [hlenys]⟩
+
+private theorem forall₂_get? {α β : Type} {R : α → β → Prop} {xs : List α} {ys : List β}
+    (h : List.Forall₂ R xs ys) :
+    ∀ {i : Nat} {x : α} {y : β}, xs[i]? = some x → ys[i]? = some y → R x y := by
+  induction h with
+  | nil => intro i x y hx _; simp at hx
+  | cons hhead htail ih =>
+      intro i x y hx hy
+      cases i with
+      | zero =>
+          simp only [List.getElem?_cons_zero, Option.some.injEq] at hx hy
+          subst hx
+          subst hy
+          exact hhead
+      | succ i =>
+          simp only [List.getElem?_cons_succ] at hx hy
+          exact ih hx hy
+
+private theorem forall₂_map_of_forall₂ {fields : List Ty} {args : List RuntimeExpr}
+    {f : Ty → Ty} {R : RuntimeExpr → Ty → Prop}
+    (h : List.Forall₂ (fun e ft => R e (f ft)) args fields) :
+    List.Forall₂ R args (fields.map f) := by
+  induction fields generalizing args with
+  | nil => cases h; exact .nil
+  | cons ft fts ih =>
+      cases h with
+      | cons hhead htail => exact .cons hhead (ih htail)
+
+namespace Signature
+
+private theorem schemeOf_ctor_some {sig : Signature} {type ctor arity : Nat} {scheme : PolyTy}
+    (h : sig.schemeOf (.ctor type ctor arity) = some scheme) :
+    ∃ (decl : DataDecl) (fields : List Ty), sig[type]? = some decl ∧
+      decl.ctors[ctor]? = some fields ∧ fields.length = arity ∧
+      scheme = decl.ctorScheme type fields := by
+  cases hdecl : sig[type]? with
+  | none => simp [Signature.schemeOf, hdecl] at h
+  | some decl =>
+      cases hfields : decl.ctors[ctor]? with
+      | none => simp [Signature.schemeOf, hdecl, hfields] at h
+      | some fields =>
+          by_cases hlen : fields.length = arity
+          · have hsch : sig.schemeOf (.ctor type ctor arity) =
+                some (decl.ctorScheme type fields) := by
+              simp [Signature.schemeOf, hdecl, hfields, hlen]
+            have heq : scheme = decl.ctorScheme type fields :=
+              (Option.some.inj (hsch.symm.trans h)).symm
+            exact ⟨decl, fields, rfl, hfields, hlen, heq⟩
+          · simp [Signature.schemeOf, hdecl, hfields, hlen] at h
+
+private theorem schemeOf_elim_some {sig : Signature} {type ctorCount : Nat} {scheme : PolyTy}
+    (h : sig.schemeOf (.elim type ctorCount) = some scheme) :
+    ∃ (decl : DataDecl), sig[type]? = some decl ∧ decl.ctors.length = ctorCount ∧
+      scheme = decl.elimScheme type := by
+  cases hdecl : sig[type]? with
+  | none => simp [Signature.schemeOf, hdecl] at h
+  | some decl =>
+      by_cases hlen : decl.ctors.length = ctorCount
+      · have hsch : sig.schemeOf (.elim type ctorCount) = some (decl.elimScheme type) := by
+          simp [Signature.schemeOf, hdecl, hlen]
+        have heq : scheme = decl.elimScheme type :=
+          (Option.some.inj (hsch.symm.trans h)).symm
+        exact ⟨decl, rfl, hlen, heq⟩
+      · simp [Signature.schemeOf, hdecl, hlen] at h
+
+end Signature
+
+namespace RuntimeTyping
+
+variable {sig : Signature} {r : Nat} {ctx : Ctx}
+
+private theorem typing_apps_intro {f : RuntimeExpr} {tys : List Ty} {u : Ty}
+    (typing : RuntimeTyping sig r ctx f (Ty.arrows tys u))
+    {args : List RuntimeExpr}
+    (hargs : List.Forall₂ (fun e t => RuntimeTyping sig r ctx e t) args tys) :
+    RuntimeTyping sig r ctx (Expr.apps f args) u := by
+  induction hargs generalizing f u with
+  | nil => simpa [Expr.apps] using typing
+  | cons hhead htail ih =>
+      exact ih (RuntimeTyping.app typing hhead)
+
+private theorem typing_spine_inv {head : RuntimeExpr} {args : List RuntimeExpr} {ty : Ty}
+    (typing : RuntimeTyping sig r ctx (Expr.apps head args) ty) :
+    ∃ argTys : List Ty,
+      List.Forall₂ (fun e t => RuntimeTyping sig r ctx e t) args argTys ∧
+      RuntimeTyping sig r ctx head (Ty.arrows argTys ty) := by
+  induction args generalizing head ty with
+  | nil => exact ⟨[], .nil, by simpa [Expr.apps] using typing⟩
+  | cons a as ih =>
+      have typing' : RuntimeTyping sig r ctx (Expr.apps (.app head a) as) ty := typing
+      obtain ⟨argTys, hforall, hhead⟩ := ih typing'
+      cases argTys with
+      | nil =>
+          cases hhead with
+          | app hf ha =>
+              rename_i argumentTy
+              exact ⟨[argumentTy], .cons ha hforall, by simpa [Ty.arrows] using hf⟩
+      | cons b bs =>
+          cases hhead with
+          | app hf ha =>
+              rename_i argumentTy
+              exact ⟨argumentTy :: b :: bs, .cons ha hforall, by
+                simpa [Ty.arrows] using hf⟩
+
+private theorem const_spine_inv {c : DataConst} {args : List RuntimeExpr} {ty : Ty}
+    (typing : RuntimeTyping sig r ctx (Expr.apps (.const c) args) ty) :
+    ∃ (scheme : PolyTy) (instArgs argTys : List Ty),
+      sig.schemeOf c = some scheme ∧ scheme.WF 0 ∧
+      instArgs.length = scheme.paramCount ∧
+      (∀ a ∈ instArgs, a.WF r 0) ∧
+      scheme.openWith instArgs = Ty.arrows argTys ty ∧
+      List.Forall₂ (fun e t => RuntimeTyping sig r ctx e t) args argTys := by
+  obtain ⟨argTys, hforall, hhead⟩ := typing_spine_inv typing
+  generalize hty : Ty.arrows argTys ty = target at hhead
+  cases hhead with
+  | const hscheme hwf hlen hargs =>
+      exact ⟨_, _, argTys, hscheme, hwf, hlen, hargs, hty.symm, hforall⟩
+
+private theorem ctorScheme_fields_scoped {decl : DataDecl} {type : Nat} {fields : List Ty}
+    (h : (decl.ctorScheme type fields).WF 0) :
+    ∀ ft ∈ fields, ft.Scoped 0 decl.paramCount := by
+  intro ft hft
+  exact Ty.arrows_scoped_inv h.1 ft hft
+
+private theorem fields_openWith_eq {decl : DataDecl} {fields : List Ty} {params : List Ty}
+    {r : Ty}
+    (hfields : ∀ ft ∈ fields, ft.Scoped 0 decl.paramCount)
+    (hplen : params.length = decl.paramCount) :
+    fields.map (fun ft => ft.openWith (params ++ [r])) =
+      fields.map (fun ft => ft.openWith params) := by
+  apply List.map_congr_left
+  intro ft hft
+  exact Ty.openWith_append_of_scoped (hfields ft hft) hplen
+
+private theorem forall₂_map_openWith {fields : List Ty} {args : List RuntimeExpr}
+    {params : List Ty}
+    (h : List.Forall₂ (fun e ty => RuntimeTyping sig r ctx e ty) args
+      (fields.map (fun ft => ft.openWith params))) :
+    List.Forall₂ (fun e ft => RuntimeTyping sig r ctx e (ft.openWith params)) args fields := by
+  induction fields generalizing args with
+  | nil => cases h; exact .nil
+  | cons ft fts ih =>
+      cases h with
+      | cons hhead htail => exact .cons hhead (ih htail)
+
+private theorem forall₂_openWith_append {fields : List Ty} {args : List RuntimeExpr}
+    {params : List Ty} {result : Ty} {n : Nat}
+    (hfields : ∀ ft ∈ fields, ft.Scoped 0 n)
+    (hplen : params.length = n)
+    (h : List.Forall₂ (fun e ft => RuntimeTyping sig r ctx e (ft.openWith params)) args fields) :
+    List.Forall₂ (fun e ft => RuntimeTyping sig r ctx e (ft.openWith (params ++ [result]))) args fields := by
+  induction fields generalizing args with
+  | nil => cases h; exact .nil
+  | cons ft fts ih =>
+      cases h with
+      | cons hhead htail =>
+          exact .cons (by
+            rw [Ty.openWith_append_of_scoped (hfields ft (by simp)) hplen]
+            exact hhead)
+            (ih (fun x hx => hfields x (by simp [hx])) htail)
+
+/-- A value whose assigned type is a declared data type instance must be a
+saturated constructor application of that declaration. -/
+private theorem data_value_canonical {expr : RuntimeExpr} {t : Nat} {params : List Ty}
+    (value : Eval.Value expr)
+    (typing : RuntimeTyping sig r ctx expr (Ty.apps (.con t) params)) :
+    ∃ (decl : DataDecl) (ctor arity : Nat) (fields : List RuntimeExpr) (fieldTys : List Ty),
+      sig[t]? = some decl ∧ decl.ctors[ctor]? = some fieldTys ∧
+      fieldTys.length = arity ∧
+      expr = Expr.apps (.const (.ctor t ctor arity)) fields ∧
+      fields.length = arity ∧
+      (decl.ctorScheme t fieldTys).WF 0 ∧
+      List.Forall₂ (fun e ft => RuntimeTyping sig r ctx e (ft.openWith params)) fields fieldTys := by
+  cases value with
+  | primLit =>
+      rename_i literal
+      generalize hty : Ty.apps (.con t) params = target at typing
+      cases typing
+      cases literal <;> (exfalso; exact Ty.apps_con_ne_prim hty)
+  | primOp =>
+      generalize hty : Ty.apps (.con t) params = target at typing
+      cases typing
+      rename_i op
+      cases op
+      exfalso
+      exact Ty.apps_con_ne_arrow hty
+  | lambda =>
+      generalize hty : Ty.apps (.con t) params = target at typing
+      cases typing
+      exfalso
+      exact Ty.apps_con_ne_arrow hty
+  | intAddPartial =>
+      generalize hty : Ty.apps (.con t) params = target at typing
+      cases typing with
+      | app hf _ =>
+          cases hf
+          exfalso
+          exact Ty.apps_con_ne_arrow hty
+  | const hspine hlen hvals =>
+      expose_names
+      have hexpr : Expr.apps (.const c) args = expr := by
+        have h := Expr.apps_spine expr
+        rw [hspine] at h
+        exact h
+      have typing' : RuntimeTyping sig r ctx (Expr.apps (.const c) args)
+          (Ty.apps (.con t) params) := by
+        rw [hexpr]
+        exact typing
+      obtain ⟨scheme, instArgs, argTys, hscheme, hwf, hilen, hiwf, hopen, hforall⟩ :=
+        const_spine_inv typing'
+      cases c with
+      | ctor type ctor arity =>
+          obtain ⟨decl, fieldTys, hdecl, hctors, hflen, hschemeEq⟩ :=
+            Signature.schemeOf_ctor_some hscheme
+          subst scheme
+          have hilen' : instArgs.length = decl.paramCount := by simpa using hilen
+          rw [DataDecl.ctorScheme_openWith decl type fieldTys instArgs hilen'] at hopen
+          have hargLen : argTys.length = args.length :=
+            (List.Forall₂.length_eq hforall).symm
+          have hvalLen : args.length ≤ arity := by
+            simpa [DataConst.valueArity] using hlen
+          obtain ⟨rest, hrest, hty⟩ :=
+            Ty.arrows_eq_arrows_append hopen.symm (by
+              simp only [List.length_map]
+              omega)
+          cases rest with
+          | nil =>
+              have hargTys : argTys = fieldTys.map (fun ft => Ty.openWith instArgs ft) := by
+                simpa using hrest.symm
+              obtain ⟨htype, hparams⟩ := Ty.apps_con_inj hty
+              rw [htype, hparams]
+              refine ⟨decl, ctor, arity, args, fieldTys, hdecl, hctors, hflen, ?_, ?_, hwf, ?_⟩
+              · rw [hexpr]
+              · have hlength := List.Forall₂.length_eq hforall
+                rw [hargTys] at hlength
+                simpa [hflen] using hlength
+              · rw [hargTys] at hforall
+                exact forall₂_map_openWith hforall
+          | cons x xs =>
+              exfalso
+              exact Ty.apps_con_ne_arrow (a := x) (b := Ty.arrows xs _) hty
+      | elim type ctorCount =>
+          obtain ⟨decl, hdecl, hctorsLen, hschemeEq⟩ :=
+            Signature.schemeOf_elim_some hscheme
+          subst scheme
+          have hilen' : instArgs.length = decl.paramCount + 1 := by simpa using hilen
+          obtain ⟨p, rr, hp, hplen⟩ := exists_append_singleton_of_length hilen'
+          subst hp
+          rw [DataDecl.elimScheme_openWith decl type hplen] at hopen
+          have hargLen : argTys.length = args.length :=
+            (List.Forall₂.length_eq hforall).symm
+          have hvalLen : args.length ≤ ctorCount := by
+            simpa [DataConst.valueArity] using hlen
+          have hbranchLen : (decl.ctors.map (fun fields =>
+              Ty.arrow (.prim .unit)
+                (Ty.arrows (fields.map (fun ft => Ty.openWith (p ++ [rr]) ft)) rr))).length
+              = ctorCount := by
+            simp [hctorsLen]
+          obtain ⟨rest, hrest, hty⟩ :=
+            Ty.arrows_eq_arrows_append hopen.symm (by
+              simp only [List.length_cons, List.length_map]
+              omega)
+          have hlenRest : 0 < rest.length := by
+            have hcongr := congrArg List.length hrest
+            simp only [List.length_append, List.length_cons, List.length_map] at hcongr
+            omega
+          cases rest with
+          | nil => simp at hlenRest
+          | cons x xs =>
+              exfalso
+              exact Ty.apps_con_ne_arrow (a := x) (b := Ty.arrows xs _) hty
+
+/-- A fully applied elimininator's type is a list of all its branches at the
+result type. -/
+private theorem elim_spine_full {decl : DataDecl} {type : Nat}
+    {instArgs argTys : List Ty} {ty : Ty}
+    (hlen : instArgs.length = decl.paramCount + 1)
+    (hargLen : argTys.length = decl.ctors.length + 1)
+    (hopened : (decl.elimScheme type).openWith instArgs = Ty.arrows argTys ty) :
+    ∃ (params : List Ty) (r : Ty),
+      instArgs = params ++ [r] ∧ params.length = decl.paramCount ∧ ty = r ∧
+      argTys = (Ty.apps (.con type) params) ::
+        decl.ctors.map (fun fields =>
+          Ty.arrow (.prim .unit)
+            (Ty.arrows (fields.map (fun ft => Ty.openWith (params ++ [r]) ft)) r)) := by
+  obtain ⟨params, r, rfl, hplen⟩ := exists_append_singleton_of_length hlen
+  rw [DataDecl.elimScheme_openWith decl type hplen] at hopened
+  have hlenEq : argTys.length =
+      (Ty.apps (.con type) params :: decl.ctors.map (fun fields =>
+        Ty.arrow (.prim .unit)
+          (Ty.arrows (fields.map (fun ft => Ty.openWith (params ++ [r]) ft)) r))).length := by
+    simp only [List.length_cons, List.length_map]
+    omega
+  obtain ⟨hargTys, hty⟩ := Ty.arrows_cancel hopened.symm hlenEq
+  exact ⟨params, r, rfl, hplen, hty, hargTys⟩
+
+end RuntimeTyping
+
 private theorem erase_openRigidsFrom (expr : Source) :
     (expr.openRigidsFrom depth base count).erase = expr.erase := by
   induction expr generalizing depth with
@@ -16,6 +638,7 @@ private theorem erase_openRigidsFrom (expr : Source) :
       simp only [Expr.openRigidsFrom, Expr.erase, rhsIH, bodyIH]
   | fix ann body ih =>
       simp only [Expr.openRigidsFrom, Expr.erase, ih]
+  | const c => rfl
 
 /-- Opening source type annotations has no runtime effect. -/
 theorem erase_openRigids (expr : Source) :
@@ -25,8 +648,8 @@ theorem erase_openRigids (expr : Source) :
 namespace Typing
 
 /-- Erasing Core-native partial annotations preserves the assigned type. -/
-theorem erase (typing : Typing rigidCount ctx expr ty) :
-    RuntimeTyping rigidCount ctx expr.erase ty := by
+theorem erase (typing : Typing sig rigidCount ctx expr ty) :
+    RuntimeTyping sig rigidCount ctx expr.erase ty := by
   induction typing with
   | primLit => exact .primLit
   | primOp => exact .primOp
@@ -44,6 +667,8 @@ theorem erase (typing : Typing rigidCount ctx expr ty) :
       · exact bodyErased
   | fix selfWF _ _ bodyErased =>
       exact .fix selfWF bodyErased
+  | const hscheme hwf hlen hargs =>
+      exact .const hscheme hwf hlen hargs
 
 end Typing
 end EPL
@@ -116,8 +741,19 @@ private theorem wf_openWith
   exact ⟨scoped_openWith wf.1 hlen (fun arg harg => (hargs arg harg).1),
     metaFree_openWith wf.2 (fun arg harg => (hargs arg harg).2)⟩
 
+private theorem scoped_monoRigids_zero {ty : Ty} {n : Nat}
+    (h : ty.Scoped 0 n) (r : Nat) : ty.Scoped r n := by
+  induction h with
+  | prim => exact .prim
+  | arrow _ _ ihd ihc => exact .arrow ihd ihc
+  | bvar hi => exact .bvar hi
+  | rigid hi => omega
+  | mvar id => exact .mvar id
+  | con id => exact .con id
+  | app _ _ ihd ihc => exact .app ihd ihc
+
 /-- Runtime typing also assigns only scoped, meta-free semantic types. -/
-theorem regular (typing : RuntimeTyping rigidCount ctx expr ty) :
+theorem regular (typing : RuntimeTyping sig rigidCount ctx expr ty) :
     ty.WF rigidCount 0 := by
   induction typing with
   | primLit => cases_type PrimLit <;> exact ⟨.prim, .prim⟩
@@ -138,6 +774,10 @@ theorem regular (typing : RuntimeTyping rigidCount ctx expr ty) :
   | letMono => assumption
   | letPoly => assumption
   | fix => assumption
+  | const _ wf hlen hargs =>
+      expose_names
+      exact wf_openWith (binderCount := scheme.paramCount)
+        ⟨scoped_monoRigids_zero wf.1 _, wf.2⟩ hlen hargs
 
 end RuntimeTyping
 end EPL
@@ -298,9 +938,9 @@ private theorem shiftScheme_openRigids (scheme : PolyTy)
   simp only [PolyTy.openRigids, PolyTy.openWith, shiftScheme]
   rw [shiftTy_openWith, shiftRigidBlock hcut]
 
-private theorem shiftTyping (typing : RuntimeTyping rigidCount ctx expr ty)
+private theorem shiftTyping (typing : RuntimeTyping sig rigidCount ctx expr ty)
     (hcut : cutoff ≤ rigidCount) :
-    RuntimeTyping (rigidCount + delta) (shiftCtx cutoff delta ctx)
+    RuntimeTyping sig (rigidCount + delta) (shiftCtx cutoff delta ctx)
       expr (shiftTy cutoff delta ty) := by
   induction typing with
   | primLit =>
@@ -328,6 +968,22 @@ private theorem shiftTyping (typing : RuntimeTyping rigidCount ctx expr ty)
       simpa [shiftScheme, PolyTy.openWith, shiftedArgs, hopen] using
         (RuntimeTyping.var hlookup' (shiftScheme_wf hwf)
           (by simpa [shiftedArgs] using hlen) hargs')
+  | const hscheme hwf hlen hargs =>
+      clear rigidCount ctx expr ty
+      expose_names
+      let shiftedArgs := args.map (shiftTy cutoff delta)
+      have hargs' : ∀ arg ∈ shiftedArgs,
+          arg.WF (rigidCount + delta) 0 := by
+        intro arg harg
+        rcases List.mem_map.mp harg with ⟨original, horiginal, rfl⟩
+        exact shiftTy_wf (hargs original horiginal)
+      have hopen := shiftTy_openWith (cutoff := cutoff) (delta := delta)
+        scheme.body args
+      have hbody : shiftTy cutoff delta scheme.body = scheme.body :=
+        shiftTy_eq_self (scoped_monoRigids_zero hwf.1 cutoff)
+      simpa [shiftScheme, PolyTy.openWith, shiftedArgs, hopen, hbody] using
+        (RuntimeTyping.const hscheme hwf
+          (by simpa [shiftedArgs] using hlen) hargs')
   | lambda hwf _ ih =>
       simpa [shiftCtx, shiftScheme, PolyTy.mono, shiftTy] using
         (RuntimeTyping.lambda (shiftTy_wf hwf) (ih hcut))
@@ -352,10 +1008,10 @@ private theorem shiftTyping (typing : RuntimeTyping rigidCount ctx expr ty)
 private theorem rebaseExplicit
     (hctx : Ctx.WF rigidCount ctx)
     (hscheme : PolyTy.WF rigidCount scheme)
-    (htyping : RuntimeTyping (rigidCount + scheme.paramCount) ctx rhs
+    (htyping : RuntimeTyping sig (rigidCount + scheme.paramCount) ctx rhs
       (scheme.openRigids rigidCount))
     (hle : rigidCount ≤ larger) :
-    RuntimeTyping (larger + scheme.paramCount) ctx rhs
+    RuntimeTyping sig (larger + scheme.paramCount) ctx rhs
       (scheme.openRigids larger) := by
   let delta := larger - rigidCount
   have hshift := shiftTyping (cutoff := rigidCount) (delta := delta)
@@ -377,14 +1033,17 @@ private theorem rebaseExplicit
 /-- Runtime typing is stable when unrelated rigid levels are added to scope.
 Explicit-polymorphic lets rebase their deterministic generic block. -/
 theorem weakenRigids
-    (typing : RuntimeTyping rigidCount ctx expr ty)
+    (typing : RuntimeTyping sig rigidCount ctx expr ty)
     (hscope : rigidCount ≤ larger) :
-    RuntimeTyping larger ctx expr ty := by
+    RuntimeTyping sig larger ctx expr ty := by
   induction typing generalizing larger with
   | primLit => exact .primLit
   | primOp => exact .primOp
   | var hlookup hwf hlen hargs =>
       exact .var hlookup (schemeWF_monoRigids hwf hscope) hlen
+        (fun arg harg => wf_monoRigids (hargs arg harg) hscope)
+  | const hscheme hwf hlen hargs =>
+      exact .const hscheme hwf hlen
         (fun arg harg => wf_monoRigids (hargs arg harg) hscope)
   | lambda hwf _ ih =>
       exact .lambda (wf_monoRigids hwf hscope) (ih hscope)
@@ -438,10 +1097,10 @@ private theorem ctxWF_insert
     · exact wf scheme (List.mem_append_right pre hsuffix)
 
 private theorem weakenAt
-    (typing : RuntimeTyping rigidCount env expr ty) :
+    (typing : RuntimeTyping sig rigidCount env expr ty) :
     ∀ (pre post : Ctx), env = pre ++ post →
       inserted.WF rigidCount →
-      RuntimeTyping rigidCount (pre ++ inserted :: post)
+      RuntimeTyping sig rigidCount (pre ++ inserted :: post)
         (expr.shiftFrom pre.length 1) ty := by
   induction typing with
   | primLit =>
@@ -481,6 +1140,10 @@ private theorem weakenAt
       have shifted := bodyIH (PolyTy.mono paramTy :: pre) post
         (by simp [envEq]) insertedWF
       simpa only [List.cons_append, List.length_cons] using shifted
+  | const hscheme hwf hlen hargs =>
+      intro pre post envEq insertedWF
+      simpa only [Expr.shiftFrom] using
+        (RuntimeTyping.const hscheme hwf hlen hargs)
   | app _ _ functionIH argumentIH =>
       intro pre post envEq insertedWF
       exact .app (functionIH pre post envEq insertedWF)
@@ -518,9 +1181,9 @@ private theorem weakenAt
 /-- Inserting a well-formed scheme at the head of the term context preserves
 typing after shifting all free term indices by one. -/
 theorem weakenHead
-    (typing : RuntimeTyping rigidCount ctx expr ty)
+    (typing : RuntimeTyping sig rigidCount ctx expr ty)
     (insertedWF : inserted.WF rigidCount) :
-    RuntimeTyping rigidCount (inserted :: ctx) (expr.shiftFrom 0 1) ty := by
+    RuntimeTyping sig rigidCount (inserted :: ctx) (expr.shiftFrom 0 1) ty := by
   simpa using weakenAt typing [] ctx rfl insertedWF
 
 end RuntimeTyping
@@ -562,8 +1225,8 @@ private theorem openWith_eq_self_of_scoped_zero
 zero-binder scheme. -/
 theorem RuntimeHasScheme.mono
     (typeWF : ty.WF rigidCount 0)
-    (typing : RuntimeTyping rigidCount ctx expr ty) :
-    RuntimeHasScheme rigidCount ctx expr (PolyTy.mono ty) := by
+    (typing : RuntimeTyping sig rigidCount ctx expr ty) :
+    RuntimeHasScheme sig rigidCount ctx expr (PolyTy.mono ty) := by
   refine ⟨typeWF, ?_⟩
   intro larger hscope args hlen _
   have : args = [] := List.length_eq_zero_iff.mp (by simpa [PolyTy.mono] using hlen)
@@ -1019,12 +1682,12 @@ private theorem instantiateCtxRigidsTo_eq_self
       · exact ih (fun candidate hcandidate => wf candidate (by simp [hcandidate]))
 
 private theorem instantiateTypingTo
-    (typing : RuntimeTyping old ctx expr ty)
+    (typing : RuntimeTyping sig old ctx expr ty)
     (hold : old = source + count + extra)
     (hsource : source ≤ target)
     (hlen : args.length = count)
     (argsWF : ∀ arg ∈ args, arg.WF target 0) :
-    RuntimeTyping (target + extra)
+    RuntimeTyping sig (target + extra)
       (instantiateCtxRigidsTo source target count args ctx) expr
       (instantiateRigidsTo source target count args ty) := by
   induction typing generalizing extra with
@@ -1040,7 +1703,7 @@ private theorem instantiateTypingTo
           (instantiateCtxRigidsTo source target count args ctx)[index]? =
             some (instantiateSchemeRigidsTo source target count args scheme) := by
         simp [instantiateCtxRigidsTo, List.getElem?_map, hlookup]
-      have opened := RuntimeTyping.var
+      have opened := RuntimeTyping.var (sig := sig)
         (args := instArgs.map (instantiateRigidsTo source target count args)) hlookup'
         (instantiateSchemeRigidsTo_wf schemeWF' hsource hlen argsWF)
         (by simpa using instLength)
@@ -1060,6 +1723,33 @@ private theorem instantiateTypingTo
           (fun arg harg => (argsWF arg harg).1)
       rw [hopen]
       exact opened
+  | @const c scheme instArgs rigidCount ctx hscheme schemeWF instLength instWF =>
+      let transformedArgs := instArgs.map (instantiateRigidsTo source target count args)
+      have hlen' : transformedArgs.length = scheme.paramCount := by
+        simpa [transformedArgs] using instLength
+      have hargs' : ∀ arg ∈ transformedArgs, arg.WF (target + extra) 0 := by
+        intro arg harg
+        obtain ⟨original, horiginal, rfl⟩ := List.mem_map.mp harg
+        have originalWF : original.WF (source + count + extra) 0 := by
+          simpa [hold] using instWF original horiginal
+        exact instantiateRigidsTo_wf originalWF hsource hlen argsWF
+      have hopen :
+          instantiateRigidsTo source target count args (scheme.openWith instArgs) =
+            (instantiateRigidsTo source target count args scheme.body).openWith
+              transformedArgs :=
+        instantiateRigidsTo_openWith
+          (source := source) (target := target) (count := count) (args := args)
+          scheme.body (replacements := instArgs)
+          (fun arg harg => (argsWF arg harg).1)
+      have hbody : instantiateRigidsTo source target count args scheme.body = scheme.body :=
+        instantiateRigidsTo_eq_self
+          (scoped_mono schemeWF.1 (Nat.zero_le source) (le_refl scheme.paramCount))
+      have hgoal : instantiateRigidsTo source target count args (scheme.openWith instArgs) =
+          scheme.openWith transformedArgs := by
+        rw [hopen, hbody]
+        rfl
+      rw [hgoal]
+      exact RuntimeTyping.const (sig := sig) hscheme schemeWF hlen' hargs'
   | @lambda rigidCount paramTy ctx body bodyTy ann paramWF bodyTyping bodyIH =>
       have paramWF' : paramTy.WF (source + count + extra) 0 := by
         simpa [hold] using paramWF
@@ -1117,9 +1807,9 @@ well-formed semantic instances of that exact written scheme. -/
 theorem genericHasScheme
     (schemeWF : scheme.WF rigidCount)
     (ctxWF : ctx.WF rigidCount)
-    (generic : RuntimeTyping (rigidCount + scheme.paramCount) ctx expr
+    (generic : RuntimeTyping sig (rigidCount + scheme.paramCount) ctx expr
       (scheme.openRigids rigidCount)) :
-    RuntimeHasScheme rigidCount ctx expr scheme := by
+    RuntimeHasScheme sig rigidCount ctx expr scheme := by
   refine ⟨schemeWF, ?_⟩
   intro larger hscope args hlen argsWF
   have instantiated := instantiateTypingTo
@@ -1213,6 +1903,7 @@ private theorem shiftFrom_zero (expr : Expr T) :
   | letIn ann rhs body ihRhs ihBody =>
       simp [Expr.shiftFrom, ihRhs, ihBody]
   | fix ann body ih => simp [Expr.shiftFrom, ih]
+  | const c => rfl
 
 private theorem shiftFrom_add_zero (expr : Expr T) :
     (expr.shiftFrom threshold first).shiftFrom threshold second =
@@ -1230,13 +1921,14 @@ private theorem shiftFrom_add_zero (expr : Expr T) :
   | letIn ann rhs body ihRhs ihBody =>
       simp [Expr.shiftFrom, ihRhs, ihBody]
   | fix ann body ih => simp [Expr.shiftFrom, ih]
+  | const c => rfl
 
 private theorem hasScheme_weakenPrefix
     {rigidCount : Nat} {ctx pre : Ctx} {replacement : RuntimeExpr}
     {scheme : PolyTy}
-    (typing : RuntimeHasScheme rigidCount ctx replacement scheme)
+    (typing : RuntimeHasScheme sig rigidCount ctx replacement scheme)
     (preWF : pre.WF rigidCount) :
-    RuntimeHasScheme rigidCount (pre ++ ctx)
+    RuntimeHasScheme sig rigidCount (pre ++ ctx)
       (replacement.shiftFrom 0 pre.length) scheme := by
   refine ⟨typing.schemeWF, ?_⟩
   intro larger hscope args hlen hargs
@@ -1257,12 +1949,12 @@ private theorem hasScheme_weakenPrefix
         shiftFrom_add_zero, Nat.add_comm] using weakened
 
 private theorem substAt
-    (bodyTyping : RuntimeTyping rigidCount env body ty) :
+    (bodyTyping : RuntimeTyping sig rigidCount env body ty) :
     ∀ (pre ctx : Ctx) (target : PolyTy) (replacement : RuntimeExpr),
       env = pre ++ [target] ++ ctx →
       pre.WF rigidCount →
-      RuntimeHasScheme rigidCount ctx replacement target →
-      RuntimeTyping rigidCount (pre ++ ctx)
+      RuntimeHasScheme sig rigidCount ctx replacement target →
+      RuntimeTyping sig rigidCount (pre ++ ctx)
         (body.substN pre.length [replacement]) ty := by
   induction bodyTyping with
   | primLit =>
@@ -1295,7 +1987,7 @@ private theorem substAt
           have schemeEq : scheme = target := (Option.some.inj lookup').symm
           subst scheme
           have replacementAtPrefix := hasScheme_weakenPrefix replacementTyping preWF
-          have typed : RuntimeTyping rigidCount_1 (pre ++ ctx)
+          have typed : RuntimeTyping sig rigidCount_1 (pre ++ ctx)
               (replacement.shiftFrom 0 pre.length) (target.openWith args) :=
             replacementAtPrefix.typed rigidCount_1 (le_refl rigidCount_1)
               args lengthEq argsWF
@@ -1332,6 +2024,10 @@ private theorem substAt
       intro pre ctx target replacement envEq preWF replacementTyping
       exact .app (functionIH pre ctx target replacement envEq preWF replacementTyping)
         (argumentIH pre ctx target replacement envEq preWF replacementTyping)
+  | const hscheme hwf hlen hargs =>
+      intro pre ctx target replacement _ _ _
+      simpa only [Expr.substN] using
+        (RuntimeTyping.const hscheme hwf hlen hargs)
   | letMono rhsWF _ _ rhsIH bodyIH =>
       expose_names
       intro pre ctx target replacement envEq preWF replacementTyping
@@ -1372,9 +2068,9 @@ private theorem substAt
 preserves runtime typing. This is the common substitution principle for beta,
 monomorphic lets, explicit-polymorphic lets, and fixed-point unfolding. -/
 theorem substScheme
-    (replacementTyping : RuntimeHasScheme rigidCount ctx replacement scheme)
-    (bodyTyping : RuntimeTyping rigidCount (scheme :: ctx) body ty) :
-    RuntimeTyping rigidCount ctx (body.subst1 replacement) ty := by
+    (replacementTyping : RuntimeHasScheme sig rigidCount ctx replacement scheme)
+    (bodyTyping : RuntimeTyping sig rigidCount (scheme :: ctx) body ty) :
+    RuntimeTyping sig rigidCount ctx (body.subst1 replacement) ty := by
   simpa [Expr.subst1] using
     substAt bodyTyping [] ctx scheme replacement (by simp) (by simp [Ctx.WF])
       replacementTyping
@@ -1385,9 +2081,56 @@ end EPL
 namespace EPL
 namespace RuntimeTyping
 
+private theorem value_const_not_prim {c : DataConst} {args : List RuntimeExpr} {p : PrimTy}
+    (hlen : args.length ≤ c.valueArity)
+    (typing : RuntimeTyping sig r ctx (Expr.apps (.const c) args) (.prim p)) : False := by
+  obtain ⟨scheme, instArgs, argTys, hscheme, hwf, hilen, hiwf, hopen, hforall⟩ :=
+    const_spine_inv typing
+  cases c with
+  | ctor type ctor arity =>
+      obtain ⟨decl, fieldTys, hdecl, hctors, hflen, hschemeEq⟩ :=
+        Signature.schemeOf_ctor_some hscheme
+      subst scheme
+      have hilen' : instArgs.length = decl.paramCount := by simpa using hilen
+      rw [DataDecl.ctorScheme_openWith decl type fieldTys instArgs hilen'] at hopen
+      have hargLen : argTys.length = args.length :=
+        (List.Forall₂.length_eq hforall).symm
+      have hvalLen : args.length ≤ arity := by
+        simpa [DataConst.valueArity] using hlen
+      obtain ⟨rest, hrest, hty⟩ :=
+        Ty.arrows_eq_arrows_append hopen.symm (by
+          simp only [List.length_map]
+          omega)
+      cases rest with
+      | nil => exact Ty.apps_con_ne_prim hty.symm
+      | cons x xs => exact Ty.arrow_ne_prim hty.symm
+  | elim type ctorCount =>
+      obtain ⟨decl, hdecl, hctorsLen, hschemeEq⟩ :=
+        Signature.schemeOf_elim_some hscheme
+      subst scheme
+      have hilen' : instArgs.length = decl.paramCount + 1 := by simpa using hilen
+      obtain ⟨p', rr, hp, hplen⟩ := exists_append_singleton_of_length hilen'
+      subst hp
+      rw [DataDecl.elimScheme_openWith decl type hplen] at hopen
+      have hargLen : argTys.length = args.length :=
+        (List.Forall₂.length_eq hforall).symm
+      have hvalLen : args.length ≤ ctorCount := by
+        simpa [DataConst.valueArity] using hlen
+      obtain ⟨rest, hrest, hty⟩ :=
+        Ty.arrows_eq_arrows_append hopen.symm (by
+          simp only [List.length_cons, List.length_map]
+          omega)
+      have hlenRest : 0 < rest.length := by
+        have hcongr := congrArg List.length hrest
+        simp only [List.length_append, List.length_cons, List.length_map] at hcongr
+        omega
+      cases rest with
+      | nil => simp at hlenRest
+      | cons x xs => exact Ty.arrow_ne_prim hty.symm
+
 private theorem int_value
     (value : Eval.Value expr)
-    (typing : RuntimeTyping rigidCount [] expr (.prim .int)) :
+    (typing : RuntimeTyping sig rigidCount [] expr (.prim .int)) :
     ∃ number, expr = .primLit (.int number) := by
   cases value with
   | primLit =>
@@ -1398,8 +2141,20 @@ private theorem int_value
   | intAddPartial =>
       cases typing with
       | app functionTyping _ => cases functionTyping
+  | const hspine hlen hvals =>
+      exfalso
+      expose_names
+      have hexpr : Expr.apps (.const c) args = expr := by
+        have h := Expr.apps_spine expr
+        rw [hspine] at h
+        exact h
+      have typing' : RuntimeTyping sig rigidCount [] (Expr.apps (.const c) args)
+          (.prim .int) := by
+        rw [hexpr]
+        exact typing
+      exact value_const_not_prim hlen typing'
 
-private theorem progress_empty (typing : RuntimeTyping rigidCount ctx expr ty)
+private theorem progress_empty (typing : RuntimeTyping sig rigidCount ctx expr ty)
     (empty : ctx = []) :
     Eval.Value expr ∨ ∃ next, Eval.Step expr next := by
   induction typing with
@@ -1426,6 +2181,128 @@ private theorem progress_empty (typing : RuntimeTyping rigidCount ctx expr ty)
                   cases operatorTyping
                   obtain ⟨number, rfl⟩ := int_value argumentValue (empty ▸ argumentTyping)
                   exact .inr ⟨_, .intAdd⟩
+          | const hspine hlen hvals =>
+              expose_names
+              by_cases hsmall : args.length < c.valueArity
+              · refine .inl (Eval.Value.const (Expr.spine_app_spine hspine) ?_ ?_)
+                · simpa [List.length_append, List.length_cons] using Nat.succ_le_of_lt hsmall
+                · intro arg harg
+                  rcases List.mem_append.mp harg with h | h
+                  · exact hvals arg h
+                  · simp only [List.mem_singleton] at h
+                    subst h
+                    exact argumentValue
+              · have heq : args.length = c.valueArity :=
+                  le_antisymm hlen (Nat.le_of_not_gt hsmall)
+                cases c with
+                | ctor type ctor arity =>
+                    exfalso
+                    have hfunction : function =
+                        Expr.apps (.const (.ctor type ctor arity)) args := by
+                      have h := Expr.apps_spine function
+                      rw [hspine] at h
+                      exact h.symm
+                    have ftyping := functionTyping
+                    rw [hfunction] at ftyping
+                    obtain ⟨scheme, instArgs, argTys, hscheme, hwf, hilen, hiwf, hopen, hforall⟩ :=
+                      const_spine_inv ftyping
+                    obtain ⟨decl, fieldTys, hdecl, hctors, hflen, hschemeEq⟩ :=
+                      Signature.schemeOf_ctor_some hscheme
+                    subst scheme
+                    have hilen' : instArgs.length = decl.paramCount := by simpa using hilen
+                    rw [DataDecl.ctorScheme_openWith decl type fieldTys instArgs hilen'] at hopen
+                    have hargLen : argTys.length = args.length :=
+                      (List.Forall₂.length_eq hforall).symm
+                    have hvalLen : args.length ≤ arity := by
+                      simpa [DataConst.valueArity] using hlen
+                    have hargsArity : args.length = arity := by
+                      simpa [DataConst.valueArity] using heq
+                    have hlenEq : (fieldTys.map (fun ft => Ty.openWith instArgs ft)).length
+                        = argTys.length := by
+                      rw [List.length_map, hflen, hargLen, hargsArity]
+                    obtain ⟨_, hty⟩ := Ty.arrows_cancel hopen hlenEq
+                    exact Ty.apps_con_ne_arrow hty
+                | elim type ctorCount =>
+                    have hfunction : function =
+                        Expr.apps (.const (.elim type ctorCount)) args := by
+                      have h := Expr.apps_spine function
+                      rw [hspine] at h
+                      exact h.symm
+                    have hwhole :
+                        Expr.apps (.const (.elim type ctorCount)) (args ++ [argument]) =
+                          Expr.app function argument := by
+                      rw [Expr.apps_append, hfunction]
+                      rfl
+                    have whtyping := RuntimeTyping.app functionTyping argumentTyping
+                    rw [← hwhole] at whtyping
+                    obtain ⟨scheme, instArgs, argTys, hscheme, hwf, hilen, hiwf, hopen, hforall⟩ :=
+                      const_spine_inv whtyping
+                    obtain ⟨decl, hdecl, hctorsLen, hschemeEq⟩ :=
+                      Signature.schemeOf_elim_some hscheme
+                    subst scheme
+                    have hargsCtor : args.length = ctorCount := by
+                      simpa [DataConst.valueArity] using heq
+                    have hilen' : instArgs.length = decl.paramCount + 1 := by simpa using hilen
+                    have hargLen : argTys.length = decl.ctors.length + 1 := by
+                      have hlength := List.Forall₂.length_eq hforall
+                      simp only [List.length_append, List.length_cons, List.length_nil] at hlength
+                      omega
+                    obtain ⟨params, r, hparams, hplen, hty, hargTys⟩ :=
+                      elim_spine_full hilen' hargLen hopen
+                    rw [hargTys] at hforall
+                    cases args with
+                    | nil =>
+                        exfalso
+                        simp only [List.length_nil] at hargsCtor
+                        simp only [List.nil_append] at hforall
+                        cases hforall with
+                        | cons hscrut _ =>
+                            obtain ⟨d, ctor, arity, fields, fieldTys, hd, hctors, hflen,
+                              hargsEq, hfieldsLen, hctorWF, hfieldTypings⟩ :=
+                              data_value_canonical argumentValue hscrut
+                            have hdEq : d = decl := Option.some.inj (hd.symm.trans hdecl)
+                            rw [hdEq] at hctors
+                            obtain ⟨hlt, _⟩ := List.getElem?_eq_some_iff.mp hctors
+                            omega
+                    | cons s rest =>
+                        simp only [List.length_cons] at hargsCtor
+                        simp only [List.cons_append] at hforall
+                        cases hforall with
+                        | cons hscrut _ =>
+                            obtain ⟨d, ctor, arity, fields, fieldTys, hd, hctors, hflen,
+                              hargsEq, hfieldsLen, hctorWF, hfieldTypings⟩ :=
+                              data_value_canonical (hvals s (by simp)) hscrut
+                            have hdEq : d = decl := Option.some.inj (hd.symm.trans hdecl)
+                            rw [hdEq] at hctors hctorWF
+                            have hbranchLen : (rest ++ [argument]).length = ctorCount := by
+                              simp only [List.length_append, List.length_cons, List.length_nil]
+                              omega
+                            have hctorLt : ctor < ctorCount := by
+                              obtain ⟨hlt, _⟩ := List.getElem?_eq_some_iff.mp hctors
+                              omega
+                            have hspineScrut : s.spine =
+                                (.const (.ctor type ctor arity), fields) := by
+                              rw [hargsEq]
+                              exact Expr.spine_apps _ _
+                            have hget : (rest ++ [argument])[ctor]? =
+                                some ((rest ++ [argument])[ctor]'(by omega)) :=
+                              List.getElem?_eq_getElem (by omega)
+                            have hreduce : Eval.reduceConst (.elim type ctorCount)
+                                (s :: (rest ++ [argument])) =
+                                some (Expr.apps ((rest ++ [argument])[ctor]'(by omega))
+                                  (Expr.primLit .unit :: fields)) := by
+                              simp only [Eval.reduceConst, hbranchLen, hspineScrut,
+                                hfieldsLen, hget, Option.map_some, if_true]
+                            refine .inr ⟨Expr.apps ((rest ++ [argument])[ctor]'(by omega))
+                                (Expr.primLit .unit :: fields), ?_⟩
+                            refine Eval.Step.const (Expr.spine_app_spine hspine) ?_ ?_
+                            · intro arg harg
+                              rcases List.mem_append.mp harg with h | h
+                              · exact hvals arg h
+                              · simp only [List.mem_singleton] at h
+                                subst h
+                                exact argumentValue
+                            · simpa only [List.cons_append] using hreduce
         · exact .inr ⟨_, .appArgument functionValue argumentStep⟩
       · exact .inr ⟨_, .appFunction functionStep⟩
   | letMono _ _ _ rhsIH _ =>
@@ -1437,17 +2314,19 @@ private theorem progress_empty (typing : RuntimeTyping rigidCount ctx expr ty)
       · exact .inr ⟨_, .letValue rhsValue⟩
       · exact .inr ⟨_, .letRhs rhsStep⟩
   | fix => exact .inr ⟨_, .fixUnfold⟩
+  | const hscheme hwf hlen hargs =>
+      exact .inl (Eval.Value.const rfl (Nat.zero_le _) (by simp))
 
 /-- Closed, well-typed runtime terms are values or can take a step. -/
-theorem progress (typing : RuntimeTyping 0 [] expr ty) :
+theorem progress (typing : RuntimeTyping sig 0 [] expr ty) :
     Eval.Value expr ∨ ∃ next, Eval.Step expr next := by
   exact progress_empty typing rfl
 
 /-- A runtime step preserves the exact assigned type. -/
 theorem preservation
-    (typing : RuntimeTyping rigidCount ctx expr ty)
+    (typing : RuntimeTyping sig rigidCount ctx expr ty)
     (step : Eval.Step expr next) :
-    RuntimeTyping rigidCount ctx next ty := by
+    RuntimeTyping sig rigidCount ctx next ty := by
   induction step generalizing rigidCount ctx ty with
   | beta argumentValue =>
       cases typing with
@@ -1491,6 +2370,123 @@ theorem preservation
           expose_names
           have fixed := RuntimeTyping.fix selfWF bodyTyping
           exact substScheme (RuntimeHasScheme.mono selfWF fixed) bodyTyping
+  | const hspine hvals hreduce =>
+      expose_names
+      have hexpr : Expr.apps (.const c) args = Expr.app function argument := by
+        have h := Expr.apps_spine (Expr.app function argument)
+        rw [hspine] at h
+        exact h
+      have typing' : RuntimeTyping sig rigidCount ctx (Expr.apps (.const c) args) ty := by
+        rw [hexpr]
+        exact typing
+      obtain ⟨scheme, instArgs, argTys, hscheme, hwf, hilen, hiwf, hopen, hforall⟩ :=
+        const_spine_inv typing'
+      cases c with
+      | ctor type ctor arity =>
+          simp [Eval.reduceConst] at hreduce
+      | elim type ctorCount =>
+          cases args with
+          | nil => simp [Eval.reduceConst] at hreduce
+          | cons scrutinee branches =>
+              simp only [Eval.reduceConst] at hreduce
+              by_cases hbranchLen : branches.length = ctorCount
+              · rw [if_pos hbranchLen] at hreduce
+                cases hsp : scrutinee.spine with
+                | mk head fields =>
+                    rw [hsp] at hreduce
+                    cases head with
+                    | const dc =>
+                        cases dc with
+                        | ctor type' ctor arity =>
+                            by_cases hfieldsLen : fields.length = arity
+                            · simp only [hfieldsLen, if_true] at hreduce
+                              cases hbranch : branches[ctor]? with
+                              | none => simp [hbranch] at hreduce
+                              | some branch =>
+                                  simp only [hbranch, Option.map_some, Option.some.injEq] at hreduce
+                                  obtain ⟨decl, hdecl, hctorsLen, hschemeEq⟩ :=
+                                    Signature.schemeOf_elim_some hscheme
+                                  subst scheme
+                                  have hilen' : instArgs.length = decl.paramCount + 1 := by
+                                    simpa using hilen
+                                  have hargLen : argTys.length = decl.ctors.length + 1 := by
+                                    have hlength := List.Forall₂.length_eq hforall
+                                    simp only [List.length_cons] at hlength
+                                    omega
+                                  obtain ⟨params, r, hparams, hplen, hty, hargTys⟩ :=
+                                    elim_spine_full hilen' hargLen hopen
+                                  rw [hargTys] at hforall
+                                  cases hforall with
+                                  | cons hscrut htail =>
+                                      obtain ⟨d, ctor', arity', fields', fieldTys', hd, hctors',
+                                        hflen', hargsEq, hfieldsLen', hctorWF, hfieldTypings⟩ :=
+                                        data_value_canonical (hvals scrutinee (by simp)) hscrut
+                                      have hdEq : d = decl :=
+                                        Option.some.inj (hd.symm.trans hdecl)
+                                      rw [hdEq] at hctors' hctorWF
+                                      have hspineCanon : scrutinee.spine =
+                                          (.const (.ctor type ctor' arity'), fields') := by
+                                        rw [hargsEq]
+                                        exact Expr.spine_apps _ _
+                                      have hspineEq := hsp.symm.trans hspineCanon
+                                      injection hspineEq with hhead hfieldsEq
+                                      injection hhead with hcEq
+                                      injection hcEq with htypeEq hctorEq harityEq
+                                      subst htypeEq
+                                      subst hctorEq
+                                      subst harityEq
+                                      subst hfieldsEq
+                                      have hctorLt : ctor < decl.ctors.length := by
+                                        obtain ⟨hlt, _⟩ := List.getElem?_eq_some_iff.mp hctors'
+                                        exact hlt
+                                      have hdeclCtor : decl.ctors[ctor] = fieldTys' := by
+                                        have hsome := List.getElem?_eq_getElem hctorLt
+                                        exact Option.some.inj (hsome.symm.trans hctors')
+                                      let branchTy : List Ty → Ty := fun fs =>
+                                        Ty.arrow (.prim .unit)
+                                          (Ty.arrows (fs.map (fun ft =>
+                                            Ty.openWith (params ++ [r]) ft)) r)
+                                      have hmapGet : ((decl.ctors.map branchTy)[ctor]?) =
+                                          some (branchTy (decl.ctors[ctor]'(by omega))) := by
+                                        rw [List.getElem?_map, List.getElem?_eq_getElem hctorLt]
+                                        rfl
+                                      have hbranchTyping :
+                                          RuntimeTyping sig rigidCount ctx branch
+                                            (Ty.arrow (.prim .unit)
+                                              (Ty.arrows (fieldTys'.map
+                                                (fun ft => Ty.openWith (params ++ [r]) ft)) r)) := by
+                                        have hb := forall₂_get? htail hbranch hmapGet
+                                        rw [hdeclCtor] at hb
+                                        exact hb
+                                      have hfieldScoped : ∀ ft ∈ fieldTys',
+                                          ft.Scoped 0 decl.paramCount :=
+                                        ctorScheme_fields_scoped hctorWF
+                                      have hfieldTypings' : List.Forall₂ (fun e ft =>
+                                          RuntimeTyping sig rigidCount ctx e
+                                            (ft.openWith (params ++ [r]))) fields fieldTys' :=
+                                        forall₂_openWith_append hfieldScoped hplen hfieldTypings
+                                      have hargsForall : List.Forall₂ (fun e t =>
+                                          RuntimeTyping sig rigidCount ctx e t)
+                                          (Expr.primLit .unit :: fields)
+                                          (.prim .unit :: fieldTys'.map
+                                            (fun ft => Ty.openWith (params ++ [r]) ft)) :=
+                                        .cons .primLit (forall₂_map_of_forall₂ hfieldTypings')
+                                      have hresultTyping : RuntimeTyping sig rigidCount ctx
+                                          (Expr.apps branch (Expr.primLit .unit :: fields)) r :=
+                                        typing_apps_intro hbranchTyping hargsForall
+                                      rw [← hreduce, hty]
+                                      exact hresultTyping
+                            · simp [hfieldsLen] at hreduce
+                        | elim type' ctorCount' => simp at hreduce
+                    | primLit => simp at hreduce
+                    | primOp => simp at hreduce
+                    | var index => simp at hreduce
+                    | lambda ann body => simp at hreduce
+                    | app f a => simp at hreduce
+                    | letIn ann rhs body => simp at hreduce
+                    | fix ann body => simp at hreduce
+              · rw [if_neg hbranchLen] at hreduce
+                simp at hreduce
 
 end RuntimeTyping
 end EPL
@@ -1507,62 +2503,320 @@ by `run` given enough fuel.
 namespace EPL
 namespace Eval
 
+private theorem reduceConst_eq_none_of_length_le {c : DataConst} {args : List RuntimeExpr}
+    (hlen : args.length ≤ c.valueArity) : reduceConst c args = none := by
+  cases c with
+  | ctor type ctor arity => rfl
+  | elim type ctorCount =>
+      cases args with
+      | nil => rfl
+      | cons scrutinee branches =>
+          have hbranch : ¬ branches.length = ctorCount := by
+            simp [DataConst.valueArity] at hlen
+            omega
+          simp only [reduceConst, if_neg hbranch]
+
+
+
+private theorem value_app_spine_all_values {f a : RuntimeExpr} {c : DataConst}
+    {args : List RuntimeExpr}
+    (vf : Value f) (va : Value a)
+    (hsp : (Expr.app f a).spine = (.const c, args)) :
+    ∀ x ∈ args, Value x := by
+  cases vf with
+  | const hfspine hflen hfvals =>
+      have hsp' : (Expr.app f a).spine = (f.spine.1, f.spine.2 ++ [a]) := rfl
+      rw [hsp'] at hsp
+      rw [hfspine] at hsp
+      injection hsp with _ hargs
+      intro x hx
+      rw [← hargs] at hx
+      rcases List.mem_append.mp hx with h | h
+      · exact hfvals x h
+      · simp only [List.mem_singleton] at h
+        subst h
+        exact va
+  | primLit => simp only [Expr.spine] at hsp; cases hsp
+  | primOp => simp only [Expr.spine] at hsp; cases hsp
+  | lambda => simp only [Expr.spine] at hsp; cases hsp
+  | intAddPartial => simp only [Expr.spine] at hsp; cases hsp
+
+private theorem value_app_parts {f a : RuntimeExpr} {c : DataConst} {args : List RuntimeExpr}
+    (hsp : (Expr.app f a).spine = (.const c, args))
+    (hlen : args.length ≤ c.valueArity)
+    (hvals : ∀ x ∈ args, Value x) : Value f ∧ Value a := by
+  have hsp' : (Expr.app f a).spine = (f.spine.1, f.spine.2 ++ [a]) := rfl
+  rw [hsp'] at hsp
+  cases hfs : f.spine with
+  | mk head fs =>
+      rw [hfs] at hsp
+      injection hsp with hhead hargs
+      subst hhead
+      have hargsEq : args = fs ++ [a] := hargs.symm
+      have hlenF : fs.length ≤ c.valueArity := by
+        have hlen' := congrArg List.length hargsEq
+        simp only [List.length_append, List.length_cons, List.length_nil] at hlen'
+        omega
+      have hvalsF : ∀ x ∈ fs, Value x := by
+        intro x hx
+        exact hvals x (by rw [hargsEq]; exact List.mem_append_left _ hx)
+      exact ⟨Value.const hfs hlenF hvalsF,
+        hvals a (by rw [hargsEq]; simp)⟩
+
 theorem isValue_iff {expr : RuntimeExpr} :
     isValue expr = true ↔ Value expr := by
   constructor
   · intro h
-    cases expr with
+    induction expr with
     | primLit literal => exact .primLit
     | primOp op => exact .primOp
     | var index => simp [isValue] at h
     | lambda ann body => exact .lambda
-    | app function argument =>
-        cases function with
+    | letIn ann rhs body => simp [isValue] at h
+    | fix ann body => simp [isValue] at h
+    | const c => exact .const rfl (Nat.zero_le _) (by simp)
+    | app f a ihf iha =>
+        cases f with
         | primOp op =>
             cases op
-            cases argument with
+            cases a with
             | primLit literal =>
                 cases literal with
                 | int value => exact .intAddPartial
-                | unit => simp [isValue] at h
-                | bool value => simp [isValue] at h
-            | primOp op => simp [isValue] at h
-            | var index => simp [isValue] at h
-            | lambda ann body => simp [isValue] at h
-            | app f a => simp [isValue] at h
-            | letIn ann rhs body => simp [isValue] at h
-            | fix ann body => simp [isValue] at h
-        | primLit literal => simp [isValue] at h
-        | var index => simp [isValue] at h
-        | lambda ann body => simp [isValue] at h
-        | app f a => simp [isValue] at h
-        | letIn ann rhs body => simp [isValue] at h
-        | fix ann body => simp [isValue] at h
-    | letIn ann rhs body => simp [isValue] at h
-    | fix ann body => simp [isValue] at h
+                | unit => simp [isValue, Expr.spine] at h
+            | primOp => simp [isValue, Expr.spine] at h
+            | var index => simp [isValue, Expr.spine] at h
+            | lambda ann body => simp [isValue, Expr.spine] at h
+            | app f' a' => simp [isValue, Expr.spine] at h
+            | letIn ann rhs body => simp [isValue, Expr.spine] at h
+            | fix ann body => simp [isValue, Expr.spine] at h
+            | const c => simp [isValue, Expr.spine] at h
+        | primLit literal => simp [isValue, Expr.spine] at h
+        | var index => simp [isValue, Expr.spine] at h
+        | lambda ann body => simp [isValue, Expr.spine] at h
+        | letIn ann rhs body => simp [isValue, Expr.spine] at h
+        | fix ann body => simp [isValue, Expr.spine] at h
+        | const c =>
+            simp only [isValue, Expr.spine, Bool.and_eq_true, Bool.true_and,
+              true_and, decide_eq_true_eq, List.length_cons, List.length_nil] at h
+            obtain ⟨hia, hlen'⟩ := h
+            refine .const (c := c) (args := [a]) rfl ?_ ?_
+            · simpa using hlen'
+            · intro x hx
+              simp only [List.mem_singleton] at hx
+              subst hx
+              exact iha hia
+        | app f' a' =>
+            simp only [isValue, Bool.and_eq_true, Bool.true_and] at h
+            obtain ⟨⟨hif, hia⟩, hmatch⟩ := h
+            cases hsp : (Expr.app (.app f' a') a).spine with
+            | mk head args =>
+                simp only [hsp] at hmatch
+                cases head with
+                | const c =>
+                    simp only [decide_eq_true_eq] at hmatch
+                    exact .const hsp hmatch
+                      (value_app_spine_all_values (ihf hif) (iha hia) hsp)
+                | primLit => simp at hmatch
+                | primOp => simp at hmatch
+                | var => simp at hmatch
+                | lambda => simp at hmatch
+                | app => simp at hmatch
+                | letIn => simp at hmatch
+                | fix => simp at hmatch
   · intro value
-    cases value <;> simp [isValue]
+    induction expr with
+    | primLit literal => rfl
+    | primOp op => rfl
+    | var index =>
+        cases value with
+        | const hsp _ _ => simp [Expr.spine] at hsp
+    | lambda ann body => rfl
+    | letIn ann rhs body =>
+        cases value with
+        | const hsp _ _ => simp [Expr.spine] at hsp
+    | fix ann body =>
+        cases value with
+        | const hsp _ _ => simp [Expr.spine] at hsp
+    | const c => rfl
+    | app f a ihf iha =>
+        cases f with
+        | primOp op =>
+            cases op
+            cases value with
+            | intAddPartial => rfl
+            | const hsp _ _ => simp [Expr.spine] at hsp
+        | primLit literal =>
+            cases value with
+            | const hsp _ _ => simp [Expr.spine] at hsp
+        | var index =>
+            cases value with
+            | const hsp _ _ => simp [Expr.spine] at hsp
+        | lambda ann body =>
+            cases value with
+            | const hsp _ _ => simp [Expr.spine] at hsp
+        | letIn ann rhs body =>
+            cases value with
+            | const hsp _ _ => simp [Expr.spine] at hsp
+        | fix ann body =>
+            cases value with
+            | const hsp _ _ => simp [Expr.spine] at hsp
+        | const c0 =>
+            cases value with
+            | const hsp hlen hvals =>
+                obtain ⟨hvalF, hvalA⟩ := value_app_parts hsp hlen hvals
+                have hif := ihf hvalF
+                have hia := iha hvalA
+                have hstep : isValue (.app (.const c0) a) =
+                    (isValue (.const c0) && isValue a &&
+                      (match (Expr.app (.const c0) a).spine with
+                        | (.const c, args) => decide (args.length ≤ c.valueArity)
+                        | _ => false)) := rfl
+                rw [hstep]
+                simp only [isValue, hia, Bool.true_and, hsp, decide_eq_true_eq]
+                exact hlen
+        | app f' a' =>
+            cases value with
+            | const hsp hlen hvals =>
+                obtain ⟨hvalF, hvalA⟩ := value_app_parts hsp hlen hvals
+                have hif := ihf hvalF
+                have hia := iha hvalA
+                have hstep : isValue (.app (.app f' a') a) =
+                    (isValue (.app f' a') && isValue a &&
+                      (match (Expr.app (.app f' a') a).spine with
+                        | (.const c, args) => decide (args.length ≤ c.valueArity)
+                        | _ => false)) := rfl
+                rw [hstep]
+                simp only [hif, hia, Bool.true_and, hsp, decide_eq_true_eq]
+                exact hlen
 
-/-- `step?` is the identity (returns `none`) on values. -/
-private theorem step?_of_value {expr : RuntimeExpr} (value : Value expr) :
-    step? expr = none := by
-  cases value <;> rfl
+
+
+
+private theorem reduceConst_some_length {c : DataConst} {args : List RuntimeExpr}
+    {result : RuntimeExpr} (h : reduceConst c args = some result) :
+    args.length ≤ c.valueArity + 1 := by
+  cases c with
+  | ctor type ctor arity => simp [reduceConst] at h
+  | elim type ctorCount =>
+      cases args with
+      | nil => simp [reduceConst] at h
+      | cons scrutinee branches =>
+          by_cases hb : branches.length = ctorCount
+          · simp [DataConst.valueArity, List.length_cons]
+            omega
+          · simp [reduceConst, hb] at h
+
+private theorem reduceApp_eq_reduceConst {f a : RuntimeExpr} {c : DataConst}
+    {args : List RuntimeExpr} (hsp : (Expr.app f a).spine = (.const c, args)) :
+    reduceApp f a = reduceConst c args := by
+  cases f with
+  | lambda ann body => simp [Expr.spine] at hsp
+  | primOp op => cases op; simp [Expr.spine] at hsp
+  | primLit literal => simp [Expr.spine] at hsp
+  | var index => simp [Expr.spine] at hsp
+  | letIn ann rhs body => simp [Expr.spine] at hsp
+  | fix ann body => simp [Expr.spine] at hsp
+  | const c0 => simp [reduceApp, hsp]
+  | app f' a' =>
+      cases f' with
+      | primOp op => cases op; simp [Expr.spine] at hsp
+      | primLit literal => simp [reduceApp, hsp]
+      | var index => simp [reduceApp, hsp]
+      | lambda ann body => simp [reduceApp, hsp]
+      | letIn ann rhs body => simp [reduceApp, hsp]
+      | fix ann body => simp [reduceApp, hsp]
+      | const c0 => simp [reduceApp, hsp]
+      | app g b => simp [reduceApp, hsp]
 
 private theorem isValue_lambda (ann : Option Unit) (body : RuntimeExpr) :
     isValue (.lambda ann body) = true := rfl
 
-/-- Values are normal forms. -/
+private theorem step?_of_value {expr : RuntimeExpr} (value : Value expr) :
+    step? expr = none := by
+  induction expr with
+  | primLit literal => rfl
+  | primOp op => rfl
+  | lambda ann body => rfl
+  | const c => rfl
+  | var index =>
+      cases value with
+      | const hsp _ _ => simp [Expr.spine] at hsp
+  | letIn ann rhs body =>
+      cases value with
+      | const hsp _ _ => simp [Expr.spine] at hsp
+  | fix ann body =>
+      cases value with
+      | const hsp _ _ => simp [Expr.spine] at hsp
+  | app f a ihf iha =>
+      cases value with
+      | intAddPartial => rfl
+      | const hsp hlen hvals =>
+          obtain ⟨hvalF, hvalA⟩ := value_app_parts hsp hlen hvals
+          have hf := ihf hvalF
+          have ha := iha hvalA
+          have hif : isValue f = true := isValue_iff.mpr hvalF
+          have hia : isValue a = true := isValue_iff.mpr hvalA
+          have hredNone : reduceApp f a = none := by
+            rw [reduceApp_eq_reduceConst hsp]
+            exact reduceConst_eq_none_of_length_le hlen
+          simp [step?, hf, hif, ha, hia, hredNone]
+
 theorem Value.irreducible {expr next : RuntimeExpr}
     (value : Value expr) : ¬ Step expr next := by
-  intro step
-  cases value with
-  | primLit => cases step
-  | primOp => cases step
-  | lambda => cases step
-  | intAddPartial =>
-      cases step with
-      | appFunction h => cases h
-      | appArgument _ h => cases h
+  revert value
+  induction expr generalizing next with
+  | primLit literal =>
+      intro value step
+      cases value with
+      | primLit => cases step
+      | const hsp _ _ => simp [Expr.spine] at hsp
+  | primOp op =>
+      intro value step
+      cases value with
+      | primOp => cases step
+      | const hsp _ _ => simp [Expr.spine] at hsp
+  | lambda ann body =>
+      intro value step
+      cases value with
+      | lambda => cases step
+      | const hsp _ _ => simp [Expr.spine] at hsp
+  | var index =>
+      intro value step
+      cases value with
+      | const hsp _ _ => simp [Expr.spine] at hsp
+  | letIn ann rhs body =>
+      intro value step
+      cases value with
+      | const hsp _ _ => simp [Expr.spine] at hsp
+  | fix ann body =>
+      intro value step
+      cases value with
+      | const hsp _ _ => simp [Expr.spine] at hsp
+  | const c =>
+      intro value step
+      cases value with
+      | const hsp hlen hvals => cases step
+  | app f a ihf iha =>
+      intro value step
+      cases value with
+      | intAddPartial =>
+          cases step with
+          | appFunction h => exact ihf Value.primOp h
+          | appArgument _ h => exact iha Value.primLit h
+          | const hspStep _ _ => simp [Expr.spine] at hspStep
+      | const hsp hlen hvals =>
+          obtain ⟨hvalF, hvalA⟩ := value_app_parts hsp hlen hvals
+          cases step with
+          | beta _ => simp [Expr.spine] at hsp
+          | intAdd => simp [Expr.spine] at hsp
+          | appFunction h => exact ihf hvalF h
+          | appArgument _ h => exact iha hvalA h
+          | const hspStep _ hred =>
+              have hEq := hsp.symm.trans hspStep
+              cases hEq
+              rw [reduceConst_eq_none_of_length_le hlen] at hred
+              cases hred
 
 theorem step?_sound {expr next : RuntimeExpr}
     (h : step? expr = some next) : Step expr next := by
@@ -1571,6 +2825,7 @@ theorem step?_sound {expr next : RuntimeExpr}
   | primOp op => simp [step?] at h
   | var index => simp [step?] at h
   | lambda ann body => simp [step?] at h
+  | const c => simp [step?] at h
   | fix ann body =>
       cases ann
       simp only [step?] at h
@@ -1616,33 +2871,36 @@ theorem step?_sound {expr next : RuntimeExpr}
                 · simp only [harg, if_true] at h
                   have vf := isValue_iff.mp hval
                   have va := isValue_iff.mp harg
-                  cases vf with
-                  | primLit => simp [reduceApp] at h
-                  | primOp => simp [reduceApp] at h
-                  | lambda =>
-                      simp only [reduceApp] at h
-                      simp only [Option.some.injEq] at h
-                      cases h
-                      exact Step.beta va
-                  | intAddPartial =>
-                      cases va with
-                      | primLit =>
-                          rename_i literal
-                          cases literal with
-                          | int right =>
-                              simp only [reduceApp] at h
-                              simp only [Option.some.injEq] at h
-                              cases h
-                              exact Step.intAdd
-                          | unit => simp [reduceApp] at h
-                          | bool b => simp [reduceApp] at h
-                      | primOp => simp [reduceApp] at h
-                      | lambda => simp [reduceApp] at h
-                      | intAddPartial => simp [reduceApp] at h
+                  unfold reduceApp at h
+                  split at h
+                  · rename_i ann body _heq
+                    simp only [Option.some.injEq] at h
+                    cases h
+                    exact Step.beta va
+                  · rename_i l r _heqF _heqA
+                    simp only [Option.some.injEq] at h
+                    cases h
+                    exact Step.intAdd
+                  · cases hsp : (Expr.app function argument).spine with
+                    | mk head args =>
+                        simp only [hsp] at h
+                        cases head with
+                        | const c =>
+                            change reduceConst c args = some next at h
+                            exact Step.const hsp
+                              (value_app_spine_all_values vf va hsp) h
+                        | primLit => simp at h
+                        | primOp => simp at h
+                        | var => simp at h
+                        | lambda => simp at h
+                        | app => simp at h
+                        | letIn => simp at h
+                        | fix => simp at h
                 · simp only [harg] at h
                   simp at h
           · simp only [hval] at h
             simp at h
+
 
 theorem step?_complete {expr next : RuntimeExpr}
     (step : Step expr next) : step? expr = some next := by
@@ -1654,13 +2912,57 @@ theorem step?_complete {expr next : RuntimeExpr}
   | appArgument value h ih =>
       simp [step?, step?_of_value value, isValue_iff.mpr value, ih]
   | intAdd =>
-      simp [step?, reduceApp, isValue]
+      simp [step?, reduceApp, isValue, Expr.spine]
   | letRhs h ih =>
       simp [step?, ih]
   | letValue value =>
       simp [step?, step?_of_value value, isValue_iff.mpr value]
   | fixUnfold =>
       simp [step?]
+  | const hsp hvals hreduce =>
+      expose_names
+      have hlenTotal := reduceConst_some_length hreduce
+      have hspSpine : (Expr.app function argument).spine =
+          (function.spine.1, function.spine.2 ++ [argument]) := rfl
+      rw [hspSpine] at hsp
+      cases hfs : function.spine with
+      | mk head fs =>
+          rw [hfs] at hsp
+          injection hsp with hhead hargs
+          subst hhead
+          have hargsEq : args = fs ++ [argument] := hargs.symm
+          have hspine : (Expr.app function argument).spine = (.const c, args) := by
+            rw [hspSpine, hfs, ← hargsEq]
+          have hlenFs : fs.length ≤ c.valueArity := by
+            have := hlenTotal
+            rw [hargsEq] at this
+            simp only [List.length_append, List.length_cons, List.length_nil] at this
+            omega
+          have hvalsFs : ∀ x ∈ fs, Value x := by
+            intro x hx
+            exact hvals x (by rw [hargsEq]; exact List.mem_append_left _ hx)
+          have hvalArg : Value argument := hvals argument (by rw [hargsEq]; simp)
+          have hvalFunc : Value (Expr.apps (.const c) fs) :=
+            Value.const (by simpa using Expr.spine_apps (.const c) fs) hlenFs hvalsFs
+          have hfuncVal : function = Expr.apps (.const c) fs := by
+            have := Expr.apps_spine function
+            rw [hfs] at this
+            exact this.symm
+          have hstepFunc : step? function = none := by
+            rw [hfuncVal]
+            exact step?_of_value hvalFunc
+          have hif : isValue function = true := by
+            rw [hfuncVal]
+            exact isValue_iff.mpr hvalFunc
+          have hstepArg : step? argument = none := step?_of_value hvalArg
+          have hia : isValue argument = true := isValue_iff.mpr hvalArg
+          have hreduceApp : reduceApp function argument = some result := by
+            rw [reduceApp_eq_reduceConst hspine]
+            exact hreduce
+          have hstepEq : step? (Expr.app function argument) = some result := by
+            simp [step?, hstepFunc, hif, hstepArg, hia, hreduceApp]
+          rw [hstepEq]
+
 
 theorem Step.deterministic {expr first second : RuntimeExpr}
     (stepFirst : Step expr first) (stepSecond : Step expr second) :

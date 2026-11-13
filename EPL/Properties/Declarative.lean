@@ -88,8 +88,27 @@ private theorem wf_openWith
   exact ⟨scoped_openWith wf.1 hlen (fun arg harg => (hargs arg harg).1),
     metaFree_openWith wf.2 (fun arg harg => (hargs arg harg).2)⟩
 
+private theorem scoped_zero_mono {ty : Ty} {binderCount : Nat}
+    (h : ty.Scoped 0 binderCount) (rigidCount : Nat) :
+    ty.Scoped rigidCount binderCount := by
+  induction h with
+  | prim => exact .prim
+  | arrow _ _ iha ihb => exact .arrow iha ihb
+  | bvar hi => exact .bvar hi
+  | rigid hi => exact .rigid (by omega)
+  | mvar id => exact .mvar id
+  | con id => exact .con id
+  | app _ _ iha ihb => exact .app iha ihb
+
+private theorem wf_openWith_closed {scheme : PolyTy} {args : List Ty}
+    {rigidCount : Nat}
+    (hwf : scheme.WF 0) (hlen : args.length = scheme.paramCount)
+    (hargs : ∀ arg ∈ args, arg.WF rigidCount 0) :
+    (scheme.openWith args).WF rigidCount 0 :=
+  wf_openWith ⟨scoped_zero_mono hwf.1 rigidCount, hwf.2⟩ hlen hargs
+
 /-- Every declaratively assigned type is semantic and scoped. -/
-theorem regular (typing : Typing rigidCount ctx expr ty) :
+theorem regular (typing : Typing sig rigidCount ctx expr ty) :
     ty.WF rigidCount 0 := by
   induction typing with
   | primLit => cases_type PrimLit <;> exact ⟨.prim, .prim⟩
@@ -110,6 +129,8 @@ theorem regular (typing : Typing rigidCount ctx expr ty) :
   | letMono => assumption
   | letPoly => assumption
   | fix => assumption
+  | const hscheme hwf hlen hargs =>
+      exact wf_openWith_closed hwf hlen hargs
 
 end Typing
 end EPL
@@ -160,7 +181,7 @@ private theorem param_scoped
 
 /-- A derivable source expression cannot contain an out-of-scope authored
 rigid, bound type variable, or inference metavariable in its annotations. -/
-theorem sourceScoped (typing : Typing rigidCount ctx expr ty) :
+theorem sourceScoped (typing : Typing sig rigidCount ctx expr ty) :
     expr.TypeScoped rigidCount 0 := by
   induction typing with
   | primLit => exact .primLit
@@ -182,6 +203,7 @@ theorem sourceScoped (typing : Typing rigidCount ctx expr ty) :
         bodyScoped
   | fix selfWF hMatches _ bodyScoped =>
       exact .fix (matches_scoped hMatches selfWF) bodyScoped
+  | const => exact .const
 
 end Typing
 end EPL
@@ -232,6 +254,7 @@ private def shiftSource (cutoff delta : Nat) : Source → Source
         (shiftSource cutoff delta rhs) (shiftSource cutoff delta body)
   | .fix ann body =>
       .fix (shiftTemplate cutoff delta ann) (shiftSource cutoff delta body)
+  | .const c => .const c
 
 private def shiftCtx (cutoff delta : Nat) (ctx : Ctx) : Ctx :=
   ctx.map (shiftScheme cutoff delta)
@@ -292,6 +315,7 @@ private theorem typeScoped_monoRigids {expr : Source}
   | letPoly hw _ _ ihr ihb =>
       exact .letPoly (templateScoped_monoRigids hw hle) ihr ihb
   | fix ha _ ihb => exact .fix (templateScoped_monoRigids ha hle) ihb
+  | const => exact .const
 
 private theorem shiftTy_eq_self {ty : Ty} (h : Ty.Scoped cutoff binderCount ty) :
     shiftTy cutoff delta ty = ty := by
@@ -356,6 +380,7 @@ private theorem shiftSource_eq_self {expr : Source}
   | fix ann body ih =>
       cases h with
       | fix ha hb => simp [shiftSource, shiftTemplate_eq_self ha, ih hb]
+  | const => rfl
 
 private theorem shiftCtx_eq_self {ctx : Ctx} (h : Ctx.WF cutoff ctx) :
     shiftCtx cutoff delta ctx = ctx := by
@@ -454,6 +479,7 @@ private theorem shiftTypeScoped {expr : Source}
   | fix ann body ih =>
       cases h with
       | fix ha hb => exact .fix (shiftTemplate_scoped ha hcut) (ih hb)
+  | const => exact .const
 
 private theorem shiftCtx_wf {ctx : Ctx} (h : Ctx.WF rigidCount ctx)
     (hcut : cutoff ≤ rigidCount) :
@@ -630,6 +656,7 @@ private theorem shiftSource_openRigidsFrom (expr : Source)
   | fix ann body ih =>
       simp [Expr.openRigidsFrom, shiftSource, ih,
         shiftTemplate_openRigidsFrom ann hcut]
+  | const => rfl
 
 private theorem shiftSource_openRigids (expr : Source)
     (hcut : cutoff ≤ base) :
@@ -637,9 +664,35 @@ private theorem shiftSource_openRigids (expr : Source)
       (shiftSource cutoff delta expr).openRigids (base + delta) count :=
   shiftSource_openRigidsFrom expr hcut
 
-private theorem shiftTyping (typing : Typing rigidCount ctx expr ty)
+private theorem shiftTypingConst {rigidCount : Nat} {c : DataConst}
+    {scheme : PolyTy} {args : List Ty}
+    (hscheme : sig.schemeOf c = some scheme)
+    (hwf : scheme.WF 0)
+    (hlen : args.length = scheme.paramCount)
+    (hargs : ∀ arg ∈ args, arg.WF rigidCount 0)
     (hcut : cutoff ≤ rigidCount) :
-    Typing (rigidCount + delta) (shiftCtx cutoff delta ctx)
+    ∀ ctx : Ctx, Typing sig (rigidCount + delta) ctx
+      (.const c) (shiftTy cutoff delta (scheme.openWith args)) := by
+  intro ctx
+  let shiftedArgs := args.map (shiftTy cutoff delta)
+  have hargs' : ∀ arg ∈ shiftedArgs, arg.WF (rigidCount + delta) 0 := by
+    intro arg harg
+    rcases List.mem_map.mp harg with ⟨original, horiginal, rfl⟩
+    exact shiftTy_wf (hargs original horiginal) hcut
+  have hopen := shiftTy_openWith (cutoff := cutoff) (delta := delta)
+    scheme.body args
+  have hself : shiftTy cutoff delta scheme.body = scheme.body :=
+    shiftTy_eq_self (scoped_zero_mono hwf.1 cutoff)
+  have hopen' : shiftTy cutoff delta (scheme.body.openWith args) =
+      scheme.body.openWith (args.map (shiftTy cutoff delta)) := by
+    simpa [hself] using hopen
+  simpa [shiftSource, shiftedArgs, PolyTy.openWith, hopen'] using
+    (Typing.const (ctx := ctx) (rigidCount := rigidCount + delta)
+      hscheme hwf (by simpa [shiftedArgs] using hlen) hargs')
+
+private theorem shiftTyping (typing : Typing sig rigidCount ctx expr ty)
+    (hcut : cutoff ≤ rigidCount) :
+    Typing sig (rigidCount + delta) (shiftCtx cutoff delta ctx)
       (shiftSource cutoff delta expr) (shiftTy cutoff delta ty) := by
   induction typing with
   | primLit =>
@@ -689,16 +742,18 @@ private theorem shiftTyping (typing : Typing rigidCount ctx expr ty)
   | fix hwf hmatch _ ih =>
       simpa [shiftSource, shiftCtx, shiftScheme, PolyTy.mono] using
         (Typing.fix (shiftTy_wf hwf hcut) (shiftMatches hmatch) (ih hcut))
+  | const hscheme hwf hlen hargs =>
+      exact shiftTypingConst (delta := delta) hscheme hwf hlen hargs hcut _
 
 private theorem rebaseExplicit
     (hctx : Ctx.WF rigidCount ctx)
     (hsource : Expr.TypeScoped rigidCount scheme.paramCount rhs)
     (hscheme : PolyTy.WF rigidCount scheme)
-    (htyping : Typing (rigidCount + scheme.paramCount) ctx
+    (htyping : Typing sig (rigidCount + scheme.paramCount) ctx
       (rhs.openRigids rigidCount scheme.paramCount)
       (scheme.openRigids rigidCount))
     (hle : rigidCount ≤ larger) :
-    Typing (larger + scheme.paramCount) ctx
+    Typing sig (larger + scheme.paramCount) ctx
       (rhs.openRigids larger scheme.paramCount)
       (scheme.openRigids larger) := by
   let delta := larger - rigidCount
@@ -724,9 +779,9 @@ private theorem rebaseExplicit
 /-- Increasing the rigid-level boundary preserves an existing derivation.
 Explicit-scheme premises require alpha-renaming their deterministic fresh
 rigid block from the old boundary to the new one. -/
-theorem weakenRigids (typing : Typing rigidCount ctx expr ty)
+theorem weakenRigids (typing : Typing sig rigidCount ctx expr ty)
     (hscope : rigidCount ≤ larger) :
-    Typing larger ctx expr ty := by
+    Typing sig larger ctx expr ty := by
   induction typing generalizing larger with
   | primLit => exact .primLit
   | primOp => exact .primOp
@@ -744,6 +799,9 @@ theorem weakenRigids (typing : Typing rigidCount ctx expr ty)
         (rebaseExplicit hctx hsource hwf hrhs hscope) (ihb hscope)
   | fix hwf hmatch _ ih =>
       exact .fix (wf_monoRigids hwf hscope) hmatch (ih hscope)
+  | const hscheme hwf hlen hargs =>
+      exact .const hscheme hwf hlen
+        (fun arg harg => wf_monoRigids (hargs arg harg) hscope)
 
 end Typing
 end EPL
@@ -754,8 +812,8 @@ namespace EPL
 theorem Elaborates.typing
     {rigidCount : Nat} {ctx : Ctx} {input : Source} {elaborated : Expr Ty}
     {ty : Ty}
-    (elaborates : Elaborates rigidCount ctx input elaborated ty) :
-    Typing rigidCount ctx input ty := by
+    (elaborates : Elaborates sig rigidCount ctx input elaborated ty) :
+    Typing sig rigidCount ctx input ty := by
   induction elaborates with
   | primLit => exact .primLit
   | primOp => exact .primOp
@@ -766,5 +824,6 @@ theorem Elaborates.typing
   | letPoly hmatch hwf hctx hscoped _ _ _ rhsIH ihb =>
       exact .letPoly hmatch hwf hctx hscoped rhsIH ihb
   | fix hwf hmatch _ ih => exact .fix hwf hmatch ih
+  | const hscheme hwf hlen hargs => exact .const hscheme hwf hlen hargs
 
 end EPL

@@ -5,63 +5,108 @@ namespace EPL
 def PrimLit.ty : PrimLit → Ty
   | .unit => .prim .unit
   | .int _ => .prim .int
-  | .bool _ => .prim .bool
 
 def PrimOp.ty : PrimOp → Ty
   | .intAdd => .arrow (.prim .int) (.arrow (.prim .int) (.prim .int))
+
+def Ty.apps (head : Ty) (args : List Ty) : Ty :=
+  args.foldl .app head
+
+def Ty.arrows (domains : List Ty) (codomain : Ty) : Ty :=
+  domains.foldr .arrow codomain
+
+/-- Declared type `type` applied to its own parameters. -/
+def DataDecl.selfTy (decl : DataDecl) (type : Nat) : Ty :=
+  Ty.apps (.con type) ((List.range decl.paramCount).map .bvar)
+
+/-- `forall params. field_1 -> ... -> field_n -> T params`. -/
+def DataDecl.ctorScheme (decl : DataDecl) (type : Nat) (fields : List Ty) :
+    PolyTy :=
+  ⟨decl.paramCount, Ty.arrows fields (decl.selfTy type)⟩
+
+/-- A branch first receives `()`, so that call-by-value evaluation does not
+run the branches a match does not take, and then the constructor's fields. -/
+def branchTy (fields : List Ty) (result : Ty) : Ty :=
+  .arrow (.prim .unit) (Ty.arrows fields result)
+
+/-- `forall params r. T params -> branch_1 -> ... -> branch_k -> r`, with the
+result type `r` bound last. -/
+def DataDecl.elimScheme (decl : DataDecl) (type : Nat) : PolyTy :=
+  let result := Ty.bvar decl.paramCount
+  ⟨decl.paramCount + 1,
+    .arrow (decl.selfTy type)
+      (Ty.arrows (decl.ctors.map fun fields => branchTy fields result) result)⟩
+
+/-- The scheme of a constant, if the signature declares it with the recorded
+arity. -/
+def Signature.schemeOf (sig : Signature) : DataConst → Option PolyTy
+  | .ctor type ctor arity => do
+      let decl ← sig[type]?
+      let fields ← decl.ctors[ctor]?
+      if fields.length = arity then some (decl.ctorScheme type fields) else none
+  | .elim type ctorCount => do
+      let decl ← sig[type]?
+      if decl.ctors.length = ctorCount then some (decl.elimScheme type) else none
 
 /-- Declarative typing for the explicitly polymorphic source language.
 
 `rigidCount` is the number of rigid levels currently in scope. It makes an
 explicit scheme's generic opening deterministic and prevents rigid variables
 from being confused with inference metavariables. -/
-inductive Typing : Nat → Ctx → Source → Ty → Prop
+inductive Typing (sig : Signature) : Nat → Ctx → Source → Ty → Prop
   | primLit :
-      Typing rigidCount ctx (.primLit literal) literal.ty
+      Typing sig rigidCount ctx (.primLit literal) literal.ty
 
   | primOp :
-      Typing rigidCount ctx (.primOp op) op.ty
+      Typing sig rigidCount ctx (.primOp op) op.ty
 
   | var :
       ctx[index]? = some scheme →
       scheme.WF rigidCount →
       args.length = scheme.paramCount →
       (∀ arg ∈ args, arg.WF rigidCount 0) →
-      Typing rigidCount ctx (.var index) (scheme.openWith args)
+      Typing sig rigidCount ctx (.var index) (scheme.openWith args)
 
   | lambda :
       paramTy.WF rigidCount 0 →
       ParamAnn.Matches ann paramTy →
-      Typing rigidCount (PolyTy.mono paramTy :: ctx) body bodyTy →
-      Typing rigidCount ctx (.lambda ann body) (.arrow paramTy bodyTy)
+      Typing sig rigidCount (PolyTy.mono paramTy :: ctx) body bodyTy →
+      Typing sig rigidCount ctx (.lambda ann body) (.arrow paramTy bodyTy)
 
   | app :
-      Typing rigidCount ctx function (.arrow argumentTy resultTy) →
-      Typing rigidCount ctx argument argumentTy →
-      Typing rigidCount ctx (.app function argument) resultTy
+      Typing sig rigidCount ctx function (.arrow argumentTy resultTy) →
+      Typing sig rigidCount ctx argument argumentTy →
+      Typing sig rigidCount ctx (.app function argument) resultTy
 
   | letMono :
       rhsTy.WF rigidCount 0 →
-      Typing rigidCount ctx rhs rhsTy →
-      Typing rigidCount (PolyTy.mono rhsTy :: ctx) body bodyTy →
-      Typing rigidCount ctx (.letIn none rhs body) bodyTy
+      Typing sig rigidCount ctx rhs rhsTy →
+      Typing sig rigidCount (PolyTy.mono rhsTy :: ctx) body bodyTy →
+      Typing sig rigidCount ctx (.letIn none rhs body) bodyTy
 
   | letPoly :
       SchemeTemplateMatches written scheme →
       scheme.WF rigidCount →
       ctx.WF rigidCount →
       rhs.TypeScoped rigidCount scheme.paramCount →
-      Typing (rigidCount + scheme.paramCount) ctx
+      Typing sig (rigidCount + scheme.paramCount) ctx
         (rhs.openRigids rigidCount scheme.paramCount)
         (scheme.openRigids rigidCount) →
-      Typing rigidCount (scheme :: ctx) body bodyTy →
-      Typing rigidCount ctx (.letIn (some written) rhs body) bodyTy
+      Typing sig rigidCount (scheme :: ctx) body bodyTy →
+      Typing sig rigidCount ctx (.letIn (some written) rhs body) bodyTy
 
   | fix :
       selfTy.WF rigidCount 0 →
       ann.Matches selfTy →
-      Typing rigidCount (PolyTy.mono selfTy :: ctx) body selfTy →
-      Typing rigidCount ctx (.fix ann body) selfTy
+      Typing sig rigidCount (PolyTy.mono selfTy :: ctx) body selfTy →
+      Typing sig rigidCount ctx (.fix ann body) selfTy
+
+  | const :
+      sig.schemeOf c = some scheme →
+      scheme.WF 0 →
+      args.length = scheme.paramCount →
+      (∀ arg ∈ args, arg.WF rigidCount 0) →
+      Typing sig rigidCount ctx (.const c) (scheme.openWith args)
 
 /-- Declarative typing that also records the implicit types it chose: every
 lambda's parameter type, every `fix`'s self type, and every explicit let's
@@ -79,39 +124,39 @@ are treated like any other implicit type.)
 So, unlike `Typing`, not every typable program elaborates (e.g.
 `let f : forall a. _ -> a -> a = fun z y => y in f true true`, where `_` could
 be `a` or `Bool`). -/
-inductive Elaborates : Nat → Ctx → Source → Expr Ty → Ty → Prop
+inductive Elaborates (sig : Signature) : Nat → Ctx → Source → Expr Ty → Ty → Prop
   | primLit :
-      Elaborates rigidCount ctx (.primLit literal) (.primLit literal) literal.ty
+      Elaborates sig rigidCount ctx (.primLit literal) (.primLit literal) literal.ty
 
   | primOp :
-      Elaborates rigidCount ctx (.primOp op) (.primOp op) op.ty
+      Elaborates sig rigidCount ctx (.primOp op) (.primOp op) op.ty
 
   | var :
       ctx[index]? = some scheme →
       scheme.WF rigidCount →
       args.length = scheme.paramCount →
       (∀ arg ∈ args, arg.WF rigidCount 0) →
-      Elaborates rigidCount ctx (.var index) (.var index) (scheme.openWith args)
+      Elaborates sig rigidCount ctx (.var index) (.var index) (scheme.openWith args)
 
   | lambda :
       paramTy.WF rigidCount 0 →
       ParamAnn.Matches ann paramTy →
-      Elaborates rigidCount (PolyTy.mono paramTy :: ctx) body bodyElab bodyTy →
-      Elaborates rigidCount ctx (.lambda ann body)
+      Elaborates sig rigidCount (PolyTy.mono paramTy :: ctx) body bodyElab bodyTy →
+      Elaborates sig rigidCount ctx (.lambda ann body)
         (.lambda (some paramTy) bodyElab) (.arrow paramTy bodyTy)
 
   | app :
-      Elaborates rigidCount ctx function functionElab
+      Elaborates sig rigidCount ctx function functionElab
         (.arrow argumentTy resultTy) →
-      Elaborates rigidCount ctx argument argumentElab argumentTy →
-      Elaborates rigidCount ctx (.app function argument)
+      Elaborates sig rigidCount ctx argument argumentElab argumentTy →
+      Elaborates sig rigidCount ctx (.app function argument)
         (.app functionElab argumentElab) resultTy
 
   | letMono :
       rhsTy.WF rigidCount 0 →
-      Elaborates rigidCount ctx rhs rhsElab rhsTy →
-      Elaborates rigidCount (PolyTy.mono rhsTy :: ctx) body bodyElab bodyTy →
-      Elaborates rigidCount ctx (.letIn none rhs body)
+      Elaborates sig rigidCount ctx rhs rhsElab rhsTy →
+      Elaborates sig rigidCount (PolyTy.mono rhsTy :: ctx) body bodyElab bodyTy →
+      Elaborates sig rigidCount ctx (.letIn none rhs body)
         (.letIn none rhsElab bodyElab) bodyTy
 
   | letPoly :
@@ -119,7 +164,7 @@ inductive Elaborates : Nat → Ctx → Source → Expr Ty → Ty → Prop
       scheme.WF rigidCount →
       ctx.WF rigidCount →
       rhs.TypeScoped rigidCount scheme.paramCount →
-      Elaborates (rigidCount + scheme.paramCount) ctx
+      Elaborates sig (rigidCount + scheme.paramCount) ctx
         (rhs.openRigids rigidCount scheme.paramCount) rhsElab
         (scheme.openRigids rigidCount) →
       -- A polymorphic signature's holes are determined by the definition
@@ -129,18 +174,25 @@ inductive Elaborates : Nat → Ctx → Source → Expr Ty → Ty → Prop
       (scheme.paramCount = 0 ∨
         ∀ other : PolyTy, SchemeTemplateMatches written other →
           other.WF rigidCount →
-          Typing (rigidCount + other.paramCount) ctx
+          Typing sig (rigidCount + other.paramCount) ctx
             (rhs.openRigids rigidCount other.paramCount)
             (other.openRigids rigidCount) →
           other = scheme) →
-      Elaborates rigidCount (scheme :: ctx) body bodyElab bodyTy →
-      Elaborates rigidCount ctx (.letIn (some written) rhs body)
+      Elaborates sig rigidCount (scheme :: ctx) body bodyElab bodyTy →
+      Elaborates sig rigidCount ctx (.letIn (some written) rhs body)
         (.letIn (some scheme) rhsElab bodyElab) bodyTy
 
   | fix :
       selfTy.WF rigidCount 0 →
       ann.Matches selfTy →
-      Elaborates rigidCount (PolyTy.mono selfTy :: ctx) body bodyElab selfTy →
-      Elaborates rigidCount ctx (.fix ann body) (.fix selfTy bodyElab) selfTy
+      Elaborates sig rigidCount (PolyTy.mono selfTy :: ctx) body bodyElab selfTy →
+      Elaborates sig rigidCount ctx (.fix ann body) (.fix selfTy bodyElab) selfTy
+
+  | const :
+      sig.schemeOf c = some scheme →
+      scheme.WF 0 →
+      args.length = scheme.paramCount →
+      (∀ arg ∈ args, arg.WF rigidCount 0) →
+      Elaborates sig rigidCount ctx (.const c) (.const c) (scheme.openWith args)
 
 end EPL

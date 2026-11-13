@@ -22,6 +22,38 @@ import the FHM language or inference stack.
   annotation holes) are uniquely determined. Unknowns introduced only to
   instantiate a scheme need not be determined.
 
+## Data types
+
+A program is a `Signature` (a list of `DataDecl`s) and an expression; the
+signature is a uniform parameter of every judgment. Declaration `i` is the
+type constructor `Ty.con i`; types are applied with binary `Ty.app`, so a
+declared type's arguments need no nested list of types. Kinds are not
+checked: an ill-kinded type such as `Bool Int` is simply a type without
+values. A declaration lists, per constructor, its field types over the
+declaration's parameters (`bvar`s) and any declared types, so recursive and
+mutually recursive types are allowed.
+
+Each declaration contributes constants (`Expr.const`) with closed schemes:
+
+- constructor `C_i : forall params. fields_i -> T params`;
+- eliminator `elim_T : forall params r. T params -> branch_1 -> ... ->
+  branch_k -> r`, where `branch_i = Unit -> fields_i -> r`.
+
+Surface `match` is an application of the eliminator to one branch function
+per constructor, in declaration order; `if` is a match on `Bool`, now an
+ordinary declared type. Each branch first receives `()`, so call-by-value
+evaluation does not run the branches a match does not take. Representing
+matches by eliminator constants (like Lean's `casesOn`) rather than by a
+binding form with a list of branches keeps `Expr` a plain inductive, and
+typing and inference treat constants exactly like variables with closed
+schemes. Exhaustiveness and duplicate branches are therefore the parser's
+concern; a kernel match missing a branch is an ill-typed application.
+
+Constants record their arities, so the erased runtime evaluates without the
+signature: a constant applied to fewer arguments than it consumes is a value,
+and a saturated eliminator meeting a saturated constructor reduces to the
+chosen branch applied to `()` and the fields.
+
 ## Variable classes
 
 `Ty` deliberately distinguishes:

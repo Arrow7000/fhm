@@ -5,7 +5,6 @@ namespace EPL
 inductive PrimTy where
   | unit
   | int
-  | bool
   deriving DecidableEq, Repr
 
 /-- Semantic type variables and inference metavariables are different
@@ -181,11 +180,45 @@ structure SchemeTemplateMatches (written : Scheme Template)
 inductive PrimLit where
   | unit
   | int (value : Int)
-  | bool (value : Bool)
   deriving DecidableEq, Repr
 
 inductive PrimOp where
   | intAdd
+  deriving DecidableEq, Repr
+
+/-- A data type declaration with `paramCount` type parameters and one list of
+field types per constructor. Field types refer to the parameters as
+`bvar 0 ... bvar (paramCount - 1)` and to declared types (including this one
+and later ones, so recursion and mutual recursion are allowed) as `con`. -/
+structure DataDecl where
+  paramCount : Nat
+  ctors : List (List Ty)
+  deriving DecidableEq, Repr
+
+/-- A program's data declarations: type `con i` is declaration `i`. -/
+abbrev Signature := List DataDecl
+
+/-- The constants a signature introduces. Arities are recorded so that the
+erased runtime can evaluate without consulting the signature; typing checks
+them against it.
+
+@TODO Two simplifications to consider (deferred while data types land):
+* Parameterise `Eval.Step`/`step?`/`Value` by the signature and drop the
+  recorded arities (`arity`, `ctorCount`), which are then looked up.
+* Number constructors globally across the signature (`ctor id`), so a
+  constructor no longer names its type; typing looks up the owner. `elim`
+  keeps its type, which nothing else determines.
+* Once comparison primitives (`Int -> Int -> Bool`) exist, the primitive
+  typing rule must know which declared type is Bool: e.g. a premise that the
+  signature declares Bool at some index as exactly two nullary constructors
+  `True | False`, or a signature that records Bool's index. This fixes the
+  order of built-in declarations (or makes it explicit). -/
+inductive DataConst where
+  /-- Constructor number `ctor` of type `type`, which has `arity` fields. -/
+  | ctor (type ctor arity : Nat)
+  /-- The eliminator of type `type`, which has `ctorCount` constructors.
+  Surface `match` and `if` are applications of an eliminator. -/
+  | elim (type ctorCount : Nat)
   deriving DecidableEq, Repr
 
 /-- One expression family for annotated source and erased runtime syntax. -/
@@ -197,6 +230,7 @@ inductive Expr (T : Type) where
   | app (function argument : Expr T)
   | letIn (ann : Option (Scheme T)) (rhs body : Expr T)
   | fix (selfAnn : T) (body : Expr T)
+  | const (c : DataConst)
   deriving DecidableEq, Repr
 
 abbrev Source := Expr Template
@@ -213,10 +247,11 @@ def Expr.mapAnn (f : Ty → Ty) : Expr Ty → Expr Ty
   | .letIn scheme rhs body =>
       .letIn (scheme.map (Scheme.map f)) (rhs.mapAnn f) (body.mapAnn f)
   | .fix selfTy body => .fix (f selfTy) (body.mapAnn f)
+  | .const c => .const c
 
 /-- Every type annotation of an elaborated expression, in source order. -/
 def Expr.annotations : Expr Ty → List Ty
-  | .primLit _ | .primOp _ | .var _ => []
+  | .primLit _ | .primOp _ | .var _ | .const _ => []
   | .lambda paramTy body => paramTy.toList ++ body.annotations
   | .app function argument => function.annotations ++ argument.annotations
   | .letIn scheme rhs body =>
@@ -251,6 +286,7 @@ def Expr.openRigidsFrom (depth base count : Nat) : Source → Source
   | .fix ann body =>
       .fix (ann.openRigidsFrom depth base count)
         (body.openRigidsFrom depth base count)
+  | .const c => .const c
 
 def Expr.openRigids (base count : Nat) (expr : Source) : Source :=
   expr.openRigidsFrom 0 base count
@@ -283,6 +319,7 @@ inductive Expr.TypeScoped (rigidCount : Nat) : Nat → Source → Prop
       ann.Scoped rigidCount binderCount →
       body.TypeScoped rigidCount binderCount →
       Expr.TypeScoped rigidCount binderCount (.fix ann body)
+  | const : Expr.TypeScoped rigidCount binderCount (.const c)
 
 def Expr.erase : Source → RuntimeExpr
   | .primLit lit => .primLit lit
@@ -292,6 +329,7 @@ def Expr.erase : Source → RuntimeExpr
   | .app function argument => .app function.erase argument.erase
   | .letIn _ rhs body => .letIn none rhs.erase body.erase
   | .fix _ body => .fix () body.erase
+  | .const c => .const c
 
 /-- Shift free term-variable indices at or above `threshold`. -/
 def Expr.shiftFrom (threshold amount : Nat) : Expr T → Expr T
@@ -305,6 +343,7 @@ def Expr.shiftFrom (threshold amount : Nat) : Expr T → Expr T
       .letIn ann (rhs.shiftFrom threshold amount)
         (body.shiftFrom (threshold + 1) amount)
   | .fix ann body => .fix ann (body.shiftFrom (threshold + 1) amount)
+  | .const c => .const c
 
 /-- Capture-avoiding simultaneous substitution of consecutive de Bruijn term
 variables beginning at `depth`. -/
@@ -322,6 +361,7 @@ def Expr.substN (depth : Nat) (values : List (Expr T)) : Expr T → Expr T
   | .letIn ann rhs body =>
       .letIn ann (rhs.substN depth values) (body.substN (depth + 1) values)
   | .fix ann body => .fix ann (body.substN (depth + 1) values)
+  | .const c => .const c
 
 def Expr.subst1 (expr : Expr T) (value : Expr T) : Expr T :=
   expr.substN 0 [value]
