@@ -1,4 +1,4 @@
-import EPL.Properties.InferenceSound
+import EPL.Properties.InferenceComplete
 import EPL.Properties.Runtime
 
 namespace EPL

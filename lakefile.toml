@@ -57,6 +57,7 @@ roots = [
   "EPL.Properties.Unification",
   "EPL.Properties.InferenceState",
   "EPL.Properties.InferenceSound",
+  "EPL.Properties.InferenceComplete",
   "EPL.Properties.EndToEnd",
   "EPL.Examples",
   "EPL.Tests",

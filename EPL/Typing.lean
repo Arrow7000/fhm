@@ -70,7 +70,15 @@ omitted parameter type. Scheme instantiations are deliberately not recorded:
 an unknown introduced only to instantiate a scheme need not be determined.
 
 An explicit let's right-hand side is elaborated at the scheme's rigid block,
-so its recorded types may mention those rigid levels. -/
+so its recorded types may mention those rigid levels. A partial signature is
+completed from its definition and context, never from later uses: the
+completed scheme must be the only one for which the right-hand side checks.
+(Later uses could not consider completions mentioning the scheme's own
+binders. A signature without binders has no such completions, so its holes
+are treated like any other implicit type.)
+So, unlike `Typing`, not every typable program elaborates (e.g.
+`let f : forall a. _ -> a -> a = fun z y => y in f true true`, where `_` could
+be `a` or `Bool`). -/
 inductive Elaborates : Nat → Ctx → Source → Expr Ty → Ty → Prop
   | primLit :
       Elaborates rigidCount ctx (.primLit literal) (.primLit literal) literal.ty
@@ -114,6 +122,17 @@ inductive Elaborates : Nat → Ctx → Source → Expr Ty → Ty → Prop
       Elaborates (rigidCount + scheme.paramCount) ctx
         (rhs.openRigids rigidCount scheme.paramCount) rhsElab
         (scheme.openRigids rigidCount) →
+      -- A polymorphic signature's holes are determined by the definition
+      -- and its context alone: no other completion also checks. (A
+      -- signature without binders is an ordinary partial annotation, whose
+      -- holes later uses may determine.)
+      (scheme.paramCount = 0 ∨
+        ∀ other : PolyTy, SchemeTemplateMatches written other →
+          other.WF rigidCount →
+          Typing (rigidCount + other.paramCount) ctx
+            (rhs.openRigids rigidCount other.paramCount)
+            (other.openRigids rigidCount) →
+          other = scheme) →
       Elaborates rigidCount (scheme :: ctx) body bodyElab bodyTy →
       Elaborates rigidCount ctx (.letIn (some written) rhs body)
         (.letIn (some scheme) rhsElab bodyElab) bodyTy

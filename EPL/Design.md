@@ -76,8 +76,14 @@ successful internal run to declarative typing under every semantic model of
 its result state, and `infer_sound` specializes that result to the closed type
 returned by the public entry point.
 
-The kernel deliberately makes no claim of
-implicit generalisation or polymorphic recursion. Completeness is in progress.
+Inference is also complete: `infer_eq_some_iff` states that `infer` accepts
+exactly the programs with a unique elaboration and type (in the sense of
+`Elaborates`), and returns them; `infer_type_unique` that an accepted program
+has exactly one type. Internally, `inferFuel_principal(_elab)` (every
+declarative typing or elaboration is an instance of a successful run) and
+`inferFuel_complete` (a run on an elaborable program succeeds) carry the
+induction. The kernel deliberately has no implicit generalisation or
+polymorphic recursion.
 
 ## Algorithmic boundary
 
@@ -117,8 +123,9 @@ the written scheme, and unknowns created while checking its right-hand side,
 start at the inner level and are lowered as soon as they become part of an
 outer unknown's solution. This is the whole rigid-escape check.
 
-Partial signatures are completed from their definition and its context,
-never from later uses: after checking, every metavariable left in the
+Polymorphic partial signatures are completed from their definition and its
+context, never from later uses (a signature without binders is an ordinary
+partial annotation, whose holes later uses may determine): after checking, every metavariable left in the
 completed scheme must be at the outer level. A hole still at the inner level
 could equally have been one of the scheme's own binders, so the signature is
 ambiguous (`let f : forall a. _ -> a -> a = fun z y => y in f true true` is

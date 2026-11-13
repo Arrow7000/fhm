@@ -265,6 +265,24 @@ example : infer (.lambda none (.letIn (some polyIdentityAnnotation)
     (.primLit (.int 0)))) = none := by
   decide
 
+/-- `_ -> Int`: a signature without binders is an ordinary partial annotation. -/
+def monoHoleScheme : Scheme Template :=
+  ⟨0, .arrow .hole (.fixed intTy)⟩
+
+/-- Its hole may be determined by a later use.
+
+`let f : _ -> Int = fun x => 1 in f 3` -/
+example : (infer (.letIn (some monoHoleScheme) (.lambda none (.primLit (.int 1)))
+    (.app (.var 0) (.primLit (.int 3))))).map (·.ty) = some intTy := by
+  decide
+
+/-- If nothing determines it, the program is ambiguous.
+
+`let f : _ -> Int = fun x => 1 in 0` -/
+example : infer (.letIn (some monoHoleScheme) (.lambda none (.primLit (.int 1)))
+    (.primLit (.int 0))) = none := by
+  decide
+
 def inferredHoleLambda : Source :=
   .lambda (some .hole)
     (.app

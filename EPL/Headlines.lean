@@ -26,10 +26,15 @@ namespace EPL.Headlines
 #check @InferState.has_model
 #check @inferFuel_sound_model
 #check @Elaborates.typing
-#check @Typing.elaborates
 #check @infer_sound
 #check @infer_typing
 #check @infer_result_wf
+#check @inferFuel_principal
+#check @inferFuel_principal_elab
+#check @inferFuel_complete
+#check @infer_type_unique
+#check @infer_eq_some_iff
+#check @infer_eq_none_iff
 #check @infer_erases
 #check @infer_progress
 #check @infer_step_preserves
@@ -59,10 +64,15 @@ namespace EPL.Headlines
 #print axioms InferState.has_model
 #print axioms inferFuel_sound_model
 #print axioms Elaborates.typing
-#print axioms Typing.elaborates
 #print axioms infer_sound
 #print axioms infer_typing
 #print axioms infer_result_wf
+#print axioms inferFuel_principal
+#print axioms inferFuel_principal_elab
+#print axioms inferFuel_complete
+#print axioms infer_type_unique
+#print axioms infer_eq_some_iff
+#print axioms infer_eq_none_iff
 #print axioms infer_erases
 #print axioms infer_progress
 #print axioms infer_step_preserves
