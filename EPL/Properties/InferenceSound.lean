@@ -1752,6 +1752,41 @@ private theorem Ctx.InferWF.mono_rigid
     context.InferWF larger frontier :=
   fun scheme member => Ty.InferWF.mono_rigid (wf scheme member) le
 
+/-- Every primitive operator's result type is semantic and scoped (it is a
+closed type built from primitives, arrows, and possibly `Bool`). -/
+private theorem primOpTy_wf {sig : Signature} {op : PrimOp} {ty : Ty}
+    (hty : op.ty sig = some ty) {rigidCount : Nat} : ty.WF rigidCount 0 := by
+  cases op with
+  | intAdd | intSub =>
+      simp only [PrimOp.ty, Option.some.injEq] at hty
+      subst hty
+      exact ⟨Ty.Scoped.arrow Ty.Scoped.prim
+          (Ty.Scoped.arrow Ty.Scoped.prim Ty.Scoped.prim),
+        Ty.MetaFree.arrow Ty.MetaFree.prim
+          (Ty.MetaFree.arrow Ty.MetaFree.prim Ty.MetaFree.prim)⟩
+  | intLt =>
+      by_cases hb : sig.HasBool
+      · simp only [PrimOp.ty, hb, if_true, Option.some.injEq] at hty
+        subst hty
+        exact ⟨Ty.Scoped.arrow Ty.Scoped.prim
+            (Ty.Scoped.arrow Ty.Scoped.prim (Ty.Scoped.con 0)),
+          Ty.MetaFree.arrow Ty.MetaFree.prim
+            (Ty.MetaFree.arrow Ty.MetaFree.prim Ty.MetaFree.con)⟩
+      · simp [PrimOp.ty, hb] at hty
+  | charLt =>
+      by_cases hb : sig.HasBool
+      · simp only [PrimOp.ty, hb, if_true, Option.some.injEq] at hty
+        subst hty
+        exact ⟨Ty.Scoped.arrow Ty.Scoped.prim
+            (Ty.Scoped.arrow Ty.Scoped.prim (Ty.Scoped.con 0)),
+          Ty.MetaFree.arrow Ty.MetaFree.prim
+            (Ty.MetaFree.arrow Ty.MetaFree.prim Ty.MetaFree.con)⟩
+      · simp [PrimOp.ty, hb] at hty
+
+private theorem primOpTy_metaFree {sig : Signature} {op : PrimOp} {ty : Ty}
+    (hty : op.ty sig = some ty) : ty.MetaFree :=
+  (primOpTy_wf (rigidCount := 0) hty).2
+
 /-- Inference at a rigid count above `level` (inside an explicit scheme's
 region) allocates nothing at or below `level`, so it preserves anchoring. -/
 theorem inferFuel_anchored
@@ -1785,9 +1820,12 @@ theorem inferFuel_anchored
           subst result
           exact anchored
       | primOp op =>
-          simp only [inferFuel, Option.some.injEq] at run
-          subst result
-          exact anchored
+          cases hty : op.ty sig with
+          | none => simp [inferFuel, hty] at run
+          | some primTy =>
+              simp [inferFuel, hty] at run
+              subst result
+              exact anchored
       | var index =>
           simp only [inferFuel] at run
           cases lookup : ctx[index]? with
@@ -3294,11 +3332,17 @@ theorem inferFuel_principal
           cases literal <;>
             exact ⟨valuation, models, (fun id hid => rfl), rfl⟩
       | primOp op =>
-          simp only [inferFuel, Option.some.injEq] at run
-          subst result
-          cases typing
-          cases op
-          exact ⟨valuation, models, (fun id hid => rfl), rfl⟩
+          cases hty : op.ty sig with
+          | none => simp [inferFuel, hty] at run
+          | some primTy =>
+              simp [inferFuel, hty] at run
+              subst result
+              cases typing with
+              | primOp htyD =>
+                  have hEq : primTy = ty := Option.some.inj (hty.symm.trans htyD)
+                  subst hEq
+                  exact ⟨valuation, models, (fun id hid => rfl),
+                    Ty.realize_eq_self (primOpTy_metaFree htyD) valuation⟩
       | var index =>
           simp only [inferFuel] at run
           cases lookup : ctx[index]? with
@@ -4320,12 +4364,15 @@ theorem inferFuel_sound_model
           intro valuation models
           cases literal <;> exact Elaborates.primLit
       | primOp op =>
-          simp only [inferFuel, Option.some.injEq] at run
-          subst result
-          refine ⟨MStore.Refines.refl _, ?_⟩
-          intro valuation models
-          cases op
-          exact Elaborates.primOp
+          cases hty : op.ty sig with
+          | none => simp [inferFuel, hty] at run
+          | some primTy =>
+              simp [inferFuel, hty] at run
+              subst result
+              refine ⟨MStore.Refines.refl _, ?_⟩
+              intro valuation models
+              rw [Ty.realize_eq_self (primOpTy_metaFree hty) valuation]
+              exact Elaborates.primOp hty
       | var index =>
           simp only [inferFuel] at run
           cases lookup : ctx[index]? with

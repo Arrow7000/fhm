@@ -1428,6 +1428,37 @@ private theorem Ty.openWith_levelBounded
   · exact bodyBounded id old
   · exact argsBounded arg argMem id argMember
 
+/-- Every primitive operator's result type is semantic and scoped (it is a
+closed type built from primitives, arrows, and possibly `Bool`). -/
+private theorem primOpTy_wf {sig : Signature} {op : PrimOp} {ty : Ty}
+    (hty : op.ty sig = some ty) {rigidCount : Nat} : ty.WF rigidCount 0 := by
+  cases op with
+  | intAdd | intSub =>
+      simp only [PrimOp.ty, Option.some.injEq] at hty
+      subst hty
+      exact ⟨Ty.Scoped.arrow Ty.Scoped.prim
+          (Ty.Scoped.arrow Ty.Scoped.prim Ty.Scoped.prim),
+        Ty.MetaFree.arrow Ty.MetaFree.prim
+          (Ty.MetaFree.arrow Ty.MetaFree.prim Ty.MetaFree.prim)⟩
+  | intLt =>
+      by_cases hb : sig.HasBool
+      · simp only [PrimOp.ty, hb, if_true, Option.some.injEq] at hty
+        subst hty
+        exact ⟨Ty.Scoped.arrow Ty.Scoped.prim
+            (Ty.Scoped.arrow Ty.Scoped.prim (Ty.Scoped.con 0)),
+          Ty.MetaFree.arrow Ty.MetaFree.prim
+            (Ty.MetaFree.arrow Ty.MetaFree.prim Ty.MetaFree.con)⟩
+      · simp [PrimOp.ty, hb] at hty
+  | charLt =>
+      by_cases hb : sig.HasBool
+      · simp only [PrimOp.ty, hb, if_true, Option.some.injEq] at hty
+        subst hty
+        exact ⟨Ty.Scoped.arrow Ty.Scoped.prim
+            (Ty.Scoped.arrow Ty.Scoped.prim (Ty.Scoped.con 0)),
+          Ty.MetaFree.arrow Ty.MetaFree.prim
+            (Ty.MetaFree.arrow Ty.MetaFree.prim Ty.MetaFree.con)⟩
+      · simp [PrimOp.ty, hb] at hty
+
 /-- Inference preserves state safety, returns an allocated type scoped and
 levelled at the current rigid count, never moves the frontier backwards, and
 only ever lowers the levels of existing metavariables. -/
@@ -1578,18 +1609,19 @@ theorem inferFuel_safe
           · intro id hid
             exact le_rfl
       | primOp op =>
-          simp only [inferFuel, Option.some.injEq] at run
-          subst result
-          refine ⟨stateSafe, ?_, ?_, le_rfl, ?_⟩
-          · cases op
-            exact wf_inferWF
-              ⟨.arrow .prim (.arrow .prim .prim),
-                .arrow .prim (.arrow .prim .prim)⟩
-          · cases op
-            intro id member
-            simp [Ty.mvars, PrimOp.ty] at member
-          · intro id hid
-            exact le_rfl
+          cases hty : op.ty sig with
+          | none => simp [inferFuel, hty] at run
+          | some primTy =>
+              simp [inferFuel, hty] at run
+              subst result
+              refine ⟨stateSafe, ?_, ?_, le_rfl, ?_⟩
+              · exact wf_inferWF (primOpTy_wf (rigidCount := rigidCount) hty)
+              · intro id member
+                have hbound := metaFree_bounded
+                  (primOpTy_wf (rigidCount := 0) hty).2 (frontier := 0) id member
+                omega
+              · intro id hid
+                exact le_rfl
       | var index =>
           simp only [inferFuel] at run
           cases lookup : ctx[index]? with

@@ -397,6 +397,229 @@ namespace RuntimeTyping
 
 variable {sig : Signature} {r : Nat} {ctx : Ctx}
 
+/-- A typed primitive operator has an arrow type. -/
+private theorem primOp_ty_arrow {sig : Signature} {op : PrimOp} {ty : Ty}
+    (hop : op.ty sig = some ty) : ∃ a b, ty = .arrow a b := by
+  cases op with
+  | intAdd =>
+      exact ⟨_, _, by
+        simp only [PrimOp.ty, Option.some.injEq] at hop
+        exact hop.symm⟩
+  | intSub =>
+      exact ⟨_, _, by
+        simp only [PrimOp.ty, Option.some.injEq] at hop
+        exact hop.symm⟩
+  | intLt =>
+      by_cases hb : sig.HasBool
+      · exact ⟨_, _, by
+          simp only [PrimOp.ty, if_pos hb, Option.some.injEq] at hop
+          exact hop.symm⟩
+      · simp [PrimOp.ty, if_neg hb] at hop
+  | charLt =>
+      by_cases hb : sig.HasBool
+      · exact ⟨_, _, by
+          simp only [PrimOp.ty, if_pos hb, Option.some.injEq] at hop
+          exact hop.symm⟩
+      · simp [PrimOp.ty, if_neg hb] at hop
+
+/-- The codomain of a typed primitive operator is itself an arrow. -/
+private theorem primOp_ty_codomain_arrow {sig : Signature} {op : PrimOp} {a b : Ty}
+    (hop : op.ty sig = some (.arrow a b)) : ∃ c d, b = .arrow c d := by
+  cases op with
+  | intAdd =>
+      simp only [PrimOp.ty, Option.some.injEq, Ty.arrow.injEq] at hop
+      exact ⟨_, _, hop.2.symm⟩
+  | intSub =>
+      simp only [PrimOp.ty, Option.some.injEq, Ty.arrow.injEq] at hop
+      exact ⟨_, _, hop.2.symm⟩
+  | intLt =>
+      by_cases hb : sig.HasBool
+      · simp only [PrimOp.ty, if_pos hb, Option.some.injEq, Ty.arrow.injEq] at hop
+        exact ⟨_, _, hop.2.symm⟩
+      · simp [PrimOp.ty, if_neg hb] at hop
+  | charLt =>
+      by_cases hb : sig.HasBool
+      · simp only [PrimOp.ty, if_pos hb, Option.some.injEq, Ty.arrow.injEq] at hop
+        exact ⟨_, _, hop.2.symm⟩
+      · simp [PrimOp.ty, if_neg hb] at hop
+
+/-- The domain and codomain of a typed primitive operator are primitive types. -/
+private theorem primOp_ty_domain {sig : Signature} {op : PrimOp} {α β ty : Ty}
+    (hop : op.ty sig = some (.arrow α (.arrow β ty))) :
+    ∃ p q, α = .prim p ∧ β = .prim q := by
+  cases op with
+  | intAdd =>
+      simp only [PrimOp.ty, Option.some.injEq, Ty.arrow.injEq] at hop
+      obtain ⟨hα, hβ, _⟩ := hop
+      exact ⟨.int, .int, hα.symm, hβ.symm⟩
+  | intSub =>
+      simp only [PrimOp.ty, Option.some.injEq, Ty.arrow.injEq] at hop
+      obtain ⟨hα, hβ, _⟩ := hop
+      exact ⟨.int, .int, hα.symm, hβ.symm⟩
+  | intLt =>
+      by_cases hb : sig.HasBool
+      · simp only [PrimOp.ty, if_pos hb, Option.some.injEq, Ty.arrow.injEq] at hop
+        obtain ⟨hα, hβ, _⟩ := hop
+        exact ⟨.int, .int, hα.symm, hβ.symm⟩
+      · simp [PrimOp.ty, if_neg hb] at hop
+  | charLt =>
+      by_cases hb : sig.HasBool
+      · simp only [PrimOp.ty, if_pos hb, Option.some.injEq, Ty.arrow.injEq] at hop
+        obtain ⟨hα, hβ, _⟩ := hop
+        exact ⟨.char, .char, hα.symm, hβ.symm⟩
+      · simp [PrimOp.ty, if_neg hb] at hop
+
+/-- A typed primitive operator's type is well formed. -/
+private theorem primOp_ty_wf {sig : Signature} {op : PrimOp} {ty : Ty} {rc : Nat}
+    (hop : op.ty sig = some ty) : ty.WF rc 0 := by
+  cases op with
+  | intAdd =>
+      simp only [PrimOp.ty, Option.some.injEq] at hop
+      subst hop
+      exact ⟨.arrow .prim (.arrow .prim .prim),
+        .arrow .prim (.arrow .prim .prim)⟩
+  | intSub =>
+      simp only [PrimOp.ty, Option.some.injEq] at hop
+      subst hop
+      exact ⟨.arrow .prim (.arrow .prim .prim),
+        .arrow .prim (.arrow .prim .prim)⟩
+  | intLt =>
+      by_cases hb : sig.HasBool
+      · simp only [PrimOp.ty, if_pos hb, Option.some.injEq] at hop
+        subst hop
+        exact ⟨.arrow .prim (.arrow .prim (.con 0)),
+          .arrow .prim (.arrow .prim .con)⟩
+      · simp [PrimOp.ty, if_neg hb] at hop
+  | charLt =>
+      by_cases hb : sig.HasBool
+      · simp only [PrimOp.ty, if_pos hb, Option.some.injEq] at hop
+        subst hop
+        exact ⟨.arrow .prim (.arrow .prim (.con 0)),
+          .arrow .prim (.arrow .prim .con)⟩
+      · simp [PrimOp.ty, if_neg hb] at hop
+
+private theorem primLit_int_eq {lit : PrimLit} (h : lit.ty = .prim .int) :
+    ∃ n, lit = .int n := by
+  cases lit with
+  | int n => exact ⟨n, rfl⟩
+  | unit => simp [PrimLit.ty] at h
+  | nat n => simp [PrimLit.ty] at h
+  | char c => simp [PrimLit.ty] at h
+
+private theorem primLit_char_eq {lit : PrimLit} (h : lit.ty = .prim .char) :
+    ∃ c, lit = .char c := by
+  cases lit with
+  | int n => simp [PrimLit.ty] at h
+  | unit => simp [PrimLit.ty] at h
+  | nat n => simp [PrimLit.ty] at h
+  | char c => exact ⟨c, rfl⟩
+
+/-- Under the `Bool` convention, declaration 0's constructors have scheme `Bool`. -/
+private theorem hasBool_schemeOf_boolCtor {sig : Signature} (hsig : sig.HasBool)
+    (c : Nat) (hc : c < 2) :
+    sig.schemeOf (.ctor 0 c 0) = some (PolyTy.mono Ty.bool) := by
+  have h0 : sig[0]? = some boolDecl := hsig
+  have hc' : c = 0 ∨ c = 1 := by omega
+  rcases hc' with rfl | rfl <;>
+    simp [Signature.schemeOf, h0, boolDecl, DataDecl.ctorScheme, DataDecl.selfTy,
+      Ty.apps, Ty.arrows, PolyTy.mono, Ty.bool]
+
+/-- `True` and `False` are typed at `Bool` under the `Bool` convention. -/
+private theorem hasBool_boolValue_typing {sig : Signature} {rc : Nat} {ctx : Ctx}
+    (hsig : sig.HasBool) (b : Bool) :
+    RuntimeTyping sig rc ctx (Eval.boolValue b) Ty.bool := by
+  have hsch := hasBool_schemeOf_boolCtor hsig (if b then 0 else 1) (by split <;> omega)
+  unfold Eval.boolValue Ty.bool
+  refine RuntimeTyping.const (args := []) hsch ?_ rfl ?_
+  · exact ⟨.con 0, .con⟩
+  · intro arg harg
+    simp at harg
+
+/-- A saturated primitive application on operands of the right kinds has a result. -/
+private theorem primOp_eval_exists {sig : Signature} {op : PrimOp} {left right : PrimLit}
+    {α β ty : Ty}
+    (hop : op.ty sig = some (.arrow α (.arrow β ty)))
+    (hleft : left.ty = α) (hright : right.ty = β) :
+    ∃ result, op.eval left right = some result := by
+  cases op with
+  | intAdd =>
+      simp only [PrimOp.ty, Option.some.injEq, Ty.arrow.injEq] at hop
+      obtain ⟨hα, hβ, _⟩ := hop
+      obtain ⟨l, rfl⟩ := primLit_int_eq (hleft.trans hα.symm)
+      obtain ⟨rr, rfl⟩ := primLit_int_eq (hright.trans hβ.symm)
+      exact ⟨.primLit (.int (l + rr)), by simp [PrimOp.eval]⟩
+  | intSub =>
+      simp only [PrimOp.ty, Option.some.injEq, Ty.arrow.injEq] at hop
+      obtain ⟨hα, hβ, _⟩ := hop
+      obtain ⟨l, rfl⟩ := primLit_int_eq (hleft.trans hα.symm)
+      obtain ⟨rr, rfl⟩ := primLit_int_eq (hright.trans hβ.symm)
+      exact ⟨.primLit (.int (l - rr)), by simp [PrimOp.eval]⟩
+  | intLt =>
+      by_cases hb : sig.HasBool
+      · simp only [PrimOp.ty, if_pos hb, Option.some.injEq, Ty.arrow.injEq] at hop
+        obtain ⟨hα, hβ, _⟩ := hop
+        obtain ⟨l, rfl⟩ := primLit_int_eq (hleft.trans hα.symm)
+        obtain ⟨rr, rfl⟩ := primLit_int_eq (hright.trans hβ.symm)
+        exact ⟨Eval.boolValue (decide (l < rr)), by simp [PrimOp.eval]⟩
+      · simp [PrimOp.ty, if_neg hb] at hop
+  | charLt =>
+      by_cases hb : sig.HasBool
+      · simp only [PrimOp.ty, if_pos hb, Option.some.injEq, Ty.arrow.injEq] at hop
+        obtain ⟨hα, hβ, _⟩ := hop
+        obtain ⟨l, rfl⟩ := primLit_char_eq (hleft.trans hα.symm)
+        obtain ⟨rr, rfl⟩ := primLit_char_eq (hright.trans hβ.symm)
+        exact ⟨Eval.boolValue (decide (l < rr)), by simp [PrimOp.eval]⟩
+      · simp [PrimOp.ty, if_neg hb] at hop
+
+/-- Evaluating a saturated primitive preserves the assigned type. -/
+private theorem primOp_eval_typing {sig : Signature} {rc : Nat} {ctx : Ctx}
+    {op : PrimOp} {left right : PrimLit} {result : RuntimeExpr} {α β ty : Ty}
+    (hop : op.ty sig = some (.arrow α (.arrow β ty)))
+    (hleft : left.ty = α) (hright : right.ty = β)
+    (heval : op.eval left right = some result) :
+    RuntimeTyping sig rc ctx result ty := by
+  cases op with
+  | intAdd =>
+      simp only [PrimOp.ty, Option.some.injEq, Ty.arrow.injEq] at hop
+      obtain ⟨hα, hβ, hγ⟩ := hop
+      obtain ⟨l, rfl⟩ := primLit_int_eq (hleft.trans hα.symm)
+      obtain ⟨rr, rfl⟩ := primLit_int_eq (hright.trans hβ.symm)
+      simp only [PrimOp.eval, Option.some.injEq] at heval
+      subst heval
+      rw [← hγ]
+      exact .primLit
+  | intSub =>
+      simp only [PrimOp.ty, Option.some.injEq, Ty.arrow.injEq] at hop
+      obtain ⟨hα, hβ, hγ⟩ := hop
+      obtain ⟨l, rfl⟩ := primLit_int_eq (hleft.trans hα.symm)
+      obtain ⟨rr, rfl⟩ := primLit_int_eq (hright.trans hβ.symm)
+      simp only [PrimOp.eval, Option.some.injEq] at heval
+      subst heval
+      rw [← hγ]
+      exact .primLit
+  | intLt =>
+      by_cases hb : sig.HasBool
+      · simp only [PrimOp.ty, if_pos hb, Option.some.injEq, Ty.arrow.injEq] at hop
+        obtain ⟨hα, hβ, hγ⟩ := hop
+        obtain ⟨l, rfl⟩ := primLit_int_eq (hleft.trans hα.symm)
+        obtain ⟨rr, rfl⟩ := primLit_int_eq (hright.trans hβ.symm)
+        simp only [PrimOp.eval, Option.some.injEq] at heval
+        subst heval
+        rw [← hγ]
+        exact hasBool_boolValue_typing hb _
+      · simp [PrimOp.ty, if_neg hb] at hop
+  | charLt =>
+      by_cases hb : sig.HasBool
+      · simp only [PrimOp.ty, if_pos hb, Option.some.injEq, Ty.arrow.injEq] at hop
+        obtain ⟨hα, hβ, hγ⟩ := hop
+        obtain ⟨l, rfl⟩ := primLit_char_eq (hleft.trans hα.symm)
+        obtain ⟨rr, rfl⟩ := primLit_char_eq (hright.trans hβ.symm)
+        simp only [PrimOp.eval, Option.some.injEq] at heval
+        subst heval
+        rw [← hγ]
+        exact hasBool_boolValue_typing hb _
+      · simp [PrimOp.ty, if_neg hb] at hop
+
 private theorem typing_apps_intro {f : RuntimeExpr} {tys : List Ty} {u : Ty}
     (typing : RuntimeTyping sig r ctx f (Ty.arrows tys u))
     {args : List RuntimeExpr}
@@ -507,23 +730,25 @@ private theorem data_value_canonical {expr : RuntimeExpr} {t : Nat} {params : Li
       cases literal <;> (exfalso; exact Ty.apps_con_ne_prim hty)
   | primOp =>
       generalize hty : Ty.apps (.con t) params = target at typing
-      cases typing
-      rename_i op
-      cases op
-      exfalso
-      exact Ty.apps_con_ne_arrow hty
+      cases typing with
+      | primOp hop =>
+          obtain ⟨a, b, hab⟩ := primOp_ty_arrow hop
+          exfalso
+          exact Ty.apps_con_ne_arrow (hty.trans hab)
   | lambda =>
       generalize hty : Ty.apps (.con t) params = target at typing
       cases typing
       exfalso
       exact Ty.apps_con_ne_arrow hty
-  | intAddPartial =>
+  | primOpPartial _ =>
       generalize hty : Ty.apps (.con t) params = target at typing
       cases typing with
       | app hf _ =>
-          cases hf
-          exfalso
-          exact Ty.apps_con_ne_arrow hty
+          cases hf with
+          | primOp hop =>
+              obtain ⟨a, b, hab⟩ := primOp_ty_codomain_arrow hop
+              exfalso
+              exact Ty.apps_con_ne_arrow (hty.trans hab)
   | const hspine hlen hvals =>
       expose_names
       have hexpr : Expr.apps (.const c) args = expr := by
@@ -652,7 +877,7 @@ theorem erase (typing : Typing sig rigidCount ctx expr ty) :
     RuntimeTyping sig rigidCount ctx expr.erase ty := by
   induction typing with
   | primLit => exact .primLit
-  | primOp => exact .primOp
+  | primOp hop => exact .primOp hop
   | var hlookup hwf hlen hargs =>
       exact .var hlookup hwf hlen hargs
   | lambda paramWF _ _ bodyErased =>
@@ -757,10 +982,7 @@ theorem regular (typing : RuntimeTyping sig rigidCount ctx expr ty) :
     ty.WF rigidCount 0 := by
   induction typing with
   | primLit => cases_type PrimLit <;> exact ⟨.prim, .prim⟩
-  | primOp =>
-      cases_type PrimOp
-      exact ⟨.arrow .prim (.arrow .prim .prim),
-        .arrow .prim (.arrow .prim .prim)⟩
+  | primOp hop => exact primOp_ty_wf hop
   | var _ wf hlen hargs => exact wf_openWith wf hlen hargs
   | lambda paramWF _ bodyRegular =>
       exact ⟨.arrow paramWF.1 bodyRegular.1,
@@ -802,6 +1024,32 @@ private def shiftScheme (cutoff delta : Nat) (scheme : PolyTy) : PolyTy :=
 
 private def shiftCtx (cutoff delta : Nat) (ctx : Ctx) : Ctx :=
   ctx.map (shiftScheme cutoff delta)
+
+/-- Shifting rigid levels leaves a primitive operator's type unchanged. -/
+private theorem primOp_ty_shiftTy {sig : Signature} {op : PrimOp} {ty : Ty}
+    (hop : op.ty sig = some ty) {cutoff delta : Nat} :
+    shiftTy cutoff delta ty = ty := by
+  cases op with
+  | intAdd =>
+      simp only [PrimOp.ty, Option.some.injEq] at hop
+      subst hop
+      rfl
+  | intSub =>
+      simp only [PrimOp.ty, Option.some.injEq] at hop
+      subst hop
+      rfl
+  | intLt =>
+      by_cases hb : sig.HasBool
+      · simp only [PrimOp.ty, if_pos hb, Option.some.injEq] at hop
+        subst hop
+        rfl
+      · simp [PrimOp.ty, if_neg hb] at hop
+  | charLt =>
+      by_cases hb : sig.HasBool
+      · simp only [PrimOp.ty, if_pos hb, Option.some.injEq] at hop
+        subst hop
+        rfl
+      · simp [PrimOp.ty, if_neg hb] at hop
 
 private theorem scoped_monoRigids {ty : Ty}
     (h : Ty.Scoped rigidCount binderCount ty) (hle : rigidCount ≤ larger) :
@@ -946,10 +1194,8 @@ private theorem shiftTyping (typing : RuntimeTyping sig rigidCount ctx expr ty)
   | primLit =>
       rename_i literal
       cases literal <;> exact .primLit
-  | primOp =>
-      rename_i op
-      cases op
-      exact .primOp
+  | primOp hop =>
+      exact .primOp (by rw [primOp_ty_shiftTy hop]; exact hop)
   | var hlookup hwf hlen hargs =>
       clear rigidCount ctx expr ty
       rename_i localCtx index scheme args localRigid
@@ -1038,7 +1284,7 @@ theorem weakenRigids
     RuntimeTyping sig larger ctx expr ty := by
   induction typing generalizing larger with
   | primLit => exact .primLit
-  | primOp => exact .primOp
+  | primOp hop => exact .primOp hop
   | var hlookup hwf hlen hargs =>
       exact .var hlookup (schemeWF_monoRigids hwf hscope) hlen
         (fun arg harg => wf_monoRigids (hargs arg harg) hscope)
@@ -1106,9 +1352,9 @@ private theorem weakenAt
   | primLit =>
       intro pre post _ _
       exact .primLit
-  | primOp =>
+  | primOp hop =>
       intro pre post _ _
-      exact .primOp
+      exact .primOp hop
   | var lookup schemeWF lengthEq argsWF =>
       expose_names
       intro pre post envEq insertedWF
@@ -1469,6 +1715,32 @@ private def instantiateSchemeRigidsTo (source target count : Nat) (args : List T
     (scheme : PolyTy) : PolyTy :=
   ⟨scheme.paramCount, instantiateRigidsTo source target count args scheme.body⟩
 
+/-- Instantiating rigid levels leaves a primitive operator's type unchanged. -/
+private theorem primOp_ty_instantiateRigidsTo {sig : Signature} {op : PrimOp} {ty : Ty}
+    (hop : op.ty sig = some ty) {source target count : Nat} {args : List Ty} :
+    instantiateRigidsTo source target count args ty = ty := by
+  cases op with
+  | intAdd =>
+      simp only [PrimOp.ty, Option.some.injEq] at hop
+      subst hop
+      rfl
+  | intSub =>
+      simp only [PrimOp.ty, Option.some.injEq] at hop
+      subst hop
+      rfl
+  | intLt =>
+      by_cases hb : sig.HasBool
+      · simp only [PrimOp.ty, if_pos hb, Option.some.injEq] at hop
+        subst hop
+        rfl
+      · simp [PrimOp.ty, if_neg hb] at hop
+  | charLt =>
+      by_cases hb : sig.HasBool
+      · simp only [PrimOp.ty, if_pos hb, Option.some.injEq] at hop
+        subst hop
+        rfl
+      · simp [PrimOp.ty, if_neg hb] at hop
+
 private def instantiateCtxRigidsTo (source target count : Nat) (args : List Ty)
     (ctx : Ctx) : Ctx :=
   ctx.map (instantiateSchemeRigidsTo source target count args)
@@ -1693,9 +1965,10 @@ private theorem instantiateTypingTo
   induction typing generalizing extra with
   | primLit =>
       cases_type PrimLit <;> exact .primLit
-  | primOp =>
-      cases_type PrimOp
-      exact .primOp
+  | primOp hop =>
+      exact .primOp (by
+        rw [primOp_ty_instantiateRigidsTo hop]
+        exact hop)
   | @var ctx index scheme instArgs rigidCount hlookup schemeWF instLength instWF =>
       have schemeWF' : scheme.WF (source + count + extra) := by
         simpa [hold] using schemeWF
@@ -1960,9 +2233,9 @@ private theorem substAt
   | primLit =>
       intro pre ctx target replacement _ _ _
       exact .primLit
-  | primOp =>
+  | primOp hop =>
       intro pre ctx target replacement _ _ _
-      exact .primOp
+      exact .primOp hop
   | var lookup schemeWF lengthEq argsWF =>
       expose_names
       intro pre ctx target replacement envEq preWF replacementTyping
@@ -2128,19 +2401,25 @@ private theorem value_const_not_prim {c : DataConst} {args : List RuntimeExpr} {
       | nil => simp at hlenRest
       | cons x xs => exact Ty.arrow_ne_prim hty.symm
 
-private theorem int_value
+private theorem prim_value_canonical {expr : RuntimeExpr} {p : PrimTy}
     (value : Eval.Value expr)
-    (typing : RuntimeTyping sig rigidCount [] expr (.prim .int)) :
-    ∃ number, expr = .primLit (.int number) := by
+    (typing : RuntimeTyping sig rigidCount ctx expr (.prim p)) :
+    ∃ literal, expr = .primLit literal := by
   cases value with
-  | primLit =>
-      cases_type PrimLit <;> cases typing
-      exact ⟨_, rfl⟩
-  | primOp => cases typing
-  | lambda => cases typing
-  | intAddPartial =>
+  | primLit => exact ⟨_, rfl⟩
+  | primOp =>
       cases typing with
-      | app functionTyping _ => cases functionTyping
+      | primOp hop =>
+          obtain ⟨a, b, hab⟩ := primOp_ty_arrow hop
+          exact absurd hab.symm Ty.arrow_ne_prim
+  | lambda => cases typing
+  | primOpPartial _ =>
+      cases typing with
+      | app hf _ =>
+          cases hf with
+          | primOp hop =>
+              obtain ⟨a, b, hab⟩ := primOp_ty_codomain_arrow hop
+              exact absurd hab.symm Ty.arrow_ne_prim
   | const hspine hlen hvals =>
       exfalso
       expose_names
@@ -2148,8 +2427,8 @@ private theorem int_value
         have h := Expr.apps_spine expr
         rw [hspine] at h
         exact h
-      have typing' : RuntimeTyping sig rigidCount [] (Expr.apps (.const c) args)
-          (.prim .int) := by
+      have typing' : RuntimeTyping sig rigidCount ctx (Expr.apps (.const c) args)
+          (.prim p) := by
         rw [hexpr]
         exact typing
       exact value_const_not_prim hlen typing'
@@ -2169,18 +2448,21 @@ private theorem progress_empty (typing : RuntimeTyping sig rigidCount ctx expr t
           | primLit =>
               cases_type PrimLit <;> cases functionTyping
           | primOp =>
-              cases_type PrimOp
-              cases functionTyping
-              obtain ⟨number, rfl⟩ := int_value argumentValue (empty ▸ argumentTyping)
-              exact .inl .intAddPartial
+              exact .inl (.primOpPartial argumentValue)
           | lambda =>
               exact .inr ⟨_, .beta argumentValue⟩
-          | intAddPartial =>
+          | primOpPartial hleft =>
               cases functionTyping with
-              | app operatorTyping _ =>
-                  cases operatorTyping
-                  obtain ⟨number, rfl⟩ := int_value argumentValue (empty ▸ argumentTyping)
-                  exact .inr ⟨_, .intAdd⟩
+              | app operatorTyping leftTyping =>
+                  cases operatorTyping with
+                  | primOp hop =>
+                      obtain ⟨p, q, hα, hβ⟩ := primOp_ty_domain hop
+                      obtain ⟨l, rfl⟩ := prim_value_canonical hleft (hα ▸ leftTyping)
+                      cases leftTyping
+                      obtain ⟨r, rfl⟩ := prim_value_canonical argumentValue (hβ ▸ argumentTyping)
+                      cases argumentTyping
+                      obtain ⟨result, hresult⟩ := primOp_eval_exists hop rfl rfl
+                      exact .inr ⟨result, .primOp hresult⟩
           | const hspine hlen hvals =>
               expose_names
               by_cases hsmall : args.length < c.valueArity
@@ -2343,15 +2625,16 @@ theorem preservation
       cases typing with
       | app functionTyping argumentTyping =>
           exact .app functionTyping (argumentIH argumentTyping)
-  | intAdd =>
+  | primOp hreduce =>
       cases typing with
       | app functionTyping argumentTyping =>
           cases functionTyping with
           | app operatorTyping leftTyping =>
-              cases operatorTyping
-              cases leftTyping
-              cases argumentTyping
-              exact .primLit
+              cases operatorTyping with
+              | primOp hop =>
+                  cases leftTyping
+                  cases argumentTyping
+                  exact primOp_eval_typing hop rfl rfl hreduce
   | letRhs rhsStep rhsIH =>
       cases typing with
       | letMono rhsWF rhsTyping bodyTyping =>
@@ -2539,7 +2822,7 @@ private theorem value_app_spine_all_values {f a : RuntimeExpr} {c : DataConst}
   | primLit => simp only [Expr.spine] at hsp; cases hsp
   | primOp => simp only [Expr.spine] at hsp; cases hsp
   | lambda => simp only [Expr.spine] at hsp; cases hsp
-  | intAddPartial => simp only [Expr.spine] at hsp; cases hsp
+  | primOpPartial => simp only [Expr.spine] at hsp; cases hsp
 
 private theorem value_app_parts {f a : RuntimeExpr} {c : DataConst} {args : List RuntimeExpr}
     (hsp : (Expr.app f a).spine = (.const c, args))
@@ -2578,19 +2861,7 @@ theorem isValue_iff {expr : RuntimeExpr} :
     | app f a ihf iha =>
         cases f with
         | primOp op =>
-            cases op
-            cases a with
-            | primLit literal =>
-                cases literal with
-                | int value => exact .intAddPartial
-                | unit => simp [isValue, Expr.spine] at h
-            | primOp => simp [isValue, Expr.spine] at h
-            | var index => simp [isValue, Expr.spine] at h
-            | lambda ann body => simp [isValue, Expr.spine] at h
-            | app f' a' => simp [isValue, Expr.spine] at h
-            | letIn ann rhs body => simp [isValue, Expr.spine] at h
-            | fix ann body => simp [isValue, Expr.spine] at h
-            | const c => simp [isValue, Expr.spine] at h
+            exact .primOpPartial (iha (by simpa [isValue] using h))
         | primLit literal => simp [isValue, Expr.spine] at h
         | var index => simp [isValue, Expr.spine] at h
         | lambda ann body => simp [isValue, Expr.spine] at h
@@ -2598,7 +2869,7 @@ theorem isValue_iff {expr : RuntimeExpr} :
         | fix ann body => simp [isValue, Expr.spine] at h
         | const c =>
             simp only [isValue, Expr.spine, Bool.and_eq_true, Bool.true_and,
-              true_and, decide_eq_true_eq, List.length_cons, List.length_nil] at h
+              decide_eq_true_eq] at h
             obtain ⟨hia, hlen'⟩ := h
             refine .const (c := c) (args := [a]) rfl ?_ ?_
             · simpa using hlen'
@@ -2607,7 +2878,7 @@ theorem isValue_iff {expr : RuntimeExpr} :
               subst hx
               exact iha hia
         | app f' a' =>
-            simp only [isValue, Bool.and_eq_true, Bool.true_and] at h
+            simp only [isValue, Bool.and_eq_true] at h
             obtain ⟨⟨hif, hia⟩, hmatch⟩ := h
             cases hsp : (Expr.app (.app f' a') a).spine with
             | mk head args =>
@@ -2642,9 +2913,8 @@ theorem isValue_iff {expr : RuntimeExpr} :
     | app f a ihf iha =>
         cases f with
         | primOp op =>
-            cases op
             cases value with
-            | intAddPartial => rfl
+            | primOpPartial h => exact iha h
             | const hsp _ _ => simp [Expr.spine] at hsp
         | primLit literal =>
             cases value with
@@ -2712,7 +2982,10 @@ private theorem reduceApp_eq_reduceConst {f a : RuntimeExpr} {c : DataConst}
     reduceApp f a = reduceConst c args := by
   cases f with
   | lambda ann body => simp [Expr.spine] at hsp
-  | primOp op => cases op; simp [Expr.spine] at hsp
+  | primOp op =>
+      have hsp' : (Expr.app (.primOp op) a).spine = (.primOp op, [a]) := rfl
+      rw [hsp'] at hsp
+      simp at hsp
   | primLit literal => simp [Expr.spine] at hsp
   | var index => simp [Expr.spine] at hsp
   | letIn ann rhs body => simp [Expr.spine] at hsp
@@ -2720,7 +2993,11 @@ private theorem reduceApp_eq_reduceConst {f a : RuntimeExpr} {c : DataConst}
   | const c0 => simp [reduceApp, hsp]
   | app f' a' =>
       cases f' with
-      | primOp op => cases op; simp [Expr.spine] at hsp
+      | primOp op =>
+          have hsp' : (Expr.app (.app (.primOp op) a') a).spine =
+              (.primOp op, [a', a]) := rfl
+          rw [hsp'] at hsp
+          simp at hsp
       | primLit literal => simp [reduceApp, hsp]
       | var index => simp [reduceApp, hsp]
       | lambda ann body => simp [reduceApp, hsp]
@@ -2750,7 +3027,10 @@ private theorem step?_of_value {expr : RuntimeExpr} (value : Value expr) :
       | const hsp _ _ => simp [Expr.spine] at hsp
   | app f a ihf iha =>
       cases value with
-      | intAddPartial => rfl
+      | primOpPartial harg =>
+          have ha := iha harg
+          have hia : isValue a = true := isValue_iff.mpr harg
+          simp [step?, reduceApp, Expr.spine, ha, hia]
       | const hsp hlen hvals =>
           obtain ⟨hvalF, hvalA⟩ := value_app_parts hsp hlen hvals
           have hf := ihf hvalF
@@ -2800,16 +3080,16 @@ theorem Value.irreducible {expr next : RuntimeExpr}
   | app f a ihf iha =>
       intro value step
       cases value with
-      | intAddPartial =>
+      | primOpPartial harg =>
           cases step with
           | appFunction h => exact ihf Value.primOp h
-          | appArgument _ h => exact iha Value.primLit h
+          | appArgument _ h => exact iha harg h
           | const hspStep _ _ => simp [Expr.spine] at hspStep
       | const hsp hlen hvals =>
           obtain ⟨hvalF, hvalA⟩ := value_app_parts hsp hlen hvals
           cases step with
           | beta _ => simp [Expr.spine] at hsp
-          | intAdd => simp [Expr.spine] at hsp
+          | primOp _ => simp [Expr.spine] at hsp
           | appFunction h => exact ihf hvalF h
           | appArgument _ h => exact iha hvalA h
           | const hspStep _ hred =>
@@ -2877,10 +3157,7 @@ theorem step?_sound {expr next : RuntimeExpr}
                     simp only [Option.some.injEq] at h
                     cases h
                     exact Step.beta va
-                  · rename_i l r _heqF _heqA
-                    simp only [Option.some.injEq] at h
-                    cases h
-                    exact Step.intAdd
+                  · exact Step.primOp h
                   · cases hsp : (Expr.app function argument).spine with
                     | mk head args =>
                         simp only [hsp] at h
@@ -2911,8 +3188,8 @@ theorem step?_complete {expr next : RuntimeExpr}
       simp [step?, ih]
   | appArgument value h ih =>
       simp [step?, step?_of_value value, isValue_iff.mpr value, ih]
-  | intAdd =>
-      simp [step?, reduceApp, isValue, Expr.spine]
+  | primOp h =>
+      simp [step?, reduceApp, isValue, Expr.spine, h]
   | letRhs h ih =>
       simp [step?, ih]
   | letValue value =>

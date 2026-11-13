@@ -264,7 +264,7 @@ theorem inferredIntLambda_typed :
   apply Typing.lambda (paramTy := intTy) (prim_wf .int) (absent_matches intTy)
   apply Typing.app (argumentTy := intTy)
   · apply Typing.app (argumentTy := intTy)
-    · exact .primOp
+    · exact .primOp rfl
     · exact Typing.var (scheme := PolyTy.mono intTy) (args := [])
         (by simp [PolyTy.mono]) (prim_wf .int) rfl (by simp)
   · exact .primLit

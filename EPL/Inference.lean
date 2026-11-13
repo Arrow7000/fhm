@@ -170,7 +170,9 @@ def inferFuel (sig : Signature) : Nat → Nat → Ctx → Source → InferState 
   | fuel + 1, rigidCount, ctx, input, state =>
       match input with
       | .primLit literal => some ⟨state, literal.ty, .primLit literal⟩
-      | .primOp op => some ⟨state, op.ty, .primOp op⟩
+      | .primOp op => do
+          let ty ← op.ty sig
+          some ⟨state, ty, .primOp op⟩
       | .var index => do
           let scheme ← ctx[index]?
           let scheme := state.solutions.applyScheme scheme

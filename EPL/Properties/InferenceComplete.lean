@@ -15,6 +15,41 @@ inferred one) and success (inference does not fail on an elaborable program).
 
 namespace EPL
 
+/-- Every primitive operator's result type is semantic and scoped (it is a
+closed type built from primitives, arrows, and possibly `Bool`). -/
+private theorem primOpTy_wf {sig : Signature} {op : PrimOp} {ty : Ty}
+    (hty : op.ty sig = some ty) {rigidCount : Nat} : ty.WF rigidCount 0 := by
+  cases op with
+  | intAdd | intSub =>
+      simp only [PrimOp.ty, Option.some.injEq] at hty
+      subst hty
+      exact ⟨Ty.Scoped.arrow Ty.Scoped.prim
+          (Ty.Scoped.arrow Ty.Scoped.prim Ty.Scoped.prim),
+        Ty.MetaFree.arrow Ty.MetaFree.prim
+          (Ty.MetaFree.arrow Ty.MetaFree.prim Ty.MetaFree.prim)⟩
+  | intLt =>
+      by_cases hb : sig.HasBool
+      · simp only [PrimOp.ty, hb, if_true, Option.some.injEq] at hty
+        subst hty
+        exact ⟨Ty.Scoped.arrow Ty.Scoped.prim
+            (Ty.Scoped.arrow Ty.Scoped.prim (Ty.Scoped.con 0)),
+          Ty.MetaFree.arrow Ty.MetaFree.prim
+            (Ty.MetaFree.arrow Ty.MetaFree.prim Ty.MetaFree.con)⟩
+      · simp [PrimOp.ty, hb] at hty
+  | charLt =>
+      by_cases hb : sig.HasBool
+      · simp only [PrimOp.ty, hb, if_true, Option.some.injEq] at hty
+        subst hty
+        exact ⟨Ty.Scoped.arrow Ty.Scoped.prim
+            (Ty.Scoped.arrow Ty.Scoped.prim (Ty.Scoped.con 0)),
+          Ty.MetaFree.arrow Ty.MetaFree.prim
+            (Ty.MetaFree.arrow Ty.MetaFree.prim Ty.MetaFree.con)⟩
+      · simp [PrimOp.ty, hb] at hty
+
+private theorem primOpTy_metaFree {sig : Signature} {op : PrimOp} {ty : Ty}
+    (hty : op.ty sig = some ty) : ty.MetaFree :=
+  (primOpTy_wf (rigidCount := 0) hty).2
+
 /-! ## Realizing the store under extended valuations -/
 
 private theorem Ty.realize_congr {ty : Ty} {first second : MValuation}
@@ -1631,13 +1666,25 @@ private theorem inferFuel_principal_elab_aux
           | int value =>
               exact ⟨valuation, models, by intro id hid; rfl, rfl, rfl,
                 by intro annotation member; simp [Expr.annotations] at member⟩
+          | nat value =>
+              exact ⟨valuation, models, by intro id hid; rfl, rfl, rfl,
+                by intro annotation member; simp [Expr.annotations] at member⟩
+          | char value =>
+              exact ⟨valuation, models, by intro id hid; rfl, rfl, rfl,
+                by intro annotation member; simp [Expr.annotations] at member⟩
       | primOp op =>
-          simp only [inferFuel, Option.some.injEq] at run
-          subst result
-          cases elaborates
-          cases op
-          exact ⟨valuation, models, by intro id hid; rfl, rfl, rfl,
-            by intro annotation member; simp [Expr.annotations] at member⟩
+          cases hty : op.ty sig with
+          | none => simp [inferFuel, hty] at run
+          | some primTy =>
+              simp [inferFuel, hty] at run
+              subst result
+              cases elaborates with
+              | primOp htyD =>
+                  have hEq : primTy = ty := Option.some.inj (hty.symm.trans htyD)
+                  subst hEq
+                  exact ⟨valuation, models, by intro id hid; rfl, rfl,
+                    Ty.realize_eq_self (primOpTy_metaFree htyD) valuation,
+                    by intro annotation member; simp [Expr.annotations] at member⟩
       | var index =>
           simp only [inferFuel] at run
           cases lookup : ctx[index]? with
@@ -2837,7 +2884,10 @@ theorem inferFuel_complete
       | primLit literal =>
           exact ⟨⟨state, literal.ty, .primLit literal⟩, rfl⟩
       | primOp op =>
-          exact ⟨⟨state, op.ty, .primOp op⟩, rfl⟩
+          cases elaborates with
+          | primOp htyD =>
+              refine ⟨⟨state, ty, .primOp op⟩, ?_⟩
+              simp [inferFuel, htyD]
       | var index =>
           simp only [inferFuel]
           cases lookup : ctx[index]? with

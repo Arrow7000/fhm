@@ -5,6 +5,8 @@ namespace EPL
 inductive PrimTy where
   | unit
   | int
+  | nat
+  | char
   deriving DecidableEq, Repr
 
 /-- Semantic type variables and inference metavariables are different
@@ -180,10 +182,17 @@ structure SchemeTemplateMatches (written : Scheme Template)
 inductive PrimLit where
   | unit
   | int (value : Int)
+  | nat (value : Nat)
+  | char (value : Char)
   deriving DecidableEq, Repr
 
+/-- Built-in binary operators on primitive literals. Comparisons return the
+declared type `Bool` (see `PrimOp.ty`). -/
 inductive PrimOp where
   | intAdd
+  | intSub
+  | intLt
+  | charLt
   deriving DecidableEq, Repr
 
 /-- A data type declaration with `paramCount` type parameters and one list of
@@ -208,11 +217,10 @@ them against it.
 * Number constructors globally across the signature (`ctor id`), so a
   constructor no longer names its type; typing looks up the owner. `elim`
   keeps its type, which nothing else determines.
-* Once comparison primitives (`Int -> Int -> Bool`) exist, the primitive
-  typing rule must know which declared type is Bool: e.g. a premise that the
-  signature declares Bool at some index as exactly two nullary constructors
-  `True | False`, or a signature that records Bool's index. This fixes the
-  order of built-in declarations (or makes it explicit). -/
+* Comparison primitives currently find `Bool` by convention: declaration 0
+  must be `True | False` (`Signature.HasBool`). The alternative is a
+  signature that records Bool's index explicitly; the runtime would then
+  need that index to produce `True`/`False`. -/
 inductive DataConst where
   /-- Constructor number `ctor` of type `type`, which has `arity` fields. -/
   | ctor (type ctor arity : Nat)

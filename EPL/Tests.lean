@@ -541,3 +541,97 @@ example : (infer listSig (.app listLength listInt)).map (·.ty) = some intTy := 
   some (.primLit (.int 3))
 
 end EPL.DataTests
+
+namespace EPL.PrimTests
+
+open EPL EPL.Examples
+
+def charTy : Ty := .prim .char
+
+/-- `if c then a else b` as an application of `Bool`'s eliminator. -/
+def primIfThen (c a b : Source) : Source :=
+  .app (.app (.app (.const (.elim 0 2)) c) (.lambda none a)) (.lambda none b)
+
+def intSubExpr : Source :=
+  .app (.app (.primOp .intSub) (.primLit (.int 1))) (.primLit (.int 5))
+
+example : (infer boolSig intSubExpr).map (·.ty) = some intTy := by
+  decide
+
+#guard ((evaluate boolSig intSubExpr 50).bind (·.2.value?)) =
+  some (.primLit (.int (-4)))
+
+def intLtExpr (left right : Int) : Source :=
+  .app (.app (.primOp .intLt) (.primLit (.int left))) (.primLit (.int right))
+
+def charIf : Source :=
+  primIfThen (intLtExpr 1 2) (.primLit (.char 'y')) (.primLit (.char 'n'))
+
+def charIfFalse : Source :=
+  primIfThen (intLtExpr 2 1) (.primLit (.char 'y')) (.primLit (.char 'n'))
+
+example : (infer boolSig charIf).map (·.ty) = some charTy := by
+  decide
+
+#guard ((evaluate boolSig charIf 50).bind (·.2.value?)) =
+  some (.primLit (.char 'y'))
+
+#guard ((evaluate boolSig charIfFalse 50).bind (·.2.value?)) =
+  some (.primLit (.char 'n'))
+
+def charLtExpr : Source :=
+  .app (.app (.primOp .charLt) (.primLit (.char 'a'))) (.primLit (.char 'b'))
+
+example : (infer boolSig charLtExpr).map (·.ty) = some boolTy := by
+  decide
+
+#guard ((evaluate boolSig charLtExpr 50).bind (·.2.value?)) =
+  some (Eval.boolValue true)
+
+/-- Declaration 0 is `List`-shaped rather than `True | False`. -/
+def listShapedSig : Signature :=
+  [⟨1, [[], [.bvar 0, .app (.con 0) (.bvar 0)]]⟩]
+
+example : infer [] (intLtExpr 1 2) = none := by
+  decide
+
+example : infer listShapedSig (intLtExpr 1 2) = none := by
+  decide
+
+example : infer boolSig (.app (.app (.primOp .intAdd) (.primLit (.int 1)))
+    (.primLit (.char 'c'))) = none := by
+  decide
+
+example : (infer boolSig (.primLit (.nat 7))).map (·.ty) = some (.prim .nat) := by
+  decide
+
+def partialIntLt : Source :=
+  .app (.primOp .intLt) (.primLit (.int 1))
+
+example : (infer boolSig partialIntLt).map (·.ty) =
+    some (.arrow intTy boolTy) := by
+  decide
+
+example : Eval.Value partialIntLt.erase :=
+  Eval.Value.primOpPartial (op := .intLt) .primLit
+
+/-- `fix f : Int -> Int. fun n => if n < 1 then 0 else n + f (n - 1)`. -/
+def primRecursive : Source :=
+  .app
+    (.fix (.fixed (.arrow intTy intTy))
+      (.lambda (some (.fixed intTy))
+        (primIfThen
+          (.app (.app (.primOp .intLt) (.var 0)) (.primLit (.int 1)))
+          (.primLit (.int 0))
+          (.app (.app (.primOp .intAdd) (.var 1))
+            (.app (.var 2)
+              (.app (.app (.primOp .intSub) (.var 1)) (.primLit (.int 1))))))))
+    (.primLit (.int 4))
+
+example : (infer boolSig primRecursive).map (·.ty) = some intTy := by
+  decide
+
+#guard ((evaluate boolSig primRecursive 500).bind (·.2.value?)) =
+  some (.primLit (.int 10))
+
+end EPL.PrimTests

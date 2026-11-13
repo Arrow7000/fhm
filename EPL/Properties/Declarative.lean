@@ -107,15 +107,43 @@ private theorem wf_openWith_closed {scheme : PolyTy} {args : List Ty}
     (scheme.openWith args).WF rigidCount 0 :=
   wf_openWith ⟨scoped_zero_mono hwf.1 rigidCount, hwf.2⟩ hlen hargs
 
+/-- Every primitive operator's result type is semantic and scoped (it is a
+closed type built from primitives, arrows, and possibly `Bool`). -/
+private theorem primOpTy_wf {sig : Signature} {op : PrimOp} {ty : Ty}
+    (hty : op.ty sig = some ty) {rigidCount : Nat} : ty.WF rigidCount 0 := by
+  cases op with
+  | intAdd | intSub =>
+      simp only [PrimOp.ty, Option.some.injEq] at hty
+      subst hty
+      exact ⟨Ty.Scoped.arrow Ty.Scoped.prim
+          (Ty.Scoped.arrow Ty.Scoped.prim Ty.Scoped.prim),
+        Ty.MetaFree.arrow Ty.MetaFree.prim
+          (Ty.MetaFree.arrow Ty.MetaFree.prim Ty.MetaFree.prim)⟩
+  | intLt =>
+      by_cases hb : sig.HasBool
+      · simp only [PrimOp.ty, hb, if_true, Option.some.injEq] at hty
+        subst hty
+        exact ⟨Ty.Scoped.arrow Ty.Scoped.prim
+            (Ty.Scoped.arrow Ty.Scoped.prim (Ty.Scoped.con 0)),
+          Ty.MetaFree.arrow Ty.MetaFree.prim
+            (Ty.MetaFree.arrow Ty.MetaFree.prim Ty.MetaFree.con)⟩
+      · simp [PrimOp.ty, hb] at hty
+  | charLt =>
+      by_cases hb : sig.HasBool
+      · simp only [PrimOp.ty, hb, if_true, Option.some.injEq] at hty
+        subst hty
+        exact ⟨Ty.Scoped.arrow Ty.Scoped.prim
+            (Ty.Scoped.arrow Ty.Scoped.prim (Ty.Scoped.con 0)),
+          Ty.MetaFree.arrow Ty.MetaFree.prim
+            (Ty.MetaFree.arrow Ty.MetaFree.prim Ty.MetaFree.con)⟩
+      · simp [PrimOp.ty, hb] at hty
+
 /-- Every declaratively assigned type is semantic and scoped. -/
 theorem regular (typing : Typing sig rigidCount ctx expr ty) :
     ty.WF rigidCount 0 := by
   induction typing with
   | primLit => cases_type PrimLit <;> exact ⟨.prim, .prim⟩
-  | primOp =>
-      cases_type PrimOp
-      exact ⟨.arrow .prim (.arrow .prim .prim),
-        .arrow .prim (.arrow .prim .prim)⟩
+  | primOp hty => exact primOpTy_wf hty
   | var _ wf hlen hargs => exact wf_openWith wf hlen hargs
   | lambda paramWF _ _ bodyRegular =>
       exact ⟨.arrow paramWF.1 bodyRegular.1,
@@ -327,6 +355,11 @@ private theorem shiftTy_eq_self {ty : Ty} (h : Ty.Scoped cutoff binderCount ty) 
   | mvar id => rfl
   | con id => rfl
   | app _ _ iha ihb => simp [shiftTy, iha, ihb]
+
+private theorem primOpTy_shift {sig : Signature} {op : PrimOp} {ty : Ty}
+    (hty : op.ty sig = some ty) (cutoff delta : Nat) :
+    shiftTy cutoff delta ty = ty :=
+  shiftTy_eq_self (primOpTy_wf (rigidCount := cutoff) hty).1
 
 private theorem shiftScheme_eq_self {scheme : PolyTy} (h : PolyTy.WF cutoff scheme) :
     shiftScheme cutoff delta scheme = scheme := by
@@ -699,9 +732,9 @@ private theorem shiftTyping (typing : Typing sig rigidCount ctx expr ty)
       rename_i literal
       cases literal <;> exact .primLit
   | primOp =>
-      rename_i op
-      cases op
-      exact .primOp
+      rename_i op hty
+      rw [primOpTy_shift hty cutoff delta]
+      exact Typing.primOp hty
   | var hlookup hwf hlen hargs =>
       clear rigidCount ctx expr ty
       rename_i localCtx index scheme args localRigid
@@ -784,7 +817,7 @@ theorem weakenRigids (typing : Typing sig rigidCount ctx expr ty)
     Typing sig larger ctx expr ty := by
   induction typing generalizing larger with
   | primLit => exact .primLit
-  | primOp => exact .primOp
+  | primOp hty => exact .primOp hty
   | var hlookup hwf hlen hargs =>
       exact .var hlookup (schemeWF_monoRigids hwf hscope) hlen
         (fun arg harg => wf_monoRigids (hargs arg harg) hscope)
@@ -816,7 +849,7 @@ theorem Elaborates.typing
     Typing sig rigidCount ctx input ty := by
   induction elaborates with
   | primLit => exact .primLit
-  | primOp => exact .primOp
+  | primOp hty => exact .primOp hty
   | var hlookup hwf hlen hargs => exact .var hlookup hwf hlen hargs
   | lambda hwf hmatch _ ih => exact .lambda hwf hmatch ih
   | app _ _ ihf iha => exact .app ihf iha

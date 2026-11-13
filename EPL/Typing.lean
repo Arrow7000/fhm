@@ -5,9 +5,32 @@ namespace EPL
 def PrimLit.ty : PrimLit → Ty
   | .unit => .prim .unit
   | .int _ => .prim .int
+  | .nat _ => .prim .nat
+  | .char _ => .prim .char
 
-def PrimOp.ty : PrimOp → Ty
-  | .intAdd => .arrow (.prim .int) (.arrow (.prim .int) (.prim .int))
+/-- By convention, declaration 0 of a signature is `Bool`, with constructors
+`True | False` in that order. Comparisons are typed only in signatures that
+follow the convention, so evaluation can produce `True` and `False` without
+consulting the signature. -/
+def boolDecl : DataDecl := ⟨0, [[], []]⟩
+
+def Ty.bool : Ty := .con 0
+
+def Signature.HasBool (sig : Signature) : Prop := sig[0]? = some boolDecl
+
+instance (sig : Signature) : Decidable sig.HasBool :=
+  inferInstanceAs (Decidable (sig[0]? = some boolDecl))
+
+/-- The type of a primitive operator, if the signature supports it. -/
+def PrimOp.ty (sig : Signature) : PrimOp → Option Ty
+  | .intAdd | .intSub =>
+      some (.arrow (.prim .int) (.arrow (.prim .int) (.prim .int)))
+  | .intLt =>
+      if sig.HasBool then some (.arrow (.prim .int) (.arrow (.prim .int) .bool))
+      else none
+  | .charLt =>
+      if sig.HasBool then some (.arrow (.prim .char) (.arrow (.prim .char) .bool))
+      else none
 
 def Ty.apps (head : Ty) (args : List Ty) : Ty :=
   args.foldl .app head
@@ -58,7 +81,8 @@ inductive Typing (sig : Signature) : Nat → Ctx → Source → Ty → Prop
       Typing sig rigidCount ctx (.primLit literal) literal.ty
 
   | primOp :
-      Typing sig rigidCount ctx (.primOp op) op.ty
+      op.ty sig = some ty →
+      Typing sig rigidCount ctx (.primOp op) ty
 
   | var :
       ctx[index]? = some scheme →
@@ -129,7 +153,8 @@ inductive Elaborates (sig : Signature) : Nat → Ctx → Source → Expr Ty → 
       Elaborates sig rigidCount ctx (.primLit literal) (.primLit literal) literal.ty
 
   | primOp :
-      Elaborates sig rigidCount ctx (.primOp op) (.primOp op) op.ty
+      op.ty sig = some ty →
+      Elaborates sig rigidCount ctx (.primOp op) (.primOp op) ty
 
   | var :
       ctx[index]? = some scheme →

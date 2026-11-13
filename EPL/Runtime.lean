@@ -20,6 +20,19 @@ def DataConst.valueArity : DataConst → Nat
   | .ctor _ _ arity => arity
   | .elim _ ctorCount => ctorCount
 
+/-- `True` or `False`, following the `Bool` convention of `PrimOp.ty`. -/
+def Eval.boolValue (value : Bool) : RuntimeExpr :=
+  .const (.ctor 0 (if value then 0 else 1) 0)
+
+/-- The result of a primitive operator on literal operands; `none` when the
+operands have the wrong kind. -/
+def PrimOp.eval : PrimOp → PrimLit → PrimLit → Option RuntimeExpr
+  | .intAdd, .int left, .int right => some (.primLit (.int (left + right)))
+  | .intSub, .int left, .int right => some (.primLit (.int (left - right)))
+  | .intLt, .int left, .int right => some (Eval.boolValue (decide (left < right)))
+  | .charLt, .char left, .char right => some (Eval.boolValue (decide (left < right)))
+  | _, _, _ => none
+
 namespace Eval
 
 /-- Contract a saturated eliminator whose scrutinee is a saturated
@@ -42,7 +55,8 @@ inductive Value : RuntimeExpr → Prop
   | primLit : Value (.primLit literal)
   | primOp : Value (.primOp op)
   | lambda : Value (.lambda ann body)
-  | intAddPartial : Value (.app (.primOp .intAdd) (.primLit (.int value)))
+  /-- A primitive operator awaiting its second operand. -/
+  | primOpPartial : Value argument → Value (.app (.primOp op) argument)
   /-- A constant applied to values, short of a redex. -/
   | const :
       expr.spine = (.const c, args) →
@@ -61,11 +75,9 @@ inductive Step : RuntimeExpr → RuntimeExpr → Prop
       Value function →
       Step argument argument' →
       Step (.app function argument) (.app function argument')
-  | intAdd :
-      Step
-        (.app (.app (.primOp .intAdd) (.primLit (.int left)))
-          (.primLit (.int right)))
-        (.primLit (.int (left + right)))
+  | primOp :
+      op.eval left right = some result →
+      Step (.app (.app (.primOp op) (.primLit left)) (.primLit right)) result
   | letRhs :
       Step rhs rhs' →
       Step (.letIn ann rhs body) (.letIn ann rhs' body)
@@ -97,7 +109,8 @@ inductive RuntimeTyping (sig : Signature) : Nat → Ctx → RuntimeExpr → Ty �
       RuntimeTyping sig rigidCount ctx (.primLit literal) literal.ty
 
   | primOp :
-      RuntimeTyping sig rigidCount ctx (.primOp op) op.ty
+      op.ty sig = some ty →
+      RuntimeTyping sig rigidCount ctx (.primOp op) ty
 
   | var :
       ctx[index]? = some scheme →
@@ -171,7 +184,7 @@ def isValue : RuntimeExpr → Bool
   | .primOp _ => true
   | .lambda _ _ => true
   | .const _ => true
-  | .app (.primOp .intAdd) (.primLit (.int _)) => true
+  | .app (.primOp _) argument => isValue argument
   | .app function argument =>
       isValue function && isValue argument &&
         match (Expr.app function argument).spine with
@@ -180,12 +193,11 @@ def isValue : RuntimeExpr → Bool
   | _ => false
 
 /-- Contract an application whose function and argument are both values:
-beta reduction, saturated integer addition, or an eliminator meeting a
+beta reduction, a saturated primitive operator, or an eliminator meeting a
 constructor. `none` if none applies. -/
 def reduceApp : RuntimeExpr → RuntimeExpr → Option RuntimeExpr
   | .lambda _ body, argument => some (body.subst1 argument)
-  | .app (.primOp .intAdd) (.primLit (.int left)), .primLit (.int right) =>
-      some (.primLit (.int (left + right)))
+  | .app (.primOp op) (.primLit left), .primLit right => op.eval left right
   | function, argument =>
       match (Expr.app function argument).spine with
       | (.const c, args) => reduceConst c args
