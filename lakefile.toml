@@ -65,6 +65,24 @@ roots = [
 ]
 
 [[lean_lib]]
+name = "EPL2"
+# EPL rewrite: parametric types, levels in source annotations, structural
+# inference. `lake build EPL2`.
+roots = [
+  "EPL2.Syntax",
+  "EPL2.Typing",
+  "EPL2.Runtime",
+  "EPL2.Unify",
+  "EPL2.Infer",
+  "EPL2.Spec.Syntax",
+  "EPL2.Spec.Declarative",
+  "EPL2.Spec.Runtime",
+  "EPL2.Spec.Unify",
+  "EPL2.Spec.Infer",
+  "EPL2.Tests",
+]
+
+[[lean_lib]]
 name = "FHMExamples"
 # Executable examples and audit canaries; build with `lake build FHMExamples`.
 roots = ["FHM.Examples", "FHM.Examples.Programs", "FHM.RuntimeTyping.PolyRecCanary"]
