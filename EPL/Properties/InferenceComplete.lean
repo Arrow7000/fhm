@@ -1666,9 +1666,6 @@ private theorem inferFuel_principal_elab_aux
           | int value =>
               exact ⟨valuation, models, by intro id hid; rfl, rfl, rfl,
                 by intro annotation member; simp [Expr.annotations] at member⟩
-          | nat value =>
-              exact ⟨valuation, models, by intro id hid; rfl, rfl, rfl,
-                by intro annotation member; simp [Expr.annotations] at member⟩
           | char value =>
               exact ⟨valuation, models, by intro id hid; rfl, rfl, rfl,
                 by intro annotation member; simp [Expr.annotations] at member⟩

@@ -5,7 +5,6 @@ namespace EPL
 def PrimLit.ty : PrimLit → Ty
   | .unit => .prim .unit
   | .int _ => .prim .int
-  | .nat _ => .prim .nat
   | .char _ => .prim .char
 
 /-- By convention, declaration 0 of a signature is `Bool`, with constructors

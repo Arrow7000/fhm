@@ -503,7 +503,6 @@ private theorem primLit_int_eq {lit : PrimLit} (h : lit.ty = .prim .int) :
   cases lit with
   | int n => exact ⟨n, rfl⟩
   | unit => simp [PrimLit.ty] at h
-  | nat n => simp [PrimLit.ty] at h
   | char c => simp [PrimLit.ty] at h
 
 private theorem primLit_char_eq {lit : PrimLit} (h : lit.ty = .prim .char) :
@@ -511,7 +510,6 @@ private theorem primLit_char_eq {lit : PrimLit} (h : lit.ty = .prim .char) :
   cases lit with
   | int n => simp [PrimLit.ty] at h
   | unit => simp [PrimLit.ty] at h
-  | nat n => simp [PrimLit.ty] at h
   | char c => exact ⟨c, rfl⟩
 
 /-- Under the `Bool` convention, declaration 0's constructors have scheme `Bool`. -/

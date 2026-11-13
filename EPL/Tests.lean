@@ -602,9 +602,6 @@ example : infer boolSig (.app (.app (.primOp .intAdd) (.primLit (.int 1)))
     (.primLit (.char 'c'))) = none := by
   decide
 
-example : (infer boolSig (.primLit (.nat 7))).map (·.ty) = some (.prim .nat) := by
-  decide
-
 def partialIntLt : Source :=
   .app (.primOp .intLt) (.primLit (.int 1))
 

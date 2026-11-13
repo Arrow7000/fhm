@@ -5,7 +5,6 @@ namespace EPL
 inductive PrimTy where
   | unit
   | int
-  | nat
   | char
   deriving DecidableEq, Repr
 
@@ -182,7 +181,6 @@ structure SchemeTemplateMatches (written : Scheme Template)
 inductive PrimLit where
   | unit
   | int (value : Int)
-  | nat (value : Nat)
   | char (value : Char)
   deriving DecidableEq, Repr
 
