@@ -20,6 +20,15 @@ theorem PrimOp.ty_lift {op : PrimOp} {ty : SemTy} (typed : op.ty sig = some ty) 
     op.ty sig = some (ty.lift : Ty V) := by
   sorry
 
+/-- Primitive operator types have no variables. -/
+theorem PrimOp.ty_bind {op : PrimOp} {ty : Ty V} (typed : op.ty sig = some ty) (f : V → Ty W) :
+    op.ty sig = some (ty.bind f) := by
+  sorry
+
+theorem PrimLit.ty_bind (literal : PrimLit) (f : V → Ty W) :
+    (literal.ty : Ty V).bind f = literal.ty := by
+  sorry
+
 theorem Signature.schemeOf_wf {sig : Signature} (found : sig.schemeOf c = some scheme) : scheme.WF 0 := by
   sorry
 

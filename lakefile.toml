@@ -75,10 +75,15 @@ roots = [
   "EPL2.Unify",
   "EPL2.Infer",
   "EPL2.Spec.Syntax",
-  "EPL2.Spec.Declarative",
+  "EPL2.Spec.Eval",
   "EPL2.Spec.Runtime",
+  "EPL2.Spec.Declarative",
+  "EPL2.Spec.Models",
   "EPL2.Spec.Unify",
+  "EPL2.Spec.Store",
+  "EPL2.Spec.InferLet",
   "EPL2.Spec.Infer",
+  "EPL2.Theorems",
   "EPL2.Tests",
 ]
 

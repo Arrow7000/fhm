@@ -291,6 +291,16 @@ def Expr.traverseAnn (f : A → Option B) : Expr A → Option (Expr B)
       some (.letIn (some ⟨ann.arity, ← f ann.body⟩) (← rhs.traverseAnn f) (← body.traverseAnn f))
   | .fix self body => do some (.fix (← f self) (← body.traverseAnn f))
 
+/-- Every annotation of an expression, in order. -/
+def Expr.anns : Expr A → List A
+  | .lit _ | .primOp _ | .const _ | .var _ => []
+  | .lambda none body => body.anns
+  | .lambda (some param) body => param :: body.anns
+  | .app function argument => function.anns ++ argument.anns
+  | .letIn none rhs body => rhs.anns ++ body.anns
+  | .letIn (some ann) rhs body => ann.body :: (rhs.anns ++ body.anns)
+  | .fix self body => self :: body.anns
+
 /-- Forget every annotation. A source program and its elaboration erase to the
 same runtime expression. -/
 def Expr.erase : Expr A → RuntimeExpr
