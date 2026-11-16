@@ -563,7 +563,7 @@ theorem vars_closeRigids (k n : Nat) (ty : Ty V) : (ty.closeRigids k n).vars = t
 theorem substRigids_wf {ty : Ty V} {f : Nat → Ty V} (wf : ty.WF k)
     (images : ∀ l < k, (f l).WF k') : (ty.substRigids f).WF k' :=
   Ty.scoped_subst (rigids := k) (binders := 0) (rigids' := k') (binders' := 0)
-    wf (fun i hi => absurd hi (Nat.not_lt_zero i)) images (fun v _ => trivial)
+    wf (fun i hi => absurd hi (Nat.not_lt_zero i)) images (fun _ _ => trivial)
 
 /-- Closing rigid levels absent from a type leaves it unchanged. -/
 private theorem closeRigids_closed {ty : Ty V} (h : ty.WF k) (n : Nat) :
@@ -658,7 +658,7 @@ theorem inst_wf {scheme : Scheme V} (wf : scheme.WF k) (le : k ≤ k')
   · exact argsWF
 
 /-- The generic instance is an instance, one block deeper. -/
-theorem skolemize_instance {scheme : Scheme V} (wf : scheme.WF k) :
+theorem skolemize_instance (scheme : Scheme V) (k : Nat) :
     scheme.Instance (k + scheme.arity) (scheme.skolemize k) := by
   refine ⟨rigidBlock k scheme.arity, ?_, ?_, rfl⟩
   · exact rigidBlock_length k scheme.arity

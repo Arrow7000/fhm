@@ -1052,7 +1052,7 @@ theorem inferAt_spec_app {sig : Signature} {function argument : Source}
                 have h2 : (argumentResult.store.fresh k).2.Anchored start level := by
                   rw [MStore.fresh_eq]
                   exact MStore.Anchored.append_unsolved (count := 1) (level' := k) h1 hlt
-                exact MStore.unify_anchored hsafeFresh h2 hu
+                exact MStore.unify_anchored h2 hu
               · intro valuation models2
                 obtain ⟨hmodelsFresh, hunifyEq⟩ := MStore.unify_sound hu models2
                 have hmodelsArg : argumentResult.store.Models valuation :=
@@ -1442,7 +1442,7 @@ theorem inferAt_spec_fix {sig : Signature} {self : Template} {body : Source}
                 rw [MStore.allocate_snd]
                 exact MStore.Anchored.append_unsolved
                   (count := self.vars.dedup.length) (level' := k) hanch hlt
-              exact MStore.unify_anchored hbodyPost.safe
+              exact MStore.unify_anchored
                 (hbodyPost.anchored start level hlt (le_trans hstart hgrow1) hstoreAnch) hu
             · intro valuation models
               obtain ⟨hmodelsBody, hunifyEq⟩ := MStore.unify_sound hu models

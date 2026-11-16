@@ -2583,7 +2583,7 @@ private theorem unifyLoop_anchored
 
 /-- A metavariable lowered to `level` or below by a binding enters the
 solution of whatever it was unified with, which is anchored. -/
-theorem MStore.unify_anchored {store result : MStore} {left right : InfTy} (safe : store.Safe)
+theorem MStore.unify_anchored {store result : MStore} {left right : InfTy}
     (anchored : store.Anchored start level) (run : store.unify left right = some result) :
     result.Anchored start level := by
   change unifyLoop (store.unsolved + 1) store

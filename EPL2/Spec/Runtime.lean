@@ -674,7 +674,7 @@ theorem substRigids (ctxWF : ctx.WF k) (typing : RuntimeTyping sig k ctx expr ty
               Option.getD_some]
             exact hargs _ (List.getElem_mem hidx)
         have hgen := ihRhs (k_1 + scheme.arity) (Nat.le_add_right _ _)
-          (scheme.skolemize k_1) (Scheme.skolemize_instance hwf)
+          (scheme.skolemize k_1) (Scheme.skolemize_instance _ _)
           (Ctx.WF.mono ctxWF (Nat.le_add_right _ _)) g hg
         have hctx : ctx_1.map (Scheme.substRigids g) =
             ctx_1.map (Scheme.substRigids f) :=
@@ -1507,7 +1507,7 @@ private theorem progress_empty (typing : RuntimeTyping sig k ctx expr ty) (empty
         · exact .inr ⟨_, .appArgument functionValue step⟩
       · exact .inr ⟨_, .appFunction step⟩
   | letIn hwf hrhs hbody ihRhs ihBody =>
-      rcases ihRhs _ (Nat.le_add_right _ _) _ (Scheme.skolemize_instance hwf) empty with
+      rcases ihRhs _ (Nat.le_add_right _ _) _ (Scheme.skolemize_instance _ _) empty with
         rhsValue | ⟨rhs', rhsStep⟩
       · exact .inr ⟨_, .letValue rhsValue⟩
       · exact .inr ⟨_, .letRhs rhsStep⟩

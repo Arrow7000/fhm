@@ -255,7 +255,7 @@ theorem rhsChecked {sig : Signature} {ann : PolyAnn Template} {rhsResult : Infer
       exact MStore.Anchored.append_unsolved hanch hinner
     have h₂ : rhsResult.store.Anchored start level :=
       rhsPost.anchored start level hinner (by omega) h₁
-    exact MStore.unify_anchored rhsPost.safe h₂ unified
+    exact MStore.unify_anchored h₂ unified
   · -- anchoredSelf
     intro harity
     have hinner : k < (k + ann.arity) := by omega
@@ -264,7 +264,7 @@ theorem rhsChecked {sig : Signature} {ann : PolyAnn Template} {rhsResult : Infer
       exact MStore.Anchored.append_unsolved (MStore.Anchored.of_length store k) hinner
     have h₂ : rhsResult.store.Anchored store.length k :=
       rhsPost.anchored store.length k hinner (by omega) h₁
-    exact MStore.unify_anchored rhsPost.safe h₂ unified
+    exact MStore.unify_anchored h₂ unified
   · -- sound
     intro valuation hmodels
     have hunifySound := MStore.unify_sound unified hmodels

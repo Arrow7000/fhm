@@ -8,6 +8,8 @@ import EPL2.Spec.Eval
   programs with a unique elaboration, and returns it.
 * `infer_unique`: an accepted program has exactly one typing.
 * `infer_type_safety`, `infer_run_value`: accepted programs do not get stuck.
+* `evaluate`: infer, erase and run, returning a typed value or a typed term
+  that can still step.
 
 **Proof guidance.** Everything about inference follows from `inferAt_spec`
 at the empty store (`InferPre` holds by `MStore.safe_nil`), unfolding
@@ -256,6 +258,17 @@ theorem infer_sound {sig : Signature} {src : Source} {result : InferenceResult}
     Expr.realize_of_traverseAnn_ground models traverse
   simpa only [Ctx.realize, List.map_nil, hty, helaboration] using elaborates
 
+/-- An accepted program is typed at the inferred elaboration and type. -/
+theorem infer_typing {sig : Signature} {src : Source} {result : InferenceResult}
+    (accepted : infer sig src = some result) :
+    Typing sig 0 [] src result.elaboration result.ty :=
+  (infer_sound accepted).typing
+
+/-- The inferred type is closed. -/
+theorem infer_ty_wf {sig : Signature} {src : Source} {result : InferenceResult}
+    (accepted : infer sig src = some result) : result.ty.WF 0 :=
+  TypingWith.regular (fun _ mem => absurd mem List.not_mem_nil) (infer_sound accepted)
+
 /-- An accepted program has exactly one typing: its elaboration and type are
 the inferred ones. -/
 theorem infer_unique {sig : Signature} {src : Source} {result : InferenceResult}
@@ -367,16 +380,79 @@ theorem infer_type_safety {sig : Signature} {src : Source} {result : InferenceRe
     Eval.Value sig expr ∨ ∃ next, Eval.Step sig expr next :=
   RuntimeTyping.progress (infer_steps_typed accepted steps)
 
+/-- Running an accepted program, for any fuel, yields a term of the inferred
+type. -/
+theorem infer_run_typed {sig : Signature} {src : Source} {result : InferenceResult}
+    (accepted : infer sig src = some result) (fuel : Nat) :
+    RuntimeTyping sig 0 [] (Eval.run sig fuel src.erase) result.ty :=
+  infer_steps_typed accepted (Eval.run_steps fuel src.erase)
+
 /-- When the evaluator stops before its fuel runs out, it stops at a value. -/
 theorem infer_run_value {sig : Signature} {src : Source} {result : InferenceResult}
     (accepted : infer sig src = some result)
     (stopped : Eval.step? sig (Eval.run sig fuel src.erase) = none) :
     Eval.Value sig (Eval.run sig fuel src.erase) := by
-  have typed : RuntimeTyping sig 0 [] (Eval.run sig fuel src.erase) result.ty :=
-    infer_steps_typed accepted (Eval.run_steps fuel src.erase)
-  rcases RuntimeTyping.progress typed with value | ⟨next, step⟩
+  rcases RuntimeTyping.progress (infer_run_typed accepted fuel) with value | ⟨next, step⟩
   · exact value
   · rw [Eval.step?_complete step] at stopped
     exact Option.noConfusion stopped
+
+/-! ## A proof-carrying pipeline -/
+
+/-- The result of running a closed program of type `ty` from `start` with
+bounded fuel, carrying its own evidence. -/
+inductive Eval.Outcome (sig : Signature) (start : RuntimeExpr) (ty : SemTy) : Type
+  /-- Evaluation finished at a value. -/
+  | value (result : RuntimeExpr)
+      (steps : Eval.Steps sig start result)
+      (isValue : Eval.Value sig result)
+      (typed : RuntimeTyping sig 0 [] result ty)
+  /-- Fuel ran out at a typed term that can still step. -/
+  | running (current next : RuntimeExpr)
+      (steps : Eval.Steps sig start current)
+      (typed : RuntimeTyping sig 0 [] current ty)
+      (step : Eval.Step sig current next)
+
+/-- The final value, or `none` if fuel ran out. -/
+def Eval.Outcome.value? : Eval.Outcome sig start ty → Option RuntimeExpr
+  | .value result .. => some result
+  | .running .. => none
+
+/-- Infer `src`, then run its erasure for at most `fuel` steps. Rejected
+programs yield `none`; accepted programs cannot get stuck, by construction of
+`Eval.Outcome`. -/
+def evaluate (sig : Signature) (src : Source) (fuel : Nat) :
+    Option ((result : InferenceResult) × Eval.Outcome sig src.erase result.ty) :=
+  match accepted : infer sig src with
+  | none => none
+  | some result =>
+      some ⟨result,
+        match stepped : Eval.step? sig (Eval.run sig fuel src.erase) with
+        | some next =>
+            .running _ next (Eval.run_steps fuel _) (infer_run_typed accepted fuel)
+              (Eval.step?_sound stepped)
+        | none =>
+            .value _ (Eval.run_steps fuel _) (infer_run_value accepted stepped)
+              (infer_run_typed accepted fuel)⟩
+
+/-! ## Axioms
+
+The build fails if a headline theorem comes to depend on anything but Lean's
+three standard axioms. -/
+
+/-- info: 'EPL2.infer_eq_some_iff' depends on axioms: [propext, Classical.choice, Quot.sound] -/
+#guard_msgs in #print axioms infer_eq_some_iff
+
+/-- info: 'EPL2.infer_eq_none_iff' depends on axioms: [propext, Classical.choice, Quot.sound] -/
+#guard_msgs in #print axioms infer_eq_none_iff
+
+/-- info: 'EPL2.infer_unique' depends on axioms: [propext, Classical.choice, Quot.sound] -/
+#guard_msgs in #print axioms infer_unique
+
+/-- info: 'EPL2.infer_type_safety' depends on axioms: [propext, Classical.choice, Quot.sound] -/
+#guard_msgs in #print axioms infer_type_safety
+
+/-- info: 'EPL2.evaluate' depends on axioms: [propext, Classical.choice, Quot.sound] -/
+#guard_msgs in #print axioms evaluate
 
 end EPL2
