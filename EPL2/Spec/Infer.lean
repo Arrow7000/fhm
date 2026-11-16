@@ -1,5 +1,4 @@
 import EPL2.Spec.InferLet
-import Mathlib.Tactic
 
 /-!
 # Inference is sound and complete
