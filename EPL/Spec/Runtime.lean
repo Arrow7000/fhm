@@ -1,5 +1,5 @@
-import EPL2.Spec.Syntax
-import EPL2.Runtime
+import EPL.Spec.Syntax
+import EPL.Runtime
 
 /-!
 # Runtime metatheory
@@ -13,7 +13,7 @@ Type safety rests on four lemmas about `RuntimeTyping`:
 * `substRigids`: the one type-substitution lemma, used only by erasure.
 -/
 
-namespace EPL2
+namespace EPL
 
 /-! ## Generic expression-spine lemmas -/
 
@@ -1491,4 +1491,4 @@ theorem preservation (typing : RuntimeTyping sig k ctx expr ty)
 
 end RuntimeTyping
 
-end EPL2
+end EPL

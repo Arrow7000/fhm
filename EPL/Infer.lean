@@ -1,5 +1,5 @@
-import EPL2.Unify
-import EPL2.Typing
+import EPL.Unify
+import EPL.Typing
 
 /-!
 # Inference
@@ -11,7 +11,7 @@ The store's length is the allocation frontier: `?store.length` is the next
 fresh metavariable.
 -/
 
-namespace EPL2
+namespace EPL
 
 /-- A fresh unsolved metavariable at `level`. -/
 def MStore.fresh (store : MStore) (level : Nat) : InfTy × MStore :=
@@ -109,4 +109,4 @@ def infer (sig : Signature) (src : Source) : Option InferenceResult := do
   let elaboration ← (result.store.applyElab result.elaboration).traverseAnn Ty.ground
   some ⟨elaboration, ty⟩
 
-end EPL2
+end EPL

@@ -1,4 +1,4 @@
-import EPL2.Syntax
+import EPL.Syntax
 
 /-!
 # The metavariable store and unification
@@ -20,7 +20,7 @@ other step; each binding solves one more metavariable. The fuel is internal:
 `MStore.unify` takes none.
 -/
 
-namespace EPL2
+namespace EPL
 
 structure MEntry where
   level : Nat
@@ -114,4 +114,4 @@ def unifyLoop : Nat → MStore → List Constraint → Option MStore
 def MStore.unify (store : MStore) (left right : InfTy) : Option MStore :=
   unifyLoop (store.unsolved + 1) store [(store.apply left, store.apply right)]
 
-end EPL2
+end EPL

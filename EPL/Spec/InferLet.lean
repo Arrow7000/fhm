@@ -1,6 +1,6 @@
-import EPL2.Spec.Unify
-import EPL2.Spec.Store
-import EPL2.Spec.Declarative
+import EPL.Spec.Unify
+import EPL.Spec.Store
+import EPL.Spec.Declarative
 
 /-!
 # Inference of an explicit let
@@ -22,7 +22,7 @@ Throughout: `k` is the let's depth, `store` the store before the let,
 allocated annotation, `completed` the annotation resolved through `store'`.
 -/
 
-namespace EPL2
+namespace EPL
 
 /-- Contexts are realized by their metavariables only. -/
 theorem Ctx.realize_congr_vars {ctx : Ctx Nat} {first second : Valuation}
@@ -800,4 +800,4 @@ theorem inferAt_spec_letPoly {sig : Signature} {ann : PolyAnn Template} {rhs bod
       rename_i rhsElab scheme bodyElab
       exact hann (Template.Matches.wf completes.body_matches (Completes.skolemize_wf completes))
 
-end EPL2
+end EPL

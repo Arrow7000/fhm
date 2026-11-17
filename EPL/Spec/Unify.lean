@@ -1,4 +1,4 @@
-import EPL2.Spec.Models
+import EPL.Spec.Models
 
 /-!
 # Unification computes most general unifiers
@@ -11,7 +11,7 @@ Each property is proved for `MStore.solve` first, then for one `unifyPhase`,
 then for `unifyLoop` by induction on the fuel.
 -/
 
-namespace EPL2
+namespace EPL
 
 /-! ## Unfolding lemmas
 
@@ -2293,4 +2293,4 @@ theorem MStore.unify_anchored {store result : MStore} {left right : InfTy}
     [(store.apply left, store.apply right)] = some result at run
   exact unifyLoop_anchored anchored run
 
-end EPL2
+end EPL

@@ -1,235 +1,156 @@
 import Mathlib.Logic.Relation
 import EPL.Typing
 
+/-!
+# Runtime: strict left-to-right evaluation of erased programs
+
+Evaluation consults the signature for constants' arities.
+-/
+
 namespace EPL
 
-/-- The head of an application spine and its arguments, in order. -/
-def Expr.spine : Expr T → Expr T × List (Expr T)
-  | .app function argument =>
-      let headArgs := function.spine
-      (headArgs.1, headArgs.2 ++ [argument])
-  | expr => (expr, [])
-
-def Expr.apps (head : Expr T) (args : List (Expr T)) : Expr T :=
-  args.foldl .app head
-
 /-- How many arguments a constant takes while still a value: all of a
-constructor's fields, or every argument of an eliminator but its last
-branch. -/
-def DataConst.valueArity : DataConst → Nat
-  | .ctor _ _ arity => arity
-  | .elim _ ctorCount => ctorCount
+constructor's fields, or an eliminator's scrutinee and all its branches but
+the last. -/
+def Signature.valueArity (sig : Signature) : DataConst → Option Nat
+  | .ctor type index => do
+      let decl ← sig[type]?
+      let fields ← decl.ctors[index]?
+      some fields.length
+  | .elim type => do
+      let decl ← sig[type]?
+      some decl.ctors.length
+
+namespace Eval
 
 /-- `True` or `False`, following the `Bool` convention of `PrimOp.ty`. -/
-def Eval.boolValue (value : Bool) : RuntimeExpr :=
-  .const (.ctor 0 (if value then 0 else 1) 0)
+def boolValue (value : Bool) : RuntimeExpr :=
+  .const (.ctor 0 (if value then 0 else 1))
 
-/-- The result of a primitive operator on literal operands; `none` when the
-operands have the wrong kind. -/
+end Eval
+
+/-- A primitive operator on literal operands; `none` on operands of the wrong
+kind. -/
 def PrimOp.eval : PrimOp → PrimLit → PrimLit → Option RuntimeExpr
-  | .intAdd, .int left, .int right => some (.primLit (.int (left + right)))
-  | .intSub, .int left, .int right => some (.primLit (.int (left - right)))
+  | .intAdd, .int left, .int right => some (.lit (.int (left + right)))
+  | .intSub, .int left, .int right => some (.lit (.int (left - right)))
   | .intLt, .int left, .int right => some (Eval.boolValue (decide (left < right)))
   | .charLt, .char left, .char right => some (Eval.boolValue (decide (left < right)))
   | _, _, _ => none
 
 namespace Eval
 
-/-- Contract a saturated eliminator whose scrutinee is a saturated
-constructor: the chosen branch receives `()` and then the fields. -/
-def reduceConst : DataConst → List RuntimeExpr → Option RuntimeExpr
-  | .elim _ ctorCount, scrutinee :: branches =>
-      if branches.length = ctorCount then
-        match scrutinee.spine with
-        | (.const (.ctor _ ctor arity), fields) =>
-            if fields.length = arity then
-              (branches[ctor]?).map fun branch =>
-                Expr.apps branch (.primLit .unit :: fields)
-            else none
-        | _ => none
-      else none
+/-- Contract a saturated eliminator whose scrutinee is a saturated constructor
+of the same type: the chosen branch receives `()` and then the fields. -/
+def reduceConst (sig : Signature) : DataConst → List RuntimeExpr → Option RuntimeExpr
+  | .elim type, scrutinee :: branches => do
+      let decl ← sig[type]?
+      if branches.length ≠ decl.ctors.length then none
+      match scrutinee.spine with
+      | (.const (.ctor type' index), fields) => do
+          if type' ≠ type then none
+          let fieldTys ← decl.ctors[index]?
+          if fields.length ≠ fieldTys.length then none
+          let branch ← branches[index]?
+          some (Expr.apps branch (.lit .unit :: fields))
+      | _ => none
   | _, _ => none
 
-/-- Runtime values for strict left-to-right evaluation. -/
-inductive Value : RuntimeExpr → Prop
-  | primLit : Value (.primLit literal)
-  | primOp : Value (.primOp op)
-  | lambda : Value (.lambda ann body)
+inductive Value (sig : Signature) : RuntimeExpr → Prop
+  | lit : Value sig (.lit literal)
+  | primOp : Value sig (.primOp op)
+  | lambda : Value sig (.lambda param body)
   /-- A primitive operator awaiting its second operand. -/
-  | primOpPartial : Value argument → Value (.app (.primOp op) argument)
+  | primOpPartial : Value sig argument → Value sig (.app (.primOp op) argument)
   /-- A constant applied to values, short of a redex. -/
   | const :
       expr.spine = (.const c, args) →
-      args.length ≤ c.valueArity →
-      (∀ arg ∈ args, Value arg) →
-      Value expr
+      sig.valueArity c = some arity →
+      args.length ≤ arity →
+      (∀ arg ∈ args, Value sig arg) →
+      Value sig expr
 
-inductive Step : RuntimeExpr → RuntimeExpr → Prop
+inductive Step (sig : Signature) : RuntimeExpr → RuntimeExpr → Prop
   | beta :
-      Value argument →
-      Step (.app (.lambda ann body) argument) (body.subst1 argument)
+      Value sig argument →
+      Step sig (.app (.lambda param body) argument) (body.subst1 argument)
   | appFunction :
-      Step function function' →
-      Step (.app function argument) (.app function' argument)
+      Step sig function function' →
+      Step sig (.app function argument) (.app function' argument)
   | appArgument :
-      Value function →
-      Step argument argument' →
-      Step (.app function argument) (.app function argument')
+      Value sig function →
+      Step sig argument argument' →
+      Step sig (.app function argument) (.app function argument')
   | primOp :
       op.eval left right = some result →
-      Step (.app (.app (.primOp op) (.primLit left)) (.primLit right)) result
-  | letRhs :
-      Step rhs rhs' →
-      Step (.letIn ann rhs body) (.letIn ann rhs' body)
-  | letValue :
-      Value rhs →
-      Step (.letIn ann rhs body) (body.subst1 rhs)
-  | fixUnfold :
-      Step (.fix () body) (body.subst1 (.fix () body))
+      Step sig (.app (.app (.primOp op) (.lit left)) (.lit right)) result
   | const :
       (Expr.app function argument).spine = (.const c, args) →
-      (∀ arg ∈ args, Value arg) →
-      reduceConst c args = some result →
-      Step (.app function argument) result
+      (∀ arg ∈ args, Value sig arg) →
+      reduceConst sig c args = some result →
+      Step sig (.app function argument) result
+  | letRhs :
+      Step sig rhs rhs' →
+      Step sig (.letIn ann rhs body) (.letIn ann rhs' body)
+  | letValue :
+      Value sig rhs →
+      Step sig (.letIn ann rhs body) (body.subst1 rhs)
+  | fixUnfold :
+      Step sig (.fix self body) (body.subst1 (.fix self body))
 
-/-- Finite execution: the reflexive-transitive closure of `Step`. -/
-abbrev Steps : RuntimeExpr → RuntimeExpr → Prop :=
-  Relation.ReflTransGen Step
+abbrev Steps (sig : Signature) : RuntimeExpr → RuntimeExpr → Prop :=
+  Relation.ReflTransGen (Step sig)
 
-end Eval
-end EPL
+/-! ## Executable evaluator -/
 
-namespace EPL
-
-/-- Typing after annotations have been erased. Runtime syntax does not retain
-whether a source let was monomorphic or carried an explicit scheme, so the
-relation has separate derivations for the same erased constructor. -/
-inductive RuntimeTyping (sig : Signature) : Nat → Ctx → RuntimeExpr → Ty → Prop
-  | primLit :
-      RuntimeTyping sig rigidCount ctx (.primLit literal) literal.ty
-
-  | primOp :
-      op.ty sig = some ty →
-      RuntimeTyping sig rigidCount ctx (.primOp op) ty
-
-  | var :
-      ctx[index]? = some scheme →
-      scheme.WF rigidCount →
-      args.length = scheme.paramCount →
-      (∀ arg ∈ args, arg.WF rigidCount 0) →
-      RuntimeTyping sig rigidCount ctx (.var index) (scheme.openWith args)
-
-  | lambda :
-      paramTy.WF rigidCount 0 →
-      RuntimeTyping sig rigidCount (PolyTy.mono paramTy :: ctx) body bodyTy →
-      RuntimeTyping sig rigidCount ctx (.lambda ann body) (.arrow paramTy bodyTy)
-
-  | app :
-      RuntimeTyping sig rigidCount ctx function (.arrow argumentTy resultTy) →
-      RuntimeTyping sig rigidCount ctx argument argumentTy →
-      RuntimeTyping sig rigidCount ctx (.app function argument) resultTy
-
-  | letMono :
-      rhsTy.WF rigidCount 0 →
-      RuntimeTyping sig rigidCount ctx rhs rhsTy →
-      RuntimeTyping sig rigidCount (PolyTy.mono rhsTy :: ctx) body bodyTy →
-      RuntimeTyping sig rigidCount ctx (.letIn ann rhs body) bodyTy
-
-  | letPoly :
-      scheme.WF rigidCount →
-      ctx.WF rigidCount →
-      RuntimeTyping sig (rigidCount + scheme.paramCount) ctx rhs
-        (scheme.openRigids rigidCount) →
-      RuntimeTyping sig rigidCount (scheme :: ctx) body bodyTy →
-      RuntimeTyping sig rigidCount ctx (.letIn ann rhs body) bodyTy
-
-  | fix :
-      selfTy.WF rigidCount 0 →
-      RuntimeTyping sig rigidCount (PolyTy.mono selfTy :: ctx) body selfTy →
-      RuntimeTyping sig rigidCount ctx (.fix () body) selfTy
-
-  | const :
-      sig.schemeOf c = some scheme →
-      scheme.WF 0 →
-      args.length = scheme.paramCount →
-      (∀ arg ∈ args, arg.WF rigidCount 0) →
-      RuntimeTyping sig rigidCount ctx (.const c) (scheme.openWith args)
-
-/-- A runtime expression inhabits every semantic instance of a scheme. -/
-structure RuntimeHasScheme (sig : Signature) (rigidCount : Nat) (ctx : Ctx)
-    (expr : RuntimeExpr) (scheme : PolyTy) : Prop where
-  schemeWF : scheme.WF rigidCount
-  typed : ∀ larger, rigidCount ≤ larger → ∀ args,
-    args.length = scheme.paramCount →
-    (∀ arg ∈ args, arg.WF larger 0) →
-    RuntimeTyping sig larger ctx expr (scheme.openWith args)
-
-end EPL
-
-/-!
-# Executable evaluator
-
-A deterministic one-step function `Eval.step?` and a fuel-bounded driver
-`Eval.run` for the erased runtime language. `EPL.Properties.Evaluator` proves
-that `step?` computes exactly the `Eval.Step` relation and that `run` follows
-it; fuel is needed because `fix` admits divergence.
--/
-
-namespace EPL
-namespace Eval
-
-/-- Executable check for `Value`. -/
-def isValue : RuntimeExpr → Bool
-  | .primLit _ => true
-  | .primOp _ => true
-  | .lambda _ _ => true
-  | .const _ => true
-  | .app (.primOp _) argument => isValue argument
+def isValue (sig : Signature) : RuntimeExpr → Bool
+  | .lit _ | .primOp _ | .lambda _ _ => true
+  | .const c => (sig.valueArity c).isSome
+  | .app (.primOp _) argument => isValue sig argument
   | .app function argument =>
-      isValue function && isValue argument &&
+      isValue sig function && isValue sig argument &&
         match (Expr.app function argument).spine with
-        | (.const c, args) => decide (args.length ≤ c.valueArity)
+        | (.const c, args) =>
+            match sig.valueArity c with
+            | some arity => decide (args.length ≤ arity)
+            | none => false
         | _ => false
   | _ => false
 
-/-- Contract an application whose function and argument are both values:
-beta reduction, a saturated primitive operator, or an eliminator meeting a
-constructor. `none` if none applies. -/
-def reduceApp : RuntimeExpr → RuntimeExpr → Option RuntimeExpr
+/-- Contract an application of a value to a value, if it is a redex. -/
+def reduceApp (sig : Signature) : RuntimeExpr → RuntimeExpr → Option RuntimeExpr
   | .lambda _ body, argument => some (body.subst1 argument)
-  | .app (.primOp op) (.primLit left), .primLit right => op.eval left right
+  | .app (.primOp op) (.lit left), .lit right => op.eval left right
   | function, argument =>
       match (Expr.app function argument).spine with
-      | (.const c, args) => reduceConst c args
+      | (.const c, args) => reduceConst sig c args
       | _ => none
 
-/-- One step of strict left-to-right evaluation. Returns `none` exactly when
-the expression has no `Step` successor (it is a value or stuck). -/
-def step? : RuntimeExpr → Option RuntimeExpr
+/-- One step; `none` exactly when there is no `Step` successor. -/
+def step? (sig : Signature) : RuntimeExpr → Option RuntimeExpr
   | .app function argument =>
-      match step? function with
+      match step? sig function with
       | some function' => some (.app function' argument)
       | none =>
-          if isValue function then
-            match step? argument with
+          if isValue sig function then
+            match step? sig argument with
             | some argument' => some (.app function argument')
-            | none =>
-                if isValue argument then reduceApp function argument else none
+            | none => if isValue sig argument then reduceApp sig function argument else none
           else none
   | .letIn ann rhs body =>
-      match step? rhs with
+      match step? sig rhs with
       | some rhs' => some (.letIn ann rhs' body)
-      | none => if isValue rhs then some (body.subst1 rhs) else none
-  | .fix ann body => some (body.subst1 (.fix ann body))
+      | none => if isValue sig rhs then some (body.subst1 rhs) else none
+  | .fix self body => some (body.subst1 (.fix self body))
   | _ => none
 
-/-- Take up to `fuel` steps, stopping early at an expression with no
-successor. -/
-def run : Nat → RuntimeExpr → RuntimeExpr
+/-- Up to `fuel` steps, stopping early where no step applies. (Fuel because
+`fix` admits divergence.) -/
+def run (sig : Signature) : Nat → RuntimeExpr → RuntimeExpr
   | 0, expr => expr
   | fuel + 1, expr =>
-      match step? expr with
-      | some next => run fuel next
+      match step? sig expr with
+      | some next => run sig fuel next
       | none => expr
 
 end Eval

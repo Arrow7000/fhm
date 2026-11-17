@@ -46,45 +46,24 @@ roots = [
 name = "EPL"
 # Cleanroom explicit-polymorphism research language. Kept independent of the
 # FHM verified stack so experimental type systems do not inherit HM machinery.
+# `lake build EPL`; see EPL/Design.md.
 roots = [
-  "EPL.Core",
+  "EPL.Syntax",
   "EPL.Typing",
   "EPL.Runtime",
-  "EPL.Unification",
-  "EPL.Inference",
-  "EPL.Properties.Declarative",
-  "EPL.Properties.Runtime",
-  "EPL.Properties.Unification",
-  "EPL.Properties.InferenceState",
-  "EPL.Properties.InferenceSound",
-  "EPL.Properties.InferenceComplete",
-  "EPL.Properties.EndToEnd",
-  "EPL.Examples",
+  "EPL.Unify",
+  "EPL.Infer",
+  "EPL.Spec.Syntax",
+  "EPL.Spec.Eval",
+  "EPL.Spec.Runtime",
+  "EPL.Spec.Declarative",
+  "EPL.Spec.Models",
+  "EPL.Spec.Unify",
+  "EPL.Spec.Store",
+  "EPL.Spec.InferLet",
+  "EPL.Spec.Infer",
+  "EPL.Theorems",
   "EPL.Tests",
-  "EPL.Headlines",
-]
-
-[[lean_lib]]
-name = "EPL2"
-# EPL rewrite: parametric types, levels in source annotations, structural
-# inference. `lake build EPL2`.
-roots = [
-  "EPL2.Syntax",
-  "EPL2.Typing",
-  "EPL2.Runtime",
-  "EPL2.Unify",
-  "EPL2.Infer",
-  "EPL2.Spec.Syntax",
-  "EPL2.Spec.Eval",
-  "EPL2.Spec.Runtime",
-  "EPL2.Spec.Declarative",
-  "EPL2.Spec.Models",
-  "EPL2.Spec.Unify",
-  "EPL2.Spec.Store",
-  "EPL2.Spec.InferLet",
-  "EPL2.Spec.Infer",
-  "EPL2.Theorems",
-  "EPL2.Tests",
 ]
 
 [[lean_lib]]

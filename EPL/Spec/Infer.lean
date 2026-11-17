@@ -1,15 +1,15 @@
-import EPL2.Spec.InferLet
+import EPL.Spec.InferLet
 
 /-!
 # Inference is sound and complete
 
 The whole correctness argument is **one induction**, `inferAt_spec`, on the
 source program, with one lemma per constructor. Each is a short composition
-of the specifications of the store operations (`EPL2.Spec.Store`,
-`EPL2.Spec.Unify`); none unfolds `MStore.unify`. The explicit let is in
-`EPL2.Spec.InferLet`.
+of the specifications of the store operations (`EPL.Spec.Store`,
+`EPL.Spec.Unify`); none unfolds `MStore.unify`. The explicit let is in
+`EPL.Spec.InferLet`.
 
-The public theorems (`infer_eq_some_iff` and friends, in `EPL2.Theorems`) are
+The public theorems (`infer_eq_some_iff` and friends, in `EPL.Theorems`) are
 corollaries.
 
 **Outline of the cases.** Each lemma unfolds `inferAt` on its constructor
@@ -32,7 +32,7 @@ into nested `match`/`Option.bind` and splits along it.
   against by `Elaborates.typing` and the earlier steps' `principal`.
 -/
 
-namespace EPL2
+namespace EPL
 
 /-! ## Small helpers -/
 
@@ -1412,4 +1412,4 @@ theorem inferAt_spec {sig : Signature} {k : Nat} {ctx : Ctx Nat} {src : Source} 
       exact inferAt_spec_fix
         (fun k ctx store pre' => ih (k := k) (ctx := ctx) (store := store) pre') pre
 
-end EPL2
+end EPL

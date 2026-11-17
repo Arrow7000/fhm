@@ -1,11 +1,11 @@
-import EPL2.Spec.Models
-import EPL2.Infer
+import EPL.Spec.Models
+import EPL.Infer
 
 /-!
 # Store operations and the inference invariant
 
 Each store operation of inference (`fresh`, `freshMany`, `allocate`,
-`paramTy`; `unify` is in `EPL2.Spec.Unify`) is specified by how it changes
+`paramTy`; `unify` is in `EPL.Spec.Unify`) is specified by how it changes
 the set of models:
 
 * *sound*: every model of the new store is a model of the old one, with some
@@ -18,7 +18,7 @@ the set of models:
 `inferAt`.
 -/
 
-namespace EPL2
+namespace EPL
 
 /-! ## Store operations -/
 
@@ -482,4 +482,4 @@ def InferSpec (sig : Signature) (k : Nat) (ctx : Ctx Nat) (src : Source) (store 
   | none => ∀ valuation, store.Models valuation →
       ∀ elaboration ty, ¬ Elaborates sig k (ctx.realize valuation) src elaboration ty
 
-end EPL2
+end EPL

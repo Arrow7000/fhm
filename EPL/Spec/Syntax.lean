@@ -1,4 +1,4 @@
-import EPL2.Syntax
+import EPL.Syntax
 
 /-!
 # The type-level library
@@ -18,7 +18,7 @@ ask the substituted images to be free of `bvar`s (`Scoped _ 0`). Images are
 always semantic types well-formed at some depth, so this always holds.
 -/
 
-namespace EPL2
+namespace EPL
 namespace Ty
 
 /-- Membership in an appended list, split into the two summands. -/
@@ -951,4 +951,4 @@ theorem matches_bind {template : Template} (f : String → SemTy) :
 
 end Template
 
-end EPL2
+end EPL

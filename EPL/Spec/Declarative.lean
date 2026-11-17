@@ -1,5 +1,5 @@
-import EPL2.Spec.Syntax
-import EPL2.Spec.Runtime
+import EPL.Spec.Syntax
+import EPL.Spec.Runtime
 
 /-!
 # Declarative metatheory
@@ -8,7 +8,7 @@ Everything here is proved once for `TypingWith sig Det`, generically in the
 let condition `Det`, so it holds for both `Typing` and `Elaborates`.
 -/
 
-namespace EPL2
+namespace EPL
 
 theorem PrimLit.ty_wf (literal : PrimLit) : (literal.ty : Ty V).WF k := by
   cases literal <;> trivial
@@ -210,4 +210,4 @@ theorem Elaborates.typing (elaborates : Elaborates sig k ctx src elaboration ty)
     Typing sig k ctx src elaboration ty :=
   TypingWith.mono (fun _ _ _ _ _ _ => trivial) elaborates
 
-end EPL2
+end EPL

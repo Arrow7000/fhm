@@ -1,5 +1,5 @@
-import EPL2.Spec.Syntax
-import EPL2.Unify
+import EPL.Spec.Syntax
+import EPL.Unify
 
 /-!
 # The store: semantics and invariants
@@ -10,7 +10,7 @@ metavariable's level and satisfies every solution. Everything inference
 does is specified by how it changes the set of models.
 -/
 
-namespace EPL2
+namespace EPL
 
 abbrev Valuation := Nat → SemTy
 
@@ -494,4 +494,4 @@ theorem MStore.Models.agree_below {store : MStore} {first second : Valuation} (s
   | some entry =>
       exact agree_of_lookup safe firstModels secondModels hget hlevel (fun m _ => agree m)
 
-end EPL2
+end EPL

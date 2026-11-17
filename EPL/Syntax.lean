@@ -1,7 +1,7 @@
 import Mathlib.Data.List.Dedup
 
 /-!
-# EPL2 syntax
+# EPL syntax
 
 One type syntax `Ty V`, parametric in what its flexible variables are:
 
@@ -21,10 +21,10 @@ Type variables come in two further kinds, both natural numbers:
 
 Every operation on types that replaces variables is an instance of the one
 traversal `Ty.subst`, whose laws (`Ty.subst_subst`, `Ty.subst_congr`,
-`Ty.scoped_subst` in `EPL2.Spec.Syntax`) are the whole type-level library.
+`Ty.scoped_subst` in `EPL.Spec.Syntax`) are the whole type-level library.
 -/
 
-namespace EPL2
+namespace EPL
 
 inductive PrimTy where
   | unit
@@ -353,4 +353,4 @@ def Expr.spine : Expr A → Expr A × List (Expr A)
 def Expr.apps (head : Expr A) (args : List (Expr A)) : Expr A :=
   args.foldl .app head
 
-end EPL2
+end EPL

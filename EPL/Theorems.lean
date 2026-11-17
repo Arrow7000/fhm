@@ -1,8 +1,8 @@
-import EPL2.Spec.Infer
-import EPL2.Spec.Eval
+import EPL.Spec.Infer
+import EPL.Spec.Eval
 
 /-!
-# EPL2: the headline theorems
+# EPL: the headline theorems
 
 * `infer_eq_some_iff` / `infer_eq_none_iff`: inference accepts exactly the
   programs with a unique elaboration, and returns it.
@@ -27,7 +27,7 @@ The runtime theorems follow from `TypingWith.erase`,
 `RuntimeTyping.preservation`/`progress` and `Eval.step?_complete`.
 -/
 
-namespace EPL2
+namespace EPL
 
 /-! ## Mapping the annotations of an expression -/
 
@@ -406,19 +406,19 @@ def evaluate (sig : Signature) (src : Source) (fuel : Nat) :
 The build fails if a headline theorem comes to depend on anything but Lean's
 three standard axioms. -/
 
-/-- info: 'EPL2.infer_eq_some_iff' depends on axioms: [propext, Classical.choice, Quot.sound] -/
+/-- info: 'EPL.infer_eq_some_iff' depends on axioms: [propext, Classical.choice, Quot.sound] -/
 #guard_msgs in #print axioms infer_eq_some_iff
 
-/-- info: 'EPL2.infer_eq_none_iff' depends on axioms: [propext, Classical.choice, Quot.sound] -/
+/-- info: 'EPL.infer_eq_none_iff' depends on axioms: [propext, Classical.choice, Quot.sound] -/
 #guard_msgs in #print axioms infer_eq_none_iff
 
-/-- info: 'EPL2.infer_unique' depends on axioms: [propext, Classical.choice, Quot.sound] -/
+/-- info: 'EPL.infer_unique' depends on axioms: [propext, Classical.choice, Quot.sound] -/
 #guard_msgs in #print axioms infer_unique
 
-/-- info: 'EPL2.infer_type_safety' depends on axioms: [propext, Classical.choice, Quot.sound] -/
+/-- info: 'EPL.infer_type_safety' depends on axioms: [propext, Classical.choice, Quot.sound] -/
 #guard_msgs in #print axioms infer_type_safety
 
-/-- info: 'EPL2.evaluate' depends on axioms: [propext, Classical.choice, Quot.sound] -/
+/-- info: 'EPL.evaluate' depends on axioms: [propext, Classical.choice, Quot.sound] -/
 #guard_msgs in #print axioms evaluate
 
-end EPL2
+end EPL

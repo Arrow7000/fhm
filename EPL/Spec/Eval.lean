@@ -1,4 +1,4 @@
-import EPL2.Runtime
+import EPL.Runtime
 
 /-!
 # The evaluator
@@ -8,7 +8,7 @@ deterministic, and values are exactly the expressions `isValue` accepts.
 None of this mentions types.
 -/
 
-namespace EPL2
+namespace EPL
 namespace Eval
 
 /-! ## Spine facts -/
@@ -388,4 +388,4 @@ theorem run_complete (steps : Steps sig expr result) (value : Value sig result) 
       exact found extra
 
 end Eval
-end EPL2
+end EPL
