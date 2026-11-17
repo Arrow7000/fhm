@@ -5,7 +5,7 @@ import EPL.Spec.Eval
 # EPL: the headline theorems
 
 * `infer_eq_some_iff` / `infer_eq_none_iff`: inference accepts exactly the
-  programs with a unique elaboration, and returns it.
+  programs that elaborate and have no other typing, and returns that typing.
 * `infer_unique`: an accepted program has exactly one typing.
 * `infer_type_safety`, `infer_run_value`: accepted programs do not get stuck.
 * `evaluate`: infer, erase and run, returning a typed value or a typed term
@@ -46,7 +46,7 @@ private theorem Expr.mapAnn_mapAnn {A B C : Type} (f : A → B) (g : B → C) (e
       | none => rfl
       | some ann => cases ann; rfl
   | fix self body ih =>
-      simp only [Expr.mapAnn, ih]
+      cases self <;> simp [Expr.mapAnn, ih]
 
 private theorem Expr.mapAnn_id {A : Type} (expr : Expr A) : expr.mapAnn (fun a => a) = expr := by
   induction expr with
@@ -62,7 +62,7 @@ private theorem Expr.mapAnn_id {A : Type} (expr : Expr A) : expr.mapAnn (fun a =
       | none => rfl
       | some ann => cases ann; rfl
   | fix self body ih =>
-      simp only [Expr.mapAnn, ih]
+      cases self <;> simp [Expr.mapAnn, ih]
 
 /-- Resolving an elaboration's annotations does not change its realization. -/
 private theorem Expr.realize_applyElab {store : MStore} {valuation : Valuation}
@@ -262,21 +262,24 @@ theorem infer_unique {sig : Signature} {src : Source} {result : InferenceResult}
   obtain ⟨hground, hgroundElab⟩ := realize_ground extendedModels ground traverse
   exact ⟨helaboration.symm.trans hgroundElab, hty.symm.trans hground⟩
 
-/-- **Soundness and completeness.** `infer` accepts exactly the programs with
-a unique elaboration, and returns it. Proof of `←`: `inferAt_spec` cannot
-fail (its failure case contradicts the elaboration); if the result's type or
-elaboration kept an unsolved metavariable, `Models.exists_different` and
-soundness would give a second elaboration. -/
+/-- **Soundness and completeness.** `infer` accepts exactly the programs that
+elaborate and have no other typing, and returns that typing. (Uniqueness among
+elaborations alone is equivalent, by this theorem.) Proof of `←`:
+`inferAt_spec` cannot fail (its failure case contradicts the elaboration); if
+the result's type or elaboration kept an unsolved metavariable,
+`Models.exists_different` and soundness would give a second elaboration. -/
 theorem infer_eq_some_iff {sig : Signature} {src : Source} {result : InferenceResult} :
     infer sig src = some result ↔
       Elaborates sig 0 [] src result.elaboration result.ty ∧
-        ∀ elaboration ty, Elaborates sig 0 [] src elaboration ty →
+        ∀ elaboration ty, Typing sig 0 [] src elaboration ty →
           elaboration = result.elaboration ∧ ty = result.ty := by
   constructor
   · intro accepted
-    exact ⟨infer_sound accepted, fun elaboration ty elaborates =>
-      infer_unique accepted (Elaborates.typing elaborates)⟩
-  · rintro ⟨sound, unique⟩
+    exact ⟨infer_sound accepted, fun _ _ typing => infer_unique accepted typing⟩
+  · rintro ⟨sound, uniqueTyping⟩
+    have unique : ∀ elaboration ty, Elaborates sig 0 [] src elaboration ty →
+        elaboration = result.elaboration ∧ ty = result.ty :=
+      fun elaboration ty elaborates => uniqueTyping elaboration ty elaborates.typing
     cases run : inferAt sig 0 [] src [] with
     | none =>
         have hspec := inferAt_spec (sig := sig) (src := src) inferPre_nil
@@ -311,7 +314,7 @@ theorem infer_eq_some_iff {sig : Signature} {src : Source} {result : InferenceRe
 theorem infer_eq_none_iff {sig : Signature} {src : Source} :
     infer sig src = none ↔
       ¬ ∃ elaboration ty, Elaborates sig 0 [] src elaboration ty ∧
-        ∀ elaboration' ty', Elaborates sig 0 [] src elaboration' ty' →
+        ∀ elaboration' ty', Typing sig 0 [] src elaboration' ty' →
           elaboration' = elaboration ∧ ty' = ty := by
   constructor
   · rintro noneRun ⟨elaboration, ty, elaborates, unique⟩

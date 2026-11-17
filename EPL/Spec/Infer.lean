@@ -370,11 +370,12 @@ private theorem TypingWith.letMono_inv {sig : Signature} {Det : LetCondition} {k
   | letMono hrhs hbody => exact ⟨_, _, _, _, rfl, rfl, hrhs, hbody⟩
 
 private theorem TypingWith.fix_inv {sig : Signature} {Det : LetCondition} {k : Nat} {ctx : Ctx Empty}
-    {self : Template} {body : Source} {elaboration : Elab} {ty : SemTy}
+    {self : Option Template} {body : Source} {elaboration : Elab} {ty : SemTy}
     (typing : TypingWith sig Det k ctx (.fix self body) elaboration ty) :
     ∃ sem : SemTy, ∃ bodyElab : Elab,
-      elaboration = .fix sem bodyElab ∧ ty = sem ∧ sem.WF k ∧
-        self.Matches sem ∧ TypingWith sig Det k (.mono sem :: ctx) body bodyElab sem := by
+      elaboration = .fix (some sem) bodyElab ∧ ty = sem ∧ sem.WF k ∧
+        Template.MatchesOpt self sem ∧
+          TypingWith sig Det k (.mono sem :: ctx) body bodyElab sem := by
   cases typing with
   | fix hwf hmatches hbody => exact ⟨_, _, rfl, rfl, hwf, hmatches, hbody⟩
 
@@ -1184,204 +1185,192 @@ theorem inferAt_spec_letMono {sig : Signature} {rhs body : Source}
             · rw [htarget]
               exact hbodyTyReal
 
-/-- A model of the store extends to the allocated self type, and the context
-follows: this is the state the body of a `fix` runs in. -/
-private theorem fix_extend {k : Nat} {ctx : Ctx Nat} {store : MStore} {self : Template}
-    {valuation : Valuation} (pre : InferPre k ctx store) (models : store.Models valuation)
-    {sem : SemTy} (hsemwf : sem.WF k) (hsm : self.Matches sem) :
-    ∃ ext, (store.allocate k self).2.Models ext ∧ Agree store.length valuation ext ∧
-      (store.allocate k self).1.realize ext = sem ∧
-      Ctx.realize (.mono (store.allocate k self).1 :: ctx) ext =
-        .mono sem :: ctx.realize valuation := by
-  obtain ⟨ext, hmodelsExt, hagreeExt, hreal⟩ :=
-    MStore.allocate_principal pre.safe models hsm hsemwf
-  exact ⟨ext, hmodelsExt, hagreeExt, hreal, ctx_realize_cons_eq pre hagreeExt hreal⟩
-
-theorem inferAt_spec_fix {sig : Signature} {self : Template} {body : Source}
+/-- The `fix` case of inference: the binder type comes from `paramTy`, exactly
+as a lambda's parameter, and the body is then unified with it. -/
+theorem inferAt_spec_fix {sig : Signature} {self : Option Template} {body : Source}
     (bodySpec : ∀ k ctx store, InferPre k ctx store → InferSpec sig k ctx body store)
     (pre : InferPre k ctx store) :
     InferSpec sig k ctx (.fix self body) store := by
   have hbind : inferAt sig k ctx (.fix self body) store =
-      (if ¬ self.WF k then none else
-        (fun (selfTy : InfTy) (store : MStore) =>
-          (inferAt sig k (.mono selfTy :: ctx) body store).bind (fun bodyResult =>
+      (paramTy k store self).bind (fun pair =>
+        (inferAt sig k (.mono pair.1 :: ctx) body pair.2).bind (fun bodyResult =>
+          (bodyResult.store.unify bodyResult.ty pair.1).bind (fun store =>
+            some ⟨pair.1, .fix (some pair.1) bodyResult.elaboration, store⟩))) := rfl
+  cases hp : paramTy k store self with
+  | none =>
+      have h : inferAt sig k ctx (.fix self body) store = none := by
+        rw [hbind, hp]; rfl
+      simp only [InferSpec, h]
+      have hspec := paramTy_spec (k := k) (store := store) (param := self) pre.safe
+      rw [hp] at hspec
+      intro valuation models elaboration ty typing
+      obtain ⟨sem, bodyElab, _, _, hsemwf, hsm, _⟩ := TypingWith.fix_inv typing
+      exact hspec sem hsm hsemwf
+  | some pair =>
+      obtain ⟨selfTy, store'⟩ := pair
+      have h : inferAt sig k ctx (.fix self body) store =
+          (inferAt sig k (.mono selfTy :: ctx) body store').bind (fun bodyResult =>
             (bodyResult.store.unify bodyResult.ty selfTy).bind (fun store =>
-              some ⟨selfTy, .fix selfTy bodyResult.elaboration, store⟩)))
-          (store.allocate k self).1 (store.allocate k self).2) := rfl
-  by_cases hwf : self.WF k
-  · have hbase : inferAt sig k ctx (.fix self body) store =
-        (fun (selfTy : InfTy) (store : MStore) =>
-          (inferAt sig k (.mono selfTy :: ctx) body store).bind (fun bodyResult =>
-            (bodyResult.store.unify bodyResult.ty selfTy).bind (fun store =>
-              some ⟨selfTy, .fix selfTy bodyResult.elaboration, store⟩)))
-          (store.allocate k self).1 (store.allocate k self).2 := by
-      rw [hbind]; simp [hwf]
-    obtain ⟨hselfWF, hselfAlloc, hselfOuter⟩ :=
-      MStore.allocate_wf (store := store) (level := k) (template := self) hwf
-    have hsafe1 : (store.allocate k self).2.Safe := by
-      rw [MStore.allocate_snd]
-      exact MStore.append_unsolved_safe pre.safe
-    have hgrow1 : store.length ≤ (store.allocate k self).2.length := by
-      rw [MStore.allocate_snd]; simp
-    have hlev1 : ∀ id < store.length, (store.allocate k self).2.levelOf id ≤ store.levelOf id := by
-      intro id hi
-      rw [MStore.allocate_snd, MStore.append_unsolved_levelOf, if_pos hi]
-    have hselfLev : (store.allocate k self).1.LevelBounded (store.allocate k self).2 k := by
-      rw [MStore.allocate_snd]
-      exact Ty.levelBounded_append hselfAlloc hselfOuter
-    have hpre1 : InferPre k (.mono (store.allocate k self).1 :: ctx) (store.allocate k self).2 :=
-      InferPre.cons_mono (pre.extend hsafe1 hgrow1 hlev1) hselfWF hselfAlloc hselfLev
-    cases hb : inferAt sig k (.mono (store.allocate k self).1 :: ctx) body
-        (store.allocate k self).2 with
-    | none =>
-        have hnone : inferAt sig k ctx (.fix self body) store = none := by
-          simp only [hbase, hb, Option.bind]
-        simp only [InferSpec, hnone]
-        have hbodyNone := bodySpec k (.mono (store.allocate k self).1 :: ctx)
-          (store.allocate k self).2 hpre1
-        unfold InferSpec at hbodyNone
-        rw [hb] at hbodyNone
-        intro valuation models elaboration ty typing
-        obtain ⟨sem, bodyElab, _, _, hsemwf, hsm, hbody⟩ := TypingWith.fix_inv typing
-        obtain ⟨ext, hmodelsExt, _, _, hctxeq⟩ := fix_extend pre models hsemwf hsm
-        rw [← hctxeq] at hbody
-        exact hbodyNone ext hmodelsExt bodyElab sem hbody
-    | some bodyResult =>
-        have h : inferAt sig k ctx (.fix self body) store =
-            (bodyResult.store.unify bodyResult.ty (store.allocate k self).1).bind
-              (fun storeFinal =>
-                some ⟨(store.allocate k self).1,
-                  .fix (store.allocate k self).1 bodyResult.elaboration, storeFinal⟩) := by
-          simp only [hbase, hb, Option.bind]
-        have hbodyPost := bodySpec k (.mono (store.allocate k self).1 :: ctx)
-          (store.allocate k self).2 hpre1
-        unfold InferSpec at hbodyPost
-        rw [hb] at hbodyPost
-        simp only at hbodyPost
-        cases hu : bodyResult.store.unify bodyResult.ty (store.allocate k self).1 with
-        | none =>
-            have hnone : inferAt sig k ctx (.fix self body) store = none := by
-              rw [h, hu]; rfl
-            simp only [InferSpec, hnone]
-            intro valuation models elaboration ty typing
-            obtain ⟨sem, bodyElab, _, _, hsemwf, hsm, hbody⟩ := TypingWith.fix_inv typing
-            have hbodyTyping := Elaborates.typing hbody
-            obtain ⟨ext, hmodelsExt, _, hreal, hctxeq⟩ := fix_extend pre models hsemwf hsm
-            rw [← hctxeq] at hbody
-            rw [← hctxeq] at hbodyTyping
-            obtain ⟨extended, hmodelsExt', hagreeExt', _, hbodyTyReal⟩ :=
-              hbodyPost.principal ext hmodelsExt bodyElab sem hbodyTyping
-            have hself : (store.allocate k self).1.realize extended = sem := by
-              rw [Ty.realize_agree hselfAlloc
-                (fun id hi => (hagreeExt' id hi).symm), hreal]
-            have hunifies : bodyResult.ty.realize extended =
-                (store.allocate k self).1.realize extended := by
-              rw [hbodyTyReal, hself]
-            obtain ⟨result, hresult, _⟩ :=
-              MStore.unify_complete (store := bodyResult.store)
-                (left := bodyResult.ty) (right := (store.allocate k self).1)
-                hbodyPost.safe hbodyPost.tyAllocated
-                (Ty.allocated_mono hbodyPost.grows hselfAlloc) hmodelsExt' hunifies
-            rw [hu] at hresult
-            cases hresult
-        | some store2 =>
-            have hsucc : inferAt sig k ctx (.fix self body) store =
-                some ⟨(store.allocate k self).1,
-                  .fix (store.allocate k self).1 bodyResult.elaboration, store2⟩ := by
-              simp only [h, hu, Option.bind]
-            simp only [InferSpec, hsucc]
-            have hgrowBody2 : bodyResult.store.length ≤ store2.length :=
-              le_of_eq (MStore.unify_length hu).symm
-            have hgrow12 : (store.allocate k self).2.length ≤ store2.length :=
-              le_trans hbodyPost.grows hgrowBody2
-            have hselfLevBody : (store.allocate k self).1.LevelBounded bodyResult.store k :=
-              Ty.levelBounded_mono hselfAlloc hselfLev hbodyPost.levels
-            refine
-              { safe := MStore.unify_safe hbodyPost.safe hbodyPost.tyAllocated
-                  (Ty.allocated_mono hbodyPost.grows hselfAlloc) hu
-                grows := by
-                  show store.length ≤ store2.length
-                  exact le_trans (le_trans hgrow1 hbodyPost.grows) hgrowBody2
-                levels := ?_
-                tyWF := hselfWF
-                tyAllocated := Ty.allocated_mono hgrow12 hselfAlloc
-                tyLevels := Ty.levelBounded_mono (Ty.allocated_mono hbodyPost.grows hselfAlloc)
-                  hselfLevBody (fun id _ => MStore.unify_levelOf_le hu id)
-                elabAllocated := ?_
-                anchored := ?_
-                sound := ?_
-                principal := ?_ }
-            · intro id hi
-              exact le_trans (MStore.unify_levelOf_le hu id)
-                (le_trans (hbodyPost.levels id (lt_of_lt_of_le hi hgrow1)) (hlev1 id hi))
-            · intro ann hann
-              simp only [Expr.anns, List.mem_cons] at hann
-              rcases hann with rfl | hann
-              · exact Ty.allocated_mono hgrow12 hselfAlloc
-              · exact Ty.allocated_mono hgrowBody2 (hbodyPost.elabAllocated ann hann)
-            · intro start level hlt hstart hanch
-              have hstoreAnch : (store.allocate k self).2.Anchored start level := by
-                rw [MStore.allocate_snd]
-                exact MStore.Anchored.append_unsolved
-                  (count := self.vars.dedup.length) (level' := k) hanch hlt
-              exact MStore.unify_anchored
-                (hbodyPost.anchored start level hlt (le_trans hstart hgrow1) hstoreAnch) hu
-            · intro valuation models
-              obtain ⟨hmodelsBody, hunifyEq⟩ := MStore.unify_sound hu models
-              obtain ⟨hmodels1, hbodyElab⟩ := hbodyPost.sound valuation hmodelsBody
-              refine ⟨?_, ?_⟩
-              · rw [MStore.allocate_snd] at hmodels1
-                exact MStore.Models.of_append_unsolved hmodels1
-              · simp only [Expr.realize, Expr.mapAnn]
-                have hselfRealWF : ((store.allocate k self).1.realize valuation).WF k :=
-                  Ty.realize_wf_of_models hmodels1 hselfWF hselfAlloc hselfLev
-                rw [hunifyEq] at hbodyElab
-                exact TypingWith.fix hselfRealWF
-                  (MStore.allocate_sound store k self valuation) hbodyElab
-            · intro valuation models elaboration target typing
-              obtain ⟨sem, bodyElab, helab, htarget, hsemwf, hsm, hbody⟩ :=
-                TypingWith.fix_inv typing
-              obtain ⟨ext, hmodelsExt, hagreeExt, hreal, hctxeq⟩ := fix_extend pre models hsemwf hsm
+              some ⟨selfTy, .fix (some selfTy) bodyResult.elaboration, store⟩)) := by
+        rw [hbind, hp]; rfl
+      have hspec := paramTy_spec (k := k) (store := store) (param := self) pre.safe
+      rw [hp] at hspec
+      obtain ⟨hstore', htywf, htyalloc, htyouter, hmatches, hprincipal⟩ := hspec
+      have hsafe' : store'.Safe := by
+        rw [hstore']; exact MStore.append_unsolved_safe pre.safe
+      have hgrow' : store.length ≤ store'.length := by
+        rw [hstore']; simp
+      have hlev' : ∀ id < store.length, store'.levelOf id ≤ store.levelOf id := by
+        intro id hi
+        rw [hstore', MStore.append_unsolved_levelOf, if_pos hi]
+      have htyalloc' : selfTy.Allocated
+          (store ++ List.replicate (store'.length - store.length) ⟨k, none⟩) := by
+        rw [← hstore']; exact htyalloc
+      have htylev : selfTy.LevelBounded store' k := by
+        rw [hstore']
+        exact Ty.levelBounded_append htyalloc' htyouter
+      have hpre' : InferPre k (.mono selfTy :: ctx) store' :=
+        InferPre.cons_mono (pre.extend hsafe' hgrow' hlev') htywf htyalloc htylev
+      cases hb : inferAt sig k (.mono selfTy :: ctx) body store' with
+      | none =>
+          have hnone : inferAt sig k ctx (.fix self body) store = none := by
+            simp only [h, hb, Option.bind]
+          simp only [InferSpec, hnone]
+          have hbodyNone := bodySpec k (.mono selfTy :: ctx) store' hpre'
+          unfold InferSpec at hbodyNone
+          rw [hb] at hbodyNone
+          intro valuation models elaboration ty typing
+          obtain ⟨sem, bodyElab, _, _, hsemwf, hsm, hbody⟩ := TypingWith.fix_inv typing
+          obtain ⟨ext', hmodels', hagree', hreal'⟩ :=
+            hprincipal valuation sem models hsm hsemwf
+          have hctxeq := ctx_realize_cons_eq pre hagree' hreal'
+          rw [← hctxeq] at hbody
+          exact hbodyNone ext' hmodels' bodyElab sem hbody
+      | some bodyResult =>
+          have hsucc : inferAt sig k ctx (.fix self body) store =
+              (bodyResult.store.unify bodyResult.ty selfTy).bind (fun store =>
+                some ⟨selfTy, .fix (some selfTy) bodyResult.elaboration, store⟩) := by
+            simp only [h, hb, Option.bind]
+          have hbodyPost := bodySpec k (.mono selfTy :: ctx) store' hpre'
+          unfold InferSpec at hbodyPost
+          rw [hb] at hbodyPost
+          simp only at hbodyPost
+          cases hu : bodyResult.store.unify bodyResult.ty selfTy with
+          | none =>
+              have hnone : inferAt sig k ctx (.fix self body) store = none := by
+                rw [hsucc, hu]; rfl
+              simp only [InferSpec, hnone]
+              intro valuation models elaboration ty typing
+              obtain ⟨sem, bodyElab, _, _, hsemwf, hsm, hbody⟩ := TypingWith.fix_inv typing
+              have hbodyTyping := Elaborates.typing hbody
+              obtain ⟨ext, hmodelsExt, hagreeExt, hreal⟩ :=
+                hprincipal valuation sem models hsm hsemwf
+              have hctxeq := ctx_realize_cons_eq pre hagreeExt hreal
               rw [← hctxeq] at hbody
-              obtain ⟨extended, hmodelsExt', hagreeExt', hbodyElabReal, hbodyTyReal⟩ :=
-                hbodyPost.principal ext hmodelsExt bodyElab sem hbody
-              have hself : (store.allocate k self).1.realize extended = sem := by
-                rw [Ty.realize_agree hselfAlloc
+              rw [← hctxeq] at hbodyTyping
+              obtain ⟨extended, hmodelsExt', hagreeExt', _, hbodyTyReal⟩ :=
+                hbodyPost.principal ext hmodelsExt bodyElab sem hbodyTyping
+              have hself : selfTy.realize extended = sem := by
+                rw [Ty.realize_agree htyalloc
                   (fun id hi => (hagreeExt' id hi).symm), hreal]
-              have hunifies : bodyResult.ty.realize extended =
-                  (store.allocate k self).1.realize extended := by
+              have hunifies : bodyResult.ty.realize extended = selfTy.realize extended := by
                 rw [hbodyTyReal, hself]
-              obtain ⟨result, hresult, hmodelsResult⟩ :=
+              obtain ⟨result, hresult, _⟩ :=
                 MStore.unify_complete (store := bodyResult.store)
-                  (left := bodyResult.ty) (right := (store.allocate k self).1)
+                  (left := bodyResult.ty) (right := selfTy)
                   hbodyPost.safe hbodyPost.tyAllocated
-                  (Ty.allocated_mono hbodyPost.grows hselfAlloc) hmodelsExt' hunifies
-              have hresultEq : result = store2 := by
-                rw [hu] at hresult
-                exact (Option.some.inj hresult).symm
-              subst hresultEq
-              refine ⟨extended, hmodelsResult, ?_, ?_, ?_⟩
+                  (Ty.allocated_mono hbodyPost.grows htyalloc) hmodelsExt' hunifies
+              rw [hu] at hresult
+              cases hresult
+          | some store2 =>
+              have hsucc' : inferAt sig k ctx (.fix self body) store =
+                  some ⟨selfTy, .fix (some selfTy) bodyResult.elaboration, store2⟩ := by
+                simp only [hsucc, hu, Option.bind]
+              simp only [InferSpec, hsucc']
+              have hgrowBody2 : bodyResult.store.length ≤ store2.length :=
+                le_of_eq (MStore.unify_length hu).symm
+              have hgrow12 : store'.length ≤ store2.length :=
+                le_trans hbodyPost.grows hgrowBody2
+              have hselfLevBody : selfTy.LevelBounded bodyResult.store k :=
+                Ty.levelBounded_mono htyalloc htylev hbodyPost.levels
+              refine
+                { safe := MStore.unify_safe hbodyPost.safe hbodyPost.tyAllocated
+                    (Ty.allocated_mono hbodyPost.grows htyalloc) hu
+                  grows := by
+                    show store.length ≤ store2.length
+                    exact le_trans (le_trans hgrow' hbodyPost.grows) hgrowBody2
+                  levels := ?_
+                  tyWF := htywf
+                  tyAllocated := Ty.allocated_mono hgrow12 htyalloc
+                  tyLevels := Ty.levelBounded_mono (Ty.allocated_mono hbodyPost.grows htyalloc)
+                    hselfLevBody (fun id _ => MStore.unify_levelOf_le hu id)
+                  elabAllocated := ?_
+                  anchored := ?_
+                  sound := ?_
+                  principal := ?_ }
               · intro id hi
-                exact (hagreeExt id hi).trans
-                  (hagreeExt' id (lt_of_lt_of_le hi hgrow1))
-              · change (Expr.fix (store.allocate k self).1
-                    bodyResult.elaboration).realize extended = elaboration
-                rw [helab]
-                show Expr.fix ((store.allocate k self).1.realize extended)
-                    (Expr.mapAnn (fun x => Ty.realize x extended) bodyResult.elaboration) =
-                  Expr.fix sem bodyElab
-                have hbodyMap : Expr.mapAnn (fun x => Ty.realize x extended)
-                    bodyResult.elaboration = bodyElab := hbodyElabReal
-                rw [hself, hbodyMap]
-              · rw [htarget]
-                exact hself
-  · have h : inferAt sig k ctx (.fix self body) store = none := by
-      rw [hbind]
-      simp [hwf]
-    simp only [InferSpec, h]
-    intro valuation models elaboration ty typing
-    obtain ⟨sem, bodyElab, _, _, hsemwf, hsm, _⟩ := TypingWith.fix_inv typing
-    exact hwf (Template.Matches.wf hsm hsemwf)
+                exact le_trans (MStore.unify_levelOf_le hu id)
+                  (le_trans (hbodyPost.levels id (lt_of_lt_of_le hi hgrow')) (hlev' id hi))
+              · intro ann hann
+                simp only [Expr.anns, List.mem_cons] at hann
+                rcases hann with rfl | hann
+                · exact Ty.allocated_mono hgrow12 htyalloc
+                · exact Ty.allocated_mono hgrowBody2 (hbodyPost.elabAllocated ann hann)
+              · intro start level hlt hstart hanch
+                have hstoreAnch : store'.Anchored start level := by
+                  rw [hstore']
+                  exact MStore.Anchored.append_unsolved
+                    (count := store'.length - store.length) (level' := k) hanch hlt
+                exact MStore.unify_anchored
+                  (hbodyPost.anchored start level hlt (le_trans hstart hgrow') hstoreAnch) hu
+              · intro valuation models
+                obtain ⟨hmodelsBody, hunifyEq⟩ := MStore.unify_sound hu models
+                obtain ⟨hmodels1, hbodyElab⟩ := hbodyPost.sound valuation hmodelsBody
+                refine ⟨?_, ?_⟩
+                · rw [hstore'] at hmodels1
+                  exact MStore.Models.of_append_unsolved hmodels1
+                · simp only [Expr.realize, Expr.mapAnn]
+                  have hselfRealWF : (selfTy.realize valuation).WF k :=
+                    Ty.realize_wf_of_models hmodels1 htywf htyalloc htylev
+                  rw [hunifyEq] at hbodyElab
+                  exact TypingWith.fix hselfRealWF (hmatches valuation) hbodyElab
+              · intro valuation models elaboration target typing
+                obtain ⟨sem, bodyElab, helab, htarget, hsemwf, hsm, hbody⟩ :=
+                  TypingWith.fix_inv typing
+                obtain ⟨ext, hmodelsExt, hagreeExt, hreal⟩ :=
+                  hprincipal valuation sem models hsm hsemwf
+                have hctxeq := ctx_realize_cons_eq pre hagreeExt hreal
+                rw [← hctxeq] at hbody
+                obtain ⟨extended, hmodelsExt', hagreeExt', hbodyElabReal, hbodyTyReal⟩ :=
+                  hbodyPost.principal ext hmodelsExt bodyElab sem hbody
+                have hself : selfTy.realize extended = sem := by
+                  rw [Ty.realize_agree htyalloc
+                    (fun id hi => (hagreeExt' id hi).symm), hreal]
+                have hunifies : bodyResult.ty.realize extended = selfTy.realize extended := by
+                  rw [hbodyTyReal, hself]
+                obtain ⟨result, hresult, hmodelsResult⟩ :=
+                  MStore.unify_complete (store := bodyResult.store)
+                    (left := bodyResult.ty) (right := selfTy)
+                    hbodyPost.safe hbodyPost.tyAllocated
+                    (Ty.allocated_mono hbodyPost.grows htyalloc) hmodelsExt' hunifies
+                have hresultEq : result = store2 := by
+                  rw [hu] at hresult
+                  exact (Option.some.inj hresult).symm
+                subst hresultEq
+                refine ⟨extended, hmodelsResult, ?_, ?_, ?_⟩
+                · intro id hi
+                  exact (hagreeExt id hi).trans
+                    (hagreeExt' id (lt_of_lt_of_le hi hgrow'))
+                · change (Expr.fix (some selfTy) bodyResult.elaboration).realize extended = elaboration
+                  rw [helab]
+                  show Expr.fix (some (selfTy.realize extended))
+                      (Expr.mapAnn (fun x => Ty.realize x extended) bodyResult.elaboration) =
+                    Expr.fix (some sem) bodyElab
+                  have hbodyMap : Expr.mapAnn (fun x => Ty.realize x extended)
+                      bodyResult.elaboration = bodyElab := hbodyElabReal
+                  rw [hself, hbodyMap]
+                · rw [htarget]
+                  exact hself
 
 /-- **The** inference theorem: induction on `src` with the lemmas above. -/
 theorem inferAt_spec {sig : Signature} {k : Nat} {ctx : Ctx Nat} {src : Source} {store : MStore}

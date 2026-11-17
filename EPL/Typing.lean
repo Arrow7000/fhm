@@ -132,9 +132,9 @@ inductive TypingWith (sig : Signature) (Det : LetCondition) :
         (.letIn (some ⟨scheme.arity, scheme.skolemize k⟩) rhsElab bodyElab) bodyTy
   | fix :
       selfTy.WF k →
-      self.Matches selfTy →
+      Template.MatchesOpt self selfTy →
       TypingWith sig Det k (.mono selfTy :: ctx) body bodyElab selfTy →
-      TypingWith sig Det k ctx (.fix self body) (.fix selfTy bodyElab) selfTy
+      TypingWith sig Det k ctx (.fix self body) (.fix (some selfTy) bodyElab) selfTy
 
 /-- Ordinary typing (each derivation also determines an elaboration). -/
 abbrev Typing (sig : Signature) := TypingWith sig fun _ _ _ _ _ => True

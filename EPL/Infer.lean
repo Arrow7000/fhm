@@ -38,8 +38,8 @@ structure Inferred where
   elaboration : Expr InfTy
   store : MStore
 
-/-- The type of a lambda parameter: a fresh metavariable, or the annotation
-with its holes allocated. -/
+/-- The type of a lambda parameter or a `fix` binder: a fresh metavariable,
+or the annotation with its holes allocated. -/
 def paramTy (k : Nat) (store : MStore) : Option Template → Option (InfTy × MStore)
   | none => some (store.fresh k)
   | some template => if template.WF k then some (store.allocate k template) else none
@@ -90,11 +90,10 @@ def inferAt (sig : Signature) (k : Nat) (ctx : Ctx Nat) : Source → MStore → 
       some ⟨bodyResult.ty, .letIn (some ⟨ann.arity, completed⟩) rhsResult.elaboration bodyResult.elaboration,
         bodyResult.store⟩
   | .fix self body, store => do
-      if ¬ self.WF k then none
-      let (selfTy, store) := store.allocate k self
+      let (selfTy, store) ← paramTy k store self
       let bodyResult ← inferAt sig k (.mono selfTy :: ctx) body store
       let store ← bodyResult.store.unify bodyResult.ty selfTy
-      some ⟨selfTy, .fix selfTy bodyResult.elaboration, store⟩
+      some ⟨selfTy, .fix (some selfTy) bodyResult.elaboration, store⟩
 
 structure InferenceResult where
   elaboration : Elab

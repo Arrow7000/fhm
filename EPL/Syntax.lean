@@ -246,8 +246,9 @@ def PolyAnn.map (f : A → B) (ann : PolyAnn A) : PolyAnn B := ⟨ann.arity, f a
 
 /-- Expressions, parametric in the annotation type `A`:
 * `Source := Expr Template` — what the programmer wrote;
-* `Elab := Expr SemTy` — the same program with every implicit type filled in;
-* `RuntimeExpr := Expr Unit` — after erasure. -/
+* `Elab := Expr SemTy` — the same program with every implicit type filled in
+  (every annotation is `some`);
+* `RuntimeExpr := Expr Empty` — after erasure (every annotation is `none`). -/
 inductive Expr (A : Type) where
   | lit (literal : PrimLit)
   | primOp (op : PrimOp)
@@ -258,12 +259,14 @@ inductive Expr (A : Type) where
   /-- `none`: a monomorphic let. `some ann`: a let with an explicit scheme;
   its right-hand side is one rigid depth level per binder deeper. -/
   | letIn (ann : Option (PolyAnn A)) (rhs body : Expr A)
-  | fix (self : A) (body : Expr A)
+  /-- Monomorphic recursion; `self` annotates the recursive binder, as `param`
+  does a lambda's. -/
+  | fix (self : Option A) (body : Expr A)
   deriving DecidableEq, Repr
 
 abbrev Source := Expr Template
 abbrev Elab := Expr SemTy
-abbrev RuntimeExpr := Expr Unit
+abbrev RuntimeExpr := Expr Empty
 
 def Expr.mapAnn (f : A → B) : Expr A → Expr B
   | .lit literal => .lit literal
@@ -273,7 +276,7 @@ def Expr.mapAnn (f : A → B) : Expr A → Expr B
   | .lambda param body => .lambda (param.map f) (body.mapAnn f)
   | .app function argument => .app (function.mapAnn f) (argument.mapAnn f)
   | .letIn ann rhs body => .letIn (ann.map (PolyAnn.map f)) (rhs.mapAnn f) (body.mapAnn f)
-  | .fix self body => .fix (f self) (body.mapAnn f)
+  | .fix self body => .fix (self.map f) (body.mapAnn f)
 
 /-- Map every annotation, failing if any annotation fails. -/
 def Expr.traverseAnn (f : A → Option B) : Expr A → Option (Expr B)
@@ -289,7 +292,8 @@ def Expr.traverseAnn (f : A → Option B) : Expr A → Option (Expr B)
       some (.letIn none (← rhs.traverseAnn f) (← body.traverseAnn f))
   | .letIn (some ann) rhs body => do
       some (.letIn (some ⟨ann.arity, ← f ann.body⟩) (← rhs.traverseAnn f) (← body.traverseAnn f))
-  | .fix self body => do some (.fix (← f self) (← body.traverseAnn f))
+  | .fix none body => do some (.fix none (← body.traverseAnn f))
+  | .fix (some self) body => do some (.fix (some (← f self)) (← body.traverseAnn f))
 
 /-- Every annotation of an expression, in order. -/
 def Expr.anns : Expr A → List A
@@ -299,7 +303,8 @@ def Expr.anns : Expr A → List A
   | .app function argument => function.anns ++ argument.anns
   | .letIn none rhs body => rhs.anns ++ body.anns
   | .letIn (some ann) rhs body => ann.body :: (rhs.anns ++ body.anns)
-  | .fix self body => self :: body.anns
+  | .fix none body => body.anns
+  | .fix (some self) body => self :: body.anns
 
 /-- Forget every annotation. A source program and its elaboration erase to the
 same runtime expression. -/
@@ -311,7 +316,7 @@ def Expr.erase : Expr A → RuntimeExpr
   | .lambda _ body => .lambda none body.erase
   | .app function argument => .app function.erase argument.erase
   | .letIn _ rhs body => .letIn none rhs.erase body.erase
-  | .fix _ body => .fix () body.erase
+  | .fix _ body => .fix none body.erase
 
 /-- Add `amount` to every term variable at or above `cutoff`. -/
 def Expr.shift (cutoff amount : Nat) : Expr A → Expr A

@@ -649,7 +649,7 @@ theorem anns_mapAnn (f : A → B) (expr : Expr A) : (expr.mapAnn f).anns = expr.
       | none => simp [Expr.mapAnn, Expr.anns, ihr, ihb, List.map_append]
       | some a => simp [Expr.mapAnn, Expr.anns, ihr, ihb, List.map_append, PolyAnn.map]
   | fix self body ih =>
-      simp [Expr.mapAnn, Expr.anns, ih]
+      cases self <;> simp [Expr.mapAnn, Expr.anns, ih]
 
 theorem mapAnn_congr {f g : A → B} {expr : Expr A} (agree : ∀ ann ∈ expr.anns, f ann = g ann) :
     expr.mapAnn f = expr.mapAnn g := by
@@ -675,8 +675,12 @@ theorem mapAnn_congr {f g : A → B} {expr : Expr A} (agree : ∀ ann ∈ expr.a
             ihr (fun ann hann => agree ann (by simp [Expr.anns, hann])),
             ihb (fun ann hann => agree ann (by simp [Expr.anns, hann]))]
   | fix self body ih =>
-      simp [Expr.mapAnn, agree self (by simp [Expr.anns]),
-        ih (fun ann hann => agree ann (by simp [Expr.anns, hann]))]
+      cases self with
+      | none =>
+          simp [Expr.mapAnn, ih (fun ann hann => agree ann (by simp [Expr.anns, hann]))]
+      | some a =>
+          simp [Expr.mapAnn, agree a (by simp [Expr.anns]),
+            ih (fun ann hann => agree ann (by simp [Expr.anns, hann]))]
 
 /-- If two maps of an expression agree, the functions agree on every
 annotation. -/
@@ -732,13 +736,22 @@ theorem mapAnn_eq_anns {f g : A → B} {expr : Expr A} (equal : expr.mapAnn f = 
           · exact ihr hr ann' h
           · exact ihb hb ann' h
   | fix self body ih =>
-      have hs : f self = g self := by injection equal with _ _
-      have hb : body.mapAnn f = body.mapAnn g := by injection equal with _ _
       intro ann hmem
-      simp only [Expr.anns, List.mem_cons] at hmem
-      rcases hmem with h | h
-      · subst h; exact hs
-      · exact ih hb ann h
+      cases self with
+      | none =>
+          simp only [Expr.anns] at hmem
+          have hb : body.mapAnn f = body.mapAnn g := by
+            injection equal with _ _
+          exact ih hb ann hmem
+      | some a =>
+          simp only [Expr.anns, List.mem_cons] at hmem
+          rcases hmem with h | h
+          · subst h
+            injection equal with hp _
+            exact Option.some.inj hp
+          · have hb : body.mapAnn f = body.mapAnn g := by
+              injection equal with _ _
+            exact ih hb ann h
 
 private theorem option_bind_some_eq_some {α γ : Type} {o : Option α} {g : α → γ} {c : γ} :
     (o >>= fun a => some (g a)) = some c ↔ ∃ a, o = some a ∧ g a = c := by
@@ -785,7 +798,13 @@ private theorem traverseAnn_eq_none_iff {f : Ty V → Option SemTy} :
           simp only [Expr.traverseAnn, Expr.anns, option_bind3_none, ihr, ihb,
             List.exists_mem_cons_iff, Ty.exists_mem_append]
   | fix self body ih =>
-      simp only [Expr.traverseAnn, Expr.anns, Ty.option_bind2_none, ih, List.exists_mem_cons_iff]
+      cases self with
+      | none =>
+          simp only [Expr.traverseAnn, Expr.anns]
+          rw [Ty.option_bind_some_eq_none, ih]
+      | some a =>
+          simp only [Expr.traverseAnn, Expr.anns]
+          rw [Ty.option_bind2_none, ih, List.exists_mem_cons_iff]
 
 private theorem traverseAnn_eq_some_iff {f : Ty V → Option SemTy} {r : SemTy → Ty V}
     (hf : ∀ (ty : Ty V) (sem : SemTy), f ty = some sem ↔ ty = r sem) :
@@ -909,20 +928,43 @@ private theorem traverseAnn_eq_some_iff {f : Ty V → Option SemTy} {r : SemTy �
                       simp [Expr.traverseAnn, har, hfa, (ihr erhs).mpr hr, (ihb ebody).mpr hb]
   | fix self body ih =>
       intro el
-      constructor
-      · intro h
-        rw [Expr.traverseAnn] at h
-        obtain ⟨x, y, hs, hb, he⟩ := option_bind2_some.mp h
-        have hself : self = r x := (hf self x).mp hs
-        have hbody : body = y.mapAnn r := (ih y).mp hb
-        subst he
-        simp [Expr.mapAnn, hself, hbody]
-      · intro h
-        cases el <;> try simp [Expr.mapAnn] at h
-        case fix eself ebody =>
-            obtain ⟨hs, hb⟩ := h
-            have hfs : f self = some eself := (hf self eself).mpr hs
-            simp [Expr.traverseAnn, hfs, (ih ebody).mpr hb]
+      cases self with
+      | none =>
+          constructor
+          · intro h
+            rw [Expr.traverseAnn] at h
+            obtain ⟨e, hb, he⟩ := option_bind_some_eq_some.mp h
+            have hbody : body = e.mapAnn r := (ih e).mp hb
+            subst he
+            simp [Expr.mapAnn, hbody]
+          · intro h
+            cases el <;> try simp [Expr.mapAnn] at h
+            case fix p ebody =>
+              cases p with
+              | none =>
+                  simp only [Option.map_none] at h
+                  obtain ⟨-, hbody⟩ := h
+                  simp [Expr.traverseAnn, (ih ebody).mpr hbody]
+              | some b => simp at h
+      | some a =>
+          constructor
+          · intro h
+            rw [Expr.traverseAnn] at h
+            obtain ⟨x, y, ha, hb, he⟩ := option_bind2_some.mp h
+            have hax : a = r x := (hf a x).mp ha
+            have hbody : body = y.mapAnn r := (ih y).mp hb
+            subst he
+            simp [Expr.mapAnn, hax, hbody]
+          · intro h
+            cases el <;> try simp [Expr.mapAnn] at h
+            case fix p ebody =>
+              cases p with
+              | none => simp at h
+              | some b =>
+                  simp only [Option.map_some, Option.some.injEq] at h
+                  obtain ⟨ha, hbody⟩ := h
+                  have hfa : f a = some b := (hf a b).mpr ha
+                  simp [Expr.traverseAnn, hfa, (ih ebody).mpr hbody]
 
 theorem traverseAnn_ground_eq_some {expr : Expr (Ty V)} {elaboration : Elab} :
     expr.traverseAnn Ty.ground = some elaboration ↔ expr = elaboration.mapAnn Ty.lift :=

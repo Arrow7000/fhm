@@ -101,7 +101,7 @@ def ifLt : Source :=
 /-- `length (Cons 1 (Cons 2 Nil))` by `fix`. -/
 def lengthProgram : Source :=
   let length : Source :=
-    .fix (.arrow (.app (.con 1) (.var "a")) int.lift)
+    .fix (some (.arrow (.app (.con 1) (.var "a")) int.lift))
       (.lambda none
         (.app (.app (.app (.const (.elim 1)) (.var 0))
           (.lambda none (.lit (.int 0))))
@@ -228,7 +228,7 @@ def inferredIntLambda : Source :=
 /-- General recursion is monomorphic and has no recursive binding group. This
 loop is intentionally divergent but has the ordinary function type. -/
 def integerLoop : Source :=
-  .fix (.arrow int int)
+  .fix (some (.arrow int int))
     (.lambda (some int)
       (.app (.var 1) (.var 0)))
 
@@ -472,7 +472,7 @@ example : (infer boolSig falsePolyProgram).map (·.ty) = none := by
   decide
 
 def inferredIntegerFix : Source :=
-  .fix (.var "_")
+  .fix none
     (.app
       (.app (.primOp .intAdd) (.var 0))
       (.lit (.int 1)))
@@ -546,14 +546,14 @@ example : ∃ elaboration, Typing boolSig 0 [] partlyInferredPolyProgram elabora
 example : ∃ elaboration, Typing boolSig 0 [] inferredIntegerFix elaboration int :=
   ⟨_, infer_typing (by
     decide : infer boolSig inferredIntegerFix = some
-      ⟨.fix int
+      ⟨.fix (some int)
           (.app (.app (.primOp .intAdd) (.var 0)) (.lit (.int 1))),
         int⟩)⟩
 
 example : ∃ elaboration, Typing boolSig 0 [] integerLoop elaboration (.arrow int int) :=
   ⟨_, infer_typing (by
     decide : infer boolSig integerLoop = some
-      ⟨.fix (.arrow int int) (.lambda (some int) (.app (.var 1) (.var 0))),
+      ⟨.fix (some (.arrow int int)) (.lambda (some int) (.app (.var 1) (.var 0))),
         .arrow int int⟩)⟩
 
 /-! ## Evaluator -/
@@ -671,7 +671,7 @@ def listMatch (scrutinee : Source) : Source :=
     listConsBranch
 
 def listLength : Source :=
-  .fix (.arrow listTy int)
+  .fix (some (.arrow listTy int))
     (.lambda (some listTy) (listMatch (.var 0)))
 
 example : (infer listSig (.app listLength listInt)).map (·.ty) = some int := by
@@ -745,7 +745,7 @@ example : Eval.Value boolSig partialIntLt.erase :=
 /-- `fix f : Int -> Int. fun n => if n < 1 then 0 else n + f (n - 1)`. -/
 def primRecursive : Source :=
   .app
-    (.fix (.arrow int int)
+    (.fix (some (.arrow int int))
       (.lambda (some int)
         (ifThen
           (.app (.app (.primOp .intLt) (.var 0)) (.lit (.int 1)))

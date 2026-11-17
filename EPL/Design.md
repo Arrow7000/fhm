@@ -12,16 +12,16 @@ axioms, which the build verifies for the headline theorems.
 - An unannotated `let` is monomorphic.
 - A polymorphic `let` writes its exact `forall` prefix. Written schemes never
   acquire inferred binders.
-- Lambda parameter annotations are optional, and any annotation may be
-  partial: it may contain named holes. Holes with the same name within one
-  annotation stand for the same type. The surface `_` is a hole with a fresh
-  name.
-- `fix` binds an annotated self type monomorphically. There are no recursive
+- `fix` binds its recursive binder monomorphically. There are no recursive
   binding groups, no implicit generalisation and no polymorphic recursion.
-- Inference accepts exactly the programs with a unique elaboration: every
-  omitted parameter type and every hole is determined. Unknowns introduced
-  only to instantiate a scheme are not part of the elaboration and need not
-  be determined (a use of `forall a. Int` is accepted).
+- Annotations on lambda parameters and `fix` binders are optional, and any
+  annotation may be partial: it may contain named holes. Holes with the same
+  name within one annotation stand for the same type. The surface `_` is a
+  hole with a fresh name.
+- Inference accepts exactly the programs that elaborate and have no other
+  typing: every omitted binder type and every hole is determined. Unknowns
+  introduced only to instantiate a scheme are not part of the elaboration and
+  need not be determined (a use of `forall a. Int` is accepted).
 
 ## Types
 
@@ -81,6 +81,9 @@ meeting a saturated constructor reduces to the chosen branch applied to
 
 `TypingWith sig Det k ctx src elab ty`: at rigid depth `k`, in `ctx`, source
 `src` has type `ty`, and `elab` is `src` with every implicit type filled in.
+Expressions are parametric in their annotations: `Source = Expr Template`,
+`Elab = Expr SemTy` (every annotation present) and `RuntimeExpr = Expr
+Empty` (every annotation erased).
 The relation takes a side condition `Det` on explicit lets, which gives two
 judgments from one set of rules:
 
@@ -134,8 +137,8 @@ type and every annotation of the resolved elaboration are ground.
 
 | Theorem | Statement |
 |---|---|
-| `infer_eq_some_iff` | `infer` returns a result exactly when it is the program's unique elaboration |
-| `infer_eq_none_iff` | `infer` rejects exactly the programs without a unique elaboration |
+| `infer_eq_some_iff` | `infer` returns a result exactly when it elaborates the program and is its only typing |
+| `infer_eq_none_iff` | `infer` rejects exactly the programs without such a typing |
 | `infer_unique` | an accepted program has exactly one `Typing` |
 | `infer_type_safety` | an accepted program never gets stuck |
 | `evaluate` | infer, erase and run; returns a typed value or a typed term that can still step |
