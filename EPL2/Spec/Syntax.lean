@@ -8,10 +8,9 @@ three laws of `subst` (`subst_subst`, `subst_congr`, `scoped_subst`), and the
 facts about the derived operations that the rest of the development uses,
 each provable from those laws plus `simp`/`omega` on the pointwise maps.
 
-**Proof guidance.** Prove the laws of `subst` by induction on the type. Prefer
-proving the other lemmas by rewriting with them (`Ty.bind`, `Ty.instantiate`,
-... are all `subst` by definition); a fresh induction on the type is fine
-where that is shorter.
+The laws of `subst` are proved by induction on the type. Most other lemmas
+follow by rewriting with them (`Ty.bind`, `Ty.instantiate`, ... are all
+`subst` by definition), a few by a fresh induction where that is shorter.
 
 Substitution under a scheme's binders is not capture-avoiding (`bvar`s are
 not shifted), so the lemmas that push a substitution through `instantiate`
@@ -25,25 +24,7 @@ namespace Ty
 /-- Membership in an appended list, split into the two summands. -/
 private theorem exists_mem_append {α : Type} {l₁ l₂ : List α} {p : α → Prop} :
     (∃ v ∈ l₁ ++ l₂, p v) ↔ (∃ v ∈ l₁, p v) ∨ (∃ v ∈ l₂, p v) := by
-  simp only [List.mem_append]
-  constructor
-  · rintro ⟨v, hv, hp⟩
-    rcases hv with hv | hv
-    · exact Or.inl ⟨v, hv, hp⟩
-    · exact Or.inr ⟨v, hv, hp⟩
-  · rintro (⟨v, hv, hp⟩ | ⟨v, hv, hp⟩)
-    · exact ⟨v, Or.inl hv, hp⟩
-    · exact ⟨v, Or.inr hv, hp⟩
-
-private theorem append_ne_nil_left {α : Type} {l₁ l₂ : List α} (h : l₁ ≠ []) : l₁ ++ l₂ ≠ [] := by
-  cases l₁ with
-  | nil => exact absurd rfl h
-  | cons x xs => intro hnil; exact List.cons_ne_nil x _ hnil
-
-private theorem append_ne_nil_right {α : Type} {l₁ l₂ : List α} (h : l₂ ≠ []) : l₁ ++ l₂ ≠ [] := by
-  cases l₁ with
-  | nil => simpa using h
-  | cons x xs => intro hnil; exact List.cons_ne_nil x _ hnil
+  simp only [List.mem_append, or_and_right, exists_or]
 
 /-- Indexing a list with a proof of the bound. -/
 private theorem getD_eq_getElem {α : Type} {l : List α} {i : Nat} {d : α} (h : i < l.length) :
@@ -54,31 +35,15 @@ private theorem getD_eq_getElem {α : Type} {l : List α} {i : Nat} {d : α} (h 
 theorem subst_subst (σ : Subst U V) (τ : Subst V W) (ty : Ty U) :
     (ty.subst σ).subst τ = ty.subst (σ.comp τ) := by
   induction ty with
-  | prim name => rfl
-  | arrow domain codomain ihd ihc =>
+  | prim _ | con _ | bvar _ | rigid _ | var _ => rfl
+  | arrow domain codomain ihd ihc | app domain codomain ihd ihc =>
       simp only [Ty.subst, ihd, ihc]
-  | con id => rfl
-  | app function argument ihf iha =>
-      simp only [Ty.subst, ihf, iha]
-  | bvar index => rfl
-  | rigid level => rfl
-  | var v => rfl
 
 theorem subst_id (ty : Ty V) : ty.subst Subst.id = ty := by
   induction ty with
-  | prim name => rfl
-  | arrow domain codomain ihd ihc =>
-      change Ty.arrow (domain.subst Subst.id) (codomain.subst Subst.id) =
-        Ty.arrow domain codomain
-      rw [ihd, ihc]
-  | con id => rfl
-  | app function argument ihf iha =>
-      change Ty.app (function.subst Subst.id) (argument.subst Subst.id) =
-        Ty.app function argument
-      rw [ihf, iha]
-  | bvar index => rfl
-  | rigid level => rfl
-  | var v => rfl
+  | prim _ | con _ | bvar _ | rigid _ | var _ => rfl
+  | arrow domain codomain ihd ihc | app domain codomain ihd ihc =>
+      simp only [Ty.subst, ihd, ihc]
 
 /-- Substitutions that agree on the variables a type mentions agree on it. -/
 theorem subst_congr {σ τ : Subst V W} {ty : Ty V} (inScope : ty.Scoped rigids binders)
@@ -87,26 +52,19 @@ theorem subst_congr {σ τ : Subst V W} {ty : Ty V} (inScope : ty.Scoped rigids 
     (onVar : ∀ v ∈ ty.vars, σ.var v = τ.var v) :
     ty.subst σ = ty.subst τ := by
   induction ty generalizing rigids binders with
-  | prim name => rfl
-  | con id => rfl
+  | prim _ | con _ => rfl
   | bvar index =>
       exact onBvar index inScope
   | rigid level =>
       exact onRigid level inScope
   | var v =>
       exact onVar v (by simp [Ty.vars])
-  | arrow domain codomain ihd ihc =>
+  | arrow domain codomain ihd ihc | app domain codomain ihd ihc =>
       have hd : domain.subst σ = domain.subst τ :=
         ihd inScope.1 onBvar onRigid (fun v hv => onVar v (by simp [Ty.vars, hv]))
       have hc : codomain.subst σ = codomain.subst τ :=
         ihc inScope.2 onBvar onRigid (fun v hv => onVar v (by simp [Ty.vars, hv]))
       simp only [Ty.subst, hd, hc]
-  | app function argument ihf iha =>
-      have hf : function.subst σ = function.subst τ :=
-        ihf inScope.1 onBvar onRigid (fun v hv => onVar v (by simp [Ty.vars, hv]))
-      have ha : argument.subst σ = argument.subst τ :=
-        iha inScope.2 onBvar onRigid (fun v hv => onVar v (by simp [Ty.vars, hv]))
-      simp only [Ty.subst, hf, ha]
 
 /-- `subst_congr` for a type of unknown scope. -/
 theorem subst_ext {σ τ : Subst V W} {ty : Ty V}
@@ -114,23 +72,16 @@ theorem subst_ext {σ τ : Subst V W} {ty : Ty V}
     (onVar : ∀ v ∈ ty.vars, σ.var v = τ.var v) :
     ty.subst σ = ty.subst τ := by
   induction ty with
-  | prim name => rfl
-  | con id => rfl
+  | prim _ | con _ => rfl
   | bvar index => exact onBvar index
   | rigid level => exact onRigid level
   | var v => exact onVar v (by simp [Ty.vars])
-  | arrow domain codomain ihd ihc =>
+  | arrow domain codomain ihd ihc | app domain codomain ihd ihc =>
       have hd : domain.subst σ = domain.subst τ :=
         ihd (fun v hv => onVar v (by simp [Ty.vars, hv]))
       have hc : codomain.subst σ = codomain.subst τ :=
         ihc (fun v hv => onVar v (by simp [Ty.vars, hv]))
       simp only [Ty.subst, hd, hc]
-  | app function argument ihf iha =>
-      have hf : function.subst σ = function.subst τ :=
-        ihf (fun v hv => onVar v (by simp [Ty.vars, hv]))
-      have ha : argument.subst σ = argument.subst τ :=
-        iha (fun v hv => onVar v (by simp [Ty.vars, hv]))
-      simp only [Ty.subst, hf, ha]
 
 theorem scoped_subst {σ : Subst V W} {ty : Ty V} (inScope : ty.Scoped rigids binders)
     (onBvar : ∀ i < binders, (σ.bvar i).Scoped rigids' binders')
@@ -138,48 +89,32 @@ theorem scoped_subst {σ : Subst V W} {ty : Ty V} (inScope : ty.Scoped rigids bi
     (onVar : ∀ v ∈ ty.vars, (σ.var v).Scoped rigids' binders') :
     (ty.subst σ).Scoped rigids' binders' := by
   induction ty generalizing rigids binders with
-  | prim name => trivial
-  | con id => trivial
+  | prim _ | con _ => trivial
   | bvar index => exact onBvar index inScope
   | rigid level => exact onRigid level inScope
   | var v => exact onVar v (by simp [Ty.vars])
-  | arrow domain codomain ihd ihc =>
+  | arrow domain codomain ihd ihc | app domain codomain ihd ihc =>
       exact ⟨ihd inScope.1 onBvar onRigid (fun v hv => onVar v (by simp [Ty.vars, hv])),
              ihc inScope.2 onBvar onRigid (fun v hv => onVar v (by simp [Ty.vars, hv]))⟩
-  | app function argument ihf iha =>
-      exact ⟨ihf inScope.1 onBvar onRigid (fun v hv => onVar v (by simp [Ty.vars, hv])),
-             iha inScope.2 onBvar onRigid (fun v hv => onVar v (by simp [Ty.vars, hv]))⟩
 
 theorem Scoped.mono {ty : Ty V} (inScope : ty.Scoped rigids binders)
     (rigidsLe : rigids ≤ rigids') (bindersLe : binders ≤ binders') :
     ty.Scoped rigids' binders' := by
   induction ty generalizing rigids binders with
-  | prim name => trivial
-  | con id => trivial
-  | var v => trivial
+  | prim _ | con _ | var _ => trivial
   | bvar index => exact Nat.lt_of_lt_of_le inScope bindersLe
   | rigid level => exact Nat.lt_of_lt_of_le inScope rigidsLe
-  | arrow domain codomain ihd ihc =>
+  | arrow domain codomain ihd ihc | app domain codomain ihd ihc =>
       exact ⟨ihd inScope.1 rigidsLe bindersLe, ihc inScope.2 rigidsLe bindersLe⟩
-  | app function argument ihf iha =>
-      exact ⟨ihf inScope.1 rigidsLe bindersLe, iha inScope.2 rigidsLe bindersLe⟩
 
 theorem mem_vars_bind {ty : Ty V} {f : V → Ty W} {w : W} :
     w ∈ (ty.bind f).vars ↔ ∃ v ∈ ty.vars, w ∈ (f v).vars := by
   induction ty with
-  | prim _ => simp [Ty.bind, Ty.subst, Ty.vars]
-  | con _ => simp [Ty.bind, Ty.subst, Ty.vars]
-  | bvar _ => simp [Ty.bind, Ty.subst, Ty.vars]
-  | rigid _ => simp [Ty.bind, Ty.subst, Ty.vars]
-  | var v => simp [Ty.bind, Ty.subst, Ty.vars]
-  | arrow d c ihd ihc =>
+  | prim _ | con _ | bvar _ | rigid _ | var _ => simp [Ty.bind, Ty.subst, Ty.vars]
+  | arrow d c ihd ihc | app d c ihd ihc =>
       change w ∈ ((d.bind f).vars ++ (c.bind f).vars) ↔
         ∃ v ∈ d.vars ++ c.vars, w ∈ (f v).vars
       rw [List.mem_append, ihd, ihc, exists_mem_append]
-  | app fn arg ihf iha =>
-      change w ∈ ((fn.bind f).vars ++ (arg.bind f).vars) ↔
-        ∃ v ∈ fn.vars ++ arg.vars, w ∈ (f v).vars
-      rw [List.mem_append, ihf, iha, exists_mem_append]
 
 theorem bind_bind (ty : Ty U) (f : U → Ty V) (g : V → Ty W) :
     (ty.bind f).bind g = ty.bind fun u => (f u).bind g :=
@@ -189,113 +124,57 @@ theorem bind_var (ty : Ty V) : ty.bind .var = ty :=
   Ty.subst_id ty
 
 theorem bind_congr {ty : Ty V} {f g : V → Ty W} (agree : ∀ v ∈ ty.vars, f v = g v) :
-    ty.bind f = ty.bind g := by
-  induction ty with
-  | prim _ => rfl
-  | con _ => rfl
-  | bvar _ => rfl
-  | rigid _ => rfl
-  | var v => exact agree v (by simp [Ty.vars])
-  | arrow d c ihd ihc =>
-      have hd : ∀ v ∈ d.vars, f v = g v := fun v hv => agree v (by simp [Ty.vars, hv])
-      have hc : ∀ v ∈ c.vars, f v = g v := fun v hv => agree v (by simp [Ty.vars, hv])
-      change Ty.arrow (d.bind f) (c.bind f) = Ty.arrow (d.bind g) (c.bind g)
-      rw [ihd hd, ihc hc]
-  | app fn arg ihf iha =>
-      have hf : ∀ v ∈ fn.vars, f v = g v := fun v hv => agree v (by simp [Ty.vars, hv])
-      have ha : ∀ v ∈ arg.vars, f v = g v := fun v hv => agree v (by simp [Ty.vars, hv])
-      change Ty.app (fn.bind f) (arg.bind f) = Ty.app (fn.bind g) (arg.bind g)
-      rw [ihf hf, iha ha]
+    ty.bind f = ty.bind g :=
+  Ty.subst_ext (fun _ => rfl) (fun _ => rfl) agree
 
 theorem scoped_bind {ty : Ty V} {f : V → Ty W} (inScope : ty.Scoped rigids binders)
     (images : ∀ v ∈ ty.vars, (f v).Scoped rigids binders) :
-    (ty.bind f).Scoped rigids binders := by
-  induction ty with
-  | prim _ => trivial
-  | con _ => trivial
-  | bvar _ => exact inScope
-  | rigid _ => exact inScope
-  | var v => exact images v (by simp [Ty.vars])
-  | arrow d c ihd ihc =>
-      exact ⟨ihd inScope.1 (fun v hv => images v (by simp [Ty.vars, hv])),
-             ihc inScope.2 (fun v hv => images v (by simp [Ty.vars, hv]))⟩
-  | app fn arg ihf iha =>
-      exact ⟨ihf inScope.1 (fun v hv => images v (by simp [Ty.vars, hv])),
-             iha inScope.2 (fun v hv => images v (by simp [Ty.vars, hv]))⟩
+    (ty.bind f).Scoped rigids binders :=
+  Ty.scoped_subst inScope (fun _ hi => hi) (fun _ hl => hl) images
 
 /-- A bind keeps bound and rigid variables and embeds every image, so the
 scope of the result bounds the scope of the type and of every image. -/
 theorem scoped_of_bind {ty : Ty V} {f : V → Ty W} (inScope : (ty.bind f).Scoped rigids binders) :
     ty.Scoped rigids binders ∧ ∀ v ∈ ty.vars, (f v).Scoped rigids binders := by
   induction ty with
-  | prim _ => exact ⟨trivial, fun v hv => by simp [Ty.vars] at hv⟩
-  | con _ => exact ⟨trivial, fun v hv => by simp [Ty.vars] at hv⟩
-  | bvar _ => exact ⟨inScope, fun v hv => by simp [Ty.vars] at hv⟩
-  | rigid _ => exact ⟨inScope, fun v hv => by simp [Ty.vars] at hv⟩
+  | prim _ | con _ => exact ⟨trivial, fun v hv => by simp [Ty.vars] at hv⟩
+  | bvar _ | rigid _ => exact ⟨inScope, fun v hv => by simp [Ty.vars] at hv⟩
   | var v =>
       refine ⟨trivial, ?_⟩
       intro w hw
       simp [Ty.vars] at hw
       subst hw
       exact inScope
-  | arrow d c ihd ihc =>
+  | arrow d c ihd ihc | app d c ihd ihc =>
       obtain ⟨hd1, hd2⟩ := ihd inScope.1
       obtain ⟨hc1, hc2⟩ := ihc inScope.2
-      refine ⟨⟨hd1, hc1⟩, ?_⟩
-      intro v hv
-      rcases List.mem_append.mp hv with hv | hv
-      · exact hd2 v hv
-      · exact hc2 v hv
-  | app fn arg ihf iha =>
-      obtain ⟨hf1, hf2⟩ := ihf inScope.1
-      obtain ⟨ha1, ha2⟩ := iha inScope.2
-      refine ⟨⟨hf1, ha1⟩, ?_⟩
-      intro v hv
-      rcases List.mem_append.mp hv with hv | hv
-      · exact hf2 v hv
-      · exact ha2 v hv
+      exact ⟨⟨hd1, hc1⟩, fun v hv => (List.mem_append.mp hv).elim (hd2 v) (hc2 v)⟩
 
 /-- If two binds agree, the maps agree on every variable of the type. -/
 theorem bind_eq_bind_vars {ty : Ty V} {f g : V → Ty W} (equal : ty.bind f = ty.bind g) :
     ∀ v ∈ ty.vars, f v = g v := by
   induction ty with
-  | prim _ => intro v hv; simp [Ty.vars] at hv
-  | con _ => intro v hv; simp [Ty.vars] at hv
-  | bvar _ => intro v hv; simp [Ty.vars] at hv
-  | rigid _ => intro v hv; simp [Ty.vars] at hv
+  | prim _ | con _ | bvar _ | rigid _ => intro v hv; simp [Ty.vars] at hv
   | var v =>
       intro w hw
       simp [Ty.vars] at hw
       subst hw
       exact equal
-  | arrow d c ihd ihc =>
-      change Ty.arrow (d.bind f) (c.bind f) = Ty.arrow (d.bind g) (c.bind g) at equal
+  | arrow d c ihd ihc | app d c ihd ihc =>
+      simp only [Ty.bind, Ty.subst] at equal
       injection equal with hd hc
       intro v hv
       rcases List.mem_append.mp hv with hv | hv
       · exact ihd hd v hv
       · exact ihc hc v hv
-  | app fn arg ihf iha =>
-      change Ty.app (fn.bind f) (arg.bind f) = Ty.app (fn.bind g) (arg.bind g) at equal
-      injection equal with hf ha
-      intro v hv
-      rcases List.mem_append.mp hv with hv | hv
-      · exact ihf hf v hv
-      · exact iha ha v hv
 
 theorem vars_lift (ty : SemTy) : (ty.lift : Ty V).vars = [] := by
   induction ty with
-  | prim _ => rfl
-  | con _ => rfl
-  | bvar _ => rfl
-  | rigid _ => rfl
+  | prim _ | con _ | bvar _ | rigid _ => rfl
   | var v => exact Empty.elim v
-  | arrow d c ihd ihc =>
+  | arrow d c ihd ihc | app d c ihd ihc =>
       change (d.lift : Ty V).vars ++ (c.lift : Ty V).vars = []
       rw [ihd, ihc, List.append_nil]
-  | app fn arg ihf iha =>
-      change (fn.lift : Ty V).vars ++ (arg.lift : Ty V).vars = []
-      rw [ihf, iha, List.append_nil]
 
 theorem lift_bind (ty : SemTy) (f : V → Ty W) : (ty.lift : Ty V).bind f = ty.lift := by
   change (ty.bind Empty.elim).bind f = ty.bind (Empty.elim : Empty → Ty W)
@@ -310,19 +189,12 @@ theorem lift_self (ty : SemTy) : (ty.lift : SemTy) = ty := by
 
 theorem scoped_lift {ty : SemTy} : (ty.lift : Ty V).Scoped rigids binders ↔ ty.Scoped rigids binders := by
   induction ty with
-  | prim _ => rfl
-  | con _ => rfl
-  | bvar _ => rfl
-  | rigid _ => rfl
+  | prim _ | con _ | bvar _ | rigid _ => rfl
   | var v => exact Empty.elim v
-  | arrow d c ihd ihc =>
+  | arrow d c ihd ihc | app d c ihd ihc =>
       change ((d.lift : Ty V).Scoped rigids binders ∧ (c.lift : Ty V).Scoped rigids binders) ↔
         (d.Scoped rigids binders ∧ c.Scoped rigids binders)
       exact and_congr ihd ihc
-  | app fn arg ihf iha =>
-      change ((fn.lift : Ty V).Scoped rigids binders ∧ (arg.lift : Ty V).Scoped rigids binders) ↔
-        (fn.Scoped rigids binders ∧ arg.Scoped rigids binders)
-      exact and_congr ihf iha
 
 private theorem lift_ground (sem : SemTy) : (sem.lift : Ty V).ground = some sem := by
   induction sem with
@@ -342,86 +214,38 @@ private theorem lift_ground (sem : SemTy) : (sem.lift : Ty V).ground = some sem 
       rw [ihf, iha]
       rfl
 
-private theorem option_bind_eq_some_iff {α β : Type} {o : Option α} {f : α → Option β} {b : β} :
-    (o >>= f = some b) ↔ ∃ a, o = some a ∧ f a = some b := by
-  cases o with
-  | none => simp
-  | some a => simp
-
-private theorem option_bind_eq_none_iff {α β : Type} {o : Option α} {f : α → Option β} :
-    (o >>= f = none) ↔ o = none ∨ ∃ a, o = some a ∧ f a = none := by
-  cases o with
-  | none => simp
-  | some a => simp
-
 private theorem option_bind_some_eq_none {α β : Type} {o : Option α} {g : α → β} :
     (o >>= fun a => some (g a)) = none ↔ o = none := by
-  cases o with
-  | none => simp
-  | some a => simp
+  cases o <;> simp
+
+private theorem option_bind2_none {α β γ : Type} {o1 : Option α} {o2 : Option β}
+    {g : α → β → γ} :
+    (o1 >>= fun x => o2 >>= fun y => some (g x y)) = none ↔ o1 = none ∨ o2 = none := by
+  cases o1 <;> cases o2 <;> simp
 
 private theorem ground_eq_some_aux (ty : Ty V) :
     ∀ sem : SemTy, ty.ground = some sem ↔ ty = sem.lift := by
   induction ty with
-  | prim name =>
+  | prim _ | con _ | bvar _ | rigid _ =>
       intro sem
-      constructor
-      · intro h
-        change some (Ty.prim name) = some sem at h
-        obtain rfl := Option.some.inj h
-        rfl
-      · intro h; rw [h]; exact lift_ground sem
-  | con id =>
-      intro sem
-      constructor
-      · intro h
-        change some (Ty.con id) = some sem at h
-        obtain rfl := Option.some.inj h
-        rfl
-      · intro h; rw [h]; exact lift_ground sem
-  | bvar index =>
-      intro sem
-      constructor
-      · intro h
-        change some (Ty.bvar index) = some sem at h
-        obtain rfl := Option.some.inj h
-        rfl
-      · intro h; rw [h]; exact lift_ground sem
-  | rigid level =>
-      intro sem
-      constructor
-      · intro h
-        change some (Ty.rigid level) = some sem at h
-        obtain rfl := Option.some.inj h
-        rfl
-      · intro h; rw [h]; exact lift_ground sem
-  | var v =>
+      exact ⟨fun h => by rw [← Option.some.inj h]; rfl,
+        fun h => by rw [h]; exact lift_ground sem⟩
+  | var _ =>
       intro sem
       constructor
       · intro h
         change none = some sem at h
         cases h
       · intro h; rw [h]; exact lift_ground sem
-  | arrow d c ihd ihc =>
+  | arrow d c ihd ihc | app d c ihd ihc =>
       intro sem
       constructor
       · intro h
-        change (d.ground >>= fun x => c.ground >>= fun y => some (Ty.arrow x y)) = some sem at h
-        obtain ⟨ds, hd, h2⟩ := option_bind_eq_some_iff.mp h
-        obtain ⟨cs, hc, h3⟩ := option_bind_eq_some_iff.mp h2
+        simp only [Ty.ground] at h
+        obtain ⟨ds, hd, h2⟩ := Option.bind_eq_some_iff.mp h
+        obtain ⟨cs, hc, h3⟩ := Option.bind_eq_some_iff.mp h2
         obtain rfl := Option.some.inj h3
         rw [(ihd ds).mp hd, (ihc cs).mp hc]
-        rfl
-      · intro h; rw [h]; exact lift_ground sem
-  | app fn arg ihf iha =>
-      intro sem
-      constructor
-      · intro h
-        change (fn.ground >>= fun x => arg.ground >>= fun y => some (Ty.app x y)) = some sem at h
-        obtain ⟨fs, hf, h2⟩ := option_bind_eq_some_iff.mp h
-        obtain ⟨as, ha, h3⟩ := option_bind_eq_some_iff.mp h2
-        obtain rfl := Option.some.inj h3
-        rw [(ihf fs).mp hf, (iha as).mp ha]
         rfl
       · intro h; rw [h]; exact lift_ground sem
 
@@ -430,49 +254,10 @@ theorem ground_eq_some {ty : Ty V} {sem : SemTy} : ty.ground = some sem ↔ ty =
 
 theorem ground_eq_none {ty : Ty V} : ty.ground = none ↔ ty.vars ≠ [] := by
   induction ty with
-  | prim _ => simp [Ty.ground, Ty.vars]
-  | con _ => simp [Ty.ground, Ty.vars]
-  | bvar _ => simp [Ty.ground, Ty.vars]
-  | rigid _ => simp [Ty.ground, Ty.vars]
-  | var _ => simp [Ty.ground, Ty.vars]
-  | arrow d c ihd ihc =>
-      change (d.ground >>= fun x => c.ground >>= fun y => some (Ty.arrow x y)) = none ↔
-        (d.vars ++ c.vars) ≠ []
-      cases hd : d.ground with
-      | none =>
-          have hdv : d.vars ≠ [] := ihd.mp hd
-          constructor
-          · intro _; exact append_ne_nil_left hdv
-          · intro _; rfl
-      | some ds =>
-          change (c.ground >>= fun y => some (Ty.arrow ds y)) = none ↔
-            (d.vars ++ c.vars) ≠ []
-          have hdv : d.vars = [] := by
-            by_contra h
-            have : d.ground = none := ihd.mpr h
-            rw [this] at hd
-            cases hd
-          rw [option_bind_some_eq_none, ihc]
-          simp [hdv]
-  | app fn arg ihf iha =>
-      change (fn.ground >>= fun x => arg.ground >>= fun y => some (Ty.app x y)) = none ↔
-        (fn.vars ++ arg.vars) ≠ []
-      cases hf : fn.ground with
-      | none =>
-          have hfv : fn.vars ≠ [] := ihf.mp hf
-          constructor
-          · intro _; exact append_ne_nil_left hfv
-          · intro _; rfl
-      | some fs =>
-          change (arg.ground >>= fun y => some (Ty.app fs y)) = none ↔
-            (fn.vars ++ arg.vars) ≠ []
-          have hfv : fn.vars = [] := by
-            by_contra h
-            have : fn.ground = none := ihf.mpr h
-            rw [this] at hf
-            cases hf
-          rw [option_bind_some_eq_none, iha]
-          simp [hfv]
+  | prim _ | con _ | bvar _ | rigid _ | var _ => simp [Ty.ground, Ty.vars]
+  | arrow d c ihd ihc | app d c ihd ihc =>
+      simp only [Ty.ground, Ty.vars, option_bind2_none, ihd, ihc, ne_eq,
+        List.append_eq_nil_iff, not_and_or]
 
 theorem instantiate_nil (ty : Ty V) : ty.instantiate [] = ty := by
   change ty.subst ⟨fun i => ([] : List (Ty V)).getD i (.bvar i), .rigid, .var⟩ = ty
@@ -482,11 +267,8 @@ theorem instantiate_nil (ty : Ty V) : ty.instantiate [] = ty := by
 private theorem instantiate_closed {ty : Ty V} {args : List (Ty V)} {rigids : Nat}
     (h : ty.Scoped rigids 0) : ty.instantiate args = ty := by
   induction ty with
-  | prim _ => rfl
-  | con _ => rfl
+  | prim _ | con _ | rigid _ | var _ => rfl
   | bvar i => exact absurd h (Nat.not_lt_zero i)
-  | rigid _ => rfl
-  | var _ => rfl
   | arrow d c ihd ihc =>
       change Ty.arrow (d.instantiate args) (c.instantiate args) = Ty.arrow d c
       rw [ihd h.1, ihc h.2]
@@ -497,68 +279,39 @@ private theorem instantiate_closed {ty : Ty V} {args : List (Ty V)} {rigids : Na
 private theorem getD_map_bind (args : List (Ty V)) (f : V → Ty W) (i : Nat) :
     (args.getD i (.bvar i)).bind f = (args.map (·.bind f)).getD i (.bvar i) := by
   rw [List.getD_eq_getElem?_getD, List.getD_eq_getElem?_getD, List.getElem?_map]
-  cases h : args[i]? with
-  | none => simp [h, Ty.bind, Ty.subst]
-  | some a => simp [h]
+  cases args[i]? <;> simp [Ty.bind, Ty.subst]
 
 theorem instantiate_bind (args : List (Ty V)) {ty : Ty V} {f : V → Ty W}
     (closed : ∀ v ∈ ty.vars, (f v).Scoped rigids 0) :
     (ty.instantiate args).bind f = (ty.bind f).instantiate (args.map (·.bind f)) := by
-  induction ty with
-  | prim _ => rfl
-  | con _ => rfl
-  | bvar i => exact getD_map_bind args f i
-  | rigid _ => rfl
-  | var v =>
-      exact (instantiate_closed (args := args.map (·.bind f))
-        (closed v (by simp [Ty.vars]))).symm
-  | arrow d c ihd ihc =>
-      have hdc : ∀ v ∈ d.vars, (f v).Scoped rigids 0 := fun v hv => closed v (by simp [Ty.vars, hv])
-      have hcc : ∀ v ∈ c.vars, (f v).Scoped rigids 0 := fun v hv => closed v (by simp [Ty.vars, hv])
-      change Ty.arrow ((d.instantiate args).bind f) ((c.instantiate args).bind f) =
-        Ty.arrow ((d.bind f).instantiate (args.map (·.bind f)))
-          ((c.bind f).instantiate (args.map (·.bind f)))
-      rw [ihd hdc, ihc hcc]
-  | app fn arg ihf iha =>
-      have hfc : ∀ v ∈ fn.vars, (f v).Scoped rigids 0 := fun v hv => closed v (by simp [Ty.vars, hv])
-      have hac : ∀ v ∈ arg.vars, (f v).Scoped rigids 0 := fun v hv => closed v (by simp [Ty.vars, hv])
-      change Ty.app ((fn.instantiate args).bind f) ((arg.instantiate args).bind f) =
-        Ty.app ((fn.bind f).instantiate (args.map (·.bind f)))
-          ((arg.bind f).instantiate (args.map (·.bind f)))
-      rw [ihf hfc, iha hac]
+  rw [Ty.bind, Ty.bind, Ty.instantiate, Ty.instantiate, Ty.subst_subst, Ty.subst_subst]
+  refine Ty.subst_ext (fun i => getD_map_bind args f i) (fun _ => rfl) ?_
+  intro v hv
+  show f v = (f v).instantiate (args.map (fun a => a.bind f))
+  exact (instantiate_closed (closed v hv)).symm
 
 theorem instantiate_scoped {ty : Ty V} (inScope : ty.Scoped rigids args.length)
     (argsScoped : ∀ arg ∈ args, arg.Scoped rigids binders) :
     (ty.instantiate args).Scoped rigids binders := by
   induction ty with
-  | prim _ => trivial
-  | con _ => trivial
-  | var _ => trivial
+  | prim _ | con _ | var _ => trivial
   | bvar i =>
       show (args.getD i (.bvar i)).Scoped rigids binders
       rw [getD_eq_getElem inScope]
       exact argsScoped _ (List.getElem_mem inScope)
   | rigid _ => exact inScope
-  | arrow d c ihd ihc =>
+  | arrow d c ihd ihc | app d c ihd ihc =>
       exact ⟨ihd inScope.1, ihc inScope.2⟩
-  | app fn arg ihf iha =>
-      exact ⟨ihf inScope.1, iha inScope.2⟩
 
 theorem vars_closeRigids (k n : Nat) (ty : Ty V) : (ty.closeRigids k n).vars = ty.vars := by
   induction ty with
-  | prim _ => rfl
-  | con _ => rfl
-  | bvar _ => rfl
+  | prim _ | con _ | bvar _ | var _ => rfl
   | rigid level =>
       by_cases h : k ≤ level ∧ level < k + n <;>
         simp [Ty.closeRigids, Ty.substRigids, Ty.subst, Ty.vars, h]
-  | var _ => rfl
-  | arrow d c ihd ihc =>
+  | arrow d c ihd ihc | app d c ihd ihc =>
       change ((d.closeRigids k n).vars ++ (c.closeRigids k n).vars) = d.vars ++ c.vars
       rw [ihd, ihc]
-  | app fn arg ihf iha =>
-      change ((fn.closeRigids k n).vars ++ (arg.closeRigids k n).vars) = fn.vars ++ arg.vars
-      rw [ihf, iha]
 
 theorem substRigids_wf {ty : Ty V} {f : Nat → Ty V} (wf : ty.WF k)
     (images : ∀ l < k, (f l).WF k') : (ty.substRigids f).WF k' :=
@@ -587,33 +340,35 @@ block. -/
 theorem closeRigids_bind {ty : Ty V} {f : V → Ty W}
     (images : ∀ v ∈ ty.vars, (f v).WF k) :
     (ty.closeRigids k n).bind f = (ty.bind f).closeRigids k n := by
-  induction ty with
-  | prim _ => rfl
-  | con _ => rfl
-  | bvar _ => rfl
-  | rigid level =>
-      by_cases h : k ≤ level ∧ level < k + n <;>
-        simp [Ty.closeRigids, Ty.substRigids, Ty.subst, Ty.bind, h]
-  | var v =>
-      exact (closeRigids_closed (images v (by simp [Ty.vars])) n).symm
-  | arrow d c ihd ihc =>
-      have hdc : ∀ v ∈ d.vars, (f v).WF k := fun v hv => images v (by simp [Ty.vars, hv])
-      have hcc : ∀ v ∈ c.vars, (f v).WF k := fun v hv => images v (by simp [Ty.vars, hv])
-      change Ty.arrow ((d.closeRigids k n).bind f) ((c.closeRigids k n).bind f) =
-        Ty.arrow ((d.bind f).closeRigids k n) ((c.bind f).closeRigids k n)
-      rw [ihd hdc, ihc hcc]
-  | app fn arg ihf iha =>
-      have hfc : ∀ v ∈ fn.vars, (f v).WF k := fun v hv => images v (by simp [Ty.vars, hv])
-      have hac : ∀ v ∈ arg.vars, (f v).WF k := fun v hv => images v (by simp [Ty.vars, hv])
-      change Ty.app ((fn.closeRigids k n).bind f) ((arg.closeRigids k n).bind f) =
-        Ty.app ((fn.bind f).closeRigids k n) ((arg.bind f).closeRigids k n)
-      rw [ihf hfc, iha hac]
+  rw [Ty.bind, Ty.bind, Ty.closeRigids, Ty.closeRigids, Ty.substRigids, Ty.substRigids,
+    Ty.subst_subst, Ty.subst_subst]
+  refine Ty.subst_ext (fun _ => rfl) ?_ ?_
+  · intro l
+    by_cases h : k ≤ l ∧ l < k + n <;> simp [Ty.Subst.comp, Ty.subst, h]
+  · intro v hv
+    show f v = (f v).closeRigids k n
+    exact (closeRigids_closed (images v hv) n).symm
 
 end Ty
 
 /-- Rigid levels below `k` are kept; level `k + i` becomes `args[i]`. -/
 def blockSubst (k : Nat) (args : List (Ty V)) : Nat → Ty V :=
   fun l => if l < k then .rigid l else args.getD (l - k) (.rigid l)
+
+/-- A level of the block is replaced by the corresponding argument; the value
+substituted below `k` is irrelevant. -/
+private theorem blockSubst_add {k i : Nat} {args : List (Ty V)} {g : Nat → Ty V}
+    (h : i < args.length) :
+    (if k + i < k then g (k + i) else args.getD (k + i - k) (.rigid (k + i))) =
+      args.getD i (.bvar i) := by
+  rw [if_neg (by omega : ¬ k + i < k), show k + i - k = i by omega,
+    Ty.getD_eq_getElem h, Ty.getD_eq_getElem h]
+
+/-- Levels below `k` are untouched by `blockSubst`. -/
+private theorem blockSubst_lt {k l : Nat} {args : List (Ty V)} (h : l < k) :
+    blockSubst k args l = .rigid l := by
+  unfold blockSubst
+  rw [if_pos h]
 
 private theorem rigidBlock_length (k n : Nat) : (rigidBlock k n : List (Ty V)).length = n := by
   simp [rigidBlock]
@@ -626,9 +381,15 @@ private theorem rigidBlock_getD {k n i : Nat} {d : Ty V} (h : i < n) :
 private theorem rigidBlock_mem {k n : Nat} {ty : Ty V} :
     ty ∈ rigidBlock k n ↔ ∃ i, i < n ∧ ty = .rigid (k + i) := by
   simp only [rigidBlock, List.mem_map, List.mem_range]
-  constructor
-  · rintro ⟨i, hi, rfl⟩; exact ⟨i, hi, rfl⟩
-  · rintro ⟨i, hi, rfl⟩; exact ⟨i, hi, rfl⟩
+  constructor <;> rintro ⟨i, hi, rfl⟩ <;> exact ⟨i, hi, rfl⟩
+
+/-- Every member of a rigid block is a rigid variable below `k + n`. -/
+private theorem rigidBlock_wf {k n : Nat} {arg : Ty V} (harg : arg ∈ rigidBlock k n) :
+    arg.WF (k + n) := by
+  rw [rigidBlock_mem] at harg
+  obtain ⟨i, hi, rfl⟩ := harg
+  show k + i < k + n
+  omega
 
 private theorem rigidBlock_bind (k n : Nat) (f : V → Ty W) :
     (rigidBlock k n).map (·.bind f) = (rigidBlock k n : List (Ty W)) := by
@@ -642,11 +403,7 @@ theorem skolemize_wf {scheme : Scheme V} (wf : scheme.WF k) :
   refine Ty.instantiate_scoped (rigids := k + scheme.arity) (binders := 0) ?_ ?_
   · rw [rigidBlock_length]
     exact Ty.Scoped.mono wf (by omega) (le_refl _)
-  · intro arg harg
-    rw [rigidBlock_mem] at harg
-    obtain ⟨i, hi, rfl⟩ := harg
-    show k + i < k + scheme.arity
-    omega
+  · exact fun _ harg => rigidBlock_wf harg
 
 theorem inst_wf {scheme : Scheme V} (wf : scheme.WF k) (le : k ≤ k')
     (length : args.length = scheme.arity) (argsWF : ∀ arg ∈ args, arg.WF k') :
@@ -659,14 +416,9 @@ theorem inst_wf {scheme : Scheme V} (wf : scheme.WF k) (le : k ≤ k')
 
 /-- The generic instance is an instance, one block deeper. -/
 theorem skolemize_instance (scheme : Scheme V) (k : Nat) :
-    scheme.Instance (k + scheme.arity) (scheme.skolemize k) := by
-  refine ⟨rigidBlock k scheme.arity, ?_, ?_, rfl⟩
-  · exact rigidBlock_length k scheme.arity
-  · intro arg harg
-    rw [rigidBlock_mem] at harg
-    obtain ⟨i, hi, rfl⟩ := harg
-    show k + i < k + scheme.arity
-    omega
+    scheme.Instance (k + scheme.arity) (scheme.skolemize k) :=
+  ⟨rigidBlock k scheme.arity, rigidBlock_length k scheme.arity,
+    fun _ harg => rigidBlock_wf harg, rfl⟩
 
 theorem Instance.mono {scheme : Scheme V} {ty : Ty V} (inst : scheme.Instance k ty)
     (le : k ≤ k') : scheme.Instance k' ty := by
@@ -678,17 +430,10 @@ theorem instance_mono {ty ty' : Ty V} : (Scheme.mono ty').Instance k ty ↔ ty =
   constructor
   · rintro ⟨args, length, _, h⟩
     cases args with
-    | nil =>
-        simp only [Scheme.inst, Scheme.mono] at h
-        rw [Ty.instantiate_nil] at h
-        exact h.symm
-    | cons a as =>
-        simp [Scheme.mono] at length
-  · intro h
-    subst h
-    refine ⟨[], rfl, (by intro arg harg; simp at harg), ?_⟩
-    simp only [Scheme.inst, Scheme.mono]
-    rw [Ty.instantiate_nil]
+    | nil => simpa [Scheme.inst, Scheme.mono, Ty.instantiate_nil] using h.symm
+    | cons a as => simp [Scheme.mono] at length
+  · rintro rfl
+    exact ⟨[], rfl, by simp, by simp [Scheme.inst, Scheme.mono, Ty.instantiate_nil]⟩
 
 theorem skolemize_bind (scheme : Scheme V) {f : V → Ty W} (k : Nat)
     (closed : ∀ v ∈ scheme.body.vars, (f v).Scoped rigids 0) :
@@ -719,16 +464,10 @@ theorem skolemize_substRigids {scheme : Scheme V} (wf : scheme.WF k)
       ⟨.bvar, blockSubst k args, .var⟩ = args.getD i (.bvar i)
     rw [rigidBlock_getD (k := k) (n := scheme.arity) (i := i) (d := .bvar i) (by omega)]
     show blockSubst k args (k + i) = args.getD i (.bvar i)
-    unfold blockSubst
-    rw [if_neg (by omega : ¬ k + i < k)]
-    have hki : k + i - k = i := by omega
-    rw [hki]
-    have hi' : i < args.length := by omega
-    rw [Ty.getD_eq_getElem hi', Ty.getD_eq_getElem hi']
+    exact blockSubst_add (by omega)
   · intro l hl
     show blockSubst k args l = Ty.rigid l
-    unfold blockSubst
-    rw [if_pos hl]
+    exact blockSubst_lt hl
   · intro v hv; rfl
 
 /-- Every instance of a type substitution of a scheme is one type
@@ -751,11 +490,7 @@ theorem skolemize_substRigids_inst {scheme : Scheme V} {f : Nat → Ty V} (wf : 
     rw [rigidBlock_getD (k := k) (n := scheme.arity) (i := i) (d := .bvar i) (by omega)]
     show (if k + i < k then f (k + i) else args.getD (k + i - k) (.rigid (k + i))) =
       args.getD i (.bvar i)
-    rw [if_neg (by omega : ¬ k + i < k)]
-    have hki : k + i - k = i := by omega
-    rw [hki]
-    have hi' : i < args.length := by omega
-    rw [Ty.getD_eq_getElem hi', Ty.getD_eq_getElem hi']
+    exact blockSubst_add (by omega)
   · intro l hl
     show (if l < k then f l else args.getD (l - k) (.rigid l)) =
       (f l).subst ⟨fun i => args.getD i (.bvar i), .rigid, .var⟩
@@ -767,12 +502,7 @@ theorem substRigids_congr {scheme : Scheme V} {f g : Nat → Ty V} (wf : scheme.
     (agree : ∀ l < k, f l = g l) : scheme.substRigids f = scheme.substRigids g := by
   have h : scheme.body.substRigids f = scheme.body.substRigids g := by
     show scheme.body.subst ⟨.bvar, f, .var⟩ = scheme.body.subst ⟨.bvar, g, .var⟩
-    refine Ty.subst_congr wf ?_ ?_ ?_
-    · intro i hi; rfl
-    · intro l hl
-      show f l = g l
-      exact agree l hl
-    · intro v hv; rfl
+    exact Ty.subst_congr wf (fun _ _ => rfl) (fun l hl => agree l hl) (fun _ _ => rfl)
   cases scheme with
   | mk arity body => simp only [Scheme.substRigids, h]
 
@@ -793,13 +523,8 @@ theorem substRigids_eq_self {scheme : Scheme V} (wf : scheme.WF k)
     scheme.substRigids f = scheme := by
   have h : scheme.body.substRigids f = scheme.body := by
     show scheme.body.subst ⟨.bvar, f, .var⟩ = scheme.body
-    have hc : scheme.body.subst ⟨.bvar, f, .var⟩ = scheme.body.subst Ty.Subst.id := by
-      refine Ty.subst_congr wf ?_ ?_ ?_
-      · intro i hi; rfl
-      · intro l hl
-        show f l = Ty.rigid l
-        exact identity l hl
-      · intro v hv; rfl
+    have hc : scheme.body.subst ⟨.bvar, f, .var⟩ = scheme.body.subst Ty.Subst.id :=
+      Ty.subst_congr wf (fun _ _ => rfl) (fun l hl => identity l hl) (fun _ _ => rfl)
     rw [hc, Ty.subst_id]
   cases scheme with
   | mk arity body => simp only [Scheme.substRigids, h]
@@ -808,9 +533,7 @@ private theorem getD_map_substRigids (args : List (Ty V)) (f : Nat → Ty V) (i 
     (args.getD i (.bvar i)).substRigids f =
       (args.map (·.substRigids f)).getD i (.bvar i) := by
   rw [List.getD_eq_getElem?_getD, List.getD_eq_getElem?_getD, List.getElem?_map]
-  cases h : args[i]? with
-  | none => simp [h, Ty.substRigids, Ty.subst]
-  | some a => simp [h]
+  cases args[i]? <;> simp [Ty.substRigids, Ty.subst]
 
 theorem inst_substRigids {scheme : Scheme V} (args : List (Ty V)) {f : Nat → Ty V}
     (wf : scheme.WF k) (closed : ∀ l < k, (f l).Scoped rigids 0) :
@@ -843,16 +566,12 @@ theorem skolemize_closeRigids {ty : Ty V} (wf : ty.WF (k + n)) :
     refine Ty.subst_congr wf ?_ ?_ ?_
     · intro i hi; exact absurd hi (Nat.not_lt_zero i)
     · intro l hl
-      by_cases hcond : k ≤ l ∧ l < k + n
-      · have hlk : l - k < n := by omega
-        have hk : k + (l - k) = l := by omega
-        show ((if k ≤ l ∧ l < k + n then Ty.bvar (l - k) else Ty.rigid l)).subst τ = Ty.rigid l
-        rw [if_pos hcond]
-        show (rigidBlock k n).getD (l - k) (.bvar (l - k)) = Ty.rigid l
-        rw [rigidBlock_getD (k := k) (n := n) (i := l - k) (d := .bvar (l - k)) hlk, hk]
-      · show ((if k ≤ l ∧ l < k + n then Ty.bvar (l - k) else Ty.rigid l)).subst τ = Ty.rigid l
-        rw [if_neg hcond]
-        rfl
+      show ((if k ≤ l ∧ l < k + n then Ty.bvar (l - k) else Ty.rigid l) : Ty V).subst τ = Ty.rigid l
+      split_ifs with hcond
+      · show (rigidBlock k n).getD (l - k) (.bvar (l - k)) = Ty.rigid l
+        rw [rigidBlock_getD (k := k) (n := n) (i := l - k) (d := .bvar (l - k)) (by omega),
+          show k + (l - k) = l by omega]
+      · rfl
     · intro v hv; rfl
   rw [h, Ty.subst_id]
 
@@ -864,14 +583,8 @@ theorem closeRigids_wf {ty : Ty V} (wf : ty.WF (k + n)) :
   refine Ty.scoped_subst (rigids := k + n) (binders := 0) (rigids' := k) (binders' := n) wf ?_ ?_ ?_
   · intro i hi; exact absurd hi (Nat.not_lt_zero i)
   · intro l hl
-    show (if k ≤ l ∧ l < k + n then Ty.bvar (l - k) else Ty.rigid l).Scoped k n
-    by_cases hcond : k ≤ l ∧ l < k + n
-    · rw [if_pos hcond]
-      show l - k < n
-      omega
-    · rw [if_neg hcond]
-      show l < k
-      omega
+    show Ty.Scoped k n (if k ≤ l ∧ l < k + n then Ty.bvar (l - k) else Ty.rigid l)
+    split_ifs with hcond <;> simp only [Ty.Scoped] <;> omega
   · intro v hv; trivial
 
 /-- Opening a well-formed scheme and closing it at the same depth is the
@@ -912,13 +625,9 @@ theorem skolemize_injective {first second : Scheme V} (firstWF : first.WF k)
   have hsecond := Scheme.closeRigids_skolemize secondWF
   have hbody : first.body = second.body := by
     rw [← hfirst, ← hsecond, equal, arity]
-  cases first with
-  | mk fa fb =>
-    cases second with
-    | mk sa sb =>
-      have ha : fa = sa := arity
-      have hb : fb = sb := hbody
-      rw [ha, hb]
+  obtain ⟨fa, fb⟩ := first
+  obtain ⟨sa, sb⟩ := second
+  simp_all
 
 end Scheme
 
@@ -930,14 +639,9 @@ namespace Expr
 
 theorem anns_mapAnn (f : A → B) (expr : Expr A) : (expr.mapAnn f).anns = expr.anns.map f := by
   induction expr with
-  | lit _ => rfl
-  | primOp _ => rfl
-  | const _ => rfl
-  | var _ => rfl
+  | lit _ | primOp _ | const _ | var _ => rfl
   | lambda param body ih =>
-      cases param with
-      | none => simp [Expr.mapAnn, Expr.anns, ih]
-      | some a => simp [Expr.mapAnn, Expr.anns, ih]
+      cases param <;> simp [Expr.mapAnn, Expr.anns, ih]
   | app fn arg ihf iha =>
       simp [Expr.mapAnn, Expr.anns, ihf, iha, List.map_append]
   | letIn ann rhs body ihr ihb =>
@@ -950,57 +654,36 @@ theorem anns_mapAnn (f : A → B) (expr : Expr A) : (expr.mapAnn f).anns = expr.
 theorem mapAnn_congr {f g : A → B} {expr : Expr A} (agree : ∀ ann ∈ expr.anns, f ann = g ann) :
     expr.mapAnn f = expr.mapAnn g := by
   induction expr with
-  | lit _ => rfl
-  | primOp _ => rfl
-  | const _ => rfl
-  | var _ => rfl
+  | lit _ | primOp _ | const _ | var _ => rfl
   | lambda param body ih =>
       cases param with
       | none =>
-          have hb : body.mapAnn f = body.mapAnn g := ih (fun ann hann => agree ann hann)
-          simp [Expr.mapAnn, hb]
+          simp [Expr.mapAnn, ih (fun ann hann => agree ann (by simp [Expr.anns, hann]))]
       | some a =>
-          have hb : body.mapAnn f = body.mapAnn g :=
-            ih (fun ann hann => agree ann (by simp [Expr.anns, List.mem_cons, hann]))
-          have ha : f a = g a := agree a (by simp [Expr.anns])
-          simp [Expr.mapAnn, ha, hb]
+          simp [Expr.mapAnn, agree a (by simp [Expr.anns]),
+            ih (fun ann hann => agree ann (by simp [Expr.anns, hann]))]
   | app fn arg ihf iha =>
-      have hf : fn.mapAnn f = fn.mapAnn g :=
-        ihf (fun ann hann => agree ann (by simp [Expr.anns, List.mem_append, hann]))
-      have ha : arg.mapAnn f = arg.mapAnn g :=
-        iha (fun ann hann => agree ann (by simp [Expr.anns, List.mem_append, hann]))
-      simp [Expr.mapAnn, hf, ha]
+      simp [Expr.mapAnn, ihf (fun ann hann => agree ann (by simp [Expr.anns, hann])),
+        iha (fun ann hann => agree ann (by simp [Expr.anns, hann]))]
   | letIn ann rhs body ihr ihb =>
       cases ann with
       | none =>
-          have hr : rhs.mapAnn f = rhs.mapAnn g :=
-            ihr (fun ann hann => agree ann (by simp [Expr.anns, List.mem_append, hann]))
-          have hb : body.mapAnn f = body.mapAnn g :=
-            ihb (fun ann hann => agree ann (by simp [Expr.anns, List.mem_append, hann]))
-          simp [Expr.mapAnn, hr, hb]
+          simp [Expr.mapAnn, ihr (fun ann hann => agree ann (by simp [Expr.anns, hann])),
+            ihb (fun ann hann => agree ann (by simp [Expr.anns, hann]))]
       | some a =>
-          have hr : rhs.mapAnn f = rhs.mapAnn g :=
-            ihr (fun ann hann => agree ann (by simp [Expr.anns, List.mem_cons, List.mem_append, hann]))
-          have hb : body.mapAnn f = body.mapAnn g :=
-            ihb (fun ann hann => agree ann (by simp [Expr.anns, List.mem_cons, List.mem_append, hann]))
-          have ha : f a.body = g a.body :=
-            agree a.body (by simp [Expr.anns])
-          simp [Expr.mapAnn, PolyAnn.map, ha, hr, hb]
+          simp [Expr.mapAnn, PolyAnn.map, agree a.body (by simp [Expr.anns]),
+            ihr (fun ann hann => agree ann (by simp [Expr.anns, hann])),
+            ihb (fun ann hann => agree ann (by simp [Expr.anns, hann]))]
   | fix self body ih =>
-      have hs : f self = g self := agree self (by simp [Expr.anns])
-      have hb : body.mapAnn f = body.mapAnn g :=
-        ih (fun ann hann => agree ann (by simp [Expr.anns, List.mem_cons, hann]))
-      simp [Expr.mapAnn, hs, hb]
+      simp [Expr.mapAnn, agree self (by simp [Expr.anns]),
+        ih (fun ann hann => agree ann (by simp [Expr.anns, hann]))]
 
 /-- If two maps of an expression agree, the functions agree on every
 annotation. -/
 theorem mapAnn_eq_anns {f g : A → B} {expr : Expr A} (equal : expr.mapAnn f = expr.mapAnn g) :
     ∀ ann ∈ expr.anns, f ann = g ann := by
   induction expr with
-  | lit _ => intro ann h; simp [Expr.anns] at h
-  | primOp _ => intro ann h; simp [Expr.anns] at h
-  | const _ => intro ann h; simp [Expr.anns] at h
-  | var _ => intro ann h; simp [Expr.anns] at h
+  | lit _ | primOp _ | const _ | var _ => intro ann h; simp [Expr.anns] at h
   | lambda param body ih =>
       intro ann hmem
       cases param with
@@ -1059,76 +742,31 @@ theorem mapAnn_eq_anns {f g : A → B} {expr : Expr A} (equal : expr.mapAnn f = 
 
 private theorem option_bind_some_eq_some {α γ : Type} {o : Option α} {g : α → γ} {c : γ} :
     (o >>= fun a => some (g a)) = some c ↔ ∃ a, o = some a ∧ g a = c := by
-  cases o with
-  | none => simp
-  | some a => simp [eq_comm]
+  cases o <;> simp [eq_comm]
 
 private theorem option_bind2_some {α β γ : Type} {o1 : Option α} {o2 : Option β}
     {g : α → β → γ} {c : γ} :
     (o1 >>= fun x => o2 >>= fun y => some (g x y)) = some c ↔
       ∃ x y, o1 = some x ∧ o2 = some y ∧ g x y = c := by
-  cases o1 with
-  | none => simp
-  | some x =>
-      cases o2 with
-      | none => simp
-      | some y => simp [eq_comm]
+  cases o1 <;> cases o2 <;> simp [eq_comm]
 
 private theorem option_bind3_some {α β γ δ : Type} {o1 : Option α} {o2 : Option β} {o3 : Option γ}
     {g : α → β → γ → δ} {c : δ} :
     (o1 >>= fun x => o2 >>= fun y => o3 >>= fun z => some (g x y z)) = some c ↔
       ∃ x y z, o1 = some x ∧ o2 = some y ∧ o3 = some z ∧ g x y z = c := by
-  cases o1 with
-  | none => simp
-  | some x =>
-      cases o2 with
-      | none => simp
-      | some y =>
-          cases o3 with
-          | none => simp
-          | some z => simp [eq_comm]
-
-private theorem option_bind2_none {α β γ : Type} {o1 : Option α} {o2 : Option β}
-    {g : α → β → γ} :
-    (o1 >>= fun x => o2 >>= fun y => some (g x y)) = none ↔ o1 = none ∨ o2 = none := by
-  cases o1 with
-  | none => simp
-  | some x =>
-      cases o2 with
-      | none => simp
-      | some y => simp
+  cases o1 <;> cases o2 <;> cases o3 <;> simp [eq_comm]
 
 private theorem option_bind3_none {α β γ δ : Type} {o1 : Option α} {o2 : Option β} {o3 : Option γ}
     {g : α → β → γ → δ} :
     (o1 >>= fun x => o2 >>= fun y => o3 >>= fun z => some (g x y z)) = none ↔
       o1 = none ∨ o2 = none ∨ o3 = none := by
-  cases o1 with
-  | none => simp
-  | some x =>
-      cases o2 with
-      | none => simp
-      | some y => cases o3 <;> simp
-
-private theorem exists_mem_cons {α : Type} {a : α} {l : List α} {p : α → Prop} :
-    (∃ x ∈ a :: l, p x) ↔ p a ∨ ∃ x ∈ l, p x := by
-  simp only [List.mem_cons]
-  constructor
-  · rintro ⟨x, hx, hp⟩
-    rcases hx with hx | hx
-    · subst hx; exact Or.inl hp
-    · exact Or.inr ⟨x, hx, hp⟩
-  · rintro (hp | ⟨x, hx, hp⟩)
-    · exact ⟨a, Or.inl rfl, hp⟩
-    · exact ⟨x, Or.inr hx, hp⟩
+  cases o1 <;> cases o2 <;> cases o3 <;> simp
 
 private theorem traverseAnn_eq_none_iff {f : Ty V → Option SemTy} :
     ∀ (expr : Expr (Ty V)), expr.traverseAnn f = none ↔ ∃ ann ∈ expr.anns, f ann = none := by
   intro expr
   induction expr with
-  | lit _ => simp [Expr.traverseAnn, Expr.anns]
-  | primOp _ => simp [Expr.traverseAnn, Expr.anns]
-  | const _ => simp [Expr.traverseAnn, Expr.anns]
-  | var _ => simp [Expr.traverseAnn, Expr.anns]
+  | lit _ | primOp _ | const _ | var _ => simp [Expr.traverseAnn, Expr.anns]
   | lambda param body ih =>
       cases param with
       | none =>
@@ -1136,18 +774,18 @@ private theorem traverseAnn_eq_none_iff {f : Ty V → Option SemTy} :
           rw [Ty.option_bind_some_eq_none, ih]
       | some a =>
           simp only [Expr.traverseAnn, Expr.anns]
-          rw [option_bind2_none, ih, exists_mem_cons]
+          rw [Ty.option_bind2_none, ih, List.exists_mem_cons_iff]
   | app fn arg ihf iha =>
-      simp only [Expr.traverseAnn, Expr.anns, option_bind2_none, ihf, iha, Ty.exists_mem_append]
+      simp only [Expr.traverseAnn, Expr.anns, Ty.option_bind2_none, ihf, iha, Ty.exists_mem_append]
   | letIn ann rhs body ihr ihb =>
       cases ann with
       | none =>
-          simp only [Expr.traverseAnn, Expr.anns, option_bind2_none, ihr, ihb, Ty.exists_mem_append]
+          simp only [Expr.traverseAnn, Expr.anns, Ty.option_bind2_none, ihr, ihb, Ty.exists_mem_append]
       | some a =>
           simp only [Expr.traverseAnn, Expr.anns, option_bind3_none, ihr, ihb,
-            exists_mem_cons, Ty.exists_mem_append]
+            List.exists_mem_cons_iff, Ty.exists_mem_append]
   | fix self body ih =>
-      simp only [Expr.traverseAnn, Expr.anns, option_bind2_none, ih, exists_mem_cons]
+      simp only [Expr.traverseAnn, Expr.anns, Ty.option_bind2_none, ih, List.exists_mem_cons_iff]
 
 private theorem traverseAnn_eq_some_iff {f : Ty V → Option SemTy} {r : SemTy → Ty V}
     (hf : ∀ (ty : Ty V) (sem : SemTy), f ty = some sem ↔ ty = r sem) :
@@ -1155,46 +793,15 @@ private theorem traverseAnn_eq_some_iff {f : Ty V → Option SemTy} {r : SemTy �
       expr.traverseAnn f = some el ↔ expr = el.mapAnn r := by
   intro expr
   induction expr with
-  | lit l =>
-      intro el; constructor
+  | lit l | primOp l | const l | var l =>
+      intro el
+      constructor
       · intro h
         rw [Expr.traverseAnn] at h
-        have h' : el = Expr.lit l := (Option.some.inj h).symm
-        subst h'; simp [Expr.mapAnn]
+        obtain rfl := (Option.some.inj h).symm
+        simp [Expr.mapAnn]
       · intro h
-        cases el <;> simp [Expr.mapAnn] at h
-        rw [← h]
-        rfl
-  | primOp p =>
-      intro el; constructor
-      · intro h
-        rw [Expr.traverseAnn] at h
-        have h' : el = Expr.primOp p := (Option.some.inj h).symm
-        subst h'; simp [Expr.mapAnn]
-      · intro h
-        cases el <;> simp [Expr.mapAnn] at h
-        rw [← h]
-        rfl
-  | const c =>
-      intro el; constructor
-      · intro h
-        rw [Expr.traverseAnn] at h
-        have h' : el = Expr.const c := (Option.some.inj h).symm
-        subst h'; simp [Expr.mapAnn]
-      · intro h
-        cases el <;> simp [Expr.mapAnn] at h
-        rw [← h]
-        rfl
-  | var i =>
-      intro el; constructor
-      · intro h
-        rw [Expr.traverseAnn] at h
-        have h' : el = Expr.var i := (Option.some.inj h).symm
-        subst h'; simp [Expr.mapAnn]
-      · intro h
-        cases el <;> simp [Expr.mapAnn] at h
-        rw [← h]
-        rfl
+        cases el <;> simp_all [Expr.traverseAnn, Expr.mapAnn]
   | lambda param body ih =>
       intro el
       cases param with
@@ -1211,10 +818,10 @@ private theorem traverseAnn_eq_some_iff {f : Ty V → Option SemTy} {r : SemTy �
             case lambda p ebody =>
               cases p with
               | none =>
-                  simp only [Expr.mapAnn, Option.map_none, Expr.lambda.injEq] at h
+                  simp only [Option.map_none] at h
                   obtain ⟨-, hbody⟩ := h
                   simp [Expr.traverseAnn, (ih ebody).mpr hbody]
-              | some b => simp [Expr.mapAnn] at h
+              | some b => simp at h
       | some a =>
           constructor
           · intro h
@@ -1228,10 +835,9 @@ private theorem traverseAnn_eq_some_iff {f : Ty V → Option SemTy} {r : SemTy �
             cases el <;> try simp [Expr.mapAnn] at h
             case lambda p ebody =>
               cases p with
-              | none => simp [Expr.mapAnn] at h
+              | none => simp at h
               | some b =>
-                  simp only [Expr.mapAnn, Option.map_some, Expr.lambda.injEq,
-                    Option.some.injEq] at h
+                  simp only [Option.map_some, Option.some.injEq] at h
                   obtain ⟨ha, hbody⟩ := h
                   have hfa : f a = some b := (hf a b).mpr ha
                   simp [Expr.traverseAnn, hfa, (ih ebody).mpr hbody]
@@ -1267,10 +873,10 @@ private theorem traverseAnn_eq_some_iff {f : Ty V → Option SemTy} {r : SemTy �
             case letIn p erhs ebody =>
               cases p with
               | none =>
-                  simp only [Expr.mapAnn, Option.map_none, Expr.letIn.injEq] at h
+                  simp only [Option.map_none] at h
                   obtain ⟨-, hr, hb⟩ := h
                   simp [Expr.traverseAnn, (ihr erhs).mpr hr, (ihb ebody).mpr hb]
-              | some c => simp [Expr.mapAnn] at h
+              | some c => simp at h
       | some a =>
           cases a with
           | mk ar bd =>
@@ -1287,11 +893,11 @@ private theorem traverseAnn_eq_some_iff {f : Ty V → Option SemTy} {r : SemTy �
               cases el <;> try simp [Expr.mapAnn] at h
               case letIn p erhs ebody =>
                 cases p with
-                | none => simp [Expr.mapAnn] at h
+                | none => simp at h
                 | some an =>
                     cases an with
                     | mk anar anbody =>
-                      simp only [Expr.mapAnn, Option.map_some, Expr.letIn.injEq] at h
+                      simp only [Option.map_some] at h
                       obtain ⟨hann, hr, hb⟩ := h
                       have h1 : (⟨ar, bd⟩ : PolyAnn (Ty V)) = ⟨anar, r anbody⟩ :=
                         Option.some.inj hann
@@ -1325,12 +931,7 @@ theorem traverseAnn_ground_eq_some {expr : Expr (Ty V)} {elaboration : Elab} :
 
 theorem traverseAnn_ground_eq_none {expr : Expr (Ty V)} :
     expr.traverseAnn Ty.ground = none ↔ ∃ ann ∈ expr.anns, ann.vars ≠ [] := by
-  rw [traverseAnn_eq_none_iff]
-  constructor
-  · rintro ⟨ann, hmem, hnone⟩
-    exact ⟨ann, hmem, Ty.ground_eq_none.mp hnone⟩
-  · rintro ⟨ann, hmem, hvars⟩
-    exact ⟨ann, hmem, Ty.ground_eq_none.mpr hvars⟩
+  simp only [traverseAnn_eq_none_iff, Ty.ground_eq_none]
 
 end Expr
 

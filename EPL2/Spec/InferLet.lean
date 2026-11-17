@@ -28,26 +28,17 @@ namespace EPL2
 theorem Ctx.realize_congr_vars {ctx : Ctx Nat} {first second : Valuation}
     (agree : ∀ scheme ∈ ctx, ∀ id ∈ scheme.body.vars, first id = second id) :
     ctx.realize first = ctx.realize second := by
-  induction ctx with
-  | nil => rfl
-  | cons scheme rest ih =>
-      simp only [Ctx.realize, List.map_cons]
-      congr 1
-      · simp only [Scheme.realize, Scheme.bind]
-        congr 1
-        exact Ty.bind_congr (fun id hid => agree scheme (by simp) id hid)
-      · exact ih (fun scheme hscheme => agree scheme (by simp [hscheme]))
+  unfold Ctx.realize
+  apply List.map_congr_left
+  intro scheme hscheme
+  simpa [Scheme.realize, Scheme.bind] using
+    Ty.bind_congr (fun id hid => agree scheme hscheme id hid)
 
 /-- The level check of `inferAt` is `Ty.LevelBounded`. -/
 theorem levelCheck_iff {store : MStore} {ty : InfTy} {k : Nat} :
     (ty.vars.all (store.levelOf · ≤ k) = true) ↔ ty.LevelBounded store k := by
   rw [List.all_eq_true]
-  constructor
-  · intro h id hid
-    have := h id hid
-    simpa using this
-  · intro h id hid
-    simpa using h id hid
+  simp [Ty.LevelBounded]
 
 /-- A run one explicit let deeper sees the context after allocating the
 annotation. -/
@@ -108,6 +99,25 @@ structure RhsChecked (sig : Signature) (k : Nat) (ctx : Ctx Nat) (ann : PolyAnn 
       ∃ extended, store'.Models extended ∧ Agree store.length valuation extended ∧
         rhsElab.realize extended = elaboration ∧ completed.realize extended = ty
 
+/-- A context entry of the run's own depth extends an `InferPre`. -/
+private theorem InferPre.cons {scheme : Scheme Nat} (pre : InferPre k ctx store)
+    (wf : scheme.WF k) (allocated : scheme.body.Allocated store)
+    (levels : scheme.body.LevelBounded store k) :
+    InferPre k (scheme :: ctx) store := by
+  refine ⟨pre.safe, ?_, ?_, ?_⟩
+  · intro sch hsch
+    rcases List.mem_cons.mp hsch with rfl | hsch
+    · exact wf
+    · exact pre.ctxWF sch hsch
+  · intro sch hsch
+    rcases List.mem_cons.mp hsch with rfl | hsch
+    · exact allocated
+    · exact pre.ctxAllocated sch hsch
+  · intro sch hsch
+    rcases List.mem_cons.mp hsch with rfl | hsch
+    · exact levels
+    · exact pre.ctxLevels sch hsch
+
 /-- The context of the body: the completed annotation's closed scheme, above
 the original context. -/
 theorem RhsChecked.bodyPre {sig : Signature} {ann : PolyAnn Template}
@@ -115,34 +125,16 @@ theorem RhsChecked.bodyPre {sig : Signature} {ann : PolyAnn Template}
     (checked : RhsChecked sig k ctx ann rhs store rhsElab completed store')
     (outer : completed.LevelBounded store' k) :
     InferPre k (⟨ann.arity, completed.closeRigids k ann.arity⟩ :: ctx) store' := by
-  have hschemeWF : (⟨ann.arity, completed.closeRigids k ann.arity⟩ : Scheme Nat).WF k :=
-    Scheme.closeRigids_wf checked.completedWF
-  have hschemeAlloc :
-      (⟨ann.arity, completed.closeRigids k ann.arity⟩ : Scheme Nat).body.Allocated store' := by
-    intro id hid
+  refine InferPre.cons (pre.extend checked.safe checked.grows checked.levels) ?_ ?_ ?_
+  · exact Scheme.closeRigids_wf checked.completedWF
+  · intro id hid
     rw [Ty.vars_closeRigids] at hid
     exact checked.completedAllocated id hid
-  have hschemeLevels :
-      (⟨ann.arity, completed.closeRigids k ann.arity⟩ : Scheme Nat).body.LevelBounded store' k := by
-    intro id hid
+  · intro id hid
     rw [Ty.vars_closeRigids] at hid
     exact outer id hid
-  have hpre : InferPre k ctx store' := pre.extend checked.safe checked.grows checked.levels
-  refine ⟨checked.safe, ?_, ?_, ?_⟩
-  · intro sch hsch
-    rcases List.mem_cons.mp hsch with rfl | hsch
-    · exact hschemeWF
-    · exact hpre.ctxWF sch hsch
-  · intro sch hsch
-    rcases List.mem_cons.mp hsch with rfl | hsch
-    · exact hschemeAlloc
-    · exact hpre.ctxAllocated sch hsch
-  · intro sch hsch
-    rcases List.mem_cons.mp hsch with rfl | hsch
-    · exact hschemeLevels
-    · exact hpre.ctxLevels sch hsch
 
-/-- **Proof guidance.** Write `inner := k + ann.arity`,
+/-- **Proof outline.** Write `inner := k + ann.arity`,
 `(annTy, store₁) := store.allocate inner ann.body`.
 * invariants: `MStore.allocate_wf`, `MStore.append_unsolved_*`, the fields of
   `rhsPost`, `MStore.unify_safe`/`unify_length`/`unify_levelOf_le`,
@@ -174,8 +166,10 @@ theorem rhsChecked {sig : Signature} {ann : PolyAnn Template} {rhsResult : Infer
       store.length + ann.body.vars.dedup.length := by
     rw [MStore.allocate_snd]
     simp
-  have grow₁ : store.length ≤ (store.allocate (k + ann.arity) ann.body).2.length := by
-    omega
+  have hlen' : store'.length = rhsResult.store.length := MStore.unify_length unified
+  have hgrowth : store.length ≤ (store.allocate (k + ann.arity) ann.body).2.length := by
+    rw [MStore.allocate_snd]
+    simp
   have annTyAllocRhs :
       (store.allocate (k + ann.arity) ann.body).1.Allocated rhsResult.store := by
     intro id hid
@@ -185,13 +179,12 @@ theorem rhsChecked {sig : Signature} {ann : PolyAnn Template} {rhsResult : Infer
   have annTyAlloc' : (store.allocate (k + ann.arity) ann.body).1.Allocated store' := by
     intro id hid
     have h := annTyAlloc₁ id hid
-    have hlen : store'.length = rhsResult.store.length := MStore.unify_length unified
     have := rhsPost.grows
     omega
   have annTyLevels' :
       (store.allocate (k + ann.arity) ann.body).1.LevelBounded store' (k + ann.arity) := by
     intro id hid
-    have hfresh := annTyFresh id hid
+    have hfresh : store.length ≤ id := annTyFresh id hid
     have hid₁ : id < (store.allocate (k + ann.arity) ann.body).2.length :=
       annTyAlloc₁ id hid
     have hlev₁ : (store.allocate (k + ann.arity) ann.body).2.levelOf id = (k + ann.arity) := by
@@ -206,16 +199,12 @@ theorem rhsChecked {sig : Signature} {ann : PolyAnn Template} {rhsResult : Infer
       _ = (k + ann.arity) := hlev₁
   have store'Safe : store'.Safe :=
     MStore.unify_safe rhsPost.safe rhsPost.tyAllocated annTyAllocRhs unified
-  have completedWF :
-      (store'.apply (store.allocate (k + ann.arity) ann.body).1).WF (k + ann.arity) :=
-    (MStore.apply_wf store'Safe annTyWF annTyLevels').1
-  have completedLevels :
-      (store'.apply (store.allocate (k + ann.arity) ann.body).1).LevelBounded store'
-        (k + ann.arity) :=
-    (MStore.apply_wf store'Safe annTyWF annTyLevels').2
-  refine ⟨store'Safe, ?_, ?_, ?_, ?_, ?_, ?_, ?_, ?_, ?_, ?_, ?_⟩
+  obtain ⟨completedWF, completedLevels⟩ :=
+    MStore.apply_wf store'Safe annTyWF annTyLevels'
+  refine ⟨store'Safe, ?_, ?_, completedWF,
+    MStore.apply_allocated store'Safe annTyAlloc', completedLevels,
+    MStore.apply_vars_unsolved store'Safe, ?_, ?_, ?_, ?_, ?_⟩
   · -- grows
-    have hlen : store'.length = rhsResult.store.length := MStore.unify_length unified
     have h₂ : (store.allocate (k + ann.arity) ann.body).2.length ≤
         rhsResult.store.length := rhsPost.grows
     rw [hlen₁] at h₂
@@ -232,18 +221,9 @@ theorem rhsChecked {sig : Signature} {ann : PolyAnn Template} {rhsResult : Infer
     have hsame : (store.allocate (k + ann.arity) ann.body).2.levelOf id = store.levelOf id := by
       rw [MStore.allocate_snd, MStore.append_unsolved_levelOf, if_pos hid]
     omega
-  · -- completedWF
-    exact completedWF
-  · -- completedAllocated
-    exact MStore.apply_allocated store'Safe annTyAlloc'
-  · -- completedLevels
-    exact completedLevels
-  · -- completedUnsolved
-    exact MStore.apply_vars_unsolved store'Safe
   · -- elabAllocated
     intro a ha
     have h := rhsPost.elabAllocated a ha
-    have hlen : store'.length = rhsResult.store.length := MStore.unify_length unified
     intro id hid
     have := h id hid
     omega
@@ -254,7 +234,7 @@ theorem rhsChecked {sig : Signature} {ann : PolyAnn Template} {rhsResult : Infer
       rw [MStore.allocate_snd]
       exact MStore.Anchored.append_unsolved hanch hinner
     have h₂ : rhsResult.store.Anchored start level :=
-      rhsPost.anchored start level hinner (by omega) h₁
+      rhsPost.anchored start level hinner (le_trans hstart hgrowth) h₁
     exact MStore.unify_anchored h₂ unified
   · -- anchoredSelf
     intro harity
@@ -263,7 +243,7 @@ theorem rhsChecked {sig : Signature} {ann : PolyAnn Template} {rhsResult : Infer
       rw [MStore.allocate_snd]
       exact MStore.Anchored.append_unsolved (MStore.Anchored.of_length store k) hinner
     have h₂ : rhsResult.store.Anchored store.length k :=
-      rhsPost.anchored store.length k hinner (by omega) h₁
+      rhsPost.anchored store.length k hinner hgrowth h₁
     exact MStore.unify_anchored h₂ unified
   · -- sound
     intro valuation hmodels
@@ -321,6 +301,33 @@ theorem rhsChecked {sig : Signature} {ann : PolyAnn Template} {rhsResult : Infer
       rw [MStore.Models.realize_apply hstore'Models, hAnnTyExt]
     exact ⟨extended, hstore'Models, hAgree, hElab, hCompleted⟩
 
+/-- A completion's generic instance is well-formed one level deeper. -/
+private theorem Completes.skolemize_wf {ann : PolyAnn Template} {scheme : Scheme Empty}
+    (completes : ann.Completes k scheme) : (scheme.skolemize k).WF (k + ann.arity) := by
+  rw [← completes.arity_eq]
+  exact Scheme.skolemize_wf completes.wf
+
+/-- A completion is the closed completed annotation, once the realization is
+the completion's generic instance. -/
+private theorem Completes.eq_closeRigids {ann : PolyAnn Template} {scheme : Scheme Empty}
+    {ty : Ty Empty} (completes : ann.Completes k scheme) (realized : ty = scheme.skolemize k) :
+    (⟨ann.arity, ty.closeRigids k ann.arity⟩ : Scheme Empty) = scheme := by
+  rw [realized, ← completes.arity_eq, Scheme.closeRigids_skolemize completes.wf]
+
+/-- Failing the level check exhibits a metavariable above the depth. -/
+private theorem exists_level_above {ty : InfTy} {store : MStore} {k : Nat}
+    (fails : ¬ ty.LevelBounded store k) :
+    ∃ id, id ∈ ty.vars ∧ k < store.levelOf id := by
+  by_contra hnone
+  exact fails fun id hid => Nat.le_of_not_lt fun hlt => hnone ⟨id, hid, hlt⟩
+
+/-- Passing the level check excludes metavariables above the depth. -/
+private theorem not_exists_level_above {ty : InfTy} {store : MStore} {k : Nat}
+    (passes : ty.LevelBounded store k) :
+    ¬ ∃ id, id ∈ ty.vars ∧ k < store.levelOf id := by
+  rintro ⟨id, hid, hlt⟩
+  exact absurd (passes id hid) (by omega)
+
 namespace RhsChecked
 
 /-- The completed annotation, closed, completes the annotation; reopening it
@@ -333,11 +340,9 @@ theorem completes {sig : Signature} {ann : PolyAnn Template}
     ann.Completes k ⟨ann.arity, (completed.realize valuation).closeRigids k ann.arity⟩ ∧
       (⟨ann.arity, (completed.realize valuation).closeRigids k ann.arity⟩ : Scheme Empty).skolemize k =
         completed.realize valuation := by
-  have images : ∀ id ∈ completed.vars, (valuation id).WF (k + ann.arity) := by
-    intro id hid
-    have hwf : (valuation id).WF (store'.levelOf id) :=
-      MStore.Models.image_wf models (checked.completedAllocated id hid)
-    exact Ty.Scoped.mono hwf (checked.completedLevels id hid) (Nat.zero_le 0)
+  have images : ∀ id ∈ completed.vars, (valuation id).WF (k + ann.arity) := fun id hid =>
+    Ty.Scoped.mono (MStore.Models.image_wf models (checked.completedAllocated id hid))
+      (checked.completedLevels id hid) (Nat.zero_le 0)
   have tyWF : (completed.realize valuation).WF (k + ann.arity) :=
     Ty.realize_wf checked.completedWF images
   have hskel :
@@ -357,11 +362,9 @@ theorem realize_scheme {sig : Signature} {ann : PolyAnn Template}
     (outer : completed.LevelBounded store' k) (models : store'.Models valuation) :
     (⟨ann.arity, completed.closeRigids k ann.arity⟩ : Scheme Nat).realize valuation =
       ⟨ann.arity, (completed.realize valuation).closeRigids k ann.arity⟩ := by
-  have images : ∀ id ∈ completed.vars, (valuation id).WF k := by
-    intro id hid
-    have hwf : (valuation id).WF (store'.levelOf id) :=
-      MStore.Models.image_wf models (checked.completedAllocated id hid)
-    exact Ty.Scoped.mono hwf (outer id hid) (Nat.zero_le 0)
+  have images : ∀ id ∈ completed.vars, (valuation id).WF k := fun id hid =>
+    Ty.Scoped.mono (MStore.Models.image_wf models (checked.completedAllocated id hid))
+      (outer id hid) (Nat.zero_le 0)
   simp only [Scheme.realize, Scheme.bind, Ty.realize]
   congr 1
   exact Ty.closeRigids_bind images
@@ -390,15 +393,10 @@ theorem determined {sig : Signature} {ann : PolyAnn Template}
     simp [harity]
   · right
     intro other otherElab completes typing
-    have hsound := checked.sound valuation models
-    have hstoreModels : store.Models valuation := hsound.1
-    have hskelWF : (other.skolemize k).WF (k + ann.arity) := by
-      rw [← completes.arity_eq]
-      exact Scheme.skolemize_wf completes.wf
+    have hstoreModels : store.Models valuation := (checked.sound valuation models).1
+    have hskelWF := Completes.skolemize_wf completes
     have typing' : Typing sig (k + ann.arity) (ctx.realize valuation) rhs otherElab
-        (other.skolemize k) := by
-      rw [← completes.arity_eq]
-      exact typing
+        (other.skolemize k) := completes.arity_eq ▸ typing
     obtain ⟨extended, extModels, agree, _hrhs, hcompleted⟩ :=
       checked.principal valuation hstoreModels otherElab (other.skolemize k)
         completes.body_matches hskelWF typing'
@@ -411,13 +409,12 @@ theorem determined {sig : Signature} {ann : PolyAnn Template}
       Ty.bind_congr hval
     have hreal' : completed.realize valuation = other.skolemize k := by
       rw [hreal, hcompleted]
-    have hbodyEq : other.body = (completed.realize valuation).closeRigids k ann.arity := by
-      rw [← Scheme.closeRigids_skolemize completes.wf]
-      rw [← hreal', completes.arity_eq]
     cases other with
-    | mk oa ob =>
+    | mk arity body =>
       simp only [Scheme.mk.injEq]
-      exact ⟨completes.arity_eq, hbodyEq⟩
+      refine ⟨completes.arity_eq, ?_⟩
+      rw [hreal', ← completes.arity_eq]
+      exact (Scheme.closeRigids_skolemize completes.wf).symm
 
 /-- When some metavariable `?m` of the completed annotation is still above
 the outer depth, no completion is determined: it could equally be a binder.
@@ -444,43 +441,31 @@ theorem undetermined {sig : Signature} {ann : PolyAnn Template}
       (scheme.skolemize k)) :
     ¬ Determined sig k (ctx.realize valuation) ann rhs scheme := by
   intro hdet
-  have hbad : ∃ id, id ∈ completed.vars ∧ ¬ store'.levelOf id ≤ k := by
-    by_contra h
-    apply inner
-    intro id hid
-    by_contra hle
-    exact h ⟨id, hid, hle⟩
-  obtain ⟨id, hid, hlev⟩ := hbad
+  obtain ⟨id, hid, hlev⟩ := exists_level_above inner
   have hunsolved : store'.lookup id = none := checked.completedUnsolved id hid
-  have hallocated : id < store'.length := checked.completedAllocated id hid
   have htyping' : Typing sig (k + ann.arity) (ctx.realize valuation) rhs rhsElab'
-      (scheme.skolemize k) := by
-    rw [← completes.arity_eq]
-    exact typing
-  have hskelWF : (scheme.skolemize k).WF (k + ann.arity) := by
-    rw [← completes.arity_eq]
-    exact Scheme.skolemize_wf completes.wf
+      (scheme.skolemize k) := completes.arity_eq ▸ typing
+  have hskelWF := Completes.skolemize_wf completes
   obtain ⟨extended, extModels, agree, _hrhs, hcompleted⟩ :=
     checked.principal valuation models rhsElab' (scheme.skolemize k)
       completes.body_matches hskelWF htyping'
   obtain ⟨updated, updModels, hdiff, hsame⟩ :=
-    MStore.Models.exists_different checked.safe extModels hallocated hunsolved
+    MStore.Models.exists_different checked.safe extModels hunsolved
   have hbel : ∀ m, store'.levelOf m ≤ k → extended m = updated m := by
     apply MStore.Models.agree_below checked.safe extModels updModels
     intro m hmunsolved hmlevel
     have hmne : m ≠ id := by
       intro hmi
       subst hmi
-      exact hlev hmlevel
+      omega
     exact (hsame m hmunsolved hmne).symm
   have hctxEq : ctx.realize updated = ctx.realize valuation := by
     apply Ctx.realize_congr_vars
     intro sch hsch var hvar
     have hvarAlloc : var < store.length := pre.ctxAllocated sch hsch var hvar
     have hvarLevel : store.levelOf var ≤ k := pre.ctxLevels sch hsch var hvar
-    have hvarLevel' : store'.levelOf var ≤ k := by
-      have := checked.levels var hvarAlloc
-      omega
+    have hvarLevel' : store'.levelOf var ≤ k :=
+      le_trans (checked.levels var hvarAlloc) hvarLevel
     have e1 : updated var = extended var := (hbel var hvarLevel').symm
     have e2 : valuation var = extended var := agree var hvarAlloc
     rw [e1, e2]
@@ -518,9 +503,8 @@ end RhsChecked
 
 /-- The explicit-let case of `inferAt_spec`.
 
-**Proof guidance.** First state and prove (by `rfl` or `simp [inferAt]`) an
-equation that unfolds `inferAt` on `.letIn (some ann) rhs body` into nested
-`if`/`match`/`Option.bind`, and split along it:
+**Proof outline.** Unfold `inferAt` on `.letIn (some ann) rhs body` into
+nested `if`/`match`/`Option.bind` and split along it:
 * annotation out of scope: no completion exists (`Template.Matches.wf` with
   `Scheme.skolemize_wf` and `Completes.arity_eq`);
 * right-hand side fails: `rhsSpec` at `pre.deeper` extended by
@@ -538,159 +522,107 @@ theorem inferAt_spec_letPoly {sig : Signature} {ann : PolyAnn Template} {rhs bod
     InferSpec sig k ctx (.letIn (some ann) rhs body) store := by
   by_cases hann : ann.body.WF (k + ann.arity)
   · -- annotation is in scope
+    have rhsSpec' := rhsSpec (k + ann.arity) ctx _ (InferPre.allocate_deeper pre ann)
+    unfold InferSpec at rhsSpec'
     cases hrhs : inferAt sig (k + ann.arity) ctx rhs
         (store.allocate (k + ann.arity) ann.body).2 with
     | none =>
+        rw [hrhs] at rhsSpec'
         have hval : inferAt sig k ctx (.letIn (some ann) rhs body) store = none := by
-          rw [inferAt_letPoly]
-          simp [hann, hrhs]
-        unfold InferSpec
-        rw [hval]
+          simp [inferAt_letPoly, hann, hrhs]
+        simp only [InferSpec, hval]
         intro valuation hmodels elaboration ty helab
         cases helab with
         | letPoly completes rhsTyping det bodyTyping =>
           rename_i rhsElab scheme bodyElab
-          have hskelWF : (scheme.skolemize k).WF (k + ann.arity) := by
-            rw [← completes.arity_eq]
-            exact Scheme.skolemize_wf completes.wf
-          have hpre₁ : InferPre (k + ann.arity) ctx
-              (store.allocate (k + ann.arity) ann.body).2 :=
-            InferPre.allocate_deeper pre ann
-          have spec := rhsSpec (k + ann.arity) ctx _ hpre₁
-          unfold InferSpec at spec
-          rw [hrhs] at spec
           obtain ⟨extended, extModels, agree, _⟩ :=
-            MStore.allocate_principal pre.safe hmodels completes.body_matches hskelWF
-          have hrhsElab : Elaborates sig (k + ann.arity) (ctx.realize extended) rhs rhsElab
-              (scheme.skolemize k) := by
-            have hctx : ctx.realize valuation = ctx.realize extended :=
-              Ctx.realize_congr pre.ctxAllocated agree
-            rw [← hctx, ← completes.arity_eq]
-            exact rhsTyping
-          exact spec extended extModels rhsElab (scheme.skolemize k) hrhsElab
+            MStore.allocate_principal pre.safe hmodels completes.body_matches
+              (Completes.skolemize_wf completes)
+          refine rhsSpec' extended extModels rhsElab (scheme.skolemize k) ?_
+          rw [← (Ctx.realize_congr pre.ctxAllocated agree), ← completes.arity_eq]
+          exact rhsTyping
     | some rhsResult =>
+        rw [hrhs] at rhsSpec'
+        have rhsPost : InferPost sig (k + ann.arity) ctx rhs
+            (store.allocate (k + ann.arity) ann.body).2 rhsResult := rhsSpec'
         cases hunify : rhsResult.store.unify rhsResult.ty
             (store.allocate (k + ann.arity) ann.body).1 with
         | none =>
             have hval : inferAt sig k ctx (.letIn (some ann) rhs body) store = none := by
-              rw [inferAt_letPoly]
-              simp [hann, hrhs, hunify]
-            unfold InferSpec
-            rw [hval]
+              simp [inferAt_letPoly, hann, hrhs, hunify]
+            simp only [InferSpec, hval]
             intro valuation hmodels elaboration ty helab
             cases helab with
             | letPoly completes rhsTyping det bodyTyping =>
               rename_i rhsElab scheme bodyElab
-              have hskelWF : (scheme.skolemize k).WF (k + ann.arity) := by
-                rw [← completes.arity_eq]
-                exact Scheme.skolemize_wf completes.wf
-              have hpre₁ : InferPre (k + ann.arity) ctx
-                  (store.allocate (k + ann.arity) ann.body).2 :=
-                InferPre.allocate_deeper pre ann
-              have spec := rhsSpec (k + ann.arity) ctx _ hpre₁
-              unfold InferSpec at spec
-              rw [hrhs] at spec
               obtain ⟨extended₀, extModels₀, agree₀, hannTy₀⟩ :=
-                MStore.allocate_principal pre.safe hmodels completes.body_matches hskelWF
+                MStore.allocate_principal pre.safe hmodels completes.body_matches
+                  (Completes.skolemize_wf completes)
               have htyping₀ : Typing sig (k + ann.arity) (ctx.realize extended₀) rhs rhsElab
                   (scheme.skolemize k) := by
-                have hctx : ctx.realize valuation = ctx.realize extended₀ :=
-                  Ctx.realize_congr pre.ctxAllocated agree₀
-                rw [← hctx, ← completes.arity_eq]
+                rw [← (Ctx.realize_congr pre.ctxAllocated agree₀), ← completes.arity_eq]
                 exact Elaborates.typing rhsTyping
-              obtain ⟨extended, extModels, agree, _hElabEq, hTyEq⟩ :=
-                spec.principal extended₀ extModels₀ rhsElab (scheme.skolemize k) htyping₀
+              obtain ⟨extended, extModels, agree, _, hTyEq⟩ :=
+                rhsPost.principal extended₀ extModels₀ rhsElab (scheme.skolemize k) htyping₀
               obtain ⟨-, annTyAlloc₁, -⟩ :=
                 MStore.allocate_wf (store := store) (template := ann.body) hann
               have hannTy : (store.allocate (k + ann.arity) ann.body).1.realize extended =
                   scheme.skolemize k := by
-                have hcongr :
-                    (store.allocate (k + ann.arity) ann.body).1.realize extended₀ =
-                      (store.allocate (k + ann.arity) ann.body).1.realize extended :=
-                  Ty.realize_congr annTyAlloc₁ agree
-                rw [← hcongr, hannTy₀]
+                rw [← Ty.realize_congr annTyAlloc₁ agree, hannTy₀]
               have annAllocRhs :
                   (store.allocate (k + ann.arity) ann.body).1.Allocated rhsResult.store := by
                 intro id hid
                 have := annTyAlloc₁ id hid
-                have := spec.grows
+                have := rhsPost.grows
                 omega
-              have hUnify : rhsResult.ty.realize extended =
-                  (store.allocate (k + ann.arity) ann.body).1.realize extended := by
-                rw [hTyEq, hannTy]
               obtain ⟨result, hresult, -⟩ :=
-                MStore.unify_complete spec.safe spec.tyAllocated annAllocRhs extModels hUnify
+                MStore.unify_complete rhsPost.safe rhsPost.tyAllocated annAllocRhs extModels
+                  (by rw [hTyEq, hannTy])
               rw [hunify] at hresult
               cases hresult
         | some store' =>
+            have hchecked : RhsChecked sig k ctx ann rhs store rhsResult.elaboration
+                (store'.apply (store.allocate (k + ann.arity) ann.body).1) store' :=
+              rhsChecked pre hann rhsPost hunify
             by_cases hlevel :
                 (store'.apply (store.allocate (k + ann.arity) ann.body).1).LevelBounded store' k
             · -- level check passes, run the body
+              have bodyPre := RhsChecked.bodyPre pre hchecked hlevel
+              have hnot := not_exists_level_above hlevel
               cases hbody : inferAt sig k
                   (⟨ann.arity,
                     (store'.apply (store.allocate (k + ann.arity) ann.body).1).closeRigids
                       k ann.arity⟩ :: ctx) body store' with
               | none =>
                   have hval : inferAt sig k ctx (.letIn (some ann) rhs body) store = none := by
-                    have hnot : ¬ ∃ x, x ∈
-                        (store'.apply (store.allocate (k + ann.arity) ann.body).1).vars ∧
-                        k < store'.levelOf x := by
-                      rintro ⟨x, hx, hlt⟩
-                      exact absurd (hlevel x hx) (by omega)
-                    rw [inferAt_letPoly]
-                    simp [hann, hrhs, hunify, hnot, hbody]
-                  unfold InferSpec
-                  rw [hval]
+                    simp [inferAt_letPoly, hann, hrhs, hunify, hnot, hbody]
+                  simp only [InferSpec, hval]
                   intro valuation hmodels elaboration ty helab
                   cases helab with
                   | letPoly completes rhsTyping det bodyTyping =>
                     rename_i rhsElab scheme bodyElab
-                    have hpre₁ : InferPre (k + ann.arity) ctx
-                        (store.allocate (k + ann.arity) ann.body).2 :=
-                      InferPre.allocate_deeper pre ann
-                    have spec := rhsSpec (k + ann.arity) ctx _ hpre₁
-                    unfold InferSpec at spec
-                    rw [hrhs] at spec
-                    have rhsPost : InferPost sig (k + ann.arity) ctx rhs
-                        (store.allocate (k + ann.arity) ann.body).2 rhsResult := spec
-                    have hchecked : RhsChecked sig k ctx ann rhs store rhsResult.elaboration
-                        (store'.apply (store.allocate (k + ann.arity) ann.body).1) store' :=
-                      rhsChecked pre hann rhsPost hunify
-                    obtain ⟨extended, extModels, agree, _hrhs, hcompleted⟩ :=
-                      hchecked.principal valuation hmodels rhsElab (scheme.skolemize k)
-                        completes.body_matches (by
-                          rw [← completes.arity_eq]
-                          exact Scheme.skolemize_wf completes.wf) (by
-                          rw [← completes.arity_eq]
-                          exact Elaborates.typing rhsTyping)
                     have bspec := bodySpec k
                       (⟨ann.arity,
                         (store'.apply (store.allocate (k + ann.arity) ann.body).1).closeRigids
-                          k ann.arity⟩ :: ctx) store'
-                      (RhsChecked.bodyPre pre hchecked hlevel)
+                          k ann.arity⟩ :: ctx) store' bodyPre
                     unfold InferSpec at bspec
                     rw [hbody] at bspec
+                    obtain ⟨extended, extModels, agree, _, hcompleted⟩ :=
+                      hchecked.principal valuation hmodels rhsElab (scheme.skolemize k)
+                        completes.body_matches (Completes.skolemize_wf completes)
+                        (completes.arity_eq ▸ Elaborates.typing rhsTyping)
                     have hschemeExt :
                         (⟨ann.arity,
                           (store'.apply (store.allocate (k + ann.arity) ann.body).1).closeRigids
                             k ann.arity⟩ : Scheme Nat).realize extended = scheme := by
-                      have h := RhsChecked.realize_scheme hchecked hlevel extModels
-                      rw [h, hcompleted]
-                      have hbodyEq :
-                          (scheme.skolemize k).closeRigids k ann.arity = scheme.body := by
-                        rw [← completes.arity_eq]
-                        exact Scheme.closeRigids_skolemize completes.wf
-                      cases scheme with
-                      | mk sa sb =>
-                        simp only [Scheme.mk.injEq]
-                        exact ⟨completes.arity_eq.symm, hbodyEq⟩
-                    have hctxExt : ctx.realize extended = ctx.realize valuation :=
-                      (Ctx.realize_congr pre.ctxAllocated agree).symm
+                      rw [RhsChecked.realize_scheme hchecked hlevel extModels]
+                      exact Completes.eq_closeRigids completes hcompleted
                     have bodyTyping' : Elaborates sig k
                         (Ctx.realize ((⟨ann.arity,
                           (store'.apply (store.allocate (k + ann.arity) ann.body).1).closeRigids
                             k ann.arity⟩ : Scheme Nat) :: ctx) extended) body bodyElab ty := by
-                      rw [Ctx.realize_cons, hschemeExt, hctxExt]
+                      rw [Ctx.realize_cons, hschemeExt,
+                        (Ctx.realize_congr pre.ctxAllocated agree).symm]
                       exact bodyTyping
                     exact bspec extended extModels bodyElab ty bodyTyping'
               | some bodyResult =>
@@ -700,25 +632,7 @@ theorem inferAt_spec_letPoly {sig : Signature} {ann : PolyAnn Template} {rhs bod
                           store'.apply (store.allocate (k + ann.arity) ann.body).1⟩)
                           rhsResult.elaboration bodyResult.elaboration,
                         bodyResult.store⟩ := by
-                    have hnot : ¬ ∃ x, x ∈
-                        (store'.apply (store.allocate (k + ann.arity) ann.body).1).vars ∧
-                        k < store'.levelOf x := by
-                      rintro ⟨x, hx, hlt⟩
-                      exact absurd (hlevel x hx) (by omega)
-                    rw [inferAt_letPoly]
-                    simp [hann, hrhs, hunify, hnot, hbody]
-                  have hpre₁ : InferPre (k + ann.arity) ctx
-                      (store.allocate (k + ann.arity) ann.body).2 :=
-                    InferPre.allocate_deeper pre ann
-                  have spec := rhsSpec (k + ann.arity) ctx _ hpre₁
-                  unfold InferSpec at spec
-                  rw [hrhs] at spec
-                  have rhsPost : InferPost sig (k + ann.arity) ctx rhs
-                      (store.allocate (k + ann.arity) ann.body).2 rhsResult := spec
-                  have hchecked : RhsChecked sig k ctx ann rhs store rhsResult.elaboration
-                      (store'.apply (store.allocate (k + ann.arity) ann.body).1) store' :=
-                    rhsChecked pre hann rhsPost hunify
-                  have bodyPre := RhsChecked.bodyPre pre hchecked hlevel
+                    simp [inferAt_letPoly, hann, hrhs, hunify, hnot, hbody]
                   have bodySpec' := bodySpec k
                     (⟨ann.arity,
                       (store'.apply (store.allocate (k + ann.arity) ann.body).1).closeRigids
@@ -729,11 +643,9 @@ theorem inferAt_spec_letPoly {sig : Signature} {ann : PolyAnn Template} {rhs bod
                       (⟨ann.arity,
                         (store'.apply (store.allocate (k + ann.arity) ann.body).1).closeRigids
                           k ann.arity⟩ :: ctx) body store' bodyResult := bodySpec'
-                  unfold InferSpec
-                  rw [hval]
-                  refine ⟨?_, ?_, ?_, ?_, ?_, ?_, ?_, ?_, ?_, ?_⟩
-                  · -- safe
-                    exact bodyPost.safe
+                  simp only [InferSpec, hval]
+                  refine ⟨bodyPost.safe, ?_, ?_, bodyPost.tyWF, bodyPost.tyAllocated,
+                    bodyPost.tyLevels, ?_, ?_, ?_, ?_⟩
                   · -- grows
                     show store.length ≤ bodyResult.store.length
                     have h₁ : store.length ≤
@@ -750,17 +662,9 @@ theorem inferAt_spec_letPoly {sig : Signature} {ann : PolyAnn Template} {rhs bod
                     intro id hid
                     show bodyResult.store.levelOf id ≤ store.levelOf id
                     have hle : store'.levelOf id ≤ store.levelOf id := hchecked.levels id hid
-                    have hid' : id < store'.length := by
-                      have := hchecked.grows
-                      omega
+                    have hid' : id < store'.length := lt_of_lt_of_le hid hchecked.grows
                     have hbl := bodyPost.levels id hid'
                     omega
-                  · -- tyWF
-                    exact bodyPost.tyWF
-                  · -- tyAllocated
-                    exact bodyPost.tyAllocated
-                  · -- tyLevels
-                    exact bodyPost.tyLevels
                   · -- elabAllocated
                     intro a ha
                     change a ∈ (store'.apply (store.allocate (k + ann.arity) ann.body).1 ::
@@ -780,47 +684,23 @@ theorem inferAt_spec_letPoly {sig : Signature} {ann : PolyAnn Template} {rhs bod
                       · exact bodyPost.elabAllocated a ha
                   · -- anchored
                     intro start level hlevelk hstart hanch
-                    change bodyResult.store.Anchored start level
                     have hstore' : store'.Anchored start level :=
                       hchecked.anchored start level hlevelk hstart hanch
-                    exact bodyPost.anchored start level hlevelk (by
-                      have := hchecked.grows
-                      omega) hstore'
+                    exact bodyPost.anchored start level hlevelk
+                      (le_trans hstart hchecked.grows) hstore'
                   · -- sound
                     intro valuation hmodels
                     have hbodySound := bodyPost.sound valuation hmodels
                     have hstore'Models : store'.Models valuation := hbodySound.1
-                    have hbodyElab : Elaborates sig k
-                        (Ctx.realize ((⟨ann.arity,
-                          (store'.apply (store.allocate (k + ann.arity) ann.body).1).closeRigids
-                            k ann.arity⟩ : Scheme Nat) :: ctx) valuation) body
-                        (bodyResult.elaboration.realize valuation)
-                        (bodyResult.ty.realize valuation) := hbodySound.2
                     have hcheckedSound := hchecked.sound valuation hstore'Models
-                    have hstoreModels : store.Models valuation := hcheckedSound.1
-                    have hrhsElab : Elaborates sig (k + ann.arity) (ctx.realize valuation) rhs
-                        (rhsResult.elaboration.realize valuation)
-                        ((store'.apply (store.allocate (k + ann.arity) ann.body).1).realize
-                          valuation) := hcheckedSound.2.2
                     obtain ⟨hcompl, hskel⟩ := RhsChecked.completes hchecked hstore'Models
-                    have hschemeRealize :
-                        (⟨ann.arity,
-                          (store'.apply (store.allocate (k + ann.arity) ann.body).1).closeRigids
-                            k ann.arity⟩ : Scheme Nat).realize valuation =
-                        (⟨ann.arity,
-                          ((store'.apply (store.allocate (k + ann.arity) ann.body).1).realize
-                            valuation).closeRigids k ann.arity⟩ : Scheme Empty) :=
-                      RhsChecked.realize_scheme hchecked hlevel hstore'Models
-                    have hrhsTyping : Elaborates sig
-                        (k + (⟨ann.arity,
-                          ((store'.apply (store.allocate (k + ann.arity) ann.body).1).realize
-                            valuation).closeRigids k ann.arity⟩ : Scheme Empty).arity)
-                        (ctx.realize valuation) rhs (rhsResult.elaboration.realize valuation)
+                    refine ⟨hcheckedSound.1, ?_⟩
+                    have hrhsTyping : Elaborates sig (k + ann.arity) (ctx.realize valuation) rhs
+                        (rhsResult.elaboration.realize valuation)
                         ((⟨ann.arity,
                           ((store'.apply (store.allocate (k + ann.arity) ann.body).1).realize
-                            valuation).closeRigids k ann.arity⟩ : Scheme Empty).skolemize k) := by
-                      rw [hskel]
-                      exact hrhsElab
+                            valuation).closeRigids k ann.arity⟩ : Scheme Empty).skolemize k) :=
+                      hskel.symm ▸ hcheckedSound.2.2
                     have hbodyTyping : Elaborates sig k
                         ((⟨ann.arity,
                           ((store'.apply (store.allocate (k + ann.arity) ann.body).1).realize
@@ -828,77 +708,48 @@ theorem inferAt_spec_letPoly {sig : Signature} {ann : PolyAnn Template} {rhs bod
                           ctx.realize valuation) body
                         (bodyResult.elaboration.realize valuation)
                         (bodyResult.ty.realize valuation) := by
-                      have hctxEq :
-                          (Ctx.realize ((⟨ann.arity,
-                            (store'.apply (store.allocate (k + ann.arity) ann.body).1).closeRigids
-                              k ann.arity⟩ : Scheme Nat) :: ctx) valuation) =
+                      have hctxEq : Ctx.realize ((⟨ann.arity,
+                          (store'.apply (store.allocate (k + ann.arity) ann.body).1).closeRigids
+                            k ann.arity⟩ : Scheme Nat) :: ctx) valuation =
                           (⟨ann.arity,
                             ((store'.apply (store.allocate (k + ann.arity) ann.body).1).realize
                               valuation).closeRigids k ann.arity⟩ : Scheme Empty) ::
                             ctx.realize valuation := by
-                        rw [Ctx.realize_cons, hschemeRealize]
-                      rw [← hctxEq]
-                      exact hbodyElab
-                    refine ⟨hstoreModels, ?_⟩
+                        rw [Ctx.realize_cons,
+                          RhsChecked.realize_scheme hchecked hlevel hstore'Models]
+                      exact hctxEq ▸ hbodySound.2
                     have hlet := TypingWith.letPoly hcompl hrhsTyping
                       (RhsChecked.determined hchecked hlevel hstore'Models) hbodyTyping
                     rw [hskel] at hlet
-                    rw [show
-                      (Expr.letIn (some ⟨ann.arity,
-                          store'.apply (store.allocate (k + ann.arity) ann.body).1⟩)
-                          rhsResult.elaboration bodyResult.elaboration).realize valuation =
-                        Expr.letIn (some ⟨ann.arity,
-                            (store'.apply (store.allocate (k + ann.arity) ann.body).1).realize
-                              valuation⟩)
-                          (rhsResult.elaboration.realize valuation)
-                          (bodyResult.elaboration.realize valuation) from by
-                      simp [Expr.realize, Expr.mapAnn, PolyAnn.map]]
-                    exact hlet
+                    simpa [Expr.realize, Expr.mapAnn, PolyAnn.map] using hlet
                   · -- principal
                     intro valuation hmodels elaboration ty htyping
                     cases htyping with
                     | letPoly completes rhsTyping det bodyTyping =>
                       rename_i rhsElab0 scheme bodyElab0
-                      have hskelWF : (scheme.skolemize k).WF (k + ann.arity) := by
-                        rw [← completes.arity_eq]
-                        exact Scheme.skolemize_wf completes.wf
-                      have htyping' : Typing sig (k + ann.arity) (ctx.realize valuation) rhs
-                          rhsElab0 (scheme.skolemize k) := by
-                        rw [← completes.arity_eq]
-                        exact rhsTyping
-                      obtain ⟨extended₁, extModels₁, agree₁, _hrhsElab, hcompleted₁⟩ :=
+                      obtain ⟨extended₁, extModels₁, agree₁, hrhsElab₁, hcompleted₁⟩ :=
                         hchecked.principal valuation hmodels rhsElab0 (scheme.skolemize k)
-                          completes.body_matches hskelWF htyping'
+                          completes.body_matches (Completes.skolemize_wf completes)
+                          (completes.arity_eq ▸ rhsTyping)
                       have hschemeExt₁ :
                           (⟨ann.arity,
                             (store'.apply (store.allocate (k + ann.arity) ann.body).1).closeRigids
                               k ann.arity⟩ : Scheme Nat).realize extended₁ = scheme := by
-                        have h := RhsChecked.realize_scheme hchecked hlevel extModels₁
-                        rw [h, hcompleted₁]
-                        have hbodyEq :
-                            (scheme.skolemize k).closeRigids k ann.arity = scheme.body := by
-                          rw [← completes.arity_eq]
-                          exact Scheme.closeRigids_skolemize completes.wf
-                        cases scheme with
-                        | mk sa sb =>
-                          simp only [Scheme.mk.injEq]
-                          exact ⟨completes.arity_eq.symm, hbodyEq⟩
-                      have hctx₁ : ctx.realize extended₁ = ctx.realize valuation :=
-                        (Ctx.realize_congr pre.ctxAllocated agree₁).symm
+                        rw [RhsChecked.realize_scheme hchecked hlevel extModels₁]
+                        exact Completes.eq_closeRigids completes hcompleted₁
                       have hbodyTyping₁ : Typing sig k
                           (Ctx.realize ((⟨ann.arity,
                             (store'.apply (store.allocate (k + ann.arity) ann.body).1).closeRigids
                               k ann.arity⟩ : Scheme Nat) :: ctx) extended₁) body bodyElab0 ty := by
-                        rw [Ctx.realize_cons, hschemeExt₁, hctx₁]
+                        rw [Ctx.realize_cons, hschemeExt₁,
+                          (Ctx.realize_congr pre.ctxAllocated agree₁).symm]
                         exact bodyTyping
                       obtain ⟨extended, extModels, agreeBody, hbodyElab, hty⟩ :=
                         bodyPost.principal extended₁ extModels₁ bodyElab0 ty hbodyTyping₁
                       have hAgree : Agree store.length valuation extended := by
                         intro id hid
                         rw [agree₁ id hid]
-                        exact agreeBody id (by
-                          have := hchecked.grows
-                          omega)
+                        exact agreeBody id (lt_of_lt_of_le hid hchecked.grows)
                       have hcr :
                           (store'.apply (store.allocate (k + ann.arity) ann.body).1).realize
                               extended₁ =
@@ -925,53 +776,28 @@ theorem inferAt_spec_letPoly {sig : Signature} {ann : PolyAnn Template} {rhs bod
                               (rhsResult.elaboration.realize extended)
                               (bodyResult.elaboration.realize extended) from by
                           simp [Expr.realize, Expr.mapAnn, PolyAnn.map]]
-                        rw [← hcr, hcompleted₁, ← hrr, _hrhsElab, hbodyElab,
+                        rw [← hcr, hcompleted₁, ← hrr, hrhsElab₁, hbodyElab,
                           completes.arity_eq]
                       exact ⟨extended, extModels, hAgree, hElabInf, hty⟩
             · -- level check fails
-              have hbad : ∃ x, x ∈
-                  (store'.apply (store.allocate (k + ann.arity) ann.body).1).vars ∧
-                  k < store'.levelOf x := by
-                by_contra h
-                apply hlevel
-                intro x hx
-                by_contra hle
-                exact h ⟨x, hx, by omega⟩
+              have hbad := exists_level_above hlevel
               have hval : inferAt sig k ctx (.letIn (some ann) rhs body) store = none := by
-                rw [inferAt_letPoly]
-                simp [hann, hrhs, hunify, hbad]
-              unfold InferSpec
-              rw [hval]
+                simp [inferAt_letPoly, hann, hrhs, hunify, hbad]
+              simp only [InferSpec, hval]
               intro valuation hmodels elaboration ty helab
               cases helab with
               | letPoly completes rhsTyping det bodyTyping =>
                 rename_i rhsElab scheme bodyElab
-                have hpre₁ : InferPre (k + ann.arity) ctx
-                    (store.allocate (k + ann.arity) ann.body).2 :=
-                  InferPre.allocate_deeper pre ann
-                have spec := rhsSpec (k + ann.arity) ctx _ hpre₁
-                unfold InferSpec at spec
-                rw [hrhs] at spec
-                have rhsPost : InferPost sig (k + ann.arity) ctx rhs
-                    (store.allocate (k + ann.arity) ann.body).2 rhsResult := spec
-                have hchecked : RhsChecked sig k ctx ann rhs store rhsResult.elaboration
-                    (store'.apply (store.allocate (k + ann.arity) ann.body).1) store' :=
-                  rhsChecked pre hann rhsPost hunify
                 exact (RhsChecked.undetermined pre hchecked hlevel hmodels completes
                   (Elaborates.typing rhsTyping)) det
   · -- annotation is out of scope
     have hval : inferAt sig k ctx (.letIn (some ann) rhs body) store = none := by
-      rw [inferAt_letPoly]
-      simp [hann]
-    unfold InferSpec
-    rw [hval]
+      simp [inferAt_letPoly, hann]
+    simp only [InferSpec, hval]
     intro valuation hmodels elaboration ty helab
     cases helab with
     | letPoly completes rhsTyping det bodyTyping =>
       rename_i rhsElab scheme bodyElab
-      exfalso
-      apply hann
-      have h := Template.Matches.wf completes.body_matches (Scheme.skolemize_wf completes.wf)
-      rwa [completes.arity_eq] at h
+      exact hann (Template.Matches.wf completes.body_matches (Completes.skolemize_wf completes))
 
 end EPL2

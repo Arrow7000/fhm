@@ -7,15 +7,8 @@ The models of `MStore.unify`'s result are exactly the models of its input
 that equate the two types (`unify_sound`, `unify_complete`). The remaining
 theorems are the invariants inference needs.
 
-**Proof guidance.** Port `EPL/Properties/Unification.lean`, which proves all
-of these for the previous representation of the same algorithm (there
-`Ty.mvar`, `MVarBounded`, a deduplicated `Ty.mvars`, `occursMVar`, `scopedB`,
-separate `Leveled`/`Bounded`/`Normalized`; here `Ty.var`, `Ty.Allocated`,
-plain `Ty.vars`, `vars.contains`, `decide (ty.WF _)`, one `MStore.Safe`).
-`unify_anchored` ports from `MStore.solve_anchored_of_canBind` and its
-neighbours in `EPL/Properties/InferenceSound.lean`. Prove each property for
-`MStore.solve` first, then for one `unifyPhase`, then for `unifyLoop` by
-induction on the fuel.
+Each property is proved for `MStore.solve` first, then for one `unifyPhase`,
+then for `unifyLoop` by induction on the fuel.
 -/
 
 namespace EPL2
@@ -126,13 +119,6 @@ private theorem Constraints.size_cons (constraint : Constraint) (rest : List Con
       constraint.1.size + constraint.2.size + Constraints.size rest := by
   simp [Constraints.size]
 
-private theorem Constraints.size_tail (constraint : Constraint) (rest : List Constraint) :
-    Constraints.size rest ≤ Constraints.size (constraint :: rest) := by
-  rw [Constraints.size_cons]
-  have left := Ty.size_pos constraint.1
-  have right := Ty.size_pos constraint.2
-  omega
-
 private theorem Constraints.size_nonempty {constraints : List Constraint}
     (nonempty : constraints ≠ []) : 0 < Constraints.size constraints := by
   cases constraints with
@@ -164,6 +150,10 @@ private theorem Ty.Allocated.appRight {store : MStore} {function argument : InfT
     (bounded : (Ty.app function argument).Allocated store) : argument.Allocated store := by
   intro id member
   exact bounded id (by simp [Ty.vars, member])
+
+private theorem Ty.Allocated.var {store : MStore} {id : Nat}
+    (allocated : (Ty.var id).Allocated store) : id < store.length :=
+  allocated id (by simp [Ty.vars])
 
 private theorem Ty.substVar_wf {ty replacement : InfTy} {level target : Nat}
     (typeWf : ty.WF level) (replacementWf : replacement.WF level) :
@@ -352,6 +342,15 @@ private theorem MStore.canBind_iff {store : MStore} {id : Nat} {ty : InfTy} :
       · rintro ⟨entry', rfl, hsol, hocc, hscoped⟩
         exact ⟨⟨hsol, by simpa using hocc⟩, hscoped⟩
 
+/-- A bindable metavariable does not occur in the type it is bound to. -/
+private theorem MStore.not_mem_vars_of_canBind {store : MStore} {id : Nat} {ty : InfTy}
+    (guard : store.canBind id ty = true) : id ∉ ty.vars := by
+  obtain ⟨_, _, _, hocc, _⟩ := MStore.canBind_iff.mp guard
+  intro member
+  have htrue := (Ty.contains_iff_mem ty id).mpr member
+  rw [hocc] at htrue
+  exact nomatch htrue
+
 private theorem MStore.unsolved_solve_lt (store : MStore) (id : Nat) (ty : InfTy)
     {e : MEntry} (entry : store[id]? = some e) (hsol : e.solution = none) :
     (store.solve id ty).unsolved < store.unsolved := by
@@ -404,12 +403,18 @@ private theorem MStore.unsolved_solve_lt (store : MStore) (id : Nat) (ty : InfTy
   rw [lhsEq, hflags, hcount', ← storeEq]
   omega
 
+private theorem MStore.unsolved_solve_lt_of_canBind {store : MStore} {id : Nat} {ty : InfTy}
+    (guard : store.canBind id ty = true) :
+    (store.solve id ty).unsolved < store.unsolved := by
+  obtain ⟨entry, hentry, hsol, _, _⟩ := MStore.canBind_iff.mp guard
+  exact MStore.unsolved_solve_lt store id ty hentry hsol
+
 private theorem MStore.solve_leveled {store : MStore} {id : Nat} {ty : InfTy}
     (leveled : store.Leveled) (norm : store.Normalized)
     (guard : store.canBind id ty = true)
     (resolved : store.apply ty = ty) :
     (store.solve id ty).Leveled := by
-  obtain ⟨entry, hentry, hsolNone, hocc, hwf⟩ := MStore.canBind_iff.mp guard
+  obtain ⟨entry, hentry, hsolNone, _, hwf⟩ := MStore.canBind_iff.mp guard
   have hlevel : store.levelOf id = entry.level := by
     unfold MStore.levelOf
     rw [hentry]
@@ -432,13 +437,7 @@ private theorem MStore.solve_leveled {store : MStore} {id : Nat} {ty : InfTy}
       exact hwf
     · rw [hlevelEq, hsolEq]
       intro m hm
-      have hmne : m ≠ id := by
-        intro sameId
-        subst m
-        have htrue : ty.vars.contains id = true :=
-          (Ty.contains_iff_mem ty id).mpr hm
-        rw [hocc] at htrue
-        exact nomatch htrue
+      have hmne : m ≠ id := fun sameId => MStore.not_mem_vars_of_canBind guard (sameId ▸ hm)
       rw [MStore.levelOf_solve]
       simp only [hmne, if_false, hm, if_true]
       rw [hlevel]
@@ -483,13 +482,8 @@ private theorem MStore.solve_leveled {store : MStore} {id : Nat} {ty : InfTy}
           intro m hm
           rcases Ty.mem_vars_substVar_subset hm with hold | ⟨hidmem, hmty⟩
           · exact le_trans (MStore.levelOf_solve_le store id m ty) (hprevBounded m hold)
-          · have hmne : m ≠ id := by
-              intro sameId
-              subst m
-              have htrue : ty.vars.contains id = true :=
-                (Ty.contains_iff_mem ty id).mpr hmty
-              rw [hocc] at htrue
-              exact nomatch htrue
+          · have hmne : m ≠ id :=
+              fun sameId => MStore.not_mem_vars_of_canBind guard (sameId ▸ hmty)
             have hle : store.levelOf id ≤ entry0.level := hprevBounded id hidmem
             rw [MStore.levelOf_solve]
             simp only [hmne, if_false, hmty, if_true]
@@ -499,20 +493,14 @@ private theorem MStore.solve_normalized {store : MStore} {id : Nat} {ty : InfTy}
     (norm : store.Normalized) (guard : store.canBind id ty = true)
     (resolved : store.apply ty = ty) :
     (store.solve id ty).Normalized := by
-  obtain ⟨entry, hentry, hsolNone, hocc, hwf⟩ := MStore.canBind_iff.mp guard
+  obtain ⟨entry, hentry, hsolNone, _, hwf⟩ := MStore.canBind_iff.mp guard
   intro j solution hlookup m hm
   by_cases same : j = id
   · subst j
     rw [MStore.lookup_solve_self store id ty hentry] at hlookup
     injection hlookup with hsol
     subst hsol
-    have hmne : m ≠ id := by
-      intro sameId
-      subst m
-      have htrue : ty.vars.contains id = true :=
-        (Ty.contains_iff_mem ty id).mpr hm
-      rw [hocc] at htrue
-      exact nomatch htrue
+    have hmne : m ≠ id := fun sameId => MStore.not_mem_vars_of_canBind guard (sameId ▸ hm)
     have hnone := MStore.lookup_none_of_resolved norm resolved hm
     rw [MStore.lookup_solve_of_ne store id m ty hmne, hnone]
     rfl
@@ -524,13 +512,8 @@ private theorem MStore.solve_normalized {store : MStore} {id : Nat} {ty : InfTy}
     · have hnone := norm j previous hprevLookup m hmprev
       rw [MStore.lookup_solve_of_ne store id m ty hmne, hnone]
       rfl
-    · have hmne : m ≠ id := by
-        intro sameId
-        subst m
-        have htrue : ty.vars.contains id = true :=
-          (Ty.contains_iff_mem ty id).mpr hmty
-        rw [hocc] at htrue
-        exact nomatch htrue
+    · have hmne : m ≠ id :=
+        fun sameId => MStore.not_mem_vars_of_canBind guard (sameId ▸ hmty)
       have hnone := MStore.lookup_none_of_resolved norm resolved hmty
       rw [MStore.lookup_solve_of_ne store id m ty hmne, hnone]
       rfl
@@ -647,7 +630,7 @@ theorem unifyPhase_ne_outOfFuel {store : MStore} {constraints : List Constraint}
             refine ih ?_
             have h := enough
             rw [Constraints.size_cons] at h
-            simp only [Prod.fst, Prod.snd] at h
+            dsimp only at h
             have l := Ty.size_pos left
             have r := Ty.size_pos right
             omega
@@ -718,10 +701,10 @@ private theorem bound_if_length {p : Prop} [Decidable p]
   · rw [if_neg h] at run
     exact nomatch run
 
-private theorem unifyPhase_finished_length
+private theorem unifyPhase_finished_eq
     {store result : MStore} {fuel : Nat} {constraints : List Constraint}
     (run : unifyPhase store fuel constraints = .finished result) :
-    result.length = store.length := by
+    result = store := by
   induction fuel generalizing constraints with
   | zero =>
       cases constraints with
@@ -748,6 +731,12 @@ private theorem unifyPhase_finished_length
               | (exact ih run)
               | (exact (not_finished_of_bound_if run).elim)
               | (cases run)
+
+private theorem unifyPhase_finished_length
+    {store result : MStore} {fuel : Nat} {constraints : List Constraint}
+    (run : unifyPhase store fuel constraints = .finished result) :
+    result.length = store.length := by
+  rw [unifyPhase_finished_eq run]
 
 private theorem unifyPhase_bound_length
     {store result : MStore} {fuel : Nat}
@@ -784,11 +773,17 @@ private theorem unifyLoop_succ (fuel : Nat) (store : MStore)
       | .failed | .outOfFuel => none := by
   rfl
 
-private theorem unifyLoop_length
-    {fuel : Nat} {store : MStore} {constraints : List Constraint}
-    {result : MStore}
-    (run : unifyLoop fuel store constraints = some result) :
-    result.length = store.length := by
+/-- Induction on a successful loop: its first phase either finishes or binds one
+metavariable, and the loop continues from the bound store and constraints. -/
+private theorem unifyLoop_induction {P : MStore → List Constraint → MStore → Prop}
+    (finished : ∀ {store : MStore} {constraints : List Constraint} {result : MStore},
+      unifyPhase store (Constraints.size constraints) constraints = .finished result →
+      P store constraints result)
+    (bound : ∀ {store result : MStore} {constraints rest : List Constraint} {final : MStore},
+      unifyPhase store (Constraints.size constraints) constraints = .bound result rest →
+      P result rest final → P store constraints final)
+    {fuel : Nat} {store : MStore} {constraints : List Constraint} {result : MStore}
+    (run : unifyLoop fuel store constraints = some result) : P store constraints result := by
   induction fuel generalizing store constraints with
   | zero => simp [unifyLoop] at run
   | succ fuel ih =>
@@ -797,47 +792,25 @@ private theorem unifyLoop_length
       · rename_i finishedRun
         injection run with resultEq
         subst resultEq
-        exact unifyPhase_finished_length finishedRun
+        exact finished finishedRun
       · rename_i boundRun
-        rw [ih run]
-        exact unifyPhase_bound_length boundRun
+        exact bound boundRun (ih run)
       · exact nomatch run
       · exact nomatch run
+
+private theorem unifyLoop_length
+    {fuel : Nat} {store : MStore} {constraints : List Constraint}
+    {result : MStore}
+    (run : unifyLoop fuel store constraints = some result) :
+    result.length = store.length :=
+  unifyLoop_induction (P := fun store _ result => result.length = store.length)
+    (finished := fun finishedRun => unifyPhase_finished_length finishedRun)
+    (bound := fun boundRun ih =>
+      ih.trans (unifyPhase_bound_length boundRun)) run
 
 theorem MStore.unify_length {store result : MStore} {left right : InfTy}
     (run : store.unify left right = some result) : result.length = store.length := by
   exact unifyLoop_length run
-
-private theorem unifyPhase_finished_eq
-    {store result : MStore} {fuel : Nat} {constraints : List Constraint}
-    (run : unifyPhase store fuel constraints = .finished result) :
-    result = store := by
-  induction fuel generalizing constraints with
-  | zero =>
-      cases constraints with
-      | nil =>
-          simp only [unifyPhase, UnifyPhase.finished.injEq] at run
-          subst result
-          rfl
-      | cons constraint rest => simp [unifyPhase] at run
-  | succ fuel ih =>
-      cases constraints with
-      | nil =>
-          simp only [unifyPhase, UnifyPhase.finished.injEq] at run
-          subst result
-          rfl
-      | cons constraint rest =>
-          obtain ⟨left, right⟩ := constraint
-          rw [unifyPhase_cons_eq] at run
-          by_cases equal : left = right
-          · rw [if_pos equal] at run
-            exact ih run
-          · rw [if_neg equal] at run
-            cases left <;> cases right <;> simp only [] at run
-            all_goals first
-              | (exact ih run)
-              | (exact (not_finished_of_bound_if run).elim)
-              | (cases run)
 
 /-! ## Resolved constraints -/
 
@@ -860,11 +833,9 @@ private theorem ConstraintsResolved.arrows {store : MStore}
     (Ty.arrow leftDomain leftCodomain, Ty.arrow rightDomain rightCodomain)
     (by simp)
   have leftParts : store.apply leftDomain = leftDomain ∧
-      store.apply leftCodomain = leftCodomain := by
-    simpa using head.1
+      store.apply leftCodomain = leftCodomain := by simpa using head.1
   have rightParts : store.apply rightDomain = rightDomain ∧
-      store.apply rightCodomain = rightCodomain := by
-    simpa using head.2
+      store.apply rightCodomain = rightCodomain := by simpa using head.2
   rcases List.mem_cons.mp member with rfl | member
   · exact ⟨leftParts.1, rightParts.1⟩
   · rcases List.mem_cons.mp member with rfl | member
@@ -884,16 +855,21 @@ private theorem ConstraintsResolved.apps {store : MStore}
     (Ty.app leftFunction leftArgument, Ty.app rightFunction rightArgument)
     (by simp)
   have leftParts : store.apply leftFunction = leftFunction ∧
-      store.apply leftArgument = leftArgument := by
-    simpa using head.1
+      store.apply leftArgument = leftArgument := by simpa using head.1
   have rightParts : store.apply rightFunction = rightFunction ∧
-      store.apply rightArgument = rightArgument := by
-    simpa using head.2
+      store.apply rightArgument = rightArgument := by simpa using head.2
   rcases List.mem_cons.mp member with rfl | member
   · exact ⟨leftParts.1, rightParts.1⟩
   · rcases List.mem_cons.mp member with rfl | member
     · exact ⟨leftParts.2, rightParts.2⟩
     · exact resolved constraint (by simp [member])
+
+private theorem ConstraintsResolved.tail {store : MStore} {constraint : Constraint}
+    {rest : List Constraint}
+    (resolved : ConstraintsResolved store (constraint :: rest)) :
+    ConstraintsResolved store rest := by
+  intro current member
+  exact resolved current (by simp [member])
 
 private theorem MStore.apply_eq_self_of_vars_unsolved (store : MStore) (ty : InfTy)
     (unsolved : ∀ id ∈ ty.vars, store.lookup id = none) :
@@ -1030,6 +1006,13 @@ private theorem ConstraintsAllocated.apps {store : MStore}
     · exact ⟨head.1.appRight, head.2.appRight⟩
     · exact restAllocated constraint member
 
+private theorem ConstraintsAllocated.tail {store : MStore} {constraint : Constraint}
+    {rest : List Constraint}
+    (allocated : ConstraintsAllocated store (constraint :: rest)) :
+    ConstraintsAllocated store rest := by
+  intro current member
+  exact allocated current (by simp [member])
+
 private theorem Ty.substVar_allocated {store : MStore} {previous replacement : InfTy}
     {target : Nat} (previousAllocated : previous.Allocated store)
     (replacementAllocated : replacement.Allocated store) :
@@ -1038,6 +1021,36 @@ private theorem Ty.substVar_allocated {store : MStore} {previous replacement : I
   rcases Ty.mem_vars_substVar member with old | new
   · exact previousAllocated id old
   · exact replacementAllocated id new
+
+private theorem solve_map_resolved {store : MStore} {id : Nat} {ty : InfTy}
+    {rest : List Constraint}
+    (safe : store.Safe) (guard : store.canBind id ty = true)
+    (resolvedTy : store.apply ty = ty) (restResolved : ConstraintsResolved store rest) :
+    ConstraintsResolved (store.solve id ty) (rest.map (Constraint.substVar id ty)) := by
+  obtain ⟨_, _, _, hocc, _⟩ := MStore.canBind_iff.mp guard
+  intro constraint member
+  rcases List.mem_map.mp member with ⟨old, inRest, rfl⟩
+  exact ⟨MStore.apply_subst_resolved safe.normalized hocc resolvedTy
+           (restResolved old inRest).1,
+         MStore.apply_subst_resolved safe.normalized hocc resolvedTy
+           (restResolved old inRest).2⟩
+
+private theorem solve_map_allocated {store : MStore} {id : Nat} {ty : InfTy}
+    {rest : List Constraint}
+    (tyAllocated : ty.Allocated store)
+    (restAllocated : ConstraintsAllocated store rest) :
+    ConstraintsAllocated (store.solve id ty) (rest.map (Constraint.substVar id ty)) := by
+  intro constraint member
+  rcases List.mem_map.mp member with ⟨old, inRest, rfl⟩
+  have oldAllocated := restAllocated old inRest
+  have first : (old.1.substVar id ty).Allocated store :=
+    Ty.substVar_allocated (target := id) (previous := old.1) (replacement := ty)
+      oldAllocated.1 tyAllocated
+  have second : (old.2.substVar id ty).Allocated store :=
+    Ty.substVar_allocated (target := id) (previous := old.2) (replacement := ty)
+      oldAllocated.2 tyAllocated
+  exact ⟨fun m hm => by simpa [MStore.solve_length] using first m hm,
+         fun m hm => by simpa [MStore.solve_length] using second m hm⟩
 
 /-! ## Safety -/
 
@@ -1053,32 +1066,11 @@ private theorem bound_branch_safe {store result : MStore} {id : Nat} {ty : InfTy
     result.Safe ∧ ConstraintsResolved result rest' ∧
       ConstraintsAllocated result rest' := by
   obtain ⟨guard, resultEq, restEq⟩ := bound_guard_data run
-  obtain ⟨entry, hentry, hsolNone, hocc, hwf⟩ := MStore.canBind_iff.mp guard
   subst resultEq
   subst restEq
-  refine ⟨MStore.solve_safe safe guard tyAllocated tyResolved, ?_, ?_⟩
-  · intro current inRest
-    rcases List.mem_map.mp inRest with ⟨old, inOld, rfl⟩
-    exact ⟨MStore.apply_subst_resolved safe.normalized hocc tyResolved
-             (resolved old inOld).1,
-           MStore.apply_subst_resolved safe.normalized hocc tyResolved
-             (resolved old inOld).2⟩
-  · intro current inRest
-    rcases List.mem_map.mp inRest with ⟨old, inOld, rfl⟩
-    have oldAllocated := allocated old inOld
-    have newAllocated : (old.1.substVar id ty).Allocated store :=
-      Ty.substVar_allocated (target := id) (previous := old.1) (replacement := ty)
-        oldAllocated.1 tyAllocated
-    have newAllocated' : (old.2.substVar id ty).Allocated store :=
-      Ty.substVar_allocated (target := id) (previous := old.2) (replacement := ty)
-        oldAllocated.2 tyAllocated
-    refine ⟨?_, ?_⟩
-    · intro m hm
-      have hbound := newAllocated m hm
-      simpa [MStore.solve_length] using hbound
-    · intro m hm
-      have hbound := newAllocated' m hm
-      simpa [MStore.solve_length] using hbound
+  exact ⟨MStore.solve_safe safe guard tyAllocated tyResolved,
+    solve_map_resolved safe guard tyResolved resolved,
+    solve_map_allocated tyAllocated allocated⟩
 
 private theorem unifyPhase_finished_safe
     {store result : MStore} {fuel : Nat} {constraints : List Constraint}
@@ -1108,13 +1100,9 @@ private theorem unifyPhase_bound_safe
       | cons constraint rest =>
           obtain ⟨left, right⟩ := constraint
           have headResolved := resolved (left, right) (by simp)
-          have restResolved : ConstraintsResolved store rest := by
-            intro current inRest
-            exact resolved current (by simp [inRest])
+          have restResolved := ConstraintsResolved.tail resolved
           have headAllocated := allocated (left, right) (by simp)
-          have restAllocated : ConstraintsAllocated store rest := by
-            intro current inRest
-            exact allocated current (by simp [inRest])
+          have restAllocated := ConstraintsAllocated.tail allocated
           rw [unifyPhase_cons_eq] at run
           by_cases equal : left = right
           · rw [if_pos equal] at run
@@ -1139,22 +1127,17 @@ private theorem unifyLoop_safe
     (allocated : ConstraintsAllocated store constraints)
     (resolved : ConstraintsResolved store constraints)
     (run : unifyLoop fuel store constraints = some result) :
-    result.Safe := by
-  induction fuel generalizing store constraints with
-  | zero => simp [unifyLoop] at run
-  | succ fuel ih =>
-      rw [unifyLoop_succ] at run
-      split at run
-      · rename_i finishedRun
-        injection run with resultEq
-        subst resultEq
-        exact unifyPhase_finished_safe safe finishedRun
-      · rename_i boundRun
-        obtain ⟨resultSafe, restResolved, restAllocated⟩ :=
-          unifyPhase_bound_safe safe allocated resolved boundRun
-        exact ih resultSafe restAllocated restResolved run
-      · exact nomatch run
-      · exact nomatch run
+    result.Safe :=
+  unifyLoop_induction
+    (P := fun store constraints result =>
+      store.Safe → ConstraintsAllocated store constraints →
+        ConstraintsResolved store constraints → result.Safe)
+    (finished := fun finishedRun safe _ _ => unifyPhase_finished_safe safe finishedRun)
+    (bound := fun boundRun ih safe allocated resolved => by
+      obtain ⟨resultSafe, restResolved, restAllocated⟩ :=
+        unifyPhase_bound_safe safe allocated resolved boundRun
+      exact ih resultSafe restAllocated restResolved)
+    run safe allocated resolved
 
 theorem MStore.unify_safe {store result : MStore} {left right : InfTy} (safe : store.Safe)
     (leftAllocated : left.Allocated store) (rightAllocated : right.Allocated store)
@@ -1213,20 +1196,13 @@ private theorem unifyLoop_levelOf_le
     {fuel : Nat} {store : MStore} {constraints : List Constraint}
     {result : MStore}
     (run : unifyLoop fuel store constraints = some result) (id : Nat) :
-    result.levelOf id ≤ store.levelOf id := by
-  induction fuel generalizing store constraints with
-  | zero => simp [unifyLoop] at run
-  | succ fuel ih =>
-      rw [unifyLoop_succ] at run
-      split at run
-      · rename_i finishedRun
-        injection run with resultEq
-        subst resultEq
-        exact unifyPhase_finished_levelOf_le finishedRun id
-      · rename_i boundRun
-        exact le_trans (ih run) (unifyPhase_bound_levelOf_le boundRun id)
-      · exact nomatch run
-      · exact nomatch run
+    result.levelOf id ≤ store.levelOf id :=
+  unifyLoop_induction
+    (P := fun store _ result => result.levelOf id ≤ store.levelOf id)
+    (finished := fun finishedRun => unifyPhase_finished_levelOf_le finishedRun id)
+    (bound := fun boundRun ih =>
+      le_trans ih (unifyPhase_bound_levelOf_le boundRun id))
+    run
 
 /-- Levels only decrease. -/
 theorem MStore.unify_levelOf_le {store result : MStore} {left right : InfTy}
@@ -1312,6 +1288,19 @@ private theorem ConstraintsRealized.tail {valuation : Valuation}
   intro current member
   exact realized current (by simp [member])
 
+/-! Solving one metavariable turns the remaining constraints into substituted
+copies, and every constraint invariant survives the substitution. -/
+
+private theorem solve_map_realized {id : Nat} {ty : InfTy}
+    {rest : List Constraint} {valuation : Valuation}
+    (agrees : valuation id = ty.realize valuation)
+    (restSolves : ConstraintsRealized valuation rest) :
+    ConstraintsRealized valuation (rest.map (Constraint.substVar id ty)) := by
+  intro constraint member
+  rcases List.mem_map.mp member with ⟨old, inRest, rfl⟩
+  have oldSolves := restSolves old inRest
+  simpa only [Constraint.substVar, Ty.realize_substVar agrees] using oldSolves
+
 private theorem MStore.models_solve {store : MStore} {id : Nat} {ty : InfTy}
     {valuation : Valuation}
     (models : store.Models valuation)
@@ -1331,10 +1320,7 @@ private theorem MStore.models_solve {store : MStore} {id : Nat} {ty : InfTy}
       rw [hentry] at hentry'
       simp only [Option.map_some] at hentry'
       injection hentry' with hEq
-      have levelEq : entry'.level = entry.level := by
-        rw [← hEq]
-        simp
-      rw [levelEq]
+      rw [← hEq]
       exact models.wf id entry hentry
     · rw [MStore.solve_getElem?] at hentry'
       cases hj : store[j]? with
@@ -1343,10 +1329,7 @@ private theorem MStore.models_solve {store : MStore} {id : Nat} {ty : InfTy}
           rw [hj] at hentry'
           simp only [Option.map_some, if_neg same] at hentry'
           injection hentry' with hEq
-          have levelEq : entry'.level =
-              (if j ∈ ty.vars then min old.level (store.levelOf id) else old.level) := by
-            rw [← hEq]
-          rw [levelEq]
+          rw [← hEq]
           by_cases mem : j ∈ ty.vars
           · simp only [mem, if_true]
             have wfId : (valuation id).WF (store.levelOf id) := by
@@ -1427,6 +1410,7 @@ private theorem MStore.models_of_solve {store : MStore} {id : Nat} {ty : InfTy}
       rw [Ty.realize_substVar agrees] at solved
       exact solved
 
+/-- A binding step preserves models: the bound variable is on the left. -/
 private theorem bound_branch_sound_left
     {store result : MStore} {id : Nat} {ty : InfTy}
     {rest rest' : List Constraint}
@@ -1440,7 +1424,7 @@ private theorem bound_branch_sound_left
     store.Models valuation ∧
       ConstraintsRealized valuation ((Ty.var id, ty) :: rest) := by
   obtain ⟨guard, resultEq, restEq⟩ := bound_guard_data run
-  obtain ⟨entry, hentry, hsolNone, hocc, hwf⟩ := MStore.canBind_iff.mp guard
+  obtain ⟨_, hentry, _, _, _⟩ := MStore.canBind_iff.mp guard
   subst resultEq
   subst restEq
   have agrees : valuation id = ty.realize valuation :=
@@ -1455,6 +1439,7 @@ private theorem bound_branch_sound_left
     rw [Ty.realize_substVar agrees, Ty.realize_substVar agrees] at substituted
     exact substituted
 
+/-- A binding step preserves models: the bound variable is on the right. -/
 private theorem bound_branch_sound_right
     {store result : MStore} {id : Nat} {ty : InfTy}
     {rest rest' : List Constraint}
@@ -1468,7 +1453,7 @@ private theorem bound_branch_sound_right
     store.Models valuation ∧
       ConstraintsRealized valuation ((ty, Ty.var id) :: rest) := by
   obtain ⟨guard, resultEq, restEq⟩ := bound_guard_data run
-  obtain ⟨entry, hentry, hsolNone, hocc, hwf⟩ := MStore.canBind_iff.mp guard
+  obtain ⟨_, hentry, _, _, _⟩ := MStore.canBind_iff.mp guard
   subst resultEq
   subst restEq
   have agrees : valuation id = ty.realize valuation :=
@@ -1564,21 +1549,17 @@ private theorem unifyLoop_sound
     (run : unifyLoop fuel store constraints = some result)
     (models : result.Models valuation) :
     store.Models valuation ∧
-      ConstraintsRealized valuation constraints := by
-  induction fuel generalizing store constraints with
-  | zero => simp [unifyLoop] at run
-  | succ fuel ih =>
-      rw [unifyLoop_succ] at run
-      split at run
-      · rename_i finishedRun
-        injection run with resultEq
-        subst resultEq
-        exact unifyPhase_sound_finished finishedRun models
-      · rename_i boundRun
-        obtain ⟨boundModels, restRealized⟩ := ih run
-        exact unifyPhase_sound_bound boundRun boundModels restRealized
-      · exact nomatch run
-      · exact nomatch run
+      ConstraintsRealized valuation constraints :=
+  unifyLoop_induction
+    (P := fun store constraints result =>
+      result.Models valuation → store.Models valuation ∧
+        ConstraintsRealized valuation constraints)
+    (finished := fun finishedRun resultModels =>
+      unifyPhase_sound_finished finishedRun resultModels)
+    (bound := fun boundRun ih resultModels => by
+      obtain ⟨boundModels, restRealized⟩ := ih resultModels
+      exact unifyPhase_sound_bound boundRun boundModels restRealized)
+    run models
 
 /-- Every model of the result is a model of the input that unifies the two
 types. -/
@@ -1734,9 +1715,11 @@ private theorem unifyPhase_cons_eq_app (store : MStore) (fuel : Nat)
         ((leftFunction, rightFunction) :: (leftArgument, rightArgument) :: rest) := by
   rw [unifyPhase_cons_eq, if_neg different]
 
-private theorem var_guard_left {store : MStore} {id : Nat} {ty : InfTy}
+/-- An unsolved metavariable may bind a type that does not contain it, provided
+the two have a common realisation. -/
+private theorem var_guard {store : MStore} {id : Nat} {ty : InfTy}
     {valuation : Valuation}
-    (different : (Ty.var id) ≠ ty)
+    (different : ty ≠ (Ty.var id))
     (resolvedId : store.apply (.var id) = .var id)
     (boundedId : id < store.length)
     (headSolves : valuation id = ty.realize valuation)
@@ -1755,43 +1738,12 @@ private theorem var_guard_left {store : MStore} {id : Nat} {ty : InfTy}
         have member : id ∈ ty.vars :=
           (Ty.contains_iff_mem ty id).mp occurrence
         have strict := Ty.size_realize_gt_of_mem_of_ne
-          (valuation := valuation) member (Ne.symm different)
+          (valuation := valuation) member different
         rw [← headSolves] at strict
         exact absurd strict (lt_irrefl _)
   have wf := models.wf id entry hentry
   rw [headSolves] at wf
   have scopedTy : ty.WF entry.level := Ty.scoped_of_realize_scoped wf
-  exact MStore.canBind_iff.mpr ⟨entry, hentry, hsolNone, occurs, scopedTy⟩
-
-private theorem var_guard_right {store : MStore} {id : Nat} {ty : InfTy}
-    {valuation : Valuation}
-    (different : ty ≠ (Ty.var id))
-    (resolvedId : store.apply (.var id) = .var id)
-    (boundedId : id < store.length)
-    (headSolves : ty.realize valuation = valuation id)
-    (normalized : store.Normalized)
-    (models : store.Models valuation) :
-    store.canBind id ty = true := by
-  have allocatedLookup : store.lookup id = none :=
-    MStore.lookup_none_of_apply_var_eq normalized resolvedId
-  obtain ⟨entry, hentry, hsolNone⟩ :=
-    MStore.entry_of_lookup_none boundedId allocatedLookup
-  have occurs : ty.vars.contains id = false := by
-    cases occurrence : ty.vars.contains id with
-    | false => rfl
-    | true =>
-        exfalso
-        have member : id ∈ ty.vars :=
-          (Ty.contains_iff_mem ty id).mp occurrence
-        have strict := Ty.size_realize_gt_of_mem_of_ne
-          (valuation := valuation) member different
-        rw [headSolves] at strict
-        exact absurd strict (lt_irrefl _)
-  have wf := models.wf id entry hentry
-  have wfTy : (ty.realize valuation).WF entry.level := by
-    rw [headSolves]
-    exact wf
-  have scopedTy : ty.WF entry.level := Ty.scoped_of_realize_scoped wfTy
   exact MStore.canBind_iff.mpr ⟨entry, hentry, hsolNone, occurs, scopedTy⟩
 
 private theorem phase_bound_left_complete {store : MStore} {fuel : Nat}
@@ -1815,41 +1767,16 @@ private theorem phase_bound_left_complete {store : MStore} {fuel : Nat}
       ConstraintsRealized valuation rest' ∧
       result.unsolved < store.unsolved := by
   have guard : store.canBind id ty = true :=
-    var_guard_left different resolvedId boundedId headSolves safe.normalized models
-  obtain ⟨entry, hentry, hsolNone, hocc, hwf⟩ := MStore.canBind_iff.mp guard
-  refine ⟨store.solve id ty, rest.map (Constraint.substVar id ty), ?_, ?_, ?_,
-    ?_, ?_, ?_, ?_⟩
-  · rw [unifyPhase_cons_eq_var_left store fuel id ty rest different]
-    simp [guard]
-  · exact MStore.models_solve models guard headSolves
-  · exact MStore.solve_safe safe guard tyAllocated resolvedTy
-  · intro constraint member
-    rcases List.mem_map.mp member with ⟨old, inOld, rfl⟩
-    exact ⟨MStore.apply_subst_resolved safe.normalized hocc resolvedTy
-             (restResolved old inOld).1,
-           MStore.apply_subst_resolved safe.normalized hocc resolvedTy
-             (restResolved old inOld).2⟩
-  · intro constraint member
-    rcases List.mem_map.mp member with ⟨old, inOld, rfl⟩
-    have oldAllocated := restAllocated old inOld
-    have newFirst : (old.1.substVar id ty).Allocated store :=
-      Ty.substVar_allocated (target := id) (previous := old.1) (replacement := ty)
-        oldAllocated.1 tyAllocated
-    have newSecond : (old.2.substVar id ty).Allocated store :=
-      Ty.substVar_allocated (target := id) (previous := old.2) (replacement := ty)
-        oldAllocated.2 tyAllocated
-    refine ⟨?_, ?_⟩
-    · intro m hm
-      have hbound := newFirst m hm
-      simpa [MStore.solve_length] using hbound
-    · intro m hm
-      have hbound := newSecond m hm
-      simpa [MStore.solve_length] using hbound
-  · intro constraint member
-    rcases List.mem_map.mp member with ⟨old, inOld, rfl⟩
-    have oldSolves := restSolves old inOld
-    simpa only [Constraint.substVar, Ty.realize_substVar headSolves] using oldSolves
-  · exact MStore.unsolved_solve_lt store id ty hentry hsolNone
+    var_guard (Ne.symm different) resolvedId boundedId headSolves safe.normalized models
+  refine ⟨store.solve id ty, rest.map (Constraint.substVar id ty), ?_,
+    MStore.models_solve models guard headSolves,
+    MStore.solve_safe safe guard tyAllocated resolvedTy,
+    solve_map_resolved safe guard resolvedTy restResolved,
+    solve_map_allocated tyAllocated restAllocated,
+    solve_map_realized headSolves restSolves,
+    MStore.unsolved_solve_lt_of_canBind guard⟩
+  rw [unifyPhase_cons_eq_var_left store fuel id ty rest different]
+  simp [guard]
 
 private theorem phase_bound_right_complete {store : MStore} {fuel : Nat}
     {id : Nat} {ty : InfTy} {rest : List Constraint}
@@ -1877,41 +1804,15 @@ private theorem phase_bound_right_complete {store : MStore} {fuel : Nat}
       ConstraintsRealized valuation rest' ∧
       result.unsolved < store.unsolved := by
   have guard : store.canBind id ty = true :=
-    var_guard_right different resolvedId boundedId headSolves safe.normalized models
-  obtain ⟨entry, hentry, hsolNone, hocc, hwf⟩ := MStore.canBind_iff.mp guard
-  have agrees : valuation id = ty.realize valuation := headSolves.symm
-  refine ⟨store.solve id ty, rest.map (Constraint.substVar id ty), ?_, ?_, ?_,
-    ?_, ?_, ?_, ?_⟩
-  · rw [phaseBase, if_pos guard]
-  · exact MStore.models_solve models guard agrees
-  · exact MStore.solve_safe safe guard tyAllocated resolvedTy
-  · intro constraint member
-    rcases List.mem_map.mp member with ⟨old, inOld, rfl⟩
-    exact ⟨MStore.apply_subst_resolved safe.normalized hocc resolvedTy
-             (restResolved old inOld).1,
-           MStore.apply_subst_resolved safe.normalized hocc resolvedTy
-             (restResolved old inOld).2⟩
-  · intro constraint member
-    rcases List.mem_map.mp member with ⟨old, inOld, rfl⟩
-    have oldAllocated := restAllocated old inOld
-    have newFirst : (old.1.substVar id ty).Allocated store :=
-      Ty.substVar_allocated (target := id) (previous := old.1) (replacement := ty)
-        oldAllocated.1 tyAllocated
-    have newSecond : (old.2.substVar id ty).Allocated store :=
-      Ty.substVar_allocated (target := id) (previous := old.2) (replacement := ty)
-        oldAllocated.2 tyAllocated
-    refine ⟨?_, ?_⟩
-    · intro m hm
-      have hbound := newFirst m hm
-      simpa [MStore.solve_length] using hbound
-    · intro m hm
-      have hbound := newSecond m hm
-      simpa [MStore.solve_length] using hbound
-  · intro constraint member
-    rcases List.mem_map.mp member with ⟨old, inOld, rfl⟩
-    have oldSolves := restSolves old inOld
-    simpa only [Constraint.substVar, Ty.realize_substVar agrees] using oldSolves
-  · exact MStore.unsolved_solve_lt store id ty hentry hsolNone
+    var_guard different resolvedId boundedId headSolves.symm safe.normalized models
+  refine ⟨store.solve id ty, rest.map (Constraint.substVar id ty), ?_,
+    MStore.models_solve models guard headSolves.symm,
+    MStore.solve_safe safe guard tyAllocated resolvedTy,
+    solve_map_resolved safe guard resolvedTy restResolved,
+    solve_map_allocated tyAllocated restAllocated,
+    solve_map_realized headSolves.symm restSolves,
+    MStore.unsolved_solve_lt_of_canBind guard⟩
+  rw [phaseBase, if_pos guard]
 
 private theorem ConstraintsRealized.arrow_parts {valuation : Valuation}
     {leftDomain leftCodomain rightDomain rightCodomain : InfTy}
@@ -1947,6 +1848,22 @@ private theorem ConstraintsRealized.app_parts {valuation : Valuation}
     · exact parts.2
     · exact restSolves constraint member
 
+/-- Two types with non-variable heads that realise equally either are two
+arrows, two applications, or have equal heads. -/
+private theorem Ty.heads_match_of_realize_eq {valuation : Valuation} {left right : InfTy}
+    (equal : left.realize valuation = right.realize valuation)
+    (leftRigid : ∀ id, left ≠ .var id) (rightRigid : ∀ id, right ≠ .var id) :
+    (∃ ld lc rd rc, left = .arrow ld lc ∧ right = .arrow rd rc) ∨
+    (∃ lf la rf ra, left = .app lf la ∧ right = .app rf ra) ∨
+    left = right := by
+  cases left <;> cases right
+  all_goals first
+    | exact absurd rfl (leftRigid _)
+    | exact absurd rfl (rightRigid _)
+    | exact Or.inl ⟨_, _, _, _, rfl, rfl⟩
+    | exact Or.inr (Or.inl ⟨_, _, _, _, rfl, rfl⟩)
+    | exact Or.inr (Or.inr (by simp_all))
+
 private theorem unifyPhase_complete {store : MStore} {fuel : Nat}
     {constraints : List Constraint}
     {valuation : Valuation}
@@ -1980,13 +1897,9 @@ private theorem unifyPhase_complete {store : MStore} {fuel : Nat}
       | cons constraint rest =>
           obtain ⟨left, right⟩ := constraint
           have headResolved := resolved (left, right) (by simp)
-          have restResolved : ConstraintsResolved store rest := by
-            intro current member
-            exact resolved current (by simp [member])
+          have restResolved := ConstraintsResolved.tail resolved
           have headAllocated := allocated (left, right) (by simp)
-          have restAllocated : ConstraintsAllocated store rest := by
-            intro current member
-            exact allocated current (by simp [member])
+          have restAllocated := ConstraintsAllocated.tail allocated
           have headSolves := solves (left, right) (by simp)
           have restSolves : ConstraintsRealized valuation rest :=
             ConstraintsRealized.tail solves
@@ -1998,284 +1911,94 @@ private theorem unifyPhase_complete {store : MStore} {fuel : Nat}
             have leftPos := Ty.size_pos left
             have rightPos := Ty.size_pos right
             omega
-          · cases left with
-            | var id =>
-                exact Or.inr (phase_bound_left_complete
-                  (ty := right) (by simpa using equal)
-                  headResolved.1 headResolved.2
-                  (headAllocated.1 id (by simp [Ty.vars])) headAllocated.2
-                  (by simpa using headSolves)
-                  safe models restResolved restAllocated restSolves)
-            | prim name =>
-                cases right with
-                | var id =>
-                    have phaseBase := unifyPhase_cons_eq_var_right store fuel
-                      (.prim name) id rest (by simpa using equal)
-                      (fun j impossible => nomatch impossible)
-                    exact Or.inr (phase_bound_right_complete
-                      (ty := .prim name) (by simpa using equal)
-                      headResolved.1 headResolved.2
-                      (headAllocated.2 id (by simp [Ty.vars])) headAllocated.1
-                      (by simpa using headSolves)
-                      phaseBase safe models restResolved restAllocated restSolves)
-                | prim other =>
-                    exfalso
-                    have head := headSolves
-                    simp only [Ty.realize_prim] at head
-                    injection head with payload
-                    exact equal (by rw [payload])
-                | bvar index =>
-                    exfalso
-                    have head := headSolves
-                    simp only [Ty.realize_prim, Ty.realize_bvar] at head
-                    cases head
-                | rigid level =>
-                    exfalso
-                    have head := headSolves
-                    simp only [Ty.realize_prim, Ty.realize_rigid] at head
-                    cases head
-                | arrow rd rc =>
-                    exfalso
-                    have head := headSolves
-                    simp only [Ty.realize_prim, Ty.realize_arrow] at head
-                    cases head
-                | con other =>
-                    exfalso
-                    have head := headSolves
-                    simp only [Ty.realize_prim, Ty.realize_con] at head
-                    cases head
-                | app rf ra =>
-                    exfalso
-                    have head := headSolves
-                    simp only [Ty.realize_prim, Ty.realize_app] at head
-                    cases head
-            | bvar index =>
-                cases right with
-                | var id =>
-                    have phaseBase := unifyPhase_cons_eq_var_right store fuel
-                      (.bvar index) id rest (by simpa using equal)
-                      (fun j impossible => nomatch impossible)
-                    exact Or.inr (phase_bound_right_complete
-                      (ty := .bvar index) (by simpa using equal)
-                      headResolved.1 headResolved.2
-                      (headAllocated.2 id (by simp [Ty.vars])) headAllocated.1
-                      (by simpa using headSolves)
-                      phaseBase safe models restResolved restAllocated restSolves)
-                | prim other =>
-                    exfalso
-                    have head := headSolves
-                    simp only [Ty.realize_bvar, Ty.realize_prim] at head
-                    cases head
-                | bvar other =>
-                    exfalso
-                    have head := headSolves
-                    simp only [Ty.realize_bvar] at head
-                    injection head with payload
-                    exact equal (by rw [payload])
-                | rigid level =>
-                    exfalso
-                    have head := headSolves
-                    simp only [Ty.realize_bvar, Ty.realize_rigid] at head
-                    cases head
-                | arrow rd rc =>
-                    exfalso
-                    have head := headSolves
-                    simp only [Ty.realize_bvar, Ty.realize_arrow] at head
-                    cases head
-                | con other =>
-                    exfalso
-                    have head := headSolves
-                    simp only [Ty.realize_bvar, Ty.realize_con] at head
-                    cases head
-                | app rf ra =>
-                    exfalso
-                    have head := headSolves
-                    simp only [Ty.realize_bvar, Ty.realize_app] at head
-                    cases head
-            | rigid level =>
-                cases right with
-                | var id =>
-                    have phaseBase := unifyPhase_cons_eq_var_right store fuel
-                      (.rigid level) id rest (by simpa using equal)
-                      (fun j impossible => nomatch impossible)
-                    exact Or.inr (phase_bound_right_complete
-                      (ty := .rigid level) (by simpa using equal)
-                      headResolved.1 headResolved.2
-                      (headAllocated.2 id (by simp [Ty.vars])) headAllocated.1
-                      (by simpa using headSolves)
-                      phaseBase safe models restResolved restAllocated restSolves)
-                | prim other =>
-                    exfalso
-                    have head := headSolves
-                    simp only [Ty.realize_rigid, Ty.realize_prim] at head
-                    cases head
-                | bvar index =>
-                    exfalso
-                    have head := headSolves
-                    simp only [Ty.realize_rigid, Ty.realize_bvar] at head
-                    cases head
-                | rigid other =>
-                    exfalso
-                    have head := headSolves
-                    simp only [Ty.realize_rigid] at head
-                    injection head with payload
-                    exact equal (by rw [payload])
-                | arrow rd rc =>
-                    exfalso
-                    have head := headSolves
-                    simp only [Ty.realize_rigid, Ty.realize_arrow] at head
-                    cases head
-                | con other =>
-                    exfalso
-                    have head := headSolves
-                    simp only [Ty.realize_rigid, Ty.realize_con] at head
-                    cases head
-                | app rf ra =>
-                    exfalso
-                    have head := headSolves
-                    simp only [Ty.realize_rigid, Ty.realize_app] at head
-                    cases head
-            | arrow ld lc =>
-                cases right with
-                | var id =>
-                    have phaseBase := unifyPhase_cons_eq_var_right store fuel
-                      (.arrow ld lc) id rest (by simpa using equal)
-                      (fun j impossible => nomatch impossible)
-                    exact Or.inr (phase_bound_right_complete
-                      (ty := .arrow ld lc) (by simpa using equal)
-                      headResolved.1 headResolved.2
-                      (headAllocated.2 id (by simp [Ty.vars])) headAllocated.1
-                      (by simpa using headSolves)
-                      phaseBase safe models restResolved restAllocated restSolves)
-                | prim other =>
-                    exfalso
-                    have head := headSolves
-                    simp only [Ty.realize_arrow, Ty.realize_prim] at head
-                    cases head
-                | bvar index =>
-                    exfalso
-                    have head := headSolves
-                    simp only [Ty.realize_arrow, Ty.realize_bvar] at head
-                    cases head
-                | rigid level =>
-                    exfalso
-                    have head := headSolves
-                    simp only [Ty.realize_arrow, Ty.realize_rigid] at head
-                    cases head
-                | arrow rd rc =>
-                    have phaseEq := unifyPhase_cons_eq_arrow store fuel
-                      ld lc rd rc rest (by simpa using equal)
-                    rw [phaseEq]
-                    have enoughNew : Constraints.size
-                        ((ld, rd) :: (lc, rc) :: rest) ≤ fuel := by
-                      simp only [Constraints.size_cons, Ty.size] at enough ⊢
-                      omega
-                    exact ih enoughNew
+          · -- The two types differ. If `left` is a variable it is bound; otherwise
+            -- `key` shows that either `right` is a variable, or both are arrows
+            -- or both are applications (and a phase step unfolds them), or the
+            -- two have equal rigid heads, contradicting `equal`.
+            have key : ∀ (leftRigid : ∀ id, left ≠ .var id),
+                (∃ result, unifyPhase store (fuel + 1) ((left, right) :: rest) =
+                    .finished result ∧ result.Models valuation) ∨
+                (∃ result rest', unifyPhase store (fuel + 1) ((left, right) :: rest) =
+                    .bound result rest' ∧
+                  result.Models valuation ∧ result.Safe ∧
+                  ConstraintsResolved result rest' ∧ ConstraintsAllocated result rest' ∧
+                  ConstraintsRealized valuation rest' ∧
+                  result.unsolved < store.unsolved) := by
+              intro leftRigid
+              cases right with
+              | var id =>
+                  exact Or.inr (phase_bound_right_complete equal headResolved.1
+                    headResolved.2 (Ty.Allocated.var headAllocated.2) headAllocated.1
+                    headSolves
+                    (unifyPhase_cons_eq_var_right store fuel left id rest equal leftRigid)
+                    safe models restResolved restAllocated restSolves)
+              | prim name =>
+                  rcases Ty.heads_match_of_realize_eq headSolves leftRigid
+                    (fun j impossible => nomatch impossible) with
+                    ⟨_, _, _, _, _, other⟩ | ⟨_, _, _, _, _, other⟩ | same
+                  · cases other
+                  · cases other
+                  · exact absurd same equal
+              | bvar index =>
+                  rcases Ty.heads_match_of_realize_eq headSolves leftRigid
+                    (fun j impossible => nomatch impossible) with
+                    ⟨_, _, _, _, _, other⟩ | ⟨_, _, _, _, _, other⟩ | same
+                  · cases other
+                  · cases other
+                  · exact absurd same equal
+              | rigid level =>
+                  rcases Ty.heads_match_of_realize_eq headSolves leftRigid
+                    (fun j impossible => nomatch impossible) with
+                    ⟨_, _, _, _, _, other⟩ | ⟨_, _, _, _, _, other⟩ | same
+                  · cases other
+                  · cases other
+                  · exact absurd same equal
+              | con id =>
+                  rcases Ty.heads_match_of_realize_eq headSolves leftRigid
+                    (fun j impossible => nomatch impossible) with
+                    ⟨_, _, _, _, _, other⟩ | ⟨_, _, _, _, _, other⟩ | same
+                  · cases other
+                  · cases other
+                  · exact absurd same equal
+              | arrow rd rc =>
+                  rcases Ty.heads_match_of_realize_eq headSolves leftRigid
+                    (fun j impossible => nomatch impossible) with
+                    ⟨ld, lc, _, _, leftEq, _⟩ | ⟨_, _, _, _, _, other⟩ | same
+                  · obtain rfl := leftEq
+                    rw [unifyPhase_cons_eq_arrow store fuel ld lc rd rc rest equal]
+                    exact ih (by
+                        simp only [Constraints.size_cons, Ty.size] at enough ⊢
+                        omega)
                       (ConstraintsResolved.arrows resolved)
                       (ConstraintsAllocated.arrows headAllocated restAllocated)
                       (ConstraintsRealized.arrow_parts headSolves restSolves)
-                | con other =>
-                    exfalso
-                    have head := headSolves
-                    simp only [Ty.realize_arrow, Ty.realize_con] at head
-                    cases head
-                | app rf ra =>
-                    exfalso
-                    have head := headSolves
-                    simp only [Ty.realize_arrow, Ty.realize_app] at head
-                    cases head
-            | con id =>
-                cases right with
-                | var other =>
-                    have phaseBase := unifyPhase_cons_eq_var_right store fuel
-                      (.con id) other rest (by simpa using equal)
-                      (fun j impossible => nomatch impossible)
-                    exact Or.inr (phase_bound_right_complete
-                      (ty := .con id) (by simpa using equal)
-                      headResolved.1 headResolved.2
-                      (headAllocated.2 other (by simp [Ty.vars])) headAllocated.1
-                      (by simpa using headSolves)
-                      phaseBase safe models restResolved restAllocated restSolves)
-                | prim other =>
-                    exfalso
-                    have head := headSolves
-                    simp only [Ty.realize_con, Ty.realize_prim] at head
-                    cases head
-                | bvar index =>
-                    exfalso
-                    have head := headSolves
-                    simp only [Ty.realize_con, Ty.realize_bvar] at head
-                    cases head
-                | rigid level =>
-                    exfalso
-                    have head := headSolves
-                    simp only [Ty.realize_con, Ty.realize_rigid] at head
-                    cases head
-                | con other =>
-                    exfalso
-                    have head := headSolves
-                    simp only [Ty.realize_con] at head
-                    injection head with payload
-                    exact equal (by rw [payload])
-                | arrow rd rc =>
-                    exfalso
-                    have head := headSolves
-                    simp only [Ty.realize_con, Ty.realize_arrow] at head
-                    cases head
-                | app rf ra =>
-                    exfalso
-                    have head := headSolves
-                    simp only [Ty.realize_con, Ty.realize_app] at head
-                    cases head
-            | app lf la =>
-                cases right with
-                | var id =>
-                    have phaseBase := unifyPhase_cons_eq_var_right store fuel
-                      (.app lf la) id rest (by simpa using equal)
-                      (fun j impossible => nomatch impossible)
-                    exact Or.inr (phase_bound_right_complete
-                      (ty := .app lf la) (by simpa using equal)
-                      headResolved.1 headResolved.2
-                      (headAllocated.2 id (by simp [Ty.vars])) headAllocated.1
-                      (by simpa using headSolves)
-                      phaseBase safe models restResolved restAllocated restSolves)
-                | prim other =>
-                    exfalso
-                    have head := headSolves
-                    simp only [Ty.realize_app, Ty.realize_prim] at head
-                    cases head
-                | bvar index =>
-                    exfalso
-                    have head := headSolves
-                    simp only [Ty.realize_app, Ty.realize_bvar] at head
-                    cases head
-                | rigid level =>
-                    exfalso
-                    have head := headSolves
-                    simp only [Ty.realize_app, Ty.realize_rigid] at head
-                    cases head
-                | con other =>
-                    exfalso
-                    have head := headSolves
-                    simp only [Ty.realize_app, Ty.realize_con] at head
-                    cases head
-                | arrow rd rc =>
-                    exfalso
-                    have head := headSolves
-                    simp only [Ty.realize_app, Ty.realize_arrow] at head
-                    cases head
-                | app rf ra =>
-                    have phaseEq := unifyPhase_cons_eq_app store fuel
-                      lf la rf ra rest (by simpa using equal)
-                    rw [phaseEq]
-                    have enoughNew : Constraints.size
-                        ((lf, rf) :: (la, ra) :: rest) ≤ fuel := by
-                      simp only [Constraints.size_cons, Ty.size] at enough ⊢
-                      omega
-                    exact ih enoughNew
+                  · cases other
+                  · exact absurd same equal
+              | app rf ra =>
+                  rcases Ty.heads_match_of_realize_eq headSolves leftRigid
+                    (fun j impossible => nomatch impossible) with
+                    ⟨_, _, _, _, _, other⟩ | ⟨lf, la, _, _, leftEq, _⟩ | same
+                  · cases other
+                  · obtain rfl := leftEq
+                    rw [unifyPhase_cons_eq_app store fuel lf la rf ra rest equal]
+                    exact ih (by
+                        simp only [Constraints.size_cons, Ty.size] at enough ⊢
+                        omega)
                       (ConstraintsResolved.apps resolved)
                       (ConstraintsAllocated.apps headAllocated restAllocated)
                       (ConstraintsRealized.app_parts headSolves restSolves)
+                  · exact absurd same equal
+            cases left with
+            | var id =>
+                exact Or.inr (phase_bound_left_complete equal headResolved.1
+                  headResolved.2 (Ty.Allocated.var headAllocated.1) headAllocated.2
+                  headSolves safe models restResolved restAllocated restSolves)
+            | prim name => exact key (fun j impossible => nomatch impossible)
+            | bvar index => exact key (fun j impossible => nomatch impossible)
+            | rigid level => exact key (fun j impossible => nomatch impossible)
+            | con id => exact key (fun j impossible => nomatch impossible)
+            | arrow ld lc => exact key (fun j impossible => nomatch impossible)
+            | app lf la => exact key (fun j impossible => nomatch impossible)
 
 private theorem unifyLoop_complete {fuel : Nat} {store : MStore}
     {constraints : List Constraint}
@@ -2483,17 +2206,6 @@ private theorem MStore.solve_anchored_of_canBind
       simp [outerLookup]
     · exact Ty.mem_vars_substVar_of_mem_of_ne jMemSolution different
 
-private theorem match_bound_anchored
-    {store : MStore} {id : Nat} {ty : InfTy} {rest : List Constraint}
-    {start level : Nat}
-    (anchored : store.Anchored start level)
-    (guard : store.canBind id ty = true) :
-    (match (UnifyPhase.bound (store.solve id ty) rest : UnifyPhase) with
-     | .finished result => result.Anchored start level
-     | .bound result _ => result.Anchored start level
-     | .failed | .outOfFuel => True) := by
-  simpa using MStore.solve_anchored_of_canBind anchored guard
-
 private theorem ite_bound_anchored
     {store : MStore} {id : Nat} {ty : InfTy} {rest : List Constraint}
     {start level : Nat}
@@ -2506,7 +2218,7 @@ private theorem ite_bound_anchored
      | .failed | .outOfFuel => True) := by
   by_cases guard : store.canBind id ty = true
   · rw [if_pos guard]
-    exact match_bound_anchored (rest := rest) anchored guard
+    simpa using MStore.solve_anchored_of_canBind anchored guard
   · rw [if_neg guard]
     trivial
 
@@ -2537,7 +2249,6 @@ private theorem unifyPhase_anchored
             all_goals first
               | exact ih
               | exact ite_bound_anchored anchored
-              | simp
 
 private theorem unifyPhase_finished_anchored
     {store result : MStore} {fuel : Nat} {constraints : List Constraint}
@@ -2566,20 +2277,12 @@ private theorem unifyLoop_anchored
     {start level : Nat}
     (anchored : store.Anchored start level)
     (run : unifyLoop fuel store constraints = some result) :
-    result.Anchored start level := by
-  induction fuel generalizing store constraints with
-  | zero => simp [unifyLoop] at run
-  | succ fuel ih =>
-      rw [unifyLoop_succ] at run
-      split at run
-      · rename_i finishedRun
-        injection run with resultEq
-        subst resultEq
-        exact unifyPhase_finished_anchored anchored finishedRun
-      · rename_i boundRun
-        exact ih (unifyPhase_bound_anchored anchored boundRun) run
-      · exact nomatch run
-      · exact nomatch run
+    result.Anchored start level :=
+  unifyLoop_induction
+    (P := fun store _ result => store.Anchored start level → result.Anchored start level)
+    (finished := fun finishedRun h => unifyPhase_finished_anchored h finishedRun)
+    (bound := fun boundRun ih h => ih (unifyPhase_bound_anchored h boundRun))
+    run anchored
 
 /-- A metavariable lowered to `level` or below by a binding enters the
 solution of whatever it was unified with, which is anchored. -/

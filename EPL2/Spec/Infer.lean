@@ -12,9 +12,8 @@ of the specifications of the store operations (`EPL2.Spec.Store`,
 The public theorems (`infer_eq_some_iff` and friends, in `EPL2.Theorems`) are
 corollaries.
 
-**Proof guidance for the cases.** For each constructor, first state and prove
-(by `rfl` or `simp [inferAt]`) an equation unfolding `inferAt` on it into
-nested `match`/`Option.bind`, then split along it.
+**Outline of the cases.** Each lemma unfolds `inferAt` on its constructor
+into nested `match`/`Option.bind` and splits along it.
 
 * leaves: `MStore.freshMany_principal` with the declarative instance's
   arguments; `Scheme.realize_inst`, `Scheme.realize_lift`,
@@ -85,6 +84,23 @@ private theorem Expr.realize_agree {expr : Expr InfTy} {store : MStore}
     expr.realize first = expr.realize second :=
   Expr.realize_congr (fun ann hann id hid => allocated ann hann id hid) agree
 
+/-- Two valuations agreeing on the input store realize the context alike. -/
+private theorem ctx_realize_congr_of_agree {k : Nat} {ctx : Ctx Nat} {store : MStore}
+    {valuation extended : Valuation} (pre : InferPre k ctx store)
+    (agree : Agree store.length valuation extended) :
+    ctx.realize extended = ctx.realize valuation :=
+  Ctx.realize_congr (fun scheme hmem id hid => pre.ctxAllocated scheme hmem id hid)
+    (fun id hi => (agree id hi).symm)
+
+/-- The context extended by the realized type of a subterm. -/
+private theorem ctx_realize_cons_eq {k : Nat} {ctx : Ctx Nat} {store : MStore}
+    {valuation extended : Valuation} (pre : InferPre k ctx store)
+    (agree : Agree store.length valuation extended) {ty : InfTy} {sem : SemTy}
+    (real : ty.realize extended = sem) :
+    Ctx.realize (.mono ty :: ctx) extended = .mono sem :: ctx.realize valuation := by
+  simp only [Ctx.realize_cons, Scheme.realize_mono]
+  rw [real, ctx_realize_congr_of_agree pre agree]
+
 private theorem ctx_image_wf {pre : InferPre k ctx store} {valuation : Valuation}
     (models : store.Models valuation) {scheme : Scheme Nat} (hmem : scheme ∈ ctx) {id : Nat}
     (hid : id ∈ scheme.body.vars) : (valuation id).WF k :=
@@ -104,18 +120,10 @@ private theorem PrimLit.ty_vars (literal : PrimLit) : (literal.ty : Ty V).vars =
 private theorem PrimOp.ty_vars {op : PrimOp} {ty : Ty V} {sig : Signature}
     (typed : op.ty sig = some ty) : ty.vars = [] := by
   cases op with
-  | intAdd =>
+  | intAdd | intSub =>
       simp only [PrimOp.ty, Option.some.injEq] at typed
       subst typed; simp [Ty.vars]
-  | intSub =>
-      simp only [PrimOp.ty, Option.some.injEq] at typed
-      subst typed; simp [Ty.vars]
-  | intLt =>
-      by_cases hb : sig.HasBool
-      · simp only [PrimOp.ty, hb, if_true, Option.some.injEq] at typed
-        subst typed; simp [Ty.bool, Ty.vars]
-      · simp [PrimOp.ty, hb] at typed
-  | charLt =>
+  | intLt | charLt =>
       by_cases hb : sig.HasBool
       · simp only [PrimOp.ty, hb, if_true, Option.some.injEq] at typed
         subst typed; simp [Ty.bool, Ty.vars]
@@ -132,92 +140,71 @@ private theorem Ty.levelBounded_append {store : MStore} {count level : Nat} {ty 
   have hlt' : id < store.length + count := by simpa using hlt
   rw [if_pos hlt']
 
-private theorem Ty.allocated_getD (args : List InfTy) (i : Nat) (default : InfTy)
-    (store : MStore) (defaultVars : default.vars = [])
-    (argsAlloc : ∀ arg ∈ args, arg.Allocated store) :
-    (args.getD i default).Allocated store := by
-  induction args generalizing i with
+/-- A variable occurring in a defaulted list lookup occurs in some entry. -/
+private theorem getD_vars_mem (args : List InfTy) (default : InfTy) (hdef : default.vars = []) :
+    ∀ (j : Nat) {id : Nat}, id ∈ (args.getD j default).vars → ∃ arg ∈ args, id ∈ arg.vars := by
+  induction args with
   | nil =>
-      intro id hid
-      simp [List.getD] at hid
-      rw [defaultVars] at hid
-      simp at hid
+      intro j id hid
+      simp [List.getD, hdef] at hid
   | cons a as ih =>
-    cases i with
-    | zero => simpa using argsAlloc a (by simp)
-    | succ i =>
-      have hstep := ih (i := i) (fun arg ha => argsAlloc arg (by simp [ha]))
-      simpa [List.getD] using hstep
+      intro j id hid
+      cases j with
+      | zero => exact ⟨a, by simp, by simpa [List.getD] using hid⟩
+      | succ j =>
+          obtain ⟨arg, harg, hmem⟩ := ih (j := j) (by simpa [List.getD] using hid)
+          exact ⟨arg, by simp [harg], hmem⟩
 
-private theorem Ty.levelBounded_getD (args : List InfTy) (i level : Nat)
-    (default : InfTy) (store : MStore) (defaultVars : default.vars = [])
-    (argsLB : ∀ arg ∈ args, arg.LevelBounded store level) :
-    (args.getD i default).LevelBounded store level := by
-  induction args generalizing i with
-  | nil =>
+/-- Instantiation only reads the flexible variables of the type and of the
+arguments. -/
+private theorem Ty.vars_instantiate : ∀ (ty : InfTy) (args : List InfTy),
+    ∀ id ∈ (ty.instantiate args).vars, id ∈ ty.vars ∨ ∃ arg ∈ args, id ∈ arg.vars
+  | .prim _, _ => by intro id hid; simp [Ty.instantiate, Ty.subst, Ty.vars] at hid
+  | .con _, _ => by intro id hid; simp [Ty.instantiate, Ty.subst, Ty.vars] at hid
+  | .rigid _, _ => by intro id hid; simp [Ty.instantiate, Ty.subst, Ty.vars] at hid
+  | .var _, _ => by
       intro id hid
-      simp [List.getD] at hid
-      rw [defaultVars] at hid
-      simp at hid
-  | cons a as ih =>
-    cases i with
-    | zero => simpa using argsLB a (by simp)
-    | succ i =>
-      have hstep := ih (i := i) (fun arg ha => argsLB arg (by simp [ha]))
-      simpa [List.getD] using hstep
+      simp only [Ty.instantiate, Ty.subst, Ty.vars] at hid
+      exact Or.inl hid
+  | .bvar i, args => by
+      intro id hid
+      simp only [Ty.instantiate, Ty.subst] at hid
+      exact Or.inr (getD_vars_mem args (.bvar i) (by simp [Ty.vars]) i hid)
+  | .arrow d c, args => by
+      intro id hid
+      simp only [Ty.instantiate, Ty.subst, Ty.vars, List.mem_append] at hid
+      rcases hid with hid | hid
+      · rcases Ty.vars_instantiate d args id hid with h | ⟨arg, harg, hmem⟩
+        · exact Or.inl (List.mem_append_left _ h)
+        · exact Or.inr ⟨arg, harg, hmem⟩
+      · rcases Ty.vars_instantiate c args id hid with h | ⟨arg, harg, hmem⟩
+        · exact Or.inl (List.mem_append_right _ h)
+        · exact Or.inr ⟨arg, harg, hmem⟩
+  | .app d c, args => by
+      intro id hid
+      simp only [Ty.instantiate, Ty.subst, Ty.vars, List.mem_append] at hid
+      rcases hid with hid | hid
+      · rcases Ty.vars_instantiate d args id hid with h | ⟨arg, harg, hmem⟩
+        · exact Or.inl (List.mem_append_left _ h)
+        · exact Or.inr ⟨arg, harg, hmem⟩
+      · rcases Ty.vars_instantiate c args id hid with h | ⟨arg, harg, hmem⟩
+        · exact Or.inl (List.mem_append_right _ h)
+        · exact Or.inr ⟨arg, harg, hmem⟩
 
-private theorem Ty.allocated_instantiate : ∀ (ty : InfTy) (args : List InfTy) (store : MStore),
-    ty.Allocated store → (∀ arg ∈ args, arg.Allocated store) →
-    (ty.instantiate args).Allocated store
-  | .prim _, _, _, _, _ => by simp [Ty.instantiate, Ty.subst, Ty.vars, Ty.Allocated]
-  | .con _, _, _, _, _ => by simp [Ty.instantiate, Ty.subst, Ty.vars, Ty.Allocated]
-  | .rigid _, _, _, _, _ => by simp [Ty.instantiate, Ty.subst, Ty.vars, Ty.Allocated]
-  | .var _, _, _, h, _ => by
-      simpa [Ty.instantiate, Ty.subst, Ty.vars, Ty.Allocated] using h _ (by simp [Ty.vars])
-  | .bvar i, args, store, _, ha => by
-      simpa [Ty.instantiate, Ty.subst] using
-        Ty.allocated_getD args i (.bvar i) store rfl ha
-  | .arrow d c, args, store, h, ha => by
-      have hd := Ty.allocated_instantiate d args store (fun id hi => h id (by simp [Ty.vars, hi])) ha
-      have hc := Ty.allocated_instantiate c args store (fun id hi => h id (by simp [Ty.vars, hi])) ha
-      intro id hmem
-      simp only [Ty.instantiate, Ty.subst, Ty.vars, List.mem_append] at hmem
-      exact hmem.elim (hd id) (hc id)
-  | .app d c, args, store, h, ha => by
-      have hd := Ty.allocated_instantiate d args store (fun id hi => h id (by simp [Ty.vars, hi])) ha
-      have hc := Ty.allocated_instantiate c args store (fun id hi => h id (by simp [Ty.vars, hi])) ha
-      intro id hmem
-      simp only [Ty.instantiate, Ty.subst, Ty.vars, List.mem_append] at hmem
-      exact hmem.elim (hd id) (hc id)
+private theorem Ty.allocated_instantiate (ty : InfTy) (args : List InfTy) (store : MStore)
+    (allocated : ty.Allocated store) (argsAllocated : ∀ arg ∈ args, arg.Allocated store) :
+    (ty.instantiate args).Allocated store :=
+  fun id hid =>
+    (Ty.vars_instantiate ty args id hid).elim (allocated id)
+      (fun ⟨arg, harg, hmem⟩ => argsAllocated arg harg id hmem)
 
-private theorem Ty.levelBounded_instantiate : ∀ (ty : InfTy) (args : List InfTy) (store : MStore)
-    (level : Nat), ty.LevelBounded store level →
-    (∀ arg ∈ args, arg.LevelBounded store level) →
-    (ty.instantiate args).LevelBounded store level
-  | .prim _, _, _, _, _, _ => by simp [Ty.instantiate, Ty.subst, Ty.vars, Ty.LevelBounded]
-  | .con _, _, _, _, _, _ => by simp [Ty.instantiate, Ty.subst, Ty.vars, Ty.LevelBounded]
-  | .rigid _, _, _, _, _, _ => by simp [Ty.instantiate, Ty.subst, Ty.vars, Ty.LevelBounded]
-  | .var _, _, _, _, h, _ => by
-      simpa [Ty.instantiate, Ty.subst, Ty.vars, Ty.LevelBounded] using h _ (by simp [Ty.vars])
-  | .bvar i, args, store, level, _, ha => by
-      simpa [Ty.instantiate, Ty.subst] using
-        Ty.levelBounded_getD args i level (.bvar i) store rfl ha
-  | .arrow d c, args, store, level, h, ha => by
-      have hd := Ty.levelBounded_instantiate d args store level
-        (fun id hi => h id (by simp [Ty.vars, hi])) ha
-      have hc := Ty.levelBounded_instantiate c args store level
-        (fun id hi => h id (by simp [Ty.vars, hi])) ha
-      intro id hmem
-      simp only [Ty.instantiate, Ty.subst, Ty.vars, List.mem_append] at hmem
-      exact hmem.elim (hd id) (hc id)
-  | .app d c, args, store, level, h, ha => by
-      have hd := Ty.levelBounded_instantiate d args store level
-        (fun id hi => h id (by simp [Ty.vars, hi])) ha
-      have hc := Ty.levelBounded_instantiate c args store level
-        (fun id hi => h id (by simp [Ty.vars, hi])) ha
-      intro id hmem
-      simp only [Ty.instantiate, Ty.subst, Ty.vars, List.mem_append] at hmem
-      exact hmem.elim (hd id) (hc id)
+private theorem Ty.levelBounded_instantiate (ty : InfTy) (args : List InfTy) (store : MStore)
+    (level : Nat) (bounded : ty.LevelBounded store level)
+    (argsBounded : ∀ arg ∈ args, arg.LevelBounded store level) :
+    (ty.instantiate args).LevelBounded store level :=
+  fun id hid =>
+    (Ty.vars_instantiate ty args id hid).elim (bounded id)
+      (fun ⟨arg, harg, hmem⟩ => argsBounded arg harg id hmem)
 
 private theorem freshMany_fst_length (store : MStore) (k count : Nat) :
     (store.freshMany k count).1.length = count := by
@@ -271,6 +258,54 @@ private theorem freshMany_args_realize_wf {store : MStore} {k count : Nat}
   have hfresh := ((MStore.models_append_unsolved (store := store) (count := count)
     (level := k)).1 models).2 i hi
   simpa [Ty.realize, Ty.bind, Ty.subst] using hfresh
+
+/-- The arguments produced by one `freshMany` call: well-formed, of the right
+length, allocated and level-bounded in the extended store. -/
+private theorem freshMany_facts (store : MStore) (k count : Nat) :
+    (∀ arg ∈ (store.freshMany k count).1, arg.WF k) ∧
+      (store.freshMany k count).1.length = count ∧
+      (∀ arg ∈ (store.freshMany k count).1,
+        arg.Allocated (store ++ List.replicate count ⟨k, none⟩)) ∧
+      (∀ arg ∈ (store.freshMany k count).1,
+        arg.LevelBounded (store ++ List.replicate count ⟨k, none⟩) k) :=
+  ⟨freshMany_args_wf, freshMany_fst_length store k count,
+    freshMany_args_allocated, freshMany_args_levelBounded⟩
+
+private theorem freshMany_map_length {store : MStore} {k count : Nat} (valuation : Valuation) :
+    ((store.freshMany k count).1.map (·.realize valuation)).length = count := by
+  rw [List.length_map, freshMany_fst_length]
+
+private theorem freshMany_map_wf {store : MStore} {k count : Nat} {valuation : Valuation}
+    (models : (store.freshMany k count).2.Models valuation) :
+    ∀ arg ∈ (store.freshMany k count).1.map (·.realize valuation), arg.WF k := by
+  intro arg harg
+  rw [List.mem_map] at harg
+  obtain ⟨orig, horig, rfl⟩ := harg
+  exact freshMany_args_realize_wf models orig horig
+
+private theorem fresh_allocated {store : MStore} {k : Nat} :
+    (store.fresh k).1.Allocated (store.fresh k).2 := by
+  rw [MStore.fresh_eq]
+  intro id hid
+  simp only [Ty.vars, List.mem_singleton] at hid
+  subst hid
+  simp
+
+private theorem fresh_levelBounded {store : MStore} {k : Nat} :
+    (store.fresh k).1.LevelBounded (store.fresh k).2 k := by
+  rw [MStore.fresh_eq]
+  intro id hid
+  simp only [Ty.vars, List.mem_singleton] at hid
+  subst hid
+  rw [MStore.append_unsolved_levelOf, if_neg (by omega), if_pos (by omega)]
+
+/-- A model of a store extended by unsolved metavariables restricts to the
+original store. -/
+private theorem MStore.Models.of_append_unsolved {store : MStore} {count level : Nat}
+    {valuation : Valuation}
+    (models : (store ++ List.replicate count (⟨level, none⟩ : MEntry)).Models valuation) :
+    store.Models valuation :=
+  ((MStore.models_append_unsolved (store := store) (count := count) (level := level)).1 models).1
 
 /-! ## Inverting a typing derivation -/
 
@@ -343,34 +378,38 @@ private theorem TypingWith.fix_inv {sig : Signature} {Det : LetCondition} {k : N
   cases typing with
   | fix hwf hmatches hbody => exact ⟨_, _, rfl, rfl, hwf, hmatches, hbody⟩
 
+/-- A run that succeeds without touching the store on a closed, annotation-free
+type: only `sound` and `principal` remain to be proved. -/
+private theorem closed_post {sig : Signature} {k : Nat} {ctx : Ctx Nat} {store : MStore}
+    {src : Source} {ty : InfTy} {elaboration : Expr InfTy} (pre : InferPre k ctx store)
+    (tyWF : ty.WF k) (noVars : ty.vars = []) (noAnns : elaboration.anns = [])
+    (sound : ∀ valuation, store.Models valuation →
+      store.Models valuation ∧
+        Elaborates sig k (ctx.realize valuation) src
+          (elaboration.realize valuation) (ty.realize valuation))
+    (principal : ∀ valuation, store.Models valuation → ∀ elaboration' ty',
+      Typing sig k (ctx.realize valuation) src elaboration' ty' →
+      ∃ extended, store.Models extended ∧ Agree store.length valuation extended ∧
+        elaboration.realize extended = elaboration' ∧ ty.realize extended = ty') :
+    InferPost sig k ctx src store ⟨ty, elaboration, store⟩ :=
+  { safe := pre.safe
+    grows := le_rfl
+    levels := fun _ _ => le_rfl
+    tyWF := tyWF
+    tyAllocated := fun id hid => by rw [noVars] at hid; simp at hid
+    tyLevels := fun id hid => by rw [noVars] at hid; simp at hid
+    elabAllocated := fun ann hmem => by rw [noAnns] at hmem; simp at hmem
+    anchored := fun _ _ _ _ hanch => hanch
+    sound := sound
+    principal := principal }
+
 theorem inferAt_spec_lit {sig : Signature} (pre : InferPre k ctx store) :
     InferSpec sig k ctx (.lit literal) store := by
   have h : inferAt sig k ctx (.lit literal) store =
       some ⟨literal.ty, .lit literal, store⟩ := rfl
   simp only [InferSpec, h]
-  refine
-    { safe := pre.safe
-      grows := le_rfl
-      levels := ?_
-      tyWF := PrimLit.ty_wf literal
-      tyAllocated := ?_
-      tyLevels := ?_
-      elabAllocated := ?_
-      anchored := ?_
-      sound := ?_
-      principal := ?_ }
-  · intro id _
-    exact le_rfl
-  · intro id hmem
-    rw [PrimLit.ty_vars] at hmem
-    simp at hmem
-  · intro id hmem
-    rw [PrimLit.ty_vars] at hmem
-    simp at hmem
-  · intro ann hmem
-    simp [Expr.anns] at hmem
-  · intro start level _ _ hanch
-    exact hanch
+  refine closed_post (elaboration := .lit literal) pre (PrimLit.ty_wf literal)
+    (PrimLit.ty_vars literal) (by simp [Expr.anns]) ?_ ?_
   · intro valuation models
     refine ⟨models, ?_⟩
     have hty : (literal.ty : InfTy).realize valuation = (literal.ty : SemTy) :=
@@ -380,10 +419,7 @@ theorem inferAt_spec_lit {sig : Signature} (pre : InferPre k ctx store) :
   · intro valuation models elaboration ty typing
     cases typing with
     | lit =>
-      refine ⟨valuation, models, ?_, ?_, ?_⟩
-      · intro id _; rfl
-      · rfl
-      · exact PrimLit.ty_bind literal valuation
+      exact ⟨valuation, models, fun _ _ => rfl, rfl, PrimLit.ty_bind literal valuation⟩
 
 theorem inferAt_spec_primOp {sig : Signature} (pre : InferPre k ctx store) :
     InferSpec sig k ctx (.primOp op) store := by
@@ -406,29 +442,8 @@ theorem inferAt_spec_primOp {sig : Signature} (pre : InferPre k ctx store) :
         rw [hbind, hop]; rfl
       simp only [InferSpec, h]
       have htyvars : ty.vars = [] := PrimOp.ty_vars hop
-      refine
-        { safe := pre.safe
-          grows := le_rfl
-          levels := ?_
-          tyWF := PrimOp.ty_wf hop
-          tyAllocated := ?_
-          tyLevels := ?_
-          elabAllocated := ?_
-          anchored := ?_
-          sound := ?_
-          principal := ?_ }
-      · intro id _
-        exact le_rfl
-      · intro id hmem
-        rw [htyvars] at hmem
-        simp at hmem
-      · intro id hmem
-        rw [htyvars] at hmem
-        simp at hmem
-      · intro ann hmem
-        simp [Expr.anns] at hmem
-      · intro start level _ _ hanch
-        exact hanch
+      refine closed_post (elaboration := .primOp op) pre (PrimOp.ty_wf hop) htyvars
+        (by simp [Expr.anns]) ?_ ?_
       · intro valuation models
         refine ⟨models, ?_⟩
         simp only [Expr.realize, Expr.mapAnn]
@@ -436,14 +451,9 @@ theorem inferAt_spec_primOp {sig : Signature} (pre : InferPre k ctx store) :
       · intro valuation models elaboration target typing
         cases typing with
         | primOp hty =>
-            refine ⟨valuation, models, ?_, ?_, ?_⟩
-            · intro id _; rfl
-            · rfl
-            · have hsame : (ty.bind valuation : SemTy) = target := by
-                have h1 := PrimOp.ty_bind hop valuation
-                rw [h1] at hty
-                exact Option.some.inj hty
-              exact hsame
+            refine ⟨valuation, models, fun _ _ => rfl, rfl, ?_⟩
+            rw [PrimOp.ty_bind hop valuation] at hty
+            exact Option.some.inj hty
 
 theorem inferAt_spec_const {sig : Signature} (pre : InferPre k ctx store) :
     InferSpec sig k ctx (.const c) store := by
@@ -468,16 +478,8 @@ theorem inferAt_spec_const {sig : Signature} (pre : InferPre k ctx store) :
             .const c, (store.freshMany k scheme.arity).2⟩ := by
         rw [hbind, hsch]; rfl
       simp only [InferSpec, h]
-      have hargsWF : ∀ arg ∈ (store.freshMany k scheme.arity).1, arg.WF k :=
-        freshMany_args_wf
-      have hlen : (store.freshMany k scheme.arity).1.length = scheme.arity :=
-        freshMany_fst_length store k scheme.arity
-      have hargsAlloc : ∀ arg ∈ (store.freshMany k scheme.arity).1,
-          arg.Allocated (store ++ List.replicate scheme.arity ⟨k, none⟩) :=
-        freshMany_args_allocated
-      have hargsLB : ∀ arg ∈ (store.freshMany k scheme.arity).1,
-          arg.LevelBounded (store ++ List.replicate scheme.arity ⟨k, none⟩) k :=
-        freshMany_args_levelBounded
+      obtain ⟨hargsWF, hlen, hargsAlloc, hargsLB⟩ :=
+        freshMany_facts store k scheme.arity
       have hschemeWF0 : scheme.WF 0 := Signature.schemeOf_wf hsch
       have hschemeWFk : scheme.body.Scoped k scheme.arity :=
         Ty.Scoped.mono hschemeWF0 (by omega) le_rfl
@@ -486,15 +488,11 @@ theorem inferAt_spec_const {sig : Signature} (pre : InferPre k ctx store) :
       have hbodyAlloc : (scheme.lift : Scheme Nat).body.Allocated
           (store ++ List.replicate scheme.arity ⟨k, none⟩) := by
         intro id hid
-        rw [Scheme.lift] at hid
-        rw [Ty.vars_lift] at hid
-        simp at hid
+        simp [Scheme.lift, Ty.vars_lift] at hid
       have hbodyLB : (scheme.lift : Scheme Nat).body.LevelBounded
           (store ++ List.replicate scheme.arity ⟨k, none⟩) k := by
         intro id hid
-        rw [Scheme.lift] at hid
-        rw [Ty.vars_lift] at hid
-        simp at hid
+        simp [Scheme.lift, Ty.vars_lift] at hid
       refine
         { safe := MStore.append_unsolved_safe pre.safe
           grows := by rw [MStore.freshMany_snd]; simp
@@ -522,29 +520,19 @@ theorem inferAt_spec_const {sig : Signature} (pre : InferPre k ctx store) :
       · intro start level hlt hstart hanch
         exact MStore.Anchored.append_unsolved (count := scheme.arity) (level' := k) hanch hlt
       · intro valuation models
-        obtain ⟨hmodelsStore, _⟩ :=
-          (MStore.models_append_unsolved (store := store) (count := scheme.arity)
-            (level := k)).1 models
+        have hmodelsStore : store.Models valuation :=
+          MStore.Models.of_append_unsolved models
         refine ⟨hmodelsStore, ?_⟩
         simp only [Expr.realize, Expr.mapAnn]
-        have hargsRealWF : ∀ arg ∈ (store.freshMany k scheme.arity).1,
-            (arg.realize valuation).WF k := freshMany_args_realize_wf models
         have hclosed : ∀ id ∈ (scheme.lift : Scheme Nat).body.vars, (valuation id).WF k := by
           intro id hid
-          rw [Scheme.lift] at hid
-          rw [Ty.vars_lift] at hid
-          simp at hid
+          simp [Scheme.lift, Ty.vars_lift] at hid
         have hreal := Scheme.realize_inst (scheme := (scheme.lift : Scheme Nat))
           (args := (store.freshMany k scheme.arity).1) (valuation := valuation) hclosed
         rw [Scheme.realize_lift] at hreal
         refine TypingWith.const hsch ?_
-        refine ⟨(store.freshMany k scheme.arity).1.map (·.realize valuation), ?_, ?_, ?_⟩
-        · rw [List.length_map, hlen]
-        · intro arg harg
-          rw [List.mem_map] at harg
-          obtain ⟨orig, horig, rfl⟩ := harg
-          exact hargsRealWF orig horig
-        · exact hreal.symm
+        exact ⟨(store.freshMany k scheme.arity).1.map (·.realize valuation),
+          freshMany_map_length valuation, freshMany_map_wf models, hreal.symm⟩
       · intro valuation models elaboration target typing
         cases typing with
         | const htyping hinst =>
@@ -559,9 +547,7 @@ theorem inferAt_spec_const {sig : Signature} (pre : InferPre k ctx store) :
             · have hclosed : ∀ id ∈ (scheme.lift : Scheme Nat).body.vars,
                   (extended id).WF k := by
                 intro id hid
-                rw [Scheme.lift] at hid
-                rw [Ty.vars_lift] at hid
-                simp at hid
+                simp [Scheme.lift, Ty.vars_lift] at hid
               have hreal := Scheme.realize_inst (scheme := (scheme.lift : Scheme Nat))
                 (args := (store.freshMany k scheme.arity).1) (valuation := extended) hclosed
               rw [Scheme.realize_lift, hmap] at hreal
@@ -592,16 +578,8 @@ theorem inferAt_spec_var {sig : Signature} (pre : InferPre k ctx store) :
         rw [hbind, hget]; rfl
       simp only [InferSpec, h]
       have hmem : scheme ∈ ctx := List.mem_of_getElem? hget
-      have hargsWF : ∀ arg ∈ (store.freshMany k scheme.arity).1, arg.WF k :=
-        freshMany_args_wf
-      have hlen : (store.freshMany k scheme.arity).1.length = scheme.arity :=
-        freshMany_fst_length store k scheme.arity
-      have hargsAlloc : ∀ arg ∈ (store.freshMany k scheme.arity).1,
-          arg.Allocated (store ++ List.replicate scheme.arity ⟨k, none⟩) :=
-        freshMany_args_allocated
-      have hargsLB : ∀ arg ∈ (store.freshMany k scheme.arity).1,
-          arg.LevelBounded (store ++ List.replicate scheme.arity ⟨k, none⟩) k :=
-        freshMany_args_levelBounded
+      obtain ⟨hargsWF, hlen, hargsAlloc, hargsLB⟩ :=
+        freshMany_facts store k scheme.arity
       refine
         { safe := MStore.append_unsolved_safe pre.safe
           grows := by rw [MStore.freshMany_snd]; simp
@@ -639,28 +617,20 @@ theorem inferAt_spec_var {sig : Signature} (pre : InferPre k ctx store) :
       · intro start level hlt hstart hanch
         exact MStore.Anchored.append_unsolved (count := scheme.arity) (level' := k) hanch hlt
       · intro valuation models
-        obtain ⟨hmodelsStore, _⟩ :=
-          (MStore.models_append_unsolved (store := store) (count := scheme.arity)
-            (level := k)).1 models
+        have hmodelsStore : store.Models valuation :=
+          MStore.Models.of_append_unsolved models
         refine ⟨hmodelsStore, ?_⟩
         simp only [Expr.realize, Expr.mapAnn]
         have hctxget : (ctx.realize valuation)[index]? = some (scheme.realize valuation) := by
           rw [Ctx.realize_getElem?, hget]; rfl
-        have hargsRealWF : ∀ arg ∈ (store.freshMany k scheme.arity).1,
-            (arg.realize valuation).WF k := freshMany_args_realize_wf models
         have hclosed : ∀ id ∈ scheme.body.vars, (valuation id).WF k :=
           fun id hid => ctx_image_wf (pre := pre) hmodelsStore hmem hid
         have hreal := Scheme.realize_inst (scheme := scheme)
           (args := (store.freshMany k scheme.arity).1) (valuation := valuation) hclosed
         refine TypingWith.var hctxget ?_
         rw [hreal]
-        refine ⟨(store.freshMany k scheme.arity).1.map (·.realize valuation), ?_, ?_, rfl⟩
-        · rw [List.length_map, hlen]
-          rfl
-        · intro arg harg
-          rw [List.mem_map] at harg
-          obtain ⟨orig, horig, rfl⟩ := harg
-          exact hargsRealWF orig horig
+        exact ⟨(store.freshMany k scheme.arity).1.map (·.realize valuation),
+          freshMany_map_length valuation, freshMany_map_wf models, rfl⟩
       · intro valuation models elaboration target typing
         cases typing with
         | var htyping hinst =>
@@ -673,8 +643,7 @@ theorem inferAt_spec_var {sig : Signature} (pre : InferPre k ctx store) :
               MStore.freshMany_principal (store := store) (level := k)
                 (count := scheme.arity) (valuation := valuation) pre.safe models hlen' hwf'
             have hmodelsStore : store.Models extended :=
-              ((MStore.models_append_unsolved (store := store) (count := scheme.arity)
-                (level := k)).1 hmodels').1
+              MStore.Models.of_append_unsolved hmodels'
             refine ⟨extended, hmodels', hagree', ?_, ?_⟩
             · simp only [Expr.realize, Expr.mapAnn]
             · have hclosed : ∀ id ∈ scheme.body.vars, (extended id).WF k :=
@@ -733,9 +702,8 @@ theorem inferAt_spec_lambda {sig : Signature} {body : Source}
       have htylev : pty.LevelBounded store' k := by
         rw [hstore']
         exact Ty.levelBounded_append htyalloc' htyouter
-      have hpreExt : InferPre k ctx store' := pre.extend hsafe' hgrow' hlev'
       have hpre' : InferPre k (.mono pty :: ctx) store' :=
-        InferPre.cons_mono hpreExt htywf htyalloc htylev
+        InferPre.cons_mono (pre.extend hsafe' hgrow' hlev') htywf htyalloc htylev
       cases hb : inferAt sig k (.mono pty :: ctx) body store' with
       | none =>
           have hnone : inferAt sig k ctx (.lambda param body) store = none := by
@@ -749,14 +717,7 @@ theorem inferAt_spec_lambda {sig : Signature} {body : Source}
             TypingWith.lambda_inv typing
           obtain ⟨ext', hmodels', hagree', hreal'⟩ :=
             hprincipal valuation sem models hsemmatches hsemwf
-          have hctxeq : Ctx.realize (.mono pty :: ctx) ext' =
-              .mono sem :: ctx.realize valuation := by
-            simp only [Ctx.realize_cons, Scheme.realize_mono]
-            rw [hreal']
-            congr 1
-            exact Ctx.realize_congr
-              (fun scheme hmem id hid => pre.ctxAllocated scheme hmem id hid)
-              (fun id hi => (hagree' id hi).symm)
+          have hctxeq := ctx_realize_cons_eq pre hagree' hreal'
           rw [← hctxeq] at hbody
           exact hbodyNone ext' hmodels' bodyElab bodyTy hbody
       | some bodyResult =>
@@ -799,8 +760,7 @@ theorem inferAt_spec_lambda {sig : Signature} {body : Source}
             obtain ⟨hmodels', hbodyElab⟩ := hbodyPost.sound valuation models
             refine ⟨?_, ?_⟩
             · rw [hstore'] at hmodels'
-              exact ((MStore.models_append_unsolved (store := store)
-                (count := store'.length - store.length) (level := k)).1 hmodels').1
+              exact MStore.Models.of_append_unsolved hmodels'
             · simp only [Expr.realize, Expr.mapAnn]
               exact TypingWith.lambda
                 (Ty.realize_wf_of_models hmodels' htywf htyalloc htylev)
@@ -810,14 +770,7 @@ theorem inferAt_spec_lambda {sig : Signature} {body : Source}
               TypingWith.lambda_inv typing
             obtain ⟨ext', hmodels', hagree', hreal'⟩ :=
               hprincipal valuation sem models hsemmatches hsemwf
-            have hctxeq : Ctx.realize (.mono pty :: ctx) ext' =
-                .mono sem :: ctx.realize valuation := by
-              simp only [Ctx.realize_cons, Scheme.realize_mono]
-              rw [hreal']
-              congr 1
-              exact Ctx.realize_congr
-                (fun scheme hmem id hid => pre.ctxAllocated scheme hmem id hid)
-                (fun id hi => (hagree' id hi).symm)
+            have hctxeq := ctx_realize_cons_eq pre hagree' hreal'
             rw [← hctxeq] at hbody
             obtain ⟨extended, hmodelsExt, hagreeExt, hbodyElabReal, hbodyTyReal⟩ :=
               hbodyPost.principal ext' hmodels' bodyElab bodyTy hbody
@@ -839,6 +792,93 @@ theorem inferAt_spec_lambda {sig : Signature} {body : Source}
               show (Ty.arrow (pty.realize extended) (bodyResult.ty.realize extended)) =
                 Ty.arrow sem bodyTy
               rw [hpty, hbodyTyReal]
+
+/-- A model of the function's store extends through the argument and the fresh
+metavariable to one satisfying the unification constraint. -/
+private theorem app_extend {sig : Signature} {k : Nat} {ctx : Ctx Nat} {store : MStore}
+    {function argument : Source} {functionResult argumentResult : Inferred}
+    (pre : InferPre k ctx store)
+    (hfunPost : InferPost sig k ctx function store functionResult)
+    (hargPost : InferPost sig k ctx argument functionResult.store argumentResult)
+    {valuation : Valuation} (models : store.Models valuation)
+    {fElab aElab : Elab} {argTy resTy : SemTy}
+    (hfun : Typing sig k (ctx.realize valuation) function fElab (.arrow argTy resTy))
+    (harg : Typing sig k (ctx.realize valuation) argument aElab argTy)
+    (resWF : resTy.WF k) :
+    ∃ ext1 : Valuation, (argumentResult.store.fresh k).2.Models ext1 ∧
+      Agree store.length valuation ext1 ∧
+      functionResult.elaboration.realize ext1 = fElab ∧
+      argumentResult.elaboration.realize ext1 = aElab ∧
+      ((argumentResult.store.fresh k).1).realize ext1 = resTy ∧
+      functionResult.ty.realize ext1 =
+        (Ty.arrow argumentResult.ty (argumentResult.store.fresh k).1).realize ext1 := by
+  have hgrowFresh : argumentResult.store.length ≤
+      (argumentResult.store.fresh k).2.length := by
+    rw [MStore.fresh_eq]; simp
+  have hsafeFresh : (argumentResult.store.fresh k).2.Safe := by
+    rw [MStore.fresh_eq]
+    exact MStore.append_unsolved_safe hargPost.safe
+  have hleftAllocFresh : functionResult.ty.Allocated
+      (argumentResult.store.fresh k).2 :=
+    Ty.allocated_mono (le_trans hargPost.grows hgrowFresh) hfunPost.tyAllocated
+  have hrightAllocFresh :
+      (Ty.arrow argumentResult.ty (argumentResult.store.fresh k).1).Allocated
+        (argumentResult.store.fresh k).2 :=
+    Ty.allocated_arrow (Ty.allocated_mono hgrowFresh hargPost.tyAllocated) fresh_allocated
+  obtain ⟨extF, hmodelsF, hagreeF, hfunElabReal, hfunTyReal⟩ :=
+    hfunPost.principal valuation models fElab (.arrow argTy resTy) hfun
+  have hctxF := ctx_realize_congr_of_agree pre hagreeF
+  rw [← hctxF] at harg
+  obtain ⟨extA, hmodelsA, hagreeFA, hargElabReal, hargTyReal⟩ :=
+    hargPost.principal extF hmodelsF aElab argTy harg
+  let ext1 : Valuation := Function.update extA argumentResult.store.length resTy
+  have hagreeA1 : Agree argumentResult.store.length extA ext1 := by
+    intro id hi
+    have hne : id ≠ argumentResult.store.length := by omega
+    simp [ext1, hne]
+  have hmodelsFresh : (argumentResult.store.fresh k).2.Models ext1 := by
+    rw [MStore.fresh_eq, MStore.models_append_unsolved]
+    refine ⟨?_, ?_⟩
+    · exact MStore.Models.congr hargPost.safe hmodelsA hagreeA1
+    · intro i hi
+      have hi0 : i = 0 := by omega
+      subst hi0
+      simpa [ext1, Function.update] using resWF
+  have hfunAllocA : functionResult.ty.Allocated argumentResult.store :=
+    Ty.allocated_mono hargPost.grows hfunPost.tyAllocated
+  have hfunAtA : functionResult.ty.realize extA = .arrow argTy resTy := by
+    rw [← Ty.realize_agree hfunPost.tyAllocated hagreeFA, hfunTyReal]
+  have hfunAt1 : functionResult.ty.realize ext1 = .arrow argTy resTy := by
+    rw [← Ty.realize_agree hfunAllocA hagreeA1]
+    exact hfunAtA
+  have hargAt1 : argumentResult.ty.realize ext1 = argTy := by
+    rw [← Ty.realize_agree hargPost.tyAllocated hagreeA1, hargTyReal]
+  have hfreshAt1 : ((argumentResult.store.fresh k).1).realize ext1 = resTy := by
+    show ext1 argumentResult.store.length = resTy
+    simp [ext1]
+  have hunifies : functionResult.ty.realize ext1 =
+      (Ty.arrow argumentResult.ty (argumentResult.store.fresh k).1).realize ext1 := by
+    rw [hfunAt1]
+    show (Ty.arrow argTy resTy) =
+      (Ty.arrow (argumentResult.ty.realize ext1)
+        (((argumentResult.store.fresh k).1).realize ext1))
+    rw [hargAt1, hfreshAt1]
+  have hfunElab1 : functionResult.elaboration.realize ext1 = fElab := by
+    rw [← Expr.realize_agree (store := argumentResult.store)
+      (fun ann hann => Ty.allocated_mono hargPost.grows (hfunPost.elabAllocated ann hann))
+      hagreeA1]
+    rw [← Expr.realize_agree (store := functionResult.store)
+      hfunPost.elabAllocated hagreeFA]
+    exact hfunElabReal
+  have hargElab1 : argumentResult.elaboration.realize ext1 = aElab := by
+    rw [← Expr.realize_agree (store := argumentResult.store) hargPost.elabAllocated hagreeA1]
+    exact hargElabReal
+  have hagree1 : Agree store.length valuation ext1 := by
+    intro id hi
+    exact (hagreeF id hi).trans
+      ((hagreeFA id (lt_of_lt_of_le hi hfunPost.grows)).trans
+        (hagreeA1 id (lt_of_lt_of_le hi (le_trans hfunPost.grows hargPost.grows))))
+  exact ⟨ext1, hmodelsFresh, hagree1, hfunElab1, hargElab1, hfreshAt1, hunifies⟩
 
 theorem inferAt_spec_app {sig : Signature} {function argument : Source}
     (functionSpec : ∀ k ctx store, InferPre k ctx store → InferSpec sig k ctx function store)
@@ -885,10 +925,7 @@ theorem inferAt_spec_app {sig : Signature} {function argument : Source}
           have hfunTyping := Elaborates.typing hfun
           obtain ⟨extF, hmodelsF, hagreeF, _, _⟩ :=
             hfunPost.principal valuation models fElab (.arrow argTy resTy) hfunTyping
-          have hctxF : ctx.realize extF = ctx.realize valuation :=
-            Ctx.realize_congr
-              (fun scheme hmem id hid => pre.ctxAllocated scheme hmem id hid)
-              (fun id hi => (hagreeF id hi).symm)
+          have hctxF := ctx_realize_congr_of_agree pre hagreeF
           rw [← hctxF] at harg
           exact hargNone extF hmodelsF aElab argTy harg
       | some argumentResult =>
@@ -896,8 +933,6 @@ theorem inferAt_spec_app {sig : Signature} {function argument : Source}
           unfold InferSpec at hargPost
           rw [ha] at hargPost
           simp only at hargPost
-          have hfreshSnd : (argumentResult.store.fresh k).2 =
-              argumentResult.store ++ List.replicate 1 (⟨k, none⟩ : MEntry) := rfl
           have hgrowFresh : argumentResult.store.length ≤
               (argumentResult.store.fresh k).2.length := by
             rw [MStore.fresh_eq]; simp
@@ -912,11 +947,7 @@ theorem inferAt_spec_app {sig : Signature} {function argument : Source}
                 (argumentResult.store.fresh k).2 := by
             apply Ty.allocated_arrow
             · exact Ty.allocated_mono hgrowFresh hargPost.tyAllocated
-            · rw [MStore.fresh_eq]
-              intro id hid
-              simp only [Ty.vars, List.mem_singleton] at hid
-              subst hid
-              simp
+            · exact fresh_allocated
           cases hu : (argumentResult.store.fresh k).2.unify functionResult.ty
               (.arrow argumentResult.ty (argumentResult.store.fresh k).1) with
           | none =>
@@ -926,56 +957,14 @@ theorem inferAt_spec_app {sig : Signature} {function argument : Source}
               intro valuation models elaboration target typing
               obtain ⟨fElab, aElab, argTy, resTy, _, htarget, hfun, harg⟩ :=
                 TypingWith.app_inv typing
-              have hfunTyping := Elaborates.typing hfun
-              have hargTyping := Elaborates.typing harg
               have hctxWF : (ctx.realize valuation).WF k :=
                 Ctx.realize_wf models pre.ctxWF pre.ctxAllocated pre.ctxLevels
               have hresWF : resTy.WF k := by
                 have := TypingWith.regular hctxWF typing
                 rwa [htarget] at this
-              obtain ⟨extF, hmodelsF, hagreeF, _, hfunTyReal⟩ :=
-                hfunPost.principal valuation models fElab (.arrow argTy resTy) hfunTyping
-              have hctxF : ctx.realize extF = ctx.realize valuation :=
-                Ctx.realize_congr
-                  (fun scheme hmem id hid => pre.ctxAllocated scheme hmem id hid)
-                  (fun id hi => (hagreeF id hi).symm)
-              rw [← hctxF] at harg
-              rw [← hctxF] at hargTyping
-              obtain ⟨extA, hmodelsA, hagreeFA, _, hargTyReal⟩ :=
-                hargPost.principal extF hmodelsF aElab argTy hargTyping
-              let ext1 : Valuation :=
-                Function.update extA argumentResult.store.length resTy
-              have hagreeA1 : Agree argumentResult.store.length extA ext1 := by
-                intro id hi
-                have hne : id ≠ argumentResult.store.length := by omega
-                simp [ext1, hne]
-              have hmodelsFresh : (argumentResult.store.fresh k).2.Models ext1 := by
-                rw [MStore.fresh_eq, MStore.models_append_unsolved]
-                refine ⟨?_, ?_⟩
-                · exact MStore.Models.congr hargPost.safe hmodelsA hagreeA1
-                · intro i hi
-                  have hi0 : i = 0 := by omega
-                  subst hi0
-                  simpa [ext1, Function.update] using hresWF
-              have hfunAllocA : functionResult.ty.Allocated argumentResult.store :=
-                Ty.allocated_mono hargPost.grows hfunPost.tyAllocated
-              have hfunAtA : functionResult.ty.realize extA = .arrow argTy resTy := by
-                rw [← Ty.realize_agree hfunPost.tyAllocated hagreeFA, hfunTyReal]
-              have hfunAt1 : functionResult.ty.realize ext1 = .arrow argTy resTy := by
-                rw [← Ty.realize_agree hfunAllocA hagreeA1]
-                exact hfunAtA
-              have hargAt1 : argumentResult.ty.realize ext1 = argTy := by
-                rw [← Ty.realize_agree hargPost.tyAllocated hagreeA1, hargTyReal]
-              have hfreshAt1 : ((argumentResult.store.fresh k).1).realize ext1 = resTy := by
-                show ext1 argumentResult.store.length = resTy
-                simp [ext1]
-              have hunifies : functionResult.ty.realize ext1 =
-                  (Ty.arrow argumentResult.ty (argumentResult.store.fresh k).1).realize ext1 := by
-                rw [hfunAt1]
-                show (Ty.arrow argTy resTy) =
-                  (Ty.arrow (argumentResult.ty.realize ext1)
-                    (((argumentResult.store.fresh k).1).realize ext1))
-                rw [hargAt1, hfreshAt1]
+              obtain ⟨ext1, hmodelsFresh, _, _, _, _, hunifies⟩ :=
+                app_extend pre hfunPost hargPost models (Elaborates.typing hfun)
+                  (Elaborates.typing harg) hresWF
               obtain ⟨result, hresult, _⟩ :=
                 MStore.unify_complete hsafeFresh hleftAllocFresh hrightAllocFresh
                   hmodelsFresh hunifies
@@ -1014,31 +1003,8 @@ theorem inferAt_spec_app {sig : Signature} {function argument : Source}
                 rw [hstore1]
                 exact le_trans (hargPost.levels id (lt_of_lt_of_le hi hfunPost.grows))
                   (hfunPost.levels id hi)
-              · show ((argumentResult.store.fresh k).1).Allocated store2
-                have halloc : ((argumentResult.store.fresh k).1).Allocated
-                    (argumentResult.store.fresh k).2 := by
-                  rw [MStore.fresh_eq]
-                  intro id hid
-                  simp only [Ty.vars, List.mem_singleton] at hid
-                  subst hid
-                  simp
-                exact Ty.allocated_mono (le_of_eq (MStore.unify_length hu).symm) halloc
-              · show ((argumentResult.store.fresh k).1).LevelBounded store2 k
-                have halloc : ((argumentResult.store.fresh k).1).Allocated
-                    (argumentResult.store.fresh k).2 := by
-                  rw [MStore.fresh_eq]
-                  intro id hid
-                  simp only [Ty.vars, List.mem_singleton] at hid
-                  subst hid
-                  simp
-                have hbounded : ((argumentResult.store.fresh k).1).LevelBounded
-                    (argumentResult.store.fresh k).2 k := by
-                  rw [MStore.fresh_eq]
-                  intro id hid
-                  simp only [Ty.vars, List.mem_singleton] at hid
-                  subst hid
-                  rw [MStore.append_unsolved_levelOf, if_neg (by omega), if_pos (by omega)]
-                exact Ty.levelBounded_mono halloc hbounded
+              · exact Ty.allocated_mono (le_of_eq (MStore.unify_length hu).symm) fresh_allocated
+              · exact Ty.levelBounded_mono fresh_allocated fresh_levelBounded
                   (fun id _ => MStore.unify_levelOf_le hu id)
               · intro ann hann
                 simp only [Expr.anns, List.mem_append] at hann
@@ -1055,9 +1021,9 @@ theorem inferAt_spec_app {sig : Signature} {function argument : Source}
                 exact MStore.unify_anchored h2 hu
               · intro valuation models2
                 obtain ⟨hmodelsFresh, hunifyEq⟩ := MStore.unify_sound hu models2
-                have hmodelsArg : argumentResult.store.Models valuation :=
-                  ((MStore.models_append_unsolved (store := argumentResult.store)
-                    (count := 1) (level := k)).1 hmodelsFresh).1
+                have hmodelsArg : argumentResult.store.Models valuation := by
+                  rw [MStore.fresh_eq] at hmodelsFresh
+                  exact MStore.Models.of_append_unsolved hmodelsFresh
                 obtain ⟨hmodelsFunction, hargElab⟩ := hargPost.sound valuation hmodelsArg
                 obtain ⟨hmodelsStore, hfunElab⟩ := hfunPost.sound valuation hmodelsFunction
                 refine ⟨hmodelsStore, ?_⟩
@@ -1072,72 +1038,16 @@ theorem inferAt_spec_app {sig : Signature} {function argument : Source}
                 have hresWF : resTy.WF k := by
                   have := TypingWith.regular hctxWF typing
                   rwa [htarget] at this
-                obtain ⟨extF, hmodelsF, hagreeF, hfunElabReal, hfunTyReal⟩ :=
-                  hfunPost.principal valuation models fElab (.arrow argTy resTy) hfun
-                have hctxF : ctx.realize extF = ctx.realize valuation :=
-                  Ctx.realize_congr
-                    (fun scheme hmem id hid => pre.ctxAllocated scheme hmem id hid)
-                    (fun id hi => (hagreeF id hi).symm)
-                rw [← hctxF] at harg
-                obtain ⟨extA, hmodelsA, hagreeFA, hargElabReal, hargTyReal⟩ :=
-                  hargPost.principal extF hmodelsF aElab argTy harg
-                let ext1 : Valuation :=
-                  Function.update extA argumentResult.store.length resTy
-                have hagreeA1 : Agree argumentResult.store.length extA ext1 := by
-                  intro id hi
-                  have hne : id ≠ argumentResult.store.length := by omega
-                  simp [ext1, hne]
-                have hmodelsFresh : (argumentResult.store.fresh k).2.Models ext1 := by
-                  rw [MStore.fresh_eq, MStore.models_append_unsolved]
-                  refine ⟨?_, ?_⟩
-                  · exact MStore.Models.congr hargPost.safe hmodelsA hagreeA1
-                  · intro i hi
-                    have hi0 : i = 0 := by omega
-                    subst hi0
-                    simpa [ext1, Function.update] using hresWF
-                have hfunAllocA : functionResult.ty.Allocated argumentResult.store :=
-                  Ty.allocated_mono hargPost.grows hfunPost.tyAllocated
-                have hfunAtA : functionResult.ty.realize extA = .arrow argTy resTy := by
-                  rw [← Ty.realize_agree hfunPost.tyAllocated hagreeFA, hfunTyReal]
-                have hfunAt1 : functionResult.ty.realize ext1 = .arrow argTy resTy := by
-                  rw [← Ty.realize_agree hfunAllocA hagreeA1]
-                  exact hfunAtA
-                have hargAt1 : argumentResult.ty.realize ext1 = argTy := by
-                  rw [← Ty.realize_agree hargPost.tyAllocated hagreeA1, hargTyReal]
-                have hfreshAt1 : ((argumentResult.store.fresh k).1).realize ext1 = resTy := by
-                  show ext1 argumentResult.store.length = resTy
-                  simp [ext1]
-                have hunifies : functionResult.ty.realize ext1 =
-                    (Ty.arrow argumentResult.ty (argumentResult.store.fresh k).1).realize ext1 := by
-                  rw [hfunAt1]
-                  show (Ty.arrow argTy resTy) =
-                    (Ty.arrow (argumentResult.ty.realize ext1)
-                      (((argumentResult.store.fresh k).1).realize ext1))
-                  rw [hargAt1, hfreshAt1]
+                obtain ⟨ext1, hmodelsFresh, hagree1, hfunElab1, hargElab1, hfreshAt1, hunifies⟩ :=
+                  app_extend pre hfunPost hargPost models hfun harg hresWF
                 obtain ⟨result, hresult, hmodelsResult⟩ :=
                   MStore.unify_complete hsafeFresh hleftAllocFresh hrightAllocFresh
                     hmodelsFresh hunifies
-                have hfunElab1 : functionResult.elaboration.realize ext1 = fElab := by
-                  rw [← Expr.realize_agree (store := argumentResult.store)
-                    (fun ann hann =>
-                      Ty.allocated_mono hargPost.grows (hfunPost.elabAllocated ann hann))
-                    hagreeA1]
-                  rw [← Expr.realize_agree (store := functionResult.store)
-                    hfunPost.elabAllocated hagreeFA]
-                  exact hfunElabReal
-                have hargElab1 : argumentResult.elaboration.realize ext1 = aElab := by
-                  rw [← Expr.realize_agree (store := argumentResult.store)
-                    hargPost.elabAllocated hagreeA1]
-                  exact hargElabReal
                 have hresultEq : result = store2 := by
                   rw [hu] at hresult
                   exact (Option.some.inj hresult).symm
                 subst hresultEq
-                refine ⟨ext1, hmodelsResult, ?_, ?_, ?_⟩
-                · intro id hi
-                  exact (hagreeF id hi).trans
-                    ((hagreeFA id (lt_of_lt_of_le hi hfunPost.grows)).trans
-                      (hagreeA1 id (lt_of_lt_of_le hi (le_trans hfunPost.grows hargPost.grows))))
+                refine ⟨ext1, hmodelsResult, hagree1, ?_, ?_⟩
                 · change (Expr.app functionResult.elaboration
                       argumentResult.elaboration).realize ext1 = elaboration
                   rw [helab]
@@ -1183,10 +1093,9 @@ theorem inferAt_spec_letMono {sig : Signature} {rhs body : Source}
       unfold InferSpec at hrhsPost
       rw [hr] at hrhsPost
       simp only at hrhsPost
-      have hpreExt : InferPre k ctx rhsResult.store :=
-        pre.extend hrhsPost.safe hrhsPost.grows hrhsPost.levels
       have hpre' : InferPre k (.mono rhsResult.ty :: ctx) rhsResult.store :=
-        InferPre.cons_mono hpreExt hrhsPost.tyWF hrhsPost.tyAllocated hrhsPost.tyLevels
+        InferPre.cons_mono (pre.extend hrhsPost.safe hrhsPost.grows hrhsPost.levels)
+          hrhsPost.tyWF hrhsPost.tyAllocated hrhsPost.tyLevels
       cases hb : inferAt sig k (.mono rhsResult.ty :: ctx) body rhsResult.store with
       | none =>
           have hnone : inferAt sig k ctx (.letIn none rhs body) store = none := by
@@ -1201,14 +1110,7 @@ theorem inferAt_spec_letMono {sig : Signature} {rhs body : Source}
           have hrhsTyping := Elaborates.typing hrhs
           obtain ⟨ext, hmodelsExt, hagreeExt, _, hrhsTyReal⟩ :=
             hrhsPost.principal valuation models rhsElab rhsTy hrhsTyping
-          have hctxeq : Ctx.realize (.mono rhsResult.ty :: ctx) ext =
-              .mono rhsTy :: ctx.realize valuation := by
-            simp only [Ctx.realize_cons, Scheme.realize_mono]
-            rw [hrhsTyReal]
-            congr 1
-            exact Ctx.realize_congr
-              (fun scheme hmem id hid => pre.ctxAllocated scheme hmem id hid)
-              (fun id hi => (hagreeExt id hi).symm)
+          have hctxeq := ctx_realize_cons_eq pre hagreeExt hrhsTyReal
           rw [← hctxeq] at hbody
           exact hbodyNone ext hmodelsExt bodyElab bodyTy hbody
       | some bodyResult =>
@@ -1256,14 +1158,7 @@ theorem inferAt_spec_letMono {sig : Signature} {rhs body : Source}
               TypingWith.letMono_inv typing
             obtain ⟨ext, hmodelsExt, hagreeExt, hrhsElabReal, hrhsTyReal⟩ :=
               hrhsPost.principal valuation models rhsElab rhsTy hrhs
-            have hctxeq : Ctx.realize (.mono rhsResult.ty :: ctx) ext =
-                .mono rhsTy :: ctx.realize valuation := by
-              simp only [Ctx.realize_cons, Scheme.realize_mono]
-              rw [hrhsTyReal]
-              congr 1
-              exact Ctx.realize_congr
-                (fun scheme hmem id hid => pre.ctxAllocated scheme hmem id hid)
-                (fun id hi => (hagreeExt id hi).symm)
+            have hctxeq := ctx_realize_cons_eq pre hagreeExt hrhsTyReal
             rw [← hctxeq] at hbody
             obtain ⟨extended, hmodelsExt', hagreeExt', hbodyElabReal, hbodyTyReal⟩ :=
               hbodyPost.principal ext hmodelsExt bodyElab bodyTy hbody
@@ -1278,17 +1173,29 @@ theorem inferAt_spec_letMono {sig : Signature} {rhs body : Source}
                   (Expr.mapAnn (fun x => Ty.realize x extended) rhsResult.elaboration)
                   (Expr.mapAnn (fun x => Ty.realize x extended) bodyResult.elaboration) =
                 Expr.letIn none rhsElab bodyElab
-              have hrhsElab1 : rhsResult.elaboration.realize extended = rhsElab := by
+              have hrhsMap : Expr.mapAnn (fun x => Ty.realize x extended)
+                  rhsResult.elaboration = rhsElab := by
+                change rhsResult.elaboration.realize extended = rhsElab
                 rw [← Expr.realize_agree (store := rhsResult.store)
                   hrhsPost.elabAllocated hagreeExt']
                 exact hrhsElabReal
-              have hrhsMap : Expr.mapAnn (fun x => Ty.realize x extended)
-                  rhsResult.elaboration = rhsElab := hrhsElab1
-              have hbodyMap : Expr.mapAnn (fun x => Ty.realize x extended)
-                  bodyResult.elaboration = bodyElab := hbodyElabReal
-              rw [hrhsMap, hbodyMap]
+              rw [hrhsMap, show Expr.mapAnn (fun x => Ty.realize x extended)
+                bodyResult.elaboration = bodyElab from hbodyElabReal]
             · rw [htarget]
               exact hbodyTyReal
+
+/-- A model of the store extends to the allocated self type, and the context
+follows: this is the state the body of a `fix` runs in. -/
+private theorem fix_extend {k : Nat} {ctx : Ctx Nat} {store : MStore} {self : Template}
+    {valuation : Valuation} (pre : InferPre k ctx store) (models : store.Models valuation)
+    {sem : SemTy} (hsemwf : sem.WF k) (hsm : self.Matches sem) :
+    ∃ ext, (store.allocate k self).2.Models ext ∧ Agree store.length valuation ext ∧
+      (store.allocate k self).1.realize ext = sem ∧
+      Ctx.realize (.mono (store.allocate k self).1 :: ctx) ext =
+        .mono sem :: ctx.realize valuation := by
+  obtain ⟨ext, hmodelsExt, hagreeExt, hreal⟩ :=
+    MStore.allocate_principal pre.safe models hsm hsemwf
+  exact ⟨ext, hmodelsExt, hagreeExt, hreal, ctx_realize_cons_eq pre hagreeExt hreal⟩
 
 theorem inferAt_spec_fix {sig : Signature} {self : Template} {body : Source}
     (bodySpec : ∀ k ctx store, InferPre k ctx store → InferSpec sig k ctx body store)
@@ -1322,10 +1229,8 @@ theorem inferAt_spec_fix {sig : Signature} {self : Template} {body : Source}
     have hselfLev : (store.allocate k self).1.LevelBounded (store.allocate k self).2 k := by
       rw [MStore.allocate_snd]
       exact Ty.levelBounded_append hselfAlloc hselfOuter
-    have hpreExt : InferPre k ctx (store.allocate k self).2 :=
-      pre.extend hsafe1 hgrow1 hlev1
     have hpre1 : InferPre k (.mono (store.allocate k self).1 :: ctx) (store.allocate k self).2 :=
-      InferPre.cons_mono hpreExt hselfWF hselfAlloc hselfLev
+      InferPre.cons_mono (pre.extend hsafe1 hgrow1 hlev1) hselfWF hselfAlloc hselfLev
     cases hb : inferAt sig k (.mono (store.allocate k self).1 :: ctx) body
         (store.allocate k self).2 with
     | none =>
@@ -1338,18 +1243,7 @@ theorem inferAt_spec_fix {sig : Signature} {self : Template} {body : Source}
         rw [hb] at hbodyNone
         intro valuation models elaboration ty typing
         obtain ⟨sem, bodyElab, _, _, hsemwf, hsm, hbody⟩ := TypingWith.fix_inv typing
-        have hbodyTyping := Elaborates.typing hbody
-        obtain ⟨ext, hmodelsExt, hagreeExt, hreal⟩ :=
-          MStore.allocate_principal (store := store) (level := k) (template := self)
-            (ty := sem) pre.safe models hsm hsemwf
-        have hctxeq : Ctx.realize (.mono (store.allocate k self).1 :: ctx) ext =
-            .mono sem :: ctx.realize valuation := by
-          simp only [Ctx.realize_cons, Scheme.realize_mono]
-          rw [hreal]
-          congr 1
-          exact Ctx.realize_congr
-            (fun scheme hmem id hid => pre.ctxAllocated scheme hmem id hid)
-            (fun id hi => (hagreeExt id hi).symm)
+        obtain ⟨ext, hmodelsExt, _, _, hctxeq⟩ := fix_extend pre models hsemwf hsm
         rw [← hctxeq] at hbody
         exact hbodyNone ext hmodelsExt bodyElab sem hbody
     | some bodyResult =>
@@ -1372,17 +1266,7 @@ theorem inferAt_spec_fix {sig : Signature} {self : Template} {body : Source}
             intro valuation models elaboration ty typing
             obtain ⟨sem, bodyElab, _, _, hsemwf, hsm, hbody⟩ := TypingWith.fix_inv typing
             have hbodyTyping := Elaborates.typing hbody
-            obtain ⟨ext, hmodelsExt, hagreeExt, hreal⟩ :=
-              MStore.allocate_principal (store := store) (level := k) (template := self)
-                (ty := sem) pre.safe models hsm hsemwf
-            have hctxeq : Ctx.realize (.mono (store.allocate k self).1 :: ctx) ext =
-                .mono sem :: ctx.realize valuation := by
-              simp only [Ctx.realize_cons, Scheme.realize_mono]
-              rw [hreal]
-              congr 1
-              exact Ctx.realize_congr
-                (fun scheme hmem id hid => pre.ctxAllocated scheme hmem id hid)
-                (fun id hi => (hagreeExt id hi).symm)
+            obtain ⟨ext, hmodelsExt, _, hreal, hctxeq⟩ := fix_extend pre models hsemwf hsm
             rw [← hctxeq] at hbody
             rw [← hctxeq] at hbodyTyping
             obtain ⟨extended, hmodelsExt', hagreeExt', _, hbodyTyReal⟩ :=
@@ -1406,12 +1290,10 @@ theorem inferAt_spec_fix {sig : Signature} {self : Template} {body : Source}
                   .fix (store.allocate k self).1 bodyResult.elaboration, store2⟩ := by
               simp only [h, hu, Option.bind]
             simp only [InferSpec, hsucc]
-            have hgrowBody : (store.allocate k self).2.length ≤ bodyResult.store.length :=
-              hbodyPost.grows
-            have hgrow12 : (store.allocate k self).2.length ≤ store2.length :=
-              le_trans hbodyPost.grows (le_of_eq (MStore.unify_length hu).symm)
             have hgrowBody2 : bodyResult.store.length ≤ store2.length :=
               le_of_eq (MStore.unify_length hu).symm
+            have hgrow12 : (store.allocate k self).2.length ≤ store2.length :=
+              le_trans hbodyPost.grows hgrowBody2
             have hselfLevBody : (store.allocate k self).1.LevelBounded bodyResult.store k :=
               Ty.levelBounded_mono hselfAlloc hselfLev hbodyPost.levels
             refine
@@ -1449,8 +1331,7 @@ theorem inferAt_spec_fix {sig : Signature} {self : Template} {body : Source}
               obtain ⟨hmodels1, hbodyElab⟩ := hbodyPost.sound valuation hmodelsBody
               refine ⟨?_, ?_⟩
               · rw [MStore.allocate_snd] at hmodels1
-                exact ((MStore.models_append_unsolved (store := store)
-                  (count := self.vars.dedup.length) (level := k)).1 hmodels1).1
+                exact MStore.Models.of_append_unsolved hmodels1
               · simp only [Expr.realize, Expr.mapAnn]
                 have hselfRealWF : ((store.allocate k self).1.realize valuation).WF k :=
                   Ty.realize_wf_of_models hmodels1 hselfWF hselfAlloc hselfLev
@@ -1460,17 +1341,7 @@ theorem inferAt_spec_fix {sig : Signature} {self : Template} {body : Source}
             · intro valuation models elaboration target typing
               obtain ⟨sem, bodyElab, helab, htarget, hsemwf, hsm, hbody⟩ :=
                 TypingWith.fix_inv typing
-              obtain ⟨ext, hmodelsExt, hagreeExt, hreal⟩ :=
-                MStore.allocate_principal (store := store) (level := k) (template := self)
-                  (ty := sem) pre.safe models hsm hsemwf
-              have hctxeq : Ctx.realize (.mono (store.allocate k self).1 :: ctx) ext =
-                  .mono sem :: ctx.realize valuation := by
-                simp only [Ctx.realize_cons, Scheme.realize_mono]
-                rw [hreal]
-                congr 1
-                exact Ctx.realize_congr
-                  (fun scheme hmem id hid => pre.ctxAllocated scheme hmem id hid)
-                  (fun id hi => (hagreeExt id hi).symm)
+              obtain ⟨ext, hmodelsExt, hagreeExt, hreal, hctxeq⟩ := fix_extend pre models hsemwf hsm
               rw [← hctxeq] at hbody
               obtain ⟨extended, hmodelsExt', hagreeExt', hbodyElabReal, hbodyTyReal⟩ :=
                 hbodyPost.principal ext hmodelsExt bodyElab sem hbody

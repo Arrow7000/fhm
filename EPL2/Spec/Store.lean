@@ -41,54 +41,6 @@ private theorem MStore.append_replicate_getElem? {store : MStore} {count level :
     · rw [if_neg hc] at h
       exact absurd h (by simp)
 
-/-- Structural facts about appending unsolved metavariables. -/
-theorem MStore.append_unsolved_safe {store : MStore} (safe : store.Safe) :
-    (store ++ List.replicate count (⟨level, none⟩ : MEntry)).Safe := by
-  refine ⟨?_, ?_, ?_⟩
-  · intro id entry ty hfind hsol
-    rcases MStore.append_replicate_getElem? hfind with h | ⟨rfl, _⟩
-    · obtain ⟨hwf, hlev⟩ := safe.leveled id entry ty h hsol
-      have hall : ty.Allocated store :=
-        safe.allocated id ty (by unfold MStore.lookup; simp [h, hsol])
-      refine ⟨hwf, ?_⟩
-      intro v hv
-      have hvlt : v < store.length := hall v hv
-      unfold MStore.levelOf
-      rw [List.getElem?_append, if_pos hvlt]
-      exact hlev v hv
-    · simp at hsol
-  · intro id ty hlookup
-    unfold MStore.lookup at hlookup
-    cases hfind : (store ++ List.replicate count (⟨level, none⟩ : MEntry))[id]? with
-    | none => simp [hfind] at hlookup
-    | some entry =>
-      have hsol : entry.solution = some ty := by simpa [hfind] using hlookup
-      rcases MStore.append_replicate_getElem? hfind with h | ⟨rfl, _⟩
-      · intro v hv
-        have := safe.allocated id ty (by unfold MStore.lookup; simp [h, hsol]) v hv
-        simp only [List.length_append, List.length_replicate] at this ⊢
-        omega
-      · simp at hsol
-  · intro id ty hlookup m hm
-    unfold MStore.lookup at hlookup
-    cases hfind : (store ++ List.replicate count (⟨level, none⟩ : MEntry))[id]? with
-    | none => simp [hfind] at hlookup
-    | some entry =>
-      have hsol : entry.solution = some ty := by simpa [hfind] using hlookup
-      rcases MStore.append_replicate_getElem? hfind with h | ⟨rfl, _⟩
-      · have hold := safe.normalized id ty (by unfold MStore.lookup; simp [h, hsol]) m hm
-        unfold MStore.lookup at hold ⊢
-        rw [List.getElem?_append]
-        by_cases hm' : m < store.length
-        · rw [if_pos hm']
-          exact hold
-        · rw [if_neg hm']
-          rw [List.getElem?_replicate]
-          by_cases hc : m - store.length < count
-          · rw [if_pos hc]; simp
-          · rw [if_neg hc]; simp
-      · simp at hsol
-
 theorem MStore.append_unsolved_levelOf (store : MStore) (id : Nat) :
     (store ++ List.replicate count (⟨level, none⟩ : MEntry)).levelOf id =
       if id < store.length then store.levelOf id
@@ -110,13 +62,39 @@ theorem MStore.append_unsolved_lookup (store : MStore) (id : Nat) :
       if id < store.length then store.lookup id else none := by
   unfold MStore.lookup
   rw [List.getElem?_append]
-  by_cases h1 : id < store.length
-  · rw [if_pos h1, if_pos h1]
-  · rw [if_neg h1, if_neg h1]
-    rw [List.getElem?_replicate]
-    by_cases h2 : id - store.length < count
-    · rw [if_pos h2]; simp
-    · rw [if_neg h2]; simp
+  by_cases h1 : id < store.length <;> simp [h1, List.getElem?_replicate]
+
+/-- Appending unsolved entries adds no solutions. -/
+private theorem MStore.lookup_append_unsolved_some {store : MStore} {count level id : Nat}
+    {ty : InfTy}
+    (h : (store ++ List.replicate count (⟨level, none⟩ : MEntry)).lookup id = some ty) :
+    store.lookup id = some ty := by
+  by_cases hlt : id < store.length
+  · simpa [MStore.append_unsolved_lookup, hlt] using h
+  · rw [MStore.append_unsolved_lookup, if_neg hlt] at h
+    simp at h
+
+/-- Structural facts about appending unsolved metavariables. -/
+theorem MStore.append_unsolved_safe {store : MStore} (safe : store.Safe) :
+    (store ++ List.replicate count (⟨level, none⟩ : MEntry)).Safe := by
+  refine ⟨?_, ?_, ?_⟩
+  · intro id entry ty hfind hsol
+    rcases MStore.append_replicate_getElem? hfind with h | ⟨rfl, _⟩
+    · obtain ⟨hwf, hlev⟩ := safe.leveled id entry ty h hsol
+      refine ⟨hwf, fun v hv => ?_⟩
+      have hvlt : v < store.length :=
+        safe.allocated id ty (by simp [MStore.lookup, h, hsol]) v hv
+      rw [MStore.append_unsolved_levelOf, if_pos hvlt]
+      exact hlev v hv
+    · simp at hsol
+  · intro id ty hlookup v hv
+    simp only [List.length_append, List.length_replicate]
+    have hbound := safe.allocated id ty (MStore.lookup_append_unsolved_some hlookup) v hv
+    omega
+  · intro id ty hlookup m hm
+    have hold := safe.normalized id ty (MStore.lookup_append_unsolved_some hlookup) m hm
+    rw [MStore.append_unsolved_lookup]
+    split <;> simp [hold]
 
 theorem MStore.freshMany_fst (store : MStore) (level count : Nat) :
     (store.freshMany level count).1 = (List.range count).map fun i => .var (store.length + i) :=
@@ -145,6 +123,22 @@ private theorem List.map_range_getD {α : Type} (l : List α) (d : α) :
     rw [hnone, List.getElem?_eq_none_iff.mpr hj']
     simp
 
+/-- A model extends over appended unsolved entries, given well-formed images
+for them. -/
+private theorem models_append_unsolved_extend {store : MStore} {valuation : Valuation}
+    {count level : Nat} (safe : store.Safe) (models : store.Models valuation)
+    {image : Nat → SemTy} (wf : ∀ i < count, (image i).WF level) :
+    (store ++ List.replicate count (⟨level, none⟩ : MEntry)).Models
+        (fun id => if id < store.length then valuation id else image (id - store.length)) ∧
+      Agree store.length valuation
+        (fun id => if id < store.length then valuation id else image (id - store.length)) := by
+  refine ⟨?_, fun id hid => by simp [hid]⟩
+  rw [MStore.models_append_unsolved]
+  refine ⟨MStore.Models.congr safe models (fun id hid => by simp [hid]), ?_⟩
+  intro i hi
+  rw [if_neg (by omega : ¬ store.length + i < store.length), Nat.add_sub_cancel_left]
+  exact wf i hi
+
 /-- Any arguments well-formed at the level can be chosen for fresh
 metavariables. -/
 theorem MStore.freshMany_principal {store : MStore} {valuation : Valuation} (safe : store.Safe)
@@ -155,33 +149,57 @@ theorem MStore.freshMany_principal {store : MStore} {valuation : Valuation} (saf
       (store.freshMany level count).1.map (·.realize extended) = args := by
   let extended : Valuation := fun id =>
     if id < store.length then valuation id else args.getD (id - store.length) (.prim .unit)
+  have himage : ∀ i < count, (args.getD i (.prim .unit)).WF level := by
+    intro i hi
+    rw [List.getD_eq_getElem?_getD, List.getElem?_eq_getElem (by omega)]
+    exact argsWF _ (List.getElem_mem (by omega))
+  obtain ⟨hmodels, hagree⟩ := models_append_unsolved_extend
+    (image := fun i => args.getD i (.prim .unit)) safe models himage
   refine ⟨extended, ?_, ?_, ?_⟩
-  · rw [MStore.freshMany_snd, MStore.models_append_unsolved]
-    constructor
-    · exact MStore.Models.congr safe models (fun id hid => by simp [extended, hid])
-    · intro i hi
-      have hiargs : i < args.length := by omega
-      have hval : extended (store.length + i) = args[i] := by
-        simp only [extended]
-        rw [if_neg (by omega), show store.length + i - store.length = i by omega]
-        rw [List.getD_eq_getElem?_getD, List.getElem?_eq_getElem hiargs]
-        simp
-      rw [hval]
-      exact argsWF _ (List.getElem_mem hiargs)
-  · intro id hid
-    simp [extended, hid]
+  · rw [MStore.freshMany_snd]
+    exact hmodels
+  · exact hagree
   · rw [MStore.freshMany_fst, show count = args.length from length.symm, List.map_map]
     trans (List.range args.length).map (fun i => args.getD i (.prim .unit))
     · apply List.map_congr_left
       intro i _
       show extended (store.length + i) = args.getD i (.prim .unit)
-      simp only [extended]
-      rw [if_neg (by omega), show store.length + i - store.length = i by omega]
+      simp only [extended, Nat.add_sub_cancel_left]
+      rw [if_neg (by omega)]
     · exact List.map_range_getD args (.prim .unit)
 
 theorem MStore.allocate_snd (store : MStore) (level : Nat) (template : Template) :
     (store.allocate level template).2 =
       store ++ List.replicate template.vars.dedup.length ⟨level, none⟩ :=
+  rfl
+
+/-- `allocate` is `bind` with a fresh metavariable for every hole. -/
+private theorem allocate_fst (store : MStore) (level : Nat) (template : Template) :
+    (store.allocate level template).1 =
+      template.bind (fun name =>
+        (Ty.var (store.length + template.vars.dedup.idxOf name) : InfTy)) :=
+  rfl
+
+/-- The metavariables of an allocated template are exactly the fresh ones. -/
+private theorem allocate_vars {store : MStore} {template : Template} {level id : Nat}
+    (hid : id ∈ (store.allocate level template).1.vars) :
+    store.length ≤ id ∧ id < (store.allocate level template).2.length := by
+  rw [MStore.allocate_snd]
+  rw [allocate_fst] at hid
+  obtain ⟨name, hname, hid'⟩ := Ty.mem_vars_bind.mp hid
+  simp only [Ty.vars, List.mem_singleton] at hid'
+  have hidx : template.vars.dedup.idxOf name < template.vars.dedup.length := by
+    rw [List.idxOf_lt_length_iff]
+    exact List.mem_dedup.mpr hname
+  rw [List.length_append, List.length_replicate]
+  omega
+
+/-- Realizing an allocated template substitutes its fresh metavariables. -/
+private theorem allocate_realize (store : MStore) (level : Nat) (template : Template)
+    (valuation : Valuation) :
+    (store.allocate level template).1.realize valuation =
+      template.bind (fun name => valuation (store.length + template.vars.dedup.idxOf name)) := by
+  rw [Ty.realize, allocate_fst, Ty.bind_bind]
   rfl
 
 /-- The allocated type is the template with holes replaced by fresh
@@ -190,42 +208,20 @@ theorem MStore.allocate_wf {store : MStore} {template : Template} (wf : template
     (store.allocate level template).1.WF level ∧
       (store.allocate level template).1.Allocated (store.allocate level template).2 ∧
       ∀ id ∈ (store.allocate level template).1.vars, store.length ≤ id := by
-  have hfst : (store.allocate level template).1 =
-      template.bind (fun name =>
-        (Ty.var (store.length + template.vars.dedup.idxOf name) : InfTy)) := rfl
-  have hsnd : (store.allocate level template).2 =
-      store ++ List.replicate template.vars.dedup.length (⟨level, none⟩ : MEntry) := rfl
-  constructor
-  · rw [hfst]
-    exact Ty.scoped_bind wf (fun v _ => trivial)
-  constructor
+  refine ⟨?_, ?_, ?_⟩
+  · rw [allocate_fst]
+    exact Ty.scoped_bind wf (fun _ _ => trivial)
   · intro id hid
-    rw [hsnd]
-    rw [hfst] at hid
-    rcases Ty.mem_vars_bind.mp hid with ⟨name, hname, hid'⟩
-    rw [List.length_append, List.length_replicate]
-    simp only [Ty.vars, List.mem_singleton] at hid'
-    have hidx : template.vars.dedup.idxOf name < template.vars.dedup.length := by
-      rw [List.idxOf_lt_length_iff]
-      exact List.mem_dedup.mpr hname
-    omega
+    exact (allocate_vars hid).2
   · intro id hid
-    rw [hfst] at hid
-    rcases Ty.mem_vars_bind.mp hid with ⟨name, _, hid'⟩
-    simp only [Ty.vars, List.mem_singleton] at hid'
-    omega
+    exact (allocate_vars hid).1
 
 /-- Every realization of an allocated template matches the template. -/
 theorem MStore.allocate_sound (store : MStore) (level : Nat) (template : Template)
     (valuation : Valuation) :
-    template.Matches ((store.allocate level template).1.realize valuation) := by
-  refine ⟨fun name => valuation (store.length + template.vars.dedup.idxOf name), ?_⟩
-  rw [Ty.realize]
-  rw [show (store.allocate level template).1 =
-      template.bind (fun name =>
-        (Ty.var (store.length + template.vars.dedup.idxOf name) : InfTy)) from rfl]
-  rw [Ty.bind_bind]
-  rfl
+    template.Matches ((store.allocate level template).1.realize valuation) :=
+  ⟨fun name => valuation (store.length + template.vars.dedup.idxOf name),
+    (allocate_realize store level template valuation).symm⟩
 
 /-- Every type the template matches, well-formed at the level, is a
 realization of the allocated template. -/
@@ -242,41 +238,25 @@ theorem MStore.allocate_principal {store : MStore} {valuation : Valuation} {temp
   have himage : ∀ name ∈ template.vars, (holes name).WF level := by
     have hscoped : (template.bind holes).Scoped level 0 := by rw [hbind]; exact wf
     exact (Ty.scoped_of_bind hscoped).2
+  have hfresh : ∀ i < template.vars.dedup.length,
+      (holes (template.vars.dedup.getD i "")).WF level := by
+    intro i hi
+    rw [List.getD_eq_getElem?_getD, List.getElem?_eq_getElem hi]
+    exact himage _ (List.mem_dedup.mp (List.getElem_mem hi))
+  obtain ⟨hmodels, hagree⟩ := models_append_unsolved_extend
+    (image := fun i => holes (template.vars.dedup.getD i "")) safe models hfresh
   refine ⟨extended, ?_, ?_, ?_⟩
-  · rw [MStore.allocate_snd, MStore.models_append_unsolved]
-    constructor
-    · exact MStore.Models.congr safe models (fun id hid => by simp [extended, hid])
-    · intro i hi
-      have hval : extended (store.length + i) = holes (template.vars.dedup[i]) := by
-        simp only [extended]
-        rw [if_neg (by omega), show store.length + i - store.length = i by omega]
-        rw [List.getD_eq_getElem?_getD, List.getElem?_eq_getElem hi]
-        simp
-      rw [hval]
-      exact himage _ (List.mem_dedup.mp (List.getElem_mem hi))
-  · intro id hid
-    simp [extended, hid]
-  · rw [Ty.realize]
-    rw [show (store.allocate level template).1 =
-        template.bind (fun name =>
-          (Ty.var (store.length + template.vars.dedup.idxOf name) : InfTy)) from rfl]
-    rw [Ty.bind_bind]
-    have hcongr :
-        template.bind (fun name =>
-            ((Ty.var (store.length + template.vars.dedup.idxOf name) : InfTy).bind
-              extended)) =
-          template.bind holes := by
-      apply Ty.bind_congr
-      intro name hname
-      show extended (store.length + template.vars.dedup.idxOf name) = holes name
-      simp only [extended]
-      rw [if_neg (by omega), show store.length + template.vars.dedup.idxOf name -
-        store.length = template.vars.dedup.idxOf name by omega]
-      rw [List.getD_eq_getElem?_getD,
-        List.getElem?_idxOf (List.mem_dedup.mpr hname)]
-      simp
-    rw [hcongr]
-    exact hbind
+  · rw [MStore.allocate_snd]
+    exact hmodels
+  · exact hagree
+  · rw [allocate_realize, ← hbind]
+    apply Ty.bind_congr
+    intro name hname
+    show extended (store.length + template.vars.dedup.idxOf name) = holes name
+    simp only [extended, Nat.add_sub_cancel_left]
+    rw [if_neg (by omega), List.getD_eq_getElem?_getD,
+      List.getElem?_idxOf (List.mem_dedup.mpr hname)]
+    simp
 
 /-- The parameter type of a lambda: a fresh metavariable or an allocated
 annotation. Fails exactly on an annotation with an out-of-scope variable. -/
@@ -295,36 +275,17 @@ theorem paramTy_spec {store : MStore} (safe : store.Safe) :
   | none =>
     dsimp only [paramTy]
     rw [MStore.fresh_eq]
-    refine ⟨?_, ?_, ?_, ?_, ?_, ?_⟩
-    · simp
-    · trivial
-    · intro id hid
-      simp only [Ty.vars, List.mem_singleton] at hid
-      subst hid
-      simp
-    · intro id hid
-      simp only [Ty.vars, List.mem_singleton] at hid
-      subst hid
-      simp
-    · intro valuation
-      trivial
+    refine ⟨by simp, trivial, ?_, ?_, fun _ => trivial, ?_⟩
+    · simp [Ty.Allocated, Ty.vars]
+    · simp [Ty.vars]
     · intro valuation paramSem hmodels hmatch hwf
       let extended : Valuation := fun id =>
         if id < store.length then valuation id else paramSem
+      obtain ⟨hmodels', hagree⟩ := models_append_unsolved_extend (count := 1) (level := k)
+        (image := fun _ => paramSem) safe hmodels (fun _ _ => hwf)
       refine ⟨extended, ?_, ?_, ?_⟩
-      · rw [MStore.models_append_unsolved]
-        constructor
-        · exact MStore.Models.congr safe hmodels (fun id hid => by simp [extended, hid])
-        · intro i hi
-          have hi0 : i = 0 := by omega
-          subst hi0
-          have hval : extended (store.length + 0) = paramSem := by
-            simp only [extended]
-            rw [if_neg (by omega)]
-          rw [hval]
-          exact hwf
-      · intro id hid
-        simp [extended, hid]
+      · exact hmodels'
+      · exact hagree
       · show extended store.length = paramSem
         simp only [extended]
         rw [if_neg (by omega)]
@@ -332,15 +293,10 @@ theorem paramTy_spec {store : MStore} (safe : store.Safe) :
     by_cases hwf : template.WF k
     · dsimp only [paramTy]
       rw [if_pos hwf]
-      refine ⟨?_, ?_, ?_, ?_, ?_, ?_⟩
-      · simp [List.length_append, List.length_replicate]
-      · exact (MStore.allocate_wf hwf).1
-      · exact (MStore.allocate_wf hwf).2.1
-      · exact (MStore.allocate_wf hwf).2.2
-      · intro valuation
-        exact MStore.allocate_sound store k template valuation
-      · intro valuation paramSem hmodels hmatch hsem
-        exact MStore.allocate_principal safe hmodels hmatch hsem
+      obtain ⟨hWF, halloc, hbound⟩ := MStore.allocate_wf hwf
+      exact ⟨by simp [List.length_append, List.length_replicate], hWF, halloc, hbound,
+        fun valuation => MStore.allocate_sound store k template valuation,
+        fun _ _ hmodels hmatch hsem => MStore.allocate_principal safe hmodels hmatch hsem⟩
     · dsimp only [paramTy]
       rw [if_neg hwf]
       intro paramSem hmatch hsem
@@ -363,21 +319,12 @@ theorem MStore.Anchored.append_unsolved {store : MStore} (anchored : store.Ancho
   rw [MStore.append_unsolved_lookup] at hlookup
   by_cases hlt : id < store.length
   · rw [if_pos hlt] at hlookup
-    rw [MStore.append_unsolved_levelOf] at hlev
-    rw [if_pos hlt] at hlev
+    rw [MStore.append_unsolved_levelOf, if_pos hlt] at hlev
     obtain ⟨outer, ty, houter, hlook, hmem⟩ := anchored id hstart hlt hlev hlookup
-    refine ⟨outer, ty, houter, ?_, hmem⟩
-    rw [MStore.append_unsolved_lookup]
-    rw [if_pos ?_]
-    · exact hlook
-    · by_contra hge
-      have hnone : store[outer]? = none := List.getElem?_eq_none_iff.mpr (by omega)
-      unfold MStore.lookup at hlook
-      rw [hnone] at hlook
-      simp at hlook
-  · rw [if_neg hlt] at hlookup
-    rw [MStore.append_unsolved_levelOf] at hlev
-    rw [if_neg hlt, if_pos hlen] at hlev
+    exact ⟨outer, ty, houter, by
+      rw [MStore.append_unsolved_lookup, if_pos (by omega)]
+      exact hlook, hmem⟩
+  · rw [MStore.append_unsolved_levelOf, if_neg hlt, if_pos hlen] at hlev
     omega
 
 /-! ## Contexts and schemes -/
@@ -408,10 +355,8 @@ theorem Scheme.realize_inst (scheme : Scheme Nat) (args : List InfTy) {valuation
     (closed : ∀ id ∈ scheme.body.vars, (valuation id).WF k) :
     (scheme.inst args).realize valuation =
       (scheme.realize valuation).inst (args.map (·.realize valuation)) := by
-  rw [show (scheme.inst args).realize valuation = (scheme.inst args).bind valuation from rfl]
-  rw [show (scheme.realize valuation).inst (args.map (·.realize valuation)) =
-    (scheme.bind valuation).inst (args.map (·.bind valuation)) from rfl]
-  rw [Scheme.inst_bind scheme args (f := valuation) closed]
+  unfold Scheme.realize Ty.realize
+  exact Scheme.inst_bind scheme args closed
 
 theorem Ctx.realize_congr {ctx : Ctx Nat} {first second : Valuation} {frontier : Nat}
     (allocated : ∀ scheme ∈ ctx, ∀ id ∈ scheme.body.vars, id < frontier)
@@ -420,8 +365,8 @@ theorem Ctx.realize_congr {ctx : Ctx Nat} {first second : Valuation} {frontier :
   apply List.map_congr_left
   intro scheme hscheme
   obtain ⟨arity, body⟩ := scheme
-  have hb := Ty.realize_congr (ty := body) (allocated ⟨arity, body⟩ hscheme) agree
-  simpa [Scheme.realize, Scheme.bind, Ty.realize] using hb
+  simpa [Scheme.realize, Scheme.bind, Ty.realize] using
+    Ty.realize_congr (ty := body) (allocated ⟨arity, body⟩ hscheme) agree
 
 /-- Valuations that agree on the metavariables at or below `level` realize a
 context whose metavariables are all at or below `level` alike. -/
@@ -432,10 +377,8 @@ theorem Ctx.realize_congr_levels {ctx : Ctx Nat} {store : MStore} {first second 
   unfold Ctx.realize
   apply List.map_congr_left
   intro scheme hscheme
-  have hb : scheme.body.bind first = scheme.body.bind second := by
-    apply Ty.bind_congr
-    intro v hv
-    exact agree v (levels scheme hscheme v hv)
+  have hb : scheme.body.bind first = scheme.body.bind second :=
+    Ty.bind_congr fun v hv => agree v (levels scheme hscheme v hv)
   simpa [Scheme.realize, Scheme.bind] using hb
 
 theorem Ctx.realize_wf {ctx : Ctx Nat} {store : MStore} {valuation : Valuation}
@@ -447,11 +390,9 @@ theorem Ctx.realize_wf {ctx : Ctx Nat} {store : MStore} {valuation : Valuation}
   intro realized hrealized
   obtain ⟨scheme, hscheme, rfl⟩ := List.mem_map.mp hrealized
   show (scheme.body.bind valuation).Scoped k scheme.arity
-  exact Ty.scoped_bind (wf scheme hscheme) (fun v hv => by
-    have h := MStore.Models.image_wf models (allocated scheme hscheme v hv)
-    have h2 : (valuation v).Scoped k 0 :=
-      Ty.Scoped.mono h (levels scheme hscheme v hv) (Nat.zero_le _)
-    exact Ty.Scoped.mono h2 (Nat.le_refl k) (Nat.zero_le _))
+  exact Ty.scoped_bind (wf scheme hscheme) (fun v hv =>
+    Ty.Scoped.mono (MStore.Models.image_wf models (allocated scheme hscheme v hv))
+      (levels scheme hscheme v hv) (Nat.zero_le _))
 
 /-- The scheme an explicit let binds: the completed generic type, closed. Its
 realization is the closed realization, when the completed type's
@@ -497,19 +438,15 @@ theorem InferPre.deeper (pre : InferPre k ctx store) (le : k ≤ k') : InferPre 
 theorem InferPre.cons_mono (pre : InferPre k ctx store) (wf : ty.WF k)
     (allocated : ty.Allocated store) (levels : ty.LevelBounded store k) :
     InferPre k (.mono ty :: ctx) store := by
-  refine ⟨pre.safe, ?_, ?_, ?_⟩
-  · intro scheme hscheme
+  refine ⟨pre.safe, ?_, ?_, ?_⟩ <;>
+    intro scheme hscheme <;>
     rcases List.mem_cons.mp hscheme with rfl | h
-    · simpa [Scheme.mono] using wf
-    · exact pre.ctxWF scheme h
-  · intro scheme hscheme
-    rcases List.mem_cons.mp hscheme with rfl | h
-    · simpa [Scheme.mono] using allocated
-    · exact pre.ctxAllocated scheme h
-  · intro scheme hscheme
-    rcases List.mem_cons.mp hscheme with rfl | h
-    · simpa [Scheme.mono] using levels
-    · exact pre.ctxLevels scheme h
+  · exact wf
+  · exact pre.ctxWF scheme h
+  · exact allocated
+  · exact pre.ctxAllocated scheme h
+  · exact levels
+  · exact pre.ctxLevels scheme h
 
 /-- What a successful run at depth `k` guarantees. -/
 structure InferPost (sig : Signature) (k : Nat) (ctx : Ctx Nat) (src : Source)

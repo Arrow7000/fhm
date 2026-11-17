@@ -11,7 +11,7 @@ import EPL2.Spec.Eval
 * `evaluate`: infer, erase and run, returning a typed value or a typed term
   that can still step.
 
-**Proof guidance.** Everything about inference follows from `inferAt_spec`
+**Proof outline.** Everything about inference follows from `inferAt_spec`
 at the empty store (`InferPre` holds by `MStore.safe_nil`), unfolding
 `InferSpec` and `infer`:
 * a model of the result exists (`MStore.has_model`), and a type or
@@ -20,8 +20,7 @@ at the empty store (`InferPre` holds by `MStore.safe_nil`), unfolding
   `Expr.traverseAnn_ground_eq_some`, `Ty.realize_lift`,
   `Models.realize_apply`);
 * if the resolved type or an annotation of the resolved elaboration still
-  has a metavariable, it is unsolved and allocated (`MStore.apply_vars_unsolved`,
-  `MStore.apply_allocated`, `InferPost.tyAllocated`/`elabAllocated`), so
+  has a metavariable, it is unsolved (`MStore.apply_vars_unsolved`), so
   `MStore.Models.exists_different` and `InferPost.sound` give two different
   elaborations (`Ty.realize_eq_vars`, `Expr.realize_eq_vars`).
 The runtime theorems follow from `TypingWith.erase`,
@@ -35,47 +34,33 @@ namespace EPL2
 private theorem Expr.mapAnn_mapAnn {A B C : Type} (f : A → B) (g : B → C) (expr : Expr A) :
     (expr.mapAnn f).mapAnn g = expr.mapAnn fun a => g (f a) := by
   induction expr with
-  | lit literal => rfl
-  | primOp op => rfl
-  | const c => rfl
-  | var index => rfl
+  | lit _ | primOp _ | const _ | var _ => rfl
   | lambda param body ih =>
       simp only [Expr.mapAnn, ih]
-      cases param with
-      | none => rfl
-      | some param => rfl
+      cases param <;> rfl
   | app function argument ihFunction ihArgument =>
       simp only [Expr.mapAnn, ihFunction, ihArgument]
   | letIn ann rhs body ihRhs ihBody =>
       simp only [Expr.mapAnn, ihRhs, ihBody]
       cases ann with
       | none => rfl
-      | some ann =>
-          cases ann with
-          | mk arity body => rfl
+      | some ann => cases ann; rfl
   | fix self body ih =>
       simp only [Expr.mapAnn, ih]
 
 private theorem Expr.mapAnn_id {A : Type} (expr : Expr A) : expr.mapAnn (fun a => a) = expr := by
   induction expr with
-  | lit literal => rfl
-  | primOp op => rfl
-  | const c => rfl
-  | var index => rfl
+  | lit _ | primOp _ | const _ | var _ => rfl
   | lambda param body ih =>
       simp only [Expr.mapAnn, ih]
-      cases param with
-      | none => rfl
-      | some param => rfl
+      cases param <;> rfl
   | app function argument ihFunction ihArgument =>
       simp only [Expr.mapAnn, ihFunction, ihArgument]
   | letIn ann rhs body ihRhs ihBody =>
       simp only [Expr.mapAnn, ihRhs, ihBody]
       cases ann with
       | none => rfl
-      | some ann =>
-          cases ann with
-          | mk arity body => rfl
+      | some ann => cases ann; rfl
   | fix self body ih =>
       simp only [Expr.mapAnn, ih]
 
@@ -85,9 +70,7 @@ private theorem Expr.realize_applyElab {store : MStore} {valuation : Valuation}
     (store.applyElab expr).realize valuation = expr.realize valuation := by
   unfold MStore.applyElab Expr.realize
   rw [Expr.mapAnn_mapAnn]
-  apply Expr.mapAnn_congr
-  intro ann _
-  exact MStore.Models.realize_apply models ann
+  exact Expr.mapAnn_congr fun ann _ => MStore.Models.realize_apply models ann
 
 /-- A ground type realizes to its ground value under every model. -/
 private theorem Ty.realize_of_ground {store : MStore} {valuation : Valuation} {ty : InfTy} {sem : SemTy}
@@ -107,20 +90,24 @@ private theorem Expr.realize_of_traverseAnn_ground {store : MStore} {valuation :
     expr.realize valuation = elaboration := by
   have h : store.applyElab expr = elaboration.mapAnn Ty.lift :=
     Expr.traverseAnn_ground_eq_some.mp ground
-  have hresolve : (store.applyElab expr).realize valuation = expr.realize valuation :=
-    Expr.realize_applyElab models expr
   have hself : (elaboration.mapAnn Ty.lift).realize valuation = elaboration := by
     unfold Expr.realize
     rw [Expr.mapAnn_mapAnn]
-    calc elaboration.mapAnn (fun a => (Ty.lift a).realize valuation)
-        = elaboration.mapAnn (fun a => a) := by
-          apply Expr.mapAnn_congr
-          intro ann _
-          exact Ty.realize_lift ann valuation
-      _ = elaboration := Expr.mapAnn_id elaboration
-  calc expr.realize valuation = (store.applyElab expr).realize valuation := hresolve.symm
+    simp only [Ty.realize_lift, Expr.mapAnn_id]
+  calc expr.realize valuation = (store.applyElab expr).realize valuation :=
+        (Expr.realize_applyElab models expr).symm
     _ = (elaboration.mapAnn Ty.lift).realize valuation := by rw [h]
     _ = elaboration := hself
+
+/-- A ground result realizes to itself under any model. -/
+private theorem realize_ground {internal : Inferred} {ty : SemTy} {elaboration : Elab}
+    {valuation : Valuation} (models : internal.store.Models valuation)
+    (ground : (internal.store.apply internal.ty).ground = some ty)
+    (traverse : (internal.store.applyElab internal.elaboration).traverseAnn Ty.ground =
+      some elaboration) :
+    internal.ty.realize valuation = ty ∧
+      internal.elaboration.realize valuation = elaboration :=
+  ⟨Ty.realize_of_ground models ground, Expr.realize_of_traverseAnn_ground models traverse⟩
 
 /-! ## Unfolding `infer` -/
 
@@ -143,34 +130,26 @@ private theorem infer_unfold {sig : Signature} {src : Source} {result : Inferenc
           cases helab : (internal.store.applyElab internal.elaboration).traverseAnn Ty.ground with
           | none => simp [helab]
           | some elaboration =>
+              simp only [Option.some.injEq]
               constructor
-              · intro forwards
-                have tyEq : ty = result.ty :=
-                  congrArg InferenceResult.ty (Option.some.inj forwards)
-                have elaborationEq : elaboration = result.elaboration :=
-                  congrArg InferenceResult.elaboration (Option.some.inj forwards)
+              · rintro rfl
                 refine ⟨internal, rfl, ?_, ?_⟩
-                · rw [hty, tyEq]
-                · rw [helab, elaborationEq]
+                · rw [hty]
+                · rw [helab]
               · rintro ⟨internal', hinternal, htyEq, helabEq⟩
-                have hsame : internal' = internal := (Option.some.inj hinternal).symm
-                subst hsame
+                subst hinternal
                 have tyEq : ty = result.ty := Option.some.inj (hty.symm.trans htyEq)
                 have elaborationEq : elaboration = result.elaboration :=
                   Option.some.inj (helab.symm.trans helabEq)
-                have hpair : (⟨elaboration, ty⟩ : InferenceResult) = result := by
-                  rw [show elaboration = result.elaboration from elaborationEq,
-                    show ty = result.ty from tyEq]
-                show some (⟨elaboration, ty⟩ : InferenceResult) = some result
-                rw [hpair]
+                rw [tyEq, elaborationEq]
 
 /-! ## The empty starting invariants -/
 
 private theorem inferPre_nil : InferPre 0 ([] : Ctx Nat) ([] : MStore) where
   safe := MStore.safe_nil
-  ctxWF := by intro scheme hmem; simp at hmem
-  ctxAllocated := by intro scheme hmem; simp at hmem
-  ctxLevels := by intro scheme hmem; simp at hmem
+  ctxWF := by simp
+  ctxAllocated := by simp
+  ctxLevels := by simp
 
 /-- The invariant guaranteed by a successful run of `inferAt`. -/
 private theorem inferPost_of_run {sig : Signature} {k : Nat} {ctx : Ctx Nat} {src : Source}
@@ -182,6 +161,25 @@ private theorem inferPost_of_run {sig : Signature} {k : Nat} {ctx : Ctx Nat} {sr
 
 /-! ## Failure of the final resolution -/
 
+/-- An unsolved metavariable of a resolved annotation yields two models that
+disagree on it, together with their elaborations. -/
+private theorem models_of_unsolved {sig : Signature} {src : Source} {internal : Inferred}
+    (post : InferPost sig 0 ([] : Ctx Nat) src ([] : MStore) internal)
+    {ty : InfTy} {id : Nat} (hid : id ∈ (internal.store.apply ty).vars) :
+    ∃ first second : Valuation,
+      internal.store.Models first ∧ internal.store.Models second ∧ second id ≠ first id ∧
+      Elaborates sig 0 [] src (internal.elaboration.realize first)
+        (internal.ty.realize first) ∧
+      Elaborates sig 0 [] src (internal.elaboration.realize second)
+        (internal.ty.realize second) := by
+  have hunsolved : internal.store.lookup id = none :=
+    MStore.apply_vars_unsolved post.safe id hid
+  obtain ⟨first, firstModels⟩ := MStore.has_model post.safe
+  obtain ⟨second, secondModels, different, _⟩ :=
+    MStore.Models.exists_different post.safe firstModels hunsolved
+  exact ⟨first, second, firstModels, secondModels, different,
+    (post.sound first firstModels).2, (post.sound second secondModels).2⟩
+
 /-- If the resolved type still has a metavariable, acceptance contradicts
 uniqueness. -/
 private theorem false_of_ty_ground_none {sig : Signature} {src : Source} {internal : Inferred}
@@ -190,23 +188,13 @@ private theorem false_of_ty_ground_none {sig : Signature} {src : Source} {intern
     (bad : (internal.store.apply internal.ty).ground = none)
     (unique : ∀ elaboration' ty', Elaborates sig 0 [] src elaboration' ty' →
       elaboration' = elaboration ∧ ty' = ty) : False := by
-  have hne : (internal.store.apply internal.ty).vars ≠ [] := Ty.ground_eq_none.mp bad
-  obtain ⟨id, hid⟩ := List.exists_mem_of_ne_nil _ hne
-  have hunsolved : internal.store.lookup id = none :=
-    MStore.apply_vars_unsolved post.safe id hid
-  have hallocated : id < internal.store.length :=
-    MStore.apply_allocated post.safe post.tyAllocated id hid
-  obtain ⟨first, firstModels⟩ := MStore.has_model post.safe
-  obtain ⟨second, secondModels, different, _⟩ :=
-    MStore.Models.exists_different post.safe firstModels hallocated hunsolved
-  obtain ⟨-, firstElaborates⟩ := post.sound first firstModels
-  obtain ⟨-, secondElaborates⟩ := post.sound second secondModels
-  have firstTy : internal.ty.realize first = ty := (unique _ _ firstElaborates).2
-  have secondTy : internal.ty.realize second = ty := (unique _ _ secondElaborates).2
+  obtain ⟨id, hid⟩ := List.exists_mem_of_ne_nil _ (Ty.ground_eq_none.mp bad)
+  obtain ⟨first, second, firstModels, secondModels, different, firstElaborates,
+    secondElaborates⟩ := models_of_unsolved post hid
   have realizeEq : (internal.store.apply internal.ty).realize first =
       (internal.store.apply internal.ty).realize second := by
     rw [MStore.Models.realize_apply firstModels, MStore.Models.realize_apply secondModels,
-      firstTy, secondTy]
+      (unique _ _ firstElaborates).2, (unique _ _ secondElaborates).2]
   exact different ((Ty.realize_eq_vars realizeEq) id hid).symm
 
 /-- If a resolved annotation still has a metavariable, acceptance contradicts
@@ -223,23 +211,12 @@ private theorem false_of_elab_ground_none {sig : Signature} {src : Source} {inte
     rw [MStore.applyElab, Expr.anns_mapAnn] at hannotation
     exact List.mem_map.mp hannotation
   obtain ⟨id, hid⟩ := List.exists_mem_of_ne_nil _ hne
-  have hunsolved : internal.store.lookup id = none :=
-    MStore.apply_vars_unsolved post.safe id hid
-  have hallocated : id < internal.store.length :=
-    MStore.apply_allocated post.safe (post.elabAllocated original horiginal) id hid
-  obtain ⟨first, firstModels⟩ := MStore.has_model post.safe
-  obtain ⟨second, secondModels, different, _⟩ :=
-    MStore.Models.exists_different post.safe firstModels hallocated hunsolved
-  obtain ⟨-, firstElaborates⟩ := post.sound first firstModels
-  obtain ⟨-, secondElaborates⟩ := post.sound second secondModels
-  have firstElab : internal.elaboration.realize first = elaboration :=
-    (unique _ _ firstElaborates).1
-  have secondElab : internal.elaboration.realize second = elaboration :=
-    (unique _ _ secondElaborates).1
+  obtain ⟨first, second, firstModels, secondModels, different, firstElaborates,
+    secondElaborates⟩ := models_of_unsolved post hid
   have realizeEq : (internal.store.applyElab internal.elaboration).realize first =
       (internal.store.applyElab internal.elaboration).realize second := by
     rw [Expr.realize_applyElab firstModels, Expr.realize_applyElab secondModels,
-      firstElab, secondElab]
+      (unique _ _ firstElaborates).1, (unique _ _ secondElaborates).1]
   exact different
     ((Expr.realize_eq_vars realizeEq) (internal.store.apply original) hannotation id hid).symm
 
@@ -252,10 +229,7 @@ theorem infer_sound {sig : Signature} {src : Source} {result : InferenceResult}
   have post := inferPost_of_run inferPre_nil run
   obtain ⟨valuation, models⟩ := MStore.has_model post.safe
   obtain ⟨-, elaborates⟩ := post.sound valuation models
-  have hty : internal.ty.realize valuation = result.ty :=
-    Ty.realize_of_ground models ground
-  have helaboration : internal.elaboration.realize valuation = result.elaboration :=
-    Expr.realize_of_traverseAnn_ground models traverse
+  obtain ⟨hty, helaboration⟩ := realize_ground models ground traverse
   simpa only [Ctx.realize, List.map_nil, hty, helaboration] using elaborates
 
 /-- An accepted program is typed at the inferred elaboration and type. -/
@@ -264,10 +238,15 @@ theorem infer_typing {sig : Signature} {src : Source} {result : InferenceResult}
     Typing sig 0 [] src result.elaboration result.ty :=
   (infer_sound accepted).typing
 
+/-- The empty context is well formed at any depth. -/
+private theorem ctxWF_nil {k : Nat} : Ctx.WF k ([] : Ctx Empty) := by
+  intro scheme hmem
+  simp at hmem
+
 /-- The inferred type is closed. -/
 theorem infer_ty_wf {sig : Signature} {src : Source} {result : InferenceResult}
     (accepted : infer sig src = some result) : result.ty.WF 0 :=
-  TypingWith.regular (fun _ mem => absurd mem List.not_mem_nil) (infer_sound accepted)
+  TypingWith.regular ctxWF_nil (infer_sound accepted)
 
 /-- An accepted program has exactly one typing: its elaboration and type are
 the inferred ones. -/
@@ -280,11 +259,8 @@ theorem infer_unique {sig : Signature} {src : Source} {result : InferenceResult}
   obtain ⟨valuation, models⟩ := MStore.has_model MStore.safe_nil
   obtain ⟨extended, extendedModels, -, helaboration, hty⟩ :=
     post.principal valuation models elaboration ty typing
-  have hty' : internal.ty.realize extended = result.ty :=
-    Ty.realize_of_ground extendedModels ground
-  have helaboration' : internal.elaboration.realize extended = result.elaboration :=
-    Expr.realize_of_traverseAnn_ground extendedModels traverse
-  exact ⟨helaboration.symm.trans helaboration', hty.symm.trans hty'⟩
+  obtain ⟨hground, hgroundElab⟩ := realize_ground extendedModels ground traverse
+  exact ⟨helaboration.symm.trans hgroundElab, hty.symm.trans hground⟩
 
 /-- **Soundness and completeness.** `infer` accepts exactly the programs with
 a unique elaboration, and returns it. Proof of `←`: `inferAt_spec` cannot
@@ -326,14 +302,11 @@ theorem infer_eq_some_iff {sig : Signature} {src : Source} {result : InferenceRe
                 obtain ⟨extended, extendedModels, -, helaboration, hty⟩ :=
                   post.principal valuation models result.elaboration result.ty
                     (Elaborates.typing sound)
-                have tyEq : ty = result.ty := by
-                  rw [← Ty.realize_of_ground extendedModels ground]
-                  exact hty
-                have elaborationEq : elaboration = result.elaboration := by
-                  rw [← Expr.realize_of_traverseAnn_ground extendedModels traverse]
-                  exact helaboration
-                rw [tyEq, elaborationEq] at accepted
-                simpa using accepted
+                obtain ⟨hground, hgroundElab⟩ := realize_ground extendedModels ground traverse
+                have tyEq : ty = result.ty := hground.symm.trans hty
+                have elaborationEq : elaboration = result.elaboration :=
+                  hgroundElab.symm.trans helaboration
+                simpa [tyEq, elaborationEq] using accepted
 
 theorem infer_eq_none_iff {sig : Signature} {src : Source} :
     infer sig src = none ↔
@@ -341,12 +314,11 @@ theorem infer_eq_none_iff {sig : Signature} {src : Source} :
         ∀ elaboration' ty', Elaborates sig 0 [] src elaboration' ty' →
           elaboration' = elaboration ∧ ty' = ty := by
   constructor
-  · intro noneRun acceptedData
-    obtain ⟨elaboration, ty, elaborates, unique⟩ := acceptedData
-    have someRun : infer sig src = some ⟨elaboration, ty⟩ :=
+  · rintro noneRun ⟨elaboration, ty, elaborates, unique⟩
+    have accepted : infer sig src = some ⟨elaboration, ty⟩ :=
       infer_eq_some_iff.mpr ⟨elaborates, unique⟩
-    rw [noneRun] at someRun
-    exact Option.noConfusion someRun
+    rw [accepted] at noneRun
+    exact Option.noConfusion noneRun
   · intro notExists
     cases run : infer sig src with
     | none => rfl
@@ -358,20 +330,14 @@ theorem infer_eq_none_iff {sig : Signature} {src : Source} :
 
 theorem infer_runtimeTyping {sig : Signature} {src : Source} {result : InferenceResult}
     (accepted : infer sig src = some result) :
-    RuntimeTyping sig 0 [] src.erase result.ty := by
-  have elaborates : Elaborates sig 0 [] src result.elaboration result.ty :=
-    infer_sound accepted
-  have ctxWF : Ctx.WF 0 ([] : Ctx Empty) := by
-    intro scheme hmem
-    simp at hmem
-  exact TypingWith.erase ctxWF elaborates
+    RuntimeTyping sig 0 [] src.erase result.ty :=
+  TypingWith.erase ctxWF_nil (infer_sound accepted)
 
 theorem infer_steps_typed {sig : Signature} {src : Source} {result : InferenceResult}
     (accepted : infer sig src = some result) (steps : Eval.Steps sig src.erase expr) :
     RuntimeTyping sig 0 [] expr result.ty := by
-  have initial : RuntimeTyping sig 0 [] src.erase result.ty := infer_runtimeTyping accepted
   induction steps with
-  | refl => exact initial
+  | refl => exact infer_runtimeTyping accepted
   | tail _ step ih => exact RuntimeTyping.preservation ih step
 
 /-- Type safety: an accepted program never gets stuck. -/

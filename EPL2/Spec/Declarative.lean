@@ -11,83 +11,45 @@ let condition `Det`, so it holds for both `Typing` and `Elaborates`.
 namespace EPL2
 
 theorem PrimLit.ty_wf (literal : PrimLit) : (literal.ty : Ty V).WF k := by
-  cases literal <;> simp [PrimLit.ty, Ty.WF, Ty.Scoped]
+  cases literal <;> trivial
 
 theorem PrimOp.ty_wf {op : PrimOp} {ty : Ty V} (typed : op.ty sig = some ty) : ty.WF k := by
   cases op with
-  | intAdd =>
+  | intAdd | intSub =>
       simp only [PrimOp.ty, Option.some.injEq] at typed
       subst typed
       simp [Ty.WF, Ty.Scoped]
-  | intSub =>
-      simp only [PrimOp.ty, Option.some.injEq] at typed
-      subst typed
-      simp [Ty.WF, Ty.Scoped]
-  | intLt =>
-      by_cases hb : sig.HasBool
-      · simp only [PrimOp.ty, if_pos hb, Option.some.injEq] at typed
-        subst typed
-        simp [Ty.WF, Ty.Scoped, Ty.bool]
-      · simp [PrimOp.ty, if_neg hb] at typed
-  | charLt =>
+  | intLt | charLt =>
       by_cases hb : sig.HasBool
       · simp only [PrimOp.ty, if_pos hb, Option.some.injEq] at typed
         subst typed
         simp [Ty.WF, Ty.Scoped, Ty.bool]
       · simp [PrimOp.ty, if_neg hb] at typed
 
-theorem PrimOp.ty_lift {op : PrimOp} {ty : SemTy} (typed : op.ty sig = some ty) :
-    op.ty sig = some (ty.lift : Ty V) := by
+/-- Primitive operator types are unchanged by a monadic bind. -/
+private theorem PrimOp.ty_bind_eq {op : PrimOp} {ty : Ty V} (typed : op.ty sig = some ty)
+    (f : V → Ty W) : op.ty sig = some (ty.bind f) := by
   cases op with
-  | intAdd =>
+  | intAdd | intSub =>
       simp only [PrimOp.ty, Option.some.injEq] at typed
       subst typed
       rfl
-  | intSub =>
-      simp only [PrimOp.ty, Option.some.injEq] at typed
-      subst typed
-      rfl
-  | intLt =>
+  | intLt | charLt =>
       by_cases hb : sig.HasBool
       · simp only [PrimOp.ty, if_pos hb, Option.some.injEq] at typed
         subst typed
         simp only [PrimOp.ty, if_pos hb]
         rfl
       · simp [PrimOp.ty, if_neg hb] at typed
-  | charLt =>
-      by_cases hb : sig.HasBool
-      · simp only [PrimOp.ty, if_pos hb, Option.some.injEq] at typed
-        subst typed
-        simp only [PrimOp.ty, if_pos hb]
-        rfl
-      · simp [PrimOp.ty, if_neg hb] at typed
+
+theorem PrimOp.ty_lift {op : PrimOp} {ty : SemTy} (typed : op.ty sig = some ty) :
+    op.ty sig = some (ty.lift : Ty V) :=
+  PrimOp.ty_bind_eq typed Empty.elim
 
 /-- Primitive operator types have no variables. -/
 theorem PrimOp.ty_bind {op : PrimOp} {ty : Ty V} (typed : op.ty sig = some ty) (f : V → Ty W) :
-    op.ty sig = some (ty.bind f) := by
-  cases op with
-  | intAdd =>
-      simp only [PrimOp.ty, Option.some.injEq] at typed
-      subst typed
-      rfl
-  | intSub =>
-      simp only [PrimOp.ty, Option.some.injEq] at typed
-      subst typed
-      rfl
-  | intLt =>
-      by_cases hb : sig.HasBool
-      · simp only [PrimOp.ty, if_pos hb, Option.some.injEq] at typed
-        subst typed
-        simp only [PrimOp.ty, if_pos hb]
-        rfl
-      · simp [PrimOp.ty, if_neg hb] at typed
-  | charLt =>
-      by_cases hb : sig.HasBool
-      · simp only [PrimOp.ty, if_pos hb, Option.some.injEq] at typed
-        subst typed
-        simp only [PrimOp.ty, if_pos hb]
-        rfl
-      · simp [PrimOp.ty, if_neg hb] at typed
+    op.ty sig = some (ty.bind f) :=
+  PrimOp.ty_bind_eq typed f
 
 theorem PrimLit.ty_bind (literal : PrimLit) (f : V → Ty W) :
     (literal.ty : Ty V).bind f = literal.ty := by
@@ -97,39 +59,24 @@ theorem Signature.schemeOf_wf {sig : Signature} (found : sig.schemeOf c = some s
   cases c with
   | ctor type index =>
       cases hdecl : sig[type]? with
-      | none => simp [Signature.schemeOf, hdecl] at found
+      | none => simp_all [Signature.schemeOf]
       | some decl =>
           cases hfields : decl.ctors[index]? with
-          | none => simp [Signature.schemeOf, hdecl, hfields] at found
+          | none => simp_all [Signature.schemeOf]
           | some fields =>
-              by_cases hwf : (decl.ctorScheme type fields).WF 0
-              · have hsome : sig.schemeOf (.ctor type index) = some (decl.ctorScheme type fields) := by
-                  simp [Signature.schemeOf, hdecl, hfields, hwf]
-                rw [hsome] at found
-                have heq : decl.ctorScheme type fields = scheme := Option.some.inj found
-                rw [← heq]
-                exact hwf
-              · simp [Signature.schemeOf, hdecl, hfields, hwf] at found
+              by_cases hwf : (decl.ctorScheme type fields).WF 0 <;> simp_all [Signature.schemeOf]
   | elim type =>
       cases hdecl : sig[type]? with
-      | none => simp [Signature.schemeOf, hdecl] at found
+      | none => simp_all [Signature.schemeOf]
       | some decl =>
-          by_cases hwf : (decl.elimScheme type).WF 0
-          · have hsome : sig.schemeOf (.elim type) = some (decl.elimScheme type) := by
-              simp [Signature.schemeOf, hdecl, hwf]
-            rw [hsome] at found
-            have heq : decl.elimScheme type = scheme := Option.some.inj found
-            rw [← heq]
-            exact hwf
-          · simp [Signature.schemeOf, hdecl, hwf] at found
+          by_cases hwf : (decl.elimScheme type).WF 0 <;> simp_all [Signature.schemeOf]
 
 private theorem map_substRigids_eq_self {ctx : Ctx V} {k : Nat} (wf : ctx.WF k) {f : Nat → Ty V}
-    (id : ∀ l < k, f l = .rigid l) : ctx.map (Scheme.substRigids f) = ctx := by
+    (agrees : ∀ l < k, f l = .rigid l) : ctx.map (Scheme.substRigids f) = ctx := by
   induction ctx with
   | nil => rfl
-  | cons s rest ih =>
-      simp only [List.map_cons]
-      rw [Scheme.substRigids_eq_self (wf s (by simp)) id,
+  | cons scheme rest ih =>
+      simp [Scheme.substRigids_eq_self (wf scheme (by simp)) agrees,
         ih (fun s hs => wf s (by simp [hs]))]
 
 private theorem blockSubst_wf {args : List (Ty V)} {n k k' : Nat}
@@ -155,6 +102,13 @@ private theorem ctxWF_cons {ctx : Ctx V} {k : Nat} (scheme : Scheme V)
 private theorem ctxWF_getElem {ctx : Ctx V} {k : Nat} (wf : ctx.WF k) {i : Nat}
     {scheme : Scheme V} (h : ctx[i]? = some scheme) : scheme.WF k :=
   wf scheme (List.mem_of_getElem? h)
+
+/-- Every instance of a well-formed scheme is well-formed. -/
+private theorem Scheme.instance_wf {scheme : Scheme V} {ty : Ty V} {k k' : Nat}
+    (wf : scheme.WF k) (le : k ≤ k') (inst : scheme.Instance k' ty) : ty.WF k' := by
+  obtain ⟨args, hlen, hargs, hEq⟩ := inst
+  rw [← hEq]
+  exact Scheme.inst_wf wf le hlen hargs
 
 namespace TypingWith
 
@@ -183,13 +137,9 @@ theorem regular (ctxWF : ctx.WF k) (typing : TypingWith sig Det k ctx src elabor
   | lit => exact PrimLit.ty_wf _
   | primOp h => exact PrimOp.ty_wf h
   | const hsch hinst =>
-      obtain ⟨args, hlen, hargs, hEq⟩ := hinst
-      rw [← hEq]
-      exact Scheme.inst_wf (Signature.schemeOf_wf hsch) (Nat.zero_le _) hlen hargs
+      exact Scheme.instance_wf (Signature.schemeOf_wf hsch) (Nat.zero_le _) hinst
   | var hlook hinst =>
-      obtain ⟨args, hlen, hargs, hEq⟩ := hinst
-      rw [← hEq]
-      exact Scheme.inst_wf (ctxWF_getElem ctxWF hlook) (le_refl _) hlen hargs
+      exact Scheme.instance_wf (ctxWF_getElem ctxWF hlook) (le_refl _) hinst
   | lambda hparam hmatch hbody ih =>
       expose_names
       exact ⟨hparam, ih (ctxWF_cons (Scheme.mono paramTy) hparam ctxWF)⟩
@@ -207,10 +157,7 @@ theorem regular (ctxWF : ctx.WF k) (typing : TypingWith sig Det k ctx src elabor
 /-- A source program and its elaboration erase alike. -/
 theorem erase_eq (typing : TypingWith sig Det k ctx src elaboration ty) : elaboration.erase = src.erase := by
   induction typing with
-  | lit => rfl
-  | primOp _ => rfl
-  | const _ _ => rfl
-  | var _ _ => rfl
+  | lit | primOp | const | var => rfl
   | lambda _ _ _ ih => simp [Expr.erase, ih]
   | app _ _ ihf iha => simp [Expr.erase, ihf, iha]
   | letMono _ _ ihrhs ihbody => simp [Expr.erase, ihrhs, ihbody]
@@ -235,28 +182,24 @@ theorem erase (ctxWF : ctx.WF k) (typing : TypingWith sig Det k ctx src elaborat
   | app hf ha ihf iha => exact .app (ihf ctxWF) (iha ctxWF)
   | letMono hrhs hbody ihrhs ihbody =>
       expose_names
-      refine RuntimeTyping.letIn (scheme := Scheme.mono rhsTy) ?_ ?_ ?_
-      · exact regular ctxWF hrhs
+      have hwf := regular ctxWF hrhs
+      refine RuntimeTyping.letIn (scheme := Scheme.mono rhsTy) hwf ?_ ?_
       · intro k' hle ty hinst
-        rw [Scheme.instance_mono] at hinst
-        rw [hinst]
+        obtain rfl := Scheme.instance_mono.mp hinst
         exact RuntimeTyping.mono_depth (ihrhs ctxWF) hle
-      · exact ihbody (ctxWF_cons (Scheme.mono rhsTy) (regular ctxWF hrhs) ctxWF)
+      · exact ihbody (ctxWF_cons (Scheme.mono rhsTy) hwf ctxWF)
   | letPoly hcomp hrhs hdet hbody ihrhs ihbody =>
       expose_names
       refine RuntimeTyping.letIn (scheme := scheme) hcomp.wf ?_
         (ihbody (ctxWF_cons scheme hcomp.wf ctxWF))
       intro k' hle ty hinst
-      obtain ⟨args, hlen, hargs, hEq⟩ := hinst
+      obtain ⟨args, hlen, hargs, rfl⟩ := hinst
       have hwfK : Ctx.WF (k_1 + scheme.arity) ctx_1 :=
         Ctx.WF.mono ctxWF (Nat.le_add_right k_1 scheme.arity)
       have hsub := RuntimeTyping.substRigids (k' := k') hwfK (ihrhs hwfK)
         (blockSubst k_1 args) (fun l hl => blockSubst_wf hlen hargs hle hl)
-      have hctx : ctx_1.map (Scheme.substRigids (blockSubst k_1 args)) = ctx_1 :=
-        map_substRigids_eq_self ctxWF (fun l hl => by unfold blockSubst; rw [if_pos hl])
-      have htype : (scheme.skolemize k_1).substRigids (blockSubst k_1 args) = ty := by
-        rw [Scheme.skolemize_substRigids hcomp.wf hlen, hEq]
-      rwa [hctx, htype] at hsub
+      rwa [map_substRigids_eq_self ctxWF (fun l hl => by simp [blockSubst, hl]),
+        Scheme.skolemize_substRigids hcomp.wf hlen] at hsub
   | fix hwf hmatch hbody ih =>
       expose_names
       exact .fix hwf (ih (ctxWF_cons (Scheme.mono selfTy) hwf ctxWF))

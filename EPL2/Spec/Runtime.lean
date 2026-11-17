@@ -28,10 +28,7 @@ private theorem Expr.apps_append {A : Type} (head : Expr A) (first second : List
 private theorem Expr.spine_apps {A : Type} (head : Expr A) (args : List (Expr A)) :
     (Expr.apps head args).spine = (head.spine.1, head.spine.2 ++ args) := by
   induction args generalizing head with
-  | nil =>
-      change head.spine = (head.spine.1, head.spine.2 ++ [])
-      cases head.spine
-      simp
+  | nil => simp [Expr.apps, List.append_nil]
   | cons a as ih =>
       have step : Expr.apps head (a :: as) = Expr.apps (.app head a) as := rfl
       rw [step, ih]
@@ -40,17 +37,11 @@ private theorem Expr.spine_apps {A : Type} (head : Expr A) (args : List (Expr A)
 private theorem Expr.apps_spine {A : Type} (expr : Expr A) :
     Expr.apps expr.spine.1 expr.spine.2 = expr := by
   induction expr with
-  | lit => rfl
-  | primOp => rfl
-  | const => rfl
-  | var => rfl
-  | lambda => rfl
   | app f a ihf =>
       change Expr.apps f.spine.1 (f.spine.2 ++ [a]) = Expr.app f a
       rw [Expr.apps_append, ihf]
       rfl
-  | letIn => rfl
-  | fix => rfl
+  | lit | primOp | const | var | lambda | letIn | fix => rfl
 
 private theorem Expr.spine_app_spine {A : Type} {f a h : Expr A} {args : List (Expr A)}
     (hs : f.spine = (h, args)) :
@@ -58,14 +49,6 @@ private theorem Expr.spine_app_spine {A : Type} {f a h : Expr A} {args : List (E
   simp only [Expr.spine, hs]
 
 /-! ## Type-level list and substitution lemmas -/
-
-private theorem Ty.arrows_cons {V : Type} (d : Ty V) (ds : List (Ty V)) (c : Ty V) :
-    Ty.arrows (d :: ds) c = .arrow d (Ty.arrows ds c) := rfl
-
-private theorem Ty.arrows_nil {V : Type} (c : Ty V) : Ty.arrows [] c = c := rfl
-
-private theorem Ty.apps_cons {V : Type} (head : Ty V) (a : Ty V) (as : List (Ty V)) :
-    Ty.apps head (a :: as) = Ty.apps (Ty.app head a) as := rfl
 
 private theorem Ty.instantiate_arrows {V : Type} (args : List (Ty V))
     (domains : List (Ty V)) (codomain : Ty V) :
@@ -91,10 +74,6 @@ private theorem Ty.instantiate_apps {V : Type} (args : List (Ty V))
           (as.map (fun t => Ty.instantiate args t))
       rw [ih (Ty.app head a)]
 
-private theorem Ty.subst_instantiate {V : Type} (args : List (Ty V)) (ty : Ty V) :
-    Ty.subst ⟨fun i => args.getD i (Ty.bvar i), Ty.rigid, Ty.var⟩ ty =
-      Ty.instantiate args ty := rfl
-
 private theorem Ty.instantiate_branchTy (args : List SemTy)
     (fields : List SemTy) (result : SemTy) :
     Ty.instantiate args (branchTy fields result) =
@@ -102,12 +81,10 @@ private theorem Ty.instantiate_branchTy (args : List SemTy)
         (Ty.arrows (fields.map (fun ft => Ty.instantiate args ft))
           (Ty.instantiate args result)) := by
   unfold branchTy
-  change Ty.subst ⟨fun i => args.getD i (Ty.bvar i), Ty.rigid, Ty.var⟩
-      (Ty.arrow (.prim .unit) (Ty.arrows fields result)) = _
-  rw [Ty.subst_instantiate]
-  rw [show Ty.instantiate args (Ty.arrow (.prim .unit) (Ty.arrows fields result)) =
-      Ty.arrow (Ty.instantiate args (.prim .unit))
-        (Ty.instantiate args (Ty.arrows fields result)) from rfl]
+  change Ty.arrow (Ty.instantiate args (.prim .unit))
+      (Ty.instantiate args (Ty.arrows fields result)) =
+    Ty.arrow (.prim .unit)
+      (Ty.arrows (fields.map (fun ft => Ty.instantiate args ft)) (Ty.instantiate args result))
   rw [Ty.instantiate_arrows]
   rfl
 
@@ -150,32 +127,29 @@ private theorem Ty.apps_append_singleton {V : Type} (head : Ty V) (xs : List (Ty
 
 private theorem Ty.apps_con_inj {V : Type} {t t' : Nat} {as bs : List (Ty V)}
     (h : Ty.apps (.con t) as = Ty.apps (.con t') bs) : t = t' ∧ as = bs := by
-  have main : ∀ (as : List (Ty V)) (bs : List (Ty V)),
+  have main : ∀ (as bs : List (Ty V)),
       Ty.apps (.con t) as = Ty.apps (.con t') bs → t = t' ∧ as = bs := by
     intro as
-    refine Ty.list_reverse_induction (motive := fun as => ∀ bs,
-      Ty.apps (.con t) as = Ty.apps (.con t') bs → t = t' ∧ as = bs) ?_ ?_ as
-    · intro bs
-      refine Ty.list_reverse_induction (motive := fun bs =>
-        Ty.apps (.con t) [] = Ty.apps (.con t') bs → t = t' ∧ ([] : List (Ty V)) = bs) ?_ ?_ bs
-      · intro hh
-        simpa [Ty.apps] using hh
-      · intro ys y _ hh
-        rw [Ty.apps_append_singleton] at hh
-        cases hh
-    · intro xs x ih bs
-      refine Ty.list_reverse_induction (motive := fun bs =>
-        Ty.apps (.con t) (xs ++ [x]) = Ty.apps (.con t') bs →
-          t = t' ∧ xs ++ [x] = bs) ?_ ?_ bs
-      · intro hh
-        rw [Ty.apps_append_singleton] at hh
-        cases hh
-      · intro ys y _ hh
-        rw [Ty.apps_append_singleton, Ty.apps_append_singleton] at hh
-        injection hh with hhead hlast
-        obtain ⟨htt, hxs⟩ := ih ys hhead
-        subst htt hxs hlast
-        exact ⟨rfl, rfl⟩
+    induction as using Ty.list_reverse_induction with
+    | nil =>
+        intro bs h
+        induction bs using Ty.list_reverse_induction with
+        | nil => simpa [Ty.apps] using h
+        | step ys y _ =>
+            rw [Ty.apps_append_singleton] at h
+            cases h
+    | step xs x ih =>
+        intro bs h
+        induction bs using Ty.list_reverse_induction with
+        | nil =>
+            rw [Ty.apps_append_singleton] at h
+            cases h
+        | step ys y _ =>
+            rw [Ty.apps_append_singleton, Ty.apps_append_singleton] at h
+            injection h with hhead hlast
+            obtain ⟨rfl, rfl⟩ := ih ys hhead
+            subst hlast
+            exact ⟨rfl, rfl⟩
   exact main as bs h
 
 private theorem Ty.apps_con_ne_arrow {V : Type} {t : Nat} {params : List (Ty V)} {a b : Ty V} :
@@ -264,37 +238,6 @@ private theorem DataDecl.selfTy_inst {decl : DataDecl} {type : Nat} {args : List
 
 /-! ## Signature lemmas -/
 
-private theorem schemeOf_wf {sig : Signature} {c : DataConst} {scheme : Scheme Empty}
-    (found : sig.schemeOf c = some scheme) : scheme.WF 0 := by
-  cases c with
-  | ctor type index =>
-      cases hdecl : sig[type]? with
-      | none => simp [Signature.schemeOf, hdecl] at found
-      | some decl =>
-          cases hfields : decl.ctors[index]? with
-          | none => simp [Signature.schemeOf, hdecl, hfields] at found
-          | some fields =>
-              by_cases hwf : (decl.ctorScheme type fields).WF 0
-              · have hsome : sig.schemeOf (.ctor type index) = some (decl.ctorScheme type fields) := by
-                  simp [Signature.schemeOf, hdecl, hfields, hwf]
-                rw [hsome] at found
-                have heq : decl.ctorScheme type fields = scheme := Option.some.inj found
-                rw [← heq]
-                exact hwf
-              · simp [Signature.schemeOf, hdecl, hfields, hwf] at found
-  | elim type =>
-      cases hdecl : sig[type]? with
-      | none => simp [Signature.schemeOf, hdecl] at found
-      | some decl =>
-          by_cases hwf : (decl.elimScheme type).WF 0
-          · have hsome : sig.schemeOf (.elim type) = some (decl.elimScheme type) := by
-              simp [Signature.schemeOf, hdecl, hwf]
-            rw [hsome] at found
-            have heq : decl.elimScheme type = scheme := Option.some.inj found
-            rw [← heq]
-            exact hwf
-          · simp [Signature.schemeOf, hdecl, hwf] at found
-
 private theorem schemeOf_ctor_some {sig : Signature} {type index : Nat} {scheme : Scheme Empty}
     (found : sig.schemeOf (.ctor type index) = some scheme) :
     ∃ (decl : DataDecl) (fields : List SemTy),
@@ -328,6 +271,18 @@ private theorem schemeOf_elim_some {sig : Signature} {type : Nat} {scheme : Sche
         exact (Option.some.inj found).symm
       · simp [Signature.schemeOf, hdecl, hwf] at found
 
+private theorem schemeOf_wf {sig : Signature} {c : DataConst} {scheme : Scheme Empty}
+    (found : sig.schemeOf c = some scheme) : scheme.WF 0 := by
+  cases c with
+  | ctor type index =>
+      obtain ⟨decl, fields, hdecl, hfields, rfl⟩ := schemeOf_ctor_some found
+      by_contra hwf
+      simp [Signature.schemeOf, hdecl, hfields, hwf] at found
+  | elim type =>
+      obtain ⟨decl, hdecl, rfl⟩ := schemeOf_elim_some found
+      by_contra hwf
+      simp [Signature.schemeOf, hdecl, hwf] at found
+
 private theorem schemeOf_valueArity {sig : Signature} {c : DataConst} {scheme : Scheme Empty}
     (found : sig.schemeOf c = some scheme) : ∃ arity, sig.valueArity c = some arity := by
   cases c with
@@ -358,6 +313,37 @@ private theorem Ctx.WF.cons {V : Type} {ctx : Ctx V} {scheme : Scheme V} {k : Na
   · exact hs
   · exact hc s h
 
+/-- Every instance of a scheme well-formed at `k` is well-formed at the instance
+depth. -/
+private theorem Scheme.Instance.wf {V : Type} {scheme : Scheme V} {ty : Ty V} {k k' : Nat}
+    (hwf : scheme.WF k) (le : k ≤ k') (hinst : scheme.Instance k' ty) : ty.WF k' := by
+  obtain ⟨args, hlen, hargs, heq⟩ := hinst
+  rw [← heq]
+  exact Scheme.inst_wf hwf le hlen hargs
+
+/-- Every primitive operator's type is either `p → p → p` or `p → p → Bool`. -/
+private theorem primOp_ty_eq {sig : Signature} {op : PrimOp} {ty : SemTy}
+    (hop : op.ty sig = some ty) :
+    (∃ p : PrimTy, ty = .arrow (.prim p) (.arrow (.prim p) (.prim p))) ∨
+      (∃ p : PrimTy, ty = .arrow (.prim p) (.arrow (.prim p) Ty.bool)) := by
+  cases op with
+  | intAdd | intSub =>
+      simp only [PrimOp.ty, Option.some.injEq] at hop
+      subst hop
+      exact .inl ⟨.int, rfl⟩
+  | intLt =>
+      by_cases hb : sig.HasBool
+      · simp only [PrimOp.ty, if_pos hb, Option.some.injEq] at hop
+        subst hop
+        exact .inr ⟨.int, rfl⟩
+      · simp [PrimOp.ty, if_neg hb] at hop
+  | charLt =>
+      by_cases hb : sig.HasBool
+      · simp only [PrimOp.ty, if_pos hb, Option.some.injEq] at hop
+        subst hop
+        exact .inr ⟨.char, rfl⟩
+      · simp [PrimOp.ty, if_neg hb] at hop
+
 namespace RuntimeTyping
 
 theorem regular (ctxWF : ctx.WF k) (typing : RuntimeTyping sig k ctx expr ty) : ty.WF k := by
@@ -366,34 +352,12 @@ theorem regular (ctxWF : ctx.WF k) (typing : RuntimeTyping sig k ctx expr ty) : 
       rename_i literal
       cases literal <;> trivial
   | primOp hop =>
-      rename_i op
-      cases op with
-      | intAdd =>
-          simp only [PrimOp.ty, Option.some.injEq] at hop
-          subst hop; simp [Ty.WF, Ty.Scoped]
-      | intSub =>
-          simp only [PrimOp.ty, Option.some.injEq] at hop
-          subst hop; simp [Ty.WF, Ty.Scoped]
-      | intLt =>
-          by_cases hb : sig.HasBool
-          · simp only [PrimOp.ty, if_pos hb, Option.some.injEq] at hop
-            subst hop; simp [Ty.WF, Ty.Scoped, Ty.bool]
-          · simp [PrimOp.ty, if_neg hb] at hop
-      | charLt =>
-          by_cases hb : sig.HasBool
-          · simp only [PrimOp.ty, if_pos hb, Option.some.injEq] at hop
-            subst hop; simp [Ty.WF, Ty.Scoped, Ty.bool]
-          · simp [PrimOp.ty, if_neg hb] at hop
+      rcases primOp_ty_eq hop with ⟨p, rfl⟩ | ⟨p, rfl⟩ <;>
+        simp [Ty.WF, Ty.Scoped, Ty.bool]
   | const hscheme hinst =>
-      have hwf0 := schemeOf_wf hscheme
-      obtain ⟨args, hlen, hargs, hinstEq⟩ := hinst
-      rw [← hinstEq]
-      exact Scheme.inst_wf hwf0 (Nat.zero_le _) hlen hargs
+      exact Scheme.Instance.wf (schemeOf_wf hscheme) (Nat.zero_le _) hinst
   | var hlook hinst =>
-      have hwf := Ctx.WF.getElem? ctxWF hlook
-      obtain ⟨args, hlen, hargs, hinstEq⟩ := hinst
-      rw [← hinstEq]
-      exact Scheme.inst_wf hwf (le_refl _) hlen hargs
+      exact Scheme.Instance.wf (Ctx.WF.getElem? ctxWF hlook) (le_refl _) hinst
   | lambda hparam _ ih =>
       exact ⟨hparam, ih (Ctx.WF.cons hparam ctxWF)⟩
   | app _ _ ihfun _ =>
@@ -519,8 +483,7 @@ private theorem subst_at {sig : Signature} {k : Nat} {env : Ctx Empty}
           subst hschEq
           exact weaken (inner := []) (ctx := ctx) (extra := inner)
             (value k_1 (le_refl k_1) ty_1 hinst)
-        · have hgt : inner.length < index := by omega
-          simp only [Expr.substAt, if_neg hlt, if_neg heq]
+        · simp only [Expr.substAt, if_neg hlt, if_neg heq]
           refine RuntimeTyping.var ?_ hinst
           rw [List.getElem?_append_right (by omega : inner.length ≤ index - 1)]
           rw [show index - 1 - inner.length = index - inner.length - 1 by omega]
@@ -572,6 +535,20 @@ private theorem mapSubstRigids_congr {ctx : Ctx Empty} {f g : Nat → SemTy} {k 
   intro s hs
   exact Scheme.substRigids_congr (wf s hs) agree
 
+/-- Type substitution maps a scheme instance by substituting the arguments. -/
+private theorem Scheme.instance_substRigids {scheme : Scheme Empty} {ty : SemTy}
+    {k k' : Nat} {f : Nat → SemTy} (hinst : scheme.Instance k ty)
+    (hwf : scheme.WF k) (images : ∀ l < k, (f l).WF k') :
+    (scheme.substRigids f).Instance k' (ty.substRigids f) := by
+  obtain ⟨args, hlen, hargs, heq⟩ := hinst
+  refine ⟨args.map (fun a => a.substRigids f), ?_, ?_, ?_⟩
+  · simpa using hlen
+  · intro a ha
+    obtain ⟨orig, horig, rfl⟩ := List.mem_map.mp ha
+    exact Ty.substRigids_wf (hargs orig horig) images
+  · rw [← heq]
+    exact (Scheme.inst_substRigids (rigids := k') args hwf images).symm
+
 /-- Type substitution: replace the rigid levels below `k` by types
 well-formed at `k'`. Proof: induction on `typing`, generalizing `k'` and `f`.
 In the `letIn` case, prove the premise at depth `k'' ≥ k'` for the instance
@@ -587,64 +564,20 @@ theorem substRigids (ctxWF : ctx.WF k) (typing : RuntimeTyping sig k ctx expr ty
       rename_i literal
       cases literal <;> exact .lit
   | primOp hop =>
-      rename_i op
-      cases op with
-      | intAdd =>
-          simp only [PrimOp.ty, Option.some.injEq] at hop
-          subst hop
-          exact RuntimeTyping.primOp
-            (ty := Ty.arrow (Ty.prim .int) (Ty.arrow (Ty.prim .int) (Ty.prim .int)))
-            (by simp [PrimOp.ty])
-      | intSub =>
-          simp only [PrimOp.ty, Option.some.injEq] at hop
-          subst hop
-          exact RuntimeTyping.primOp
-            (ty := Ty.arrow (Ty.prim .int) (Ty.arrow (Ty.prim .int) (Ty.prim .int)))
-            (by simp [PrimOp.ty])
-      | intLt =>
-          by_cases hb : sig.HasBool
-          · simp only [PrimOp.ty, if_pos hb, Option.some.injEq] at hop
-            subst hop
-            exact RuntimeTyping.primOp
-              (ty := Ty.arrow (Ty.prim .int) (Ty.arrow (Ty.prim .int) Ty.bool))
-              (by simp [PrimOp.ty, hb])
-          · simp [PrimOp.ty, if_neg hb] at hop
-      | charLt =>
-          by_cases hb : sig.HasBool
-          · simp only [PrimOp.ty, if_pos hb, Option.some.injEq] at hop
-            subst hop
-            exact RuntimeTyping.primOp
-              (ty := Ty.arrow (Ty.prim .char) (Ty.arrow (Ty.prim .char) Ty.bool))
-              (by simp [PrimOp.ty, hb])
-          · simp [PrimOp.ty, if_neg hb] at hop
+      rcases primOp_ty_eq hop with ⟨p, rfl⟩ | ⟨p, rfl⟩ <;>
+        exact .primOp (by simpa [Ty.substRigids, Ty.subst] using hop)
   | const hscheme hinst =>
-      obtain ⟨args, hlen, hargs, hinstEq⟩ := hinst
-      refine .const hscheme ?_
-      refine ⟨args.map (fun a => a.substRigids f), ?_, ?_, ?_⟩
-      · simpa using hlen
-      · intro a ha
-        obtain ⟨orig, horig, rfl⟩ := List.mem_map.mp ha
-        exact Ty.substRigids_wf (hargs orig horig) images
-      · rw [← hinstEq]
-        have h := (Scheme.inst_substRigids (rigids := k') (f := f) args
-          (schemeOf_wf hscheme)
-          (fun l hl => absurd hl (Nat.not_lt_zero l))).symm
-        rwa [Scheme.substRigids_eq_self (schemeOf_wf hscheme)
-          (fun l hl => absurd hl (Nat.not_lt_zero l))] at h
+      have hinst' := Scheme.instance_substRigids hinst
+        (schemeWF_mono (schemeOf_wf hscheme) (Nat.zero_le _)) images
+      rw [Scheme.substRigids_eq_self (schemeOf_wf hscheme)
+        (fun l hl => absurd hl (Nat.not_lt_zero l))] at hinst'
+      exact .const hscheme hinst'
   | var hlook hinst =>
       expose_names
-      obtain ⟨args, hlen, hargs, hinstEq⟩ := hinst
-      have hwf := Ctx.WF.getElem? ctxWF hlook
       refine .var (scheme := Scheme.substRigids f scheme) ?_ ?_
       · rw [List.getElem?_map, hlook]
         rfl
-      · refine ⟨args.map (fun a => a.substRigids f), ?_, ?_, ?_⟩
-        · simpa using hlen
-        · intro a ha
-          obtain ⟨orig, horig, rfl⟩ := List.mem_map.mp ha
-          exact Ty.substRigids_wf (hargs orig horig) images
-        · rw [← hinstEq]
-          exact (Scheme.inst_substRigids args hwf images).symm
+      · exact Scheme.instance_substRigids hinst (Ctx.WF.getElem? ctxWF hlook) images
   | lambda hparam hbody ih =>
       expose_names
       refine .lambda (Ty.substRigids_wf hparam images) ?_
@@ -696,82 +629,30 @@ theorem substRigids (ctxWF : ctx.WF k) (typing : RuntimeTyping sig k ctx expr ty
 
 private theorem primOp_ty_arrow {sig : Signature} {op : PrimOp} {ty : SemTy}
     (hop : op.ty sig = some ty) : ∃ a b, ty = .arrow a b := by
-  cases op with
-  | intAdd =>
-      exact ⟨_, _, by
-        simp only [PrimOp.ty, Option.some.injEq] at hop
-        exact hop.symm⟩
-  | intSub =>
-      exact ⟨_, _, by
-        simp only [PrimOp.ty, Option.some.injEq] at hop
-        exact hop.symm⟩
-  | intLt =>
-      by_cases hb : sig.HasBool
-      · exact ⟨_, _, by
-          simp only [PrimOp.ty, if_pos hb, Option.some.injEq] at hop
-          exact hop.symm⟩
-      · simp [PrimOp.ty, if_neg hb] at hop
-  | charLt =>
-      by_cases hb : sig.HasBool
-      · exact ⟨_, _, by
-          simp only [PrimOp.ty, if_pos hb, Option.some.injEq] at hop
-          exact hop.symm⟩
-      · simp [PrimOp.ty, if_neg hb] at hop
+  rcases primOp_ty_eq hop with ⟨p, rfl⟩ | ⟨p, rfl⟩ <;> exact ⟨_, _, rfl⟩
 
 private theorem primOp_ty_codomain_arrow {sig : Signature} {op : PrimOp} {a b : SemTy}
     (hop : op.ty sig = some (.arrow a b)) : ∃ c d, b = .arrow c d := by
-  cases op with
-  | intAdd =>
-      simp only [PrimOp.ty, Option.some.injEq, Ty.arrow.injEq] at hop
-      exact ⟨_, _, hop.2.symm⟩
-  | intSub =>
-      simp only [PrimOp.ty, Option.some.injEq, Ty.arrow.injEq] at hop
-      exact ⟨_, _, hop.2.symm⟩
-  | intLt =>
-      by_cases hb : sig.HasBool
-      · simp only [PrimOp.ty, if_pos hb, Option.some.injEq, Ty.arrow.injEq] at hop
-        exact ⟨_, _, hop.2.symm⟩
-      · simp [PrimOp.ty, if_neg hb] at hop
-  | charLt =>
-      by_cases hb : sig.HasBool
-      · simp only [PrimOp.ty, if_pos hb, Option.some.injEq, Ty.arrow.injEq] at hop
-        exact ⟨_, _, hop.2.symm⟩
-      · simp [PrimOp.ty, if_neg hb] at hop
+  rcases primOp_ty_eq hop with ⟨p, h⟩ | ⟨p, h⟩ <;>
+    (injection h with _ hb; exact ⟨_, _, hb⟩)
 
 private theorem primOp_ty_domain {sig : Signature} {op : PrimOp} {α β ty : SemTy}
     (hop : op.ty sig = some (.arrow α (.arrow β ty))) :
     ∃ p q, α = .prim p ∧ β = .prim q := by
-  cases op with
-  | intAdd =>
-      simp only [PrimOp.ty, Option.some.injEq, Ty.arrow.injEq] at hop
-      exact ⟨.int, .int, hop.1.symm, hop.2.1.symm⟩
-  | intSub =>
-      simp only [PrimOp.ty, Option.some.injEq, Ty.arrow.injEq] at hop
-      exact ⟨.int, .int, hop.1.symm, hop.2.1.symm⟩
-  | intLt =>
-      by_cases hb : sig.HasBool
-      · simp only [PrimOp.ty, if_pos hb, Option.some.injEq, Ty.arrow.injEq] at hop
-        exact ⟨.int, .int, hop.1.symm, hop.2.1.symm⟩
-      · simp [PrimOp.ty, if_neg hb] at hop
-  | charLt =>
-      by_cases hb : sig.HasBool
-      · simp only [PrimOp.ty, if_pos hb, Option.some.injEq, Ty.arrow.injEq] at hop
-        exact ⟨.char, .char, hop.1.symm, hop.2.1.symm⟩
-      · simp [PrimOp.ty, if_neg hb] at hop
+  rcases primOp_ty_eq hop with ⟨p, h⟩ | ⟨p, h⟩ <;>
+    (injection h with hα hβ; exact ⟨p, p, hα, (Ty.arrow.inj hβ).1⟩)
 
 private theorem primLit_int_eq {V : Type} {lit : PrimLit} (h : (lit.ty : Ty V) = .prim .int) :
     ∃ n, lit = .int n := by
   cases lit with
   | int n => exact ⟨n, rfl⟩
-  | unit => simp [PrimLit.ty] at h
-  | char c => simp [PrimLit.ty] at h
+  | unit | char _ => simp [PrimLit.ty] at h
 
 private theorem primLit_char_eq {V : Type} {lit : PrimLit} (h : (lit.ty : Ty V) = .prim .char) :
     ∃ c, lit = .char c := by
   cases lit with
-  | int n => simp [PrimLit.ty] at h
-  | unit => simp [PrimLit.ty] at h
   | char c => exact ⟨c, rfl⟩
+  | unit | int _ => simp [PrimLit.ty] at h
 
 private theorem hasBool_schemeOf_boolCtor {sig : Signature} (hsig : sig.HasBool)
     (c : Nat) (hc : c < 2) :
@@ -785,9 +666,8 @@ private theorem hasBool_schemeOf_boolCtor {sig : Signature} (hsig : sig.HasBool)
 private theorem hasBool_boolValue_typing {sig : Signature} (hsig : sig.HasBool) (b : Bool)
     {k : Nat} {ctx : Ctx Empty} :
     RuntimeTyping sig k ctx (Eval.boolValue b) Ty.bool := by
-  have hsch := hasBool_schemeOf_boolCtor hsig (if b then 0 else 1) (by split <;> omega)
-  refine RuntimeTyping.const hsch ?_
-  exact Scheme.instance_mono.mpr rfl
+  exact RuntimeTyping.const (hasBool_schemeOf_boolCtor hsig (if b then 0 else 1)
+    (by split <;> omega)) (Scheme.instance_mono.mpr rfl)
 
 /-- A saturated primitive application on operands of the right kinds has a result. -/
 private theorem primOp_eval_exists {sig : Signature} {op : PrimOp} {left right : PrimLit}
@@ -833,16 +713,7 @@ private theorem primOp_eval_typing {sig : Signature} {k : Nat} {ctx : Ctx Empty}
     (heval : PrimOp.eval op left right = some result) :
     RuntimeTyping sig k ctx result ty := by
   cases op with
-  | intAdd =>
-      simp only [PrimOp.ty, Option.some.injEq, Ty.arrow.injEq] at hop
-      obtain ⟨hα, hβ, hγ⟩ := hop
-      obtain ⟨l, rfl⟩ := primLit_int_eq (hleft.trans hα.symm)
-      obtain ⟨rr, rfl⟩ := primLit_int_eq (hright.trans hβ.symm)
-      simp only [PrimOp.eval, Option.some.injEq] at heval
-      subst heval
-      rw [← hγ]
-      exact .lit
-  | intSub =>
+  | intAdd | intSub =>
       simp only [PrimOp.ty, Option.some.injEq, Ty.arrow.injEq] at hop
       obtain ⟨hα, hβ, hγ⟩ := hop
       obtain ⟨l, rfl⟩ := primLit_int_eq (hleft.trans hα.symm)
@@ -998,10 +869,7 @@ private theorem Ty.instantiate_eq_take {V : Type} {ty : Ty V} {n : Nat} {args : 
     (wf : ty.Scoped rigids n) (hlen : n ≤ args.length) :
     ty.instantiate args = ty.instantiate (args.take n) := by
   induction ty with
-  | prim => rfl
-  | con => rfl
-  | rigid => rfl
-  | var => rfl
+  | prim | con | rigid | var => rfl
   | bvar i =>
       have hi : i < n := wf
       have hi1 : i < args.length := lt_of_lt_of_le hi hlen
@@ -1015,20 +883,14 @@ private theorem Ty.instantiate_eq_take {V : Type} {ty : Ty V} {n : Nat} {args : 
       simp only [Option.getD_some, List.getElem_take]
   | arrow d c ihd ihc =>
       rcases wf with ⟨hd, hc⟩
-      rw [show Ty.instantiate args (Ty.arrow d c) =
-            Ty.arrow (Ty.instantiate args d) (Ty.instantiate args c) from rfl,
-          show Ty.instantiate (args.take n) (Ty.arrow d c) =
-            Ty.arrow (Ty.instantiate (args.take n) d) (Ty.instantiate (args.take n) c)
-            from rfl,
-          ihd hd, ihc hc]
+      change (Ty.instantiate args d).arrow (Ty.instantiate args c) =
+        (Ty.instantiate (args.take n) d).arrow (Ty.instantiate (args.take n) c)
+      rw [ihd hd, ihc hc]
   | app d c ihd ihc =>
       rcases wf with ⟨hd, hc⟩
-      rw [show Ty.instantiate args (Ty.app d c) =
-            Ty.app (Ty.instantiate args d) (Ty.instantiate args c) from rfl,
-          show Ty.instantiate (args.take n) (Ty.app d c) =
-            Ty.app (Ty.instantiate (args.take n) d) (Ty.instantiate (args.take n) c)
-            from rfl,
-          ihd hd, ihc hc]
+      change (Ty.instantiate args d).app (Ty.instantiate args c) =
+        (Ty.instantiate (args.take n) d).app (Ty.instantiate (args.take n) c)
+      rw [ihd hd, ihc hc]
 
 private theorem ctorScheme_fields_scoped {decl : DataDecl} {type : Nat} {fields : List SemTy}
     (h : (decl.ctorScheme type fields).WF 0) :
@@ -1073,16 +935,6 @@ private theorem valueArity_elim {sig : Signature} {type : Nat} {decl : DataDecl}
     sig.valueArity (.elim type) = some decl.ctors.length := by
   simp [Signature.valueArity, hdecl]
 
-private theorem valueArity_elim_some {sig : Signature} {type arity : Nat}
-    (h : sig.valueArity (.elim type) = some arity) :
-    ∃ decl, sig[type]? = some decl ∧ arity = decl.ctors.length := by
-  unfold Signature.valueArity at h
-  cases hdecl : sig[type]? with
-  | none => simp [hdecl] at h
-  | some decl =>
-      simp [hdecl] at h
-      exact ⟨decl, rfl, h.symm⟩
-
 private theorem forall₂_get? {α β : Type} {R : α → β → Prop} {xs : List α} {ys : List β}
     (h : List.Forall₂ R xs ys) :
     ∀ {i : Nat} {x : α} {y : β}, xs[i]? = some x → ys[i]? = some y → R x y := by
@@ -1099,59 +951,104 @@ private theorem forall₂_get? {α β : Type} {R : α → β → Prop} {xs : Lis
           simp only [List.getElem?_cons_succ] at hx hy
           exact ih hx hy
 
+/-- Decompose the typing of an eliminator spine into its scheme instance. -/
+private theorem elim_spine_decomp {sig : Signature} {k : Nat} {ctx : Ctx Empty}
+    {type : Nat} {args : List RuntimeExpr} {ty : SemTy}
+    (typing : RuntimeTyping sig k ctx (Expr.apps (.const (.elim type)) args) ty) :
+    ∃ (decl : DataDecl) (instArgs argTys : List SemTy),
+      sig[type]? = some decl ∧
+      instArgs.length = decl.params + 1 ∧
+      (∀ a ∈ instArgs, a.WF k) ∧
+      Ty.arrow (Ty.apps (.con type) (instArgs.take decl.params))
+          (Ty.arrows (decl.ctors.map (fun fields =>
+              Ty.arrow (.prim .unit)
+                (Ty.arrows (fields.map (fun ft => ft.instantiate instArgs))
+                  (instArgs.getD decl.params (.bvar decl.params)))))
+            (instArgs.getD decl.params (.bvar decl.params))) = Ty.arrows argTys ty ∧
+      List.Forall₂ (fun e t => RuntimeTyping sig k ctx e t) args argTys := by
+  obtain ⟨scheme, argTys, hscheme, hinst, hforall⟩ := const_spine_inv typing
+  obtain ⟨decl, hdecl, hschemeEq⟩ := schemeOf_elim_some hscheme
+  subst hschemeEq
+  obtain ⟨instArgs, hilen, hiwf, hinstEq⟩ := hinst
+  have hilen' : instArgs.length = decl.params + 1 := by simpa using hilen
+  rw [DataDecl.elimScheme_inst (by omega)] at hinstEq
+  exact ⟨decl, instArgs, argTys, hdecl, hilen', hiwf, hinstEq, hforall⟩
+
+/-- A non-saturated eliminator spine has an arrow type. -/
+private theorem elim_spine_ty_arrow {sig : Signature} {k : Nat} {ctx : Ctx Empty}
+    {type arity : Nat} {args : List RuntimeExpr} {ty : SemTy}
+    (typing : RuntimeTyping sig k ctx (Expr.apps (.const (.elim type)) args) ty)
+    (harity : sig.valueArity (.elim type) = some arity) (hlen : args.length ≤ arity) :
+    ∃ X Y, ty = .arrow X Y := by
+  obtain ⟨decl, instArgs, argTys, hdecl, _hilen, _hiwf, hinstEq, hforall⟩ :=
+    elim_spine_decomp typing
+  have harityEq : decl.ctors.length = arity :=
+    Option.some.inj ((valueArity_elim hdecl).symm.trans harity)
+  have hargLen : argTys.length = args.length := (List.Forall₂.length_eq hforall).symm
+  have hlen' : argTys.length ≤
+      (Ty.apps (.con type) (instArgs.take decl.params) ::
+        decl.ctors.map (fun fields =>
+          Ty.arrow (.prim .unit)
+            (Ty.arrows (fields.map (fun ft => ft.instantiate instArgs))
+              (instArgs.getD decl.params (.bvar decl.params))))).length := by
+    simp only [List.length_cons, List.length_map]
+    omega
+  obtain ⟨rest, hrest, hty⟩ := Ty.arrows_eq_arrows_append hinstEq.symm hlen'
+  have hne : rest ≠ [] := by
+    intro hnil
+    have hlenEq := congrArg List.length hrest
+    simp only [hnil, List.append_nil, List.length_cons, List.length_map] at hlenEq
+    omega
+  cases rest with
+  | nil => exact absurd rfl hne
+  | cons x xs =>
+      exact ⟨x, Ty.arrows xs (instArgs.getD decl.params (.bvar decl.params)), hty⟩
+
+/-- Decompose the typing of a constructor spine into its scheme instance. -/
+private theorem ctor_spine_decomp {sig : Signature} {k : Nat} {ctx : Ctx Empty}
+    {type ctor : Nat} {args : List RuntimeExpr} {ty : SemTy}
+    (typing : RuntimeTyping sig k ctx (Expr.apps (.const (.ctor type ctor)) args) ty) :
+    ∃ (decl : DataDecl) (fieldTys instArgs argTys : List SemTy),
+      sig[type]? = some decl ∧
+      decl.ctors[ctor]? = some fieldTys ∧
+      (decl.ctorScheme type fieldTys).WF 0 ∧
+      instArgs.length = decl.params ∧
+      (∀ a ∈ instArgs, a.WF k) ∧
+      Ty.arrows (fieldTys.map (fun ft => ft.instantiate instArgs))
+          (Ty.apps (.con type) instArgs) = Ty.arrows argTys ty ∧
+      List.Forall₂ (fun e t => RuntimeTyping sig k ctx e t) args argTys := by
+  obtain ⟨scheme, argTys, hscheme, hinst, hforall⟩ := const_spine_inv typing
+  obtain ⟨decl, fieldTys, hdecl, hctors, hschemeEq⟩ := schemeOf_ctor_some hscheme
+  subst hschemeEq
+  obtain ⟨instArgs, hilen, hiwf, hinstEq⟩ := hinst
+  have hilen' : instArgs.length = decl.params := by simpa using hilen
+  rw [DataDecl.ctorScheme_inst hilen'] at hinstEq
+  exact ⟨decl, fieldTys, instArgs, argTys, hdecl, hctors, schemeOf_wf hscheme,
+    hilen', hiwf, hinstEq, hforall⟩
+
 /-- A constant spine short of saturation is not a primitive value. -/
 private theorem const_spine_not_prim {sig : Signature} {k : Nat} {ctx : Ctx Empty}
     {c : DataConst} {args : List RuntimeExpr} {arity : Nat} {p : PrimTy}
     (harity : sig.valueArity c = some arity) (hlen : args.length ≤ arity)
     (typing : RuntimeTyping sig k ctx (Expr.apps (.const c) args) (.prim p)) : False := by
-  obtain ⟨scheme, argTys, hscheme, hinst, hforall⟩ := const_spine_inv typing
   cases c with
   | ctor type index =>
-      obtain ⟨decl, fieldTys, hdecl, hctors, hschemeEq⟩ := schemeOf_ctor_some hscheme
-      subst hschemeEq
-      obtain ⟨instArgs, hilen, hiwf, hinstEq⟩ := hinst
-      have hilen' : instArgs.length = decl.params := by simpa using hilen
-      rw [DataDecl.ctorScheme_inst hilen'] at hinstEq
-      have harity' := valueArity_ctor hdecl hctors
-      rw [harity'] at harity
-      have harityEq : fieldTys.length = arity := Option.some.inj harity
+      obtain ⟨decl, fieldTys, instArgs, argTys, hdecl, hctors, _, _, _, hinstEq,
+        hforall⟩ := ctor_spine_decomp typing
+      have harityEq : fieldTys.length = arity :=
+        Option.some.inj ((valueArity_ctor hdecl hctors).symm.trans harity)
       have hargLen : argTys.length = args.length := (List.Forall₂.length_eq hforall).symm
       have hlen' : argTys.length ≤
           (fieldTys.map (fun ft => ft.instantiate instArgs)).length := by
-        rw [List.length_map, hargLen]; omega
+        rw [List.length_map, hargLen]
+        omega
       obtain ⟨rest, hrest, hty⟩ := Ty.arrows_eq_arrows_append hinstEq.symm hlen'
       cases rest with
       | nil => exact Ty.apps_con_ne_prim hty.symm
       | cons x xs => exact Ty.arrow_ne_prim hty.symm
   | elim type =>
-      obtain ⟨decl, hdecl, hschemeEq⟩ := schemeOf_elim_some hscheme
-      subst hschemeEq
-      obtain ⟨instArgs, hilen, hiwf, hinstEq⟩ := hinst
-      have hilen' : instArgs.length = decl.params + 1 := by simpa using hilen
-      have hlt : decl.params < instArgs.length := by omega
-      rw [DataDecl.elimScheme_inst hlt] at hinstEq
-      have harity' : sig.valueArity (.elim type) = some decl.ctors.length :=
-        valueArity_elim hdecl
-      rw [harity'] at harity
-      have harityEq : decl.ctors.length = arity := Option.some.inj harity
-      have hargLen : argTys.length = args.length := (List.Forall₂.length_eq hforall).symm
-      have hlen' : argTys.length ≤
-          (Ty.apps (.con type) (instArgs.take decl.params) ::
-            decl.ctors.map (fun fields =>
-              Ty.arrow (.prim .unit)
-                (Ty.arrows (fields.map (fun ft => ft.instantiate instArgs))
-                  (instArgs.getD decl.params (.bvar decl.params))))).length := by
-        simp only [List.length_cons, List.length_map]
-        omega
-      obtain ⟨rest, hrest, hty⟩ := Ty.arrows_eq_arrows_append hinstEq.symm hlen'
-      have hne : rest ≠ [] := by
-        intro hnil
-        have hlenEq := congrArg List.length hrest
-        simp only [hnil, List.append_nil, List.length_cons, List.length_map] at hlenEq
-        omega
-      cases rest with
-      | nil => exact absurd rfl hne
-      | cons x xs => exact False.elim (Ty.arrow_ne_prim hty.symm)
+      obtain ⟨X, Y, hab⟩ := elim_spine_ty_arrow typing harity hlen
+      exact Ty.arrow_ne_prim hab.symm
 
 /-- A saturated constructor spine has a data type, never an arrow. -/
 private theorem ctor_spine_not_arrow {sig : Signature} {k : Nat} {ctx : Ctx Empty}
@@ -1160,18 +1057,14 @@ private theorem ctor_spine_not_arrow {sig : Signature} {k : Nat} {ctx : Ctx Empt
     (hlen : args.length = arity)
     (typing : RuntimeTyping sig k ctx (Expr.apps (.const (.ctor type ctor)) args)
       (.arrow a b)) : False := by
-  obtain ⟨scheme, argTys, hscheme, hinst, hforall⟩ := const_spine_inv typing
-  obtain ⟨decl, fieldTys, hdecl, hctors, hschemeEq⟩ := schemeOf_ctor_some hscheme
-  subst hschemeEq
-  obtain ⟨instArgs, hilen, hiwf, hinstEq⟩ := hinst
-  have hilen' : instArgs.length = decl.params := by simpa using hilen
-  rw [DataDecl.ctorScheme_inst hilen'] at hinstEq
-  have harity' := valueArity_ctor hdecl hctors
-  rw [harity'] at harity
-  have harityEq : fieldTys.length = arity := Option.some.inj harity
+  obtain ⟨decl, fieldTys, instArgs, argTys, hdecl, hctors, _, _, _, hinstEq,
+    hforall⟩ := ctor_spine_decomp typing
+  have harityEq : fieldTys.length = arity :=
+    Option.some.inj ((valueArity_ctor hdecl hctors).symm.trans harity)
   have hargLen : argTys.length = args.length := (List.Forall₂.length_eq hforall).symm
   have hlenEq : (fieldTys.map (fun ft => ft.instantiate instArgs)).length = argTys.length := by
-    rw [List.length_map, hargLen]; omega
+    rw [List.length_map, hargLen]
+    omega
   obtain ⟨_, hty⟩ := Ty.arrows_cancel hinstEq hlenEq
   exact Ty.apps_con_ne_arrow hty
 
@@ -1184,13 +1077,7 @@ private theorem prim_value_canonical {sig : Signature} {k : Nat} {ctx : Ctx Empt
   cases value with
   | lit =>
       rename_i literal
-      cases literal with
-      | unit =>
-          exact ⟨.unit, rfl, by cases typing; rfl⟩
-      | int n =>
-          exact ⟨.int n, rfl, by cases typing; rfl⟩
-      | char c =>
-          exact ⟨.char c, rfl, by cases typing; rfl⟩
+      cases literal <;> exact ⟨_, rfl, by cases typing; rfl⟩
   | primOp =>
       cases typing with
       | primOp hop =>
@@ -1261,17 +1148,12 @@ private theorem data_value_canonical {sig : Signature} {k : Nat} {ctx : Ctx Empt
           (Ty.apps (.con t) params) := by
         rw [hexpr]
         exact typing
-      obtain ⟨scheme, argTys, hscheme, hinst, hforall⟩ := const_spine_inv typing'
       cases c with
       | ctor type ctor =>
-          obtain ⟨decl, fieldTys, hdecl, hctors, hschemeEq⟩ := schemeOf_ctor_some hscheme
-          subst hschemeEq
-          obtain ⟨instArgs, hilen, hiwf, hinstEq⟩ := hinst
-          have hilen' : instArgs.length = decl.params := by simpa using hilen
-          rw [DataDecl.ctorScheme_inst hilen'] at hinstEq
-          have harity' := valueArity_ctor hdecl hctors
-          rw [harity'] at harity
-          have harityEq : fieldTys.length = arity := Option.some.inj harity
+          obtain ⟨decl, fieldTys, instArgs, argTys, hdecl, hctors, hwf0, _, _,
+            hinstEq, hforall⟩ := ctor_spine_decomp typing'
+          have harityEq : fieldTys.length = arity :=
+            Option.some.inj ((valueArity_ctor hdecl hctors).symm.trans harity)
           have hargLen : argTys.length = args.length := (List.Forall₂.length_eq hforall).symm
           have hargLenLe : argTys.length ≤
               (fieldTys.map (fun ft => ft.instantiate instArgs)).length := by
@@ -1293,39 +1175,109 @@ private theorem data_value_canonical {sig : Signature} {k : Nat} {ctx : Ctx Empt
               · have hlenMap := congrArg List.length hargTys
                 simp only [List.length_map] at hlenMap
                 omega
-              · exact ctorScheme_fields_scoped (schemeOf_wf hscheme)
+              · exact ctorScheme_fields_scoped hwf0
               · rw [← hargTys] at hforall
                 exact forall₂_map_inst hforall
           | cons x xs => exact False.elim (Ty.apps_con_ne_arrow htype)
       | elim type =>
-          obtain ⟨decl, hdecl, hschemeEq⟩ := schemeOf_elim_some hscheme
-          subst hschemeEq
-          obtain ⟨instArgs, hilen, hiwf, hinstEq⟩ := hinst
-          have hilen' : instArgs.length = decl.params + 1 := by simpa using hilen
-          have hlt : decl.params < instArgs.length := by omega
-          rw [DataDecl.elimScheme_inst hlt] at hinstEq
-          have harity' : sig.valueArity (.elim type) = some decl.ctors.length :=
-            valueArity_elim hdecl
-          rw [harity'] at harity
-          have harityEq : decl.ctors.length = arity := Option.some.inj harity
-          have hargLen : argTys.length = args.length := (List.Forall₂.length_eq hforall).symm
-          have hlen' : argTys.length ≤
-              (Ty.apps (.con type) (instArgs.take decl.params) ::
-                decl.ctors.map (fun fields =>
-                  Ty.arrow (.prim .unit)
-                    (Ty.arrows (fields.map (fun ft => ft.instantiate instArgs))
-                      (instArgs.getD decl.params (.bvar decl.params))))).length := by
-            simp only [List.length_cons, List.length_map]
-            omega
-          obtain ⟨rest, hrest, hty⟩ := Ty.arrows_eq_arrows_append hinstEq.symm hlen'
-          have hne : rest ≠ [] := by
-            intro hnil
-            have hlenEq := congrArg List.length hrest
-            simp only [hnil, List.append_nil, List.length_cons, List.length_map] at hlenEq
-            omega
-          cases rest with
-          | nil => exact absurd rfl hne
-          | cons x xs => exact False.elim (Ty.apps_con_ne_arrow hty)
+          obtain ⟨X, Y, hab⟩ := elim_spine_ty_arrow typing' harity hlen
+          exact False.elim (Ty.apps_con_ne_arrow hab)
+
+/-! ## Eliminator spines -/
+
+/-- A saturated eliminator spine: the scrutinee is a constructor spine, and the
+selected branch is typed at the instantiated field types. -/
+private theorem elim_spine_saturated {sig : Signature} {k : Nat} {ctx : Ctx Empty}
+    {type : Nat} {decl : DataDecl} {instArgs argTys : List SemTy}
+    {scrutinee : RuntimeExpr} {branches : List RuntimeExpr} {ty : SemTy}
+    (hdecl : sig[type]? = some decl)
+    (hilen : instArgs.length = decl.params + 1)
+    (hbranchLen : branches.length = decl.ctors.length)
+    (hinstEq : Ty.arrow (Ty.apps (.con type) (instArgs.take decl.params))
+        (Ty.arrows (decl.ctors.map (fun fields =>
+            Ty.arrow (.prim .unit)
+              (Ty.arrows (fields.map (fun ft => ft.instantiate instArgs))
+                (instArgs.getD decl.params (.bvar decl.params)))))
+          (instArgs.getD decl.params (.bvar decl.params))) = Ty.arrows argTys ty)
+    (hforall : List.Forall₂ (fun e t => RuntimeTyping sig k ctx e t)
+      (scrutinee :: branches) argTys)
+    (scrutineeValue : Eval.Value sig scrutinee) :
+    ∃ (ctor : Nat) (fieldTys : List SemTy) (fields : List RuntimeExpr) (branch : RuntimeExpr),
+      ty = instArgs.getD decl.params (.bvar decl.params) ∧
+      scrutinee = Expr.apps (.const (.ctor type ctor)) fields ∧
+      decl.ctors[ctor]? = some fieldTys ∧
+      branches[ctor]? = some branch ∧
+      fields.length = fieldTys.length ∧
+      (∀ ft ∈ fieldTys, ft.Scoped 0 decl.params) ∧
+      List.Forall₂ (fun e ft => RuntimeTyping sig k ctx e (ft.instantiate instArgs))
+        fields fieldTys ∧
+      RuntimeTyping sig k ctx branch
+        (Ty.arrow (.prim .unit)
+          (Ty.arrows (fieldTys.map (fun ft => ft.instantiate instArgs))
+            (instArgs.getD decl.params (.bvar decl.params)))) := by
+  have hargLen : argTys.length = (scrutinee :: branches).length :=
+    (List.Forall₂.length_eq hforall).symm
+  have hlenEq : (Ty.apps (.con type) (instArgs.take decl.params) ::
+      decl.ctors.map (fun fields =>
+        Ty.arrow (.prim .unit)
+          (Ty.arrows (fields.map (fun ft => ft.instantiate instArgs))
+            (instArgs.getD decl.params (.bvar decl.params))))).length = argTys.length := by
+    simp only [List.length_cons, List.length_map]
+    rw [hargLen]
+    simp only [List.length_cons]
+    omega
+  obtain ⟨hargTys, hty⟩ := Ty.arrows_cancel_cons hinstEq hlenEq
+  have hforall' : List.Forall₂ (fun e t => RuntimeTyping sig k ctx e t)
+      (scrutinee :: branches)
+      (Ty.apps (.con type) (instArgs.take decl.params) ::
+        decl.ctors.map (fun fields =>
+          Ty.arrow (.prim .unit)
+            (Ty.arrows (fields.map (fun ft => ft.instantiate instArgs))
+              (instArgs.getD decl.params (.bvar decl.params))))) := by
+    rw [← hargTys] at hforall
+    exact hforall
+  cases hforall' with
+  | cons hscrut hbranchForall =>
+      obtain ⟨d, ctor, fieldTys, fields, hdeclD, hctors, hexprS, hflen, hfieldWF,
+        hfieldTypings⟩ := data_value_canonical scrutineeValue hscrut
+      have hdEq : d = decl := Option.some.inj (hdeclD.symm.trans hdecl)
+      rw [hdEq] at hctors hfieldWF
+      obtain ⟨hctorLt, _⟩ := List.getElem?_eq_some_iff.mp hctors
+      have hctorLtB : ctor < branches.length := by rw [hbranchLen]; exact hctorLt
+      have hbranch : branches[ctor]? = some (branches[ctor]'hctorLtB) :=
+        List.getElem?_eq_getElem hctorLtB
+      have hdeclCtor : decl.ctors[ctor] = fieldTys :=
+        Option.some.inj ((List.getElem?_eq_getElem hctorLt).symm.trans hctors)
+      have hmapGet : (decl.ctors.map (fun fields =>
+          Ty.arrow (.prim .unit)
+            (Ty.arrows (fields.map (fun ft => ft.instantiate instArgs))
+              (instArgs.getD decl.params (.bvar decl.params)))))[ctor]? =
+          some (Ty.arrow (.prim .unit)
+            (Ty.arrows (fieldTys.map (fun ft => ft.instantiate instArgs))
+              (instArgs.getD decl.params (.bvar decl.params)))) := by
+        rw [List.getElem?_map, List.getElem?_eq_getElem hctorLt, hdeclCtor]
+        rfl
+      have hfieldTypings' : List.Forall₂ (fun e ft => RuntimeTyping sig k ctx e
+          (ft.instantiate instArgs)) fields fieldTys :=
+        forall₂_instantiate_take hfieldWF (by omega) hfieldTypings
+      exact ⟨ctor, fieldTys, fields, branches[ctor]'hctorLtB, hty.symm, hexprS, hctors,
+        hbranch, hflen, hfieldWF, hfieldTypings',
+        forall₂_get? hbranchForall hbranch hmapGet⟩
+
+/-- Reducing a saturated eliminator spine whose scrutinee is a constructor
+spine selects the matching branch. -/
+private theorem reduceConst_elim {sig : Signature} {type ctor : Nat} {decl : DataDecl}
+    {fields : List RuntimeExpr} {fieldTys : List SemTy} {branches : List RuntimeExpr}
+    {branch scrutinee : RuntimeExpr}
+    (hdecl : sig[type]? = some decl) (hbranchLen : branches.length = decl.ctors.length)
+    (hctors : decl.ctors[ctor]? = some fieldTys) (hflen : fields.length = fieldTys.length)
+    (hbranch : branches[ctor]? = some branch)
+    (hexpr : scrutinee = Expr.apps (.const (.ctor type ctor)) fields) :
+    Eval.reduceConst sig (.elim type) (scrutinee :: branches) =
+      some (Expr.apps branch (.lit .unit :: fields)) := by
+  rw [hexpr]
+  simp [Eval.reduceConst, Expr.spine_apps, Expr.spine, hdecl, hbranchLen, hctors, hflen,
+    hbranch]
 
 /-- `progress`, with the empty context as an equation so that the induction
 goes through. -/
@@ -1354,16 +1306,18 @@ private theorem progress_empty (typing : RuntimeTyping sig k ctx expr ty) (empty
                   cases operatorTyping with
                   | primOp hop =>
                       obtain ⟨p, q, hα, hβ⟩ := primOp_ty_domain hop
-                      obtain ⟨l, hl, hlty⟩ := prim_value_canonical hleft (hα ▸ leftTyping)
-                      obtain ⟨r, hr, hrty⟩ :=
+                      obtain ⟨l, rfl, hlty⟩ := prim_value_canonical hleft (hα ▸ leftTyping)
+                      obtain ⟨r, rfl, hrty⟩ :=
                         prim_value_canonical argumentValue (hβ ▸ argumentTyping)
-                      subst hl
-                      subst hr
                       obtain ⟨result, hresult⟩ := primOp_eval_exists hop
                         (hlty.trans hα.symm) (hrty.trans hβ.symm)
                       exact .inr ⟨result, .primOp hresult⟩
           | const hspine harity hlen hvals =>
               expose_names
+              have hfunction : function = Expr.apps (.const c) args := by
+                have h := Expr.apps_spine function
+                rw [hspine] at h
+                exact h.symm
               by_cases hsmall : args.length < arity
               · refine .inl (.const (Expr.spine_app_spine hspine) harity ?_ ?_)
                 · rw [List.length_append, List.length_singleton]
@@ -1378,20 +1332,10 @@ private theorem progress_empty (typing : RuntimeTyping sig k ctx expr ty) (empty
                 cases c with
                 | ctor type ctor =>
                     exfalso
-                    have hfunction : function = Expr.apps (.const (.ctor type ctor)) args := by
-                      have h := Expr.apps_spine function
-                      rw [hspine] at h
-                      exact h.symm
                     have ftyping := functionTyping
                     rw [hfunction] at ftyping
                     exact ctor_spine_not_arrow harity hEq ftyping
                 | elim type =>
-                    obtain ⟨decl, hdecl, harityEq⟩ := valueArity_elim_some harity
-                    have hctorsLen : args.length = decl.ctors.length := by omega
-                    have hfunction : function = Expr.apps (.const (.elim type)) args := by
-                      have h := Expr.apps_spine function
-                      rw [hspine] at h
-                      exact h.symm
                     have hwhole : Expr.apps (.const (.elim type)) (args ++ [argument]) =
                         Expr.app function argument := by
                       rw [Expr.apps_append, hfunction]
@@ -1400,110 +1344,43 @@ private theorem progress_empty (typing : RuntimeTyping sig k ctx expr ty) (empty
                         (Expr.apps (.const (.elim type)) (args ++ [argument])) resultTy := by
                       rw [hwhole]
                       exact RuntimeTyping.app functionTyping argumentTyping
-                    obtain ⟨scheme2, argTys2, hscheme2, hinst2, hforall2⟩ :=
-                      const_spine_inv whtyping
-                    obtain ⟨decl2, hdecl2, hschemeEq2⟩ := schemeOf_elim_some hscheme2
-                    subst hschemeEq2
-                    have hdeclEq : decl2 = decl :=
-                      Option.some.inj (hdecl2.symm.trans hdecl)
-                    rw [hdeclEq] at hinst2
-                    obtain ⟨instArgs, hilen, hiwf, hinstEq⟩ := hinst2
-                    have hilen' : instArgs.length = decl.params + 1 := by simpa using hilen
-                    have hlt : decl.params < instArgs.length := by omega
-                    rw [DataDecl.elimScheme_inst hlt] at hinstEq
-                    have hargLen2 : argTys2.length = (args ++ [argument]).length :=
-                      (List.Forall₂.length_eq hforall2).symm
-                    have hlenEq : (Ty.apps (.con type) (instArgs.take decl.params) ::
-                        decl.ctors.map (fun fields =>
-                          Ty.arrow (.prim .unit)
-                            (Ty.arrows (fields.map (fun ft => ft.instantiate instArgs))
-                              (instArgs.getD decl.params (.bvar decl.params))))).length =
-                        argTys2.length := by
-                      simp only [List.length_cons, List.length_map]
-                      rw [hargLen2]
-                      simp only [List.length_append, List.length_cons, List.length_nil]
-                      omega
-                    obtain ⟨hargTys2, hty⟩ := Ty.arrows_cancel_cons hinstEq hlenEq
-                    have hforall2' : List.Forall₂ (fun e t => RuntimeTyping sig k_1 ctx_1 e t)
-                        (args ++ [argument])
-                        (Ty.apps (.con type) (instArgs.take decl.params) ::
-                          decl.ctors.map (fun fields =>
-                            Ty.arrow (.prim .unit)
-                              (Ty.arrows (fields.map (fun ft => ft.instantiate instArgs))
-                                (instArgs.getD decl.params (.bvar decl.params))))) := by
-                      rw [← hargTys2] at hforall2
-                      exact hforall2
+                    obtain ⟨decl, _, _, hdecl, hilen, _, hinstEq, hforall⟩ :=
+                      elim_spine_decomp whtyping
+                    have harityEq : decl.ctors.length = arity :=
+                      Option.some.inj ((valueArity_elim hdecl).symm.trans harity)
+                    have hctorsLen : args.length = decl.ctors.length := by omega
                     cases args with
                     | nil =>
-                        cases hforall2' with
-                        | cons hscrut _ =>
-                            obtain ⟨d, ctor, fieldTys, fields, hd, hctors, hexprArg, hflen,
-                              _, _⟩ := data_value_canonical argumentValue hscrut
-                            have hdEq : d = decl := Option.some.inj (hd.symm.trans hdecl)
-                            rw [hdEq] at hctors
-                            obtain ⟨hctorLt, _⟩ := List.getElem?_eq_some_iff.mp hctors
-                            have hzero : decl.ctors.length = 0 := by
-                              simpa using hctorsLen.symm
-                            omega
+                        obtain ⟨ctor, _, _, _, _, _, hctors, _, _, _, _, _⟩ :=
+                          elim_spine_saturated hdecl hilen hctorsLen hinstEq hforall
+                            argumentValue
+                        obtain ⟨hctorLt, _⟩ := List.getElem?_eq_some_iff.mp hctors
+                        have hzero : decl.ctors.length = 0 := by
+                          simpa using hctorsLen.symm
+                        omega
                     | cons hd tl =>
-                        cases hforall2' with
-                        | cons hscrut hbranchForall =>
-                            obtain ⟨d, ctor, fieldTys, fields, hdeclD, hctors, hexprS, hflen,
-                              _, _⟩ := data_value_canonical (hvals hd (by simp)) hscrut
-                            have hdEq : d = decl := Option.some.inj (hdeclD.symm.trans hdecl)
-                            rw [hdEq] at hctors
-                            obtain ⟨hctorLt, _⟩ := List.getElem?_eq_some_iff.mp hctors
-                            have hbranchLen : (tl ++ [argument]).length =
-                                decl.ctors.length := by
-                              simpa [List.length_append, List.length_cons] using hctorsLen
-                            have hctorLtBranch : ctor < (tl ++ [argument]).length := by omega
-                            let branch := (tl ++ [argument])[ctor]'(hctorLtBranch)
-                            have hdeclCtor : decl.ctors[ctor] = fieldTys := by
-                              have hsome := List.getElem?_eq_getElem hctorLt
-                              exact Option.some.inj (hsome.symm.trans hctors)
-                            have hmapGet : (decl.ctors.map (fun fields =>
-                                Ty.arrow (.prim .unit)
-                                  (Ty.arrows (fields.map (fun ft => ft.instantiate instArgs))
-                                    (instArgs.getD decl.params (.bvar decl.params)))))[ctor]? =
-                                some (Ty.arrow (.prim .unit)
-                                  (Ty.arrows (fieldTys.map (fun ft => ft.instantiate instArgs))
-                                    (instArgs.getD decl.params (.bvar decl.params)))) := by
-                              rw [List.getElem?_map, List.getElem?_eq_getElem hctorLt,
-                                hdeclCtor]
-                              rfl
-                            have hbranchGet : (tl ++ [argument])[ctor]? = some branch :=
-                              List.getElem?_eq_getElem hctorLtBranch
-                            have hbranchTyping : RuntimeTyping sig k_1 ctx_1 branch
-                                (Ty.arrow (.prim .unit)
-                                  (Ty.arrows (fieldTys.map (fun ft => ft.instantiate instArgs))
-                                    (instArgs.getD decl.params (.bvar decl.params)))) :=
-                              forall₂_get? hbranchForall hbranchGet hmapGet
-                            have hspineS : hd.spine = (.const (.ctor type ctor), fields) := by
-                              rw [hexprS]
-                              simpa using Expr.spine_apps (.const (.ctor type ctor)) fields
-                            have hargEq : hd :: (tl ++ [argument]) =
-                                Expr.apps (.const (.ctor type ctor)) fields ::
-                                  (tl ++ [argument]) := by
-                              rw [hexprS]
-                            have hreduce : Eval.reduceConst sig (.elim type)
-                                (hd :: (tl ++ [argument])) =
-                                some (Expr.apps branch (.lit .unit :: fields)) := by
-                              rw [hargEq]
-                              simp [Eval.reduceConst, Expr.spine_apps, Expr.spine, hdecl,
-                                hbranchLen, hctors, hflen, hbranchGet]
-                            refine .inr ⟨Expr.apps branch (.lit .unit :: fields), ?_⟩
-                            refine Eval.Step.const (c := .elim type)
-                              (args := hd :: (tl ++ [argument])) ?_ ?_ ?_
-                            · simpa using Expr.spine_app_spine hspine
-                            · intro z hz
-                              rcases List.mem_cons.mp hz with rfl | hz
-                              · exact hvals z (by simp)
-                              · rcases List.mem_append.mp hz with h | h
-                                · exact hvals z (by simp [h])
-                                · simp only [List.mem_singleton] at h
-                                  subst h
-                                  exact argumentValue
-                            · simpa using hreduce
+                        obtain ⟨ctor, fieldTys, fields, branch, _, hexprS, hctors,
+                          hbranch, hflen, _, _, _⟩ :=
+                          elim_spine_saturated hdecl hilen (by simpa using hctorsLen) hinstEq
+                            hforall (hvals hd (by simp))
+                        have hreduce : Eval.reduceConst sig (.elim type)
+                            (hd :: (tl ++ [argument])) =
+                            some (Expr.apps branch (.lit .unit :: fields)) :=
+                          reduceConst_elim hdecl (by simpa using hctorsLen) hctors hflen
+                            hbranch hexprS
+                        refine .inr ⟨Expr.apps branch (.lit .unit :: fields), ?_⟩
+                        refine Eval.Step.const (c := .elim type)
+                          (args := hd :: (tl ++ [argument])) ?_ ?_ ?_
+                        · simpa using Expr.spine_app_spine hspine
+                        · intro z hz
+                          rcases List.mem_cons.mp hz with rfl | hz
+                          · exact hvals z (by simp)
+                          · rcases List.mem_append.mp hz with h | h
+                            · exact hvals z (by simp [h])
+                            · simp only [List.mem_singleton] at h
+                              subst h
+                              exact argumentValue
+                        · simpa using hreduce
         · exact .inr ⟨_, .appArgument functionValue step⟩
       · exact .inr ⟨_, .appFunction step⟩
   | letIn hwf hrhs hbody ihRhs ihBody =>
@@ -1520,6 +1397,14 @@ theorem progress (typing : RuntimeTyping sig k [] expr ty) :
     Eval.Value sig expr ∨ ∃ next, Eval.Step sig expr next := by
   exact progress_empty typing rfl
 
+/-- Every instance of a monomorphic scheme is its body. -/
+private theorem mono_instance_eq {V : Type} {ty : Ty V} {k : Nat} {body : Ty V}
+    (hinst : (Scheme.mono body).Instance k ty) : ty = body := by
+  obtain ⟨args, hlen, _, heq⟩ := hinst
+  have hargsNil : args = [] := by simpa [Scheme.mono] using hlen
+  subst hargsNil
+  simpa [Scheme.mono, Scheme.inst, Ty.instantiate_nil] using heq.symm
+
 /-- Proof: induction on the step. `beta`, `fixUnfold`: `subst` with
 `inner := []` and `mono_depth`; `letValue`: `subst` with the `letIn` premise;
 `const`: the eliminator's scheme types the chosen branch at the scrutinee's
@@ -1531,17 +1416,11 @@ theorem preservation (typing : RuntimeTyping sig k ctx expr ty)
   | beta argumentValue =>
       cases typing with
       | app functionTyping argumentTyping =>
-          expose_names
           cases functionTyping with
           | lambda paramWF bodyTyping =>
-              expose_names
               exact subst (inner := []) bodyTyping (fun k' le ty' hinst => by
-                obtain ⟨args, hlen, hargs, heq⟩ := hinst
-                have hargsNil : args = [] := by simpa [Scheme.mono] using hlen
-                subst hargsNil
-                rw [← heq]
-                simpa [Scheme.mono, Scheme.inst, Ty.instantiate_nil] using
-                  (mono_depth argumentTyping le))
+                rw [mono_instance_eq hinst]
+                exact mono_depth argumentTyping le)
   | appFunction functionStep functionIH =>
       cases typing with
       | app functionTyping argumentTyping =>
@@ -1567,19 +1446,13 @@ theorem preservation (typing : RuntimeTyping sig k ctx expr ty)
   | letValue rhsValue =>
       cases typing with
       | letIn hwf hrhs hbody =>
-          exact subst (inner := []) hbody (fun k' le ty' hinst => hrhs k' le ty' hinst)
+          exact subst (inner := []) hbody hrhs
   | fixUnfold =>
       cases typing with
       | fix selfWF bodyTyping =>
-          expose_names
           exact subst (inner := []) bodyTyping (fun k' le ty' hinst => by
-            obtain ⟨args, hlen, hargs, heq⟩ := hinst
-            have hargsNil : args = [] := by simpa [Scheme.mono] using hlen
-            subst hargsNil
-            have hfix := RuntimeTyping.fix (self := self) selfWF bodyTyping
-            rw [← heq]
-            simpa [Scheme.mono, Scheme.inst, Ty.instantiate_nil] using
-              (mono_depth hfix le))
+            rw [mono_instance_eq hinst]
+            exact mono_depth (.fix selfWF bodyTyping) le)
   | const hspine hvals hreduce =>
       expose_names
       have hexpr : Expr.apps (.const c) args = Expr.app function argument := by
@@ -1589,100 +1462,32 @@ theorem preservation (typing : RuntimeTyping sig k ctx expr ty)
       have typing' : RuntimeTyping sig k ctx (Expr.apps (.const c) args) ty := by
         rw [hexpr]
         exact typing
-      obtain ⟨scheme, argTys, hscheme, hinst, hforall⟩ := const_spine_inv typing'
       cases c with
       | ctor type ctor =>
           simp [Eval.reduceConst] at hreduce
       | elim type =>
-          obtain ⟨decl, hdecl, hschemeEq⟩ := schemeOf_elim_some hscheme
-          subst hschemeEq
-          obtain ⟨instArgs, hilen, hiwf, hinstEq⟩ := hinst
-          have hilen' : instArgs.length = decl.params + 1 := by simpa using hilen
-          have hlt : decl.params < instArgs.length := by omega
-          rw [DataDecl.elimScheme_inst hlt] at hinstEq
+          obtain ⟨decl, instArgs, _, hdecl, hilen, _, hinstEq, hforall⟩ :=
+            elim_spine_decomp typing'
           cases args with
           | nil => simp [Eval.reduceConst] at hreduce
           | cons scrutinee branches =>
               have hbranchLen : branches.length = decl.ctors.length := by
                 by_contra hne
                 simp [Eval.reduceConst, hdecl, hne] at hreduce
-              have hargLen : argTys.length = (scrutinee :: branches).length :=
-                (List.Forall₂.length_eq hforall).symm
-              have hlenEq : (Ty.apps (.con type) (instArgs.take decl.params) ::
-                  decl.ctors.map (fun fields =>
-                    Ty.arrow (.prim .unit)
-                      (Ty.arrows (fields.map (fun ft => ft.instantiate instArgs))
-                        (instArgs.getD decl.params (.bvar decl.params))))).length =
-                  argTys.length := by
-                simp only [List.length_cons, List.length_map]
-                rw [hargLen]
-                simp only [List.length_cons]
-                omega
-              obtain ⟨hargTys, hty⟩ := Ty.arrows_cancel_cons hinstEq hlenEq
-              have hforall' : List.Forall₂ (fun e t => RuntimeTyping sig k ctx e t)
-                  (scrutinee :: branches)
-                  (Ty.apps (.con type) (instArgs.take decl.params) ::
-                    decl.ctors.map (fun fields =>
-                      Ty.arrow (.prim .unit)
-                        (Ty.arrows (fields.map (fun ft => ft.instantiate instArgs))
-                          (instArgs.getD decl.params (.bvar decl.params))))) := by
-                rw [← hargTys] at hforall
-                exact hforall
-              cases hforall' with
-              | cons hscrut hbranchForall =>
-                  obtain ⟨d, ctor, fieldTys, fields, hdeclD, hctors, hexprS, hflen,
-                    hfieldWF, hfieldTypings⟩ :=
-                    data_value_canonical (hvals scrutinee (by simp)) hscrut
-                  have hdEq : d = decl := Option.some.inj (hdeclD.symm.trans hdecl)
-                  rw [hdEq] at hctors hfieldWF
-                  have hargEq : scrutinee :: branches =
-                      Expr.apps (.const (.ctor type ctor)) fields :: branches := by
-                    rw [hexprS]
-                  rw [hargEq] at hreduce
-                  simp [Eval.reduceConst, Expr.spine_apps, Expr.spine, hdecl,
-                    hctors, hflen, hbranchLen] at hreduce
-                  cases hbranch : branches[ctor]? with
-                  | none => simp [hbranch] at hreduce
-                  | some branch =>
-                      simp [hbranch] at hreduce
-                      obtain ⟨hctorLt, _⟩ := List.getElem?_eq_some_iff.mp hctors
-                      have hdeclCtor : decl.ctors[ctor] = fieldTys := by
-                        have hsome := List.getElem?_eq_getElem hctorLt
-                        exact Option.some.inj (hsome.symm.trans hctors)
-                      have hmapGet : (decl.ctors.map (fun fields =>
-                          Ty.arrow (.prim .unit)
-                            (Ty.arrows (fields.map (fun ft => ft.instantiate instArgs))
-                              (instArgs.getD decl.params (.bvar decl.params)))))[ctor]? =
-                          some (Ty.arrow (.prim .unit)
-                            (Ty.arrows (fieldTys.map (fun ft => ft.instantiate instArgs))
-                              (instArgs.getD decl.params (.bvar decl.params)))) := by
-                        rw [List.getElem?_map, List.getElem?_eq_getElem hctorLt,
-                          hdeclCtor]
-                        rfl
-                      have hctorLtBranch : ctor < branches.length := by
-                        obtain ⟨hltBranch, _⟩ := List.getElem?_eq_some_iff.mp hbranch
-                        exact hltBranch
-                      have hbranchGet : branches[ctor]? = some branch := hbranch
-                      have hbranchTyping : RuntimeTyping sig k ctx branch
-                          (Ty.arrow (.prim .unit)
-                            (Ty.arrows (fieldTys.map (fun ft => ft.instantiate instArgs))
-                              (instArgs.getD decl.params (.bvar decl.params)))) :=
-                        forall₂_get? hbranchForall hbranchGet hmapGet
-                      have hfieldTypings' : List.Forall₂ (fun e ft =>
-                          RuntimeTyping sig k ctx e (ft.instantiate instArgs))
-                          fields fieldTys :=
-                        forall₂_instantiate_take hfieldWF (by omega) hfieldTypings
-                      have hargsForall : List.Forall₂ (fun e t =>
-                          RuntimeTyping sig k ctx e t)
-                          (.lit .unit :: fields)
-                          (.prim .unit :: fieldTys.map (fun ft => ft.instantiate instArgs)) :=
-                        .cons .lit (forall₂_map_of_forall₂ hfieldTypings')
-                      have hresultTyping := typing_apps_intro hbranchTyping hargsForall
-                      rw [← hty]
-                      have hres : result = Expr.apps branch (.lit .unit :: fields) := by
-                        simpa using hreduce.symm
-                      rw [hres]
-                      exact hresultTyping
+              obtain ⟨ctor, fieldTys, fields, branch, hty, hexprS, hctors, hbranch,
+                hflen, hfieldWF, hfieldTypings, hbranchTyping⟩ :=
+                elim_spine_saturated hdecl hilen hbranchLen hinstEq hforall
+                  (hvals scrutinee (by simp))
+              rw [reduceConst_elim hdecl hbranchLen hctors hflen hbranch hexprS] at hreduce
+              have hargsForall : List.Forall₂ (fun e t => RuntimeTyping sig k ctx e t)
+                  (.lit .unit :: fields)
+                  (.prim .unit :: fieldTys.map (fun ft => ft.instantiate instArgs)) :=
+                .cons .lit (forall₂_map_of_forall₂ hfieldTypings)
+              have hresultTyping := typing_apps_intro hbranchTyping hargsForall
+              have hres : result = Expr.apps branch (.lit .unit :: fields) := by
+                simpa using hreduce.symm
+              rw [hres, hty]
+              exact hresultTyping
 
 end RuntimeTyping
 
