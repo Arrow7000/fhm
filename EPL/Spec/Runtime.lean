@@ -236,6 +236,61 @@ private theorem DataDecl.selfTy_inst {decl : DataDecl} {type : Nat} {args : List
   congr 1
   simpa [Ty.instantiate] using (Ty.getD_range_eq (V := Empty) hlen)
 
+private theorem Ty.apps_scoped {V : Type} {head : Ty V} {args : List (Ty V)}
+    {rigids binders : Nat} (headScoped : head.Scoped rigids binders)
+    (argsScoped : ∀ a ∈ args, a.Scoped rigids binders) :
+    (Ty.apps head args).Scoped rigids binders := by
+  induction args generalizing head with
+  | nil => exact headScoped
+  | cons a as ih =>
+      change Ty.Scoped rigids binders (Ty.apps (Ty.app head a) as)
+      exact ih ⟨headScoped, argsScoped a (by simp)⟩
+        (fun x hx => argsScoped x (by simp [hx]))
+
+private theorem Ty.arrows_scoped {V : Type} {domains : List (Ty V)} {codomain : Ty V}
+    {rigids binders : Nat} (domainsScoped : ∀ d ∈ domains, d.Scoped rigids binders)
+    (codomainScoped : codomain.Scoped rigids binders) :
+    (Ty.arrows domains codomain).Scoped rigids binders := by
+  induction domains with
+  | nil => exact codomainScoped
+  | cons d ds ih =>
+      exact ⟨domainsScoped d (by simp),
+        ih (fun x hx => domainsScoped x (by simp [hx]))⟩
+
+/-- A declaration's self type is scoped by its own parameters. -/
+private theorem DataDecl.selfTy_scoped {decl : DataDecl} (type : Nat) :
+    (decl.selfTy type).Scoped rigids decl.params := by
+  unfold DataDecl.selfTy
+  refine Ty.apps_scoped trivial ?_
+  intro a ha
+  obtain ⟨i, hi, rfl⟩ := List.mem_map.mp ha
+  simp only [List.mem_range] at hi
+  exact hi
+
+theorem DataDecl.WF.ctorScheme_wf {decl : DataDecl} (wf : decl.WF) {fields : List SemTy}
+    (mem : fields ∈ decl.ctors) (type : Nat) : (decl.ctorScheme type fields).WF 0 := by
+  show (Ty.arrows fields (decl.selfTy type)).Scoped 0 decl.params
+  refine Ty.arrows_scoped ?_ ?_
+  · intro field hfield
+    exact wf fields mem field hfield
+  · exact Ty.Scoped.mono (DataDecl.selfTy_scoped (rigids := 0) type)
+      (Nat.zero_le _) (le_refl _)
+
+theorem DataDecl.WF.elimScheme_wf {decl : DataDecl} (wf : decl.WF) (type : Nat) :
+    (decl.elimScheme type).WF 0 := by
+  show (Ty.arrow (decl.selfTy type)
+      (Ty.arrows (decl.ctors.map (branchTy · (.bvar decl.params))) (.bvar decl.params))).Scoped
+    0 (decl.params + 1)
+  refine ⟨Ty.Scoped.mono (DataDecl.selfTy_scoped (rigids := 0) type)
+    (Nat.zero_le _) (Nat.le_succ _), ?_⟩
+  refine Ty.arrows_scoped ?_ (Nat.lt_succ_self _)
+  intro branch hbranch
+  obtain ⟨fields, hfields, rfl⟩ := List.mem_map.mp hbranch
+  refine ⟨trivial, ?_⟩
+  refine Ty.arrows_scoped ?_ (Nat.lt_succ_self _)
+  intro field hfield
+  exact Ty.Scoped.mono (wf fields hfields field hfield) (Nat.zero_le _) (Nat.le_succ _)
+
 /-! ## Signature lemmas -/
 
 private theorem schemeOf_ctor_some {sig : Signature} {type index : Nat} {scheme : Scheme Empty}
@@ -249,13 +304,14 @@ private theorem schemeOf_ctor_some {sig : Signature} {type index : Nat} {scheme 
       cases hfields : decl.ctors[index]? with
       | none => simp [Signature.schemeOf, hdecl, hfields] at found
       | some fields =>
-          by_cases hwf : (decl.ctorScheme type fields).WF 0
-          · refine ⟨decl, fields, rfl, hfields, ?_⟩
-            have hsome : sig.schemeOf (.ctor type index) = some (decl.ctorScheme type fields) := by
-              simp [Signature.schemeOf, hdecl, hfields, hwf]
-            rw [hsome] at found
-            exact (Option.some.inj found).symm
-          · simp [Signature.schemeOf, hdecl, hfields, hwf] at found
+          have hwf : decl.WF := by
+            by_contra h
+            simp [Signature.schemeOf, hdecl, h] at found
+          refine ⟨decl, fields, rfl, hfields, ?_⟩
+          have hsome : sig.schemeOf (.ctor type index) = some (decl.ctorScheme type fields) := by
+            simp [Signature.schemeOf, hdecl, hfields, hwf]
+          rw [hsome] at found
+          exact (Option.some.inj found).symm
 
 private theorem schemeOf_elim_some {sig : Signature} {type : Nat} {scheme : Scheme Empty}
     (found : sig.schemeOf (.elim type) = some scheme) :
@@ -263,25 +319,31 @@ private theorem schemeOf_elim_some {sig : Signature} {type : Nat} {scheme : Sche
   cases hdecl : sig[type]? with
   | none => simp [Signature.schemeOf, hdecl] at found
   | some decl =>
-      by_cases hwf : (decl.elimScheme type).WF 0
-      · refine ⟨decl, rfl, ?_⟩
-        have hsome : sig.schemeOf (.elim type) = some (decl.elimScheme type) := by
-          simp [Signature.schemeOf, hdecl, hwf]
-        rw [hsome] at found
-        exact (Option.some.inj found).symm
-      · simp [Signature.schemeOf, hdecl, hwf] at found
+      have hwf : decl.WF := by
+        by_contra h
+        simp [Signature.schemeOf, hdecl, h] at found
+      refine ⟨decl, rfl, ?_⟩
+      have hsome : sig.schemeOf (.elim type) = some (decl.elimScheme type) := by
+        simp [Signature.schemeOf, hdecl, hwf]
+      rw [hsome] at found
+      exact (Option.some.inj found).symm
 
-private theorem schemeOf_wf {sig : Signature} {c : DataConst} {scheme : Scheme Empty}
+/-- Every scheme a signature assigns is closed. -/
+theorem Signature.schemeOf_wf {sig : Signature} {c : DataConst} {scheme : Scheme Empty}
     (found : sig.schemeOf c = some scheme) : scheme.WF 0 := by
   cases c with
   | ctor type index =>
       obtain ⟨decl, fields, hdecl, hfields, rfl⟩ := schemeOf_ctor_some found
-      by_contra hwf
-      simp [Signature.schemeOf, hdecl, hfields, hwf] at found
+      have hwf : decl.WF := by
+        by_contra h
+        simp [Signature.schemeOf, hdecl, h] at found
+      exact DataDecl.WF.ctorScheme_wf hwf (List.mem_of_getElem? hfields) type
   | elim type =>
       obtain ⟨decl, hdecl, rfl⟩ := schemeOf_elim_some found
-      by_contra hwf
-      simp [Signature.schemeOf, hdecl, hwf] at found
+      have hwf : decl.WF := by
+        by_contra h
+        simp [Signature.schemeOf, hdecl, h] at found
+      exact DataDecl.WF.elimScheme_wf hwf type
 
 private theorem schemeOf_valueArity {sig : Signature} {c : DataConst} {scheme : Scheme Empty}
     (found : sig.schemeOf c = some scheme) : ∃ arity, sig.valueArity c = some arity := by
@@ -355,7 +417,7 @@ theorem regular (ctxWF : ctx.WF k) (typing : RuntimeTyping sig k ctx expr ty) : 
       rcases primOp_ty_eq hop with ⟨p, rfl⟩ | ⟨p, rfl⟩ <;>
         simp [Ty.WF, Ty.Scoped, Ty.bool]
   | const hscheme hinst =>
-      exact Scheme.Instance.wf (schemeOf_wf hscheme) (Nat.zero_le _) hinst
+      exact Scheme.Instance.wf (Signature.schemeOf_wf hscheme) (Nat.zero_le _) hinst
   | var hlook hinst =>
       exact Scheme.Instance.wf (Ctx.WF.getElem? ctxWF hlook) (le_refl _) hinst
   | lambda hparam _ ih =>
@@ -568,8 +630,8 @@ theorem substRigids (ctxWF : ctx.WF k) (typing : RuntimeTyping sig k ctx expr ty
         exact .primOp (by simpa [Ty.substRigids, Ty.subst] using hop)
   | const hscheme hinst =>
       have hinst' := Scheme.instance_substRigids hinst
-        (schemeWF_mono (schemeOf_wf hscheme) (Nat.zero_le _)) images
-      rw [Scheme.substRigids_eq_self (schemeOf_wf hscheme)
+        (schemeWF_mono (Signature.schemeOf_wf hscheme) (Nat.zero_le _)) images
+      rw [Scheme.substRigids_eq_self (Signature.schemeOf_wf hscheme)
         (fun l hl => absurd hl (Nat.not_lt_zero l))] at hinst'
       exact .const hscheme hinst'
   | var hlook hinst =>
@@ -661,7 +723,7 @@ private theorem hasBool_schemeOf_boolCtor {sig : Signature} (hsig : sig.HasBool)
   have hc' : c = 0 ∨ c = 1 := by omega
   rcases hc' with rfl | rfl <;>
     simp [Signature.schemeOf, h0, boolDecl, DataDecl.ctorScheme, DataDecl.selfTy,
-      Ty.apps, Ty.arrows, Scheme.mono, Ty.bool, Scheme.WF, Ty.Scoped]
+      Ty.apps, Ty.arrows, Scheme.mono, Ty.bool, DataDecl.WF]
 
 private theorem hasBool_boolValue_typing {sig : Signature} (hsig : sig.HasBool) (b : Bool)
     {k : Nat} {ctx : Ctx Empty} :
@@ -1023,7 +1085,7 @@ private theorem ctor_spine_decomp {sig : Signature} {k : Nat} {ctx : Ctx Empty}
   obtain ⟨instArgs, hilen, hiwf, hinstEq⟩ := hinst
   have hilen' : instArgs.length = decl.params := by simpa using hilen
   rw [DataDecl.ctorScheme_inst hilen'] at hinstEq
-  exact ⟨decl, fieldTys, instArgs, argTys, hdecl, hctors, schemeOf_wf hscheme,
+  exact ⟨decl, fieldTys, instArgs, argTys, hdecl, hctors, Signature.schemeOf_wf hscheme,
     hilen', hiwf, hinstEq, hforall⟩
 
 /-- A constant spine short of saturation is not a primitive value. -/

@@ -59,7 +59,9 @@ signature is a parameter of every judgment and of evaluation. Declaration
 `Ty.app`, and kinds are not checked: an ill-kinded type such as `Bool Int`
 is a type without values. A declaration lists, per constructor, its field
 types over the declaration's parameters (`bvar`s) and any declared types,
-so recursive and mutually recursive types are allowed.
+so recursive and mutually recursive types are allowed. A declaration is well
+formed (`DataDecl.WF`) when every field type mentions only its parameters;
+the constants of an ill-formed declaration have no type.
 
 Each declaration contributes constants with closed schemes:
 

@@ -585,6 +585,17 @@ def finalValue (input : Source) (fuel : Nat) : Option RuntimeExpr :=
 
 /-! ## Data types -/
 
+/-- A field mentioning an undeclared parameter makes its declaration ill
+formed, so none of that declaration's constants has a scheme. In particular
+the eliminator, whose scheme has one more binder, does not read the field's
+`bvar 0` as its result variable. Other declarations are unaffected. -/
+def illScopedSig : Signature := [boolDecl, ⟨0, [[.bvar 0]]⟩]
+
+example : illScopedSig.schemeOf (.ctor 1 0) = none := by decide
+example : illScopedSig.schemeOf (.elim 1) = none := by decide
+example : (infer illScopedSig trueExpr).map (·.ty) = some boolTy := by decide
+example : (listSig.schemeOf (.elim 1)).isSome := by decide
+
 /-- `if c then a else b` as an application of `Bool`'s eliminator. -/
 def ifThen (c a b : Source) : Source :=
   .app (.app (.app (.const (.elim 0)) c) (.lambda none a)) (.lambda none b)
@@ -858,13 +869,14 @@ private theorem schemeOf_ctor_eq {sig : Signature} {type index : Nat}
       cases hfields : decl.ctors[index]? with
       | none => simp [Signature.schemeOf, hdecl, hfields] at found
       | some fields =>
-          by_cases hwf : (decl.ctorScheme type fields).WF 0
-          · have hsome : sig.schemeOf (.ctor type index) =
+          have hwf : decl.WF := by
+            by_contra h
+            simp [Signature.schemeOf, hdecl, h] at found
+          have hsome : sig.schemeOf (.ctor type index) =
                 some (decl.ctorScheme type fields) := by
-              simp [Signature.schemeOf, hdecl, hfields, hwf]
-            rw [hsome] at found
-            exact ⟨decl, fields, rfl, hfields, (Option.some.inj found).symm⟩
-          · simp [Signature.schemeOf, hdecl, hfields, hwf] at found
+            simp [Signature.schemeOf, hdecl, hfields, hwf]
+          rw [hsome] at found
+          exact ⟨decl, fields, rfl, hfields, (Option.some.inj found).symm⟩
 
 /-- A constructor constant never has a primitive type. -/
 private theorem const_ctor_ne_prim {sig : Signature} {k : Nat} {ctx : Ctx Empty}

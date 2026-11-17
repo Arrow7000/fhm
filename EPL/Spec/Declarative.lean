@@ -55,22 +55,6 @@ theorem PrimLit.ty_bind (literal : PrimLit) (f : V → Ty W) :
     (literal.ty : Ty V).bind f = literal.ty := by
   cases literal <;> rfl
 
-theorem Signature.schemeOf_wf {sig : Signature} (found : sig.schemeOf c = some scheme) : scheme.WF 0 := by
-  cases c with
-  | ctor type index =>
-      cases hdecl : sig[type]? with
-      | none => simp_all [Signature.schemeOf]
-      | some decl =>
-          cases hfields : decl.ctors[index]? with
-          | none => simp_all [Signature.schemeOf]
-          | some fields =>
-              by_cases hwf : (decl.ctorScheme type fields).WF 0 <;> simp_all [Signature.schemeOf]
-  | elim type =>
-      cases hdecl : sig[type]? with
-      | none => simp_all [Signature.schemeOf]
-      | some decl =>
-          by_cases hwf : (decl.elimScheme type).WF 0 <;> simp_all [Signature.schemeOf]
-
 private theorem map_substRigids_eq_self {ctx : Ctx V} {k : Nat} (wf : ctx.WF k) {f : Nat → Ty V}
     (agrees : ∀ l < k, f l = .rigid l) : ctx.map (Scheme.substRigids f) = ctx := by
   induction ctx with

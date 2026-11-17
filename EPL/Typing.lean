@@ -70,18 +70,26 @@ def DataDecl.elimScheme (decl : DataDecl) (type : Nat) : Scheme Empty :=
   ⟨decl.params + 1,
     .arrow (decl.selfTy type) (Ty.arrows (decl.ctors.map (branchTy · result)) result)⟩
 
+/-- Every field type mentions only the declaration's parameters. -/
+def DataDecl.WF (decl : DataDecl) : Prop :=
+  ∀ fields ∈ decl.ctors, ∀ field ∈ fields, field.Scoped 0 decl.params
+
+instance (decl : DataDecl) : Decidable decl.WF :=
+  inferInstanceAs (Decidable (∀ fields ∈ decl.ctors, ∀ field ∈ fields, _))
+
 /-- The scheme of a constant; `none` if the signature does not declare it or
-its scheme is ill-scoped (a field mentions an undeclared parameter). -/
+its declaration is not well formed. (The check is per declaration, so an
+ill-formed declaration cannot take away `Bool`'s constants, which the
+comparison operators produce.) -/
 def Signature.schemeOf (sig : Signature) : DataConst → Option (Scheme Empty)
   | .ctor type index => do
       let decl ← sig[type]?
+      if ¬ decl.WF then none
       let fields ← decl.ctors[index]?
-      let scheme := decl.ctorScheme type fields
-      if scheme.WF 0 then some scheme else none
+      some (decl.ctorScheme type fields)
   | .elim type => do
       let decl ← sig[type]?
-      let scheme := decl.elimScheme type
-      if scheme.WF 0 then some scheme else none
+      if decl.WF then some (decl.elimScheme type) else none
 
 /-- `scheme` completes the written annotation `ann` at depth `k`. -/
 structure PolyAnn.Completes (k : Nat) (ann : PolyAnn Template) (scheme : Scheme Empty) :
