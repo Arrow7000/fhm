@@ -25,6 +25,7 @@ matches no well-formed type.
 
 namespace EPL
 
+/-- The type of a literal. -/
 def PrimLit.ty : PrimLit → Ty V
   | .unit => .prim .unit
   | .int _ => .prim .int
@@ -35,20 +36,28 @@ def PrimLit.ty : PrimLit → Ty V
 follow the convention. -/
 def boolDecl : DataDecl := ⟨0, [[], []]⟩
 
+/-- The type `Bool`: declaration 0, by convention (see `boolDecl`). -/
 def Ty.bool : Ty V := .con 0
 
+/-- The signature follows the `Bool` convention: declaration 0 is `boolDecl`. -/
 def Signature.HasBool (sig : Signature) : Prop := sig[0]? = some boolDecl
 
+/-- `Signature.HasBool` is decidable. -/
 instance (sig : Signature) : Decidable sig.HasBool :=
   inferInstanceAs (Decidable (sig[0]? = some boolDecl))
 
+/-- The type of an operator; `none` for a comparison if the signature has no
+`Bool`. -/
 def PrimOp.ty (sig : Signature) : PrimOp → Option (Ty V)
   | .intAdd | .intSub => some (.arrow (.prim .int) (.arrow (.prim .int) (.prim .int)))
   | .intLt => if sig.HasBool then some (.arrow (.prim .int) (.arrow (.prim .int) .bool)) else none
   | .charLt => if sig.HasBool then some (.arrow (.prim .char) (.arrow (.prim .char) .bool)) else none
 
+/-- Apply `head` to `args` in order: `Ty.apps (.con 3) [a, b]` is `Pair a b`
+if `Pair` is declaration 3. -/
 def Ty.apps (head : Ty V) (args : List (Ty V)) : Ty V := args.foldl .app head
 
+/-- `domain_1 -> ... -> domain_n -> codomain`. -/
 def Ty.arrows (domains : List (Ty V)) (codomain : Ty V) : Ty V := domains.foldr .arrow codomain
 
 /-- Declared type `type` applied to its own parameters. -/
@@ -74,6 +83,7 @@ def DataDecl.elimScheme (decl : DataDecl) (type : Nat) : Scheme Empty :=
 def DataDecl.WF (decl : DataDecl) : Prop :=
   ∀ fields ∈ decl.ctors, ∀ field ∈ fields, field.Scoped 0 decl.params
 
+/-- `DataDecl.WF` is decidable. -/
 instance (decl : DataDecl) : Decidable decl.WF :=
   inferInstanceAs (Decidable (∀ fields ∈ decl.ctors, ∀ field ∈ fields, _))
 
@@ -98,39 +108,75 @@ structure PolyAnn.Completes (k : Nat) (ann : PolyAnn Template) (scheme : Scheme 
   wf : scheme.WF k
   body_matches : ann.body.Matches (scheme.skolemize k)
 
-/-- A side condition on explicit lets: depth, context, annotation, right-hand
-side, completed scheme. -/
+/-- The type of a side condition on explicit polymorphic lets: a predicate on
+the depth, context, written annotation, right-hand side and completed scheme.
+`TypingWith` takes one as its `Det` parameter and checks it only in `letPoly`,
+as one extra premise. So a `LetCondition` says how strict typing is about
+explicit lets. `Typing` uses the condition that always holds; `Elaborates`
+uses `Determined`, which requires the annotation's holes to have exactly one
+valid filling. `Determined` is defined in terms of `Typing`, which is why it
+is a parameter rather than a premise written into the rules. -/
 abbrev LetCondition := Nat → Ctx Empty → PolyAnn Template → Source → Scheme Empty → Prop
 
+/-- `TypingWith sig Det k ctx src elab ty`: at rigid depth `k` (rigid levels
+below `k` in scope), in `ctx` (entry `i` types `var i`), source `src` has type
+`ty`, and `elab` is `src` with every implicit type filled in. `Det` is a side
+condition on explicit lets: see `Typing` and `Elaborates` for the two
+instances. Every rule elaborates to the same shape of node as its source. -/
 inductive TypingWith (sig : Signature) (Det : LetCondition) :
     Nat → Ctx Empty → Source → Elab → SemTy → Prop
+
+  /-- A literal has its built-in type. -/
   | lit :
       TypingWith sig Det k ctx (.lit literal) (.lit literal) literal.ty
+
+  /-- An operator has its fixed type (comparisons only if the signature has
+  `Bool`). -/
   | primOp :
       op.ty sig = some ty →
       TypingWith sig Det k ctx (.primOp op) (.primOp op) ty
+
+  /-- A constant has any instance of its scheme from the signature, by type
+  arguments well formed at depth `k`. -/
   | const :
       sig.schemeOf c = some scheme →
       scheme.Instance k ty →
       TypingWith sig Det k ctx (.const c) (.const c) ty
+
+  /-- A variable has any instance of its scheme in the context, by type
+  arguments well formed at depth `k`. -/
   | var :
       ctx[index]? = some scheme →
       scheme.Instance k ty →
       TypingWith sig Det k ctx (.var index) (.var index) ty
+
+  /-- `fun x => body : paramTy -> bodyTy`, for some well-formed `paramTy` that
+  completes the annotation (if any). The elaboration records `paramTy`. -/
   | lambda :
       paramTy.WF k →
       Template.MatchesOpt param paramTy →
       TypingWith sig Det k (.mono paramTy :: ctx) body bodyElab bodyTy →
       TypingWith sig Det k ctx (.lambda param body) (.lambda (some paramTy) bodyElab)
         (.arrow paramTy bodyTy)
+
+  /-- Application: the argument's type is the function's domain. -/
   | app :
       TypingWith sig Det k ctx function functionElab (.arrow argumentTy resultTy) →
       TypingWith sig Det k ctx argument argumentElab argumentTy →
       TypingWith sig Det k ctx (.app function argument) (.app functionElab argumentElab) resultTy
+
+  /-- Unannotated `let`: no generalization, so `body` sees the right-hand side
+  at its one (mono)type. -/
   | letMono :
       TypingWith sig Det k ctx rhs rhsElab rhsTy →
       TypingWith sig Det k (.mono rhsTy :: ctx) body bodyElab bodyTy →
       TypingWith sig Det k ctx (.letIn none rhs body) (.letIn none rhsElab bodyElab) bodyTy
+
+  /-- `let x : forall as. T = rhs in body`: complete the annotation to
+  `scheme`, check `rhs` against its generic instance (binders as the fresh
+  rigid levels `k, ..., k + arity - 1`), check the side condition `Det`, and
+  give `body` the scheme. The elaboration records the scheme in `PolyAnn` form.
+  -/
   | letPoly :
       ann.Completes k scheme →
       TypingWith sig Det (k + scheme.arity) ctx rhs rhsElab (scheme.skolemize k) →
@@ -138,6 +184,10 @@ inductive TypingWith (sig : Signature) (Det : LetCondition) :
       TypingWith sig Det k (scheme :: ctx) body bodyElab bodyTy →
       TypingWith sig Det k ctx (.letIn (some ann) rhs body)
         (.letIn (some ⟨scheme.arity, scheme.skolemize k⟩) rhsElab bodyElab) bodyTy
+
+  /-- `fix self => body : selfTy`, for some well-formed `selfTy` that completes
+  the annotation (if any), if `body : selfTy` assuming `self : selfTy`. The
+  elaboration records `selfTy`. -/
   | fix :
       selfTy.WF k →
       Template.MatchesOpt self selfTy →
@@ -172,32 +222,53 @@ skolem check of `letPoly` is turned into this form, by one type-substitution
 lemma (`RuntimeTyping.substRigids`). A monomorphic let is the case
 `arity = 0`. -/
 inductive RuntimeTyping (sig : Signature) : Nat → Ctx Empty → RuntimeExpr → SemTy → Prop
+
+  /-- A literal has its built-in type. -/
   | lit :
       RuntimeTyping sig k ctx (.lit literal) literal.ty
+
+  /-- An operator has its fixed type (comparisons only if the signature has
+  `Bool`). -/
   | primOp :
       op.ty sig = some ty →
       RuntimeTyping sig k ctx (.primOp op) ty
+
+  /-- A constant has any instance of its scheme from the signature, by type
+  arguments well formed at depth `k`. -/
   | const :
       sig.schemeOf c = some scheme →
       scheme.Instance k ty →
       RuntimeTyping sig k ctx (.const c) ty
+
+  /-- A variable has any instance of its scheme in the context, by type
+  arguments well formed at depth `k`. -/
   | var :
       ctx[index]? = some scheme →
       scheme.Instance k ty →
       RuntimeTyping sig k ctx (.var index) ty
+
+  /-- `fun x => body : paramTy -> bodyTy`, for any well-formed `paramTy`. -/
   | lambda :
       paramTy.WF k →
       RuntimeTyping sig k (.mono paramTy :: ctx) body bodyTy →
       RuntimeTyping sig k ctx (.lambda param body) (.arrow paramTy bodyTy)
+
+  /-- Application: the argument's type is the function's domain. -/
   | app :
       RuntimeTyping sig k ctx function (.arrow argumentTy resultTy) →
       RuntimeTyping sig k ctx argument argumentTy →
       RuntimeTyping sig k ctx (.app function argument) resultTy
+
+  /-- `let x = rhs in body`, with `x : scheme` in `body`, if `rhs` has every
+  instance of `scheme` at every depth `k' ≥ k`. -/
   | letIn :
       scheme.WF k →
       (∀ k', k ≤ k' → ∀ ty, scheme.Instance k' ty → RuntimeTyping sig k' ctx rhs ty) →
       RuntimeTyping sig k (scheme :: ctx) body bodyTy →
       RuntimeTyping sig k ctx (.letIn ann rhs body) bodyTy
+
+  /-- `fix self => body : selfTy`, for any well-formed `selfTy`, if
+  `body : selfTy` assuming `self : selfTy`. -/
   | fix :
       selfTy.WF k →
       RuntimeTyping sig k (.mono selfTy :: ctx) body selfTy →
