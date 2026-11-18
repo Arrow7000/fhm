@@ -4,28 +4,18 @@ import EPL.Typing
 /-!
 # Runtime: strict left-to-right evaluation of erased programs
 
-Evaluation consults the signature for constants' arities.
+Evaluation does not consult the signature: a constructor applied to values
+is a value however many fields it has (an over-applied constructor is ill
+typed), and a match dispatches on the constructor's name alone.
 -/
 
 namespace EPL
-
-/-- How many arguments a constant takes while still a value: all of a
-constructor's fields, or an eliminator's scrutinee and all its branches but
-the last. -/
-def Signature.valueArity (sig : Signature) : DataConst → Option Nat
-  | .ctor type index => do
-      let decl ← sig[type]?
-      let fields ← decl.ctors[index]?
-      some fields.length
-  | .elim type => do
-      let decl ← sig[type]?
-      some decl.ctors.length
 
 namespace Eval
 
 /-- `True` or `False`, following the `Bool` convention of `PrimOp.ty`. -/
 def boolValue (value : Bool) : RuntimeExpr :=
-  .const (.ctor 0 (if value then 0 else 1))
+  .ctor ⟨0, if value then 0 else 1⟩
 
 end Eval
 
@@ -40,117 +30,139 @@ def PrimOp.eval : PrimOp → PrimLit → PrimLit → Option RuntimeExpr
 
 namespace Eval
 
-/-- Contract a saturated eliminator whose scrutinee is a saturated constructor
-of the same type: the chosen branch receives `()` and then the fields. -/
-def reduceConst (sig : Signature) : DataConst → List RuntimeExpr → Option RuntimeExpr
-  | .elim type, scrutinee :: branches => do
-      let decl ← sig[type]?
-      if branches.length ≠ decl.ctors.length then none
-      match scrutinee.spine with
-      | (.const (.ctor type' index), fields) => do
-          if type' ≠ type then none
-          let fieldTys ← decl.ctors[index]?
-          if fields.length ≠ fieldTys.length then none
-          let branch ← branches[index]?
-          some (Expr.apps branch (.lit .unit :: fields))
-      | _ => none
-  | _, _ => none
+/-- Fully evaluated expressions. -/
+inductive Value : RuntimeExpr → Prop
 
-inductive Value (sig : Signature) : RuntimeExpr → Prop
-  | lit : Value sig (.lit literal)
-  | primOp : Value sig (.primOp op)
-  | lambda : Value sig (.lambda param body)
+  /-- A literal. -/
+  | lit : Value (.lit literal)
+
+  /-- An operator awaiting both operands. -/
+  | primOp : Value (.primOp op)
+
+  /-- A function. -/
+  | lambda : Value (.lambda param body)
+
   /-- A primitive operator awaiting its second operand. -/
-  | primOpPartial : Value sig argument → Value sig (.app (.primOp op) argument)
-  /-- A constant applied to values, short of a redex. -/
-  | const :
-      expr.spine = (.const c, args) →
-      sig.valueArity c = some arity →
-      args.length ≤ arity →
-      (∀ arg ∈ args, Value sig arg) →
-      Value sig expr
+  | primOpPartial : Value argument → Value (.app (.primOp op) argument)
 
-inductive Step (sig : Signature) : RuntimeExpr → RuntimeExpr → Prop
+  /-- A constructor applied to values: a data value if it has all its fields,
+  a function if it has fewer. -/
+  | ctor :
+      expr.spine = (.ctor ref, fields) →
+      (∀ field ∈ fields, Value field) →
+      Value expr
+
+/-- One step of strict, left-to-right evaluation. -/
+inductive Step : RuntimeExpr → RuntimeExpr → Prop
+
+  /-- Apply a function to a value. -/
   | beta :
-      Value sig argument →
-      Step sig (.app (.lambda param body) argument) (body.subst1 argument)
+      Value argument →
+      Step (.app (.lambda param body) argument) (body.subst1 argument)
+
+  /-- Evaluate the function first. -/
   | appFunction :
-      Step sig function function' →
-      Step sig (.app function argument) (.app function' argument)
+      Step function function' →
+      Step (.app function argument) (.app function' argument)
+
+  /-- Then the argument. -/
   | appArgument :
-      Value sig function →
-      Step sig argument argument' →
-      Step sig (.app function argument) (.app function argument')
+      Value function →
+      Step argument argument' →
+      Step (.app function argument) (.app function argument')
+
+  /-- Apply an operator to both operands. -/
   | primOp :
       op.eval left right = some result →
-      Step sig (.app (.app (.primOp op) (.lit left)) (.lit right)) result
-  | const :
-      (Expr.app function argument).spine = (.const c, args) →
-      (∀ arg ∈ args, Value sig arg) →
-      reduceConst sig c args = some result →
-      Step sig (.app function argument) result
-  | letRhs :
-      Step sig rhs rhs' →
-      Step sig (.letIn ann rhs body) (.letIn ann rhs' body)
-  | letValue :
-      Value sig rhs →
-      Step sig (.letIn ann rhs body) (body.subst1 rhs)
-  | fixUnfold :
-      Step sig (.fix self body) (body.subst1 (.fix self body))
+      Step (.app (.app (.primOp op) (.lit left)) (.lit right)) result
 
-abbrev Steps (sig : Signature) : RuntimeExpr → RuntimeExpr → Prop :=
-  Relation.ReflTransGen (Step sig)
+  /-- Evaluate the scrutinee. Branches are not evaluated. -/
+  | matchScrutinee :
+      Step scrutinee scrutinee' →
+      Step (.match scrutinee branches) (.match scrutinee' branches)
+
+  /-- A constructor value meets a match: apply the first branch for that
+  constructor to the fields. -/
+  | matchCtor :
+      Value scrutinee →
+      scrutinee.spine = (.ctor ref, fields) →
+      Expr.findBranch ref branches = some body →
+      Step (.match scrutinee branches) (Expr.apps body fields)
+
+  /-- Evaluate a let's right-hand side. -/
+  | letRhs :
+      Step rhs rhs' →
+      Step (.letIn ann rhs body) (.letIn ann rhs' body)
+
+  /-- Substitute a let's value into its body. -/
+  | letValue :
+      Value rhs →
+      Step (.letIn ann rhs body) (body.subst1 rhs)
+
+  /-- Unfold recursion once. -/
+  | fixUnfold :
+      Step (.fix self body) (body.subst1 (.fix self body))
+
+/-- Any number of steps. -/
+abbrev Steps : RuntimeExpr → RuntimeExpr → Prop :=
+  Relation.ReflTransGen Step
 
 /-! ## Executable evaluator -/
 
-def isValue (sig : Signature) : RuntimeExpr → Bool
-  | .lit _ | .primOp _ | .lambda _ _ => true
-  | .const c => (sig.valueArity c).isSome
-  | .app (.primOp _) argument => isValue sig argument
+/-- `Value`, as a check. -/
+def isValue : RuntimeExpr → Bool
+  | .lit _ | .primOp _ | .lambda _ _ | .ctor _ => true
+  | .app (.primOp _) argument => isValue argument
   | .app function argument =>
-      isValue sig function && isValue sig argument &&
-        match (Expr.app function argument).spine with
-        | (.const c, args) =>
-            match sig.valueArity c with
-            | some arity => decide (args.length ≤ arity)
-            | none => false
+      isValue function && isValue argument &&
+        match function.spine.1 with
+        | .ctor _ => true
         | _ => false
   | _ => false
 
 /-- Contract an application of a value to a value, if it is a redex. -/
-def reduceApp (sig : Signature) : RuntimeExpr → RuntimeExpr → Option RuntimeExpr
+def reduceApp : RuntimeExpr → RuntimeExpr → Option RuntimeExpr
   | .lambda _ body, argument => some (body.subst1 argument)
   | .app (.primOp op) (.lit left), .lit right => op.eval left right
-  | function, argument =>
-      match (Expr.app function argument).spine with
-      | (.const c, args) => reduceConst sig c args
-      | _ => none
+  | _, _ => none
+
+/-- Contract a match on a value, if it has a branch for the value's
+constructor. -/
+def reduceMatch (scrutinee : RuntimeExpr) (branches : List (CtorRef × RuntimeExpr)) :
+    Option RuntimeExpr :=
+  match scrutinee.spine with
+  | (.ctor ref, fields) => (Expr.findBranch ref branches).map (Expr.apps · fields)
+  | _ => none
 
 /-- One step; `none` exactly when there is no `Step` successor. -/
-def step? (sig : Signature) : RuntimeExpr → Option RuntimeExpr
+def step? : RuntimeExpr → Option RuntimeExpr
   | .app function argument =>
-      match step? sig function with
+      match step? function with
       | some function' => some (.app function' argument)
       | none =>
-          if isValue sig function then
-            match step? sig argument with
+          if isValue function then
+            match step? argument with
             | some argument' => some (.app function argument')
-            | none => if isValue sig argument then reduceApp sig function argument else none
+            | none => if isValue argument then reduceApp function argument else none
           else none
+  | .match scrutinee branches =>
+      match step? scrutinee with
+      | some scrutinee' => some (.match scrutinee' branches)
+      | none => if isValue scrutinee then reduceMatch scrutinee branches else none
   | .letIn ann rhs body =>
-      match step? sig rhs with
+      match step? rhs with
       | some rhs' => some (.letIn ann rhs' body)
-      | none => if isValue sig rhs then some (body.subst1 rhs) else none
+      | none => if isValue rhs then some (body.subst1 rhs) else none
   | .fix self body => some (body.subst1 (.fix self body))
   | _ => none
 
 /-- Up to `fuel` steps, stopping early where no step applies. (Fuel because
 `fix` admits divergence.) -/
-def run (sig : Signature) : Nat → RuntimeExpr → RuntimeExpr
+def run : Nat → RuntimeExpr → RuntimeExpr
   | 0, expr => expr
   | fuel + 1, expr =>
-      match step? sig expr with
-      | some next => run sig fuel next
+      match step? expr with
+      | some next => run fuel next
       | none => expr
 
 end Eval

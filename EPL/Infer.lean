@@ -44,15 +44,18 @@ def paramTy (k : Nat) (store : MStore) : Option Template → Option (InfTy × MS
   | none => some (store.fresh k)
   | some template => if template.WF k then some (store.allocate k template) else none
 
+mutual
+/-- Infer a type and an elaboration for `src` at rigid depth `k` in `ctx`,
+extending `store`. -/
 def inferAt (sig : Signature) (k : Nat) (ctx : Ctx Nat) : Source → MStore → Option Inferred
   | .lit literal, store => some ⟨literal.ty, .lit literal, store⟩
   | .primOp op, store => do
       let ty ← op.ty sig
       some ⟨ty, .primOp op, store⟩
-  | .const c, store => do
-      let scheme ← sig.schemeOf c
+  | .ctor ref, store => do
+      let scheme ← sig.ctorScheme ref
       let (args, store) := store.freshMany k scheme.arity
-      some ⟨scheme.lift.inst args, .const c, store⟩
+      some ⟨scheme.lift.inst args, .ctor ref, store⟩
   | .var index, store => do
       let scheme ← ctx[index]?
       let (args, store) := store.freshMany k scheme.arity
@@ -94,6 +97,35 @@ def inferAt (sig : Signature) (k : Nat) (ctx : Ctx Nat) : Source → MStore → 
       let bodyResult ← inferAt sig k (.mono selfTy :: ctx) body store
       let store ← bodyResult.store.unify bodyResult.ty selfTy
       some ⟨selfTy, .fix (some selfTy) bodyResult.elaboration, store⟩
+  | .match scrutinee branches, store => do
+      -- The first pattern names the type; every pattern must be one of its
+      -- constructors.
+      let (first, _) ← branches.head?
+      let decl ← sig.decl? first.type
+      if ¬ branches.all (fun branch =>
+          branch.1.type == first.type && decide (branch.1.index < decl.ctors.length)) then none
+      let scrutineeResult ← inferAt sig k ctx scrutinee store
+      let (args, store) := scrutineeResult.store.freshMany k decl.params
+      let store ← store.unify scrutineeResult.ty (Ty.apps (.con first.type) args)
+      let (resultTy, store) := store.fresh k
+      let (branchesElab, store) ← inferBranches sig k ctx decl args resultTy branches store
+      some ⟨resultTy, .match scrutineeResult.elaboration branchesElab, store⟩
+
+/-- Infer each branch body in turn and unify its type with
+`field_1 -> ... -> field_n -> resultTy`, the fields of its constructor
+instantiated at `args`. -/
+def inferBranches (sig : Signature) (k : Nat) (ctx : Ctx Nat) (decl : DataDecl)
+    (args : List InfTy) (resultTy : InfTy) :
+    List (CtorRef × Source) → MStore → Option (List (CtorRef × Expr InfTy) × MStore)
+  | [], store => some ([], store)
+  | (pattern, body) :: rest, store => do
+      let fields ← decl.ctors[pattern.index]?
+      let bodyResult ← inferAt sig k ctx body store
+      let expected := Ty.arrows (fields.map fun field => field.lift.instantiate args) resultTy
+      let store ← bodyResult.store.unify bodyResult.ty expected
+      let (restElab, store) ← inferBranches sig k ctx decl args resultTy rest store
+      some ((pattern, bodyResult.elaboration) :: restElab, store)
+end
 
 structure InferenceResult where
   elaboration : Elab

@@ -637,9 +637,79 @@ theorem Ctx.WF.mono {ctx : Ctx V} (wf : ctx.WF k) (le : k ≤ k') : ctx.WF k' :=
 
 namespace Expr
 
+/-! ### Branch lists
+
+Each `…Branches` companion is the obvious `List.map` (or `flatMap`); these
+`simp` lemmas let proofs work with `List` lemmas instead of the mutual
+recursion. -/
+
+@[simp] theorem mapAnnBranches_eq (f : A → B) (branches : List (CtorRef × Expr A)) :
+    Expr.mapAnnBranches f branches = branches.map fun branch => (branch.1, branch.2.mapAnn f) := by
+  induction branches with
+  | nil => rfl
+  | cons branch rest ih => simp [Expr.mapAnnBranches, ih]
+
+@[simp] theorem annsBranches_eq (branches : List (CtorRef × Expr A)) :
+    Expr.annsBranches branches = branches.flatMap (·.2.anns) := by
+  induction branches with
+  | nil => rfl
+  | cons branch rest ih => simp [Expr.annsBranches, ih]
+
+@[simp] theorem eraseBranches_eq (branches : List (CtorRef × Expr A)) :
+    Expr.eraseBranches branches = branches.map fun branch => (branch.1, branch.2.erase) := by
+  induction branches with
+  | nil => rfl
+  | cons branch rest ih => simp [Expr.eraseBranches, ih]
+
+@[simp] theorem shiftBranches_eq (cutoff amount : Nat) (branches : List (CtorRef × Expr A)) :
+    Expr.shiftBranches cutoff amount branches =
+      branches.map fun branch => (branch.1, branch.2.shift cutoff amount) := by
+  induction branches with
+  | nil => rfl
+  | cons branch rest ih => simp [Expr.shiftBranches, ih]
+
+@[simp] theorem substAtBranches_eq (branches : List (CtorRef × Expr A)) (depth : Nat)
+    (value : Expr A) :
+    Expr.substAtBranches branches depth value =
+      branches.map fun branch => (branch.1, branch.2.substAt depth value) := by
+  induction branches with
+  | nil => rfl
+  | cons branch rest ih => simp [Expr.substAtBranches, ih]
+
+theorem traverseAnnBranches_eq (f : A → Option B) (branches : List (CtorRef × Expr A)) :
+    Expr.traverseAnnBranches f branches =
+      branches.mapM fun branch => (branch.2.traverseAnn f).map (branch.1, ·) := by
+  induction branches with
+  | nil => rfl
+  | cons branch rest ih =>
+      obtain ⟨pattern, body⟩ := branch
+      simp only [Expr.traverseAnnBranches, ih, List.mapM_cons]
+      cases body.traverseAnn f <;> simp
+
+/-- Mapping the bodies commutes with looking up a branch. -/
+theorem findBranch_map (g : Expr A → Expr B) (ref : CtorRef) (branches : List (CtorRef × Expr A)) :
+    findBranch ref (branches.map fun branch => (branch.1, g branch.2)) =
+      (findBranch ref branches).map g := by
+  induction branches with
+  | nil => rfl
+  | cons branch rest ih =>
+      by_cases h : branch.1 = ref <;> simp_all [findBranch]
+
+/-- The branch found is one of the branches. -/
+theorem findBranch_mem {ref : CtorRef} {branches : List (CtorRef × Expr A)} {body : Expr A}
+    (found : findBranch ref branches = some body) : (ref, body) ∈ branches := by
+  simp only [findBranch, Option.map_eq_some_iff] at found
+  obtain ⟨⟨pattern, body'⟩, find, rfl⟩ := found
+  have := List.find?_some find
+  simp at this
+  subst this
+  exact List.mem_of_find?_eq_some find
+
+
 theorem anns_mapAnn (f : A → B) (expr : Expr A) : (expr.mapAnn f).anns = expr.anns.map f := by
   induction expr with
-  | lit _ | primOp _ | const _ | var _ => rfl
+  | «match» => sorry
+  | lit _ | primOp _ | ctor _ | var _ => rfl
   | lambda param body ih =>
       cases param <;> simp [Expr.mapAnn, Expr.anns, ih]
   | app fn arg ihf iha =>
@@ -654,7 +724,8 @@ theorem anns_mapAnn (f : A → B) (expr : Expr A) : (expr.mapAnn f).anns = expr.
 theorem mapAnn_congr {f g : A → B} {expr : Expr A} (agree : ∀ ann ∈ expr.anns, f ann = g ann) :
     expr.mapAnn f = expr.mapAnn g := by
   induction expr with
-  | lit _ | primOp _ | const _ | var _ => rfl
+  | «match» => sorry
+  | lit _ | primOp _ | ctor _ | var _ => rfl
   | lambda param body ih =>
       cases param with
       | none =>
@@ -687,7 +758,8 @@ annotation. -/
 theorem mapAnn_eq_anns {f g : A → B} {expr : Expr A} (equal : expr.mapAnn f = expr.mapAnn g) :
     ∀ ann ∈ expr.anns, f ann = g ann := by
   induction expr with
-  | lit _ | primOp _ | const _ | var _ => intro ann h; simp [Expr.anns] at h
+  | «match» => sorry
+  | lit _ | primOp _ | ctor _ | var _ => intro ann h; simp [Expr.anns] at h
   | lambda param body ih =>
       intro ann hmem
       cases param with
@@ -779,7 +851,8 @@ private theorem traverseAnn_eq_none_iff {f : Ty V → Option SemTy} :
     ∀ (expr : Expr (Ty V)), expr.traverseAnn f = none ↔ ∃ ann ∈ expr.anns, f ann = none := by
   intro expr
   induction expr with
-  | lit _ | primOp _ | const _ | var _ => simp [Expr.traverseAnn, Expr.anns]
+  | «match» => sorry
+  | lit _ | primOp _ | ctor _ | var _ => simp [Expr.traverseAnn, Expr.anns]
   | lambda param body ih =>
       cases param with
       | none =>
@@ -812,7 +885,8 @@ private theorem traverseAnn_eq_some_iff {f : Ty V → Option SemTy} {r : SemTy �
       expr.traverseAnn f = some el ↔ expr = el.mapAnn r := by
   intro expr
   induction expr with
-  | lit l | primOp l | const l | var l =>
+  | «match» => sorry
+  | lit l | primOp l | ctor l | var l =>
       intro el
       constructor
       · intro h

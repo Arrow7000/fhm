@@ -1,5 +1,6 @@
 import EPL.Spec.Infer
 import EPL.Spec.Eval
+import EPL.Spec.Exhaustive
 
 /-!
 # EPL: the headline theorems
@@ -7,7 +8,8 @@ import EPL.Spec.Eval
 * `infer_eq_some_iff` / `infer_eq_none_iff`: inference accepts exactly the
   programs that elaborate and have no other typing, and returns that typing.
 * `infer_unique`: an accepted program has exactly one typing.
-* `infer_type_safety`, `infer_run_value`: accepted programs do not get stuck.
+* `infer_type_safety`, `infer_run_value`: accepted programs whose matches are
+  exhaustive do not get stuck.
 * `evaluate`: infer, erase and run, returning a typed value or a typed term
   that can still step.
 
@@ -337,31 +339,42 @@ theorem infer_runtimeTyping {sig : Signature} {src : Source} {result : Inference
   TypingWith.erase ctxWF_nil (infer_sound accepted)
 
 theorem infer_steps_typed {sig : Signature} {src : Source} {result : InferenceResult}
-    (accepted : infer sig src = some result) (steps : Eval.Steps sig src.erase expr) :
+    (accepted : infer sig src = some result) (steps : Eval.Steps src.erase expr) :
     RuntimeTyping sig 0 [] expr result.ty := by
   induction steps with
   | refl => exact infer_runtimeTyping accepted
   | tail _ step ih => exact RuntimeTyping.preservation ih step
 
-/-- Type safety: an accepted program never gets stuck. -/
+/-- Exhaustiveness survives evaluation. -/
+theorem steps_exhaustive {sig : Signature} {src : Source}
+    (exhaustive : Exhaustive sig src) (steps : Eval.Steps src.erase expr) :
+    Exhaustive sig expr := by
+  induction steps with
+  | refl => exact exhaustive.erase
+  | tail _ step ih => exact ih.step step
+
+/-- Type safety: an accepted, exhaustive program never gets stuck. -/
 theorem infer_type_safety {sig : Signature} {src : Source} {result : InferenceResult}
-    (accepted : infer sig src = some result) (steps : Eval.Steps sig src.erase expr) :
-    Eval.Value sig expr ∨ ∃ next, Eval.Step sig expr next :=
-  RuntimeTyping.progress (infer_steps_typed accepted steps)
+    (accepted : infer sig src = some result) (exhaustive : Exhaustive sig src)
+    (steps : Eval.Steps src.erase expr) :
+    Eval.Value expr ∨ ∃ next, Eval.Step expr next :=
+  RuntimeTyping.progress (infer_steps_typed accepted steps) (steps_exhaustive exhaustive steps)
 
 /-- Running an accepted program, for any fuel, yields a term of the inferred
 type. -/
 theorem infer_run_typed {sig : Signature} {src : Source} {result : InferenceResult}
     (accepted : infer sig src = some result) (fuel : Nat) :
-    RuntimeTyping sig 0 [] (Eval.run sig fuel src.erase) result.ty :=
+    RuntimeTyping sig 0 [] (Eval.run fuel src.erase) result.ty :=
   infer_steps_typed accepted (Eval.run_steps fuel src.erase)
 
-/-- When the evaluator stops before its fuel runs out, it stops at a value. -/
+/-- When the evaluator stops before its fuel runs out on an accepted,
+exhaustive program, it stops at a value. -/
 theorem infer_run_value {sig : Signature} {src : Source} {result : InferenceResult}
-    (accepted : infer sig src = some result)
-    (stopped : Eval.step? sig (Eval.run sig fuel src.erase) = none) :
-    Eval.Value sig (Eval.run sig fuel src.erase) := by
-  rcases RuntimeTyping.progress (infer_run_typed accepted fuel) with value | ⟨next, step⟩
+    (accepted : infer sig src = some result) (exhaustive : Exhaustive sig src)
+    (stopped : Eval.step? (Eval.run fuel src.erase) = none) :
+    Eval.Value (Eval.run fuel src.erase) := by
+  rcases infer_type_safety accepted exhaustive (Eval.run_steps fuel src.erase) with
+    value | ⟨next, step⟩
   · exact value
   · rw [Eval.step?_complete step] at stopped
     exact Option.noConfusion stopped
@@ -373,36 +386,39 @@ bounded fuel, carrying its own evidence. -/
 inductive Eval.Outcome (sig : Signature) (start : RuntimeExpr) (ty : SemTy) : Type
   /-- Evaluation finished at a value. -/
   | value (result : RuntimeExpr)
-      (steps : Eval.Steps sig start result)
-      (isValue : Eval.Value sig result)
+      (steps : Eval.Steps start result)
+      (isValue : Eval.Value result)
       (typed : RuntimeTyping sig 0 [] result ty)
   /-- Fuel ran out at a typed term that can still step. -/
   | running (current next : RuntimeExpr)
-      (steps : Eval.Steps sig start current)
+      (steps : Eval.Steps start current)
       (typed : RuntimeTyping sig 0 [] current ty)
-      (step : Eval.Step sig current next)
+      (step : Eval.Step current next)
 
 /-- The final value, or `none` if fuel ran out. -/
 def Eval.Outcome.value? : Eval.Outcome sig start ty → Option RuntimeExpr
   | .value result .. => some result
   | .running .. => none
 
-/-- Infer `src`, then run its erasure for at most `fuel` steps. Rejected
-programs yield `none`; accepted programs cannot get stuck, by construction of
-`Eval.Outcome`. -/
+/-- Infer `src`, check that its matches are exhaustive, then run its erasure
+for at most `fuel` steps. Rejected or non-exhaustive programs yield `none`;
+the others cannot get stuck, by construction of `Eval.Outcome`. -/
 def evaluate (sig : Signature) (src : Source) (fuel : Nat) :
     Option ((result : InferenceResult) × Eval.Outcome sig src.erase result.ty) :=
   match accepted : infer sig src with
   | none => none
   | some result =>
-      some ⟨result,
-        match stepped : Eval.step? sig (Eval.run sig fuel src.erase) with
-        | some next =>
-            .running _ next (Eval.run_steps fuel _) (infer_run_typed accepted fuel)
-              (Eval.step?_sound stepped)
-        | none =>
-            .value _ (Eval.run_steps fuel _) (infer_run_value accepted stepped)
-              (infer_run_typed accepted fuel)⟩
+      if exhaustive : src.exhaustive sig = true then
+        some ⟨result,
+          match stepped : Eval.step? (Eval.run fuel src.erase) with
+          | some next =>
+              .running _ next (Eval.run_steps fuel _) (infer_run_typed accepted fuel)
+                (Eval.step?_sound stepped)
+          | none =>
+              .value _ (Eval.run_steps fuel _)
+                (infer_run_value accepted (Expr.exhaustive_iff.mp exhaustive) stepped)
+                (infer_run_typed accepted fuel)⟩
+      else none
 
 /-! ## Axioms
 

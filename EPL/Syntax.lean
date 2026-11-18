@@ -237,7 +237,7 @@ in field types) and one list of field types per constructor. Field types may
 name any declared type, so recursion and mutual recursion are allowed.
 
 If `List` is declaration 1, `data List a = Nil | Cons a (List a)` is
-`⟨1, [[], [.bvar 0, .app (.con 1) (.bvar 0)]]⟩`. See `DataConst` for more. -/
+`⟨1, [[], [.bvar 0, .app (.con 1) (.bvar 0)]]⟩`. See `CtorRef` for more. -/
 structure DataDecl where
   params : Nat
   ctors : List (List SemTy)
@@ -246,10 +246,12 @@ structure DataDecl where
 /-- A program's data declarations: type `con i` is declaration `i`. -/
 abbrev Signature := List DataDecl
 
-/-- The constants a signature introduces: its constructors and eliminators.
-Arities live in the signature, which evaluation consults.
+/-- A resolved constructor name: constructor number `index` of declared type
+`type`. Used both to build values (`Expr.ctor`) and as a match pattern
+(`Expr.match`). Names are resolved before the core, so a constructor always
+says which type it belongs to.
 
-A `DataConst` names a *value*. A *type* is named by its declaration's number,
+A constructor names a *value*. A *type* is named by its declaration's number,
 `Ty.con`, applied to arguments with `Ty.app`. A worked example: the signature
 
 ```
@@ -269,33 +271,28 @@ declares these types:
 | `Maybe a`          | `.app (.con 2) (.rigid 0)` (`a` at level 0)       |
 | `Pair Int Char`    | `.app (.app (.con 3) (.prim .int)) (.prim .char)` |
 
-and these constants (constructors are numbered from 0 in declaration order;
-`Signature.schemeOf` gives the schemes):
+and these constructors (numbered from 0 in declaration order;
+`Signature.ctorScheme` gives the schemes):
 
-| written  | `DataConst` | scheme                                                     |
-|----------|-------------|------------------------------------------------------------|
-| `True`   | `.ctor 0 0` | `Bool`                                                     |
-| `False`  | `.ctor 0 1` | `Bool`                                                     |
-| `Nil`    | `.ctor 1 0` | `forall a. List a`                                         |
-| `Cons`   | `.ctor 1 1` | `forall a. a -> List a -> List a`                          |
-| `Just`   | `.ctor 2 1` | `forall a. a -> Maybe a`                                   |
-| `MkPair` | `.ctor 3 0` | `forall a b. a -> b -> Pair a b`                           |
-| `if`     | `.elim 0`   | `forall r. Bool -> (() -> r) -> (() -> r) -> r`            |
-| `match` on a list | `.elim 1` | `forall a r. List a -> (() -> r) -> (() -> a -> List a -> r) -> r` |
+| written  | `CtorRef` | scheme                            |
+|----------|-----------|-----------------------------------|
+| `True`   | `⟨0, 0⟩`  | `Bool`                            |
+| `False`  | `⟨0, 1⟩`  | `Bool`                            |
+| `Nil`    | `⟨1, 0⟩`  | `forall a. List a`                |
+| `Cons`   | `⟨1, 1⟩`  | `forall a. a -> List a -> List a` |
+| `Just`   | `⟨2, 1⟩`  | `forall a. a -> Maybe a`          |
+| `MkPair` | `⟨3, 0⟩`  | `forall a b. a -> b -> Pair a b`  |
 
 So `Cons 3 Nil : List Int` is
-`.app (.app (.const (.ctor 1 1)) (.lit (.int 3))) (.const (.ctor 1 0))`, and
-`if c then t else e` is `Expr.apps (.const (.elim 0)) [c, .lambda none t', .lambda none e']`,
-where `t'` and `e'` are `t` and `e` shifted past the branch's `()` binder.
+`.app (.app (.ctor ⟨1, 1⟩) (.lit (.int 3))) (.ctor ⟨1, 0⟩)`, and
+`match xs with | Nil => a | Cons h t => b` is
+`.match xs [(⟨1, 0⟩, a), (⟨1, 1⟩, .lambda none (.lambda none b))]`.
 
 By convention declaration 0 is always `Bool` (`boolDecl`); the comparison
 operators rely on it. -/
-inductive DataConst where
-  /-- Constructor number `index` of declared type `type`. -/
-  | ctor (type index : Nat)
-  /-- The eliminator of declared type `type`. Surface `match` and `if` are
-  applications of an eliminator. -/
-  | elim (type : Nat)
+structure CtorRef where
+  type : Nat
+  index : Nat
   deriving DecidableEq, Repr
 
 /-! ## Expressions -/
@@ -335,15 +332,20 @@ def PolyAnn.map (f : A → B) (ann : PolyAnn A) : PolyAnn B := ⟨ann.arity, f a
 * `Source := Expr Template` — what the programmer wrote;
 * `Elab := Expr SemTy` — the same program with every implicit type filled in
   (every annotation is `some`);
-* `RuntimeExpr := Expr Empty` — after erasure (every annotation is `none`). -/
+* `RuntimeExpr := Expr Empty` — after erasure (every annotation is `none`).
+
+`Expr` is a nested inductive (a match holds a `List` of branches), so every
+recursive function on it comes with a companion on branch lists, defined in
+the same `mutual` block. -/
 inductive Expr (A : Type) where
   /-- A literal: `()`, an integer or a character. -/
   | lit (literal : PrimLit)
   /-- A built-in operator, unapplied: `x + y` is
   `.app (.app (.primOp .intAdd) x) y`. -/
   | primOp (op : PrimOp)
-  /-- A data constructor or eliminator; see `DataConst`. -/
-  | const (c : DataConst)
+  /-- A data constructor, unapplied: it takes its fields by `.app`, like
+  `Ty.con` takes its arguments by `Ty.app`. See `CtorRef`. -/
+  | ctor (ref : CtorRef)
   /-- A term variable, by de Bruijn index: `var 0` is the innermost binder. -/
   | var (index : Nat)
   /-- `fun x => body`, with `param` the optional type annotation on `x`. In
@@ -359,7 +361,44 @@ inductive Expr (A : Type) where
   and stands for the whole `fix`. `self` annotates the recursive binder, as
   `param` does a lambda's. -/
   | fix (self : Option A) (body : Expr A)
-  deriving DecidableEq, Repr
+  /-- `match scrutinee with | pattern => body | ...`. Each branch names the
+  constructor it matches; the first branch whose pattern is the scrutinee's
+  constructor is taken. A branch body is a function of the constructor's
+  fields (`fun h t => b` for `Cons h t => b`; just `b` for a constructor
+  without fields), so patterns bind nothing themselves. Matches may be
+  partial (see `Exhaustive`). -/
+  | «match» (scrutinee : Expr A) (branches : List (CtorRef × Expr A))
+  deriving Repr
+
+/-- Structural induction on `Expr`, with a hypothesis for every branch body of
+a `match` (the generated `Expr.rec` splits branches into separate list and
+pair motives). It is the default eliminator, so a plain `induction expr`
+uses it; `@[elab_as_elim]` lets it be applied directly as a term. -/
+@[elab_as_elim, induction_eliminator]
+theorem Expr.induction {A : Type} {motive : Expr A → Prop}
+    (lit : ∀ literal, motive (.lit literal))
+    (primOp : ∀ op, motive (.primOp op))
+    (ctor : ∀ ref, motive (.ctor ref))
+    (var : ∀ index, motive (.var index))
+    (lambda : ∀ param body, motive body → motive (.lambda param body))
+    (app : ∀ function argument, motive function → motive argument →
+      motive (.app function argument))
+    (letIn : ∀ ann rhs body, motive rhs → motive body → motive (.letIn ann rhs body))
+    (fix : ∀ self body, motive body → motive (.fix self body))
+    («match» : ∀ scrutinee branches, motive scrutinee →
+      (∀ branch ∈ branches, motive branch.2) → motive (.match scrutinee branches))
+    (expr : Expr A) : motive expr :=
+  Expr.rec (motive_1 := motive)
+    (motive_2 := fun branches => ∀ branch ∈ branches, motive branch.2)
+    (motive_3 := fun branch => motive branch.2)
+    lit primOp ctor var lambda app letIn fix «match»
+    (fun _ mem => nomatch mem)
+    (fun _ _ head tail branch mem => by
+      cases mem with
+      | head => exact head
+      | tail _ mem => exact tail branch mem)
+    (fun _ _ body => body)
+    expr
 
 /-- Programs as written: annotations are partial (`Template`s). -/
 abbrev Source := Expr Template
@@ -368,22 +407,107 @@ abbrev Elab := Expr SemTy
 /-- Erased programs, what evaluation runs: no annotations at all. -/
 abbrev RuntimeExpr := Expr Empty
 
+mutual
+/-- Decidable equality (`deriving` does not handle nested inductives). -/
+def Expr.decEq [DecidableEq A] : (x y : Expr A) → Decidable (x = y)
+  | .lit l, .lit l' =>
+      if h : l = l' then isTrue (h ▸ rfl) else isFalse (by intro e; cases e; exact h rfl)
+  | .primOp o, .primOp o' =>
+      if h : o = o' then isTrue (h ▸ rfl) else isFalse (by intro e; cases e; exact h rfl)
+  | .ctor r, .ctor r' =>
+      if h : r = r' then isTrue (h ▸ rfl) else isFalse (by intro e; cases e; exact h rfl)
+  | .var i, .var i' =>
+      if h : i = i' then isTrue (h ▸ rfl) else isFalse (by intro e; cases e; exact h rfl)
+  | .lambda p b, .lambda p' b' =>
+      if hp : p = p' then
+        match Expr.decEq b b' with
+        | isTrue hb => isTrue (hp ▸ hb ▸ rfl)
+        | isFalse hb => isFalse (by intro e; cases e; exact hb rfl)
+      else isFalse (by intro e; cases e; exact hp rfl)
+  | .app f a, .app f' a' =>
+      match Expr.decEq f f', Expr.decEq a a' with
+      | isTrue hf, isTrue ha => isTrue (hf ▸ ha ▸ rfl)
+      | isFalse hf, _ => isFalse (by intro e; cases e; exact hf rfl)
+      | _, isFalse ha => isFalse (by intro e; cases e; exact ha rfl)
+  | .letIn n r b, .letIn n' r' b' =>
+      if hn : n = n' then
+        match Expr.decEq r r', Expr.decEq b b' with
+        | isTrue hr, isTrue hb => isTrue (hn ▸ hr ▸ hb ▸ rfl)
+        | isFalse hr, _ => isFalse (by intro e; cases e; exact hr rfl)
+        | _, isFalse hb => isFalse (by intro e; cases e; exact hb rfl)
+      else isFalse (by intro e; cases e; exact hn rfl)
+  | .fix s b, .fix s' b' =>
+      if hs : s = s' then
+        match Expr.decEq b b' with
+        | isTrue hb => isTrue (hs ▸ hb ▸ rfl)
+        | isFalse hb => isFalse (by intro e; cases e; exact hb rfl)
+      else isFalse (by intro e; cases e; exact hs rfl)
+  | .match s bs, .match s' bs' =>
+      match Expr.decEq s s', Expr.decEqBranches bs bs' with
+      | isTrue hs, isTrue hb => isTrue (hs ▸ hb ▸ rfl)
+      | isFalse hs, _ => isFalse (by intro e; cases e; exact hs rfl)
+      | _, isFalse hb => isFalse (by intro e; cases e; exact hb rfl)
+  | .lit .., .primOp .. | .lit .., .ctor .. | .lit .., .var .. | .lit .., .lambda ..
+  | .lit .., .app .. | .lit .., .letIn .. | .lit .., .fix .. | .lit .., .match ..
+  | .primOp .., .lit .. | .primOp .., .ctor .. | .primOp .., .var .. | .primOp .., .lambda ..
+  | .primOp .., .app .. | .primOp .., .letIn .. | .primOp .., .fix .. | .primOp .., .match ..
+  | .ctor .., .lit .. | .ctor .., .primOp .. | .ctor .., .var .. | .ctor .., .lambda ..
+  | .ctor .., .app .. | .ctor .., .letIn .. | .ctor .., .fix .. | .ctor .., .match ..
+  | .var .., .lit .. | .var .., .primOp .. | .var .., .ctor .. | .var .., .lambda ..
+  | .var .., .app .. | .var .., .letIn .. | .var .., .fix .. | .var .., .match ..
+  | .lambda .., .lit .. | .lambda .., .primOp .. | .lambda .., .ctor .. | .lambda .., .var ..
+  | .lambda .., .app .. | .lambda .., .letIn .. | .lambda .., .fix .. | .lambda .., .match ..
+  | .app .., .lit .. | .app .., .primOp .. | .app .., .ctor .. | .app .., .var ..
+  | .app .., .lambda .. | .app .., .letIn .. | .app .., .fix .. | .app .., .match ..
+  | .letIn .., .lit .. | .letIn .., .primOp .. | .letIn .., .ctor .. | .letIn .., .var ..
+  | .letIn .., .lambda .. | .letIn .., .app .. | .letIn .., .fix .. | .letIn .., .match ..
+  | .fix .., .lit .. | .fix .., .primOp .. | .fix .., .ctor .. | .fix .., .var ..
+  | .fix .., .lambda .. | .fix .., .app .. | .fix .., .letIn .. | .fix .., .match ..
+  | .match .., .lit .. | .match .., .primOp .. | .match .., .ctor .. | .match .., .var ..
+  | .match .., .lambda .. | .match .., .app .. | .match .., .letIn .. | .match .., .fix .. =>
+      isFalse (by intro e; cases e)
+
+/-- Decidable equality of branch lists. -/
+def Expr.decEqBranches [DecidableEq A] :
+    (x y : List (CtorRef × Expr A)) → Decidable (x = y)
+  | [], [] => isTrue rfl
+  | (p, b) :: bs, (p', b') :: bs' =>
+      if hp : p = p' then
+        match Expr.decEq b b', Expr.decEqBranches bs bs' with
+        | isTrue hb, isTrue hbs => isTrue (hp ▸ hb ▸ hbs ▸ rfl)
+        | isFalse hb, _ => isFalse (by intro e; cases e; exact hb rfl)
+        | _, isFalse hbs => isFalse (by intro e; cases e; exact hbs rfl)
+      else isFalse (by intro e; cases e; exact hp rfl)
+  | [], _ :: _ | _ :: _, [] => isFalse (by intro e; cases e)
+end
+
+instance [DecidableEq A] : DecidableEq (Expr A) := Expr.decEq
+
+mutual
 /-- Map every annotation. -/
 def Expr.mapAnn (f : A → B) : Expr A → Expr B
   | .lit literal => .lit literal
   | .primOp op => .primOp op
-  | .const c => .const c
+  | .ctor ref => .ctor ref
   | .var index => .var index
   | .lambda param body => .lambda (param.map f) (body.mapAnn f)
   | .app function argument => .app (function.mapAnn f) (argument.mapAnn f)
   | .letIn ann rhs body => .letIn (ann.map (PolyAnn.map f)) (rhs.mapAnn f) (body.mapAnn f)
   | .fix self body => .fix (self.map f) (body.mapAnn f)
+  | .match scrutinee branches => .match (scrutinee.mapAnn f) (Expr.mapAnnBranches f branches)
 
+/-- `Expr.mapAnn` on every branch body. -/
+def Expr.mapAnnBranches (f : A → B) : List (CtorRef × Expr A) → List (CtorRef × Expr B)
+  | [] => []
+  | (pattern, body) :: rest => (pattern, body.mapAnn f) :: Expr.mapAnnBranches f rest
+end
+
+mutual
 /-- Map every annotation, failing if any annotation fails. -/
 def Expr.traverseAnn (f : A → Option B) : Expr A → Option (Expr B)
   | .lit literal => some (.lit literal)
   | .primOp op => some (.primOp op)
-  | .const c => some (.const c)
+  | .ctor ref => some (.ctor ref)
   | .var index => some (.var index)
   | .lambda none body => do some (.lambda none (← body.traverseAnn f))
   | .lambda (some param) body => do some (.lambda (some (← f param)) (← body.traverseAnn f))
@@ -395,10 +519,21 @@ def Expr.traverseAnn (f : A → Option B) : Expr A → Option (Expr B)
       some (.letIn (some ⟨ann.arity, ← f ann.body⟩) (← rhs.traverseAnn f) (← body.traverseAnn f))
   | .fix none body => do some (.fix none (← body.traverseAnn f))
   | .fix (some self) body => do some (.fix (some (← f self)) (← body.traverseAnn f))
+  | .match scrutinee branches => do
+      some (.match (← scrutinee.traverseAnn f) (← Expr.traverseAnnBranches f branches))
 
+/-- `Expr.traverseAnn` on every branch body. -/
+def Expr.traverseAnnBranches (f : A → Option B) :
+    List (CtorRef × Expr A) → Option (List (CtorRef × Expr B))
+  | [] => some []
+  | (pattern, body) :: rest => do
+      some ((pattern, ← body.traverseAnn f) :: (← Expr.traverseAnnBranches f rest))
+end
+
+mutual
 /-- Every annotation of an expression, in order. -/
 def Expr.anns : Expr A → List A
-  | .lit _ | .primOp _ | .const _ | .var _ => []
+  | .lit _ | .primOp _ | .ctor _ | .var _ => []
   | .lambda none body => body.anns
   | .lambda (some param) body => param :: body.anns
   | .app function argument => function.anns ++ argument.anns
@@ -406,36 +541,64 @@ def Expr.anns : Expr A → List A
   | .letIn (some ann) rhs body => ann.body :: (rhs.anns ++ body.anns)
   | .fix none body => body.anns
   | .fix (some self) body => self :: body.anns
+  | .match scrutinee branches => scrutinee.anns ++ Expr.annsBranches branches
 
+/-- Every annotation of the branch bodies, in order. -/
+def Expr.annsBranches : List (CtorRef × Expr A) → List A
+  | [] => []
+  | (_, body) :: rest => body.anns ++ Expr.annsBranches rest
+end
+
+mutual
 /-- Forget every annotation. A source program and its elaboration erase to the
 same runtime expression. -/
 def Expr.erase : Expr A → RuntimeExpr
   | .lit literal => .lit literal
   | .primOp op => .primOp op
-  | .const c => .const c
+  | .ctor ref => .ctor ref
   | .var index => .var index
   | .lambda _ body => .lambda none body.erase
   | .app function argument => .app function.erase argument.erase
   | .letIn _ rhs body => .letIn none rhs.erase body.erase
   | .fix _ body => .fix none body.erase
+  | .match scrutinee branches => .match scrutinee.erase (Expr.eraseBranches branches)
 
+/-- `Expr.erase` on every branch body. -/
+def Expr.eraseBranches : List (CtorRef × Expr A) → List (CtorRef × RuntimeExpr)
+  | [] => []
+  | (pattern, body) :: rest => (pattern, body.erase) :: Expr.eraseBranches rest
+end
+
+mutual
 /-- Add `amount` to every term variable at or above `cutoff`. -/
 def Expr.shift (cutoff amount : Nat) : Expr A → Expr A
   | .lit literal => .lit literal
   | .primOp op => .primOp op
-  | .const c => .const c
+  | .ctor ref => .ctor ref
   | .var index => .var (if cutoff ≤ index then index + amount else index)
   | .lambda param body => .lambda param (body.shift (cutoff + 1) amount)
   | .app function argument => .app (function.shift cutoff amount) (argument.shift cutoff amount)
   | .letIn ann rhs body => .letIn ann (rhs.shift cutoff amount) (body.shift (cutoff + 1) amount)
   | .fix self body => .fix self (body.shift (cutoff + 1) amount)
+  | .match scrutinee branches =>
+      .match (scrutinee.shift cutoff amount) (Expr.shiftBranches cutoff amount branches)
 
+/-- `Expr.shift` on every branch body. Patterns bind nothing, so the cutoff is
+unchanged. -/
+def Expr.shiftBranches (cutoff amount : Nat) :
+    List (CtorRef × Expr A) → List (CtorRef × Expr A)
+  | [] => []
+  | (pattern, body) :: rest =>
+      (pattern, body.shift cutoff amount) :: Expr.shiftBranches cutoff amount rest
+end
+
+mutual
 /-- Replace term variable `depth` by `value` (whose free variables are relative
 to the outside of `depth` binders) and close the gap. -/
 def Expr.substAt : Expr A → Nat → Expr A → Expr A
   | .lit literal, _, _ => .lit literal
   | .primOp op, _, _ => .primOp op
-  | .const c, _, _ => .const c
+  | .ctor ref, _, _ => .ctor ref
   | .var index, depth, value =>
       if index < depth then .var index
       else if index = depth then value.shift 0 depth
@@ -446,6 +609,16 @@ def Expr.substAt : Expr A → Nat → Expr A → Expr A
   | .letIn ann rhs body, depth, value =>
       .letIn ann (rhs.substAt depth value) (body.substAt (depth + 1) value)
   | .fix self body, depth, value => .fix self (body.substAt (depth + 1) value)
+  | .match scrutinee branches, depth, value =>
+      .match (scrutinee.substAt depth value) (Expr.substAtBranches branches depth value)
+
+/-- `Expr.substAt` on every branch body. -/
+def Expr.substAtBranches :
+    List (CtorRef × Expr A) → Nat → Expr A → List (CtorRef × Expr A)
+  | [], _, _ => []
+  | (pattern, body) :: rest, depth, value =>
+      (pattern, body.substAt depth value) :: Expr.substAtBranches rest depth value
+end
 
 /-- Replace the innermost bound variable `var 0` by `value`: `body[value/x]`
 for the body of a binder `x`, as in beta reduction. -/
@@ -461,5 +634,9 @@ def Expr.spine : Expr A → Expr A × List (Expr A)
 /-- Apply `head` to `args` in order: `head a b c`. Inverse of `Expr.spine`. -/
 def Expr.apps (head : Expr A) (args : List (Expr A)) : Expr A :=
   args.foldl .app head
+
+/-- The first branch whose pattern is `ref`. -/
+def Expr.findBranch (ref : CtorRef) (branches : List (CtorRef × Expr A)) : Option (Expr A) :=
+  (branches.find? (·.1 == ref)).map (·.2)
 
 end EPL

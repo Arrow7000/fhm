@@ -63,21 +63,28 @@ so recursive and mutually recursive types are allowed. A declaration is well
 formed (`DataDecl.WF`) when every field type mentions only its parameters;
 the constants of an ill-formed declaration have no type.
 
-Each declaration contributes constants with closed schemes:
+Constructors are named by `CtorRef ⟨type, index⟩`; names are resolved
+before the core, so a constructor always says which type it belongs to. A
+constructor `C_i : forall params. fields_i -> T params` is an expression
+(`Expr.ctor`) applied to its fields by ordinary application, like `Ty.con` is
+applied by `Ty.app`. It is first class, and typing treats it like a variable
+with a closed scheme.
 
-- constructor `C_i : forall params. fields_i -> T params`;
-- eliminator `elim_T : forall params r. T params -> branch_1 -> ... ->
-  branch_k -> r`, where `branch_i = Unit -> fields_i -> r`.
+`match scrutinee [(pattern, body), ...]` lists branches with explicit
+constructor patterns. A branch body is a function of its constructor's
+fields, so patterns bind nothing themselves. Typing requires at least one
+branch, every pattern a constructor of the scrutinee's type `T args`, and
+each body of type `fields_i[args] -> r`. Matches may be partial and may
+repeat a pattern; the first matching branch is taken. A match with no
+branches is not typable: its type would be unconstrained.
 
-Surface `match` is an application of the eliminator to one branch function
-per constructor, in declaration order; `if` is a match on `Bool`, which by
-convention is declaration 0. Each branch first receives `()`, so
-call-by-value evaluation does not run the branches a match does not take.
-Typing and inference treat constants exactly like variables with closed
-schemes. A constant's arity is read from the signature: a constant applied
-to fewer arguments than it consumes is a value, and a saturated eliminator
-meeting a saturated constructor reduces to the chosen branch applied to
-`()` and the fields.
+Exhaustiveness is separate from typing, as in FHM: `Exhaustive sig e` says
+every match in `e` covers every constructor of the type its patterns name.
+Progress assumes both typing and exhaustiveness.
+
+Evaluation does not consult the signature. A constructor applied to values
+is a value, and a match whose scrutinee is a constructor value steps to the
+first branch for that constructor applied to the fields.
 
 ## Declarative typing
 
@@ -142,12 +149,12 @@ type and every annotation of the resolved elaboration are ground.
 | `infer_eq_some_iff` | `infer` returns a result exactly when it elaborates the program and is its only typing |
 | `infer_eq_none_iff` | `infer` rejects exactly the programs without such a typing |
 | `infer_unique` | an accepted program has exactly one `Typing` |
-| `infer_type_safety` | an accepted program never gets stuck |
-| `evaluate` | infer, erase and run; returns a typed value or a typed term that can still step |
+| `infer_type_safety` | an accepted, exhaustive program never gets stuck |
+| `evaluate` | infer, check exhaustiveness, erase and run; returns a typed value or a typed term that can still step |
 | `inferAt_spec` | a successful run is sound and principal; a failed run means no model elaborates |
 | `MStore.unify_sound`, `MStore.unify_complete` | the result's models are exactly the input's models that equate the two types |
 | `TypingWith.erase` | erasure preserves typing |
-| `RuntimeTyping.progress`, `RuntimeTyping.preservation` | type safety of the erased runtime |
+| `RuntimeTyping.progress`, `RuntimeTyping.preservation` | type safety of the erased runtime (progress assumes `Exhaustive`) |
 | `Eval.step?_sound`, `Eval.step?_complete`, `Eval.Step.deterministic` | the executable evaluator is the step relation |
 
 ## How the proofs are organised
@@ -174,6 +181,7 @@ induction on the source proving `InferSpec`:
 | `Infer.lean` | `inferAt` and `infer` |
 | `Spec/Syntax.lean` | laws of `Ty.subst` and its instances |
 | `Spec/Eval.lean` | the evaluator agrees with the step relation |
+| `Spec/Exhaustive.lean` | the exhaustiveness check, and preservation of exhaustiveness |
 | `Spec/Runtime.lean` | weakening, substitution, progress, preservation |
 | `Spec/Declarative.lean` | regularity and erasure |
 | `Spec/Models.lean` | valuations, models and store invariants |

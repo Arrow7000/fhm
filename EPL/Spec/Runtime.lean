@@ -1455,8 +1455,8 @@ private theorem progress_empty (typing : RuntimeTyping sig k ctx expr ty) (empty
 /-- Proof: induction; canonical forms of values at arrow types (a lambda, a
 primitive operator possibly applied to one literal, or a partial constant
 spine) and at data types (a saturated constructor spine). -/
-theorem progress (typing : RuntimeTyping sig k [] expr ty) :
-    Eval.Value sig expr ∨ ∃ next, Eval.Step sig expr next := by
+theorem progress (typing : RuntimeTyping sig k [] expr ty) (exhaustive : Exhaustive sig expr) :
+    Eval.Value expr ∨ ∃ next, Eval.Step expr next := by
   exact progress_empty typing rfl
 
 /-- Every instance of a monomorphic scheme is its body. -/
@@ -1472,7 +1472,7 @@ private theorem mono_instance_eq {V : Type} {ty : Ty V} {k : Nat} {body : Ty V}
 `const`: the eliminator's scheme types the chosen branch at the scrutinee's
 field types (a lemma about typing `Expr.apps` spines helps). -/
 theorem preservation (typing : RuntimeTyping sig k ctx expr ty)
-    (step : Eval.Step sig expr next) :
+    (step : Eval.Step expr next) :
     RuntimeTyping sig k ctx next ty := by
   induction step generalizing k ctx ty with
   | beta argumentValue =>

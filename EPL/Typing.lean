@@ -68,17 +68,6 @@ def DataDecl.selfTy (decl : DataDecl) (type : Nat) : SemTy :=
 def DataDecl.ctorScheme (decl : DataDecl) (type : Nat) (fields : List SemTy) : Scheme Empty :=
   ⟨decl.params, Ty.arrows fields (decl.selfTy type)⟩
 
-/-- A branch first receives `()`, so call-by-value evaluation does not run the
-branches a match does not take, then the constructor's fields. -/
-def branchTy (fields : List SemTy) (result : SemTy) : SemTy :=
-  .arrow (.prim .unit) (Ty.arrows fields result)
-
-/-- `forall params r. T params -> branch_1 -> ... -> branch_k -> r`. -/
-def DataDecl.elimScheme (decl : DataDecl) (type : Nat) : Scheme Empty :=
-  let result : SemTy := .bvar decl.params
-  ⟨decl.params + 1,
-    .arrow (decl.selfTy type) (Ty.arrows (decl.ctors.map (branchTy · result)) result)⟩
-
 /-- Every field type mentions only the declaration's parameters. -/
 def DataDecl.WF (decl : DataDecl) : Prop :=
   ∀ fields ∈ decl.ctors, ∀ field ∈ fields, field.Scoped 0 decl.params
@@ -87,19 +76,20 @@ def DataDecl.WF (decl : DataDecl) : Prop :=
 instance (decl : DataDecl) : Decidable decl.WF :=
   inferInstanceAs (Decidable (∀ fields ∈ decl.ctors, ∀ field ∈ fields, _))
 
-/-- The scheme of a constant; `none` if the signature does not declare it or
-its declaration is not well formed. (The check is per declaration, so an
-ill-formed declaration cannot take away `Bool`'s constants, which the
+/-- Declaration `type`; `none` if the signature does not declare it or the
+declaration is not well formed. (The check is per declaration, so an
+ill-formed declaration cannot take away `Bool`'s constructors, which the
 comparison operators produce.) -/
-def Signature.schemeOf (sig : Signature) : DataConst → Option (Scheme Empty)
-  | .ctor type index => do
-      let decl ← sig[type]?
-      if ¬ decl.WF then none
-      let fields ← decl.ctors[index]?
-      some (decl.ctorScheme type fields)
-  | .elim type => do
-      let decl ← sig[type]?
-      if decl.WF then some (decl.elimScheme type) else none
+def Signature.decl? (sig : Signature) (type : Nat) : Option DataDecl := do
+  let decl ← sig[type]?
+  if decl.WF then some decl else none
+
+/-- The scheme of a constructor; `none` if `Signature.decl?` has no
+declaration for its type or the declaration has no such constructor. -/
+def Signature.ctorScheme (sig : Signature) (ref : CtorRef) : Option (Scheme Empty) := do
+  let decl ← sig.decl? ref.type
+  let fields ← decl.ctors[ref.index]?
+  some (decl.ctorScheme ref.type fields)
 
 /-- `scheme` completes the written annotation `ann` at depth `k`. -/
 structure PolyAnn.Completes (k : Nat) (ann : PolyAnn Template) (scheme : Scheme Empty) :
@@ -136,12 +126,12 @@ inductive TypingWith (sig : Signature) (Det : LetCondition) :
       op.ty sig = some ty →
       TypingWith sig Det k ctx (.primOp op) (.primOp op) ty
 
-  /-- A constant has any instance of its scheme from the signature, by type
+  /-- A constructor has any instance of its scheme from the signature, by type
   arguments well formed at depth `k`. -/
-  | const :
-      sig.schemeOf c = some scheme →
+  | ctor :
+      sig.ctorScheme ref = some scheme →
       scheme.Instance k ty →
-      TypingWith sig Det k ctx (.const c) (.const c) ty
+      TypingWith sig Det k ctx (.ctor ref) (.ctor ref) ty
 
   /-- A variable has any instance of its scheme in the context, by type
   arguments well formed at depth `k`. -/
@@ -194,6 +184,27 @@ inductive TypingWith (sig : Signature) (Det : LetCondition) :
       TypingWith sig Det k (.mono selfTy :: ctx) body bodyElab selfTy →
       TypingWith sig Det k ctx (.fix self body) (.fix (some selfTy) bodyElab) selfTy
 
+  /-- A match on a value of type `T args`: there is at least one branch; every
+  pattern is a constructor of `T`; and the branch for a constructor with
+  fields `f_1 ... f_n` has type `f_1 -> ... -> f_n -> resultTy` (the fields
+  instantiated at `args`). The match need not be exhaustive. The elaboration
+  keeps the patterns and elaborates each branch body. -/
+  | «match» :
+      TypingWith sig Det k ctx scrutinee scrutineeElab (Ty.apps (.con type) args) →
+      sig.decl? type = some decl →
+      args.length = decl.params →
+      branches ≠ [] →
+      (∀ pattern ∈ branches.map (·.1), pattern.type = type ∧ pattern.index < decl.ctors.length) →
+      branchesElab.map (·.1) = branches.map (·.1) →
+      (∀ (i : Nat) pattern body bodyElab fields,
+        branches[i]? = some (pattern, body) →
+        branchesElab[i]? = some (pattern, bodyElab) →
+        decl.ctors[pattern.index]? = some fields →
+        TypingWith sig Det k ctx body bodyElab
+          (Ty.arrows (fields.map (·.instantiate args)) resultTy)) →
+      TypingWith sig Det k ctx (.match scrutinee branches) (.match scrutineeElab branchesElab)
+        resultTy
+
 /-- Ordinary typing (each derivation also determines an elaboration). -/
 abbrev Typing (sig : Signature) := TypingWith sig fun _ _ _ _ _ => True
 
@@ -233,12 +244,12 @@ inductive RuntimeTyping (sig : Signature) : Nat → Ctx Empty → RuntimeExpr �
       op.ty sig = some ty →
       RuntimeTyping sig k ctx (.primOp op) ty
 
-  /-- A constant has any instance of its scheme from the signature, by type
+  /-- A constructor has any instance of its scheme from the signature, by type
   arguments well formed at depth `k`. -/
-  | const :
-      sig.schemeOf c = some scheme →
+  | ctor :
+      sig.ctorScheme ref = some scheme →
       scheme.Instance k ty →
-      RuntimeTyping sig k ctx (.const c) ty
+      RuntimeTyping sig k ctx (.ctor ref) ty
 
   /-- A variable has any instance of its scheme in the context, by type
   arguments well formed at depth `k`. -/
@@ -273,5 +284,84 @@ inductive RuntimeTyping (sig : Signature) : Nat → Ctx Empty → RuntimeExpr �
       selfTy.WF k →
       RuntimeTyping sig k (.mono selfTy :: ctx) body selfTy →
       RuntimeTyping sig k ctx (.fix self body) selfTy
+
+  /-- A match on a value of type `T args`, as in `TypingWith`: at least one
+  branch, every pattern a constructor of `T`, and each branch a function of
+  its constructor's fields (instantiated at `args`) to `resultTy`. -/
+  | «match» :
+      RuntimeTyping sig k ctx scrutinee (Ty.apps (.con type) args) →
+      sig.decl? type = some decl →
+      args.length = decl.params →
+      branches ≠ [] →
+      (∀ pattern ∈ branches.map (·.1), pattern.type = type ∧ pattern.index < decl.ctors.length) →
+      (∀ pattern body fields, (pattern, body) ∈ branches →
+        decl.ctors[pattern.index]? = some fields →
+        RuntimeTyping sig k ctx body (Ty.arrows (fields.map (·.instantiate args)) resultTy)) →
+      RuntimeTyping sig k ctx (.match scrutinee branches) resultTy
+
+/-! ## Exhaustiveness
+
+Separate from typing, as in FHM: a well-typed match may be partial, and
+progress holds for programs that are well typed *and* exhaustive. -/
+
+/-- Every type that a match's patterns name has each of its constructors
+covered by some pattern. (With typing, a match's patterns name exactly one
+type, which typing also requires to be the scrutinee's.) -/
+def Signature.Covers (sig : Signature) (patterns : List CtorRef) : Prop :=
+  ∀ pattern ∈ patterns, ∀ decl, sig[pattern.type]? = some decl →
+    ∀ index < decl.ctors.length, ⟨pattern.type, index⟩ ∈ patterns
+
+/-- Every match inside the expression covers its type (`Signature.Covers`). -/
+inductive Exhaustive {A : Type} (sig : Signature) : Expr A → Prop
+
+  | lit : Exhaustive sig (.lit literal)
+
+  | primOp : Exhaustive sig (.primOp op)
+
+  | ctor : Exhaustive sig (.ctor ref)
+
+  | var : Exhaustive sig (.var index)
+
+  | lambda : Exhaustive sig body → Exhaustive sig (.lambda param body)
+
+  | app : Exhaustive sig function → Exhaustive sig argument →
+      Exhaustive sig (.app function argument)
+
+  | letIn : Exhaustive sig rhs → Exhaustive sig body → Exhaustive sig (.letIn ann rhs body)
+
+  | fix : Exhaustive sig body → Exhaustive sig (.fix self body)
+
+  /-- The patterns cover their type, and the scrutinee and every branch body
+  are exhaustive. -/
+  | «match» :
+      Exhaustive sig scrutinee →
+      (∀ branch ∈ branches, Exhaustive sig branch.2) →
+      sig.Covers (branches.map (·.1)) →
+      Exhaustive sig (.match scrutinee branches)
+
+/-- `Signature.Covers`, as a check. -/
+def Signature.covers (sig : Signature) (patterns : List CtorRef) : Bool :=
+  patterns.all fun pattern =>
+    match sig[pattern.type]? with
+    | none => true
+    | some decl =>
+        (List.range decl.ctors.length).all fun index => patterns.contains ⟨pattern.type, index⟩
+
+mutual
+/-- `Exhaustive`, as a check. -/
+def Expr.exhaustive (sig : Signature) : Expr A → Bool
+  | .lit _ | .primOp _ | .ctor _ | .var _ => true
+  | .lambda _ body | .fix _ body => body.exhaustive sig
+  | .app function argument => function.exhaustive sig && argument.exhaustive sig
+  | .letIn _ rhs body => rhs.exhaustive sig && body.exhaustive sig
+  | .match scrutinee branches =>
+      scrutinee.exhaustive sig && Expr.exhaustiveBranches sig branches &&
+        sig.covers (branches.map (·.1))
+
+/-- `Expr.exhaustive` on every branch body. -/
+def Expr.exhaustiveBranches (sig : Signature) : List (CtorRef × Expr A) → Bool
+  | [] => true
+  | (_, body) :: rest => body.exhaustive sig && Expr.exhaustiveBranches sig rest
+end
 
 end EPL
