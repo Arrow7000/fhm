@@ -94,6 +94,98 @@ private theorem Scheme.instance_wf {scheme : Scheme V} {ty : Ty V} {k k' : Nat}
   rw [← hEq]
   exact Scheme.inst_wf wf le hlen hargs
 
+/-- The codomain of a well-formed arrow type is well formed. -/
+private theorem Ty.arrows_wf_codomain {domains : List (Ty V)} {codomain : Ty V} {k : Nat}
+    (wf : (Ty.arrows domains codomain).WF k) : codomain.WF k := by
+  induction domains with
+  | nil => exact wf
+  | cons domain domains ih => exact ih wf.2
+
+/-- Branch lists with the same patterns line up by index: the elaboration has a
+branch at every index where the source does, with the same pattern. -/
+private theorem exists_branch_of_map_fst {A B : Type} {branches : List (CtorRef × Expr A)}
+    {branchesElab : List (CtorRef × Expr B)} {i : Nat} {pattern : CtorRef} {body : Expr A}
+    (aligned : branchesElab.map (·.1) = branches.map (·.1))
+    (found : branches[i]? = some (pattern, body)) :
+    ∃ bodyElab, branchesElab[i]? = some (pattern, bodyElab) := by
+  have hpattern : (branchesElab.map (·.1))[i]? = some pattern := by
+    rw [aligned, List.getElem?_map, found]
+    rfl
+  rw [List.getElem?_map] at hpattern
+  obtain ⟨branch, hbranch, hfst⟩ := Option.map_eq_some_iff.mp hpattern
+  obtain ⟨pattern', bodyElab⟩ := branch
+  simp only at hfst
+  rw [hfst] at hbranch
+  exact ⟨bodyElab, hbranch⟩
+
+/-- A match's result type is well formed: it is the codomain of the type of its
+first branch, which is an arrow type. -/
+private theorem match_result_wf {k : Nat} {ctx : Ctx Empty} {decl : DataDecl} {type : Nat}
+    {args : List (Ty Empty)} {branches : List (CtorRef × Source)}
+    {branchesElab : List (CtorRef × Elab)} {resultTy : Ty Empty}
+    (ctxWF : ctx.WF k)
+    (branchesNe : branches ≠ [])
+    (patternsOk : ∀ pattern ∈ branches.map (·.1),
+      pattern.type = type ∧ pattern.index < decl.ctors.length)
+    (aligned : branchesElab.map (·.1) = branches.map (·.1))
+    (bodies : ∀ (i : Nat) (pattern : CtorRef) (body : Source) (bodyElab : Elab)
+      (fields : List SemTy),
+      branches[i]? = some (pattern, body) →
+      branchesElab[i]? = some (pattern, bodyElab) →
+      decl.ctors[pattern.index]? = some fields →
+      Ctx.WF k ctx →
+      (Ty.arrows (fields.map (·.instantiate args)) resultTy).WF k) :
+    resultTy.WF k := by
+  obtain ⟨pattern, body, hb0⟩ : ∃ pattern body, branches[0]? = some (pattern, body) := by
+    cases branches with
+    | nil => exact absurd rfl branchesNe
+    | cons branch rest => exact ⟨branch.1, branch.2, rfl⟩
+  obtain ⟨bodyElab, hbE⟩ := exists_branch_of_map_fst aligned hb0
+  have hmem : pattern ∈ branches.map (·.1) :=
+    List.mem_map.mpr ⟨(pattern, body), List.mem_of_getElem? hb0, rfl⟩
+  have hlen : pattern.index < decl.ctors.length := (patternsOk pattern hmem).2
+  obtain ⟨fields, hfields⟩ : ∃ fields, decl.ctors[pattern.index]? = some fields :=
+    ⟨decl.ctors[pattern.index]'hlen, List.getElem?_eq_getElem hlen⟩
+  exact Ty.arrows_wf_codomain (bodies 0 pattern body bodyElab fields hb0 hbE hfields ctxWF)
+
+/-- Erasing the bodies of two pattern-aligned branch lists commutes with the
+alignment: branch by branch, the types agree by the indexed premise. -/
+private theorem map_erase_eq_of_aligned {A B : Type} {branches : List (CtorRef × Expr A)}
+    {branchesElab : List (CtorRef × Expr B)} {decl : DataDecl} {type : Nat}
+    (patternsOk : ∀ pattern ∈ branches.map (·.1),
+      pattern.type = type ∧ pattern.index < decl.ctors.length)
+    (aligned : branchesElab.map (·.1) = branches.map (·.1))
+    (bodies : ∀ (i : Nat) (pattern : CtorRef) (body : Expr A) (bodyElab : Expr B)
+      (fields : List SemTy),
+      branches[i]? = some (pattern, body) →
+      branchesElab[i]? = some (pattern, bodyElab) →
+      decl.ctors[pattern.index]? = some fields → Expr.erase bodyElab = Expr.erase body) :
+    branchesElab.map (fun branch => (branch.1, Expr.erase branch.2)) =
+      branches.map (fun branch => (branch.1, Expr.erase branch.2)) := by
+  apply List.ext_getElem?
+  intro i
+  rw [List.getElem?_map, List.getElem?_map]
+  cases hb : branches[i]? with
+  | none =>
+      have hnone : (branchesElab.map (·.1))[i]? = none := by
+        rw [aligned, List.getElem?_map, hb]
+        rfl
+      rw [List.getElem?_map] at hnone
+      cases hbE : branchesElab[i]? with
+      | none => rfl
+      | some branch => simp [hbE] at hnone
+  | some branch =>
+      obtain ⟨pattern, body⟩ := branch
+      obtain ⟨bodyElab, hbE⟩ := exists_branch_of_map_fst aligned hb
+      have hmem : pattern ∈ branches.map (·.1) :=
+        List.mem_map.mpr ⟨(pattern, body), List.mem_of_getElem? hb, rfl⟩
+      have hlen : pattern.index < decl.ctors.length := (patternsOk pattern hmem).2
+      obtain ⟨fields, hfields⟩ : ∃ fields, decl.ctors[pattern.index]? = some fields :=
+        ⟨decl.ctors[pattern.index]'hlen, List.getElem?_eq_getElem hlen⟩
+      rw [hbE]
+      show some (pattern, Expr.erase bodyElab) = some (pattern, Expr.erase body)
+      rw [bodies i pattern body bodyElab fields hb hbE hfields]
+
 namespace TypingWith
 
 /-- A weaker let condition admits more derivations. -/
@@ -102,7 +194,9 @@ theorem mono {Det Det' : LetCondition}
     (typing : TypingWith sig Det k ctx src elaboration ty) :
     TypingWith sig Det' k ctx src elaboration ty := by
   induction typing with
-  | «match» => sorry
+  | «match» scrutineeTyping declEq argsLen branchesNe patternsOk aligned branchTyping
+      scrutineeIh branchIh =>
+      exact .«match» scrutineeIh declEq argsLen branchesNe patternsOk aligned branchIh
   | lit => exact .lit
   | primOp h => exact .primOp h
   | ctor hsch hinst => exact .ctor hsch hinst
@@ -119,7 +213,9 @@ and `const` cases are `Scheme.inst_wf`. -/
 theorem regular (ctxWF : ctx.WF k) (typing : TypingWith sig Det k ctx src elaboration ty) :
     ty.WF k := by
   induction typing with
-  | «match» => sorry
+  | «match» scrutineeTyping declEq argsLen branchesNe patternsOk aligned branchTyping
+      scrutineeIh branchIh =>
+      exact match_result_wf ctxWF branchesNe patternsOk aligned branchIh
   | lit => exact PrimLit.ty_wf _
   | primOp h => exact PrimOp.ty_wf h
   | ctor hsch hinst =>
@@ -143,7 +239,11 @@ theorem regular (ctxWF : ctx.WF k) (typing : TypingWith sig Det k ctx src elabor
 /-- A source program and its elaboration erase alike. -/
 theorem erase_eq (typing : TypingWith sig Det k ctx src elaboration ty) : elaboration.erase = src.erase := by
   induction typing with
-  | «match» => sorry
+  | «match» scrutineeTyping declEq argsLen branchesNe patternsOk aligned branchTyping
+      scrutineeIh branchIh =>
+      simp only [Expr.erase, scrutineeIh]
+      rw [Expr.eraseBranches_eq, Expr.eraseBranches_eq,
+        map_erase_eq_of_aligned patternsOk aligned branchIh]
   | lit | primOp | ctor | var => rfl
   | lambda _ _ _ ih => simp [Expr.erase, ih]
   | app _ _ ihf iha => simp [Expr.erase, ihf, iha]
@@ -159,7 +259,24 @@ instance, and `Scheme.substRigids_eq_self` shows the context is unchanged. -/
 theorem erase (ctxWF : ctx.WF k) (typing : TypingWith sig Det k ctx src elaboration ty) :
     RuntimeTyping sig k ctx src.erase ty := by
   induction typing with
-  | «match» => sorry
+  | «match» scrutineeTyping declEq argsLen branchesNe patternsOk aligned branchTyping
+      scrutineeIh branchIh =>
+      refine RuntimeTyping.«match» (scrutineeIh ctxWF) declEq argsLen ?_ ?_ ?_
+      · rw [Expr.eraseBranches_eq]
+        intro hnil
+        exact branchesNe (List.map_eq_nil_iff.mp hnil)
+      · rw [Expr.eraseBranches_eq]
+        simpa using patternsOk
+      · intro pattern body fields hmem hfields
+        rw [Expr.eraseBranches_eq] at hmem
+        obtain ⟨⟨pattern₀, body₀⟩, hmem₀, heq⟩ := List.mem_map.mp hmem
+        simp only [Prod.mk.injEq] at heq
+        obtain ⟨hpat, hbod⟩ := heq
+        obtain ⟨i, hi⟩ := List.mem_iff_getElem?.mp hmem₀
+        obtain ⟨bodyElab, hiElab⟩ := exists_branch_of_map_fst aligned hi
+        rw [← hpat] at hfields
+        rw [← hbod]
+        exact branchIh i pattern₀ body₀ bodyElab fields hi hiElab hfields ctxWF
   | lit => exact .lit
   | primOp h => exact .primOp h
   | ctor hsch hinst => exact .ctor hsch hinst

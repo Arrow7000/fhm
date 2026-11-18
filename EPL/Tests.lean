@@ -29,9 +29,9 @@ def boolSig : Signature := [boolDecl]
 def listSig : Signature :=
   [boolDecl, ⟨1, [[], [.bvar 0, .app (.con 1) (.bvar 0)]]⟩]
 
-def trueExpr : Expr A := .const (.ctor 0 0)
+def trueExpr : Expr A := .ctor ⟨0, 0⟩
 
-def falseExpr : Expr A := .const (.ctor 0 1)
+def falseExpr : Expr A := .ctor ⟨0, 1⟩
 
 def one : Source := .lit (.int 1)
 
@@ -40,7 +40,7 @@ def tyOf (sig : Signature) (src : Source) : Option SemTy := (infer sig src).map 
 
 /-- Evaluate an accepted program for at most 1000 steps. -/
 def evalOf (sig : Signature) (src : Source) : Option RuntimeExpr :=
-  (infer sig src).map fun _ => Eval.run sig 1000 src.erase
+  (infer sig src).map fun _ => Eval.run 1000 src.erase
 
 /-! ## A first tour -/
 
@@ -73,7 +73,7 @@ could be `a` or `Bool`, so it is rejected. -/
 def ambiguous : Source :=
   .letIn (some ⟨1, .arrow (.var "h") (.arrow (.rigid 0) (.rigid 0))⟩)
     (.lambda none (.lambda none (.var 0)))
-    (.app (.app (.var 0) (.const (.ctor 0 0))) (.const (.ctor 0 0)))
+    (.app (.app (.var 0) (.ctor ⟨0, 0⟩)) (.ctor ⟨0, 0⟩))
 
 #guard tyOf boolSig ambiguous = none
 
@@ -89,10 +89,8 @@ def tooGeneral : Source :=
 
 /-- `if 1 < 2 then 'y' else 'n'`. -/
 def ifLt : Source :=
-  .app (.app (.app (.const (.elim 0))
-      (.app (.app (.primOp .intLt) one) (.lit (.int 2))))
-      (.lambda none (.lit (.char 'y'))))
-    (.lambda none (.lit (.char 'n')))
+  .match (.app (.app (.primOp .intLt) one) (.lit (.int 2)))
+    [(⟨0, 0⟩, .lit (.char 'y')), (⟨0, 1⟩, .lit (.char 'n'))]
 
 #guard tyOf boolSig ifLt = some (.prim .char)
 #guard evalOf boolSig ifLt = some (.lit (.char 'y'))
@@ -103,13 +101,13 @@ def lengthProgram : Source :=
   let length : Source :=
     .fix (some (.arrow (.app (.con 1) (.var "a")) int.lift))
       (.lambda none
-        (.app (.app (.app (.const (.elim 1)) (.var 0))
-          (.lambda none (.lit (.int 0))))
-          (.lambda none (.lambda none (.lambda none
-            (.app (.app (.primOp .intAdd) one) (.app (.var 4) (.var 0))))))))
+        (.match (.var 0)
+          [(⟨1, 0⟩, .lit (.int 0)),
+           (⟨1, 1⟩, .lambda none (.lambda none
+             (.app (.app (.primOp .intAdd) one) (.app (.var 3) (.var 0)))))]))
   let list : Source :=
-    .app (.app (.const (.ctor 1 1)) one)
-      (.app (.app (.const (.ctor 1 1)) (.lit (.int 2))) (.const (.ctor 1 0)))
+    .app (.app (.ctor ⟨1, 1⟩) one)
+      (.app (.app (.ctor ⟨1, 1⟩) (.lit (.int 2))) (.ctor ⟨1, 0⟩))
   .app length list
 
 #guard tyOf listSig lengthProgram = some int
@@ -586,23 +584,24 @@ def finalValue (input : Source) (fuel : Nat) : Option RuntimeExpr :=
 /-! ## Data types -/
 
 /-- A field mentioning an undeclared parameter makes its declaration ill
-formed, so none of that declaration's constants has a scheme. In particular
-the eliminator, whose scheme has one more binder, does not read the field's
-`bvar 0` as its result variable. Other declarations are unaffected. -/
+formed: `decl?` hides it, so none of its constructors has a scheme and no
+match can name it. Other declarations are unaffected. -/
 def illScopedSig : Signature := [boolDecl, ⟨0, [[.bvar 0]]⟩]
 
-example : illScopedSig.schemeOf (.ctor 1 0) = none := by decide
-example : illScopedSig.schemeOf (.elim 1) = none := by decide
+example : illScopedSig.decl? 1 = none := by decide
+example : illScopedSig.decl? 0 = some boolDecl := by decide
+example : illScopedSig.ctorScheme ⟨1, 0⟩ = none := by decide
 example : (infer illScopedSig trueExpr).map (·.ty) = some boolTy := by decide
-example : (listSig.schemeOf (.elim 1)).isSome := by decide
+example : (listSig.decl? 1).isSome := by decide
+example : (listSig.ctorScheme ⟨1, 1⟩).isSome := by decide
 
-/-- `if c then a else b` as an application of `Bool`'s eliminator. -/
+/-- `if c then a else b` as a match on `Bool`. -/
 def ifThen (c a b : Source) : Source :=
-  .app (.app (.app (.const (.elim 0)) c) (.lambda none a)) (.lambda none b)
+  .match c [(⟨0, 0⟩, a), (⟨0, 1⟩, b)]
 
-def nil : Source := .const (.ctor 1 0)
+def nil : Source := .ctor ⟨1, 0⟩
 
-def cons (h t : Source) : Source := .app (.app (.const (.ctor 1 1)) h) t
+def cons (h t : Source) : Source := .app (.app (.ctor ⟨1, 1⟩) h) t
 
 def listTy : Ty V := .app (.con 1) int
 
@@ -619,21 +618,18 @@ example : (infer listSig ifFalse).map (·.ty) = some int := by
 /-- `match Cons 5 Nil with Nil => 0 | Cons x xs => x : Int`, evaluating to
 `5`, and annotating `x : Int` and `xs : List Int`. -/
 def matchCons : Source :=
-  .app (.app (.app (.const (.elim 1))
-      (cons (.lit (.int 5)) nil))
-    (.lambda none (.lit (.int 0))))
-    (.lambda none (.lambda none (.lambda none (.var 1))))
+  .match (cons (.lit (.int 5)) nil)
+    [(⟨1, 0⟩, .lit (.int 0)),
+     (⟨1, 1⟩, .lambda none (.lambda none (.var 1)))]
 
 example : (infer listSig matchCons).map (·.ty) = some int := by
   decide
 
 example : (infer listSig matchCons).map (·.elaboration) =
-    some (.app (.app (.app (.const (.elim 1))
-        (.app (.app (.const (.ctor 1 1)) (.lit (.int 5)))
-          (.const (.ctor 1 0))))
-      (.lambda (some (.prim .unit)) (.lit (.int 0))))
-      (.lambda (some (.prim .unit))
-        (.lambda (some int) (.lambda (some listTy) (.var 1))))) := by
+    some (.match (.app (.app (.ctor ⟨1, 1⟩) (.lit (.int 5)))
+          (.ctor ⟨1, 0⟩))
+      [(⟨1, 0⟩, .lit (.int 0)),
+       (⟨1, 1⟩, .lambda (some int) (.lambda (some listTy) (.var 1)))]) := by
   decide
 
 #guard ((evaluate listSig matchCons 50).bind (·.2.value?)) =
@@ -648,21 +644,20 @@ example : infer listSig ifInt = none := by
 
 /-- A partial constructor application is a value of function type. -/
 def partialCons : Source :=
-  .app (.const (.ctor 1 1)) (.lit (.int 1))
+  .app (.ctor ⟨1, 1⟩) (.lit (.int 1))
 
 example : (infer listSig partialCons).map (·.ty) =
     some (.arrow listTy listTy) := by
   decide
 
-example : Eval.Value listSig partialCons.erase :=
-  Eval.Value.const (c := .ctor 1 1) (args := [.lit (.int 1)]) (arity := 2) rfl
-    (by decide) (by decide) (by
-      intro arg h
-      rcases List.mem_singleton.mp h with rfl
-      exact .lit)
+example : Eval.Value partialCons.erase :=
+  Eval.Value.ctor (ref := ⟨1, 1⟩) (fields := [.lit (.int 1)]) rfl (by
+    intro field h
+    rcases List.mem_singleton.mp h with rfl
+    exact .lit)
 
 #guard ((evaluate listSig partialCons 10).bind (·.2.value?)) =
-  some (.app (.const (.ctor 1 1)) (.lit (.int 1)))
+  some (.app (.ctor ⟨1, 1⟩) (.lit (.int 1)))
 
 /-- Recursive list length via `fix`, over `listSig`. -/
 def listInt : Source :=
@@ -670,16 +665,15 @@ def listInt : Source :=
     (cons (.lit (.int 2)) (cons (.lit (.int 3)) nil))
 
 def listNilBranch : Source :=
-  .lambda none (.lit (.int 0))
+  .lit (.int 0)
 
 def listConsBranch : Source :=
-  .lambda none (.lambda none (.lambda none
+  .lambda none (.lambda none
     (.app (.app (.primOp .intAdd) (.lit (.int 1)))
-      (.app (.var 4) (.var 0)))))
+      (.app (.var 3) (.var 0))))
 
 def listMatch (scrutinee : Source) : Source :=
-  .app (.app (.app (.const (.elim 1)) scrutinee) listNilBranch)
-    listConsBranch
+  .match scrutinee [(⟨1, 0⟩, listNilBranch), (⟨1, 1⟩, listConsBranch)]
 
 def listLength : Source :=
   .fix (some (.arrow listTy int))
@@ -690,6 +684,39 @@ example : (infer listSig (.app listLength listInt)).map (·.ty) = some int := by
 
 #guard ((evaluate listSig (.app listLength listInt) 200).bind (·.2.value?)) =
   some (.lit (.int 3))
+
+/-! ## Partial, empty and mixed matches
+
+A match may be partial; exhaustiveness is a separate check that `evaluate`
+requires. -/
+
+/-- `match False with True => 1`, missing the `False` branch. -/
+def partialMatch : Source :=
+  .match falseExpr [(⟨0, 0⟩, .lit (.int 1))]
+
+example : (infer boolSig partialMatch).map (·.ty) = some int := by
+  decide
+
+example : partialMatch.exhaustive boolSig = false := by decide
+
+-- Inference accepts it, but `evaluate` refuses non-exhaustive programs.
+#guard (evaluate boolSig partialMatch 50).isNone
+
+-- Evaluation of the erasure stops at the match, which is not a value.
+#guard (Eval.step? (Eval.run 50 partialMatch.erase)).isNone
+#guard Eval.isValue (Eval.run 50 partialMatch.erase) = false
+
+/-- A match with no branches has no type to give its result. -/
+def emptyMatch : Source :=
+  .match trueExpr []
+
+example : infer boolSig emptyMatch = none := by decide
+
+/-- Patterns naming two different types are rejected. -/
+def crossTypedMatch : Source :=
+  .match trueExpr [(⟨0, 0⟩, trueExpr), (⟨1, 0⟩, nil)]
+
+example : infer listSig crossTypedMatch = none := by decide
 
 /-! ## Primitive operations -/
 
@@ -750,7 +777,7 @@ example : (infer boolSig partialIntLt).map (·.ty) =
     some (.arrow int boolTy) := by
   decide
 
-example : Eval.Value boolSig partialIntLt.erase :=
+example : Eval.Value partialIntLt.erase :=
   Eval.Value.primOpPartial (op := .intLt) .lit
 
 /-- `fix f : Int -> Int. fun n => if n < 1 then 0 else n + f (n - 1)`. -/
@@ -761,9 +788,9 @@ def primRecursive : Source :=
         (ifThen
           (.app (.app (.primOp .intLt) (.var 0)) (.lit (.int 1)))
           (.lit (.int 0))
-          (.app (.app (.primOp .intAdd) (.var 1))
-            (.app (.var 2)
-              (.app (.app (.primOp .intSub) (.var 1)) (.lit (.int 1))))))))
+          (.app (.app (.primOp .intAdd) (.var 0))
+            (.app (.var 1)
+              (.app (.app (.primOp .intSub) (.var 0)) (.lit (.int 1))))))))
     (.lit (.int 4))
 
 example : (infer boolSig primRecursive).map (·.ty) = some int := by
@@ -858,36 +885,32 @@ private theorem ctorScheme_inst_ne_prim (decl : DataDecl) (type : Nat)
   exact apps_ne_prim (.con type) _ q (by intro r h; cases h)
 
 /-- A constructor's scheme is its declaration's `ctorScheme`. -/
-private theorem schemeOf_ctor_eq {sig : Signature} {type index : Nat}
-    {scheme : Scheme Empty} (found : sig.schemeOf (.ctor type index) = some scheme) :
+private theorem ctorScheme_eq {sig : Signature} {type index : Nat}
+    {scheme : Scheme Empty} (found : sig.ctorScheme ⟨type, index⟩ = some scheme) :
     ∃ (decl : DataDecl) (fields : List SemTy),
-      sig[type]? = some decl ∧ decl.ctors[index]? = some fields ∧
+      sig.decl? type = some decl ∧ decl.ctors[index]? = some fields ∧
         scheme = decl.ctorScheme type fields := by
-  cases hdecl : sig[type]? with
-  | none => simp [Signature.schemeOf, hdecl] at found
+  cases hdecl : sig.decl? type with
+  | none => simp [Signature.ctorScheme, hdecl] at found
   | some decl =>
       cases hfields : decl.ctors[index]? with
-      | none => simp [Signature.schemeOf, hdecl, hfields] at found
+      | none => simp [Signature.ctorScheme, hdecl, hfields] at found
       | some fields =>
-          have hwf : decl.WF := by
-            by_contra h
-            simp [Signature.schemeOf, hdecl, h] at found
-          have hsome : sig.schemeOf (.ctor type index) =
-                some (decl.ctorScheme type fields) := by
-            simp [Signature.schemeOf, hdecl, hfields, hwf]
+          have hsome : sig.ctorScheme ⟨type, index⟩ = some (decl.ctorScheme type fields) := by
+            simp [Signature.ctorScheme, hdecl, hfields]
           rw [hsome] at found
           exact ⟨decl, fields, rfl, hfields, (Option.some.inj found).symm⟩
 
 /-- A constructor constant never has a primitive type. -/
-private theorem const_ctor_ne_prim {sig : Signature} {k : Nat} {ctx : Ctx Empty}
-    {type index : Nat} {elaboration : Elab} {p : PrimTy}
-    (typing : Typing sig k ctx (.const (.ctor type index)) elaboration (.prim p)) :
+private theorem ctor_ne_prim {sig : Signature} {k : Nat} {ctx : Ctx Empty}
+    {ref : CtorRef} {elaboration : Elab} {p : PrimTy}
+    (typing : Typing sig k ctx (.ctor ref) elaboration (.prim p)) :
     False := by
   cases typing with
-  | const found inst =>
-      obtain ⟨decl, fields, _, _, rfl⟩ := schemeOf_ctor_eq found
+  | ctor found inst =>
+      obtain ⟨decl, fields, _, _, rfl⟩ := ctorScheme_eq found
       obtain ⟨args, _, _, hinst⟩ := inst
-      exact ctorScheme_inst_ne_prim decl type fields args p hinst
+      exact ctorScheme_inst_ne_prim decl ref.type fields args p hinst
 
 theorem implicitPolyProgram_untypable {sig : Signature} :
     ¬ ∃ elaboration ty, Typing sig 0 [] implicitPolyProgram elaboration ty := by
@@ -913,6 +936,6 @@ theorem implicitPolyProgram_untypable {sig : Signature} :
                           (expected := .arrow param param) (by simp)
                       rw [paramEq] at finalFunEq
                       cases (Ty.arrow.inj finalFunEq).1
-                      exact const_ctor_ne_prim finalArgumentTyping
+                      exact ctor_ne_prim finalArgumentTyping
 
 end EPL.Tests

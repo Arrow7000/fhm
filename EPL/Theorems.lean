@@ -433,12 +433,19 @@ def evaluate (sig : Signature) (src : Source) (fuel : Nat) :
 The build fails if a headline theorem comes to depend on anything but Lean's
 three standard axioms. -/
 
--- TODO(ctor/match port): turn these back into `#guard_msgs` checks of the
--- three standard axioms once Spec/ is sorry-free.
--- #print axioms infer_eq_some_iff
--- #print axioms infer_eq_none_iff
--- #print axioms infer_unique
--- #print axioms infer_type_safety
--- #print axioms evaluate
+/-- info: 'EPL.infer_eq_some_iff' depends on axioms: [propext, Classical.choice, Quot.sound] -/
+#guard_msgs in #print axioms infer_eq_some_iff
+
+/-- info: 'EPL.infer_eq_none_iff' depends on axioms: [propext, Classical.choice, Quot.sound] -/
+#guard_msgs in #print axioms infer_eq_none_iff
+
+/-- info: 'EPL.infer_unique' depends on axioms: [propext, Classical.choice, Quot.sound] -/
+#guard_msgs in #print axioms infer_unique
+
+/-- info: 'EPL.infer_type_safety' depends on axioms: [propext, Classical.choice, Quot.sound] -/
+#guard_msgs in #print axioms infer_type_safety
+
+/-- info: 'EPL.evaluate' depends on axioms: [propext, Classical.choice, Quot.sound] -/
+#guard_msgs in #print axioms evaluate
 
 end EPL

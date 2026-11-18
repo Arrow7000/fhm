@@ -706,9 +706,72 @@ theorem findBranch_mem {ref : CtorRef} {branches : List (CtorRef × Expr A)} {bo
   exact List.mem_of_find?_eq_some find
 
 
+/-- A branch body's annotations are among the annotations of the branch list. -/
+private theorem mem_annsBranches_of_mem {branch : CtorRef × Expr A}
+    {branches : List (CtorRef × Expr A)} {ann : A} (mem : branch ∈ branches)
+    (inBody : ann ∈ branch.2.anns) : ann ∈ Expr.annsBranches branches := by
+  rw [Expr.annsBranches_eq]
+  exact List.mem_flatMap_of_mem mem inBody
+
+/-- The branch-list form of `anns_mapAnn`. -/
+private theorem annsBranches_mapAnnBranches {f : A → B} {branches : List (CtorRef × Expr A)}
+    (hbranch : ∀ branch ∈ branches, (branch.2.mapAnn f).anns = branch.2.anns.map f) :
+    Expr.annsBranches (Expr.mapAnnBranches f branches) = (Expr.annsBranches branches).map f := by
+  induction branches with
+  | nil => rfl
+  | cons branch rest ihrest =>
+      obtain ⟨pattern, body⟩ := branch
+      have ih := ihrest fun branch mem => hbranch branch (List.mem_cons_of_mem _ mem)
+      simp only [Expr.annsBranches_eq, Expr.mapAnnBranches_eq, List.map_cons, List.flatMap_cons,
+        List.map_append]
+      rw [hbranch (pattern, body) (by simp)]
+      congr 1
+      simpa only [← Expr.annsBranches_eq, ← Expr.mapAnnBranches_eq] using ih
+
+/-- Pointwise equality of mapped branch bodies is equality of the branch lists. -/
+private theorem mapAnnBranches_congr {f g : A → B} {branches : List (CtorRef × Expr A)}
+    (hbranch : ∀ branch ∈ branches, branch.2.mapAnn f = branch.2.mapAnn g) :
+    Expr.mapAnnBranches f branches = Expr.mapAnnBranches g branches := by
+  induction branches with
+  | nil => rfl
+  | cons branch rest ihrest =>
+      obtain ⟨pattern, body⟩ := branch
+      have ih := ihrest fun branch mem => hbranch branch (List.mem_cons_of_mem _ mem)
+      simp only [Expr.mapAnnBranches_eq, List.map_cons]
+      rw [hbranch (pattern, body) (by simp)]
+      congr 1
+      simpa only [← Expr.mapAnnBranches_eq] using ih
+
+/-- Equality of mapped branch lists makes the maps agree on the branch bodies'
+annotations. -/
+private theorem annsBranches_mapAnn_eq {f g : A → B} {branches : List (CtorRef × Expr A)}
+    (equal : Expr.mapAnnBranches f branches = Expr.mapAnnBranches g branches)
+    (hbranch : ∀ branch ∈ branches, branch.2.mapAnn f = branch.2.mapAnn g →
+      ∀ ann ∈ branch.2.anns, f ann = g ann) :
+    ∀ ann ∈ Expr.annsBranches branches, f ann = g ann := by
+  induction branches with
+  | nil => intro ann mem; simp at mem
+  | cons branch rest ihrest =>
+      obtain ⟨pattern, body⟩ := branch
+      simp only [Expr.mapAnnBranches_eq, List.map_cons, List.cons.injEq] at equal
+      obtain ⟨hhead, htail⟩ := equal
+      have hbody : body.mapAnn f = body.mapAnn g := congrArg Prod.snd hhead
+      have ih := ihrest (by simpa only [Expr.mapAnnBranches_eq] using htail)
+        fun branch mem => hbranch branch (List.mem_cons_of_mem _ mem)
+      intro ann mem
+      rw [show Expr.annsBranches ((pattern, body) :: rest) =
+        body.anns ++ Expr.annsBranches rest by
+          simp only [Expr.annsBranches_eq, List.flatMap_cons]] at mem
+      rcases List.mem_append.mp mem with mem | mem
+      · exact hbranch (pattern, body) (by simp) hbody ann mem
+      · exact ih ann mem
+
 theorem anns_mapAnn (f : A → B) (expr : Expr A) : (expr.mapAnn f).anns = expr.anns.map f := by
   induction expr with
-  | «match» => sorry
+  | «match» scrutinee branches ih ihs =>
+      have hbranches := annsBranches_mapAnnBranches (f := f) (branches := branches)
+        fun branch mem => ihs branch mem
+      rw [Expr.mapAnn, Expr.anns, Expr.anns, ih, hbranches, List.map_append]
   | lit _ | primOp _ | ctor _ | var _ => rfl
   | lambda param body ih =>
       cases param <;> simp [Expr.mapAnn, Expr.anns, ih]
@@ -724,7 +787,15 @@ theorem anns_mapAnn (f : A → B) (expr : Expr A) : (expr.mapAnn f).anns = expr.
 theorem mapAnn_congr {f g : A → B} {expr : Expr A} (agree : ∀ ann ∈ expr.anns, f ann = g ann) :
     expr.mapAnn f = expr.mapAnn g := by
   induction expr with
-  | «match» => sorry
+  | «match» scrutinee branches ih ihs =>
+      have hscrutinee : scrutinee.mapAnn f = scrutinee.mapAnn g :=
+        ih fun ann mem => agree ann (by simp [Expr.anns, mem])
+      have hbranches : Expr.mapAnnBranches f branches = Expr.mapAnnBranches g branches :=
+        mapAnnBranches_congr fun branch mem =>
+          ihs branch mem fun ann hann => agree ann (by
+            rw [Expr.anns, List.mem_append]
+            exact Or.inr (mem_annsBranches_of_mem mem hann))
+      simp only [Expr.mapAnn, hscrutinee, hbranches]
   | lit _ | primOp _ | ctor _ | var _ => rfl
   | lambda param body ih =>
       cases param with
@@ -758,7 +829,14 @@ annotation. -/
 theorem mapAnn_eq_anns {f g : A → B} {expr : Expr A} (equal : expr.mapAnn f = expr.mapAnn g) :
     ∀ ann ∈ expr.anns, f ann = g ann := by
   induction expr with
-  | «match» => sorry
+  | «match» scrutinee branches ih ihs =>
+      injection equal with hscrutinee hbranches
+      have hbodies := annsBranches_mapAnn_eq hbranches fun branch mem => ihs branch mem
+      intro ann mem
+      rw [Expr.anns, List.mem_append] at mem
+      rcases mem with mem | mem
+      · exact ih hscrutinee ann mem
+      · exact hbodies ann mem
   | lit _ | primOp _ | ctor _ | var _ => intro ann h; simp [Expr.anns] at h
   | lambda param body ih =>
       intro ann hmem
@@ -847,11 +925,34 @@ private theorem option_bind3_none {α β γ δ : Type} {o1 : Option α} {o2 : Op
       o1 = none ∨ o2 = none ∨ o3 = none := by
   cases o1 <;> cases o2 <;> cases o3 <;> simp
 
+/-- The branch-list form of `traverseAnn_eq_none_iff`. -/
+private theorem traverseAnnBranches_eq_none_iff {f : Ty V → Option SemTy}
+    {branches : List (CtorRef × Expr (Ty V))}
+    (hbranch : ∀ branch ∈ branches,
+      branch.2.traverseAnn f = none ↔ ∃ ann ∈ branch.2.anns, f ann = none) :
+    Expr.traverseAnnBranches f branches = none ↔
+      ∃ ann ∈ Expr.annsBranches branches, f ann = none := by
+  induction branches with
+  | nil => simp [Expr.traverseAnnBranches, Expr.annsBranches]
+  | cons branch rest ihrest =>
+      obtain ⟨pattern, body⟩ := branch
+      have ih := ihrest fun branch mem => hbranch branch (List.mem_cons_of_mem _ mem)
+      have hstep : Expr.traverseAnnBranches f ((pattern, body) :: rest) =
+          (body.traverseAnn f >>= fun b =>
+            Expr.traverseAnnBranches f rest >>= fun bs => some ((pattern, b) :: bs)) := rfl
+      rw [hstep, Ty.option_bind2_none, hbranch (pattern, body) (by simp), ih,
+        show Expr.annsBranches ((pattern, body) :: rest) = body.anns ++ Expr.annsBranches rest by
+          simp only [Expr.annsBranches_eq, List.flatMap_cons],
+        Ty.exists_mem_append]
+
 private theorem traverseAnn_eq_none_iff {f : Ty V → Option SemTy} :
     ∀ (expr : Expr (Ty V)), expr.traverseAnn f = none ↔ ∃ ann ∈ expr.anns, f ann = none := by
   intro expr
   induction expr with
-  | «match» => sorry
+  | «match» scrutinee branches ih ihs =>
+      have hbranches := traverseAnnBranches_eq_none_iff (f := f) (branches := branches)
+        fun branch mem => ihs branch mem
+      rw [Expr.traverseAnn, Ty.option_bind2_none, ih, hbranches, Expr.anns, Ty.exists_mem_append]
   | lit _ | primOp _ | ctor _ | var _ => simp [Expr.traverseAnn, Expr.anns]
   | lambda param body ih =>
       cases param with
@@ -879,13 +980,74 @@ private theorem traverseAnn_eq_none_iff {f : Ty V → Option SemTy} :
           simp only [Expr.traverseAnn, Expr.anns]
           rw [Ty.option_bind2_none, ih, List.exists_mem_cons_iff]
 
+/-- The branch-list form of `traverseAnn_eq_some_iff`. -/
+private theorem traverseAnnBranches_eq_some_iff {f : Ty V → Option SemTy} {r : SemTy → Ty V}
+    {branches : List (CtorRef × Expr (Ty V))}
+    (hbranch : ∀ branch ∈ branches, ∀ el : Elab,
+      branch.2.traverseAnn f = some el ↔ branch.2 = el.mapAnn r) :
+    ∀ ys : List (CtorRef × Elab),
+      Expr.traverseAnnBranches f branches = some ys ↔ branches = Expr.mapAnnBranches r ys := by
+  induction branches with
+  | nil =>
+      intro ys
+      rw [Expr.mapAnnBranches_eq]
+      simp [Expr.traverseAnnBranches]
+  | cons branch rest ihrest =>
+      obtain ⟨pattern, body⟩ := branch
+      have hhead : ∀ el : Elab, body.traverseAnn f = some el ↔ body = el.mapAnn r :=
+        hbranch (pattern, body) (by simp)
+      have hrest := ihrest fun branch mem => hbranch branch (List.mem_cons_of_mem _ mem)
+      have hstep : Expr.traverseAnnBranches f ((pattern, body) :: rest) =
+          (body.traverseAnn f >>= fun b =>
+            Expr.traverseAnnBranches f rest >>= fun bs => some ((pattern, b) :: bs)) := rfl
+      intro ys
+      constructor
+      · intro h
+        rw [hstep] at h
+        obtain ⟨b, bs, hb, hbs, rfl⟩ := option_bind2_some.mp h
+        rw [(hhead b).mp hb, (hrest bs).mp hbs]
+        simp only [Expr.mapAnnBranches_eq, List.map_cons]
+      · intro h
+        cases ys with
+        | nil =>
+            rw [Expr.mapAnnBranches_eq, List.map_nil] at h
+            cases h
+        | cons y ys' =>
+            rw [Expr.mapAnnBranches_eq, List.map_cons, List.cons.injEq] at h
+            obtain ⟨hpair, htail⟩ := h
+            have hbody : body = y.2.mapAnn r := congrArg Prod.snd hpair
+            have hpat : pattern = y.1 := congrArg Prod.fst hpair
+            have htail' : rest = Expr.mapAnnBranches r ys' := by
+              simpa only [Expr.mapAnnBranches_eq] using htail
+            rw [hstep, (hhead y.2).mpr hbody, (hrest ys').mpr htail', hpat]
+            rfl
+
 private theorem traverseAnn_eq_some_iff {f : Ty V → Option SemTy} {r : SemTy → Ty V}
     (hf : ∀ (ty : Ty V) (sem : SemTy), f ty = some sem ↔ ty = r sem) :
     ∀ (expr : Expr (Ty V)) (el : Elab),
       expr.traverseAnn f = some el ↔ expr = el.mapAnn r := by
   intro expr
   induction expr with
-  | «match» => sorry
+  | «match» scrutinee branches ih ihs =>
+      have hbranches := traverseAnnBranches_eq_some_iff (f := f) (r := r) (branches := branches)
+        fun branch mem => ihs branch mem
+      intro el
+      constructor
+      · intro h
+        rw [Expr.traverseAnn] at h
+        obtain ⟨s, bs, hs, hbs, rfl⟩ := option_bind2_some.mp h
+        have hscrutinee : scrutinee = s.mapAnn r := (ih s).mp hs
+        have hbranches' : branches = Expr.mapAnnBranches r bs := (hbranches bs).mp hbs
+        simp only [Expr.mapAnn, hscrutinee, hbranches']
+      · intro h
+        cases el <;> try simp [Expr.mapAnn] at h
+        case «match» elScrutinee elBranches =>
+          obtain ⟨hscrutinee, hbranches'⟩ := h
+          have hbranches'' : branches = Expr.mapAnnBranches r elBranches := by
+            simpa only [Expr.mapAnnBranches_eq] using hbranches'
+          rw [Expr.traverseAnn, (ih elScrutinee).mpr hscrutinee,
+            (hbranches elBranches).mpr hbranches'']
+          rfl
   | lit l | primOp l | ctor l | var l =>
       intro el
       constructor
