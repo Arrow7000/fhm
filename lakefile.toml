@@ -55,6 +55,7 @@ roots = [
   "EPL.Infer",
   "EPL.Spec.Syntax",
   "EPL.Spec.Eval",
+  "EPL.Spec.Exhaustive",
   "EPL.Spec.Runtime",
   "EPL.Spec.Declarative",
   "EPL.Spec.Models",

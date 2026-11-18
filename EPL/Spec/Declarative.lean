@@ -102,9 +102,10 @@ theorem mono {Det Det' : LetCondition}
     (typing : TypingWith sig Det k ctx src elaboration ty) :
     TypingWith sig Det' k ctx src elaboration ty := by
   induction typing with
+  | «match» => sorry
   | lit => exact .lit
   | primOp h => exact .primOp h
-  | const hsch hinst => exact .const hsch hinst
+  | ctor hsch hinst => exact .ctor hsch hinst
   | var hlook hinst => exact .var hlook hinst
   | lambda hwf hmatch hbody ih => exact .lambda hwf hmatch ih
   | app hf ha ihf iha => exact .app ihf iha
@@ -118,10 +119,11 @@ and `const` cases are `Scheme.inst_wf`. -/
 theorem regular (ctxWF : ctx.WF k) (typing : TypingWith sig Det k ctx src elaboration ty) :
     ty.WF k := by
   induction typing with
+  | «match» => sorry
   | lit => exact PrimLit.ty_wf _
   | primOp h => exact PrimOp.ty_wf h
-  | const hsch hinst =>
-      exact Scheme.instance_wf (Signature.schemeOf_wf hsch) (Nat.zero_le _) hinst
+  | ctor hsch hinst =>
+      exact Scheme.instance_wf (Signature.ctorScheme_wf hsch) (Nat.zero_le _) hinst
   | var hlook hinst =>
       exact Scheme.instance_wf (ctxWF_getElem ctxWF hlook) (le_refl _) hinst
   | lambda hparam hmatch hbody ih =>
@@ -141,7 +143,8 @@ theorem regular (ctxWF : ctx.WF k) (typing : TypingWith sig Det k ctx src elabor
 /-- A source program and its elaboration erase alike. -/
 theorem erase_eq (typing : TypingWith sig Det k ctx src elaboration ty) : elaboration.erase = src.erase := by
   induction typing with
-  | lit | primOp | const | var => rfl
+  | «match» => sorry
+  | lit | primOp | ctor | var => rfl
   | lambda _ _ _ ih => simp [Expr.erase, ih]
   | app _ _ ihf iha => simp [Expr.erase, ihf, iha]
   | letMono _ _ ihrhs ihbody => simp [Expr.erase, ihrhs, ihbody]
@@ -156,9 +159,10 @@ instance, and `Scheme.substRigids_eq_self` shows the context is unchanged. -/
 theorem erase (ctxWF : ctx.WF k) (typing : TypingWith sig Det k ctx src elaboration ty) :
     RuntimeTyping sig k ctx src.erase ty := by
   induction typing with
+  | «match» => sorry
   | lit => exact .lit
   | primOp h => exact .primOp h
-  | const hsch hinst => exact .const hsch hinst
+  | ctor hsch hinst => exact .ctor hsch hinst
   | var hlook hinst => exact .var hlook hinst
   | lambda hparam hmatch hbody ih =>
       expose_names

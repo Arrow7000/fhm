@@ -315,18 +315,6 @@ private theorem TypingWith.primOp_type {sig : Signature} {Det : LetCondition} {k
   cases typing with
   | primOp h => exact h
 
-private theorem TypingWith.const_inv {sig : Signature} {Det : LetCondition} {k : Nat} {ctx : Ctx Empty}
-    {c : DataConst} {elaboration : Elab} {ty : SemTy}
-    (typing : TypingWith sig Det k ctx (.const c) elaboration ty) :
-    elaboration = .const c ∧
-      ∃ scheme : Scheme Empty, ∃ args : List SemTy,
-        sig.schemeOf c = some scheme ∧ args.length = scheme.arity ∧
-          (∀ arg ∈ args, arg.WF k) ∧ ty = scheme.inst args := by
-  cases typing with
-  | const h inst =>
-      obtain ⟨args, hlen, hwf, hinst⟩ := inst
-      exact ⟨rfl, _, args, h, hlen, hwf, hinst.symm⟩
-
 private theorem TypingWith.var_inv {sig : Signature} {Det : LetCondition} {k : Nat} {ctx : Ctx Empty}
     {index : Nat} {elaboration : Elab} {ty : SemTy}
     (typing : TypingWith sig Det k ctx (.var index) elaboration ty) :
@@ -456,104 +444,96 @@ theorem inferAt_spec_primOp {sig : Signature} (pre : InferPre k ctx store) :
             rw [PrimOp.ty_bind hop valuation] at hty
             exact Option.some.inj hty
 
-theorem inferAt_spec_const {sig : Signature} (pre : InferPre k ctx store) :
-    InferSpec sig k ctx (.const c) store := by
-  have hbind : inferAt sig k ctx (.const c) store =
-      (sig.schemeOf c).bind (fun scheme =>
-        (fun (args : List InfTy) (store : MStore) =>
-          some ⟨scheme.lift.inst args, .const c, store⟩)
-          (store.freshMany k scheme.arity).1 (store.freshMany k scheme.arity).2) := rfl
-  cases hsch : sig.schemeOf c with
-  | none =>
-      have h : inferAt sig k ctx (.const c) store = none := by
-        rw [hbind, hsch]; rfl
-      simp only [InferSpec, h]
-      intro valuation models elaboration ty typing
-      cases typing with
-      | const htyping _ =>
-          rw [hsch] at htyping
-          cases htyping
-  | some scheme =>
-      have h : inferAt sig k ctx (.const c) store =
-          some ⟨(scheme.lift : Scheme Nat).inst (store.freshMany k scheme.arity).1,
-            .const c, (store.freshMany k scheme.arity).2⟩ := by
-        rw [hbind, hsch]; rfl
-      simp only [InferSpec, h]
-      obtain ⟨hargsWF, hlen, hargsAlloc, hargsLB⟩ :=
-        freshMany_facts store k scheme.arity
-      have hschemeWF0 : scheme.WF 0 := Signature.schemeOf_wf hsch
-      have hschemeWFk : scheme.body.Scoped k scheme.arity :=
-        Ty.Scoped.mono hschemeWF0 (by omega) le_rfl
-      have hliftWF : (scheme.lift : Scheme Nat).WF k := by
-        simpa [Scheme.lift] using (Ty.scoped_lift).2 hschemeWFk
-      have hbodyAlloc : (scheme.lift : Scheme Nat).body.Allocated
-          (store ++ List.replicate scheme.arity ⟨k, none⟩) := by
-        intro id hid
-        simp [Scheme.lift, Ty.vars_lift] at hid
-      have hbodyLB : (scheme.lift : Scheme Nat).body.LevelBounded
-          (store ++ List.replicate scheme.arity ⟨k, none⟩) k := by
-        intro id hid
-        simp [Scheme.lift, Ty.vars_lift] at hid
-      refine
-        { safe := MStore.append_unsolved_safe pre.safe
-          grows := by rw [MStore.freshMany_snd]; simp
-          levels := ?_
-          tyWF := Scheme.inst_wf hliftWF (le_refl k) hlen hargsWF
-          tyAllocated := ?_
-          tyLevels := ?_
-          elabAllocated := ?_
-          anchored := ?_
-          sound := ?_
-          principal := ?_ }
-      · intro id hi
-        show (store.freshMany k scheme.arity).2.levelOf id ≤ store.levelOf id
-        rw [MStore.freshMany_snd, MStore.append_unsolved_levelOf, if_pos hi]
-      · simpa [Scheme.inst] using
-          (Ty.allocated_instantiate (scheme.lift : Scheme Nat).body
-            (store.freshMany k scheme.arity).1
-            (store ++ List.replicate scheme.arity ⟨k, none⟩) hbodyAlloc hargsAlloc)
-      · simpa [Scheme.inst] using
-          (Ty.levelBounded_instantiate (scheme.lift : Scheme Nat).body
-            (store.freshMany k scheme.arity).1
-            (store ++ List.replicate scheme.arity ⟨k, none⟩) k hbodyLB hargsLB)
-      · intro ann hmem
-        simp [Expr.anns] at hmem
-      · intro start level hlt hstart hanch
-        exact MStore.Anchored.append_unsolved (count := scheme.arity) (level' := k) hanch hlt
-      · intro valuation models
-        have hmodelsStore : store.Models valuation :=
-          MStore.Models.of_append_unsolved models
-        refine ⟨hmodelsStore, ?_⟩
-        simp only [Expr.realize, Expr.mapAnn]
-        have hclosed : ∀ id ∈ (scheme.lift : Scheme Nat).body.vars, (valuation id).WF k := by
-          intro id hid
-          simp [Scheme.lift, Ty.vars_lift] at hid
-        have hreal := Scheme.realize_inst (scheme := (scheme.lift : Scheme Nat))
-          (args := (store.freshMany k scheme.arity).1) (valuation := valuation) hclosed
-        rw [Scheme.realize_lift] at hreal
-        refine TypingWith.const hsch ?_
-        exact ⟨(store.freshMany k scheme.arity).1.map (·.realize valuation),
-          freshMany_map_length valuation, freshMany_map_wf models, hreal.symm⟩
-      · intro valuation models elaboration target typing
-        cases typing with
-        | const htyping hinst =>
-            have hschemeEq := Option.some.inj (hsch.symm.trans htyping)
-            obtain ⟨args', hlen', hwf', hinstEq⟩ := hinst
-            rw [← hschemeEq] at hlen' hinstEq
-            obtain ⟨extended, hmodels', hagree', hmap⟩ :=
-              MStore.freshMany_principal (store := store) (level := k)
-                (count := scheme.arity) (valuation := valuation) pre.safe models hlen' hwf'
-            refine ⟨extended, hmodels', hagree', ?_, ?_⟩
-            · simp only [Expr.realize, Expr.mapAnn]
-            · have hclosed : ∀ id ∈ (scheme.lift : Scheme Nat).body.vars,
-                  (extended id).WF k := by
-                intro id hid
-                simp [Scheme.lift, Ty.vars_lift] at hid
-              have hreal := Scheme.realize_inst (scheme := (scheme.lift : Scheme Nat))
-                (args := (store.freshMany k scheme.arity).1) (valuation := extended) hclosed
-              rw [Scheme.realize_lift, hmap] at hreal
-              rw [← hinstEq]
-              exact hreal
+theorem inferAt_spec_ctor {sig : Signature} (pre : InferPre k ctx store) :
+    InferSpec sig k ctx (.ctor ref) store := by
+  sorry
+
+/-! ## Match
+
+`inferBranches` threads the store through the branches, so its specification
+is `InferSpec` lifted to a list: each branch body is checked against
+`fields[args] -> resultTy`. -/
+
+/-- What a successful `inferBranches` run guarantees, given the scrutinee's
+type arguments `args` and the shared `resultTy`. -/
+structure BranchesPost (sig : Signature) (k : Nat) (ctx : Ctx Nat) (decl : DataDecl)
+    (args : List InfTy) (resultTy : InfTy) (branches : List (CtorRef × Source))
+    (store : MStore) (result : List (CtorRef × Expr InfTy) × MStore) : Prop where
+  safe : result.2.Safe
+  grows : store.length ≤ result.2.length
+  levels : ∀ id < store.length, result.2.levelOf id ≤ store.levelOf id
+  patterns : result.1.map (·.1) = branches.map (·.1)
+  elabAllocated : ∀ branch ∈ result.1, ∀ ann ∈ branch.2.anns, ann.Allocated result.2
+  anchored : ∀ start level, level < k → start ≤ store.length →
+    store.Anchored start level → result.2.Anchored start level
+  /-- Every model of the result is a model of the input under which each
+  branch elaborates as inferred, at its expected type. -/
+  sound : ∀ valuation, result.2.Models valuation →
+    store.Models valuation ∧
+      ∀ (i : Nat) pattern body bodyElab fields,
+        branches[i]? = some (pattern, body) →
+        result.1[i]? = some (pattern, bodyElab) →
+        decl.ctors[pattern.index]? = some fields →
+        Elaborates sig k (ctx.realize valuation) body (bodyElab.realize valuation)
+          (Ty.arrows (fields.map (·.instantiate (args.map (·.realize valuation))))
+            (resultTy.realize valuation))
+  /-- Every typing of all the branches, under any model of the input, is a
+  realization of the result. -/
+  principal : ∀ valuation, store.Models valuation →
+    ∀ branchesElab : List (CtorRef × Elab),
+      branchesElab.map (·.1) = branches.map (·.1) →
+      (∀ (i : Nat) pattern body bodyElab fields,
+        branches[i]? = some (pattern, body) →
+        branchesElab[i]? = some (pattern, bodyElab) →
+        decl.ctors[pattern.index]? = some fields →
+        Typing sig k (ctx.realize valuation) body bodyElab
+          (Ty.arrows (fields.map (·.instantiate (args.map (·.realize valuation))))
+            (resultTy.realize valuation))) →
+      ∃ extended, result.2.Models extended ∧ Agree store.length valuation extended ∧
+        result.1.map (fun branch => (branch.1, branch.2.realize extended)) = branchesElab
+
+/-- The specification of `inferBranches`: success with `BranchesPost`, or no
+model of the input store lets every branch elaborate at its expected type. -/
+def BranchesSpec (sig : Signature) (k : Nat) (ctx : Ctx Nat) (decl : DataDecl)
+    (args : List InfTy) (resultTy : InfTy) (branches : List (CtorRef × Source))
+    (store : MStore) : Prop :=
+  match inferBranches sig k ctx decl args resultTy branches store with
+  | some result => BranchesPost sig k ctx decl args resultTy branches store result
+  | none => ∀ valuation, store.Models valuation →
+      ∀ branchesElab : List (CtorRef × Elab),
+        branchesElab.map (·.1) = branches.map (·.1) →
+        ¬ ∀ (i : Nat) pattern body bodyElab fields,
+          branches[i]? = some (pattern, body) →
+          branchesElab[i]? = some (pattern, bodyElab) →
+          decl.ctors[pattern.index]? = some fields →
+          Elaborates sig k (ctx.realize valuation) body bodyElab
+            (Ty.arrows (fields.map (·.instantiate (args.map (·.realize valuation))))
+              (resultTy.realize valuation))
+
+/-- Proof: induction on `branches`, each body by its `InferSpec` and the
+unification by the unifier's specification, as in `inferAt_spec_app`. -/
+theorem inferBranches_spec {sig : Signature} {decl : DataDecl} {args : List InfTy}
+    {resultTy : InfTy} {branches : List (CtorRef × Source)}
+    (bodies : ∀ branch ∈ branches, ∀ k ctx store, InferPre k ctx store →
+      InferSpec sig k ctx branch.2 store)
+    (wf : decl.WF) (arity : args.length = decl.params)
+    (indices : ∀ pattern ∈ branches.map (·.1), pattern.index < decl.ctors.length)
+    (pre : InferPre k ctx store)
+    (argsWF : ∀ arg ∈ args, arg.WF k) (argsAllocated : ∀ arg ∈ args, arg.Allocated store)
+    (argsLevels : ∀ arg ∈ args, arg.LevelBounded store k)
+    (resultWF : resultTy.WF k) (resultAllocated : resultTy.Allocated store)
+    (resultLevels : resultTy.LevelBounded store k) :
+    BranchesSpec sig k ctx decl args resultTy branches store := by
+  sorry
+
+theorem inferAt_spec_match {sig : Signature} {scrutinee : Source}
+    {branches : List (CtorRef × Source)}
+    (scrutineeSpec : ∀ k ctx store, InferPre k ctx store → InferSpec sig k ctx scrutinee store)
+    (bodies : ∀ branch ∈ branches, ∀ k ctx store, InferPre k ctx store →
+      InferSpec sig k ctx branch.2 store)
+    (pre : InferPre k ctx store) :
+    InferSpec sig k ctx (.match scrutinee branches) store := by
+  sorry
 
 theorem inferAt_spec_var {sig : Signature} (pre : InferPre k ctx store) :
     InferSpec sig k ctx (.var index) store := by
@@ -1375,10 +1355,10 @@ theorem inferAt_spec_fix {sig : Signature} {self : Option Template} {body : Sour
 /-- **The** inference theorem: induction on `src` with the lemmas above. -/
 theorem inferAt_spec {sig : Signature} {k : Nat} {ctx : Ctx Nat} {src : Source} {store : MStore}
     (pre : InferPre k ctx store) : InferSpec sig k ctx src store := by
-  induction src generalizing k ctx store with
+  induction src using Expr.induction generalizing k ctx store with
   | lit literal => exact inferAt_spec_lit pre
   | primOp op => exact inferAt_spec_primOp pre
-  | const c => exact inferAt_spec_const pre
+  | ctor ref => exact inferAt_spec_ctor pre
   | var index => exact inferAt_spec_var pre
   | lambda param body ih =>
       exact inferAt_spec_lambda
@@ -1400,5 +1380,10 @@ theorem inferAt_spec {sig : Signature} {k : Nat} {ctx : Ctx Nat} {src : Source} 
   | fix self body ih =>
       exact inferAt_spec_fix
         (fun k ctx store pre' => ih (k := k) (ctx := ctx) (store := store) pre') pre
+  | «match» scrutinee branches ihScrutinee ihBranches =>
+      exact inferAt_spec_match
+        (fun k ctx store pre' => ihScrutinee (k := k) (ctx := ctx) (store := store) pre')
+        (fun branch mem k ctx store pre' =>
+          ihBranches branch mem (k := k) (ctx := ctx) (store := store) pre') pre
 
 end EPL
