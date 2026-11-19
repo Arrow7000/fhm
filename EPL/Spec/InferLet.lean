@@ -24,6 +24,16 @@ allocated annotation, `completed` the annotation resolved through `store'`.
 
 namespace EPL
 
+/-- `Except.mapError` on a success reduces definitionally. -/
+private theorem mapError_ok {ε ε' α : Type} (f : ε → ε') (a : α) :
+    (Except.ok a : Except ε α).mapError f = .ok a := rfl
+
+/-- `Except.mapError` on a failure reduces definitionally. -/
+private theorem mapError_error {ε ε' α : Type} (f : ε → ε') (e : ε) :
+    (Except.error e : Except ε α).mapError f = .error (f e) := rfl
+
+attribute [local simp] mapError_ok mapError_error
+
 /-- Contexts are realized by their metavariables only. -/
 theorem Ctx.realize_congr_vars {ctx : Ctx Nat} {first second : Valuation}
     (agree : ∀ scheme ∈ ctx, ∀ id ∈ scheme.body.vars, first id = second id) :
@@ -58,15 +68,16 @@ theorem inferAt_letPoly (sig : Signature) (k : Nat) (ctx : Ctx Nat)
     (ann : PolyAnn Template) (rhs body : Source) (store : MStore) :
     inferAt sig k ctx (.letIn (some ann) rhs body) store = (do
       let inner := k + ann.arity
-      if ¬ ann.body.WF inner then none
-      let (annTy, store) := store.allocate inner ann.body
-      let rhsResult ← inferAt sig inner ctx rhs store
-      let store ← rhsResult.store.unify rhsResult.ty annTy
-      let completed := store.apply annTy
-      if ¬ completed.vars.all (store.levelOf · ≤ k) then none
+      if ¬ ann.body.WF inner then throw (.here .illScopedAnnotation)
+      let (annTy, allocated) := store.allocate inner ann.body
+      let rhsResult ← (inferAt sig inner ctx rhs allocated).mapError (.under .letRhs)
+      let unified ← rhsResult.store.unifyAt [] rhsResult.ty annTy
+      let completed := unified.apply annTy
+      if ¬ completed.vars.all (unified.levelOf · ≤ k) then
+        throw (.here (.ambiguousSignature (unified.ambiguousHoles ann.body store.length k)))
       let scheme : Scheme Nat := ⟨ann.arity, completed.closeRigids k ann.arity⟩
-      let bodyResult ← inferAt sig k (scheme :: ctx) body store
-      some ⟨bodyResult.ty,
+      let bodyResult ← (inferAt sig k (scheme :: ctx) body unified).mapError (.under .letBody)
+      pure ⟨bodyResult.ty,
         .letIn (some ⟨ann.arity, completed⟩) rhsResult.elaboration bodyResult.elaboration,
         bodyResult.store⟩) := by
   rfl
@@ -154,7 +165,7 @@ theorem rhsChecked {sig : Signature} {ann : PolyAnn Template} {rhsResult : Infer
     (rhsPost : InferPost sig (k + ann.arity) ctx rhs
       (store.allocate (k + ann.arity) ann.body).2 rhsResult)
     (unified : rhsResult.store.unify rhsResult.ty
-      (store.allocate (k + ann.arity) ann.body).1 = some store') :
+      (store.allocate (k + ann.arity) ann.body).1 = .ok store') :
     RhsChecked sig k ctx ann rhs store rhsResult.elaboration
       (store'.apply (store.allocate (k + ann.arity) ann.body).1) store' := by
   have store₁Safe : (store.allocate (k + ann.arity) ann.body).2.Safe := by
@@ -289,7 +300,7 @@ theorem rhsChecked {sig : Signature} {ann : PolyAnn Template} {rhsResult : Infer
       MStore.unify_complete rhsPost.safe rhsPost.tyAllocated annTyAllocRhs hExtModels htyUnify
     have hstore'Models : store'.Models extended := by
       rw [unified] at hresult
-      have hEq : store' = result := Option.some.inj hresult
+      have hEq : store' = result := Except.ok.inj hresult
       rw [hEq]
       exact hresultModels
     have hAgree : Agree store.length valuation extended := by
@@ -526,10 +537,11 @@ theorem inferAt_spec_letPoly {sig : Signature} {ann : PolyAnn Template} {rhs bod
     unfold InferSpec at rhsSpec'
     cases hrhs : inferAt sig (k + ann.arity) ctx rhs
         (store.allocate (k + ann.arity) ann.body).2 with
-    | none =>
+    | error rhsError =>
         rw [hrhs] at rhsSpec'
-        have hval : inferAt sig k ctx (.letIn (some ann) rhs body) store = none := by
-          simp [inferAt_letPoly, hann, hrhs]
+        have hval : inferAt sig k ctx (.letIn (some ann) rhs body) store =
+            .error (.under .letRhs rhsError) := by
+          simp [inferAt_letPoly, hann, hrhs, Bind.bind, Except.bind, Pure.pure, Except.pure]
         simp only [InferSpec, hval]
         intro valuation hmodels elaboration ty helab
         cases helab with
@@ -541,15 +553,17 @@ theorem inferAt_spec_letPoly {sig : Signature} {ann : PolyAnn Template} {rhs bod
           refine rhsSpec' extended extModels rhsElab (scheme.skolemize k) ?_
           rw [← (Ctx.realize_congr pre.ctxAllocated agree), ← completes.arity_eq]
           exact rhsTyping
-    | some rhsResult =>
+    | ok rhsResult =>
         rw [hrhs] at rhsSpec'
         have rhsPost : InferPost sig (k + ann.arity) ctx rhs
             (store.allocate (k + ann.arity) ann.body).2 rhsResult := rhsSpec'
         cases hunify : rhsResult.store.unify rhsResult.ty
             (store.allocate (k + ann.arity) ann.body).1 with
-        | none =>
-            have hval : inferAt sig k ctx (.letIn (some ann) rhs body) store = none := by
-              simp [inferAt_letPoly, hann, hrhs, hunify]
+        | error cause =>
+            have hval : inferAt sig k ctx (.letIn (some ann) rhs body) store =
+                .error ⟨[], .mismatch (rhsResult.store.apply (store.allocate (k + ann.arity) ann.body).1)
+                  (rhsResult.store.apply rhsResult.ty) cause⟩ := by
+              simp [inferAt_letPoly, hann, hrhs, hunify, Bind.bind, Except.bind, Pure.pure, Except.pure, MStore.unifyAt]
             simp only [InferSpec, hval]
             intro valuation hmodels elaboration ty helab
             cases helab with
@@ -580,7 +594,7 @@ theorem inferAt_spec_letPoly {sig : Signature} {ann : PolyAnn Template} {rhs bod
                   (by rw [hTyEq, hannTy])
               rw [hunify] at hresult
               cases hresult
-        | some store' =>
+        | ok store' =>
             have hchecked : RhsChecked sig k ctx ann rhs store rhsResult.elaboration
                 (store'.apply (store.allocate (k + ann.arity) ann.body).1) store' :=
               rhsChecked pre hann rhsPost hunify
@@ -593,9 +607,10 @@ theorem inferAt_spec_letPoly {sig : Signature} {ann : PolyAnn Template} {rhs bod
                   (⟨ann.arity,
                     (store'.apply (store.allocate (k + ann.arity) ann.body).1).closeRigids
                       k ann.arity⟩ :: ctx) body store' with
-              | none =>
-                  have hval : inferAt sig k ctx (.letIn (some ann) rhs body) store = none := by
-                    simp [inferAt_letPoly, hann, hrhs, hunify, hnot, hbody]
+              | error bodyError =>
+                  have hval : inferAt sig k ctx (.letIn (some ann) rhs body) store =
+                      .error (.under .letBody bodyError) := by
+                    simp [inferAt_letPoly, hann, hrhs, hunify, hnot, hbody, Bind.bind, Except.bind, Pure.pure, Except.pure, MStore.unifyAt]
                   simp only [InferSpec, hval]
                   intro valuation hmodels elaboration ty helab
                   cases helab with
@@ -625,14 +640,14 @@ theorem inferAt_spec_letPoly {sig : Signature} {ann : PolyAnn Template} {rhs bod
                         (Ctx.realize_congr pre.ctxAllocated agree).symm]
                       exact bodyTyping
                     exact bspec extended extModels bodyElab ty bodyTyping'
-              | some bodyResult =>
+              | ok bodyResult =>
                   have hval : inferAt sig k ctx (.letIn (some ann) rhs body) store =
-                      some ⟨bodyResult.ty,
+                      .ok ⟨bodyResult.ty,
                         .letIn (some ⟨ann.arity,
                           store'.apply (store.allocate (k + ann.arity) ann.body).1⟩)
                           rhsResult.elaboration bodyResult.elaboration,
                         bodyResult.store⟩ := by
-                    simp [inferAt_letPoly, hann, hrhs, hunify, hnot, hbody]
+                    simp [inferAt_letPoly, hann, hrhs, hunify, hnot, hbody, Bind.bind, Except.bind, Pure.pure, Except.pure, MStore.unifyAt]
                   have bodySpec' := bodySpec k
                     (⟨ann.arity,
                       (store'.apply (store.allocate (k + ann.arity) ann.body).1).closeRigids
@@ -781,8 +796,10 @@ theorem inferAt_spec_letPoly {sig : Signature} {ann : PolyAnn Template} {rhs bod
                       exact ⟨extended, extModels, hAgree, hElabInf, hty⟩
             · -- level check fails
               have hbad := exists_level_above hlevel
-              have hval : inferAt sig k ctx (.letIn (some ann) rhs body) store = none := by
-                simp [inferAt_letPoly, hann, hrhs, hunify, hbad]
+              have hval : inferAt sig k ctx (.letIn (some ann) rhs body) store =
+                  .error (.here (.ambiguousSignature
+                    (MStore.ambiguousHoles store' ann.body store.length k))) := by
+                simp [inferAt_letPoly, hann, hrhs, hunify, hbad, Bind.bind, Except.bind, Pure.pure, Except.pure, MStore.unifyAt]
               simp only [InferSpec, hval]
               intro valuation hmodels elaboration ty helab
               cases helab with
@@ -791,8 +808,9 @@ theorem inferAt_spec_letPoly {sig : Signature} {ann : PolyAnn Template} {rhs bod
                 exact (RhsChecked.undetermined pre hchecked hlevel hmodels completes
                   (Elaborates.typing rhsTyping)) det
   · -- annotation is out of scope
-    have hval : inferAt sig k ctx (.letIn (some ann) rhs body) store = none := by
-      simp [inferAt_letPoly, hann]
+    have hval : inferAt sig k ctx (.letIn (some ann) rhs body) store =
+        .error (.here .illScopedAnnotation) := by
+      simp [inferAt_letPoly, hann, Bind.bind, Except.bind]
     simp only [InferSpec, hval]
     intro valuation hmodels elaboration ty helab
     cases helab with

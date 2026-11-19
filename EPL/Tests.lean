@@ -36,18 +36,26 @@ def falseExpr : Expr A := .ctor ⟨0, 1⟩
 def one : Source := .lit (.int 1)
 
 /-- Type of an accepted program. -/
-def tyOf (sig : Signature) (src : Source) : Option SemTy := (infer sig src).map (·.ty)
+def tyOf (sig : Signature) (src : Source) : Option SemTy := (infer sig src).toOption.map (·.ty)
 
 /-- Evaluate an accepted program for at most 1000 steps. -/
 def evalOf (sig : Signature) (src : Source) : Option RuntimeExpr :=
-  (infer sig src).map fun _ => Eval.run 1000 src.erase
+  (infer sig src).toOption.map fun _ => Eval.run 1000 src.erase
+
+/-- `infer` succeeds with `result` exactly when its `Option` form is `some result`. -/
+private theorem infer_eq_ok_of_toOption {sig : Signature} {src : Source}
+    {result : InferenceResult} (accepted : (infer sig src).toOption = some result) :
+    infer sig src = .ok result := by
+  cases run : infer sig src with
+  | error error => simp [run, Except.toOption] at accepted
+  | ok actual => simpa [run, Except.toOption] using accepted
 
 /-! ## A first tour -/
 
 -- `fun x => x` alone has an undetermined parameter type: rejected.
-#guard infer [] (.lambda none (.var 0)) = none
+#guard (infer [] (.lambda none (.var 0))).toOption = none
 -- `(fun x => x) 1 : Int`, elaborated with the parameter type.
-#guard infer [] (.app (.lambda none (.var 0)) one) =
+#guard (infer [] (.app (.lambda none (.var 0)) one)).toOption =
   some ⟨.app (.lambda (some int) (.var 0)) (.lit (.int 1)), int⟩
 
 /-- `let id : forall a. a -> a = fun x => x in id 1`; at depth 0 the binder is
@@ -56,7 +64,7 @@ def polyId : Source :=
   .letIn (some ⟨1, .arrow (.rigid 0) (.rigid 0)⟩) (.lambda none (.var 0)) (.app (.var 0) one)
 
 #guard tyOf [] polyId = some int
-#guard (infer [] polyId).map (·.elaboration) =
+#guard (infer [] polyId).toOption.map (·.elaboration) =
   some (.letIn (some ⟨1, .arrow (.rigid 0) (.rigid 0)⟩)
     (.lambda (some (.rigid 0)) (.var 0)) (.app (.var 0) (.lit (.int 1))))
 #guard evalOf [] polyId = some (.lit (.int 1))
@@ -121,9 +129,9 @@ example : tyOf [] polyId = some int := by decide
 
 /-- `?0` and `?1` both live at level 1, so `?1` may be solved to rigid 0. -/
 def arrowExample : Option MStore :=
-  MStore.unify [⟨1, none⟩, ⟨1, none⟩]
+  (MStore.unify [⟨1, none⟩, ⟨1, none⟩]
     (.arrow (.var 0) (.rigid 0))
-    (.arrow (.prim .int) (.var 1))
+    (.arrow (.prim .int) (.var 1))).toOption
 
 example : arrowExample = some [⟨1, some (.prim .int)⟩, ⟨1, some (.rigid 0)⟩] := by
   decide
@@ -131,43 +139,43 @@ example : arrowExample = some [⟨1, some (.prim .int)⟩, ⟨1, some (.rigid 0)
 /-- Solving `?0 := ?1` and then `?1 := Int` rewrites the earlier entry, so the
 store stays normalized. -/
 example :
-    MStore.unify [⟨0, none⟩, ⟨0, none⟩]
+    (MStore.unify [⟨0, none⟩, ⟨0, none⟩]
         (.arrow (.var 0) (.var 1))
-        (.arrow (.var 1) (.prim .int)) =
+        (.arrow (.var 1) (.prim .int))).toOption =
       some [⟨0, some (.prim .int)⟩, ⟨0, some (.prim .int)⟩] := by
   decide
 
 /-- A level-0 metavariable cannot be solved to rigid 0: it would escape. -/
-example : MStore.unify [⟨0, none⟩] (.var 0) (.rigid 0) = none := by
+example : (MStore.unify [⟨0, none⟩] (.var 0) (.rigid 0)).toOption = none := by
   decide
 
 /-- Binding a level-0 metavariable lowers the metavariables of its solution. -/
 example :
-    MStore.unify [⟨0, none⟩, ⟨1, none⟩] (.var 0) (.arrow (.var 1) (.prim .int)) =
+    (MStore.unify [⟨0, none⟩, ⟨1, none⟩] (.var 0) (.arrow (.var 1) (.prim .int))).toOption =
       some [⟨0, some (.arrow (.var 1) (.prim .int))⟩, ⟨0, none⟩] := by
   decide
 
-example : MStore.unify [] (.rigid 0) (.prim .int) = none := by
+example : (MStore.unify [] (.rigid 0) (.prim .int)).toOption = none := by
   decide
 
 /-- Type applications decompose: `List ?0 ~ List Int` solves `?0 := Int`. -/
 example :
-    MStore.unify [⟨0, none⟩] (.app (.con 0) (.var 0)) (.app (.con 0) (.prim .int)) =
+    (MStore.unify [⟨0, none⟩] (.app (.con 0) (.var 0)) (.app (.con 0) (.prim .int))).toOption =
       some [⟨0, some (.prim .int)⟩] := by
   decide
 
 /-- Distinct type constructors do not unify, even at the same arguments. -/
 example :
-    MStore.unify [] (.app (.con 0) (.prim .int)) (.app (.con 1) (.prim .int)) = none := by
+    (MStore.unify [] (.app (.con 0) (.prim .int)) (.app (.con 1) (.prim .int))).toOption = none := by
   decide
 
 /-- A higher-kinded unknown may be solved to a type constructor. -/
 example :
-    MStore.unify [⟨0, none⟩] (.app (.var 0) (.prim .int)) (.app (.con 3) (.prim .int)) =
+    (MStore.unify [⟨0, none⟩] (.app (.var 0) (.prim .int)) (.app (.con 3) (.prim .int))).toOption =
       some [⟨0, some (.con 3)⟩] := by
   decide
 
-example : MStore.unify [⟨0, none⟩] (.var 0) (.arrow (.var 0) (.prim .int)) = none := by
+example : (MStore.unify [⟨0, none⟩] (.var 0) (.arrow (.var 0) (.prim .int))).toOption = none := by
   decide
 
 /-! ## Annotation allocation -/
@@ -230,23 +238,23 @@ def integerLoop : Source :=
     (.lambda (some int)
       (.app (.var 1) (.var 0)))
 
-example : (infer boolSig inferredIntLambda).map (·.ty) =
+example : (infer boolSig inferredIntLambda).toOption.map (·.ty) =
     some (.arrow int int) := by
   decide
 
-example : (infer boolSig explicitPolyProgram).map (·.ty) = some boolTy := by
+example : (infer boolSig explicitPolyProgram).toOption.map (·.ty) = some boolTy := by
   decide
 
-example : (infer boolSig implicitPolyProgram).map (·.ty) = none := by
+example : (infer boolSig implicitPolyProgram).toOption.map (·.ty) = none := by
   decide
 
-example : (infer boolSig identityRhs).map (·.ty) = none := by
+example : (infer boolSig identityRhs).toOption.map (·.ty) = none := by
   decide
 
 def deadAmbiguousLambda : Source :=
   .letIn none identityRhs (.lit .unit)
 
-example : (infer boolSig deadAmbiguousLambda).map (·.ty) = none := by
+example : (infer boolSig deadAmbiguousLambda).toOption.map (·.ty) = none := by
   decide
 
 def deadAmbiguousLambdaInScheme : Source :=
@@ -254,10 +262,10 @@ def deadAmbiguousLambdaInScheme : Source :=
     deadAmbiguousLambda
     (.lit .unit)
 
-example : (infer boolSig deadAmbiguousLambdaInScheme).map (·.ty) = none := by
+example : (infer boolSig deadAmbiguousLambdaInScheme).toOption.map (·.ty) = none := by
   decide
 
-example : (infer boolSig integerLoop).map (·.ty) =
+example : (infer boolSig integerLoop).toOption.map (·.ty) =
     some (.arrow int int) := by
   decide
 
@@ -267,7 +275,7 @@ def skolemEscape : Source :=
       (.var 0)
       (.lit .unit))
 
-example : (infer boolSig skolemEscape).map (·.ty) = none := by
+example : (infer boolSig skolemEscape).toOption.map (·.ty) = none := by
   decide
 
 def outerConstraint : Source :=
@@ -276,7 +284,7 @@ def outerConstraint : Source :=
       (.var 0)
       (.var 1))
 
-example : (infer boolSig outerConstraint).map (·.ty) =
+example : (infer boolSig outerConstraint).toOption.map (·.ty) =
     some (.arrow int int) := by
   decide
 
@@ -285,7 +293,7 @@ def solvedSignatureHole : Source :=
     (.lit (.int 5))
     (.var 0)
 
-example : (infer boolSig solvedSignatureHole).map (·.ty) = some int := by
+example : (infer boolSig solvedSignatureHole).toOption.map (·.ty) = some int := by
   decide
 
 def namedIdentityAnnotation : PolyAnn Template :=
@@ -296,7 +304,7 @@ def namedIdentity : Source :=
     identityRhs
     (.app (.var 0) (.lit (.int 5)))
 
-example : (infer boolSig namedIdentity).map (·.ty) = some int := by
+example : (infer boolSig namedIdentity).toOption.map (·.ty) = some int := by
   decide
 
 def hiddenBadBoundAnnotation : Source :=
@@ -309,8 +317,8 @@ def hiddenBadRigidAnnotation : Source :=
     (.lambda (some (.rigid 0)) (.lit .unit))
     (.lit .unit)
 
-example : (infer boolSig hiddenBadBoundAnnotation).map (·.ty) = none := by decide
-example : (infer boolSig hiddenBadRigidAnnotation).map (·.ty) = none := by decide
+example : (infer boolSig hiddenBadBoundAnnotation).toOption.map (·.ty) = none := by decide
+example : (infer boolSig hiddenBadRigidAnnotation).toOption.map (·.ty) = none := by decide
 
 /-- An unknown created while checking an explicit scheme may survive it: here
 `x : Int -> ?r` is constrained inside `f`'s region, and `?r` is only
@@ -324,7 +332,7 @@ def regionUnknownEscapes : Source :=
       (.app (.app (.primOp .intAdd) (.app (.var 1) (.lit (.int 1))))
         (.lit (.int 1))))
 
-example : (infer boolSig regionUnknownEscapes).map (·.ty) =
+example : (infer boolSig regionUnknownEscapes).toOption.map (·.ty) =
     some (.arrow (.arrow int int) int) := by
   decide
 
@@ -342,7 +350,7 @@ def deferredParameter : Source :=
     (.letIn none (.lambda none (.app (.var 1) (.var 0))) (.lambda none (.var 0)))
     applyXPlusOne)
 
-example : (infer boolSig deferredParameter).map (·.ty) =
+example : (infer boolSig deferredParameter).toOption.map (·.ty) =
     some (.arrow (.arrow int int) int) := by
   decide
 
@@ -358,12 +366,12 @@ def deferredSchemeHole : Source :=
     (.lambda none (.lambda none (.letIn none (.app (.var 2) (.var 1)) (.var 1))))
     applyXPlusOne)
 
-example : (infer boolSig deferredSchemeHole).map (·.ty) =
+example : (infer boolSig deferredSchemeHole).toOption.map (·.ty) =
     some (.arrow (.arrow int int) int) := by
   decide
 
 /-- The completed scheme is recorded in the elaboration. -/
-example : (infer boolSig deferredSchemeHole).map (·.elaboration) =
+example : (infer boolSig deferredSchemeHole).toOption.map (·.elaboration) =
     some (.lambda (some (.arrow int int))
       (.letIn (some ⟨1, .arrow int (.arrow (.rigid 0) (.rigid 0))⟩)
         (.lambda (some int) (.lambda (some (.rigid 0))
@@ -375,25 +383,25 @@ example : (infer boolSig deferredSchemeHole).map (·.elaboration) =
 /-- A scheme hole that nothing determines is still rejected.
 
 `fun (x : Int) => let f : forall a. _ -> a -> a = fun z y => y in 0` -/
-example : infer boolSig (.lambda (some int)
+example : (infer boolSig (.lambda (some int)
     (.letIn (some holeFirstScheme) (.lambda none (.lambda none (.var 0)))
-      (.lit (.int 0)))) = none := by
+      (.lit (.int 0))))).toOption = none := by
   decide
 
 /-- A hole that only uses could determine is rejected: `_ := a` and
 `_ := Bool` both elaborate.
 
 `let f : forall a. _ -> a -> a = fun z y => y in f true true` -/
-example : infer boolSig (.letIn (some holeFirstScheme) (.lambda none (.lambda none (.var 0)))
-    (.app (.app (.var 0) trueExpr) trueExpr)) = none := by
+example : (infer boolSig (.letIn (some holeFirstScheme) (.lambda none (.lambda none (.var 0)))
+    (.app (.app (.var 0) trueExpr) trueExpr))).toOption = none := by
   decide
 
 /-- Holes are completed from the definition and its context, not from uses:
 this is rejected even though only `_ := Int` would typecheck.
 
 `let f : forall a. _ -> a -> a = fun z y => y in f 1 true` -/
-example : infer boolSig (.letIn (some holeFirstScheme) (.lambda none (.lambda none (.var 0)))
-    (.app (.app (.var 0) (.lit (.int 1))) trueExpr)) = none := by
+example : (infer boolSig (.letIn (some holeFirstScheme) (.lambda none (.lambda none (.var 0)))
+    (.app (.app (.var 0) (.lit (.int 1))) trueExpr))).toOption = none := by
   decide
 
 /-- A hole fixed to the scheme's own binder by its definition.
@@ -401,7 +409,7 @@ example : infer boolSig (.letIn (some holeFirstScheme) (.lambda none (.lambda no
 `let f : forall a. _ -> a -> a = fun (z : a) y => y in 0` -/
 example : (infer boolSig (.letIn (some holeFirstScheme)
     (.lambda (some (.rigid 0)) (.lambda none (.var 0)))
-    (.lit (.int 0)))).map (·.elaboration) =
+    (.lit (.int 0)))).toOption.map (·.elaboration) =
     some (.letIn (some ⟨1, .arrow (.rigid 0) (.arrow (.rigid 0) (.rigid 0))⟩)
       (.lambda (some (.rigid 0)) (.lambda (some (.rigid 0)) (.var 0)))
       (.lit (.int 0))) := by
@@ -410,9 +418,9 @@ example : (infer boolSig (.letIn (some holeFirstScheme)
 /-- A rigid variable may not escape through an outer unknown.
 
 `fun x => let f : forall a. a -> a = fun y => (let _ = x y in y) in 0` -/
-example : infer boolSig (.lambda none (.letIn (some polyIdentityAnnotation)
+example : (infer boolSig (.lambda none (.letIn (some polyIdentityAnnotation)
     (.lambda none (.letIn none (.app (.var 1) (.var 0)) (.var 1)))
-    (.lit (.int 0)))) = none := by
+    (.lit (.int 0))))).toOption = none := by
   decide
 
 /-- `_ -> Int`: a signature without binders is an ordinary partial annotation. -/
@@ -423,14 +431,14 @@ def monoHoleScheme : PolyAnn Template :=
 
 `let f : _ -> Int = fun x => 1 in f 3` -/
 example : (infer boolSig (.letIn (some monoHoleScheme) (.lambda none (.lit (.int 1)))
-    (.app (.var 0) (.lit (.int 3))))).map (·.ty) = some int := by
+    (.app (.var 0) (.lit (.int 3))))).toOption.map (·.ty) = some int := by
   decide
 
 /-- If nothing determines it, the program is ambiguous.
 
 `let f : _ -> Int = fun x => 1 in 0` -/
-example : infer boolSig (.letIn (some monoHoleScheme) (.lambda none (.lit (.int 1)))
-    (.lit (.int 0))) = none := by
+example : (infer boolSig (.letIn (some monoHoleScheme) (.lambda none (.lit (.int 1)))
+    (.lit (.int 0)))).toOption = none := by
   decide
 
 def inferredHoleLambda : Source :=
@@ -439,14 +447,14 @@ def inferredHoleLambda : Source :=
       (.app (.primOp .intAdd) (.var 0))
       (.lit (.int 1)))
 
-example : (infer boolSig inferredHoleLambda).map (·.ty) =
+example : (infer boolSig inferredHoleLambda).toOption.map (·.ty) =
     some (.arrow int int) := by
   decide
 
 def ambiguousHoleLambda : Source :=
   .lambda (some (.var "_")) (.var 0)
 
-example : (infer boolSig ambiguousHoleLambda).map (·.ty) = none := by
+example : (infer boolSig ambiguousHoleLambda).toOption.map (·.ty) = none := by
   decide
 
 def partlyInferredPolyAnnotation : PolyAnn Template :=
@@ -456,7 +464,7 @@ def partlyInferredPolyProgram : Source :=
   .letIn (some partlyInferredPolyAnnotation) identityRhs
     (.app (.var 0) trueExpr)
 
-example : (infer boolSig partlyInferredPolyProgram).map (·.ty) = some boolTy := by
+example : (infer boolSig partlyInferredPolyProgram).toOption.map (·.ty) = some boolTy := by
   decide
 
 def falsePolyAnnotation : PolyAnn Template :=
@@ -466,7 +474,7 @@ def falsePolyProgram : Source :=
   .letIn (some falsePolyAnnotation) identityRhs
     (.lit .unit)
 
-example : (infer boolSig falsePolyProgram).map (·.ty) = none := by
+example : (infer boolSig falsePolyProgram).toOption.map (·.ty) = none := by
   decide
 
 def inferredIntegerFix : Source :=
@@ -475,7 +483,7 @@ def inferredIntegerFix : Source :=
       (.app (.primOp .intAdd) (.var 0))
       (.lit (.int 1)))
 
-example : (infer boolSig inferredIntegerFix).map (·.ty) = some int := by
+example : (infer boolSig inferredIntegerFix).toOption.map (·.ty) = some int := by
   decide
 
 def incoherentNamedHole : Source :=
@@ -485,7 +493,7 @@ def incoherentNamedHole : Source :=
       (.var 0))
     (.lambda (some int) trueExpr)
 
-example : (infer boolSig incoherentNamedHole).map (·.ty) = none := by decide
+example : (infer boolSig incoherentNamedHole).toOption.map (·.ty) = none := by decide
 
 def namedIntegerLambda : Source :=
   .lambda (some (.var "local"))
@@ -502,14 +510,14 @@ def namedBooleanLambda : Source :=
 def independentNamedHoles : Source :=
   .letIn none namedIntegerLambda namedBooleanLambda
 
-example : (infer boolSig independentNamedHoles).map (·.ty) =
+example : (infer boolSig independentNamedHoles).toOption.map (·.ty) =
     some (.arrow boolTy int) := by
   decide
 
 def reuseAfterPolyCheck : Source :=
   .letIn (some polyIdentityAnnotation) identityRhs inferredIntLambda
 
-example : (infer boolSig reuseAfterPolyCheck).map (·.ty) =
+example : (infer boolSig reuseAfterPolyCheck).toOption.map (·.ty) =
     some (.arrow int int) := by
   decide
 
@@ -520,39 +528,39 @@ public inference function. -/
 
 example : ∃ elaboration, Typing boolSig 0 [] inferredIntLambda elaboration
     (.arrow int int) :=
-  ⟨_, infer_typing (by
-    decide : infer boolSig inferredIntLambda = some
+  ⟨_, infer_typing (infer_eq_ok_of_toOption (by
+    decide : (infer boolSig inferredIntLambda).toOption = some
       ⟨.lambda (some int) (.app (.app (.primOp .intAdd) (.var 0)) (.lit (.int 1))),
-        .arrow int int⟩)⟩
+        .arrow int int⟩))⟩
 
 example : ∃ elaboration, Typing boolSig 0 [] explicitPolyProgram elaboration boolTy :=
-  ⟨_, infer_typing (by
-    decide : infer boolSig explicitPolyProgram = some
+  ⟨_, infer_typing (infer_eq_ok_of_toOption (by
+    decide : (infer boolSig explicitPolyProgram).toOption = some
       ⟨.letIn (some ⟨1, .arrow (.rigid 0) (.rigid 0)⟩)
           (.lambda (some (.rigid 0)) (.var 0))
           (.letIn none (.app (.var 0) (.lit (.int 5))) (.app (.var 1) trueExpr)),
-        boolTy⟩)⟩
+        boolTy⟩))⟩
 
 example : ∃ elaboration, Typing boolSig 0 [] partlyInferredPolyProgram elaboration boolTy :=
-  ⟨_, infer_typing (by
-    decide : infer boolSig partlyInferredPolyProgram = some
+  ⟨_, infer_typing (infer_eq_ok_of_toOption (by
+    decide : (infer boolSig partlyInferredPolyProgram).toOption = some
       ⟨.letIn (some ⟨1, .arrow (.rigid 0) (.rigid 0)⟩)
           (.lambda (some (.rigid 0)) (.var 0))
           (.app (.var 0) trueExpr),
-        boolTy⟩)⟩
+        boolTy⟩))⟩
 
 example : ∃ elaboration, Typing boolSig 0 [] inferredIntegerFix elaboration int :=
-  ⟨_, infer_typing (by
-    decide : infer boolSig inferredIntegerFix = some
+  ⟨_, infer_typing (infer_eq_ok_of_toOption (by
+    decide : (infer boolSig inferredIntegerFix).toOption = some
       ⟨.fix (some int)
           (.app (.app (.primOp .intAdd) (.var 0)) (.lit (.int 1))),
-        int⟩)⟩
+        int⟩))⟩
 
 example : ∃ elaboration, Typing boolSig 0 [] integerLoop elaboration (.arrow int int) :=
-  ⟨_, infer_typing (by
-    decide : infer boolSig integerLoop = some
+  ⟨_, infer_typing (infer_eq_ok_of_toOption (by
+    decide : (infer boolSig integerLoop).toOption = some
       ⟨.fix (some (.arrow int int)) (.lambda (some int) (.app (.var 1) (.var 0))),
-        .arrow int int⟩)⟩
+        .arrow int int⟩))⟩
 
 /-! ## Evaluator -/
 
@@ -568,7 +576,7 @@ def letAdd : Source :=
 /-- Final value of `evaluate`, or `none` if inference rejected the program or
 fuel ran out. -/
 def finalValue (input : Source) (fuel : Nat) : Option RuntimeExpr :=
-  (evaluate boolSig input fuel).bind (·.2.value?)
+  (evaluate boolSig input fuel).toOption.bind (·.2.value?)
 
 #guard finalValue incrementApplied 10 = some (.lit (.int 42))
 #guard finalValue letAdd 10 = some (.lit (.int 42))
@@ -579,7 +587,7 @@ def finalValue (input : Source) (fuel : Nat) : Option RuntimeExpr :=
 #guard finalValue inferredIntegerFix 100 = none
 
 -- Rejected programs never run.
-#guard (evaluate boolSig deadAmbiguousLambda 10).isNone
+#guard (evaluate boolSig deadAmbiguousLambda 10).toOption.isNone
 
 /-! ## Data types -/
 
@@ -591,7 +599,7 @@ def illScopedSig : Signature := [boolDecl, ⟨0, [[.bvar 0]]⟩]
 example : illScopedSig.decl? 1 = none := by decide
 example : illScopedSig.decl? 0 = some boolDecl := by decide
 example : illScopedSig.ctorScheme ⟨1, 0⟩ = none := by decide
-example : (infer illScopedSig trueExpr).map (·.ty) = some boolTy := by decide
+example : (infer illScopedSig trueExpr).toOption.map (·.ty) = some boolTy := by decide
 example : (listSig.decl? 1).isSome := by decide
 example : (listSig.ctorScheme ⟨1, 1⟩).isSome := by decide
 
@@ -609,10 +617,10 @@ def listTy : Ty V := .app (.con 1) int
 def ifFalse : Source :=
   ifThen falseExpr (.lit (.int 1)) (.lit (.int 2))
 
-example : (infer listSig ifFalse).map (·.ty) = some int := by
+example : (infer listSig ifFalse).toOption.map (·.ty) = some int := by
   decide
 
-#guard ((evaluate listSig ifFalse 50).bind (·.2.value?)) =
+#guard ((evaluate listSig ifFalse 50).toOption.bind (·.2.value?)) =
   some (.lit (.int 2))
 
 /-- `match Cons 5 Nil with Nil => 0 | Cons x xs => x : Int`, evaluating to
@@ -622,31 +630,31 @@ def matchCons : Source :=
     [(⟨1, 0⟩, .lit (.int 0)),
      (⟨1, 1⟩, .lambda none (.lambda none (.var 1)))]
 
-example : (infer listSig matchCons).map (·.ty) = some int := by
+example : (infer listSig matchCons).toOption.map (·.ty) = some int := by
   decide
 
-example : (infer listSig matchCons).map (·.elaboration) =
+example : (infer listSig matchCons).toOption.map (·.elaboration) =
     some (.match (.app (.app (.ctor ⟨1, 1⟩) (.lit (.int 5)))
           (.ctor ⟨1, 0⟩))
       [(⟨1, 0⟩, .lit (.int 0)),
        (⟨1, 1⟩, .lambda (some int) (.lambda (some listTy) (.var 1)))]) := by
   decide
 
-#guard ((evaluate listSig matchCons 50).bind (·.2.value?)) =
+#guard ((evaluate listSig matchCons 50).toOption.bind (·.2.value?)) =
   some (.lit (.int 5))
 
 /-- `if 1 then True else False` is rejected: the scrutinee must be `Bool`. -/
 def ifInt : Source :=
   ifThen (.lit (.int 1)) trueExpr falseExpr
 
-example : infer listSig ifInt = none := by
+example : (infer listSig ifInt).toOption = none := by
   decide
 
 /-- A partial constructor application is a value of function type. -/
 def partialCons : Source :=
   .app (.ctor ⟨1, 1⟩) (.lit (.int 1))
 
-example : (infer listSig partialCons).map (·.ty) =
+example : (infer listSig partialCons).toOption.map (·.ty) =
     some (.arrow listTy listTy) := by
   decide
 
@@ -656,7 +664,7 @@ example : Eval.Value partialCons.erase :=
     rcases List.mem_singleton.mp h with rfl
     exact .lit)
 
-#guard ((evaluate listSig partialCons 10).bind (·.2.value?)) =
+#guard ((evaluate listSig partialCons 10).toOption.bind (·.2.value?)) =
   some (.app (.ctor ⟨1, 1⟩) (.lit (.int 1)))
 
 /-- Recursive list length via `fix`, over `listSig`. -/
@@ -679,10 +687,10 @@ def listLength : Source :=
   .fix (some (.arrow listTy int))
     (.lambda (some listTy) (listMatch (.var 0)))
 
-example : (infer listSig (.app listLength listInt)).map (·.ty) = some int := by
+example : (infer listSig (.app listLength listInt)).toOption.map (·.ty) = some int := by
   decide
 
-#guard ((evaluate listSig (.app listLength listInt) 200).bind (·.2.value?)) =
+#guard ((evaluate listSig (.app listLength listInt) 200).toOption.bind (·.2.value?)) =
   some (.lit (.int 3))
 
 /-! ## Partial, empty and mixed matches
@@ -694,13 +702,13 @@ requires. -/
 def partialMatch : Source :=
   .match falseExpr [(⟨0, 0⟩, .lit (.int 1))]
 
-example : (infer boolSig partialMatch).map (·.ty) = some int := by
+example : (infer boolSig partialMatch).toOption.map (·.ty) = some int := by
   decide
 
 example : partialMatch.exhaustive boolSig = false := by decide
 
 -- Inference accepts it, but `evaluate` refuses non-exhaustive programs.
-#guard (evaluate boolSig partialMatch 50).isNone
+#guard (evaluate boolSig partialMatch 50).toOption.isNone
 
 -- Evaluation of the erasure stops at the match, which is not a value.
 #guard (Eval.step? (Eval.run 50 partialMatch.erase)).isNone
@@ -710,23 +718,23 @@ example : partialMatch.exhaustive boolSig = false := by decide
 def emptyMatch : Source :=
   .match trueExpr []
 
-example : infer boolSig emptyMatch = none := by decide
+example : (infer boolSig emptyMatch).toOption = none := by decide
 
 /-- Patterns naming two different types are rejected. -/
 def crossTypedMatch : Source :=
   .match trueExpr [(⟨0, 0⟩, trueExpr), (⟨1, 0⟩, nil)]
 
-example : infer listSig crossTypedMatch = none := by decide
+example : (infer listSig crossTypedMatch).toOption = none := by decide
 
 /-! ## Primitive operations -/
 
 def intSubExpr : Source :=
   .app (.app (.primOp .intSub) (.lit (.int 1))) (.lit (.int 5))
 
-example : (infer boolSig intSubExpr).map (·.ty) = some int := by
+example : (infer boolSig intSubExpr).toOption.map (·.ty) = some int := by
   decide
 
-#guard ((evaluate boolSig intSubExpr 50).bind (·.2.value?)) =
+#guard ((evaluate boolSig intSubExpr 50).toOption.bind (·.2.value?)) =
   some (.lit (.int (-4)))
 
 def intLtExpr (left right : Int) : Source :=
@@ -738,42 +746,42 @@ def charIf : Source :=
 def charIfFalse : Source :=
   ifThen (intLtExpr 2 1) (.lit (.char 'y')) (.lit (.char 'n'))
 
-example : (infer boolSig charIf).map (·.ty) = some charTy := by
+example : (infer boolSig charIf).toOption.map (·.ty) = some charTy := by
   decide
 
-#guard ((evaluate boolSig charIf 50).bind (·.2.value?)) =
+#guard ((evaluate boolSig charIf 50).toOption.bind (·.2.value?)) =
   some (.lit (.char 'y'))
 
-#guard ((evaluate boolSig charIfFalse 50).bind (·.2.value?)) =
+#guard ((evaluate boolSig charIfFalse 50).toOption.bind (·.2.value?)) =
   some (.lit (.char 'n'))
 
 def charLtExpr : Source :=
   .app (.app (.primOp .charLt) (.lit (.char 'a'))) (.lit (.char 'b'))
 
-example : (infer boolSig charLtExpr).map (·.ty) = some boolTy := by
+example : (infer boolSig charLtExpr).toOption.map (·.ty) = some boolTy := by
   decide
 
-#guard ((evaluate boolSig charLtExpr 50).bind (·.2.value?)) =
+#guard ((evaluate boolSig charLtExpr 50).toOption.bind (·.2.value?)) =
   some (Eval.boolValue true)
 
 /-- Declaration 0 is `List`-shaped rather than `True | False`. -/
 def listShapedSig : Signature :=
   [⟨1, [[], [.bvar 0, .app (.con 0) (.bvar 0)]]⟩]
 
-example : infer [] (intLtExpr 1 2) = none := by
+example : (infer [] (intLtExpr 1 2)).toOption = none := by
   decide
 
-example : infer listShapedSig (intLtExpr 1 2) = none := by
+example : (infer listShapedSig (intLtExpr 1 2)).toOption = none := by
   decide
 
-example : infer boolSig (.app (.app (.primOp .intAdd) (.lit (.int 1)))
-    (.lit (.char 'c'))) = none := by
+example : (infer boolSig (.app (.app (.primOp .intAdd) (.lit (.int 1)))
+    (.lit (.char 'c')))).toOption = none := by
   decide
 
 def partialIntLt : Source :=
   .app (.primOp .intLt) (.lit (.int 1))
 
-example : (infer boolSig partialIntLt).map (·.ty) =
+example : (infer boolSig partialIntLt).toOption.map (·.ty) =
     some (.arrow int boolTy) := by
   decide
 
@@ -793,10 +801,10 @@ def primRecursive : Source :=
               (.app (.app (.primOp .intSub) (.var 0)) (.lit (.int 1))))))))
     (.lit (.int 4))
 
-example : (infer boolSig primRecursive).map (·.ty) = some int := by
+example : (infer boolSig primRecursive).toOption.map (·.ty) = some int := by
   decide
 
-#guard ((evaluate boolSig primRecursive 500).bind (·.2.value?)) =
+#guard ((evaluate boolSig primRecursive 500).toOption.bind (·.2.value?)) =
   some (.lit (.int 10))
 
 /-! ## `implicitPolyProgram` is untypable
@@ -937,5 +945,82 @@ theorem implicitPolyProgram_untypable {sig : Signature} :
                       rw [paramEq] at finalFunEq
                       cases (Ty.arrow.inj finalFunEq).1
                       exact ctor_ne_prim finalArgumentTyping
+
+/-! ## Errors
+
+Which error inference reports is not part of the specification; these tests
+pin down the current choices, one per kind of error. -/
+
+/-- The error `infer` reports, if any. -/
+def errorOf (sig : Signature) (src : Source) : Option InferError :=
+  match infer sig src with
+  | .error error => some error
+  | .ok _ => none
+
+/-- `1 x`, with `x` unbound: the error is at the argument. -/
+example : errorOf boolSig (.app one (.var 5)) = some ⟨[.appArgument], .unboundVar⟩ := by
+  decide
+
+example : errorOf boolSig (.ctor ⟨7, 0⟩) = some ⟨[], .unknownCtor⟩ := by decide
+
+/-- `1 < 2` without `Bool`: the error is at the operator. -/
+example : errorOf listShapedSig (intLtExpr 1 2) =
+    some ⟨[.appFunction, .appFunction], .noBool⟩ := by
+  decide
+
+example : errorOf boolSig hiddenBadRigidAnnotation =
+    some ⟨[.letRhs], .illScopedAnnotation⟩ := by
+  decide
+
+example : errorOf boolSig emptyMatch = some ⟨[], .emptyMatch⟩ := by decide
+
+/-- Without `Bool`, an `if` names an undeclared type. -/
+example : errorOf [] ifLt = some ⟨[.matchBranch 0], .unknownType⟩ := by decide
+
+example : errorOf listSig crossTypedMatch = some ⟨[.matchBranch 1], .foreignPattern⟩ := by
+  decide
+
+/-- `1 + 'c'`: the function `(+) 1 : Int -> Int` against `Char -> ?1`. -/
+example : errorOf boolSig (.app (.app (.primOp .intAdd) one) (.lit (.char 'c'))) =
+    some ⟨[], .mismatch (.arrow (.prim .char) (.var 1))
+      (.arrow (.prim .int) (.prim .int)) (.clash (.prim .int) (.prim .char))⟩ := by
+  decide
+
+/-- `if 1 then True else False`: the scrutinee is at fault. -/
+example : errorOf listSig ifInt =
+    some ⟨[.matchScrutinee], .mismatch (.con 0) (.prim .int)
+      (.clash (.prim .int) (.con 0))⟩ := by
+  decide
+
+/-- `fix f => fun x => f f`: the occurs check, at the inner application. -/
+example : errorOf boolSig (.fix none (.lambda none (.app (.var 1) (.var 1)))) =
+    some ⟨[.fixBody, .lambdaBody], .mismatch (.arrow (.var 0) (.var 2)) (.var 0)
+      (.occurs 0 (.arrow (.var 0) (.var 2)))⟩ := by
+  decide
+
+/-- The rigid `a` cannot escape into the outer `x`'s unknown type. -/
+example : errorOf boolSig skolemEscape =
+    some ⟨[.lambdaBody], .mismatch (.rigid 0) (.var 0) (.escape 0 (.rigid 0))⟩ := by
+  decide
+
+/-- The hole `h` of `forall a. h -> a -> a` could be `a` or `Bool`. -/
+example : errorOf boolSig ambiguous = some ⟨[], .ambiguousSignature ["h"]⟩ := by decide
+
+/-- `fun x => x`: the program's type is not determined. -/
+example : errorOf [] (.lambda none (.var 0)) =
+    some ⟨[], .undeterminedType (.arrow (.var 0) (.var 0))⟩ := by
+  decide
+
+/-- `let f : _ -> Int = fun x => 1 in 0`: the annotation's hole is not
+determined. -/
+example : errorOf boolSig (.letIn (some monoHoleScheme) (.lambda none one) (.lit (.int 0))) =
+    some ⟨[], .undeterminedAnnotation (.arrow (.var 0) (.prim .int))⟩ := by
+  decide
+
+/-- A rejected program is not run. -/
+example : (match evaluate boolSig emptyMatch 10 with
+    | .error error => some error
+    | .ok _ => none) = some (.rejected ⟨[], .emptyMatch⟩) := by
+  decide
 
 end EPL.Tests

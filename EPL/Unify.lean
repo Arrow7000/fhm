@@ -65,6 +65,24 @@ def MStore.solve (store : MStore) (id : Nat) (ty : InfTy) : MStore :=
       { level := if index ∈ ty.vars then min entry.level level else entry.level
         solution := entry.solution.map (·.substVar id ty) }
 
+/-- Why two types do not unify. -/
+inductive UnifyError where
+  /-- Two types with different outermost forms, e.g. `Int` and `?a -> ?b`:
+  the innermost such pair found. -/
+  | clash (left right : InfTy)
+  /-- `?id` occurs in `ty`: solving it would make an infinite type. -/
+  | occurs (id : Nat) (ty : InfTy)
+  /-- `ty` mentions a type variable not in scope at `?id`'s level. -/
+  | escape (id : Nat) (ty : InfTy)
+  /-- Unreachable: unification always has enough fuel
+  (`MStore.unify_complete`). -/
+  | outOfFuel
+  deriving DecidableEq, Repr
+
+/-- Why `?id` cannot be bound to `ty`, given that `MStore.canBind` refused. -/
+def MStore.bindError (id : Nat) (ty : InfTy) : UnifyError :=
+  if ty.vars.contains id then .occurs id ty else .escape id ty
+
 abbrev Constraint := InfTy × InfTy
 
 def Constraint.substVar (target : Nat) (replacement : InfTy) (constraint : Constraint) :
@@ -79,7 +97,7 @@ inductive UnifyPhase where
   | finished (store : MStore)
   /-- One metavariable was bound; these constraints remain. -/
   | bound (store : MStore) (rest : List Constraint)
-  | failed
+  | failed (error : UnifyError)
   | outOfFuel
 
 /-- Simplify resolved constraints until one binds an unsolved metavariable. -/
@@ -93,25 +111,27 @@ def unifyPhase (store : MStore) : Nat → List Constraint → UnifyPhase
         | .var id, ty | ty, .var id =>
             if store.canBind id ty then
               .bound (store.solve id ty) (rest.map (Constraint.substVar id ty))
-            else .failed
+            else .failed (MStore.bindError id ty)
         | .arrow leftDomain leftCodomain, .arrow rightDomain rightCodomain =>
             unifyPhase store fuel
               ((leftDomain, rightDomain) :: (leftCodomain, rightCodomain) :: rest)
         | .app leftFunction leftArgument, .app rightFunction rightArgument =>
             unifyPhase store fuel
               ((leftFunction, rightFunction) :: (leftArgument, rightArgument) :: rest)
-        | _, _ => .failed
+        | _, _ => .failed (.clash left right)
 
-def unifyLoop : Nat → MStore → List Constraint → Option MStore
-  | 0, _, _ => none
+def unifyLoop : Nat → MStore → List Constraint → Except UnifyError MStore
+  | 0, _, _ => .error .outOfFuel
   | fuel + 1, store, constraints =>
       match unifyPhase store (Constraints.size constraints) constraints with
-      | .finished store => some store
+      | .finished store => .ok store
       | .bound store rest => unifyLoop fuel store rest
-      | .failed | .outOfFuel => none
+      | .failed error => .error error
+      | .outOfFuel => .error .outOfFuel
 
-/-- Extend the store so that `left` and `right` resolve to the same type. -/
-def MStore.unify (store : MStore) (left right : InfTy) : Option MStore :=
+/-- Extend the store so that `left` and `right` resolve to the same type, or
+say why they cannot. -/
+def MStore.unify (store : MStore) (left right : InfTy) : Except UnifyError MStore :=
   unifyLoop (store.unsolved + 1) store [(store.apply left, store.apply right)]
 
 end EPL

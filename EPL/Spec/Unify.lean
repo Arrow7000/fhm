@@ -578,7 +578,7 @@ private theorem unifyPhase_cons_eq (store : MStore) (fuel : Nat)
             if store.canBind id ty then
               (UnifyPhase.bound (store.solve id ty)
                 (rest.map (Constraint.substVar id ty)) : UnifyPhase)
-            else .failed
+            else .failed (MStore.bindError id ty)
         | .arrow leftDomain leftCodomain,
           .arrow rightDomain rightCodomain =>
             unifyPhase store fuel
@@ -587,7 +587,7 @@ private theorem unifyPhase_cons_eq (store : MStore) (fuel : Nat)
           .app rightFunction rightArgument =>
             unifyPhase store fuel
               ((leftFunction, rightFunction) :: (leftArgument, rightArgument) :: rest)
-        | _, _ => .failed := by
+        | _, _ => .failed (.clash left right) := by
   rfl
 
 /-- A successful binding lowers the number of unsolved entries. -/
@@ -596,7 +596,7 @@ private theorem bound_of_guard_if (store result : MStore) (id : Nat) (ty : InfTy
     (run : (if store.canBind id ty then
               (UnifyPhase.bound (store.solve id ty)
                 (rest.map (Constraint.substVar id ty)) : UnifyPhase)
-            else .failed) = .bound result rest') :
+            else .failed (MStore.bindError id ty)) = .bound result rest') :
     result.unsolved < store.unsolved := by
   by_cases h : store.canBind id ty
   · rw [if_pos h] at run
@@ -678,7 +678,7 @@ private theorem not_finished_of_bound_if {p : Prop} [Decidable p]
     (run : (if p then
               (UnifyPhase.bound (store.solve id ty)
                 (rest.map (Constraint.substVar id ty)) : UnifyPhase)
-            else .failed) = .finished result) : False := by
+            else .failed (MStore.bindError id ty)) = .finished result) : False := by
   by_cases h : p
   · rw [if_pos h] at run
     exact nomatch run
@@ -691,7 +691,7 @@ private theorem bound_if_length {p : Prop} [Decidable p]
     (run : (if p then
               (UnifyPhase.bound (store.solve id ty)
                 (rest.map (Constraint.substVar id ty)) : UnifyPhase)
-            else .failed) = .bound result rest') :
+            else .failed (MStore.bindError id ty)) = .bound result rest') :
     result.length = store.length := by
   by_cases h : p
   · rw [if_pos h] at run
@@ -768,9 +768,10 @@ private theorem unifyLoop_succ (fuel : Nat) (store : MStore)
     (constraints : List Constraint) :
     unifyLoop (fuel + 1) store constraints =
       match unifyPhase store (Constraints.size constraints) constraints with
-      | .finished result => some result
+      | .finished result => .ok result
       | .bound result rest => unifyLoop fuel result rest
-      | .failed | .outOfFuel => none := by
+      | .failed error => .error error
+      | .outOfFuel => .error .outOfFuel := by
   rfl
 
 /-- Induction on a successful loop: its first phase either finishes or binds one
@@ -783,7 +784,7 @@ private theorem unifyLoop_induction {P : MStore → List Constraint → MStore �
       unifyPhase store (Constraints.size constraints) constraints = .bound result rest →
       P result rest final → P store constraints final)
     {fuel : Nat} {store : MStore} {constraints : List Constraint} {result : MStore}
-    (run : unifyLoop fuel store constraints = some result) : P store constraints result := by
+    (run : unifyLoop fuel store constraints = .ok result) : P store constraints result := by
   induction fuel generalizing store constraints with
   | zero => simp [unifyLoop] at run
   | succ fuel ih =>
@@ -801,7 +802,7 @@ private theorem unifyLoop_induction {P : MStore → List Constraint → MStore �
 private theorem unifyLoop_length
     {fuel : Nat} {store : MStore} {constraints : List Constraint}
     {result : MStore}
-    (run : unifyLoop fuel store constraints = some result) :
+    (run : unifyLoop fuel store constraints = .ok result) :
     result.length = store.length :=
   unifyLoop_induction (P := fun store _ result => result.length = store.length)
     (finished := fun finishedRun => unifyPhase_finished_length finishedRun)
@@ -809,7 +810,7 @@ private theorem unifyLoop_length
       ih.trans (unifyPhase_bound_length boundRun)) run
 
 theorem MStore.unify_length {store result : MStore} {left right : InfTy}
-    (run : store.unify left right = some result) : result.length = store.length := by
+    (run : store.unify left right = .ok result) : result.length = store.length := by
   exact unifyLoop_length run
 
 /-! ## Resolved constraints -/
@@ -959,7 +960,7 @@ private theorem bound_guard_data {store result : MStore} {id : Nat} {ty : InfTy}
     (run : (if store.canBind id ty then
               (UnifyPhase.bound (store.solve id ty)
                 (rest.map (Constraint.substVar id ty)) : UnifyPhase)
-            else .failed) = .bound result rest') :
+            else .failed (MStore.bindError id ty)) = .bound result rest') :
     store.canBind id ty = true ∧ store.solve id ty = result ∧
       rest.map (Constraint.substVar id ty) = rest' := by
   by_cases h : store.canBind id ty
@@ -1062,7 +1063,7 @@ private theorem bound_branch_safe {store result : MStore} {id : Nat} {ty : InfTy
     (run : (if store.canBind id ty then
               (UnifyPhase.bound (store.solve id ty)
                 (rest.map (Constraint.substVar id ty)) : UnifyPhase)
-            else .failed) = .bound result rest') :
+            else .failed (MStore.bindError id ty)) = .bound result rest') :
     result.Safe ∧ ConstraintsResolved result rest' ∧
       ConstraintsAllocated result rest' := by
   obtain ⟨guard, resultEq, restEq⟩ := bound_guard_data run
@@ -1126,7 +1127,7 @@ private theorem unifyLoop_safe
     (safe : store.Safe)
     (allocated : ConstraintsAllocated store constraints)
     (resolved : ConstraintsResolved store constraints)
-    (run : unifyLoop fuel store constraints = some result) :
+    (run : unifyLoop fuel store constraints = .ok result) :
     result.Safe :=
   unifyLoop_induction
     (P := fun store constraints result =>
@@ -1141,9 +1142,9 @@ private theorem unifyLoop_safe
 
 theorem MStore.unify_safe {store result : MStore} {left right : InfTy} (safe : store.Safe)
     (leftAllocated : left.Allocated store) (rightAllocated : right.Allocated store)
-    (run : store.unify left right = some result) : result.Safe := by
+    (run : store.unify left right = .ok result) : result.Safe := by
   change unifyLoop (store.unsolved + 1) store
-    [(store.apply left, store.apply right)] = some result at run
+    [(store.apply left, store.apply right)] = .ok result at run
   refine unifyLoop_safe safe ?_ ?_ run
   · intro constraint member
     simp only [List.mem_singleton] at member
@@ -1195,7 +1196,7 @@ private theorem unifyPhase_bound_levelOf_le
 private theorem unifyLoop_levelOf_le
     {fuel : Nat} {store : MStore} {constraints : List Constraint}
     {result : MStore}
-    (run : unifyLoop fuel store constraints = some result) (id : Nat) :
+    (run : unifyLoop fuel store constraints = .ok result) (id : Nat) :
     result.levelOf id ≤ store.levelOf id :=
   unifyLoop_induction
     (P := fun store _ result => result.levelOf id ≤ store.levelOf id)
@@ -1206,10 +1207,10 @@ private theorem unifyLoop_levelOf_le
 
 /-- Levels only decrease. -/
 theorem MStore.unify_levelOf_le {store result : MStore} {left right : InfTy}
-    (run : store.unify left right = some result) (id : Nat) :
+    (run : store.unify left right = .ok result) (id : Nat) :
     result.levelOf id ≤ store.levelOf id := by
   change unifyLoop (store.unsolved + 1) store
-    [(store.apply left, store.apply right)] = some result at run
+    [(store.apply left, store.apply right)] = .ok result at run
   exact unifyLoop_levelOf_le run id
 
 /-! ## Semantics -/
@@ -1418,7 +1419,7 @@ private theorem bound_branch_sound_left
     (run : (if store.canBind id ty then
               (UnifyPhase.bound (store.solve id ty)
                 (rest.map (Constraint.substVar id ty)) : UnifyPhase)
-            else .failed) = .bound result rest')
+            else .failed (MStore.bindError id ty)) = .bound result rest')
     (models : result.Models valuation)
     (restRealized : ConstraintsRealized valuation rest') :
     store.Models valuation ∧
@@ -1447,7 +1448,7 @@ private theorem bound_branch_sound_right
     (run : (if store.canBind id ty then
               (UnifyPhase.bound (store.solve id ty)
                 (rest.map (Constraint.substVar id ty)) : UnifyPhase)
-            else .failed) = .bound result rest')
+            else .failed (MStore.bindError id ty)) = .bound result rest')
     (models : result.Models valuation)
     (restRealized : ConstraintsRealized valuation rest') :
     store.Models valuation ∧
@@ -1546,7 +1547,7 @@ private theorem unifyPhase_sound_bound
 private theorem unifyLoop_sound
     {fuel : Nat} {store : MStore} {constraints : List Constraint}
     {result : MStore} {valuation : Valuation}
-    (run : unifyLoop fuel store constraints = some result)
+    (run : unifyLoop fuel store constraints = .ok result)
     (models : result.Models valuation) :
     store.Models valuation ∧
       ConstraintsRealized valuation constraints :=
@@ -1564,10 +1565,10 @@ private theorem unifyLoop_sound
 /-- Every model of the result is a model of the input that unifies the two
 types. -/
 theorem MStore.unify_sound {store result : MStore} {left right : InfTy} {valuation : Valuation}
-    (run : store.unify left right = some result) (models : result.Models valuation) :
+    (run : store.unify left right = .ok result) (models : result.Models valuation) :
     store.Models valuation ∧ left.realize valuation = right.realize valuation := by
   change unifyLoop (store.unsolved + 1) store
-    [(store.apply left, store.apply right)] = some result at run
+    [(store.apply left, store.apply right)] = .ok result at run
   obtain ⟨storeModels, realized⟩ := unifyLoop_sound run models
   refine ⟨storeModels, ?_⟩
   have equation := realized (store.apply left, store.apply right) (by simp)
@@ -1669,7 +1670,7 @@ private theorem unifyPhase_cons_eq_var_left (store : MStore) (fuel : Nat)
       (if store.canBind id ty then
         (UnifyPhase.bound (store.solve id ty)
           (rest.map (Constraint.substVar id ty)) : UnifyPhase)
-      else .failed) := by
+      else .failed (MStore.bindError id ty)) := by
   rw [unifyPhase_cons_eq, if_neg different]
 
 private theorem unifyPhase_cons_eq_var_right (store : MStore) (fuel : Nat)
@@ -1680,7 +1681,7 @@ private theorem unifyPhase_cons_eq_var_right (store : MStore) (fuel : Nat)
       (if store.canBind id left then
         (UnifyPhase.bound (store.solve id left)
           (rest.map (Constraint.substVar id left)) : UnifyPhase)
-      else .failed) := by
+      else .failed (MStore.bindError id left)) := by
   rw [unifyPhase_cons_eq, if_neg different]
   cases left with
   | var j => exact absurd rfl (notVar j)
@@ -1791,7 +1792,7 @@ private theorem phase_bound_right_complete {store : MStore} {fuel : Nat}
       (if store.canBind id ty then
         (UnifyPhase.bound (store.solve id ty)
           (rest.map (Constraint.substVar id ty)) : UnifyPhase)
-      else .failed))
+      else .failed (MStore.bindError id ty)))
     (safe : store.Safe)
     (models : store.Models valuation)
     (restResolved : ConstraintsResolved store rest)
@@ -2009,7 +2010,7 @@ private theorem unifyLoop_complete {fuel : Nat} {store : MStore}
     (resolved : ConstraintsResolved store constraints)
     (allocated : ConstraintsAllocated store constraints)
     (solves : ConstraintsRealized valuation constraints) :
-    ∃ result, unifyLoop fuel store constraints = some result ∧
+    ∃ result, unifyLoop fuel store constraints = .ok result ∧
       result.Models valuation := by
   induction fuel generalizing store constraints with
   | zero => omega
@@ -2033,9 +2034,9 @@ theorem MStore.unify_complete {store : MStore} {left right : InfTy} {valuation :
     (safe : store.Safe) (leftAllocated : left.Allocated store)
     (rightAllocated : right.Allocated store) (models : store.Models valuation)
     (unifies : left.realize valuation = right.realize valuation) :
-    ∃ result, store.unify left right = some result ∧ result.Models valuation := by
+    ∃ result, store.unify left right = .ok result ∧ result.Models valuation := by
   change ∃ result, unifyLoop (store.unsolved + 1) store
-    [(store.apply left, store.apply right)] = some result ∧
+    [(store.apply left, store.apply right)] = .ok result ∧
       result.Models valuation
   have resolved : ConstraintsResolved store
       [(store.apply left, store.apply right)] := by
@@ -2212,10 +2213,10 @@ private theorem ite_bound_anchored
     (anchored : store.Anchored start level) :
     (match (if store.canBind id ty = true then
               (UnifyPhase.bound (store.solve id ty) rest : UnifyPhase)
-            else .failed) with
+            else .failed (MStore.bindError id ty)) with
      | .finished result => result.Anchored start level
      | .bound result _ => result.Anchored start level
-     | .failed | .outOfFuel => True) := by
+     | .failed _ | .outOfFuel => True) := by
   by_cases guard : store.canBind id ty = true
   · rw [if_pos guard]
     simpa using MStore.solve_anchored_of_canBind anchored guard
@@ -2229,7 +2230,7 @@ private theorem unifyPhase_anchored
     (match unifyPhase store fuel constraints with
      | .finished result => result.Anchored start level
      | .bound result _ => result.Anchored start level
-     | .failed | .outOfFuel => True) := by
+     | .failed _ | .outOfFuel => True) := by
   induction fuel generalizing constraints with
   | zero =>
       cases constraints with
@@ -2276,7 +2277,7 @@ private theorem unifyLoop_anchored
     {fuel : Nat} {store result : MStore} {constraints : List Constraint}
     {start level : Nat}
     (anchored : store.Anchored start level)
-    (run : unifyLoop fuel store constraints = some result) :
+    (run : unifyLoop fuel store constraints = .ok result) :
     result.Anchored start level :=
   unifyLoop_induction
     (P := fun store _ result => store.Anchored start level → result.Anchored start level)
@@ -2287,10 +2288,10 @@ private theorem unifyLoop_anchored
 /-- A metavariable lowered to `level` or below by a binding enters the
 solution of whatever it was unified with, which is anchored. -/
 theorem MStore.unify_anchored {store result : MStore} {left right : InfTy}
-    (anchored : store.Anchored start level) (run : store.unify left right = some result) :
+    (anchored : store.Anchored start level) (run : store.unify left right = .ok result) :
     result.Anchored start level := by
   change unifyLoop (store.unsolved + 1) store
-    [(store.apply left, store.apply right)] = some result at run
+    [(store.apply left, store.apply right)] = .ok result at run
   exact unifyLoop_anchored anchored run
 
 end EPL

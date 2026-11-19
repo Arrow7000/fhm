@@ -20,6 +20,34 @@ the set of models:
 
 namespace EPL
 
+/-! ## Errors
+
+Error values carry no meaning in the specification: these lemmas reduce runs
+that wrap errors to the runs they wrap. -/
+
+@[simp] theorem Except.mapError_eq_ok_iff {f : ε → ε'} {run : Except ε α} {a : α} :
+    run.mapError f = .ok a ↔ run = .ok a := by
+  cases run <;> simp [Except.mapError]
+
+theorem Except.mapError_eq_error {f : ε → ε'} {run : Except ε α} {error : ε}
+    (failed : run = .error error) : run.mapError f = .error (f error) := by
+  subst failed; rfl
+
+@[simp] theorem MStore.unifyAt_eq_ok_iff {store result : MStore} {path : List ExprStep}
+    {actual expected : InfTy} :
+    store.unifyAt path actual expected = .ok result ↔ store.unify actual expected = .ok result :=
+  Except.mapError_eq_ok_iff
+
+theorem MStore.unifyAt_eq_error {store : MStore} {path : List ExprStep} {actual expected : InfTy}
+    {cause : UnifyError} (failed : store.unify actual expected = .error cause) :
+    store.unifyAt path actual expected = .error
+      ⟨path, .mismatch (store.apply expected) (store.apply actual) cause⟩ :=
+  Except.mapError_eq_error failed
+
+@[simp] theorem Option.getDM_eq_ok_iff {option : Option α} {error : ε} {a : α} :
+    (option.getDM (throw error : Except ε α)) = .ok a ↔ option = some a := by
+  cases option <;> simp [Option.getDM, throw, throwThe, MonadExceptOf.throw, pure, Except.pure]
+
 /-! ## Store operations -/
 
 /-- Lookup in an appended block of unsolved entries: either it is an old
@@ -474,12 +502,13 @@ structure InferPost (sig : Signature) (k : Nat) (ctx : Ctx Nat) (src : Source)
       ∃ extended, result.store.Models extended ∧ Agree store.length valuation extended ∧
         result.elaboration.realize extended = elaboration ∧ result.ty.realize extended = ty
 
-/-- The specification of one run: it either succeeds with `InferPost`, or the
-program elaborates under no model of the input store. -/
+/-- The specification of one run: it either succeeds with `InferPost`, or
+fails, whatever the error, and the program elaborates under no model of the
+input store. -/
 def InferSpec (sig : Signature) (k : Nat) (ctx : Ctx Nat) (src : Source) (store : MStore) : Prop :=
   match inferAt sig k ctx src store with
-  | some result => InferPost sig k ctx src store result
-  | none => ∀ valuation, store.Models valuation →
+  | .ok result => InferPost sig k ctx src store result
+  | .error _ => ∀ valuation, store.Models valuation →
       ∀ elaboration ty, ¬ Elaborates sig k (ctx.realize valuation) src elaboration ty
 
 end EPL

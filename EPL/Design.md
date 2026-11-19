@@ -142,15 +142,22 @@ inside the right-hand side are kept and may be determined by later code.
 `infer` runs `inferAt` on a closed program and accepts it when the resolved
 type and every annotation of the resolved elaboration are ground.
 
+Inference stops at the first error. An `InferError` is a reason and the path
+from the program's root to the expression it concerns; reasons carry only
+what the source does not show, such as the two types of a mismatch and the
+`UnifyError` (clash, occurs check or escape) inside them. Error values are not
+part of the specification: the theorems say only when inference fails, and
+which error it reports is unconstrained.
+
 ## Theorems
 
 | Theorem | Statement |
 |---|---|
-| `infer_eq_some_iff` | `infer` returns a result exactly when it elaborates the program and is its only typing |
-| `infer_eq_none_iff` | `infer` rejects exactly the programs without such a typing |
+| `infer_eq_ok_iff` | `infer` returns a result exactly when it elaborates the program and is its only typing |
+| `infer_eq_error_iff` | `infer` reports an error exactly for the programs without such a typing |
 | `infer_unique` | an accepted program has exactly one `Typing` |
 | `infer_type_safety` | an accepted, exhaustive program never gets stuck |
-| `evaluate` | infer, check exhaustiveness, erase and run; returns a typed value or a typed term that can still step |
+| `evaluate` | infer, check exhaustiveness, erase and run; returns a typed value or a typed term that can still step, or why it did not run |
 | `inferAt_spec` | a successful run is sound and principal; a failed run means no model elaborates |
 | `MStore.unify_sound`, `MStore.unify_complete` | the result's models are exactly the input's models that equate the two types |
 | `TypingWith.erase` | erasure preserves typing |

@@ -5,7 +5,7 @@ import EPL.Spec.Exhaustive
 /-!
 # EPL: the headline theorems
 
-* `infer_eq_some_iff` / `infer_eq_none_iff`: inference accepts exactly the
+* `infer_eq_ok_iff` / `infer_eq_error_iff`: inference accepts exactly the
   programs that elaborate and have no other typing, and returns that typing.
 * `infer_unique`: an accepted program has exactly one typing.
 * `infer_type_safety`, `infer_run_value`: accepted programs whose matches are
@@ -123,24 +123,24 @@ private theorem realize_ground {internal : Inferred} {ty : SemTy} {elaboration :
 
 /-- The public entry point, unfolded. -/
 private theorem infer_unfold {sig : Signature} {src : Source} {result : InferenceResult} :
-    infer sig src = some result ↔
+    infer sig src = .ok result ↔
       ∃ internal : Inferred,
-        inferAt sig 0 [] src [] = some internal ∧
+        inferAt sig 0 [] src [] = .ok internal ∧
           (internal.store.apply internal.ty).ground = some result.ty ∧
           (internal.store.applyElab internal.elaboration).traverseAnn Ty.ground =
             some result.elaboration := by
   unfold infer
   cases h : inferAt sig 0 [] src [] with
-  | none => simp
-  | some internal =>
-      simp only [Bind.bind, Option.bind]
+  | error _ => simp [Bind.bind, Except.bind]
+  | ok internal =>
+      simp only [Bind.bind, Except.bind, Pure.pure, Except.pure, Option.getDM]
       cases hty : (internal.store.apply internal.ty).ground with
       | none => simp [hty]
       | some ty =>
           cases helab : (internal.store.applyElab internal.elaboration).traverseAnn Ty.ground with
           | none => simp [helab]
           | some elaboration =>
-              simp only [Option.some.injEq]
+              simp only [Except.ok.injEq]
               constructor
               · rintro rfl
                 refine ⟨internal, rfl, ?_, ?_⟩
@@ -164,7 +164,7 @@ private theorem inferPre_nil : InferPre 0 ([] : Ctx Nat) ([] : MStore) where
 /-- The invariant guaranteed by a successful run of `inferAt`. -/
 private theorem inferPost_of_run {sig : Signature} {k : Nat} {ctx : Ctx Nat} {src : Source}
     {store : MStore} {result : Inferred} (pre : InferPre k ctx store)
-    (run : inferAt sig k ctx src store = some result) :
+    (run : inferAt sig k ctx src store = .ok result) :
     InferPost sig k ctx src store result := by
   have h := inferAt_spec (sig := sig) (src := src) pre
   simpa only [InferSpec, run] using h
@@ -233,7 +233,7 @@ private theorem false_of_elab_ground_none {sig : Signature} {src : Source} {inte
 /-! ## The public entry point -/
 
 theorem infer_sound {sig : Signature} {src : Source} {result : InferenceResult}
-    (accepted : infer sig src = some result) :
+    (accepted : infer sig src = .ok result) :
     Elaborates sig 0 [] src result.elaboration result.ty := by
   obtain ⟨internal, run, ground, traverse⟩ := infer_unfold.mp accepted
   have post := inferPost_of_run inferPre_nil run
@@ -244,7 +244,7 @@ theorem infer_sound {sig : Signature} {src : Source} {result : InferenceResult}
 
 /-- An accepted program is typed at the inferred elaboration and type. -/
 theorem infer_typing {sig : Signature} {src : Source} {result : InferenceResult}
-    (accepted : infer sig src = some result) :
+    (accepted : infer sig src = .ok result) :
     Typing sig 0 [] src result.elaboration result.ty :=
   (infer_sound accepted).typing
 
@@ -255,13 +255,13 @@ private theorem ctxWF_nil {k : Nat} : Ctx.WF k ([] : Ctx Empty) := by
 
 /-- The inferred type is closed. -/
 theorem infer_ty_wf {sig : Signature} {src : Source} {result : InferenceResult}
-    (accepted : infer sig src = some result) : result.ty.WF 0 :=
+    (accepted : infer sig src = .ok result) : result.ty.WF 0 :=
   TypingWith.regular ctxWF_nil (infer_sound accepted)
 
 /-- An accepted program has exactly one typing: its elaboration and type are
 the inferred ones. -/
 theorem infer_unique {sig : Signature} {src : Source} {result : InferenceResult}
-    (accepted : infer sig src = some result)
+    (accepted : infer sig src = .ok result)
     (typing : Typing sig 0 [] src elaboration ty) :
     elaboration = result.elaboration ∧ ty = result.ty := by
   obtain ⟨internal, run, ground, traverse⟩ := infer_unfold.mp accepted
@@ -278,8 +278,8 @@ elaborations alone is equivalent, by this theorem.) Proof of `←`:
 `inferAt_spec` cannot fail (its failure case contradicts the elaboration); if
 the result's type or elaboration kept an unsolved metavariable,
 `Models.exists_different` and soundness would give a second elaboration. -/
-theorem infer_eq_some_iff {sig : Signature} {src : Source} {result : InferenceResult} :
-    infer sig src = some result ↔
+theorem infer_eq_ok_iff {sig : Signature} {src : Source} {result : InferenceResult} :
+    infer sig src = .ok result ↔
       Elaborates sig 0 [] src result.elaboration result.ty ∧
         ∀ elaboration ty, Typing sig 0 [] src elaboration ty →
           elaboration = result.elaboration ∧ ty = result.ty := by
@@ -291,14 +291,14 @@ theorem infer_eq_some_iff {sig : Signature} {src : Source} {result : InferenceRe
         elaboration = result.elaboration ∧ ty = result.ty :=
       fun elaboration ty elaborates => uniqueTyping elaboration ty elaborates.typing
     cases run : inferAt sig 0 [] src [] with
-    | none =>
+    | error _ =>
         have hspec := inferAt_spec (sig := sig) (src := src) inferPre_nil
         have hnone : ∀ valuation, MStore.Models ([] : MStore) valuation →
             ∀ elaboration ty, ¬ Elaborates sig 0 [] src elaboration ty := by
           simpa only [InferSpec, run, Ctx.realize, List.map_nil] using hspec
         obtain ⟨valuation, models⟩ := MStore.has_model MStore.safe_nil
         exact absurd sound (hnone valuation models result.elaboration result.ty)
-    | some internal =>
+    | ok internal =>
         have post := inferPost_of_run inferPre_nil run
         cases ground : (internal.store.apply internal.ty).ground with
         | none =>
@@ -309,7 +309,7 @@ theorem infer_eq_some_iff {sig : Signature} {src : Source} {result : InferenceRe
             | none =>
                 exact (false_of_elab_ground_none post traverse unique).elim
             | some elaboration =>
-                have accepted : infer sig src = some ⟨elaboration, ty⟩ :=
+                have accepted : infer sig src = .ok ⟨elaboration, ty⟩ :=
                   infer_unfold.mpr ⟨internal, run, ground, traverse⟩
                 obtain ⟨valuation, models⟩ := MStore.has_model MStore.safe_nil
                 obtain ⟨extended, extendedModels, -, helaboration, hty⟩ :=
@@ -321,33 +321,36 @@ theorem infer_eq_some_iff {sig : Signature} {src : Source} {result : InferenceRe
                   hgroundElab.symm.trans helaboration
                 simpa [tyEq, elaborationEq] using accepted
 
-theorem infer_eq_none_iff {sig : Signature} {src : Source} :
-    infer sig src = none ↔
+/-- `infer` reports an error exactly for the programs without a unique
+elaboration. Which error it reports is not specified. -/
+theorem infer_eq_error_iff {sig : Signature} {src : Source} :
+    (∃ error, infer sig src = .error error) ↔
       ¬ ∃ elaboration ty, Elaborates sig 0 [] src elaboration ty ∧
         ∀ elaboration' ty', Typing sig 0 [] src elaboration' ty' →
           elaboration' = elaboration ∧ ty' = ty := by
   constructor
   · rintro noneRun ⟨elaboration, ty, elaborates, unique⟩
-    have accepted : infer sig src = some ⟨elaboration, ty⟩ :=
-      infer_eq_some_iff.mpr ⟨elaborates, unique⟩
+    have accepted : infer sig src = .ok ⟨elaboration, ty⟩ :=
+      infer_eq_ok_iff.mpr ⟨elaborates, unique⟩
     rw [accepted] at noneRun
-    exact Option.noConfusion noneRun
+    obtain ⟨error, h⟩ := noneRun
+    cases h
   · intro notExists
     cases run : infer sig src with
-    | none => rfl
-    | some result =>
-        have data := infer_eq_some_iff.mp run
+    | error error => exact ⟨error, rfl⟩
+    | ok result =>
+        have data := infer_eq_ok_iff.mp run
         exact absurd ⟨result.elaboration, result.ty, data.1, data.2⟩ notExists
 
 /-! ## Accepted programs run safely -/
 
 theorem infer_runtimeTyping {sig : Signature} {src : Source} {result : InferenceResult}
-    (accepted : infer sig src = some result) :
+    (accepted : infer sig src = .ok result) :
     RuntimeTyping sig 0 [] src.erase result.ty :=
   TypingWith.erase ctxWF_nil (infer_sound accepted)
 
 theorem infer_steps_typed {sig : Signature} {src : Source} {result : InferenceResult}
-    (accepted : infer sig src = some result) (steps : Eval.Steps src.erase expr) :
+    (accepted : infer sig src = .ok result) (steps : Eval.Steps src.erase expr) :
     RuntimeTyping sig 0 [] expr result.ty := by
   induction steps with
   | refl => exact infer_runtimeTyping accepted
@@ -363,7 +366,7 @@ theorem steps_exhaustive {sig : Signature} {src : Source}
 
 /-- Type safety: an accepted, exhaustive program never gets stuck. -/
 theorem infer_type_safety {sig : Signature} {src : Source} {result : InferenceResult}
-    (accepted : infer sig src = some result) (exhaustive : Exhaustive sig src)
+    (accepted : infer sig src = .ok result) (exhaustive : Exhaustive sig src)
     (steps : Eval.Steps src.erase expr) :
     Eval.Value expr ∨ ∃ next, Eval.Step expr next :=
   RuntimeTyping.progress (infer_steps_typed accepted steps) (steps_exhaustive exhaustive steps)
@@ -371,14 +374,14 @@ theorem infer_type_safety {sig : Signature} {src : Source} {result : InferenceRe
 /-- Running an accepted program, for any fuel, yields a term of the inferred
 type. -/
 theorem infer_run_typed {sig : Signature} {src : Source} {result : InferenceResult}
-    (accepted : infer sig src = some result) (fuel : Nat) :
+    (accepted : infer sig src = .ok result) (fuel : Nat) :
     RuntimeTyping sig 0 [] (Eval.run fuel src.erase) result.ty :=
   infer_steps_typed accepted (Eval.run_steps fuel src.erase)
 
 /-- When the evaluator stops before its fuel runs out on an accepted,
 exhaustive program, it stops at a value. -/
 theorem infer_run_value {sig : Signature} {src : Source} {result : InferenceResult}
-    (accepted : infer sig src = some result) (exhaustive : Exhaustive sig src)
+    (accepted : infer sig src = .ok result) (exhaustive : Exhaustive sig src)
     (stopped : Eval.step? (Eval.run fuel src.erase) = none) :
     Eval.Value (Eval.run fuel src.erase) := by
   rcases infer_type_safety accepted exhaustive (Eval.run_steps fuel src.erase) with
@@ -408,16 +411,24 @@ def Eval.Outcome.value? : Eval.Outcome sig start ty → Option RuntimeExpr
   | .value result .. => some result
   | .running .. => none
 
+/-- Why `evaluate` did not run a program. -/
+inductive EvalError where
+  /-- Inference rejected the program. -/
+  | rejected (error : InferError)
+  /-- The program is accepted, but one of its matches is not exhaustive. -/
+  | notExhaustive
+  deriving DecidableEq, Repr
+
 /-- Infer `src`, check that its matches are exhaustive, then run its erasure
-for at most `fuel` steps. Rejected or non-exhaustive programs yield `none`;
-the others cannot get stuck, by construction of `Eval.Outcome`. -/
+for at most `fuel` steps. Programs that are accepted and exhaustive cannot get
+stuck, by construction of `Eval.Outcome`. -/
 def evaluate (sig : Signature) (src : Source) (fuel : Nat) :
-    Option ((result : InferenceResult) × Eval.Outcome sig src.erase result.ty) :=
+    Except EvalError ((result : InferenceResult) × Eval.Outcome sig src.erase result.ty) :=
   match accepted : infer sig src with
-  | none => none
-  | some result =>
+  | .error error => .error (.rejected error)
+  | .ok result =>
       if exhaustive : src.exhaustive sig = true then
-        some ⟨result,
+        .ok ⟨result,
           match stepped : Eval.step? (Eval.run fuel src.erase) with
           | some next =>
               .running _ next (Eval.run_steps fuel _) (infer_run_typed accepted fuel)
@@ -426,18 +437,18 @@ def evaluate (sig : Signature) (src : Source) (fuel : Nat) :
               .value _ (Eval.run_steps fuel _)
                 (infer_run_value accepted (Expr.exhaustive_iff.mp exhaustive) stepped)
                 (infer_run_typed accepted fuel)⟩
-      else none
+      else .error .notExhaustive
 
 /-! ## Axioms
 
 The build fails if a headline theorem comes to depend on anything but Lean's
 three standard axioms. -/
 
-/-- info: 'EPL.infer_eq_some_iff' depends on axioms: [propext, Classical.choice, Quot.sound] -/
-#guard_msgs in #print axioms infer_eq_some_iff
+/-- info: 'EPL.infer_eq_ok_iff' depends on axioms: [propext, Classical.choice, Quot.sound] -/
+#guard_msgs in #print axioms infer_eq_ok_iff
 
-/-- info: 'EPL.infer_eq_none_iff' depends on axioms: [propext, Classical.choice, Quot.sound] -/
-#guard_msgs in #print axioms infer_eq_none_iff
+/-- info: 'EPL.infer_eq_error_iff' depends on axioms: [propext, Classical.choice, Quot.sound] -/
+#guard_msgs in #print axioms infer_eq_error_iff
 
 /-- info: 'EPL.infer_unique' depends on axioms: [propext, Classical.choice, Quot.sound] -/
 #guard_msgs in #print axioms infer_unique
