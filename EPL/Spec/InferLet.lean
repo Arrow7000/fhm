@@ -79,7 +79,7 @@ theorem inferAt_letPoly (sig : Signature) (k : Nat) (ctx : Ctx Nat)
       let bodyResult ← (inferAt sig k (scheme :: ctx) body unified).mapError (.under .letBody)
       pure ⟨bodyResult.ty,
         .letIn (some ⟨ann.arity, completed⟩) rhsResult.elaboration bodyResult.elaboration,
-        bodyResult.store⟩) := by
+        bodyResult.store, .node bodyResult.ty [rhsResult.types, bodyResult.types]⟩) := by
   rfl
 
 /-- The outcome of checking an explicit let's right-hand side against its
@@ -646,7 +646,7 @@ theorem inferAt_spec_letPoly {sig : Signature} {ann : PolyAnn Template} {rhs bod
                         .letIn (some ⟨ann.arity,
                           store'.apply (store.allocate (k + ann.arity) ann.body).1⟩)
                           rhsResult.elaboration bodyResult.elaboration,
-                        bodyResult.store⟩ := by
+                        bodyResult.store, .node bodyResult.ty [rhsResult.types, bodyResult.types]⟩ := by
                     simp [inferAt_letPoly, hann, hrhs, hunify, hnot, hbody, Bind.bind, Except.bind, Pure.pure, Except.pure, MStore.unifyAt]
                   have bodySpec' := bodySpec k
                     (⟨ann.arity,

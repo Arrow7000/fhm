@@ -511,7 +511,7 @@ private theorem closed_post {sig : Signature} {k : Nat} {ctx : Ctx Nat} {store :
       Typing sig k (ctx.realize valuation) src elaboration' ty' →
       ∃ extended, store.Models extended ∧ Agree store.length valuation extended ∧
         elaboration.realize extended = elaboration' ∧ ty.realize extended = ty') :
-    InferPost sig k ctx src store ⟨ty, elaboration, store⟩ :=
+    InferPost sig k ctx src store ⟨ty, elaboration, store, .node ty []⟩ :=
   { safe := pre.safe
     grows := le_rfl
     levels := fun _ _ => le_rfl
@@ -526,7 +526,7 @@ private theorem closed_post {sig : Signature} {k : Nat} {ctx : Ctx Nat} {store :
 theorem inferAt_spec_lit {sig : Signature} (pre : InferPre k ctx store) :
     InferSpec sig k ctx (.lit literal) store := by
   have h : inferAt sig k ctx (.lit literal) store =
-      .ok ⟨literal.ty, .lit literal, store⟩ := rfl
+      .ok ⟨literal.ty, .lit literal, store, .node literal.ty []⟩ := rfl
   simp only [InferSpec, h]
   refine closed_post (elaboration := .lit literal) pre (PrimLit.ty_wf literal)
     (PrimLit.ty_vars literal) (by simp [Expr.anns]) ?_ ?_
@@ -545,7 +545,7 @@ theorem inferAt_spec_primOp {sig : Signature} (pre : InferPre k ctx store) :
     InferSpec sig k ctx (.primOp op) store := by
   have hbind : inferAt sig k ctx (.primOp op) store =
       (op.ty sig).getDM (throw (.here .noBool)) >>= (fun ty =>
-        (pure ⟨ty, .primOp op, store⟩ : Except InferError Inferred)) := rfl
+        (pure ⟨ty, .primOp op, store, .node ty []⟩ : Except InferError Inferred)) := rfl
   cases hop : op.ty sig with
   | none =>
       have h : inferAt sig k ctx (.primOp op) store = .error (.here .noBool) := by
@@ -559,7 +559,7 @@ theorem inferAt_spec_primOp {sig : Signature} (pre : InferPre k ctx store) :
           cases hlift
   | some ty =>
       have h : inferAt sig k ctx (.primOp op) store =
-          .ok ⟨ty, .primOp op, store⟩ := by
+          .ok ⟨ty, .primOp op, store, .node ty []⟩ := by
         rw [hbind, hop]; rfl
       simp only [InferSpec, h]
       have htyvars : ty.vars = [] := PrimOp.ty_vars hop
@@ -581,7 +581,9 @@ theorem inferAt_spec_ctor {sig : Signature} (pre : InferPre k ctx store) :
   have hbind : inferAt sig k ctx (.ctor ref) store =
       (sig.ctorScheme ref).getDM (throw (.here .unknownCtor)) >>= (fun scheme =>
         (pure ⟨scheme.lift.inst (store.freshMany k scheme.arity).1, .ctor ref,
-          (store.freshMany k scheme.arity).2⟩ : Except InferError Inferred)) := rfl
+          (store.freshMany k scheme.arity).2,
+          .node (scheme.lift.inst (store.freshMany k scheme.arity).1) []⟩ :
+            Except InferError Inferred)) := rfl
   cases hsch : sig.ctorScheme ref with
   | none =>
       have h : inferAt sig k ctx (.ctor ref) store = .error (.here .unknownCtor) := by
@@ -595,7 +597,8 @@ theorem inferAt_spec_ctor {sig : Signature} (pre : InferPre k ctx store) :
   | some scheme =>
       have h : inferAt sig k ctx (.ctor ref) store =
           .ok ⟨(scheme.lift : Scheme Nat).inst (store.freshMany k scheme.arity).1,
-            .ctor ref, (store.freshMany k scheme.arity).2⟩ := by
+            .ctor ref, (store.freshMany k scheme.arity).2,
+            .node ((scheme.lift : Scheme Nat).inst (store.freshMany k scheme.arity).1) []⟩ := by
         rw [hbind, hsch]; rfl
       simp only [InferSpec, h]
       obtain ⟨hargsWF, hlen, hargsAlloc, hargsLB⟩ :=
@@ -724,7 +727,7 @@ def BranchesSpec (sig : Signature) (k : Nat) (ctx : Ctx Nat) (decl : DataDecl)
     (args : List InfTy) (resultTy : InfTy) (branches : List (CtorRef × Source))
     (store : MStore) : Prop :=
   match inferBranches sig k ctx decl args resultTy branches store with
-  | .ok result => BranchesPost sig k ctx decl args resultTy branches store result
+  | .ok result => BranchesPost sig k ctx decl args resultTy branches store result.1
   | .error _ => ∀ valuation, store.Models valuation →
       ∀ branchesElab : List (CtorRef × Elab),
         branchesElab.map (·.1) = branches.map (·.1) →
@@ -758,7 +761,8 @@ theorem inferBranches_spec {sig : Signature} {decl : DataDecl} {args : List InfT
   induction branches with
   | nil =>
       intro store bodies indices pre argsWF argsAllocated argsLevels resultAllocated resultLevels
-      have h : inferBranches sig k ctx decl args resultTy [] store = .ok ([], store) := rfl
+      have h : inferBranches sig k ctx decl args resultTy [] store = .ok (([], store), []) :=
+        rfl
       simp only [BranchesSpec, h]
       refine
         { safe := pre.safe
@@ -786,9 +790,10 @@ theorem inferBranches_spec {sig : Signature} {decl : DataDecl} {args : List InfT
           let bodyResult ← (inferAt sig k ctx body store).mapError (.under (.matchBranch 0))
           let expected := Ty.arrows (fields.map fun field => field.lift.instantiate args) resultTy
           let store ← bodyResult.store.unifyAt [.matchBranch 0] bodyResult.ty expected
-          let (restElab, store) ← (inferBranches sig k ctx decl args resultTy rest store).mapError
-            InferError.nextBranch
-          pure ((pattern, bodyResult.elaboration) :: restElab, store)) := rfl
+          let ((restElab, store), restTypes) ←
+            (inferBranches sig k ctx decl args resultTy rest store).mapError InferError.nextBranch
+          pure (((pattern, bodyResult.elaboration) :: restElab, store),
+            bodyResult.types :: restTypes)) := rfl
       have hmem : pattern ∈ ((pattern, body) :: rest).map (·.1) := by simp
       cases hfields : decl.ctors[pattern.index]? with
       | none =>
@@ -951,11 +956,12 @@ theorem inferBranches_spec {sig : Signature} {decl : DataDecl} {args : List InfT
                         (by simpa using hbr) (by simpa using hbrElab) hfields'
                       rw [ctx_realize_congr_of_agree pre hagree, hargsExt, hresultExt]
                       exact htyping'
-                  | ok restResult =>
+                  | ok restFull =>
+                      obtain ⟨restResult, restTypes⟩ := restFull
                       have h : inferBranches sig k ctx decl args resultTy
                           ((pattern, body) :: rest) store =
-                          .ok ((pattern, bodyResult.elaboration) :: restResult.1,
-                            restResult.2) := by
+                          .ok (((pattern, bodyResult.elaboration) :: restResult.1,
+                            restResult.2), bodyResult.types :: restTypes) := by
                         simp only [hbind, hfields, hb, MStore.unifyAt, Option.getDM,
                           Bind.bind, Except.bind, Pure.pure, Except.pure,
                           mapError_ok, hu, hr]
@@ -1131,8 +1137,10 @@ theorem inferAt_spec_match {sig : Signature} {scrutinee : Source}
       let store ← store.unifyAt [.matchScrutinee] scrutineeResult.ty
         (Ty.apps (.con first.type) args)
       let (resultTy, store) := store.fresh k
-      let (branchesElab, store) ← inferBranches sig k ctx decl args resultTy branches store
-      pure ⟨resultTy, .match scrutineeResult.elaboration branchesElab, store⟩) := rfl
+      let ((branchesElab, store), branchTypes) ←
+        inferBranches sig k ctx decl args resultTy branches store
+      pure ⟨resultTy, .match scrutineeResult.elaboration branchesElab, store,
+        .node resultTy (scrutineeResult.types :: branchTypes)⟩) := rfl
   cases hhead : branches.head? with
   | none =>
       have hbranches : branches = [] := List.head?_eq_none_iff.mp hhead
@@ -1432,12 +1440,14 @@ theorem inferAt_spec_match {sig : Signature} {scrutinee : Source}
                         unfold BranchesSpec at hbranchesNone
                         rw [hbr] at hbranchesNone
                         exact hbranchesNone ext₃ hmodelsR branchesElab hmap hallR
-                    | ok branchResult =>
+                    | ok branchFull =>
+                        obtain ⟨branchResult, branchTypes⟩ := branchFull
                         have h : inferAt sig k ctx
                             (.match scrutinee ((first, second) :: restBranches)) store =
                             .ok ⟨(storeU.fresh k).1,
                               .match scrutineeResult.elaboration branchResult.1,
-                              branchResult.2⟩ := by
+                              branchResult.2,
+                              .node (storeU.fresh k).1 (scrutineeResult.types :: branchTypes)⟩ := by
                           simp only [hbind, hhead, hdecl, hallCheck, hs, not_true, ite_false, MStore.unifyAt,
                             Option.getDM, Bind.bind, Except.bind, Pure.pure, Except.pure,
                             mapError_ok, hu, hbr]
@@ -1714,7 +1724,9 @@ theorem inferAt_spec_var {sig : Signature} (pre : InferPre k ctx store) :
   have hbind : inferAt sig k ctx (.var index) store =
       (ctx[index]?).getDM (throw (.here .unboundVar)) >>= (fun scheme =>
         (pure ⟨scheme.inst (store.freshMany k scheme.arity).1, .var index,
-          (store.freshMany k scheme.arity).2⟩ : Except InferError Inferred)) := rfl
+          (store.freshMany k scheme.arity).2,
+          .node (scheme.inst (store.freshMany k scheme.arity).1) []⟩ :
+            Except InferError Inferred)) := rfl
   cases hget : ctx[index]? with
   | none =>
       have h : inferAt sig k ctx (.var index) store = .error (.here .unboundVar) := by
@@ -1728,7 +1740,8 @@ theorem inferAt_spec_var {sig : Signature} (pre : InferPre k ctx store) :
   | some scheme =>
       have h : inferAt sig k ctx (.var index) store =
           .ok ⟨scheme.inst (store.freshMany k scheme.arity).1, .var index,
-            (store.freshMany k scheme.arity).2⟩ := by
+            (store.freshMany k scheme.arity).2,
+            .node (scheme.inst (store.freshMany k scheme.arity).1) []⟩ := by
         rw [hbind, hget]; rfl
       simp only [InferSpec, h]
       have hmem : scheme ∈ ctx := List.mem_of_getElem? hget
@@ -1822,7 +1835,8 @@ theorem inferAt_spec_lambda {sig : Signature} {body : Source}
         (inferAt sig k (.mono pair.1 :: ctx) body pair.2).mapError (.under .lambdaBody) >>=
           (fun bodyResult =>
           (pure ⟨.arrow pair.1 bodyResult.ty, .lambda (some pair.1) bodyResult.elaboration,
-            bodyResult.store⟩ : Except InferError Inferred))) := rfl
+            bodyResult.store, .node (.arrow pair.1 bodyResult.ty) [bodyResult.types]⟩ :
+              Except InferError Inferred))) := rfl
   cases hp : paramTy k store param with
   | none =>
       have h : inferAt sig k ctx (.lambda param body) store =
@@ -1841,7 +1855,8 @@ theorem inferAt_spec_lambda {sig : Signature} {body : Source}
           (inferAt sig k (.mono pty :: ctx) body store').mapError (.under .lambdaBody) >>=
             (fun bodyResult =>
             (pure ⟨.arrow pty bodyResult.ty, .lambda (some pty) bodyResult.elaboration,
-              bodyResult.store⟩ : Except InferError Inferred)) := by
+              bodyResult.store, .node (.arrow pty bodyResult.ty) [bodyResult.types]⟩ :
+                Except InferError Inferred)) := by
         rw [hbind, hp]; rfl
       have hspec := paramTy_spec (k := k) (store := store) (param := param) pre.safe
       rw [hp] at hspec
@@ -1882,7 +1897,7 @@ theorem inferAt_spec_lambda {sig : Signature} {body : Source}
       | ok bodyResult =>
           have hsucc : inferAt sig k ctx (.lambda param body) store =
               .ok ⟨.arrow pty bodyResult.ty, .lambda (some pty) bodyResult.elaboration,
-                bodyResult.store⟩ := by
+                bodyResult.store, .node (.arrow pty bodyResult.ty) [bodyResult.types]⟩ := by
             rw [h, hb]
             simp only [mapError_ok, Bind.bind, Except.bind, Pure.pure, Except.pure]
           simp only [InferSpec, hsucc]
@@ -2054,7 +2069,8 @@ theorem inferAt_spec_app {sig : Signature} {function argument : Source}
               (fun store =>
                 (pure ⟨resultTy,
                   .app functionResult.elaboration argumentResult.elaboration,
-                  store⟩ : Except InferError Inferred)))
+                  store, .node resultTy [functionResult.types, argumentResult.types]⟩ :
+                    Except InferError Inferred)))
             (argumentResult.store.fresh k).1 (argumentResult.store.fresh k).2)) := rfl
   cases hf : inferAt sig k ctx function store with
   | error functionError =>
@@ -2142,7 +2158,9 @@ theorem inferAt_spec_app {sig : Signature} {function argument : Source}
           | ok store2 =>
               have hsucc : inferAt sig k ctx (.app function argument) store =
                   .ok ⟨(argumentResult.store.fresh k).1,
-                    .app functionResult.elaboration argumentResult.elaboration, store2⟩ := by
+                    .app functionResult.elaboration argumentResult.elaboration, store2,
+                    .node (argumentResult.store.fresh k).1
+                      [functionResult.types, argumentResult.types]⟩ := by
                 simp only [hbind, hf, ha, MStore.unifyAt, Bind.bind, Except.bind,
                   Pure.pure, Except.pure, mapError_ok, hu]
               simp only [InferSpec, hsucc]
@@ -2239,7 +2257,8 @@ theorem inferAt_spec_letMono {sig : Signature} {rhs body : Source}
           (.under .letBody) >>= (fun bodyResult =>
           (pure ⟨bodyResult.ty,
             .letIn none rhsResult.elaboration bodyResult.elaboration,
-            bodyResult.store⟩ : Except InferError Inferred))) := rfl
+            bodyResult.store, .node bodyResult.ty [rhsResult.types, bodyResult.types]⟩ :
+              Except InferError Inferred))) := rfl
   cases hr : inferAt sig k ctx rhs store with
   | error rhsError =>
       have h : inferAt sig k ctx (.letIn none rhs body) store =
@@ -2259,7 +2278,8 @@ theorem inferAt_spec_letMono {sig : Signature} {rhs body : Source}
             (.under .letBody) >>= (fun bodyResult =>
             (pure ⟨bodyResult.ty,
               .letIn none rhsResult.elaboration bodyResult.elaboration,
-              bodyResult.store⟩ : Except InferError Inferred)) := by
+              bodyResult.store, .node bodyResult.ty [rhsResult.types, bodyResult.types]⟩ :
+                Except InferError Inferred)) := by
         rw [hbind, hr]; rfl
       have hrhsPost := rhsSpec k ctx store pre
       unfold InferSpec at hrhsPost
@@ -2290,7 +2310,7 @@ theorem inferAt_spec_letMono {sig : Signature} {rhs body : Source}
           have hsucc : inferAt sig k ctx (.letIn none rhs body) store =
               .ok ⟨bodyResult.ty,
                 .letIn none rhsResult.elaboration bodyResult.elaboration,
-                bodyResult.store⟩ := by
+                bodyResult.store, .node bodyResult.ty [rhsResult.types, bodyResult.types]⟩ := by
             rw [h, hb]; rfl
           simp only [InferSpec, hsucc]
           have hbodyPost := bodySpec k (.mono rhsResult.ty :: ctx) rhsResult.store hpre'
@@ -2368,8 +2388,8 @@ theorem inferAt_spec_fix {sig : Signature} {self : Option Template} {body : Sour
         (inferAt sig k (.mono pair.1 :: ctx) body pair.2).mapError (.under .fixBody) >>=
           (fun bodyResult =>
           bodyResult.store.unifyAt [] bodyResult.ty pair.1 >>= (fun store =>
-            (pure ⟨pair.1, .fix (some pair.1) bodyResult.elaboration, store⟩ :
-              Except InferError Inferred)))) := rfl
+            (pure ⟨pair.1, .fix (some pair.1) bodyResult.elaboration, store,
+              .node pair.1 [bodyResult.types]⟩ : Except InferError Inferred)))) := rfl
   cases hp : paramTy k store self with
   | none =>
       have h : inferAt sig k ctx (.fix self body) store =
@@ -2387,8 +2407,8 @@ theorem inferAt_spec_fix {sig : Signature} {self : Option Template} {body : Sour
           (inferAt sig k (.mono selfTy :: ctx) body store').mapError (.under .fixBody) >>=
             (fun bodyResult =>
             bodyResult.store.unifyAt [] bodyResult.ty selfTy >>= (fun store =>
-              (pure ⟨selfTy, .fix (some selfTy) bodyResult.elaboration, store⟩ :
-                Except InferError Inferred))) := by
+              (pure ⟨selfTy, .fix (some selfTy) bodyResult.elaboration, store,
+                .node selfTy [bodyResult.types]⟩ : Except InferError Inferred))) := by
         rw [hbind, hp]; rfl
       have hspec := paramTy_spec (k := k) (store := store) (param := self) pre.safe
       rw [hp] at hspec
@@ -2427,8 +2447,8 @@ theorem inferAt_spec_fix {sig : Signature} {self : Option Template} {body : Sour
       | ok bodyResult =>
           have hsucc : inferAt sig k ctx (.fix self body) store =
               bodyResult.store.unifyAt [] bodyResult.ty selfTy >>= (fun store =>
-                (pure ⟨selfTy, .fix (some selfTy) bodyResult.elaboration, store⟩ :
-                  Except InferError Inferred)) := by
+                (pure ⟨selfTy, .fix (some selfTy) bodyResult.elaboration, store,
+                  .node selfTy [bodyResult.types]⟩ : Except InferError Inferred)) := by
             rw [h, hb]; rfl
           have hbodyPost := bodySpec k (.mono selfTy :: ctx) store' hpre'
           unfold InferSpec at hbodyPost
@@ -2466,7 +2486,8 @@ theorem inferAt_spec_fix {sig : Signature} {self : Option Template} {body : Sour
               cases hresult
           | ok store2 =>
               have hsucc' : inferAt sig k ctx (.fix self body) store =
-                  .ok ⟨selfTy, .fix (some selfTy) bodyResult.elaboration, store2⟩ := by
+                  .ok ⟨selfTy, .fix (some selfTy) bodyResult.elaboration, store2,
+                    .node selfTy [bodyResult.types]⟩ := by
                 simp only [hsucc, MStore.unifyAt, Bind.bind, Except.bind, Pure.pure,
                   Except.pure, mapError_ok, hu]
               simp only [InferSpec, hsucc']

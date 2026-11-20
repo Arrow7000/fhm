@@ -33,10 +33,32 @@ def MStore.allocate (store : MStore) (level : Nat) (template : Template) : InfTy
 def MStore.applyElab (store : MStore) (elaboration : Expr InfTy) : Expr InfTy :=
   elaboration.mapAnn store.apply
 
+/-- The type inference found for each node of a term, in the term's shape: a
+node's children are its children's trees, in `ExprStep` order (`lambdaBody`;
+`appFunction`, `appArgument`; `letRhs`, `letBody`; `fixBody`;
+`matchScrutinee`, then each `matchBranch`). It is for tools such as editors:
+no theorem is stated about it. -/
+inductive TypeTree where
+  | node (ty : InfTy) (children : List TypeTree)
+  deriving Repr
+
+instance : Inhabited TypeTree := ⟨.node (.prim .unit) []⟩
+
+mutual
+def TypeTree.map (f : InfTy → InfTy) : TypeTree → TypeTree
+  | .node ty children => .node (f ty) (TypeTree.mapList f children)
+
+def TypeTree.mapList (f : InfTy → InfTy) : List TypeTree → List TypeTree
+  | [] => []
+  | tree :: rest => tree.map f :: TypeTree.mapList f rest
+end
+
 structure Inferred where
   ty : InfTy
   elaboration : Expr InfTy
   store : MStore
+  /-- The type of every node, as inferred so far (see `TypeTree`). -/
+  types : TypeTree
 
 /-! ## Errors -/
 
@@ -135,37 +157,38 @@ mutual
 extending `store`, or report the first error. -/
 def inferAt (sig : Signature) (k : Nat) (ctx : Ctx Nat) :
     Source → MStore → Except InferError Inferred
-  | .lit literal, store => pure ⟨literal.ty, .lit literal, store⟩
+  | .lit literal, store => pure ⟨literal.ty, .lit literal, store, .node literal.ty []⟩
   | .primOp op, store => do
       let ty ← (op.ty sig).getDM (throw (.here .noBool))
-      pure ⟨ty, .primOp op, store⟩
+      pure ⟨ty, .primOp op, store, .node ty []⟩
   | .ctor ref, store => do
       let scheme ← (sig.ctorScheme ref).getDM (throw (.here .unknownCtor))
       let (args, store) := store.freshMany k scheme.arity
-      pure ⟨scheme.lift.inst args, .ctor ref, store⟩
+      pure ⟨scheme.lift.inst args, .ctor ref, store, .node (scheme.lift.inst args) []⟩
   | .var index, store => do
       let scheme ← ctx[index]?.getDM (throw (.here .unboundVar))
       let (args, store) := store.freshMany k scheme.arity
-      pure ⟨scheme.inst args, .var index, store⟩
+      pure ⟨scheme.inst args, .var index, store, .node (scheme.inst args) []⟩
   | .lambda param body, store => do
       let (paramTy, store) ← (paramTy k store param).getDM (throw (.here .illScopedAnnotation))
       let bodyResult ← (inferAt sig k (.mono paramTy :: ctx) body store).mapError
         (.under .lambdaBody)
       pure ⟨.arrow paramTy bodyResult.ty, .lambda (some paramTy) bodyResult.elaboration,
-        bodyResult.store⟩
+        bodyResult.store, .node (.arrow paramTy bodyResult.ty) [bodyResult.types]⟩
   | .app function argument, store => do
       let functionResult ← (inferAt sig k ctx function store).mapError (.under .appFunction)
       let argumentResult ← (inferAt sig k ctx argument functionResult.store).mapError
         (.under .appArgument)
       let (resultTy, store) := argumentResult.store.fresh k
       let store ← store.unifyAt [] functionResult.ty (.arrow argumentResult.ty resultTy)
-      pure ⟨resultTy, .app functionResult.elaboration argumentResult.elaboration, store⟩
+      pure ⟨resultTy, .app functionResult.elaboration argumentResult.elaboration, store,
+        .node resultTy [functionResult.types, argumentResult.types]⟩
   | .letIn none rhs body, store => do
       let rhsResult ← (inferAt sig k ctx rhs store).mapError (.under .letRhs)
       let bodyResult ← (inferAt sig k (.mono rhsResult.ty :: ctx) body rhsResult.store).mapError
         (.under .letBody)
       pure ⟨bodyResult.ty, .letIn none rhsResult.elaboration bodyResult.elaboration,
-        bodyResult.store⟩
+        bodyResult.store, .node bodyResult.ty [rhsResult.types, bodyResult.types]⟩
   | .letIn (some ann) rhs body, store => do
       -- Check the right-hand side generically, at the fresh rigid levels
       -- `k, ..., inner - 1`. The annotation's holes may mention them, so they
@@ -184,13 +207,14 @@ def inferAt (sig : Signature) (k : Nat) (ctx : Ctx Nat) :
       let bodyResult ← (inferAt sig k (scheme :: ctx) body unified).mapError (.under .letBody)
       pure ⟨bodyResult.ty,
         .letIn (some ⟨ann.arity, completed⟩) rhsResult.elaboration bodyResult.elaboration,
-        bodyResult.store⟩
+        bodyResult.store, .node bodyResult.ty [rhsResult.types, bodyResult.types]⟩
   | .fix self body, store => do
       let (selfTy, store) ← (paramTy k store self).getDM (throw (.here .illScopedAnnotation))
       let bodyResult ← (inferAt sig k (.mono selfTy :: ctx) body store).mapError
         (.under .fixBody)
       let store ← bodyResult.store.unifyAt [] bodyResult.ty selfTy
-      pure ⟨selfTy, .fix (some selfTy) bodyResult.elaboration, store⟩
+      pure ⟨selfTy, .fix (some selfTy) bodyResult.elaboration, store,
+        .node selfTy [bodyResult.types]⟩
   | .match scrutinee branches, store => do
       -- The first pattern names the type; every pattern must be one of its
       -- constructors.
@@ -207,26 +231,30 @@ def inferAt (sig : Signature) (k : Nat) (ctx : Ctx Nat) :
       let store ← store.unifyAt [.matchScrutinee] scrutineeResult.ty
         (Ty.apps (.con first.type) args)
       let (resultTy, store) := store.fresh k
-      let (branchesElab, store) ← inferBranches sig k ctx decl args resultTy branches store
-      pure ⟨resultTy, .match scrutineeResult.elaboration branchesElab, store⟩
+      let ((branchesElab, store), branchTypes) ←
+        inferBranches sig k ctx decl args resultTy branches store
+      pure ⟨resultTy, .match scrutineeResult.elaboration branchesElab, store,
+        .node resultTy (scrutineeResult.types :: branchTypes)⟩
 
 /-- Infer each branch body in turn and unify its type with
 `field_1 -> ... -> field_n -> resultTy`, the fields of its constructor
-instantiated at `args`. Error paths start at the failing branch. -/
+instantiated at `args`. Error paths start at the failing branch. Also returns
+each body's `TypeTree`. -/
 def inferBranches (sig : Signature) (k : Nat) (ctx : Ctx Nat) (decl : DataDecl)
     (args : List InfTy) (resultTy : InfTy) :
     List (CtorRef × Source) → MStore →
-      Except InferError (List (CtorRef × Expr InfTy) × MStore)
-  | [], store => pure ([], store)
+      Except InferError ((List (CtorRef × Expr InfTy) × MStore) × List TypeTree)
+  | [], store => pure (([], store), [])
   | (pattern, body) :: rest, store => do
       let fields ← decl.ctors[pattern.index]?.getDM
         (throw ⟨[.matchBranch 0], .foreignPattern⟩)
       let bodyResult ← (inferAt sig k ctx body store).mapError (.under (.matchBranch 0))
       let expected := Ty.arrows (fields.map fun field => field.lift.instantiate args) resultTy
       let store ← bodyResult.store.unifyAt [.matchBranch 0] bodyResult.ty expected
-      let (restElab, store) ← (inferBranches sig k ctx decl args resultTy rest store).mapError
-        InferError.nextBranch
-      pure ((pattern, bodyResult.elaboration) :: restElab, store)
+      let ((restElab, store), restTypes) ←
+        (inferBranches sig k ctx decl args resultTy rest store).mapError InferError.nextBranch
+      pure (((pattern, bodyResult.elaboration) :: restElab, store),
+        bodyResult.types :: restTypes)
 end
 
 /-! ## Closed programs -/
@@ -281,5 +309,29 @@ def infer (sig : Signature) (src : Source) : Except InferError InferenceResult :
     -- `firstUndetermined` finds the annotation that `traverseAnn` failed on.
     (throw (elaboration.firstUndetermined.getD (.here (.undeterminedType resolved))))
   pure ⟨ground, ty⟩
+
+/-- `infer`, also returning the type of every node of `src`, resolved (see
+`TypeTree`; parts the program leaves undetermined stay metavariables). -/
+def inferWithTypes (sig : Signature) (src : Source) :
+    Except InferError (InferenceResult × TypeTree) := do
+  let result ← inferAt sig 0 [] src []
+  let resolved := result.store.apply result.ty
+  let ty ← resolved.ground.getDM (throw (.here (.undeterminedType resolved)))
+  let elaboration := result.store.applyElab result.elaboration
+  let ground ← (elaboration.traverseAnn Ty.ground).getDM
+    (throw (elaboration.firstUndetermined.getD (.here (.undeterminedType resolved))))
+  pure (⟨ground, ty⟩, result.types.map result.store.apply)
+
+/-- `inferWithTypes` accepts and rejects exactly as `infer` does, with the
+same result. -/
+theorem inferWithTypes_fst (sig : Signature) (src : Source) :
+    (inferWithTypes sig src).map Prod.fst = infer sig src := by
+  unfold inferWithTypes infer
+  cases inferAt sig 0 [] src [] with
+  | error => rfl
+  | ok result =>
+      simp only [bind, Except.bind]
+      cases (result.store.apply result.ty).ground <;> simp [Option.getDM, Except.map, pure, Except.pure]
+      cases (result.store.applyElab result.elaboration).traverseAnn Ty.ground <;> rfl
 
 end EPL
