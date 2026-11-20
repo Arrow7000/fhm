@@ -29,12 +29,83 @@ inductive Error where
   /-- The core rejects a match that the lowering did not record as partial.
   Not expected to happen. -/
   | notExhaustiveUnlocated
+  /-- A doc comment at `span` documents nothing. -/
+  | misplacedDoc (span : Span)
   deriving Repr
 
+/-! ## Doc comments
+
+A run of doc comments documents the name it comes before (ordinary comments
+may come in between), as in FHM: the names a `let` defines, the type after
+`type`, the constructor after `|`, or the constructor it is directly before
+(a type's first). A doc comment before anything else is an error, so it
+cannot silently document nothing. -/
+
+/-- A token or a comment, in source order. -/
+inductive Lexeme where
+  | tok (t : Tok)
+  | comment (c : Comment)
+
+def Lexeme.start : Lexeme → Pos
+  | .tok t => t.span.start
+  | .comment c => c.span.start
+
+/-- Where each doc comment is, its text, and where the names it may document
+start. -/
+def docCandidates (tokens : Array Tok) (comments : Array Comment) :
+    List (Span × String × List Pos) :=
+  let before (a b : Lexeme) : Bool :=
+    a.start.line < b.start.line || (a.start.line == b.start.line && a.start.col < b.start.col)
+  let lexemes := ((tokens.map Lexeme.tok) ++ (comments.map Lexeme.comment)).qsort before
+  let isDoc : Lexeme → Bool
+    | .comment c => c.doc.isSome
+    | _ => false
+  let isComment : Lexeme → Bool
+    | .comment _ => true
+    | _ => false
+  let rec go (fuel : Nat) (rest : List Lexeme) : List (Span × String × List Pos) :=
+    match fuel, rest with
+    | 0, _ | _, [] => []
+    | fuel + 1, .comment { span, doc := some text } :: rest =>
+        let more := rest.takeWhile isDoc
+        let text := "\n".intercalate (text :: more.filterMap fun
+          | .comment c => c.doc
+          | _ => none)
+        let after := (rest.drop more.length).dropWhile isComment
+        let targets := match after with
+          | .tok { token := .keyword .let, .. } :: header =>
+              (header.takeWhile fun
+                | .tok { token := .punct .eq, .. } => false
+                | _ => true).filterMap fun
+                | .tok { token := .ident .., span } => some span.start
+                | _ => none
+          | .tok { token := .keyword .type, .. } :: next :: _
+          | .tok { token := .punct .pipe, .. } :: next :: _ => [next.start]
+          | next :: _ => [next.start]
+          | [] => []
+        (span, text, targets) :: go fuel (rest.drop more.length)
+    | fuel + 1, _ :: rest => go fuel rest
+  go (lexemes.size + 1) lexemes.toList
+
+/-- Attach the doc comments to the names they document. -/
+def Lowering.attachDocs (lowering : Lowering) (tokens : Array Tok) (comments : Array Comment) :
+    Except Error Lowering := do
+  let user := lowering.decls.drop preludeDecls.length
+  let defined : List Pos :=
+    (lowering.names.filter (·.binding)).map (·.span.start) ++
+      user.map (·.nameSpan.start) ++ user.flatMap fun decl => decl.ctors.map (·.span.start)
+  let mut docs := []
+  for (span, text, targets) in docCandidates tokens comments do
+    let documented := targets.filter (· ∈ defined)
+    if documented.isEmpty then throw (.misplacedDoc span)
+    docs := docs ++ documented.map (·, text)
+  pure { lowering with docs }
+
 def frontEnd (source : String) : Except Error Lowering := do
-  let tokens ← (lex source).mapError .lex
+  let (tokens, comments) ← (lexWithComments source).mapError .lex
   let program ← (parseProgram tokens).mapError .parse
-  (lowerProgram program).mapError .lower
+  let lowering ← (lowerProgram program).mapError .lower
+  lowering.attachDocs tokens comments
 
 /-- The subterm at `path`, if it is there. -/
 def _root_.EPL.Expr.at? {A : Type} : EPL.Expr A → List ExprStep → Option (EPL.Expr A)
@@ -195,15 +266,21 @@ name the source defines has its binder's type. -/
 /-- A span of the source with its type, for hover and go-to-definition. -/
 structure Symbol where
   name : String
-  /-- `"val"` for a value, `"ctor"` for a constructor, `"expr"` for an
-  expression. -/
+  /-- `"val"` for a value, `"ctor"` for a constructor, `"type"` for a type,
+  `"param"` for a type variable, `"expr"` for an expression. -/
   kind : String
+  /-- The type; a type's declaration; for a type variable, what binds it. -/
   ty : String
   span : Span
   /-- Where a definition can be used; a use's own span. -/
   scope : Span
   /-- A definition, rather than a use or an expression. -/
   isDef : Bool
+  doc : Option String := none
+  /-- A constructor's type declaration. -/
+  declaration : Option String := none
+  /-- The binder id a value use refers to (see `OriginInfo.useBinder`). -/
+  binder : Option Nat := none
   deriving Repr, Inhabited
 
 def _root_.EPL.TypeTree.ty : TypeTree → InfTy
@@ -238,10 +315,12 @@ def nodeFacts (globals : Globals) (facts : Array NodeFact) :
         | none => facts
       let facts := match info.use with
         | some (name, kind) =>
-            facts.push (.symbol ⟨name, kind, shown, span, span, false⟩)
+            facts.push (.symbol { name, kind, ty := shown, span, scope := span, isDef := false,
+                                  binder := info.useBinder })
         | none => facts
       let facts := match info.expr with
-        | some span => facts.push (.symbol ⟨"expression", "expr", shown, span, span, false⟩)
+        | some span => facts.push (.symbol { name := "expression", kind := "expr", ty := shown,
+                                             span, scope := span, isDef := false })
         | none => facts
       nodeFactsList globals facts children types.children
 
@@ -258,27 +337,133 @@ def tyParamsPrefix : List String → String
   | [] => ""
   | names => "{" ++ " ".intercalate names ++ "} "
 
-/-- The symbols of a checked program: each name it defines, with its type, and
-each use and expression. Arm bodies that the match compiler copies yield the
-same symbol more than once; only the first is kept. Empty if the trees differ
-in shape, which is not expected. -/
+mutual
+/-- A type as written, at precedence `prec` (as for `showTy`). -/
+def Ty.render : Nat → Ty → String
+  | _, .hole _ => "_"
+  | _, .namedHole _ name => s!"?{name}"
+  | _, .var _ name => name
+  | _, .unit _ => "Unit"
+  | _, .pair _ fst snd => s!"({fst.render 0}, {snd.render 0})"
+  | prec, .arrow _ domain codomain =>
+      parens (prec ≥ 1) s!"{domain.render 1} -> {codomain.render 0}"
+  | _, .con _ name [] => name
+  | prec, .con _ name args => parens (prec ≥ 2) (" ".intercalate (name :: Ty.renderArgs args))
+
+def Ty.renderArgs : List Ty → List String
+  | [] => []
+  | ty :: rest => ty.render 2 :: Ty.renderArgs rest
+end
+
+/-- `type Maybe a =` and a line `  | C fields` per constructor. -/
+def DataDecl.declaration (decl : DataDecl) : String :=
+  "\n".intercalate (s!"type {" ".intercalate (decl.name :: decl.params)} =" ::
+    decl.ctors.map fun ctor =>
+      "  | " ++ " ".intercalate (ctor.name :: ctor.fields.map (·.render 2)))
+
+/-- A constructor's type: `{a} a -> Maybe a`. -/
+def DataDecl.ctorTy (decl : DataDecl) (ctor : CtorDecl) : String :=
+  let result := " ".intercalate (decl.name :: decl.params)
+  tyParamsPrefix decl.params ++ " -> ".intercalate (ctor.fields.map (·.render 1) ++ [result])
+
+/-- What hover shows for a type: its declaration. -/
+def Lowering.typeInfo (lowering : Lowering) (name : String) : String × Option String :=
+  if (primOf name).isSome then (s!"type {name}  -- built in", none)
+  else match lowering.decls.find? (·.name == name) with
+    | some decl => (decl.declaration, lowering.docs.lookup decl.nameSpan.start)
+    | none => (name, none)
+
+/-- A constructor's declaring type and declaration. -/
+def Lowering.ctorDecl? (lowering : Lowering) (name : String) : Option (DataDecl × CtorDecl) :=
+  lowering.decls.findSome? fun decl => (decl.ctors.find? (·.name == name)).map (decl, ·)
+
+/-- Top-level names can be used anywhere. -/
+def everywhere : Span := ⟨⟨1, 1⟩, ⟨1000000000, 1⟩⟩
+
+mutual
+/-- The type names and type variables in a declared field type. -/
+def tyUses (lowering : Lowering) (decl : DataDecl) : Ty → List Symbol
+  | .hole _ | .namedHole _ _ | .unit _ => []
+  | .var span name =>
+      [{ name, kind := "param", ty := s!"type variable (of {decl.name})", span, scope := span,
+         isDef := false }]
+  | .con span name args =>
+      let (ty, doc) := lowering.typeInfo name
+      let span := nameSpanAt span name
+      { name, kind := "type", ty, span, scope := span, isDef := false, doc } ::
+        tyUsesList lowering decl args
+  | .pair _ fst snd | .arrow _ fst snd => tyUses lowering decl fst ++ tyUses lowering decl snd
+
+def tyUsesList (lowering : Lowering) (decl : DataDecl) : List Ty → List Symbol
+  | [] => []
+  | ty :: rest => tyUses lowering decl ty ++ tyUsesList lowering decl rest
+end
+
+/-- The symbols of the program's data declarations. -/
+def Lowering.declSymbols (lowering : Lowering) : List Symbol :=
+  (lowering.decls.drop preludeDecls.length).flatMap fun decl =>
+    let (declaration, doc) := lowering.typeInfo decl.name
+    { name := decl.name, kind := "type", ty := declaration, span := decl.nameSpan,
+      scope := everywhere, isDef := true, doc } ::
+    (decl.params.zip decl.paramSpans).map (fun (name, span) =>
+      { name, kind := "param", ty := s!"type variable (of {decl.name})", span,
+        scope := decl.span, isDef := true }) ++
+    decl.ctors.flatMap fun ctor =>
+      let span := nameSpanAt ctor.span ctor.name
+      { name := ctor.name, kind := "ctor", ty := decl.ctorTy ctor, span, scope := everywhere,
+        isDef := true, doc := lowering.docs.lookup span.start, declaration } ::
+      tyUsesList lowering decl ctor.fields
+
+/-- The symbol of a type, type variable or constructor in a pattern. -/
+def Lowering.occurrenceSymbol (lowering : Lowering) (occurrence : Occurrence) : Symbol :=
+  let base : Symbol :=
+    { name := occurrence.name, kind := "type", ty := "", span := occurrence.span,
+      scope := occurrence.scope, isDef := occurrence.isDef }
+  match occurrence.kind with
+  | .type =>
+      let (ty, doc) := lowering.typeInfo occurrence.name
+      { base with ty, doc }
+  | .ctor => { base with kind := "ctor" }
+  | .tyVar owner => { base with kind := "param", ty := s!"type variable (of {owner})" }
+
+/-- Fill in a constructor's declaration and doc, and its type if missing. -/
+def Lowering.withCtorInfo (lowering : Lowering) (symbol : Symbol) : Symbol :=
+  match lowering.ctorDecl? symbol.name with
+  | some (decl, ctor) =>
+      { symbol with
+        ty := if symbol.ty.isEmpty then decl.ctorTy ctor else symbol.ty
+        declaration := some decl.declaration
+        doc := lowering.docs.lookup (nameSpanAt ctor.span ctor.name).start }
+  | none => symbol
+
+/-- The symbols of a checked program: each name it defines or uses, with its
+type and doc, and each expression. Arm bodies that the match compiler copies
+yield the same symbol more than once; only the first is kept. Without values
+or expressions if the trees differ in shape, which is not expected. -/
 def Lowering.symbols (lowering : Lowering) (types : TypeTree) : Array Symbol := Id.run do
-  let some facts := nodeFacts lowering.globals #[] lowering.origin types | return #[]
+  let facts := (nodeFacts lowering.globals #[] lowering.origin types).getD #[]
   let binders : Std.HashMap Nat (InfTy × List (String × Nat)) :=
     facts.foldl (init := {}) fun binders fact => match fact with
       | .binder id ty tyVars => binders.insert id (ty, tyVars)
       | .symbol _ => binders
+  let docOf (binder : Nat) : Option String :=
+    (lowering.names.find? (·.binder == binder)).bind fun name =>
+      lowering.docs.lookup name.span.start
   let defs := lowering.names.filterMap fun name =>
     (binders.get? name.binder).map fun (ty, tyVars) => ({
       name := name.name, kind := "val",
       ty := tyParamsPrefix name.tyParams ++ showInfTy lowering.globals tyVars ty,
-      span := name.span, scope := name.scope, isDef := true } : Symbol)
+      span := name.span, scope := name.scope, isDef := true,
+      doc := lowering.docs.lookup name.span.start } : Symbol)
   let uses := facts.filterMap fun
-    | .symbol symbol => some symbol
+    | .symbol symbol => some { symbol with doc := symbol.binder.bind docOf }
     | .binder .. => none
+  let others := lowering.declSymbols ++ lowering.occurrences.map lowering.occurrenceSymbol
+  let all := (defs.toArray ++ uses ++ others.toArray).map fun symbol =>
+    if symbol.kind == "ctor" then lowering.withCtorInfo symbol else symbol
   let mut seen : Std.HashSet (String × String × Nat × Nat × Nat × Nat × Bool) := {}
   let mut symbols := #[]
-  for symbol in defs.toArray ++ uses do
+  for symbol in all do
     let key := (symbol.kind, symbol.name, symbol.span.start.line, symbol.span.start.col,
       symbol.span.stop.line, symbol.span.stop.col, symbol.isDef)
     unless seen.contains key do
@@ -413,6 +598,7 @@ def Error.span : Error → Option Span
   | .infer _ span .. | .notAFunction _ span .. => some span
   | .notExhaustive span _ => some span
   | .notExhaustiveUnlocated => none
+  | .misplacedDoc span => some span
 
 def Error.message : Error → String
   | .lex error => error.reason.describe
@@ -424,6 +610,7 @@ def Error.message : Error → String
         is not a function type"
   | .notExhaustive _ ctor => s!"this match does not cover the case `{ctor}`"
   | .notExhaustiveUnlocated => "a match does not cover every case"
+  | .misplacedDoc _ => "a doc comment must come before a `let`, a `type` or a constructor"
 
 /-- `line:col: message` -/
 def Error.render (error : Error) : String :=

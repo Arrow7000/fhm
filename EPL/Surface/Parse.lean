@@ -117,15 +117,15 @@ def lowerName (what : Expected) : P (Tok × String) := do
   | some tok@{ token := .ident name false, .. } => bump; return (tok, name)
   | _ => expected what
 
-/-- Identifiers up to `}` (at least one), after `{`. -/
-def binderNames : Nat → P (List String)
+/-- Identifiers up to `}` (at least one), after `{`, with their spans. -/
+def binderNames : Nat → P (List (String × Span))
   | 0 => tooDeep
   | n + 1 => do
     match ← peek with
-    | some { token := .ident name _, .. } =>
+    | some { token := .ident name _, span } =>
         bump
-        if ← nextIs (.punct .rbrace) then bump; return [name]
-        return name :: (← binderNames n)
+        if ← nextIs (.punct .rbrace) then bump; return [(name, span)]
+        return (name, span) :: (← binderNames n)
     | _ => expected .typeParameter
 
 /-! ## Types -/
@@ -195,8 +195,8 @@ end
 def polyTy (n : Nat) : P PolyTy := do
   if (← accept (.punct .lbrace)).isSome then
     let binders ← binderNames n
-    return ⟨binders, ← ty n⟩
-  return ⟨[], ← ty n⟩
+    return ⟨binders.map (·.1), ← ty n, binders.map (·.2)⟩
+  return ⟨[], ← ty n, []⟩
 
 /-! ## Patterns -/
 
@@ -350,15 +350,15 @@ def lambdaParams : Nat → P (List Param)
 /-- A binding's target and annotation, up to and including `=`. -/
 def bindingHead (n : Nat) : P (Binding × Tok) := do
   let start ← startPos
-  let target ← match ← peek with
+  let (target, tyParams) ← match ← peek with
     | some { token := .ident name false, span } =>
         bump
         let tyParams ← if (← accept (.punct .lbrace)).isSome then binderNames n else pure []
-        pure (.named name tyParams (← valueParams n) span)
-    | _ => .pattern <$> pattern n
+        pure (.named name (tyParams.map (·.1)) (← valueParams n) span, tyParams)
+    | _ => do pure (.pattern (← pattern n), [])
   let ann ← if (← accept (.punct .colon)).isSome then some <$> polyTy n else pure none
   let eq ← expect (.punct .eq)
-  return (⟨⟨start, eq.span.stop⟩, target, ann⟩, eq)
+  return ({ span := ⟨start, eq.span.stop⟩, target, ann, tyParamSpans := tyParams.map (·.2) }, eq)
 
 /-- A right-hand side on a later line than `eq` must start past `col`. -/
 def checkIndent (eq : Tok) (col : Nat) : P Unit := do
@@ -568,23 +568,24 @@ def moreCtors (declCol : Nat) : Nat → P (List CtorDecl)
       return ctor :: (← moreCtors declCol n)
     return []
 
-def lowerNames : Nat → P (List String)
+def lowerNames : Nat → P (List (String × Span))
   | 0 => tooDeep
   | n + 1 => do
     match ← peek with
-    | some { token := .ident name false, .. } => bump; return name :: (← lowerNames n)
+    | some { token := .ident name false, span } => bump; return (name, span) :: (← lowerNames n)
     | _ => return []
 
 /-- `type T a b = C fields | ...` -/
 def typeDecl (n : Nat) : P DataDecl := do
   let typeTok ← expect (.keyword .type)
-  let (_, name) ← upperName .typeName
+  let (nameTok, name) ← upperName .typeName
   let params ← lowerNames n
   let _ ← expect (.punct .eq)
   let _ ← accept (.punct .pipe)
   let first ← ctorDecl typeTok.span.start.col n
   let rest ← moreCtors typeTok.span.start.col n
-  return ⟨← spanFrom typeTok.span.start, name, params, first :: rest⟩
+  return { span := ← spanFrom typeTok.span.start, name, params := params.map (·.1),
+           ctors := first :: rest, nameSpan := nameTok.span, paramSpans := params.map (·.2) }
 
 /-- Top-level `type` declarations and `let` bindings, in any order. -/
 def items : Nat → P (List DataDecl × List (Binding × Expr))

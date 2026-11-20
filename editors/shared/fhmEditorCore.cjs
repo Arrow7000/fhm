@@ -393,22 +393,25 @@ function unavailableHover(hit, { sourceUri, diagnostics = [] } = {}) {
 }
 
 /**
- * Markdown for a hover: the signature as an `fhm` code block, which both
- * VS Code and Monaco highlight with the registered FHM grammar, plus a prose
+ * Markdown for a hover: the signature as a code block in `options.language`
+ * (`fhm` by default; `epl` for EPL), which VS Code and Monaco highlight with
+ * the registered grammar, plus a prose
  * line where the payload's `type` is a description rather than a type, then
  * the definition's doc comment and constructor declaration, if any. Unavailable
  * symbols instead use failure provenance or clearly labelled annotation context.
  * @param {any} hit
  */
 function hoverMarkdown(hit, options = {}) {
+  // Code blocks are highlighted as the hovered document's language.
+  const language = options.language || "fhm";
   if (hit?.typeStatus === "unavailable" || hit?.type?.startsWith("type unknown (")) {
     if (typeof hit.typeExpected === "string" && hit.typeExpected.length) {
-      return "Expected type from annotation:\n\n```fhm\n" + hit.typeExpected.replace(/`/g, "'") + "\n```";
+      return "Expected type from annotation:\n\n```" + language + "\n" + hit.typeExpected.replace(/`/g, "'") + "\n```";
     }
     return unavailableHover(hit, options);
   }
   const doc = typeof hit?.doc === "string" && hit.doc.length > 0 ? hit.doc : "";
-  const sections = [hoverSignature(hit)];
+  const sections = [hoverSignature(hit, language)];
   if (hit?.typeStatus === "declared") {
     sections.push("Declared type; implementation is not fully validated.");
   } else if (hit?.typeStatus === "conditional") {
@@ -419,7 +422,7 @@ function hoverMarkdown(hit, options = {}) {
   // Keep the instantiated signature and constructor docs above the declaration.
   if (doc) sections.push(doc);
   if (typeof hit?.declaration === "string" && hit.declaration.length > 0) {
-    sections.push("```fhm\n" + hit.declaration.replace(/`/g, "'") + "\n```");
+    sections.push("```" + language + "\n" + hit.declaration.replace(/`/g, "'") + "\n```");
   }
   return sections.join("\n\n---\n\n");
 }
@@ -427,11 +430,11 @@ function hoverMarkdown(hit, options = {}) {
 /**
  * @param {any} hit
  */
-function hoverSignature(hit) {
+function hoverSignature(hit, language = "fhm") {
   const kind = kindBadge(hit?.kind);
   const name = String(hit?.name ?? "?");
   const type = String(hit?.type ?? "?");
-  const block = (code) => "```fhm\n" + code.replace(/`/g, "'") + "\n```";
+  const block = (code) => "```" + language + "\n" + code.replace(/`/g, "'") + "\n```";
   if (kind === "type" || kind === "expr") return block(type);
   if (kind === "param" && type.startsWith("type variable")) {
     return block(name) + "\n\n_" + type.replace(/[_*`]/g, "") + "_";

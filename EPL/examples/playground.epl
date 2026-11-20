@@ -18,14 +18,20 @@
 --
 -- Running prints the type of each top-level binding and of the program (its
 -- last expression), then the program's value. Hover over a name to see its
--- type there.
+-- type there; a doc comment (`--- text` or `/-- text -/`) shows up there too.
 
-type Maybe a = Just a | Nothing
+--- An optional value.
+type Maybe a =
+  --- There is a value.
+  | Just a
+  --- There is none.
+  | Nothing
 
 type Tree a = Leaf | Node (Tree a) a (Tree a)
 
 -- Lists
 
+--- Apply `f` to every element.
 let map {a b} (f : a -> b) (xs : List a) : List b =
   match xs with
   | [] -> []
@@ -52,7 +58,8 @@ let zip {a b} (xs : List a) (ys : List b) : List (a, b) =
   | (x :: xs, y :: ys) -> (x, y) :: zip xs ys
   | _ -> []
 
--- `range 1 5` is [1, 2, 3, 4, 5].
+/-- The integers from `from` to `to`, inclusive:
+    `range 1 5` is [1, 2, 3, 4, 5]. -/
 let range (from : Int) (to : Int) : List Int =
   if to < from then [] else from :: range (from + 1) to
 
@@ -90,6 +97,7 @@ let toList {a} (t : Tree a) : List a =
   | Leaf -> []
   | Node l x r -> append (toList l) (x :: toList r)
 
+--- Sort by inserting every element into a search tree.
 let sort (xs : List Int) : List Int = toList (foldr insert Leaf xs)
 
 -- Unannotated bindings are fine when they are used at one type.

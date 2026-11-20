@@ -90,14 +90,31 @@ function definition(line, character) {
   // Hover shows the types inference found; go-to-definition finds the binder.
   assert.deepEqual(await update("type Maybe a = Just a | Nothing\nlet id {a} (x : a) : a = x\n" +
     "let n = id 1 -- one\nmatch Just n with\n| Just y -> y\n| Nothing -> 0\n"), []);
-  assert.equal(hover(1, 4), "```fhm\nid : {a} a -> a\n```");
-  assert.equal(hover(1, 12), "```fhm\nx : a\n```");
-  assert.equal(hover(2, 8), "```fhm\nid : Int -> Int\n```");
-  assert.equal(hover(3, 6), "```fhm\nJust : Int -> Maybe Int\n```");
-  assert.equal(hover(4, 12), "```fhm\ny : Int\n```");
+  assert.equal(hover(1, 4), "```epl\nid : {a} a -> a\n```");
+  assert.equal(hover(1, 12), "```epl\nx : a\n```");
+  assert.equal(hover(2, 8), "```epl\nid : Int -> Int\n```");
+  assert.equal(hover(3, 6), "```epl\nJust : Int -> Maybe Int\n```\n\n---\n\n" +
+    "```epl\ntype Maybe a =\n  | Just a\n  | Nothing\n```");
+  assert.equal(hover(4, 12), "```epl\ny : Int\n```");
   assert.equal(hover(2, 15), undefined, "no hover in a comment");
   assert.deepEqual(definition(3, 11), [2, 4, 2, 5]);
   assert.deepEqual(definition(4, 12), [4, 7, 4, 8]);
   assert.deepEqual(definition(2, 8), [1, 4, 1, 6]);
-  console.log("VS Code EPL integration: PASS (5 real-backend scenarios)");
+
+  // Types, type variables, constructors and doc comments.
+  assert.deepEqual(await update("--- Maybe a value.\ntype Maybe a = Just a | Nothing\n" +
+    "/-- Wrap it. -/\nlet wrap {a} (x : a) : Maybe a = Just x\nmatch wrap 1 with\n| Just y -> y\n| Nothing -> 0\n"), []);
+  const maybe = "```epl\ntype Maybe a =\n  | Just a\n  | Nothing\n```";
+  assert.equal(hover(3, 23), maybe + "\n\n---\n\nMaybe a value.");
+  assert.deepEqual(definition(3, 23), [1, 5, 1, 10]);
+  assert.equal(hover(3, 29), "```epl\na\n```\n\n_type variable (of wrap)_");
+  assert.deepEqual(definition(3, 29), [3, 10, 3, 11]);
+  assert.equal(hover(1, 20), "```epl\na\n```\n\n_type variable (of Maybe)_");
+  assert.equal(hover(4, 7), "```epl\nwrap : Int -> Maybe Int\n```\n\n---\n\nWrap it.");
+  assert.equal(hover(5, 3), "```epl\nJust : {a} a -> Maybe a\n```\n\n---\n\n" + maybe);
+  assert.deepEqual(definition(5, 3), [1, 15, 1, 19]);
+  assert.deepEqual(await update("let x = 1\n--- Nothing here.\nx\n"), [
+    { message: "A doc comment must come before a `let`, a `type` or a constructor.", range: [1, 0, 1, 17] },
+  ]);
+  console.log("VS Code EPL integration: PASS (7 real-backend scenarios)");
 })().catch(err => { console.error(err); process.exit(1); });

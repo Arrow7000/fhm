@@ -273,7 +273,9 @@ function activate(context) {
         );
         if (!hit) return undefined;
 
-        const markdown = hoverMarkdown(hit, { sourceUri: doc.uri.toString(), diagnostics: cache.diagnostics });
+        const markdown = hoverMarkdown(hit, {
+          sourceUri: doc.uri.toString(), diagnostics: cache.diagnostics, language: doc.languageId,
+        });
         if (!markdown) return undefined;
 
         // The range is on one line and contains the cursor (see resolveHover).

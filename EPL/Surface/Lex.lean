@@ -5,8 +5,9 @@ import EPL.Surface.Syntax
 # Lexer
 
 FHM's token set: `--` line comments and (nested) block comments are
-skipped (`lexWithComments` also returns their spans, for editors), tabs are rejected, `-` directly followed by a digit is a negative
-literal (so `n -1` is `n` applied to `-1`; write `n - 1`).
+skipped (`lexWithComments` also returns them, with a doc comment's text), tabs
+are rejected, `-` directly followed by a digit is a negative literal (so
+`n -1` is `n` applied to `-1`; write `n - 1`).
 -/
 
 namespace EPL.Surface
@@ -83,6 +84,49 @@ def skipBlockComment (start : Pos) : List Char → Pos → Nat → Except LexErr
   | '/' :: '-' :: rest, pos, depth => skipBlockComment start rest (pos.right 2) (depth + 1)
   | c :: rest, pos, depth => skipBlockComment start rest (pos.next c) depth
 
+/-- A comment's span, and its text if it is a doc comment: a line comment
+opened by exactly three dashes, or a block comment opened by a slash and
+exactly two dashes. -/
+structure Comment where
+  span : Span
+  doc : Option String := none
+  deriving Repr, Inhabited
+
+private def dropBlanks (cs : List Char) : List Char :=
+  cs.dropWhile Char.isWhitespace
+
+/-- The text of a `/-- … -/` doc comment, given its body: blank lines at
+either end and trailing spaces dropped, and the later lines' common
+indentation removed (the first line follows the opener). As in FHM. -/
+def docBlockText (raw : String) : String :=
+  let indentOf (l : List Char) := (l.takeWhile (· == ' ')).length
+  match (raw.splitOn "\n").map String.toList with
+  | [] => ""
+  | first :: rest =>
+    let indented := rest.filter (·.any (!·.isWhitespace))
+    let indent := match indented with
+      | [] => 0
+      | l :: ls => ls.foldl (fun m l => min m (indentOf l)) (indentOf l)
+    let lines := (first.dropWhile (· == ' ') :: rest.map (·.drop indent)).map
+      fun l => (dropBlanks l.reverse).reverse
+    let lines := ((lines.dropWhile List.isEmpty).reverse.dropWhile List.isEmpty).reverse
+    "\n".intercalate (lines.map String.ofList)
+
+/-- The text of a `---` doc line, given what follows the third dash. -/
+def docLineText (body : List Char) : String :=
+  String.ofList (dropBlanks (match body with | ' ' :: b => b | b => b).reverse).reverse
+
+/-- The comment from `start` to `stop`, whose characters after its opener
+are `body` (for a block comment, including its two closing characters). -/
+def Comment.of (start stop : Pos) (block : Bool) (body : List Char) : Comment :=
+  let doc := match block, body with
+    | false, '-' :: rest => if rest.head? == some '-' then none else some (docLineText rest)
+    | true, '-' :: rest =>
+        if rest.head? == some '-' || rest == ['/'] then none
+        else some (docBlockText (String.ofList (rest.take (rest.length - 2))))
+    | _, _ => none
+  { span := ⟨start, stop⟩, doc }
+
 /-- Skip a line comment, up to (not including) the newline. -/
 def skipLineComment : List Char → Pos → Except LexError (List Char × Pos)
   | [], pos => .ok ([], pos)
@@ -131,11 +175,11 @@ def symbolToken : Char → Option Token
   | '_' => some (.punct .underscore)
   | _ => none
 
-/-- Lex `cs` from `pos`, adding its tokens to `acc` and its comments' spans to
+/-- Lex `cs` from `pos`, adding its tokens to `acc` and its comments to
 `comments`. Each step consumes at least one character, so `cs.length + 1` is
 enough fuel. -/
-def lexChars : Nat → List Char → Pos → Array Tok → Array Span →
-    Except LexError (Array Tok × Array Span)
+def lexChars : Nat → List Char → Pos → Array Tok → Array Comment →
+    Except LexError (Array Tok × Array Comment)
   | 0, _, pos, _, _ => .error ⟨pos, .unexpectedChar ' '⟩ -- unreachable
   | _ + 1, [], _, acc, comments => .ok (acc, comments)
   | fuel + 1, c :: rest, pos, acc, comments =>
@@ -145,12 +189,14 @@ def lexChars : Nat → List Char → Pos → Array Tok → Array Span →
       | '\t', _ => .error ⟨pos, .tab⟩
       | ' ', _ | '\r', _ => lexChars fuel rest pos.right acc comments
       | '\n', _ => lexChars fuel rest (pos.next '\n') acc comments
-      | '-', '-' :: rest => do
-          let (rest, stop) ← skipLineComment rest (pos.right 2)
-          lexChars fuel rest stop acc (comments.push ⟨pos, stop⟩)
-      | '/', '-' :: rest => do
-          let (rest, stop) ← skipBlockComment pos rest (pos.right 2) 1
-          lexChars fuel rest stop acc (comments.push ⟨pos, stop⟩)
+      | '-', '-' :: body => do
+          let (rest, stop) ← skipLineComment body (pos.right 2)
+          let comment := Comment.of pos stop false (body.take (body.length - rest.length))
+          lexChars fuel rest stop acc (comments.push comment)
+      | '/', '-' :: body => do
+          let (rest, stop) ← skipBlockComment pos body (pos.right 2) 1
+          let comment := Comment.of pos stop true (body.take (body.length - rest.length))
+          lexChars fuel rest stop acc (comments.push comment)
       | '-', '>' :: rest => emit (.punct .arrow) rest (pos.right 2)
       | ':', ':' :: rest => emit (.op .cons) rest (pos.right 2)
       | '-', d :: more =>
@@ -187,8 +233,8 @@ def lexChars : Nat → List Char → Pos → Array Tok → Array Span →
             | some token => emit token rest pos.right
             | none => .error ⟨pos, .unexpectedChar c⟩
 
-/-- The tokens of `source` and the spans of its comments. -/
-def lexWithComments (source : String) : Except LexError (Array Tok × Array Span) :=
+/-- The tokens of `source` and its comments. -/
+def lexWithComments (source : String) : Except LexError (Array Tok × Array Comment) :=
   let cs := source.toList
   lexChars (cs.length + 1) cs ⟨1, 1⟩ #[] #[]
 

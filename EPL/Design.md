@@ -228,28 +228,35 @@ Lowering (`Lower.lean`) produces the core term and signature:
 - Each `Origin` node also records what the core node is in the source: the
   value of a surface expression, a use of a name, or the binder of a
   variable. Lowering lists every name the source defines with the binder it
-  stands for.
+  stands for, and the type names, type variables and pattern constructors it
+  mentions.
 
 Types for editors come from inference itself: `inferWithTypes` also returns a
 `TypeTree`, the type of every core node in the term's shape
 (`inferWithTypes_fst`: it accepts and rejects exactly as `infer` does). A
 node's type is the one at the same path in the `TypeTree` as its `Origin`, so
 `Lowering.symbols` gives each defined name its binder's type, and each use and
-expression its own. Spans stay out of the core term.
+expression its own. Spans stay out of the core term. Types and constructors
+show their declaration, and type variables what binds them.
+
+Doc comments (`--- text` or `/-- text -/`) are FHM's: a run of them documents
+the `let`, type or constructor it comes before, and one before anything else
+is an error. The lexer keeps comments aside, and `frontEnd` attaches each doc
+comment to the names it documents, for hover at the definition and its uses.
 
 The `epl` executable (`lake build epl`) runs a file (`epl [run] [--fuel N]
 file.epl`, printing each top-level binding's type and the program's, then its
 value, as `fhm run` does), checks it (`epl check`), or prints editor JSON
 (`epl diagnose`, the shape `fhm diagnose` prints: the first error, symbols
-with types, and tokens). The editor
-extension in `editors/vscode` highlights `.epl` files, shows their first error,
-shows types on hover, goes to definitions, and runs files (`EPL: Run File`).
+with types and docs, and tokens). The editor extension in `editors/vscode`
+highlights `.epl` files, shows their first error, shows types and docs on
+hover, goes to definitions, and runs files (`EPL: Run File`).
 `EPL/examples/playground.epl` is a tour.
 
 | File | Contents |
 |---|---|
 | `Surface/Syntax.lean` | the surface AST, with spans |
-| `Surface/Lex.lean` | the lexer |
+| `Surface/Lex.lean` | the lexer, and comments with their doc text |
 | `Surface/Parse.lean` | the parser (recursive descent, FHM's layout rules) |
 | `Surface/Lower.lean` | name resolution, binding order, pattern compilation, origins |
 | `Surface/Run.lean` | the pipeline, symbols for editors, printing of types, values and errors |

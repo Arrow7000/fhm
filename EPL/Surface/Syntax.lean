@@ -56,6 +56,8 @@ def Ty.span : Ty → Span
 structure PolyTy where
   binders : List String
   body : Ty
+  /-- Where each binder is written. -/
+  binderSpans : List Span := []
   deriving Repr, Inhabited
 
 /-- Patterns, possibly nested. -/
@@ -140,6 +142,8 @@ structure Binding where
   span : Span
   target : Target
   ann : Option PolyTy
+  /-- Where each of a function head's type parameters is written. -/
+  tyParamSpans : List Span := []
   deriving Repr, Inhabited
 
 /-- The names a binding defines. -/
@@ -179,7 +183,7 @@ def Expr.span : Expr → Span
   | .binOp span _ _ _ | .pair span _ _ | .list span _ | .lambda span _ _ | .app span _ _
   | .letIn span _ _ | .ite span _ _ _ | .match span _ _ => span
 
-/-- A constructor declaration `C field ...`. -/
+/-- A constructor declaration `C field ...`. Its span starts at its name. -/
 structure CtorDecl where
   span : Span
   name : String
@@ -192,6 +196,9 @@ structure DataDecl where
   name : String
   params : List String
   ctors : List CtorDecl
+  nameSpan : Span := default
+  /-- Where each parameter is written. -/
+  paramSpans : List Span := []
   deriving Repr, Inhabited
 
 /-- A program: data declarations, top-level `let`s (in any order; they may

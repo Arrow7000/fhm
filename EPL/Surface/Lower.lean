@@ -53,6 +53,8 @@ structure OriginInfo where
   /-- The node is a use of this name, a value (`"val"`) or a constructor
   (`"ctor"`), written at the node's span. -/
   use : Option (String × String) := none
+  /-- The binder id of the value a `"val"` use refers to. -/
+  useBinder : Option Nat := none
   /-- The node binds the variable with this id (see `Scope.ids`). -/
   binder : Option (Nat × BinderTy) := none
   deriving Repr, Inhabited
@@ -165,10 +167,13 @@ private def noSpan : Span := default
 /-- `type Bool = True | False`, `type List a = Nil | Cons a (List a)`,
 `type Pair a b = Pair a b`. -/
 def preludeDecls : List DataDecl :=
-  [⟨noSpan, "Bool", [], [⟨noSpan, "True", []⟩, ⟨noSpan, "False", []⟩]⟩,
-   ⟨noSpan, "List", ["a"], [⟨noSpan, "Nil", []⟩,
-      ⟨noSpan, "Cons", [.var noSpan "a", .con noSpan "List" [.var noSpan "a"]]⟩]⟩,
-   ⟨noSpan, "Pair", ["a", "b"], [⟨noSpan, "Pair", [.var noSpan "a", .var noSpan "b"]⟩]⟩]
+  [{ span := noSpan, name := "Bool", params := [],
+     ctors := [⟨noSpan, "True", []⟩, ⟨noSpan, "False", []⟩] },
+   { span := noSpan, name := "List", params := ["a"],
+     ctors := [⟨noSpan, "Nil", []⟩,
+      ⟨noSpan, "Cons", [.var noSpan "a", .con noSpan "List" [.var noSpan "a"]]⟩] },
+   { span := noSpan, name := "Pair", params := ["a", "b"],
+     ctors := [⟨noSpan, "Pair", [.var noSpan "a", .var noSpan "b"]⟩] }]
 
 def trueRef : CtorRef := ⟨0, 0⟩
 def falseRef : CtorRef := ⟨0, 1⟩
@@ -266,6 +271,8 @@ structure Scope where
   tyVars : List (String × Nat) := []
   /-- The id of the binder at each level (see `OriginInfo.binder`). -/
   ids : Array Nat := #[]
+  /-- Where each type variable in scope is bound, and by what. -/
+  tyVarDefs : List (String × Span × String) := []
   deriving Inhabited
 
 /-- Enter the term binder with id `id`, naming it `name` (`none` for an
@@ -293,6 +300,12 @@ def Scope.enterTyVars (scope : Scope) (names : List String) : Scope :=
   { scope with
     k := scope.k + names.length
     tyVars := (names.zipIdx.map fun (name, i) => (name, scope.k + i)).reverse ++ scope.tyVars }
+
+/-- Record that `owner` binds the type variables `names` at `spans`. -/
+def Scope.defineTyVars (scope : Scope) (names : List String) (spans : List Span)
+    (owner : String) : Scope :=
+  { scope with tyVarDefs := (names.zip spans).reverse.map (fun (name, span) => (name, span, owner)) ++
+      scope.tyVarDefs }
 
 def Scope.origin (scope : Scope) (span : Span) (children : List Origin)
     (info : OriginInfo := {}) : Origin :=
@@ -337,7 +350,33 @@ structure NameInfo where
   tyVars : List (String × Nat) := []
   /-- A top-level `let`. -/
   topLevel : Bool := false
+  /-- Defined by a `let` (not a parameter or a match's pattern). -/
+  binding : Bool := false
   deriving Repr, Inhabited
+
+/-- What a name that is not a value refers to. -/
+inductive OccurrenceKind where
+  | type
+  | ctor
+  /-- A type variable that `owner` binds. -/
+  | tyVar (owner : String)
+  deriving Repr, Inhabited
+
+/-- A type, type variable or constructor name in the source, other than in a
+data declaration and other than a constructor in an expression (whose node
+records it). -/
+structure Occurrence where
+  name : String
+  span : Span
+  kind : OccurrenceKind
+  isDef : Bool := false
+  /-- Where a definition can be used. -/
+  scope : Span := span
+  deriving Repr, Inhabited
+
+/-- The span of `name` written at the start of `span`. -/
+def nameSpanAt (span : Span) (name : String) : Span :=
+  ⟨span.start, ⟨span.start.line, span.start.col + name.length⟩⟩
 
 /-- Lowering reads the declarations, counts the fresh hole names and binder
 ids it has made, and collects the uncovered cases and the names the source
@@ -352,6 +391,8 @@ structure LowerState where
   binders : Nat := 0
   /-- The value names the source defines. -/
   names : Array NameInfo := #[]
+  /-- The other names the source mentions (see `Occurrence`). -/
+  occurrences : Array Occurrence := #[]
 
 abbrev M := ReaderT Globals (StateT LowerState (Except LowerError))
 
@@ -360,6 +401,30 @@ def freshBinder : M Nat :=
 
 def recordName (info : NameInfo) : M Unit :=
   modify fun state => { state with names := state.names.push info }
+
+def recordOccurrence (occurrence : Occurrence) : M Unit :=
+  modify fun state => { state with occurrences := state.occurrences.push occurrence }
+
+mutual
+/-- Record the type names and type variables of an annotation. -/
+def recordTyNames (scope : Scope) : Ty → M Unit
+  | .hole _ | .namedHole _ _ | .unit _ => pure ()
+  | .var span name => do
+      if let some (_, owner) := scope.tyVarDefs.lookup name then
+        recordOccurrence { name, span, kind := .tyVar owner }
+  | .con span name args => do
+      recordOccurrence { name, span := nameSpanAt span name, kind := .type }
+      recordTyNamesList scope args
+  | .pair _ fst snd | .arrow _ fst snd => do
+      recordTyNames scope fst
+      recordTyNames scope snd
+
+def recordTyNamesList (scope : Scope) : List Ty → M Unit
+  | [] => pure ()
+  | ty :: rest => do
+      recordTyNames scope ty
+      recordTyNamesList scope rest
+end
 
 def findCtor (span : Span) (name : String) : M (CtorRef × Nat) := do
   match (← read).findCtor name with
@@ -373,6 +438,7 @@ def freshHole : M Template := do
 
 /-- Lower an annotation in `scope`: its type variables must be in scope. -/
 def lowerTemplate (scope : Scope) (ty : Ty) : M Template := do
+  recordTyNames scope ty
   let var (span : Span) (name : String) : M Template :=
     match scope.tyVars.lookup name with
     | some level => pure (.rigid level)
@@ -420,6 +486,7 @@ def resolvePattern : Pattern → M RPat
   | .ctor span name args => do
       let (ref, arity) ← findCtor span name
       if args.length ≠ arity then throw ⟨span, .patternArity name arity args.length⟩
+      recordOccurrence { name, span := nameSpanAt span name, kind := .ctor }
       pure (.ctor span name ref (← resolvePatterns args))
   | .pair span fst snd => do
       pure (.ctor span "Pair" pairRef [← resolvePattern fst, ← resolvePattern snd])
@@ -609,7 +676,8 @@ def lowerExpr : Nat → Scope → Expr → M Lowered
         pure (scope.list span (value.toList.map fun char => scope.leaf span (.lit (.char char))))
     | .var span name =>
         match scope.vars.lookup name with
-        | some level => pure (scope.varAt level, scope.origin span [] { use := some (name, "val") })
+        | some level => pure (scope.varAt level,
+            scope.origin span [] { use := some (name, "val"), useBinder := some (scope.idAt level) })
         | none => throw ⟨span, .unboundVariable name⟩
     | .ctor span name => do
         let (ref, _) ← findCtor span name
@@ -685,7 +753,8 @@ def lowerChain : Nat → Scope → Span → Bool → List (Binding × Expr) → 
         let binders := tyParams ++ ((binding.ann.map (·.binders)).getD [])
         if let some name := firstDuplicate binders then
           throw ⟨binding.span, .duplicateTypeParameter name⟩
-        let inner := scope.enterTyVars binders
+        let inner := (scope.enterTyVars binders).defineTyVars binders
+          (binding.tyParamSpans ++ ((binding.ann.map (·.binderSpans)).getD [])) name
         let annotated := !binders.isEmpty || params.any (·.ann.isSome) || binding.ann.isSome
         let template ← if annotated then
             some <$> headTemplate inner params (binding.ann.map (·.body))
@@ -694,7 +763,12 @@ def lowerChain : Nat → Scope → Span → Bool → List (Binding × Expr) → 
         let letId ← freshBinder
         let selfId ← freshBinder
         recordName { name := name, span := nameSpan, scope := block, binder := letId,
-                     tyParams := binders, tyVars := inner.tyVars, topLevel := topLevel }
+                     tyParams := binders, tyVars := inner.tyVars, topLevel := topLevel,
+                     binding := true }
+        for (tyVar, span) in binders.zip
+            (binding.tyParamSpans ++ ((binding.ann.map (·.binderSpans)).getD [])) do
+          recordOccurrence { name := tyVar, span, kind := .tyVar name, isDef := true,
+                             scope := binding.span.union rhs.span }
         let selfScope := if recursive then inner.bind name selfId else inner
         let params ← params.mapM fun param => do
           let id ← freshBinder
@@ -723,12 +797,21 @@ def lowerChain : Nat → Scope → Span → Bool → List (Binding × Expr) → 
         let binders := (binding.ann.map (·.binders)).getD []
         if let some name := firstDuplicate binders then
           throw ⟨binding.span, .duplicateTypeParameter name⟩
-        let inner := scope.enterTyVars binders
+        let binderSpans := (binding.ann.map (·.binderSpans)).getD []
+        let inner := (scope.enterTyVars binders).defineTyVars binders binderSpans "this let"
+        for (tyVar, span) in binders.zip binderSpans do
+          recordOccurrence { name := tyVar, span, kind := .tyVar "this let", isDef := true,
+                             scope := binding.span.union rhs.span }
         let template ← binding.ann.mapM fun ann => lowerTemplate inner ann.body
         let rhs' ← lowerExpr fuel inner rhs
         let id ← freshBinder
+        let named := (← get).names.size
         let tree ← compileMatch (scope.bind none id) binding.span [(scope.depth, binding.span)]
           [[pattern]] (fun _ => block) fun _ scope => lowerChain fuel scope block topLevel rest body
+        -- The pattern's variables are the first names recorded, before the body's.
+        let vars := pattern.vars.length
+        modify fun state => { state with names := state.names.mapIdx fun index info =>
+          if named ≤ index ∧ index < named + vars then { info with binding := true } else info }
         pure (.letIn (template.map (⟨binders.length, ·⟩)) rhs'.1 tree.1,
           inner.origin binding.span [rhs'.2, tree.2] { binder := some (id, .rhs) })
 end
@@ -749,6 +832,13 @@ structure Lowering where
   uncovered : List (Span × String)
   /-- The value names the program defines. -/
   names : List NameInfo
+  /-- The other names it mentions outside data declarations. -/
+  occurrences : List Occurrence
+  /-- The data declarations, the prelude's first: type `con i` is entry `i`. -/
+  decls : List DataDecl
+  /-- Doc comments, by the position of the name they document (filled in from
+  the comments, which lowering does not see). -/
+  docs : List (Pos × String) := []
 
 def lowerProgram (program : Program) : Except LowerError Lowering := do
   let (globals, sig) ← lowerDecls (preludeDecls ++ program.decls)
@@ -759,6 +849,6 @@ def lowerProgram (program : Program) : Except LowerError Lowering := do
   let ((term, origin), state) ←
     (lowerChain fuel {} everywhere true sorted program.body).run globals |>.run {}
   pure ⟨globals, sig, term, origin, program.body.span, state.uncovered.toList,
-    state.names.toList⟩
+    state.names.toList, state.occurrences.toList, preludeDecls ++ program.decls, []⟩
 
 end EPL.Surface

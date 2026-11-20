@@ -52,6 +52,7 @@ def _root_.EPL.Surface.Error.code : Error → String
   | .lower _ => "epl.lower"
   | .infer .. | .notAFunction .. => "epl.type"
   | .notExhaustive .. | .notExhaustiveUnlocated => "epl.coverage"
+  | .misplacedDoc _ => "epl.doc"
 
 /-- A span's fields with UTF-16 columns: `startLine`, ..., `endCol`, or
 `scopeStartLine`, ... with the prefix `scope`. -/
@@ -69,6 +70,8 @@ def _root_.EPL.Surface.Symbol.toJson (lines : Array String) (symbol : Symbol) : 
     ("kind", Json.str symbol.kind),
     ("type", Json.str symbol.ty),
     ("def", Json.bool symbol.isDef)] ++
+    (symbol.doc.map fun doc => [("doc", Json.str doc)]).getD [] ++
+    (symbol.declaration.map fun text => [("declaration", Json.str text)]).getD [] ++
     spanFields lines symbol.span ++ spanFields lines symbol.scope "scope"
 
 /-- The editor's class for a token. -/
@@ -86,7 +89,7 @@ def tokenRows (lines : Array String) (source : String) : Array Json :=
   | .error _ => #[]
   | .ok (tokens, comments) =>
       let rows := tokens.map (fun tok => (tok.span, tokenClass tok.token)) ++
-        comments.map (·, "comment")
+        comments.map (·.span, "comment")
       let before (a b : Span × String) : Bool :=
         a.1.start.line < b.1.start.line ||
           (a.1.start.line == b.1.start.line && a.1.start.col < b.1.start.col)

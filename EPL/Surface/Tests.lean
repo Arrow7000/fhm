@@ -194,4 +194,35 @@ def symbolsOf (source name : String) : List String :=
 #guard symbolsOf "match [1] with\n| [] -> 0\n| _ -> let z = 2 in z" "z" ==
   ["3:12 def Int", "3:21 use Int"]
 
+-- Types, type variables and constructors.
+#guard symbolsOf "type Box a = Box a\nlet open {a} (b : Box a) : a = match b with\n  | Box x -> x\nopen (Box 1)"
+    "Box" ==
+  ["4:7 use Int -> Box Int", "1:6 def type Box a =\n  | Box a", "1:14 def {a} a -> Box a",
+   "2:19 use type Box a =\n  | Box a", "3:5 use {a} a -> Box a"]
+#guard symbolsOf "type Box a = Box a\nlet open {a} (b : Box a) : a = match b with\n  | Box x -> x\nopen (Box 1)"
+    "a" ==
+  ["1:10 def type variable (of Box)", "1:18 use type variable (of Box)",
+   "2:23 use type variable (of open)", "2:28 use type variable (of open)",
+   "2:11 def type variable (of open)"]
+
+/-- The doc comments of the names defined in `source`: `name: doc`. -/
+def docsOf (source : String) : List String :=
+  match checkWithTypes source with
+  | .ok (lowering, _, types) =>
+      ((lowering.symbols types).filter (·.isDef)).toList.filterMap fun symbol =>
+        symbol.doc.map (s!"{symbol.name}: {·}")
+  | .error error => [error.render]
+
+-- A doc comment documents the `let`, type or constructor it comes before.
+#guard docsOf "--- The answer.\nlet answer = 42\nanswer" == ["answer: The answer."]
+#guard docsOf "/-- A shape.\n    Round or square. -/\ntype Shape =\n  --- Round.\n  | Circle Int\n  \
+    -- (an ordinary comment)\n  /-- Square. -/\n  | Square Int\nlet (x, y) =\n  --- Local.\n  \
+    let z = 1 in (z, z)\n(Circle x, Square y)" ==
+  ["z: Local.", "Shape: A shape.\nRound or square.", "Circle: Round.", "Square: Square."]
+#guard docsOf "type T = /-- First. -/ A | B\nA" == ["A: First."]
+-- Four dashes, or a slash and three, open an ordinary comment.
+#guard docsOf "---- no\n/--- no -/\nlet x = 1\nx" == []
+#guard runToString "let x = 1\n--- Nothing.\nx" ==
+  "2:1: a doc comment must come before a `let`, a `type` or a constructor"
+
 end EPL.Surface.Tests
