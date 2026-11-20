@@ -1,13 +1,15 @@
 #!/usr/bin/env bash
-# Watch a .fhm file and re-run the full FHM pipeline on each save.
+# Watch a .fhm or .epl file and re-run its language's pipeline on each save:
+# `fhm` for .fhm files, `epl` for .epl files.
 #
 # Usage:
 #   scripts/watch-live.sh                       # watches scratch/live.fhm
 #   scripts/watch-live.sh path/to/foo.fhm
+#   scripts/watch-live.sh path/to/foo.epl
 #
-# Rebuilds fhm at startup (and when a pipeline Lean source changes) if
-# the binary is missing or stale. Saving the .fhm file only re-runs the exe —
-# it does not scan unrelated FHM/*.lean scratch files.
+# Rebuilds the executable at startup (and when a pipeline Lean source changes)
+# if the binary is missing or stale. Saving the watched file only re-runs the
+# exe — it does not scan unrelated *.lean scratch files.
 
 set -euo pipefail
 
@@ -24,7 +26,7 @@ for arg in "$@"; do
   case "$arg" in
     -h|--help)
       echo "usage: scripts/watch-live.sh [path]"
-      echo "  no path: scratch/live.fhm"
+      echo "  path: a .fhm or .epl file (default: scratch/live.fhm)"
       exit 0
       ;;
     -*)
@@ -44,19 +46,32 @@ for arg in "$@"; do
 done
 FILE="${FILE:-scratch/live.fhm}"
 
-BIN=".lake/build/bin/fhm"
-
-# Lean sources that actually feed `fhm` (not scratch modules under FHM/).
-PIPELINE_SRCS=(
-  FHM/Unverified
-  FHM/Pretty.lean
-  FHM/SurfaceBridge.lean
-  FHM/InferW.lean
-  FHM/Core.lean
-  FHM/SurfaceLang.lean
-  FHM/Surface
-  lakefile.toml
-)
+# The executable for the file's language, and the Lean sources that feed it
+# (not scratch modules).
+case "$FILE" in
+  *.fhm)
+    TARGET="fhm"
+    PIPELINE_SRCS=(
+      FHM/Unverified
+      FHM/Pretty.lean
+      FHM/SurfaceBridge.lean
+      FHM/InferW.lean
+      FHM/Core.lean
+      FHM/SurfaceLang.lean
+      FHM/Surface
+      lakefile.toml
+    )
+    ;;
+  *.epl)
+    TARGET="epl"
+    PIPELINE_SRCS=(EPL lakefile.toml)
+    ;;
+  *)
+    echo "error: not supported: $FILE (expected a .fhm or .epl file)" >&2
+    exit 2
+    ;;
+esac
+BIN=".lake/build/bin/$TARGET"
 
 if [[ ! -f "$FILE" ]]; then
   echo "error: file not found: $FILE" >&2
@@ -74,8 +89,8 @@ needs_rebuild() {
 
 ensure_built() {
   if needs_rebuild; then
-    echo "building fhm…"
-    lake build fhm
+    echo "building ${TARGET}…"
+    lake build "$TARGET"
   fi
 }
 
@@ -110,6 +125,7 @@ if command -v entr >/dev/null 2>&1; then
     cd '$ROOT'
     BIN='$BIN'
     FILE='$FILE'
+    TARGET='$TARGET'
     needs_rebuild() {
       if [[ ! -x \"\$BIN\" ]]; then return 0; fi
       local newest
@@ -117,12 +133,13 @@ if command -v entr >/dev/null 2>&1; then
       [[ -n \"\$newest\" ]]
     }
     if needs_rebuild; then
-      echo 'building fhm…'
-      lake build fhm
+      echo \"building \${TARGET}…\"
+      lake build \"\$TARGET\"
     fi
     \"\$BIN\" \"\$FILE\"
+    code=\$?
     echo
-    echo \"(exit \$?)\"
+    echo \"(exit \$code)\"
   "
 elif command -v fswatch >/dev/null 2>&1; then
   fswatch -o "$FILE" "${PIPELINE_SRCS[@]}" | while read -r _; do

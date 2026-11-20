@@ -268,6 +268,7 @@ For a REPL-like loop that re-runs the program every time you save:
 ```bash
 scripts/watch-live.sh                     # watches scratch/live.fhm
 scripts/watch-live.sh path/to/program.fhm
+scripts/watch-live.sh path/to/program.epl   # .epl files run with `epl`
 ```
 
 This uses `entr` or `fswatch` if available and falls back to polling.
