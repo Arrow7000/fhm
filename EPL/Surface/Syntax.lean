@@ -70,14 +70,14 @@ inductive Pattern where
   | ctor (span : Span) (name : String) (args : List Pattern)
   /-- `(p, q)` -/
   | pair (span : Span) (fst snd : Pattern)
-  /-- `p :: q` -/
-  | cons (span : Span) (head tail : Pattern)
+  /-- `p :: q`; `opSpan` is the `::`'s. -/
+  | cons (span : Span) (opSpan : Span) (head tail : Pattern)
   /-- `[p, q, ...]` -/
   | list (span : Span) (items : List Pattern)
   deriving Repr, Inhabited
 
 def Pattern.span : Pattern → Span
-  | .wildcard span | .var span _ | .ctor span _ _ | .pair span _ _ | .cons span _ _
+  | .wildcard span | .var span _ | .ctor span _ _ | .pair span _ _ | .cons span ..
   | .list span _ => span
 
 mutual
@@ -87,7 +87,7 @@ def Pattern.vars : Pattern → List String
   | .var _ name => [name]
   | .ctor _ _ args => Pattern.varsList args
   | .pair _ fst snd => fst.vars ++ snd.vars
-  | .cons _ head tail => head.vars ++ tail.vars
+  | .cons _ _ head tail => head.vars ++ tail.vars
   | .list _ items => Pattern.varsList items
 
 def Pattern.varsList : List Pattern → List String
@@ -106,6 +106,9 @@ inductive BinOp where
   /-- `::`, the prelude's `Cons` -/
   | cons
   deriving DecidableEq, Repr, Inhabited
+
+def BinOp.describe : BinOp → String
+  | .add => "+" | .sub => "-" | .lt => "<" | .cons => "::"
 
 /-- A lambda parameter: a pattern, optionally annotated: `x`, `(x : Int)`,
 `(a, b)`, `((a, b) : (Int, Int))`. -/
@@ -163,7 +166,8 @@ inductive Expr where
   | var (span : Span) (name : String)
   /-- A constructor, unapplied (`True`, `Just`, ...). -/
   | ctor (span : Span) (name : String)
-  | binOp (span : Span) (op : BinOp) (left right : Expr)
+  /-- `left op right`; `opSpan` is the operator's. -/
+  | binOp (span : Span) (op : BinOp) (opSpan : Span) (left right : Expr)
   /-- `(a, b)` -/
   | pair (span : Span) (fst snd : Expr)
   /-- `[a, b, ...]` -/
@@ -180,7 +184,7 @@ inductive Expr where
 
 def Expr.span : Expr → Span
   | .int span _ | .char span _ | .string span _ | .unit span | .var span _ | .ctor span _
-  | .binOp span _ _ _ | .pair span _ _ | .list span _ | .lambda span _ _ | .app span _ _
+  | .binOp span .. | .pair span _ _ | .list span _ | .lambda span _ _ | .app span _ _
   | .letIn span _ _ | .ite span _ _ _ | .match span _ _ => span
 
 /-- A constructor declaration `C field ...`. Its span starts at its name. -/
@@ -224,7 +228,7 @@ mutual
 def Expr.freeVars : Expr → List String
   | .int .. | .char .. | .string .. | .unit _ | .ctor .. => []
   | .var _ name => [name]
-  | .binOp _ _ left right => left.freeVars ++ right.freeVars
+  | .binOp _ _ _ left right => left.freeVars ++ right.freeVars
   | .pair _ fst snd => fst.freeVars ++ snd.freeVars
   | .list _ items => Expr.freeVarsList items
   | .lambda _ param body =>
@@ -260,7 +264,7 @@ mutual
 def Pattern.size : Pattern → Nat
   | .wildcard _ | .var .. => 1
   | .ctor _ _ args => Pattern.sizeList args + 1
-  | .pair _ fst snd | .cons _ fst snd => fst.size + snd.size + 1
+  | .pair _ fst snd | .cons _ _ fst snd => fst.size + snd.size + 1
   | .list _ items => Pattern.sizeList items + 1
 
 def Pattern.sizeList : List Pattern → Nat
@@ -273,7 +277,7 @@ mutual
 lowering. -/
 def Expr.size : Expr → Nat
   | .int .. | .char .. | .string .. | .unit _ | .var .. | .ctor .. => 1
-  | .binOp _ _ left right => left.size + right.size + 1
+  | .binOp _ _ _ left right => left.size + right.size + 1
   | .pair _ fst snd => fst.size + snd.size + 1
   | .list _ items => Expr.sizeList items + 1
   | .lambda _ param body => param.pattern.size + body.size + 1

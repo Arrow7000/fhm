@@ -270,9 +270,9 @@ def pattern : Nat → P Pattern
   | 0 => tooDeep
   | n + 1 => do
     let head ← patApp n
-    if (← accept (.op .cons)).isSome then
+    if let some op ← accept (.op .cons) then
       let tail ← pattern n
-      return .cons (head.span.union tail.span) head tail
+      return .cons (head.span.union tail.span) op.span head tail
     return head
 end
 
@@ -391,7 +391,7 @@ def infixExpr : Nat → P Expr
       | _ => appExpr n
     if let some next ← peek then
       if (binOpOf next.token).isSome then throw ⟨next.span, .infixChain⟩
-    return .binOp (left.span.union right.span) op left right
+    return .binOp (left.span.union right.span) op opTok.span left right
 
 def appExpr : Nat → P Expr
   | 0 => tooDeep

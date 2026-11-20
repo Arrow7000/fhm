@@ -113,8 +113,13 @@ function definition(line, character) {
   assert.equal(hover(4, 7), "```epl\nwrap : Int -> Maybe Int\n```\n\n---\n\nWrap it.");
   assert.equal(hover(5, 3), "```epl\nJust : {a} a -> Maybe a\n```\n\n---\n\n" + maybe);
   assert.deepEqual(definition(5, 3), [1, 15, 1, 19]);
+  assert.deepEqual(await update("let f x y = x + y\nmatch f 1 2 :: [] with\n| n :: _ -> n < 3\n| [] -> False\n"), []);
+  assert.equal(hover(0, 14), "```epl\n(+) : Int -> Int -> Int\n```");
+  assert.equal(hover(1, 12), "```epl\n(::) : Int -> List Int -> List Int\n```");
+  assert.equal(hover(2, 4), "```epl\n(::) : {a} a -> List a -> List a\n```");
+  assert.equal(hover(2, 14), "```epl\n(<) : Int -> Int -> Bool\n```");
   assert.deepEqual(await update("let x = 1\n--- Nothing here.\nx\n"), [
     { message: "A doc comment must come before a `let`, a `type` or a constructor.", range: [1, 0, 1, 17] },
   ]);
-  console.log("VS Code EPL integration: PASS (7 real-backend scenarios)");
+  console.log("VS Code EPL integration: PASS (8 real-backend scenarios)");
 })().catch(err => { console.error(err); process.exit(1); });

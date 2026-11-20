@@ -266,8 +266,9 @@ name the source defines has its binder's type. -/
 /-- A span of the source with its type, for hover and go-to-definition. -/
 structure Symbol where
   name : String
-  /-- `"val"` for a value, `"ctor"` for a constructor, `"type"` for a type,
-  `"param"` for a type variable, `"expr"` for an expression. -/
+  /-- `"val"` for a value, `"ctor"` for a constructor, `"op"` for an infix
+  operator, `"type"` for a type, `"param"` for a type variable, `"expr"` for an
+  expression. -/
   kind : String
   /-- The type; a type's declaration; for a type variable, what binds it. -/
   ty : String
@@ -425,6 +426,9 @@ def Lowering.occurrenceSymbol (lowering : Lowering) (occurrence : Occurrence) : 
       { base with ty, doc }
   | .ctor => { base with kind := "ctor" }
   | .tyVar owner => { base with kind := "param", ty := s!"type variable (of {owner})" }
+  | .op ctor =>
+      { base with kind := "op", ty := ((lowering.ctorDecl? ctor).map fun (decl, ctor) =>
+                                        decl.ctorTy ctor).getD "" }
 
 /-- Fill in a constructor's declaration and doc, and its type if missing. -/
 def Lowering.withCtorInfo (lowering : Lowering) (symbol : Symbol) : Symbol :=
@@ -487,9 +491,6 @@ def Lowering.bindingTypes (lowering : Lowering) (symbols : Array Symbol) :
 def Keyword.describe : Keyword → String
   | .let => "let" | .in => "in" | .match => "match" | .with => "with"
   | .if => "if" | .then => "then" | .else => "else" | .type => "type"
-
-def BinOp.describe : BinOp → String
-  | .add => "+" | .sub => "-" | .lt => "<" | .cons => "::"
 
 def Punct.describe : Punct → String
   | .lparen => "(" | .rparen => ")" | .lbrace => "{" | .rbrace => "}"

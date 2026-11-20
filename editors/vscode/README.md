@@ -36,7 +36,7 @@ language in `EPL/` (same syntax as FHM, plus string literals):
 
 - **Syntax highlighting**, from a grammar derived from FHM's (`scripts/gen-fhm-tmgrammar.sh` writes both).
 - **Diagnostics on edit**: the program's first error, from `epl diagnose`.
-- **Hover and go-to-definition** while the program type checks: a name shows the type it has there (`id : Int -> Int` at a use, `id : {a} a -> a` at its definition), and other expressions show their type. Types and constructors show their declaration, and type variables what binds them. Doc comments work as in FHM.
+- **Hover and go-to-definition** while the program type checks: a name shows the type it has there (`id : Int -> Int` at a use, `id : {a} a -> a` at its definition), an infix operator shows the type it is used at (`(::) : Int -> List Int -> List Int`), and other expressions show their type. Types and constructors show their declaration, and type variables what binds them. Doc comments work as in FHM.
 - **`EPL: Run File`** (the ▶ button in the editor title, or Cmd+Alt+R / Ctrl+Alt+R) runs the buffer with `epl run` and prints each top-level binding's type and the program's, then its value (or the error), in the EPL output channel.
 
 Build the binary with `lake build epl`. Settings: `epl.path` (default: the workspace's `.lake/build/bin/epl`), `epl.diagnostics.enable`, `epl.diagnostics.debounceMs`, and `epl.run.fuel` (evaluation steps, default 1000000). Try `EPL/examples/playground.epl`.

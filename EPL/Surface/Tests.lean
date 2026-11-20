@@ -205,6 +205,12 @@ def symbolsOf (source name : String) : List String :=
    "2:23 use type variable (of open)", "2:28 use type variable (of open)",
    "2:11 def type variable (of open)"]
 
+-- Operators: at the type they are used at; `::` in a pattern, at its scheme.
+#guard symbolsOf "let f x y = x + y\nf 1 2 < 3" "+" == ["1:15 use Int -> Int -> Int"]
+#guard symbolsOf "let f x y = x + y\nf 1 2 < 3" "<" == ["2:7 use Int -> Int -> Bool"]
+#guard symbolsOf "match True :: [] with\n| x :: _ -> x\n| [] -> False" "::" ==
+  ["1:12 use Bool -> List Bool -> List Bool", "2:5 use {a} a -> List a -> List a"]
+
 /-- The doc comments of the names defined in `source`: `name: doc`. -/
 def docsOf (source : String) : List String :=
   match checkWithTypes source with

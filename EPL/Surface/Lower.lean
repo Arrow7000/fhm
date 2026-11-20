@@ -50,8 +50,8 @@ inductive BinderTy where
 structure OriginInfo where
   /-- The node is the value of the surface expression at this span. -/
   expr : Option Span := none
-  /-- The node is a use of this name, a value (`"val"`) or a constructor
-  (`"ctor"`), written at the node's span. -/
+  /-- The node is a use of this name, a value (`"val"`), a constructor
+  (`"ctor"`) or an infix operator (`"op"`), written at the node's span. -/
   use : Option (String × String) := none
   /-- The binder id of the value a `"val"` use refers to. -/
   useBinder : Option Nat := none
@@ -360,9 +360,11 @@ inductive OccurrenceKind where
   | ctor
   /-- A type variable that `owner` binds. -/
   | tyVar (owner : String)
+  /-- An infix operator in a pattern, standing for constructor `ctor`. -/
+  | op (ctor : String)
   deriving Repr, Inhabited
 
-/-- A type, type variable or constructor name in the source, other than in a
+/-- A type, type variable, constructor name or operator in the source, other than in a
 data declaration and other than a constructor in an expression (whose node
 records it). -/
 structure Occurrence where
@@ -490,7 +492,8 @@ def resolvePattern : Pattern → M RPat
       pure (.ctor span name ref (← resolvePatterns args))
   | .pair span fst snd => do
       pure (.ctor span "Pair" pairRef [← resolvePattern fst, ← resolvePattern snd])
-  | .cons span head tail => do
+  | .cons span opSpan head tail => do
+      recordOccurrence { name := BinOp.cons.describe, span := opSpan, kind := .op "Cons" }
       pure (.ctor span "Cons" consRef [← resolvePattern head, ← resolvePattern tail])
   | .list span items => do
       let items ← resolvePatterns items
@@ -682,7 +685,7 @@ def lowerExpr : Nat → Scope → Expr → M Lowered
     | .ctor span name => do
         let (ref, _) ← findCtor span name
         pure (.ctor ref, scope.origin span [] { use := some (name, "ctor") })
-    | .binOp span op left right => do
+    | .binOp span op opSpan left right => do
         let left ← lowerExpr fuel scope left
         let right ← lowerExpr fuel scope right
         let head : Source := match op with
@@ -690,7 +693,8 @@ def lowerExpr : Nat → Scope → Expr → M Lowered
           | .sub => .primOp .intSub
           | .lt => .primOp .intLt
           | .cons => .ctor consRef
-        pure (scope.apps span (scope.leaf span head) [left, right])
+        let head := (head, scope.origin opSpan [] { use := some (op.describe, "op") })
+        pure (scope.apps span head [left, right])
     | .pair span fst snd => do
         let fst ← lowerExpr fuel scope fst
         let snd ← lowerExpr fuel scope snd

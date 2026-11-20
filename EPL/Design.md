@@ -226,10 +226,10 @@ Lowering (`Lower.lean`) produces the core term and signature:
   is reported at its argument (parameter type against argument type), or at
   its function if that is not a function.
 - Each `Origin` node also records what the core node is in the source: the
-  value of a surface expression, a use of a name, or the binder of a
-  variable. Lowering lists every name the source defines with the binder it
-  stands for, and the type names, type variables and pattern constructors it
-  mentions.
+  value of a surface expression, a use of a name or an infix operator, or the
+  binder of a variable. Lowering lists every name the source defines with the
+  binder it stands for, and the type names, type variables, pattern
+  constructors and pattern `::`s it mentions.
 
 Types for editors come from inference itself: `inferWithTypes` also returns a
 `TypeTree`, the type of every core node in the term's shape
