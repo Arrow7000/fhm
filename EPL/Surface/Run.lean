@@ -1,0 +1,273 @@
+import EPL.Theorems
+import EPL.Surface.Parse
+import EPL.Surface.Lower
+
+/-!
+# Running surface programs
+
+`check` lexes, parses, lowers and infers a program; `run` also evaluates it
+with the core's proof-carrying `evaluate`. Both stop at the first error, which
+`Error.render` prints with its source position. Inference errors are located
+by following their path through the lowering's `Origin` tree.
+-/
+
+namespace EPL.Surface
+
+inductive Error where
+  | lex (error : LexError)
+  | parse (error : ParseError)
+  | lower (error : LowerError)
+  /-- Inference rejected the program at `span`, with type variables `tyVars` in
+  scope there. -/
+  | infer (globals : Globals) (span : Span) (tyVars : List (String × Nat)) (error : InferError)
+  /-- The program is well typed but one of its matches is not exhaustive. -/
+  | notExhaustive
+  deriving Repr
+
+def frontEnd (source : String) : Except Error Lowering := do
+  let tokens ← (lex source).mapError .lex
+  let program ← (parseProgram tokens).mapError .parse
+  (lowerProgram program).mapError .lower
+
+/-- Locate an inference error. The program's undetermined type is reported at
+its final expression. -/
+def Lowering.inferError (lowering : Lowering) (error : InferError) : Error :=
+  let origin := lowering.origin.locate error.path
+  match error.reason with
+  | .undeterminedType _ => .infer lowering.globals lowering.body [] error
+  | _ => .infer lowering.globals origin.span origin.tyVars error
+
+/-- Infer the type of a program. -/
+def check (source : String) : Except Error (Lowering × InferenceResult) := do
+  let lowering ← frontEnd source
+  let result ← (infer lowering.sig lowering.term).mapError lowering.inferError
+  pure (lowering, result)
+
+/-- Infer the type of a program and run it for at most `fuel` steps: its value
+(`none` if fuel ran out) and type. -/
+def run (source : String) (fuel : Nat := 100000) :
+    Except Error (Lowering × Option RuntimeExpr × SemTy) := do
+  let lowering ← frontEnd source
+  match evaluate lowering.sig lowering.term fuel with
+  | .error (.rejected error) => throw (lowering.inferError error)
+  | .error .notExhaustive => throw .notExhaustive
+  | .ok ⟨result, outcome⟩ => pure (lowering, outcome.value?, result.ty)
+
+/-! ## Printing -/
+
+def parens (cond : Bool) (text : String) : String := if cond then s!"({text})" else text
+
+/-- A type, at precedence `prec` (0: anywhere, 1: function position or arrow
+domain, 2: argument). -/
+def showTy (globals : Globals) (var : V → String) (rigid : Nat → String) :
+    Nat → EPL.Ty V → String
+  | _, .prim .int => "Int"
+  | _, .prim .char => "Char"
+  | _, .prim .unit => "Unit"
+  | prec, .arrow domain codomain =>
+      parens (prec ≥ 1) s!"{showTy globals var rigid 1 domain} -> {showTy globals var rigid 0 codomain}"
+  | _, .app (.app (.con 2) fst) snd =>
+      s!"({showTy globals var rigid 0 fst}, {showTy globals var rigid 0 snd})"
+  | prec, .app function argument =>
+      parens (prec ≥ 2)
+        s!"{showTy globals var rigid 1 function} {showTy globals var rigid 2 argument}"
+  | _, .con id => globals.typeName id
+  | _, .bvar index => s!"#{index}"
+  | _, .rigid level => rigid level
+  | _, .var v => var v
+
+/-- The name of rigid level `level` among `tyVars`. -/
+def rigidName (tyVars : List (String × Nat)) (level : Nat) : String :=
+  ((tyVars.find? (·.2 == level)).map (·.1)).getD s!"'{level}"
+
+def showSemTy (globals : Globals) (ty : SemTy) : String :=
+  showTy globals Empty.elim (rigidName []) 0 ty
+
+def showInfTy (globals : Globals) (tyVars : List (String × Nat)) (ty : InfTy) : String :=
+  showTy globals (fun id => s!"?{id}") (rigidName tyVars) 0 ty
+
+/-- A printed value, with what printing it inside another value needs. -/
+inductive Shown where
+  | atom (text : String)
+  /-- An application, parenthesized as an argument. -/
+  | compound (text : String)
+  | char (value : Char)
+  /-- A complete list. -/
+  | list (items : List String)
+  /-- A complete nonempty list of characters. -/
+  | string (value : String)
+
+def Shown.text : Shown → String
+  | .atom text | .compound text => text
+  | .char value => toString (repr value)
+  | .list items => "[" ++ ", ".intercalate items ++ "]"
+  | .string value => toString (repr value)
+
+def Shown.arg : Shown → String
+  | .compound text => s!"({text})"
+  | shown => shown.text
+
+/-- Print the head of an application spine applied to `args`. Partial
+applications and functions print as `<function>`. -/
+def showValueAux (globals : Globals) : RuntimeExpr → List Shown → Shown
+  | .app function argument, args =>
+      showValueAux globals function (showValueAux globals argument [] :: args)
+  | .ctor ref, args =>
+      let arity := ((globals.types[ref.type]?).bind (·.ctors[ref.index]?) |>.map (·.2)).getD 0
+      if args.length ≠ arity then .atom "<function>"
+      else if ref = nilRef then .list []
+      else if ref = consRef then
+        match args with
+        | [.char char, .list []] => .string (String.singleton char)
+        | [.char char, .string rest] => .string (String.singleton char ++ rest)
+        | [head, .list items] => .list (head.text :: items)
+        | [head, .string rest] => .list (head.text :: rest.toList.map fun char => toString (repr char))
+        | _ => .compound (" :: ".intercalate (args.map Shown.arg))
+      else if ref = pairRef then .atom ("(" ++ ", ".intercalate (args.map Shown.text) ++ ")")
+      else if args.isEmpty then .atom (globals.ctorName ref)
+      else .compound (" ".intercalate (globals.ctorName ref :: args.map Shown.arg))
+  | .lit (.int value), [] => .atom (toString value)
+  | .lit (.char value), [] => .char value
+  | .lit .unit, [] => .atom "()"
+  | _, _ => .atom "<function>"
+
+def showValue (globals : Globals) (value : RuntimeExpr) : String :=
+  (showValueAux globals value []).text
+
+/-! ## Error messages -/
+
+def Keyword.describe : Keyword → String
+  | .let => "let" | .in => "in" | .match => "match" | .with => "with"
+  | .if => "if" | .then => "then" | .else => "else" | .type => "type"
+
+def BinOp.describe : BinOp → String
+  | .add => "+" | .sub => "-" | .lt => "<" | .cons => "::"
+
+def Punct.describe : Punct → String
+  | .lparen => "(" | .rparen => ")" | .lbrace => "{" | .rbrace => "}"
+  | .lbrack => "[" | .rbrack => "]" | .comma => "," | .colon => ":"
+  | .eq => "=" | .pipe => "|" | .arrow => "->" | .backslash => "\\"
+  | .underscore => "_"
+
+def quote [Repr α] (value : α) : String := toString (repr value)
+
+def Token.describe : Token → String
+  | .ident name _ => s!"`{name}`"
+  | .namedHole name => s!"`?{name}`"
+  | .keyword kw => s!"`{kw.describe}`"
+  | .int value => s!"`{value}`"
+  | .char value => s!"`{quote value}`"
+  | .string value => s!"`{quote value}`"
+  | .op o => s!"`{o.describe}`"
+  | .punct p => s!"`{p.describe}`"
+
+def Expected.describe : Expected → String
+  | .token tok => tok.describe
+  | .expression => "an expression"
+  | .pattern => "a pattern"
+  | .type => "a type"
+  | .parameter => "a parameter"
+  | .typeName => "a type name"
+  | .constructorName => "a constructor name"
+  | .typeParameter => "a type parameter"
+  | .endOfInput => "the end of the input"
+
+def LexErrorReason.describe : LexErrorReason → String
+  | .tab => "tabs are not allowed"
+  | .unexpectedChar char => s!"unexpected character {quote char}"
+  | .unterminatedComment => "unterminated block comment"
+  | .unterminatedChar => "unterminated character literal"
+  | .unterminatedString => "unterminated string literal"
+  | .badEscape => "unknown escape sequence"
+
+def ParseErrorReason.describe : ParseErrorReason → String
+  | .expected what (some found) => s!"expected {what.describe}, found {found.describe}"
+  | .expected what none => s!"expected {what.describe}, found the end of the input"
+  | .infixChain => "operators do not chain: add parentheses"
+  | .offside col => s!"this must be indented past column {col}"
+  | .tooDeep => "the program is nested too deeply"
+
+def LowerErrorReason.describe : LowerErrorReason → String
+  | .unboundVariable name => s!"unbound variable `{name}`"
+  | .unknownConstructor name => s!"unknown constructor `{name}`"
+  | .unknownType name => s!"unknown type `{name}`"
+  | .unboundTypeVariable name => s!"type variable `{name}` is not in scope"
+  | .typeArity name expected actual =>
+      s!"`{name}` takes {expected} type argument(s), but is given {actual}"
+  | .patternArity name expected actual =>
+      s!"`{name}` has {expected} field(s), but the pattern has {actual}"
+  | .foreignPattern ctor type => s!"`{ctor}` is not a constructor of `{type}`"
+  | .holeInDeclaration => "data declarations cannot have type holes"
+  | .duplicateType name => s!"type `{name}` is already declared"
+  | .duplicateConstructor name => s!"constructor `{name}` is already declared"
+  | .duplicateTypeParameter name => s!"type parameter `{name}` is bound twice"
+  | .duplicatePatternVariable name => s!"`{name}` is bound twice in this pattern"
+  | .duplicateBinding name => s!"`{name}` is defined twice"
+  | .mutualRecursion names =>
+      s!"mutual recursion is not supported: {", ".intercalate names}"
+  | .recursivePattern names =>
+      s!"a pattern binding cannot be recursive: {", ".intercalate names}"
+  | .redundantArm => "this arm is unreachable"
+  | .tooDeep => "the program is nested too deeply"
+
+/-- A hole's name as written: fresh names stand for `_`. -/
+def holeName (name : String) : String :=
+  if name.startsWith "_" then "_" else s!"?{name}"
+
+def _root_.EPL.UnifyError.describe (showTy : InfTy → String) : UnifyError → String
+  | .clash left right => s!"`{showTy left}` is not `{showTy right}`"
+  | .occurs id ty => s!"`?{id}` would be the infinite type `{showTy ty}`"
+  | .escape id ty => s!"`?{id}` cannot be `{showTy ty}`: a type variable would escape its scope"
+  | .outOfFuel => "unification ran out of fuel"
+
+def _root_.EPL.InferErrorReason.describe (showTy : InfTy → String) : InferErrorReason → String
+  | .unboundVar => "unbound variable"
+  | .unknownCtor => "unknown constructor"
+  | .noBool => "comparisons need `Bool`"
+  | .illScopedAnnotation => "this annotation mentions a type variable that is not in scope"
+  | .emptyMatch => "a match needs an arm"
+  | .unknownType => "unknown type in a pattern"
+  | .foreignPattern => "this pattern's type differs from the others'"
+  | .mismatch expected actual cause =>
+      s!"type mismatch: expected `{showTy expected}`, found `{showTy actual}` \
+        ({cause.describe showTy})"
+  | .ambiguousSignature holes =>
+      s!"the definition does not determine {", ".intercalate (holes.map holeName)} in its signature"
+  | .undeterminedType ty => s!"the program's type `{showTy ty}` is not determined"
+  | .undeterminedAnnotation ty => s!"this binder's type `{showTy ty}` is not determined"
+
+def Error.span : Error → Option Span
+  | .lex error => some ⟨error.pos, error.pos⟩
+  | .parse error => some error.span
+  | .lower error => some error.span
+  | .infer _ span .. => some span
+  | .notExhaustive => none
+
+def Error.message : Error → String
+  | .lex error => error.reason.describe
+  | .parse error => error.reason.describe
+  | .lower error => error.reason.describe
+  | .infer globals _ tyVars error => error.reason.describe (showInfTy globals tyVars)
+  | .notExhaustive => "a match does not cover every case"
+
+/-- `line:col: message` -/
+def Error.render (error : Error) : String :=
+  match error.span with
+  | some span => s!"{span.start.line}:{span.start.col}: {error.message}"
+  | none => error.message
+
+/-- `value : type`, `<running> : type` if fuel ran out, or the error. -/
+def runToString (source : String) (fuel : Nat := 100000) : String :=
+  match run source fuel with
+  | .ok (lowering, value, ty) =>
+      let value := (value.map (showValue lowering.globals)).getD "<running>"
+      s!"{value} : {showSemTy lowering.globals ty}"
+  | .error error => error.render
+
+/-- The program's type, or the error. -/
+def checkToString (source : String) : String :=
+  match check source with
+  | .ok (lowering, result) => showSemTy lowering.globals result.ty
+  | .error error => error.render
+
+end EPL.Surface

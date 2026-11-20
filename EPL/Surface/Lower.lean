@@ -1,0 +1,635 @@
+import EPL.Infer
+import EPL.Surface.Syntax
+
+/-!
+# Lowering
+
+`lowerProgram` translates a surface `Program` to a core signature and a core
+`Source` term, or reports the first problem with a typed `LowerError`.
+
+* **Data.** The prelude declares `Bool` (declaration 0, as the core requires),
+  `List` and `Pair`; user declarations follow, in order. Pairs, lists, strings,
+  `::` and `if` are sugar for the prelude's constructors.
+* **Names.** Term variables become de Bruijn indices, constructors `CtorRef`s,
+  type names `Ty.con`s (checked against their arity), type variables rigid
+  levels, and each `_` in an annotation a hole with a fresh name.
+* **Bindings.** The bindings of a block (and the top level) may refer to each
+  other in any order; they are sorted so that each comes after those it uses.
+  Mutual recursion is rejected. A binding that mentions itself becomes a `fix`.
+  A binding with any annotation (`{a}` binders, an annotated parameter, or a
+  result type) becomes an explicit `let` whose signature is its head:
+  `let f {a} (x : a) y : R = e` has signature `forall a. a -> _ -> R`. A
+  binding without one is a monomorphic `let`.
+* **Patterns.** Matches with nested patterns, wildcards and variables are
+  compiled to nested core matches on one constructor at a time (a decision
+  tree), splitting on the leftmost column whose first row is a constructor.
+  An arm that no input reaches is rejected. A constructor no row covers is left
+  out, so the core match is partial (and `evaluate` rejects the program).
+* **Origins.** Alongside the term, lowering builds an `Origin` tree of the same
+  shape that records each core node's source span, so an `InferError`'s path
+  leads to a span.
+-/
+
+namespace EPL.Surface
+
+/-! ## Origins -/
+
+/-- A core term's source spans: one node per core node, with a child per core
+child (see `ExprStep.child`), and the type variables in scope by name. -/
+inductive Origin where
+  | node (span : Span) (tyVars : List (String × Nat)) (children : List Origin)
+  deriving Repr, Inhabited
+
+def Origin.span : Origin → Span
+  | .node span .. => span
+
+def Origin.tyVars : Origin → List (String × Nat)
+  | .node _ tyVars _ => tyVars
+
+/-- The child a step goes to, in `Origin.node`'s list: a match's scrutinee is
+child 0 and branch `i` is child `i + 1`. -/
+def _root_.EPL.ExprStep.child : ExprStep → Nat
+  | .lambdaBody | .appFunction | .letRhs | .fixBody | .matchScrutinee => 0
+  | .appArgument | .letBody => 1
+  | .matchBranch index => index + 1
+
+/-- The origin of the node at `path`. -/
+def Origin.locate : Origin → List ExprStep → Origin
+  | origin, [] => origin
+  | origin@(.node _ _ children), step :: path =>
+      match children[step.child]? with
+      | some child => child.locate path
+      | none => origin
+
+/-! ## Errors -/
+
+inductive LowerErrorReason where
+  | unboundVariable (name : String)
+  | unknownConstructor (name : String)
+  | unknownType (name : String)
+  | unboundTypeVariable (name : String)
+  /-- A type applied to the wrong number of arguments. -/
+  | typeArity (name : String) (expected actual : Nat)
+  /-- A constructor pattern with the wrong number of fields. -/
+  | patternArity (name : String) (expected actual : Nat)
+  /-- Constructor `ctor` where the other patterns are of type `type`. -/
+  | foreignPattern (ctor type : String)
+  /-- `_` or `?a` in a data declaration. -/
+  | holeInDeclaration
+  | duplicateType (name : String)
+  | duplicateConstructor (name : String)
+  | duplicateTypeParameter (name : String)
+  | duplicatePatternVariable (name : String)
+  /-- Two top-level bindings of the same name. -/
+  | duplicateBinding (name : String)
+  /-- These bindings refer to each other in a cycle. -/
+  | mutualRecursion (names : List String)
+  /-- A pattern binding whose right-hand side mentions these of its names. -/
+  | recursivePattern (names : List String)
+  /-- No input reaches this match arm: earlier arms cover it. -/
+  | redundantArm
+  /-- Unreachable: lowering always has enough fuel. -/
+  | tooDeep
+  deriving DecidableEq, Repr
+
+structure LowerError where
+  span : Span
+  reason : LowerErrorReason
+  deriving DecidableEq, Repr
+
+/-! ## Declarations -/
+
+/-- A declared type: its name, parameter count, and constructors' names and
+field counts. -/
+structure TypeInfo where
+  name : String
+  params : Nat
+  ctors : List (String × Nat)
+  deriving Repr, Inhabited
+
+/-- The declared types; type `con i` is entry `i`. -/
+structure Globals where
+  types : List TypeInfo
+  deriving Repr, Inhabited
+
+def Globals.findType (globals : Globals) (name : String) : Option (Nat × TypeInfo) :=
+  (globals.types.zipIdx.find? (·.1.name == name)).map fun (info, id) => (id, info)
+
+/-- A constructor's reference and field count. -/
+def Globals.findCtor (globals : Globals) (name : String) : Option (CtorRef × Nat) :=
+  globals.types.zipIdx.findSome? fun (info, type) =>
+    (info.ctors.zipIdx.find? (·.1.1 == name)).map fun ((_, arity), index) => (⟨type, index⟩, arity)
+
+def Globals.typeName (globals : Globals) (type : Nat) : String :=
+  ((globals.types[type]?).map (·.name)).getD s!"#{type}"
+
+def Globals.ctorName (globals : Globals) (ref : CtorRef) : String :=
+  ((globals.types[ref.type]?).bind (·.ctors[ref.index]?) |>.map (·.1)).getD s!"#{ref.type}.{ref.index}"
+
+private def noSpan : Span := default
+
+/-- `type Bool = True | False`, `type List a = Nil | Cons a (List a)`,
+`type Pair a b = Pair a b`. -/
+def preludeDecls : List DataDecl :=
+  [⟨noSpan, "Bool", [], [⟨noSpan, "True", []⟩, ⟨noSpan, "False", []⟩]⟩,
+   ⟨noSpan, "List", ["a"], [⟨noSpan, "Nil", []⟩,
+      ⟨noSpan, "Cons", [.var noSpan "a", .con noSpan "List" [.var noSpan "a"]]⟩]⟩,
+   ⟨noSpan, "Pair", ["a", "b"], [⟨noSpan, "Pair", [.var noSpan "a", .var noSpan "b"]⟩]⟩]
+
+def trueRef : CtorRef := ⟨0, 0⟩
+def falseRef : CtorRef := ⟨0, 1⟩
+def nilRef : CtorRef := ⟨1, 0⟩
+def consRef : CtorRef := ⟨1, 1⟩
+def pairRef : CtorRef := ⟨2, 0⟩
+def pairType : Nat := 2
+
+def primOf : String → Option PrimTy
+  | "Int" => some .int
+  | "Char" => some .char
+  | "Unit" => some .unit
+  | _ => none
+
+/-! ## Types -/
+
+section
+variable {m : Type → Type} [Monad m] [MonadExcept LowerError m] {V : Type}
+  (globals : Globals) (var : Span → String → m (EPL.Ty V))
+  (hole : Span → Option String → m (EPL.Ty V))
+
+mutual
+/-- Lower a type, resolving type variables with `var` and holes (`_` is
+`none`) with `hole`. -/
+def lowerTyWith : Ty → m (EPL.Ty V)
+  | .hole span => hole span none
+  | .namedHole span name => hole span (some name)
+  | .var span name => var span name
+  | .unit _ => pure (.prim .unit)
+  | .pair _ fst snd => do
+      pure (.app (.app (.con pairType) (← lowerTyWith fst)) (← lowerTyWith snd))
+  | .arrow _ domain codomain => do
+      pure (.arrow (← lowerTyWith domain) (← lowerTyWith codomain))
+  | .con span name args => do
+      let lowered ← lowerTysWith args
+      match primOf name with
+      | some prim =>
+          if args.isEmpty then pure (.prim prim)
+          else throw ⟨span, .typeArity name 0 args.length⟩
+      | none =>
+          match globals.findType name with
+          | some (id, info) =>
+              if info.params = args.length then pure (EPL.Ty.apps (.con id) lowered)
+              else throw ⟨span, .typeArity name info.params args.length⟩
+          | none => throw ⟨span, .unknownType name⟩
+
+def lowerTysWith : List Ty → m (List (EPL.Ty V))
+  | [] => pure []
+  | ty :: rest => do pure ((← lowerTyWith ty) :: (← lowerTysWith rest))
+end
+end
+
+/-- The first name that occurs twice. -/
+def firstDuplicate : List String → Option String
+  | [] => none
+  | name :: rest => if name ∈ rest then some name else firstDuplicate rest
+
+/-- Check the declarations and build their signature. -/
+def lowerDecls (decls : List DataDecl) : Except LowerError (Globals × Signature) := do
+  for decl in decls, index in [0:decls.length] do
+    if (primOf decl.name).isSome || (decls.take index).any (·.name == decl.name) then
+      throw ⟨decl.span, .duplicateType decl.name⟩
+  let ctors := decls.flatMap (·.ctors)
+  for ctor in ctors, index in [0:ctors.length] do
+    if (ctors.take index).any (·.name == ctor.name) then
+      throw ⟨ctor.span, .duplicateConstructor ctor.name⟩
+  let globals : Globals :=
+    ⟨decls.map fun decl => ⟨decl.name, decl.params.length,
+      decl.ctors.map fun ctor => (ctor.name, ctor.fields.length)⟩⟩
+  let sig ← decls.mapM fun decl => do
+    if let some name := firstDuplicate decl.params then
+      throw ⟨decl.span, .duplicateTypeParameter name⟩
+    let param (span : Span) (name : String) : Except LowerError SemTy :=
+      match decl.params.idxOf? name with
+      | some index => pure (.bvar index)
+      | none => throw ⟨span, .unboundTypeVariable name⟩
+    let noHole (span : Span) (_ : Option String) : Except LowerError SemTy :=
+      throw ⟨span, .holeInDeclaration⟩
+    let ctors ← decl.ctors.mapM fun ctor =>
+      ctor.fields.mapM (lowerTyWith globals param noHole)
+    pure (⟨decl.params.length, ctors⟩ : EPL.DataDecl)
+  pure (globals, sig)
+
+/-! ## Scopes -/
+
+/-- What is in scope at a point of the source. Term variables are recorded by
+de Bruijn *level* (`depth` binders are in scope), so names can alias a value
+bound elsewhere (a pattern variable is the matched subterm). -/
+structure Scope where
+  depth : Nat := 0
+  vars : List (String × Nat) := []
+  /-- The rigid depth. -/
+  k : Nat := 0
+  /-- Type variables in scope, by rigid level, innermost first. -/
+  tyVars : List (String × Nat) := []
+  deriving Inhabited
+
+/-- Enter a term binder, naming it `name` (`none` for an anonymous one). -/
+def Scope.bind (scope : Scope) (name : Option String) : Scope :=
+  { scope with
+    depth := scope.depth + 1
+    vars := match name with
+      | some name => (name, scope.depth) :: scope.vars
+      | none => scope.vars }
+
+/-- Make `name` refer to the variable at `level`. -/
+def Scope.alias (scope : Scope) (name : String) (level : Nat) : Scope :=
+  { scope with vars := (name, level) :: scope.vars }
+
+/-- The variable at `level`, as a term. -/
+def Scope.varAt (scope : Scope) (level : Nat) : Source := .var (scope.depth - 1 - level)
+
+/-- Enter `names` as type variables at the next rigid levels. -/
+def Scope.enterTyVars (scope : Scope) (names : List String) : Scope :=
+  { scope with
+    k := scope.k + names.length
+    tyVars := (names.zipIdx.map fun (name, i) => (name, scope.k + i)).reverse ++ scope.tyVars }
+
+def Scope.origin (scope : Scope) (span : Span) (children : List Origin) : Origin :=
+  .node span scope.tyVars children
+
+/-- A core term and its origins. -/
+abbrev Lowered := Source × Origin
+
+def Scope.leaf (scope : Scope) (span : Span) (expr : Source) : Lowered :=
+  (expr, scope.origin span [])
+
+def Scope.app (scope : Scope) (span : Span) (function argument : Lowered) : Lowered :=
+  (.app function.1 argument.1, scope.origin span [function.2, argument.2])
+
+def Scope.apps (scope : Scope) (span : Span) (head : Lowered) (args : List Lowered) : Lowered :=
+  args.foldl (scope.app span) head
+
+def Scope.lambda (scope : Scope) (span : Span) (ann : Option Template) (body : Lowered) :
+    Lowered :=
+  (.lambda ann body.1, scope.origin span [body.2])
+
+/-- `[a, b, ...]` as `Cons a (Cons b ... Nil)`. -/
+def Scope.list (scope : Scope) (span : Span) (items : List Lowered) : Lowered :=
+  items.foldr (init := scope.leaf span (.ctor nilRef)) fun item rest =>
+    scope.apps span (scope.leaf span (.ctor consRef)) [item, rest]
+
+/-! ## The lowering monad -/
+
+/-- Lowering reads the declarations and counts the fresh hole names it has
+made. -/
+abbrev M := ReaderT Globals (StateT Nat (Except LowerError))
+
+def findCtor (span : Span) (name : String) : M (CtorRef × Nat) := do
+  match (← read).findCtor name with
+  | some found => pure found
+  | none => throw ⟨span, .unknownConstructor name⟩
+
+/-- A hole no source annotation can name (source names start with a letter). -/
+def freshHole : M Template := do
+  let index ← modifyGet fun index => (index, index + 1)
+  pure (.var s!"_{index}")
+
+/-- Lower an annotation in `scope`: its type variables must be in scope. -/
+def lowerTemplate (scope : Scope) (ty : Ty) : M Template := do
+  let var (span : Span) (name : String) : M Template :=
+    match scope.tyVars.lookup name with
+    | some level => pure (.rigid level)
+    | none => throw ⟨span, .unboundTypeVariable name⟩
+  let hole (_ : Span) : Option String → M Template
+    | some name => pure (.var name)
+    | none => freshHole
+  lowerTyWith (← read) var hole ty
+
+/-- A function head's signature: `param_1 -> ... -> result`, with a fresh hole
+for each missing annotation. -/
+def headTemplate (scope : Scope) (params : List ValueParam) (result : Option Ty) :
+    M Template := do
+  let domains ← params.mapM fun param => match param.ann with
+    | some ann => lowerTemplate scope ann
+    | none => freshHole
+  let codomain ← match result with
+    | some ann => lowerTemplate scope ann
+    | none => freshHole
+  pure (EPL.Ty.arrows domains codomain)
+
+/-! ## Pattern matching -/
+
+/-- A pattern with its constructors resolved and its sugar removed. -/
+inductive RPat where
+  /-- Matches anything, binding it to `name` if given. -/
+  | any (name : Option String)
+  | ctor (span : Span) (name : String) (ref : CtorRef) (args : List RPat)
+  deriving Repr, Inhabited
+
+mutual
+def RPat.ctorCount : RPat → Nat
+  | .any _ => 0
+  | .ctor _ _ _ args => RPat.ctorCountList args + 1
+
+def RPat.ctorCountList : List RPat → Nat
+  | [] => 0
+  | pattern :: rest => pattern.ctorCount + RPat.ctorCountList rest
+end
+
+mutual
+def resolvePattern : Pattern → M RPat
+  | .wildcard _ => pure (.any none)
+  | .var _ name => pure (.any (some name))
+  | .ctor span name args => do
+      let (ref, arity) ← findCtor span name
+      if args.length ≠ arity then throw ⟨span, .patternArity name arity args.length⟩
+      pure (.ctor span name ref (← resolvePatterns args))
+  | .pair span fst snd => do
+      pure (.ctor span "Pair" pairRef [← resolvePattern fst, ← resolvePattern snd])
+  | .cons span head tail => do
+      pure (.ctor span "Cons" consRef [← resolvePattern head, ← resolvePattern tail])
+  | .list span items => do
+      let items ← resolvePatterns items
+      pure (items.foldr (init := .ctor span "Nil" nilRef []) fun item rest =>
+        .ctor span "Cons" consRef [item, rest])
+
+def resolvePatterns : List Pattern → M (List RPat)
+  | [] => pure []
+  | pattern :: rest => do pure ((← resolvePattern pattern) :: (← resolvePatterns rest))
+end
+
+/-- A row of the pattern matrix: one pattern per column, the names already
+bound (to levels), and the arm it leads to. -/
+structure Row where
+  pats : List RPat
+  aliases : List (String × Nat)
+  arm : Nat
+  deriving Inhabited
+
+/-- The first column holding a constructor pattern, its span and constructor. -/
+def firstCtor : List RPat → Nat → Option (Nat × Span × CtorRef)
+  | [], _ => none
+  | .any _ :: rest, column => firstCtor rest (column + 1)
+  | .ctor span _ ref _ :: _, column => some (column, span, ref)
+
+/-- The rows that match constructor `index` (with `arity` fields) of `type` in
+`column`, whose value is the variable at `level`: its fields replace the
+column. -/
+def specialize (column type index arity level : Nat) : List Row → M (List Row)
+  | [] => pure []
+  | row :: rows => do
+      let rest ← specialize column type index arity level rows
+      let others := row.pats.eraseIdx column
+      match row.pats[column]? with
+      | some (.any name) =>
+          let aliases := match name with
+            | some name => (name, level) :: row.aliases
+            | none => row.aliases
+          pure (⟨List.replicate arity (.any none) ++ others, aliases, row.arm⟩ :: rest)
+      | some (.ctor span name ref args) =>
+          if ref.type ≠ type then
+            throw ⟨span, .foreignPattern name ((← read).typeName type)⟩
+          else if ref.index = index then pure (⟨args ++ others, row.aliases, row.arm⟩ :: rest)
+          else pure rest
+      | none => pure rest
+
+/-- Compile the rows, whose columns are the variables at the levels `columns`
+(with spans to blame), to a decision tree. `leaf arm scope` lowers an arm's
+body once its pattern variables are in `scope`. Returns `none` if no row
+matches, and the arms reached. The fuel (constructor patterns plus one)
+suffices: every split removes a constructor pattern of the first row. -/
+def compile (leaf : Nat → Scope → M Lowered) (span : Span) :
+    Nat → Scope → List (Nat × Span) → List Row → M (Option Lowered × List Nat)
+  | 0, _, _, _ => throw ⟨span, .tooDeep⟩
+  | _ + 1, _, _, [] => pure (none, [])
+  | fuel + 1, scope, columns, row :: rows =>
+      match firstCtor row.pats 0 with
+      | none => do
+          let bound := (row.pats.zip columns).filterMap fun
+            | (.any (some name), (level, _)) => some (name, level)
+            | _ => none
+          let scope := (row.aliases ++ bound).foldl (fun scope (name, level) =>
+            scope.alias name level) scope
+          pure (some (← leaf row.arm scope), [row.arm])
+      | some (column, patSpan, ref) => do
+          let some info := (← read).types[ref.type]? | throw ⟨span, .tooDeep⟩
+          let (level, levelSpan) := columns.getD column (0, span)
+          let others := columns.eraseIdx column
+          let results ← info.ctors.zipIdx.mapM fun ((_, arity), index) => do
+            let rows ← specialize column ref.type index arity level (row :: rows)
+            let fields := (List.range arity).map fun i => (scope.depth + i, patSpan)
+            let inner := { scope with depth := scope.depth + arity }
+            let (tree, reached) ← compile leaf span fuel inner (fields ++ others) rows
+            let branch := tree.map fun body =>
+              ((⟨ref.type, index⟩ : CtorRef),
+                (List.range arity).foldr (init := body) fun _ body =>
+                  scope.lambda body.2.span none body)
+            pure (branch, reached)
+          let branches := results.filterMap (·.1)
+          pure (some (.match (scope.varAt level) (branches.map fun (ref, body) => (ref, body.1)),
+              scope.origin patSpan (scope.origin levelSpan [] :: branches.map (·.2.2))),
+            results.flatMap (·.2))
+
+/-- Match the variables at the levels `columns` against `rows` (one per arm,
+one pattern per column), checking that every arm is reachable. -/
+def compileMatch (scope : Scope) (span : Span) (columns : List (Nat × Span))
+    (rows : List (List Pattern)) (leaf : Nat → Scope → M Lowered) : M Lowered := do
+  for row in rows do
+    if let some name := firstDuplicate (Pattern.varsList row) then
+      throw ⟨((row.head?.map (·.span)).getD span), .duplicatePatternVariable name⟩
+  let resolved ← rows.mapM resolvePatterns
+  let fuel := (resolved.map RPat.ctorCountList).sum + 1
+  let (tree, reached) ← compile leaf span fuel scope columns
+    (resolved.zipIdx.map fun (pats, arm) => ⟨pats, [], arm⟩)
+  for row in rows, arm in [0:rows.length] do
+    unless reached.contains arm do
+      throw ⟨((row.head?.map (·.span)).getD span), .redundantArm⟩
+  match tree with
+  | some tree => pure tree
+  | none => throw ⟨span, .tooDeep⟩
+
+/-! ## Bindings -/
+
+/-- A cycle among `pending` bindings (each paired with the block names it
+uses), starting from the first. -/
+def findCycle (pending : List (Binding × List String)) : Nat → List String → String →
+    List String
+  | 0, path, _ => path
+  | fuel + 1, path, current =>
+      if current ∈ path then (path.dropWhile (· ≠ current)) else
+      let next := (pending.find? (current ∈ ·.1.names)).bind fun (_, uses) =>
+        uses.find? fun name => pending.any (name ∈ ·.1.names)
+      match next with
+      | some next => findCycle pending fuel (path ++ [current]) next
+      | none => path ++ [current]
+
+/-- Order a block's bindings so that each comes after the bindings it uses
+(keeping the source order where it is free). With repeated names (allowed
+except at top level) bindings are taken in source order, each seeing the
+earlier ones. -/
+def sortBindings (topLevel : Bool) (bindings : List (Binding × Expr)) :
+    Except LowerError (List (Binding × Expr)) := do
+  let names := bindings.flatMap (·.1.names)
+  if let some name := firstDuplicate names then
+    if topLevel then
+      let span := ((bindings.find? (name ∈ ·.1.names |> decide)).map (·.1.span)).getD default
+      let span := ((bindings.reverse.find? (name ∈ ·.1.names |> decide)).map (·.1.span)).getD span
+      throw ⟨span, .duplicateBinding name⟩
+    else return bindings
+  let entries := bindings.map fun (binding, rhs) =>
+    ((binding, rhs), ((binding.rhsFreeVars rhs.freeVars).filter fun name =>
+      name ∈ names && name ∉ binding.names).eraseDups)
+  let rec go : Nat → List String → List ((Binding × Expr) × List String) →
+      Except LowerError (List (Binding × Expr))
+    | _, _, [] => pure []
+    | 0, _, _ => pure [] -- unreachable: each step emits one binding
+    | fuel + 1, done, pending =>
+        match pending.find? (fun (_, uses) => uses.all (· ∈ done)) with
+        | some entry@((binding, _), _) => do
+            let rest ← go fuel (done ++ binding.names)
+              (pending.filter fun other => other.1.1.span != entry.1.1.span ||
+                other.1.1.names != entry.1.1.names)
+            pure (entry.1 :: rest)
+        | none =>
+            let blocked := pending.map fun ((binding, _), uses) =>
+              (binding, uses.filter (· ∉ done))
+            let span := (blocked.head?.map (·.1.span)).getD default
+            let start := ((blocked.head?.bind (·.1.names.head?))).getD ""
+            throw ⟨span, .mutualRecursion (findCycle blocked (blocked.length + 1) [] start)⟩
+  go (entries.length + 1) [] entries
+
+/-! ## Expressions -/
+
+mutual
+/-- Lower an expression in `scope`. The fuel bounds the depth of the
+recursion; `Expr.size` is enough. -/
+def lowerExpr : Nat → Scope → Expr → M Lowered
+  | 0, _, expr => throw ⟨expr.span, .tooDeep⟩
+  | fuel + 1, scope, expr =>
+    match expr with
+    | .int span value => pure (scope.leaf span (.lit (.int value)))
+    | .char span value => pure (scope.leaf span (.lit (.char value)))
+    | .unit span => pure (scope.leaf span (.lit .unit))
+    | .string span value =>
+        pure (scope.list span (value.toList.map fun char => scope.leaf span (.lit (.char char))))
+    | .var span name =>
+        match scope.vars.lookup name with
+        | some level => pure (scope.leaf span (scope.varAt level))
+        | none => throw ⟨span, .unboundVariable name⟩
+    | .ctor span name => do
+        let (ref, _) ← findCtor span name
+        pure (scope.leaf span (.ctor ref))
+    | .binOp span op left right => do
+        let left ← lowerExpr fuel scope left
+        let right ← lowerExpr fuel scope right
+        let head : Source := match op with
+          | .add => .primOp .intAdd
+          | .sub => .primOp .intSub
+          | .lt => .primOp .intLt
+          | .cons => .ctor consRef
+        pure (scope.apps span (scope.leaf span head) [left, right])
+    | .pair span fst snd => do
+        let fst ← lowerExpr fuel scope fst
+        let snd ← lowerExpr fuel scope snd
+        pure (scope.apps span (scope.leaf span (.ctor pairRef)) [fst, snd])
+    | .list span items => do
+        pure (scope.list span (← items.mapM (lowerExpr fuel scope)))
+    | .app span function argument => do
+        let function ← lowerExpr fuel scope function
+        let argument ← lowerExpr fuel scope argument
+        pure (scope.app span function argument)
+    | .lambda span param body => do
+        let ann ← param.ann.mapM (lowerTemplate scope)
+        match param.pattern with
+        | .var _ name => pure (scope.lambda span ann (← lowerExpr fuel (scope.bind name) body))
+        | .wildcard _ => pure (scope.lambda span ann (← lowerExpr fuel (scope.bind none) body))
+        | pattern => do
+            let body ← compileMatch (scope.bind none) span [(scope.depth, param.span)]
+              [[pattern]] fun _ scope => lowerExpr fuel scope body
+            pure (scope.lambda span ann body)
+    | .ite span cond thenBranch elseBranch => do
+        let cond ← lowerExpr fuel scope cond
+        let thenBranch ← lowerExpr fuel scope thenBranch
+        let elseBranch ← lowerExpr fuel scope elseBranch
+        pure (.match cond.1 [(trueRef, thenBranch.1), (falseRef, elseBranch.1)],
+          scope.origin span [cond.2, thenBranch.2, elseBranch.2])
+    | .match span scrutinee arms => do
+        let rows := arms.map fun (pattern, _) => [pattern]
+        let leaf (arm : Nat) (scope : Scope) : M Lowered :=
+          lowerExpr fuel scope (arms[arm]!).2
+        match scrutinee with
+        | .var varSpan name =>
+            match scope.vars.lookup name with
+            | some level => compileMatch scope span [(level, varSpan)] rows leaf
+            | none => throw ⟨varSpan, .unboundVariable name⟩
+        | _ =>
+            let lowered ← lowerExpr fuel scope scrutinee
+            let tree ← compileMatch (scope.bind none) span [(scope.depth, scrutinee.span)] rows leaf
+            pure (.letIn none lowered.1 tree.1, scope.origin span [lowered.2, tree.2])
+    | .letIn _ bindings body => do
+        let sorted ← liftExcept (sortBindings false bindings)
+        lowerChain fuel scope sorted body
+
+/-- Lower `let b1 = e1 in ... let bn = en in body`, in this order. -/
+def lowerChain : Nat → Scope → List (Binding × Expr) → Expr → M Lowered
+  | 0, _, _, body => throw ⟨body.span, .tooDeep⟩
+  | fuel + 1, scope, [], body => lowerExpr fuel scope body
+  | fuel + 1, scope, (binding, rhs) :: rest, body =>
+    match binding.target with
+    | .named name tyParams params => do
+        let binders := tyParams ++ ((binding.ann.map (·.binders)).getD [])
+        if let some name := firstDuplicate binders then
+          throw ⟨binding.span, .duplicateTypeParameter name⟩
+        let inner := scope.enterTyVars binders
+        let annotated := !binders.isEmpty || params.any (·.ann.isSome) || binding.ann.isSome
+        let template ← if annotated then
+            some <$> headTemplate inner params (binding.ann.map (·.body))
+          else pure none
+        let recursive := name ∈ binding.rhsFreeVars rhs.freeVars
+        let selfScope := if recursive then inner.bind name else inner
+        let paramScope := params.foldl (fun scope param => scope.bind param.name) selfScope
+        let body' ← lowerExpr fuel paramScope rhs
+        let lambdas := params.foldr (init := body') fun param body =>
+          inner.lambda param.span none body
+        let rhs' : Lowered := if recursive then
+            (.fix none lambdas.1, inner.origin binding.span [lambdas.2])
+          else lambdas
+        let rest' ← lowerChain fuel (scope.bind name) rest body
+        -- An error at the let itself concerns its signature: name its binders.
+        pure (.letIn (template.map (⟨binders.length, ·⟩)) rhs'.1 rest'.1,
+          inner.origin binding.span [rhs'.2, rest'.2])
+    | .pattern pattern => do
+        let free := rhs.freeVars
+        let recursive := pattern.vars.filter (· ∈ free)
+        unless recursive.isEmpty do
+          throw ⟨binding.span, .recursivePattern recursive⟩
+        let binders := (binding.ann.map (·.binders)).getD []
+        if let some name := firstDuplicate binders then
+          throw ⟨binding.span, .duplicateTypeParameter name⟩
+        let inner := scope.enterTyVars binders
+        let template ← binding.ann.mapM fun ann => lowerTemplate inner ann.body
+        let rhs' ← lowerExpr fuel inner rhs
+        let tree ← compileMatch (scope.bind none) binding.span [(scope.depth, binding.span)]
+          [[pattern]] fun _ scope => lowerChain fuel scope rest body
+        pure (.letIn (template.map (⟨binders.length, ·⟩)) rhs'.1 tree.1,
+          inner.origin binding.span [rhs'.2, tree.2])
+end
+
+/-! ## Programs -/
+
+/-- A lowered program. -/
+structure Lowering where
+  globals : Globals
+  sig : Signature
+  term : Source
+  origin : Origin
+  /-- The span of the program's final expression. -/
+  body : Span
+
+def lowerProgram (program : Program) : Except LowerError Lowering := do
+  let (globals, sig) ← lowerDecls (preludeDecls ++ program.decls)
+  let sorted ← sortBindings true program.bindings
+  let fuel := 2 * (Expr.sizeBindings program.bindings + program.body.size) + 8
+  let (term, origin) ← (lowerChain fuel {} sorted program.body).run globals |>.run' 0
+  pure ⟨globals, sig, term, origin, program.body.span⟩
+
+end EPL.Surface

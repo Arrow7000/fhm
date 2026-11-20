@@ -68,6 +68,12 @@ roots = [
 ]
 
 [[lean_lib]]
+name = "EPLSurface"
+# Unverified front end for EPL: lexer, parser, lowering to the core, and a
+# runner. `lake build EPLSurface`.
+globs = ["EPL.Surface.+"]
+
+[[lean_lib]]
 name = "FHMExamples"
 # Executable examples and audit canaries; build with `lake build FHMExamples`.
 roots = ["FHM.Examples", "FHM.Examples.Programs", "FHM.RuntimeTyping.PolyRecCanary"]

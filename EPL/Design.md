@@ -198,3 +198,36 @@ induction on the source proving `InferSpec`:
 | `Spec/Infer.lean` | `inferAt_spec` |
 | `Theorems.lean` | the headline theorems and `evaluate` |
 | `Tests.lean` | executable checks of inference, unification and evaluation |
+
+## Surface language
+
+`EPL/Surface/` is an unverified front end (`lake build EPLSurface`) with
+FHM's syntax: `type` declarations, top-level `let`s and a final expression,
+function heads `let f {a} (x : a) y : R = ...`, `_` and `?a` holes, `\x -> e`,
+`if`, `+ - < ::`, pairs, lists, strings (`List Char`) and `match` with nested
+patterns. It stops at the first error, reported as a typed error with a
+source span. `runToString` runs a program end to end through `evaluate`.
+
+Lowering (`Lower.lean`) produces the core term and signature:
+
+- The prelude declares `Bool` (declaration 0), `List` and `Pair`; the sugar
+  denotes their constructors.
+- The bindings of a block may come in any order and are sorted by use. A
+  binding that mentions itself becomes a `fix`; mutual recursion is rejected.
+- A binding with any annotation becomes an explicit `let` whose signature is
+  its head (missing parts are fresh holes); one without is a monomorphic `let`.
+- Matches compile to nested core matches on one constructor at a time.
+  Constructor patterns are checked against their arity, and unreachable arms
+  are rejected. A case no arm covers is left out of the core match, so
+  `evaluate` rejects the program as not exhaustive.
+- An `Origin` tree of the core term's shape records each node's source span,
+  so an `InferError`'s path leads to the source.
+
+| File | Contents |
+|---|---|
+| `Surface/Syntax.lean` | the surface AST, with spans |
+| `Surface/Lex.lean` | the lexer |
+| `Surface/Parse.lean` | the parser (recursive descent, FHM's layout rules) |
+| `Surface/Lower.lean` | name resolution, binding order, pattern compilation, origins |
+| `Surface/Run.lean` | the pipeline, printing of types, values and errors |
+| `Surface/Tests.lean` | whole-program tests, including one per error kind |
