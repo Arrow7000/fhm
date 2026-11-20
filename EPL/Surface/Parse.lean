@@ -296,18 +296,18 @@ def binOpOf : Token → Option BinOp
 def valueParam (n : Nat) : P ValueParam := do
   let some tok ← peek | expected .parameter
   match tok.token with
-  | .punct .underscore => bump; return ⟨tok.span, none, none⟩
-  | .ident name false => bump; return ⟨tok.span, some name, none⟩
+  | .punct .underscore => bump; return ⟨tok.span, none, none, tok.span⟩
+  | .ident name false => bump; return ⟨tok.span, some name, none, tok.span⟩
   | .punct .lparen =>
       bump
-      let name ← match ← peek with
-        | some { token := .punct .underscore, .. } => bump; pure none
-        | some { token := .ident name false, .. } => bump; pure (some name)
+      let (name, nameSpan) ← match ← peek with
+        | some { token := .punct .underscore, span } => bump; pure (none, span)
+        | some { token := .ident name false, span } => bump; pure (some name, span)
         | _ => expected .parameter
       let _ ← expect (.punct .colon)
       let ann ← ty n
       let close ← expect (.punct .rparen)
-      return ⟨tok.span.union close.span, name, some ann⟩
+      return ⟨tok.span.union close.span, name, some ann, nameSpan⟩
   | _ => expected .parameter
 
 /-- Function-head parameters, up to `:` or `=`. -/
@@ -351,10 +351,10 @@ def lambdaParams : Nat → P (List Param)
 def bindingHead (n : Nat) : P (Binding × Tok) := do
   let start ← startPos
   let target ← match ← peek with
-    | some { token := .ident name false, .. } =>
+    | some { token := .ident name false, span } =>
         bump
         let tyParams ← if (← accept (.punct .lbrace)).isSome then binderNames n else pure []
-        pure (.named name tyParams (← valueParams n))
+        pure (.named name tyParams (← valueParams n) span)
     | _ => .pattern <$> pattern n
   let ann ← if (← accept (.punct .colon)).isSome then some <$> polyTy n else pure none
   let eq ← expect (.punct .eq)

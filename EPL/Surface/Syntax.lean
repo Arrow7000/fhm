@@ -119,12 +119,15 @@ structure ValueParam where
   /-- `none` for `_`. -/
   name : Option String
   ann : Option Ty
+  /-- The span of the name (or `_`). -/
+  nameSpan : Span
   deriving Repr, Inhabited
 
 /-- What a `let` binds. -/
 inductive Target where
   /-- A function head `f {a b} x (y : ty)`; with no parameters, just `f`. -/
   | named (name : String) (tyParams : List String) (params : List ValueParam)
+      (nameSpan : Span)
   /-- A pattern, e.g. `(a, b)`. -/
   | pattern (pattern : Pattern)
   deriving Repr, Inhabited
@@ -142,7 +145,7 @@ structure Binding where
 /-- The names a binding defines. -/
 def Binding.names (binding : Binding) : List String :=
   match binding.target with
-  | .named name _ _ => [name]
+  | .named name .. => [name]
   | .pattern pattern => pattern.vars
 
 /-- Expressions as written. -/
@@ -204,7 +207,7 @@ structure Program where
 /-- A right-hand side's free variables `free`, minus the binding's parameters. -/
 def Binding.rhsFreeVars (binding : Binding) (free : List String) : List String :=
   match binding.target with
-  | .named _ _ params =>
+  | .named _ _ params _ =>
       let bound := params.filterMap (·.name)
       free.filter (· ∉ bound)
   | .pattern _ => free
@@ -280,7 +283,7 @@ def Expr.sizeBindings : List (Binding × Expr) → Nat
   | [] => 0
   | (binding, rhs) :: rest =>
       let head := match binding.target with
-        | .named _ _ params => params.length
+        | .named _ _ params _ => params.length
         | .pattern pattern => pattern.size
       head + rhs.size + 1 + Expr.sizeBindings rest
 

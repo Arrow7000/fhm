@@ -50,9 +50,6 @@ def _root_.EPL.Expr.at? {A : Type} : EPL.Expr A → List ExprStep → Option (EP
       (branches[index]?).bind fun (_, body) => body.at? path
   | _, _ => none
 
-def Origin.children : Origin → List Origin
-  | .node _ _ children => children
-
 /-- Locate an inference error. The program's undetermined type is reported at
 its final expression. An application's mismatch is reported at its argument,
 as one between the argument's type and the parameter's, or at its function if
