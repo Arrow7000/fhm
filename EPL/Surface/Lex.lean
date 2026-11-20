@@ -5,7 +5,7 @@ import EPL.Surface.Syntax
 # Lexer
 
 FHM's token set: `--` line comments and (nested) block comments are
-skipped, tabs are rejected, `-` directly followed by a digit is a negative
+skipped (`lexWithComments` also returns their spans, for editors), tabs are rejected, `-` directly followed by a digit is a negative
 literal (so `n -1` is `n` applied to `-1`; write `n - 1`).
 -/
 
@@ -131,24 +131,26 @@ def symbolToken : Char → Option Token
   | '_' => some (.punct .underscore)
   | _ => none
 
-/-- Lex `cs` from `pos`. Each step consumes at least one character, so
-`cs.length + 1` is enough fuel. -/
-def lexChars : Nat → List Char → Pos → Array Tok → Except LexError (Array Tok)
-  | 0, _, pos, _ => .error ⟨pos, .unexpectedChar ' '⟩ -- unreachable
-  | _ + 1, [], _, acc => .ok acc
-  | fuel + 1, c :: rest, pos, acc =>
+/-- Lex `cs` from `pos`, adding its tokens to `acc` and its comments' spans to
+`comments`. Each step consumes at least one character, so `cs.length + 1` is
+enough fuel. -/
+def lexChars : Nat → List Char → Pos → Array Tok → Array Span →
+    Except LexError (Array Tok × Array Span)
+  | 0, _, pos, _, _ => .error ⟨pos, .unexpectedChar ' '⟩ -- unreachable
+  | _ + 1, [], _, acc, comments => .ok (acc, comments)
+  | fuel + 1, c :: rest, pos, acc, comments =>
       let emit (token : Token) (rest : List Char) (stop : Pos) :=
-        lexChars fuel rest stop (acc.push ⟨token, ⟨pos, stop⟩⟩)
+        lexChars fuel rest stop (acc.push ⟨token, ⟨pos, stop⟩⟩) comments
       match c, rest with
       | '\t', _ => .error ⟨pos, .tab⟩
-      | ' ', _ | '\r', _ => lexChars fuel rest pos.right acc
-      | '\n', _ => lexChars fuel rest (pos.next '\n') acc
+      | ' ', _ | '\r', _ => lexChars fuel rest pos.right acc comments
+      | '\n', _ => lexChars fuel rest (pos.next '\n') acc comments
       | '-', '-' :: rest => do
           let (rest, stop) ← skipLineComment rest (pos.right 2)
-          lexChars fuel rest stop acc
+          lexChars fuel rest stop acc (comments.push ⟨pos, stop⟩)
       | '/', '-' :: rest => do
           let (rest, stop) ← skipBlockComment pos rest (pos.right 2) 1
-          lexChars fuel rest stop acc
+          lexChars fuel rest stop acc (comments.push ⟨pos, stop⟩)
       | '-', '>' :: rest => emit (.punct .arrow) rest (pos.right 2)
       | ':', ':' :: rest => emit (.op .cons) rest (pos.right 2)
       | '-', d :: more =>
@@ -185,8 +187,12 @@ def lexChars : Nat → List Char → Pos → Array Tok → Except LexError (Arra
             | some token => emit token rest pos.right
             | none => .error ⟨pos, .unexpectedChar c⟩
 
-def lex (source : String) : Except LexError (Array Tok) :=
+/-- The tokens of `source` and the spans of its comments. -/
+def lexWithComments (source : String) : Except LexError (Array Tok × Array Span) :=
   let cs := source.toList
-  lexChars (cs.length + 1) cs ⟨1, 1⟩ #[]
+  lexChars (cs.length + 1) cs ⟨1, 1⟩ #[] #[]
+
+def lex (source : String) : Except LexError (Array Tok) :=
+  (lexWithComments source).map (·.1)
 
 end EPL.Surface

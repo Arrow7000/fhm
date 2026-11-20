@@ -255,7 +255,7 @@ function activate(context) {
   );
 
   context.subscriptions.push(
-    vscode.languages.registerHoverProvider("fhm", {
+    vscode.languages.registerHoverProvider(["fhm", "epl"], {
       provideHover(doc, position) {
         const cache = currentSymbols(doc);
         if (!cache) return undefined;
@@ -289,7 +289,7 @@ function activate(context) {
   );
 
   context.subscriptions.push(
-    vscode.languages.registerDefinitionProvider("fhm", {
+    vscode.languages.registerDefinitionProvider(["fhm", "epl"], {
       provideDefinition(doc, position) {
         const cache = currentSymbols(doc);
         if (!cache) return undefined;

@@ -27,10 +27,10 @@ const vscode = {
       delete() {}, dispose() {},
     }),
     registerHoverProvider: (language, provider) => {
-      assert.equal(language, "fhm"); hoverProvider = provider; return disposable();
+      assert.deepEqual(language, ["fhm", "epl"]); hoverProvider = provider; return disposable();
     },
     registerDefinitionProvider: (language, provider) => {
-      assert.equal(language, "fhm"); definitionProvider = provider; return disposable();
+      assert.deepEqual(language, ["fhm", "epl"]); definitionProvider = provider; return disposable();
     },
   },
   commands: { registerCommand: () => ({ dispose() {} }) },

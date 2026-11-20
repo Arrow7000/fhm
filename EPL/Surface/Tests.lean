@@ -164,4 +164,33 @@ even 4" == "1:5: mutual recursion is not supported: even, odd"
 #guard runToString "let sum n = if n < 1 then 0 else n + sum (n - 1)\nsum 1000" (fuel := 1000000) ==
   "500500 : Int"
 
+/-! ## Types for editors -/
+
+/-- The top-level bindings' types, as `epl run` prints them. -/
+def bindingTypes (source : String) : List String :=
+  match checkWithTypes source with
+  | .ok (lowering, _, types) => lowering.bindingTypes (lowering.symbols types)
+  | .error error => [error.render]
+
+/-- The definitions and uses of `name`: `line:col kind type`. -/
+def symbolsOf (source name : String) : List String :=
+  match checkWithTypes source with
+  | .ok (lowering, _, types) =>
+      ((lowering.symbols types).filter (·.name == name)).toList.map fun symbol =>
+        s!"{symbol.span.start.line}:{symbol.span.start.col} \
+          {if symbol.isDef then "def" else "use"} {symbol.ty}"
+  | .error error => [error.render]
+
+-- In source order, polymorphic ones with their type variables.
+#guard bindingTypes "let n = 1\nlet map {a b} (f : a -> b) (xs : List a) : List b =\n  \
+    match xs with\n  | [] -> []\n  | x :: rest -> f x :: map f rest\nmap (\\x -> x + n) [1]" ==
+  ["n : Int", "map : {a b} (a -> b) -> List a -> List b"]
+-- A use has the type it is used at.
+#guard symbolsOf "let id {a} (x : a) : a = x\nid 1" "id" == ["1:5 def {a} a -> a", "2:1 use Int -> Int"]
+-- A pattern variable's arm is copied by the match compiler; it is listed once.
+#guard symbolsOf "match (1, True) with\n| (y, True) -> y\n| (y, False) -> y + 1" "y" ==
+  ["2:4 def Int", "3:4 def Int", "2:16 use Int", "3:17 use Int"]
+#guard symbolsOf "match [1] with\n| [] -> 0\n| _ -> let z = 2 in z" "z" ==
+  ["3:12 def Int", "3:21 use Int"]
+
 end EPL.Surface.Tests

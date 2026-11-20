@@ -87,6 +87,13 @@ def check (source : String) : Except Error (Lowering × InferenceResult) := do
   unless lowering.uncovered.isEmpty do throw lowering.notExhaustive
   pure (lowering, result)
 
+/-- `check`, also returning the type of every core node (see `TypeTree`). -/
+def checkWithTypes (source : String) : Except Error (Lowering × InferenceResult × TypeTree) := do
+  let lowering ← frontEnd source
+  let (result, types) ← (inferWithTypes lowering.sig lowering.term).mapError lowering.inferError
+  unless lowering.uncovered.isEmpty do throw lowering.notExhaustive
+  pure (lowering, result, types)
+
 /-- Infer the type of a program and run it for at most `fuel` steps: its value
 (`none` if fuel ran out) and type. -/
 def run (source : String) (fuel : Nat := 100000) :
@@ -177,6 +184,117 @@ def showValueAux (globals : Globals) : RuntimeExpr → List Shown → Shown
 
 def showValue (globals : Globals) (value : RuntimeExpr) : String :=
   (showValueAux globals value []).text
+
+/-! ## Symbols
+
+Editor tools learn types from the lowering's `Origin` tree and inference's
+`TypeTree`, which both have a node per core node: a node's type is the one at
+the same path. A binder's type comes from its node's (see `BinderTy`), and a
+name the source defines has its binder's type. -/
+
+/-- A span of the source with its type, for hover and go-to-definition. -/
+structure Symbol where
+  name : String
+  /-- `"val"` for a value, `"ctor"` for a constructor, `"expr"` for an
+  expression. -/
+  kind : String
+  ty : String
+  span : Span
+  /-- Where a definition can be used; a use's own span. -/
+  scope : Span
+  /-- A definition, rather than a use or an expression. -/
+  isDef : Bool
+  deriving Repr, Inhabited
+
+def _root_.EPL.TypeTree.ty : TypeTree → InfTy
+  | .node ty _ => ty
+
+def _root_.EPL.TypeTree.children : TypeTree → List TypeTree
+  | .node _ children => children
+
+/-- What a node says about the program: a binder's type, or a symbol. -/
+inductive NodeFact where
+  | binder (id : Nat) (ty : InfTy) (tyVars : List (String × Nat))
+  | symbol (symbol : Symbol)
+
+/-- The type of the variable a binder node binds, given the node's type and
+its children's. -/
+def BinderTy.of (types : TypeTree) : BinderTy → Option InfTy
+  | .domain => match types.ty with
+      | .arrow param _ => some param
+      | _ => none
+  | .rhs => types.children.head?.map TypeTree.ty
+  | .self => some types.ty
+
+mutual
+/-- The facts of the nodes of `origin`, whose types are `types`, added to
+`facts`; `none` if the two trees differ in shape. -/
+def nodeFacts (globals : Globals) (facts : Array NodeFact) :
+    Origin → TypeTree → Option (Array NodeFact)
+  | .node span tyVars children info, types => do
+      let shown := showInfTy globals tyVars types.ty
+      let facts := match info.binder.bind fun (id, how) => (how.of types).map (id, ·) with
+        | some (id, ty) => facts.push (.binder id ty tyVars)
+        | none => facts
+      let facts := match info.use with
+        | some (name, kind) =>
+            facts.push (.symbol ⟨name, kind, shown, span, span, false⟩)
+        | none => facts
+      let facts := match info.expr with
+        | some span => facts.push (.symbol ⟨"expression", "expr", shown, span, span, false⟩)
+        | none => facts
+      nodeFactsList globals facts children types.children
+
+def nodeFactsList (globals : Globals) (facts : Array NodeFact) :
+    List Origin → List TypeTree → Option (Array NodeFact)
+  | [], [] => some facts
+  | origin :: origins, types :: rest => do
+      nodeFactsList globals (← nodeFacts globals facts origin types) origins rest
+  | _, _ => none
+end
+
+/-- `{a b} ` for a polymorphic let's type variables. -/
+def tyParamsPrefix : List String → String
+  | [] => ""
+  | names => "{" ++ " ".intercalate names ++ "} "
+
+/-- The symbols of a checked program: each name it defines, with its type, and
+each use and expression. Arm bodies that the match compiler copies yield the
+same symbol more than once; only the first is kept. Empty if the trees differ
+in shape, which is not expected. -/
+def Lowering.symbols (lowering : Lowering) (types : TypeTree) : Array Symbol := Id.run do
+  let some facts := nodeFacts lowering.globals #[] lowering.origin types | return #[]
+  let binders : Std.HashMap Nat (InfTy × List (String × Nat)) :=
+    facts.foldl (init := {}) fun binders fact => match fact with
+      | .binder id ty tyVars => binders.insert id (ty, tyVars)
+      | .symbol _ => binders
+  let defs := lowering.names.filterMap fun name =>
+    (binders.get? name.binder).map fun (ty, tyVars) => ({
+      name := name.name, kind := "val",
+      ty := tyParamsPrefix name.tyParams ++ showInfTy lowering.globals tyVars ty,
+      span := name.span, scope := name.scope, isDef := true } : Symbol)
+  let uses := facts.filterMap fun
+    | .symbol symbol => some symbol
+    | .binder .. => none
+  let mut seen : Std.HashSet (String × String × Nat × Nat × Nat × Nat × Bool) := {}
+  let mut symbols := #[]
+  for symbol in defs.toArray ++ uses do
+    let key := (symbol.kind, symbol.name, symbol.span.start.line, symbol.span.start.col,
+      symbol.span.stop.line, symbol.span.stop.col, symbol.isDef)
+    unless seen.contains key do
+      seen := seen.insert key
+      symbols := symbols.push symbol
+  return symbols
+
+/-- The types of the top-level bindings, in source order: `name : type`. -/
+def Lowering.bindingTypes (lowering : Lowering) (symbols : Array Symbol) : List String :=
+  let before (a b : NameInfo) : Bool :=
+    a.span.start.line < b.span.start.line ||
+      (a.span.start.line == b.span.start.line && a.span.start.col < b.span.start.col)
+  let topLevel := (lowering.names.filter (·.topLevel)).mergeSort before
+  topLevel.filterMap fun name =>
+    (symbols.find? fun symbol => symbol.isDef && symbol.span == name.span).map fun symbol =>
+      s!"{name.name} : {symbol.ty}"
 
 /-! ## Error messages -/
 

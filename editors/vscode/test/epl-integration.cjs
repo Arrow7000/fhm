@@ -11,6 +11,7 @@ assert(require("node:fs").existsSync(path.join(root, ".lake/build/bin/epl")), "R
 const settings = { "diagnostics.debounceMs": 0, "diagnostics.enable": true };
 const listeners = {};
 const markerSets = [];
+let hoverProvider, definitionProvider;
 const disposable = () => ({ dispose() {} });
 const vscode = {
   workspace: {
@@ -26,10 +27,17 @@ const vscode = {
       set(uri, markers) { markerSets.push({ uri: uri.toString(), markers }); },
       delete() {}, dispose() {},
     }),
-    registerHoverProvider: disposable,
-    registerDefinitionProvider: disposable,
+    registerHoverProvider: (language, provider) => {
+      assert(language.includes("epl")); hoverProvider = provider; return disposable();
+    },
+    registerDefinitionProvider: (language, provider) => {
+      assert(language.includes("epl")); definitionProvider = provider; return disposable();
+    },
   },
   commands: { registerCommand: disposable },
+  Hover: class Hover { constructor(contents, range) { Object.assign(this, { contents, range }); } },
+  MarkdownString: class MarkdownString { constructor(value) { this.value = value; } },
+  Location: class Location { constructor(uri, range) { Object.assign(this, { uri, range }); } },
   Range: class Range { constructor(...args) { this.args = args; } },
   Diagnostic: class Diagnostic { constructor(range, message, severity) { Object.assign(this, { range, message, severity }); } },
   DiagnosticSeverity: { Error: 0, Warning: 1 },
@@ -59,6 +67,13 @@ async function update(source, open = false) {
   return markerSets.at(-1).markers.map(d => ({ message: d.message, range: d.range.args }));
 }
 
+function hover(line, character) {
+  return hoverProvider.provideHover(doc, { line, character })?.contents.value;
+}
+function definition(line, character) {
+  return definitionProvider.provideDefinition(doc, { line, character })?.range.args;
+}
+
 (async () => {
   assert.deepEqual(await update("let id {a} (x : a) : a = x\n(id 1, id True)\n", true), []);
   assert.deepEqual(await update("let id x = x\n(id 1, id True)\n"), [
@@ -71,5 +86,18 @@ async function update(source, open = false) {
   assert.deepEqual(await update("type Maybe a = Just a | Nothing\nmatch Just 1 with\n| Just x -> x\n"), [
     { message: "This match does not cover the case `Nothing`.", range: [1, 6, 1, 12] },
   ]);
-  console.log("VS Code EPL integration: PASS (4 real-backend scenarios)");
+
+  // Hover shows the types inference found; go-to-definition finds the binder.
+  assert.deepEqual(await update("type Maybe a = Just a | Nothing\nlet id {a} (x : a) : a = x\n" +
+    "let n = id 1 -- one\nmatch Just n with\n| Just y -> y\n| Nothing -> 0\n"), []);
+  assert.equal(hover(1, 4), "```fhm\nid : {a} a -> a\n```");
+  assert.equal(hover(1, 12), "```fhm\nx : a\n```");
+  assert.equal(hover(2, 8), "```fhm\nid : Int -> Int\n```");
+  assert.equal(hover(3, 6), "```fhm\nJust : Int -> Maybe Int\n```");
+  assert.equal(hover(4, 12), "```fhm\ny : Int\n```");
+  assert.equal(hover(2, 15), undefined, "no hover in a comment");
+  assert.deepEqual(definition(3, 11), [2, 4, 2, 5]);
+  assert.deepEqual(definition(4, 12), [4, 7, 4, 8]);
+  assert.deepEqual(definition(2, 8), [1, 4, 1, 6]);
+  console.log("VS Code EPL integration: PASS (5 real-backend scenarios)");
 })().catch(err => { console.error(err); process.exit(1); });

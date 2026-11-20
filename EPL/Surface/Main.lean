@@ -5,7 +5,8 @@ import EPL.Surface.Run
 # The `epl` executable
 
 ```
-epl [run] [--fuel N] [path]   check and evaluate (at most N steps); print `value : type`
+epl [run] [--fuel N] [path]   check and evaluate (at most N steps); print each
+                              top-level binding's type, then `value : type`
 epl check [path]              check only; print the program's type
 epl diagnose [path]           editor JSON: the first error, if any
 ```
@@ -15,8 +16,10 @@ Each command reads `path`, or standard input if there is none. `run` and
 with status 1.
 
 `diagnose` prints the shape `fhm diagnose` does (version 3), so the editor
-extension can share its code: `diagnostics` holds at most one entry, with
-1-based UTF-16 positions and an exclusive end, and `symbols` is empty.
+extension can share its code. Positions are 1-based UTF-16, with an exclusive
+end. `diagnostics` holds at most one entry. If the program checks, `symbols`
+holds the names it defines and uses and its expressions, with their types (see
+`Symbol`). `tokens` holds every token and comment, for placing hovers.
 -/
 
 namespace EPL.Surface.Main
@@ -48,8 +51,48 @@ def _root_.EPL.Surface.Error.code : Error → String
   | .infer .. | .notAFunction .. => "epl.type"
   | .notExhaustive .. | .notExhaustiveUnlocated => "epl.coverage"
 
-def _root_.EPL.Surface.Error.toJson (source : String) (error : Error) : Json :=
-  let lines := (source.splitOn "\n").toArray
+/-- A span's fields with UTF-16 columns: `startLine`, ..., `endCol`, or
+`scopeStartLine`, ... with the prefix `scope`. -/
+def spanFields (lines : Array String) (span : Span) (pre : String := "") :
+    List (String × Json) :=
+  let key (name : String) := if pre.isEmpty then name.decapitalize else pre ++ name
+  [(key "StartLine", span.start.line),
+   (key "StartCol", utf16Col lines span.start.line span.start.col),
+   (key "EndLine", span.stop.line),
+   (key "EndCol", utf16Col lines span.stop.line span.stop.col)]
+
+def _root_.EPL.Surface.Symbol.toJson (lines : Array String) (symbol : Symbol) : Json :=
+  Json.mkObj <| [
+    ("name", Json.str symbol.name),
+    ("kind", Json.str symbol.kind),
+    ("type", Json.str symbol.ty),
+    ("def", Json.bool symbol.isDef)] ++
+    spanFields lines symbol.span ++ spanFields lines symbol.scope "scope"
+
+/-- The editor's class for a token. -/
+def tokenClass : Token → String
+  | .ident .. | .namedHole _ => "ident"
+  | .keyword _ => "keyword"
+  | .int _ | .char _ | .string _ => "lit"
+  | .op _ => "op"
+  | .punct _ => "punct"
+
+/-- The tokens and comments of `source` as `[startLine, startCol, endLine,
+endCol, class]` rows in source order; none if it does not lex. -/
+def tokenRows (lines : Array String) (source : String) : Array Json :=
+  match lexWithComments source with
+  | .error _ => #[]
+  | .ok (tokens, comments) =>
+      let rows := tokens.map (fun tok => (tok.span, tokenClass tok.token)) ++
+        comments.map (·, "comment")
+      let before (a b : Span × String) : Bool :=
+        a.1.start.line < b.1.start.line ||
+          (a.1.start.line == b.1.start.line && a.1.start.col < b.1.start.col)
+      (rows.qsort before).map fun (span, cls) => Json.arr #[
+        span.start.line, utf16Col lines span.start.line span.start.col,
+        span.stop.line, utf16Col lines span.stop.line span.stop.col, Json.str cls]
+
+def _root_.EPL.Surface.Error.toJson (lines : Array String) (error : Error) : Json :=
   let span := error.span.getD ⟨⟨1, 1⟩, ⟨1, 1⟩⟩
   Json.mkObj [
     ("severity", "error"),
@@ -61,28 +104,39 @@ def _root_.EPL.Surface.Error.toJson (source : String) (error : Error) : Json :=
     ("endCol", utf16Col lines span.stop.line span.stop.col)]
 
 def diagnose (source : String) : Json :=
-  let (diagnostics, programTy) := match check source with
-    | .ok (lowering, result) => (#[], some (showSemTy lowering.globals result.ty))
-    | .error error => (#[error.toJson source], none)
+  let lines := (source.splitOn "\n").toArray
+  let (diagnostics, symbols, programTy) := match checkWithTypes source with
+    | .ok (lowering, result, types) =>
+        (#[], (lowering.symbols types).map (Symbol.toJson lines),
+          some (showSemTy lowering.globals result.ty))
+    | .error error => (#[error.toJson lines], #[], none)
   Json.mkObj <| [
     ("version", Json.num 3),
     ("diagnostics", Json.arr diagnostics),
-    ("symbols", Json.arr #[])] ++
+    ("symbols", Json.arr symbols),
+    ("tokens", Json.arr (tokenRows lines source))] ++
     (programTy.map fun ty => [("programTy", Json.str ty)]).getD []
 
 def report (name : String) (error : Error) : IO UInt32 := do
   IO.eprintln s!"{name}:{error.render}"
   pure 1
 
+/-- Print the top-level bindings' types, then the value and its type. -/
 def runCommand (fuel : Nat) (path : Option String) : IO UInt32 := do
   let (source, name) ← readSource path
-  match run source fuel with
-  | .ok (lowering, value, ty) =>
-      let value := (value.map (showValue lowering.globals)).getD
-        s!"<ran out of fuel after {fuel} steps>"
-      IO.println s!"{value} : {showSemTy lowering.globals ty}"
-      pure 0
+  match checkWithTypes source with
   | .error error => report name error
+  | .ok (lowering, _, types) =>
+    let bindings := lowering.bindingTypes (lowering.symbols types)
+    for binding in bindings do IO.println binding
+    unless bindings.isEmpty do IO.println ""
+    match run source fuel with
+    | .ok (lowering, value, ty) =>
+        let value := (value.map (showValue lowering.globals)).getD
+          s!"<ran out of fuel after {fuel} steps>"
+        IO.println s!"{value} : {showSemTy lowering.globals ty}"
+        pure 0
+    | .error error => report name error
 
 def checkCommand (path : Option String) : IO UInt32 := do
   let (source, name) ← readSource path

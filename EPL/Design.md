@@ -225,12 +225,25 @@ Lowering (`Lower.lean`) produces the core term and signature:
   so an `InferError`'s path leads to the source. A mismatch at an application
   is reported at its argument (parameter type against argument type), or at
   its function if that is not a function.
+- Each `Origin` node also records what the core node is in the source: the
+  value of a surface expression, a use of a name, or the binder of a
+  variable. Lowering lists every name the source defines with the binder it
+  stands for.
+
+Types for editors come from inference itself: `inferWithTypes` also returns a
+`TypeTree`, the type of every core node in the term's shape
+(`inferWithTypes_fst`: it accepts and rejects exactly as `infer` does). A
+node's type is the one at the same path in the `TypeTree` as its `Origin`, so
+`Lowering.symbols` gives each defined name its binder's type, and each use and
+expression its own. Spans stay out of the core term.
 
 The `epl` executable (`lake build epl`) runs a file (`epl [run] [--fuel N]
-file.epl`), checks it (`epl check`), or prints editor diagnostics as JSON
-(`epl diagnose`, the shape `fhm diagnose` prints). The editor extension in
-`editors/vscode` highlights `.epl` files, shows their first error, and runs
-them (`EPL: Run File`). `EPL/examples/playground.epl` is a tour.
+file.epl`, printing each top-level binding's type and then the value), checks
+it (`epl check`), or prints editor JSON (`epl diagnose`, the shape `fhm
+diagnose` prints: the first error, symbols with types, and tokens). The editor
+extension in `editors/vscode` highlights `.epl` files, shows their first error,
+shows types on hover, goes to definitions, and runs files (`EPL: Run File`).
+`EPL/examples/playground.epl` is a tour.
 
 | File | Contents |
 |---|---|
@@ -238,6 +251,6 @@ them (`EPL: Run File`). `EPL/examples/playground.epl` is a tour.
 | `Surface/Lex.lean` | the lexer |
 | `Surface/Parse.lean` | the parser (recursive descent, FHM's layout rules) |
 | `Surface/Lower.lean` | name resolution, binding order, pattern compilation, origins |
-| `Surface/Run.lean` | the pipeline, printing of types, values and errors |
+| `Surface/Run.lean` | the pipeline, symbols for editors, printing of types, values and errors |
 | `Surface/Main.lean` | the `epl` executable |
 | `Surface/Tests.lean` | whole-program tests, including one per error kind |

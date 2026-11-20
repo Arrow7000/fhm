@@ -35,8 +35,9 @@ The same extension handles `.epl` files, for the explicit-polymorphism
 language in `EPL/` (same syntax as FHM, plus string literals):
 
 - **Syntax highlighting**, from a grammar derived from FHM's (`scripts/gen-fhm-tmgrammar.sh` writes both).
-- **Diagnostics on edit**: the program's first error, from `epl diagnose`. There is no hover or go-to-definition yet.
-- **`EPL: Run File`** (the ▶ button in the editor title, or Cmd+Alt+R / Ctrl+Alt+R) runs the buffer with `epl run` and prints `value : type`, or the error, in the EPL output channel.
+- **Diagnostics on edit**: the program's first error, from `epl diagnose`.
+- **Hover and go-to-definition** while the program type checks: a name shows the type it has there (`id : Int -> Int` at a use, `id : {a} a -> a` at its definition), and other expressions show their type.
+- **`EPL: Run File`** (the ▶ button in the editor title, or Cmd+Alt+R / Ctrl+Alt+R) runs the buffer with `epl run` and prints each top-level binding's type, then `value : type`, or the error, in the EPL output channel.
 
 Build the binary with `lake build epl`. Settings: `epl.path` (default: the workspace's `.lake/build/bin/epl`), `epl.diagnostics.enable`, `epl.diagnostics.debounceMs`, and `epl.run.fuel` (evaluation steps, default 1000000). Try `EPL/examples/playground.epl`.
 
