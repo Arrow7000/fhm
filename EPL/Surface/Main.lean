@@ -5,15 +5,17 @@ import EPL.Surface.Run
 # The `epl` executable
 
 ```
-epl [run] [--fuel N] [path]   check and evaluate (at most N steps); print each
-                              top-level binding's type, then `value : type`
+epl [run] [--fuel N] [path]   check and evaluate (at most N steps): print each
+                              top-level binding's type and the program's, then
+                              its value, as `fhm run` does
 epl check [path]              check only; print the program's type
 epl diagnose [path]           editor JSON: the first error, if any
 ```
 
 Each command reads `path`, or standard input if there is none. `run` and
-`check` print an error as `path:line:col: message` on standard error and exit
-with status 1.
+`check` print an error as `[stage] path:line:col: message` on standard error
+and exit with status 1. Output is coloured on a terminal (or with
+`FORCE_COLOR`, and not with `NO_COLOR`).
 
 `diagnose` prints the shape `fhm diagnose` does (version 3), so the editor
 extension can share its code. Positions are 1-based UTF-16, with an exclusive
@@ -117,24 +119,70 @@ def diagnose (source : String) : Json :=
     ("tokens", Json.arr (tokenRows lines source))] ++
     (programTy.map fun ty => [("programTy", Json.str ty)]).getD []
 
+/-! ## Terminal output, in `fhm run`'s style -/
+
+/-- Whether to colour output: `FORCE_COLOR` wins, then `NO_COLOR`, else
+whether standard output is a terminal. -/
+structure Ansi where
+  on : Bool
+
+def Ansi.mkIO : IO Ansi := do
+  if (← IO.getEnv "FORCE_COLOR").isSome then return ⟨true⟩
+  if (← IO.getEnv "NO_COLOR").isSome then return ⟨false⟩
+  return ⟨← (← IO.getStdout).isTty⟩
+
+/-- Paint `text` with SGR `code` (combine attributes in one code). -/
+def Ansi.wrap (ansi : Ansi) (code text : String) : String :=
+  if ansi.on then s!"\x1b[{code}m{text}\x1b[0m" else text
+
+/-- A duration in the largest unit that keeps it above 1. -/
+def formatDuration (ns : Nat) : String :=
+  if ns < 1000 then s!"{ns}ns"
+  else if ns < 1000000 then s!"{ns / 1000}µs"
+  else if ns < 1000000000 then s!"{ns / 1000000}ms"
+  else
+    let hundredths := (ns % 1000000000) / 10000000
+    s!"{ns / 1000000000}.{if hundredths < 10 then "0" else ""}{hundredths}s"
+
+def formatTiming (ansi : Ansi) (label : String) (ns : Nat) : String :=
+  ansi.wrap "2" s!"  ({label} in {formatDuration ns})"
+
+/-- `  name  :  type` -/
+def formatBinding (ansi : Ansi) (name ty : String) (nameCode : String := "1;36") : String :=
+  s!"  {ansi.wrap nameCode name}  {ansi.wrap "2" ":"}  {ansi.wrap "34" ty}"
+
 def report (name : String) (error : Error) : IO UInt32 := do
-  IO.eprintln s!"{name}:{error.render}"
+  let ansi ← Ansi.mkIO
+  let stage := error.code.drop "epl.".length
+  IO.eprintln s!"{ansi.wrap "1;31" s!"[{stage}]"} {ansi.wrap "31" s!"{name}:{error.render}"}"
   pure 1
 
-/-- Print the top-level bindings' types, then the value and its type. -/
+/-- Print the top-level bindings' types and the program's, then the value. -/
 def runCommand (fuel : Nat) (path : Option String) : IO UInt32 := do
   let (source, name) ← readSource path
+  let ansi ← Ansi.mkIO
+  let start ← IO.monoNanosNow
   match checkWithTypes source with
   | .error error => report name error
-  | .ok (lowering, _, types) =>
-    let bindings := lowering.bindingTypes (lowering.symbols types)
-    for binding in bindings do IO.println binding
-    unless bindings.isEmpty do IO.println ""
+  | .ok (lowering, result, types) =>
+    let checked ← IO.monoNanosNow
+    for (binding, ty) in lowering.bindingTypes (lowering.symbols types) do
+      IO.println (formatBinding ansi binding ty)
+    IO.println (formatBinding ansi "<program>" (showSemTy lowering.globals result.ty) "1;35")
+    IO.println (formatTiming ansi "checked" (checked - start))
+    IO.println ""
+    IO.println (ansi.wrap "33" "evaluating…")
+    (← IO.getStdout).flush
+    let start ← IO.monoNanosNow
+    -- `run` checks the program again: `evaluate` is what proves the result.
     match run source fuel with
-    | .ok (lowering, value, ty) =>
-        let value := (value.map (showValue lowering.globals)).getD
-          s!"<ran out of fuel after {fuel} steps>"
-        IO.println s!"{value} : {showSemTy lowering.globals ty}"
+    | .ok (lowering, value, _) =>
+        let evaluated ← IO.monoNanosNow
+        let value := match value with
+          | some value => ansi.wrap "96" (showValue lowering.globals value)
+          | none => ansi.wrap "33" s!"<ran out of fuel after {fuel} steps>"
+        IO.println s!"{ansi.wrap "1;92" "⟹"}  {value}"
+        IO.println (formatTiming ansi "evaluated" (evaluated - start))
         pure 0
     | .error error => report name error
 

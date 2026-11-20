@@ -238,9 +238,10 @@ node's type is the one at the same path in the `TypeTree` as its `Origin`, so
 expression its own. Spans stay out of the core term.
 
 The `epl` executable (`lake build epl`) runs a file (`epl [run] [--fuel N]
-file.epl`, printing each top-level binding's type and then the value), checks
-it (`epl check`), or prints editor JSON (`epl diagnose`, the shape `fhm
-diagnose` prints: the first error, symbols with types, and tokens). The editor
+file.epl`, printing each top-level binding's type and the program's, then its
+value, as `fhm run` does), checks it (`epl check`), or prints editor JSON
+(`epl diagnose`, the shape `fhm diagnose` prints: the first error, symbols
+with types, and tokens). The editor
 extension in `editors/vscode` highlights `.epl` files, shows their first error,
 shows types on hover, goes to definitions, and runs files (`EPL: Run File`).
 `EPL/examples/playground.epl` is a tour.

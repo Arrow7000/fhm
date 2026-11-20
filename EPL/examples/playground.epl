@@ -16,8 +16,9 @@
 --   Mutual recursion is not supported.
 -- * Matches must be exhaustive, and every arm must be reachable.
 --
--- Running prints each top-level binding's type, then the program's value (its
--- last expression) with its type. Hover over a name to see its type there.
+-- Running prints the type of each top-level binding and of the program (its
+-- last expression), then the program's value. Hover over a name to see its
+-- type there.
 
 type Maybe a = Just a | Nothing
 

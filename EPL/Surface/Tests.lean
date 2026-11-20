@@ -169,7 +169,8 @@ even 4" == "1:5: mutual recursion is not supported: even, odd"
 /-- The top-level bindings' types, as `epl run` prints them. -/
 def bindingTypes (source : String) : List String :=
   match checkWithTypes source with
-  | .ok (lowering, _, types) => lowering.bindingTypes (lowering.symbols types)
+  | .ok (lowering, _, types) =>
+      (lowering.bindingTypes (lowering.symbols types)).map fun (name, ty) => s!"{name} : {ty}"
   | .error error => [error.render]
 
 /-- The definitions and uses of `name`: `line:col kind type`. -/

@@ -229,13 +229,16 @@ function runEplFile() {
   const fuel = vscode.workspace.getConfiguration("epl").get("run.fuel", 1000000);
   const name = path.basename(doc.uri.fsPath || "program.epl");
   output.appendLine(`> epl run ${name}`);
+  // The output channel shows no colours.
+  const env = { ...process.env, NO_COLOR: "1" };
+  delete env.FORCE_COLOR;
   const child = spawn(bin, ["run", "--fuel", String(fuel)], {
-    stdio: ["pipe", "pipe", "pipe"],
+    stdio: ["pipe", "pipe", "pipe"], env,
   });
   let text = "";
   child.stdout.on("data", (c) => { text += c.toString("utf8"); });
-  // Errors print as `<stdin>:line:col: message`; show the file's name instead.
-  child.stderr.on("data", (c) => { text += c.toString("utf8").replace(/^<stdin>/gm, name); });
+  // Errors print as `[stage] <stdin>:line:col: message`; show the file's name instead.
+  child.stderr.on("data", (c) => { text += c.toString("utf8").replace(/<stdin>:/g, `${name}:`); });
   child.on("error", (err) => output.appendLine(String(err)));
   child.on("close", () => {
     output.appendLine(text.trimEnd());

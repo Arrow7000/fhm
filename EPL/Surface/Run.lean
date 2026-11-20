@@ -286,15 +286,16 @@ def Lowering.symbols (lowering : Lowering) (types : TypeTree) : Array Symbol := 
       symbols := symbols.push symbol
   return symbols
 
-/-- The types of the top-level bindings, in source order: `name : type`. -/
-def Lowering.bindingTypes (lowering : Lowering) (symbols : Array Symbol) : List String :=
+/-- The top-level bindings and their types, in source order. -/
+def Lowering.bindingTypes (lowering : Lowering) (symbols : Array Symbol) :
+    List (String × String) :=
   let before (a b : NameInfo) : Bool :=
     a.span.start.line < b.span.start.line ||
       (a.span.start.line == b.span.start.line && a.span.start.col < b.span.start.col)
   let topLevel := (lowering.names.filter (·.topLevel)).mergeSort before
   topLevel.filterMap fun name =>
     (symbols.find? fun symbol => symbol.isDef && symbol.span == name.span).map fun symbol =>
-      s!"{name.name} : {symbol.ty}"
+      (name.name, symbol.ty)
 
 /-! ## Error messages -/
 
