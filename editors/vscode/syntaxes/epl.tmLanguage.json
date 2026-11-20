@@ -1,0 +1,110 @@
+{
+ "scopeName": "source.epl",
+ "repository": {
+  "strings": {
+   "patterns": [
+    {
+     "name": "constant.character.escape.epl",
+     "match": "\\\\[ntr0\\\\\"']"
+    }
+   ],
+   "name": "string.quoted.double.epl",
+   "end": "\"",
+   "begin": "\""
+  },
+  "punctuation": {
+   "name": "punctuation.epl",
+   "match": "(?:->|\\(|\\)|\\{|\\}|\\[|\\]|,|:|=|\\||\\\\|_)"
+  },
+  "operators": {
+   "name": "keyword.operator.epl",
+   "match": "(?:::|\\+|-|<)"
+  },
+  "numbers": {
+   "name": "constant.numeric.integer.epl",
+   "match": "-?\\b[0-9]+\\b"
+  },
+  "namedHoles": {
+   "name": "variable.other.type-hole.epl",
+   "match": "\\?[\\p{L}🌀-🫿☀-➿🇦-🇿][\\p{L}\\p{N}\\p{M}_🌀-🫿☀-➿🇦-🇿]*"
+  },
+  "keywords": {
+   "name": "keyword.control.epl",
+   "match": "\\b(?:let|in|match|with|if|then|else|type)\\b"
+  },
+  "identifiers": {
+   "name": "variable.other.epl",
+   "match": "\\b[\\p{L}🌀-🫿☀-➿🇦-🇿][\\p{L}\\p{N}\\p{M}_🌀-🫿☀-➿🇦-🇿]*"
+  },
+  "ctors": {
+   "name": "entity.name.type.epl",
+   "match": "\\b\\p{Lu}[\\p{L}\\p{N}\\p{M}_🌀-🫿☀-➿🇦-🇿]*"
+  },
+  "comments": {
+   "patterns": [
+    {
+     "name": "comment.line.double-dash.epl",
+     "match": "--.*$"
+    },
+    {
+     "include": "#blockComment"
+    }
+   ]
+  },
+  "chars": {
+   "name": "string.quoted.single.epl",
+   "match": "'(?:[^'\\\\]|\\\\[ntr0\\\\\"'])'"
+  },
+  "booleans": {
+   "name": "constant.language.boolean.epl",
+   "match": "\\b(?:True|False)\\b"
+  },
+  "blockComment": {
+   "patterns": [
+    {
+     "include": "#blockComment"
+    }
+   ],
+   "name": "comment.block.epl",
+   "end": "-/",
+   "begin": "/-"
+  }
+ },
+ "patterns": [
+  {
+   "include": "#comments"
+  },
+  {
+   "include": "#strings"
+  },
+  {
+   "include": "#chars"
+  },
+  {
+   "include": "#keywords"
+  },
+  {
+   "include": "#booleans"
+  },
+  {
+   "include": "#numbers"
+  },
+  {
+   "include": "#namedHoles"
+  },
+  {
+   "include": "#ctors"
+  },
+  {
+   "include": "#identifiers"
+  },
+  {
+   "include": "#operators"
+  },
+  {
+   "include": "#punctuation"
+  }
+ ],
+ "name": "EPL",
+ "$schema": "https://raw.githubusercontent.com/martinring/tmlanguage/master/tmlanguage.json"
+}

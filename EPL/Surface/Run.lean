@@ -20,8 +20,15 @@ inductive Error where
   /-- Inference rejected the program at `span`, with type variables `tyVars` in
   scope there. -/
   | infer (globals : Globals) (span : Span) (tyVars : List (String × Nat)) (error : InferError)
-  /-- The program is well typed but one of its matches is not exhaustive. -/
-  | notExhaustive
+  /-- The expression at `span`, of type `ty`, is applied to an argument but is
+  not a function. -/
+  | notAFunction (globals : Globals) (span : Span) (tyVars : List (String × Nat)) (ty : InfTy)
+  /-- The program is well typed but a match at `span` does not cover the
+  constructor `ctor`. -/
+  | notExhaustive (span : Span) (ctor : String)
+  /-- The core rejects a match that the lowering did not record as partial.
+  Not expected to happen. -/
+  | notExhaustiveUnlocated
   deriving Repr
 
 def frontEnd (source : String) : Except Error Lowering := do
@@ -29,18 +36,58 @@ def frontEnd (source : String) : Except Error Lowering := do
   let program ← (parseProgram tokens).mapError .parse
   (lowerProgram program).mapError .lower
 
+/-- The subterm at `path`, if it is there. -/
+def _root_.EPL.Expr.at? {A : Type} : EPL.Expr A → List ExprStep → Option (EPL.Expr A)
+  | expr, [] => some expr
+  | .lambda _ body, .lambdaBody :: path
+  | .app body _, .appFunction :: path
+  | .app _ body, .appArgument :: path
+  | .letIn _ body _, .letRhs :: path
+  | .letIn _ _ body, .letBody :: path
+  | .fix _ body, .fixBody :: path
+  | .match body _, .matchScrutinee :: path => body.at? path
+  | .match _ branches, .matchBranch index :: path =>
+      (branches[index]?).bind fun (_, body) => body.at? path
+  | _, _ => none
+
+def Origin.children : Origin → List Origin
+  | .node _ _ children => children
+
 /-- Locate an inference error. The program's undetermined type is reported at
-its final expression. -/
+its final expression. An application's mismatch is reported at its argument,
+as one between the argument's type and the parameter's, or at its function if
+that is not a function at all. -/
 def Lowering.inferError (lowering : Lowering) (error : InferError) : Error :=
   let origin := lowering.origin.locate error.path
-  match error.reason with
-  | .undeterminedType _ => .infer lowering.globals lowering.body [] error
-  | _ => .infer lowering.globals origin.span origin.tyVars error
+  let at_ (index : Nat) := (origin.children[index]?).getD origin
+  match error.reason, lowering.term.at? error.path with
+  | .undeterminedType _, _ => .infer lowering.globals lowering.body [] error
+  -- Inference unified the function's type `actual` with `argument -> ?result`.
+  | .mismatch (.arrow argument (.var _)) (.arrow parameter _) cause, some (.app ..) =>
+      let cause := match cause with
+        | .clash left right => .clash right left
+        | cause => cause
+      let arg := at_ 1
+      .infer lowering.globals arg.span arg.tyVars
+        ⟨error.path ++ [.appArgument], .mismatch parameter argument cause⟩
+  | .mismatch (.arrow _ (.var _)) (.var _) _, some (.app ..) =>
+      .infer lowering.globals origin.span origin.tyVars error
+  | .mismatch (.arrow _ (.var _)) actual _, some (.app ..) =>
+      let function := at_ 0
+      .notAFunction lowering.globals function.span function.tyVars actual
+  | _, _ => .infer lowering.globals origin.span origin.tyVars error
 
-/-- Infer the type of a program. -/
+/-- The error for a well-typed program whose matches are not all exhaustive. -/
+def Lowering.notExhaustive (lowering : Lowering) : Error :=
+  match lowering.uncovered with
+  | (span, ctor) :: _ => .notExhaustive span ctor
+  | [] => .notExhaustiveUnlocated
+
+/-- Infer the type of a program and check that its matches are exhaustive. -/
 def check (source : String) : Except Error (Lowering × InferenceResult) := do
   let lowering ← frontEnd source
   let result ← (infer lowering.sig lowering.term).mapError lowering.inferError
+  unless lowering.uncovered.isEmpty do throw lowering.notExhaustive
   pure (lowering, result)
 
 /-- Infer the type of a program and run it for at most `fuel` steps: its value
@@ -50,7 +97,7 @@ def run (source : String) (fuel : Nat := 100000) :
   let lowering ← frontEnd source
   match evaluate lowering.sig lowering.term fuel with
   | .error (.rejected error) => throw (lowering.inferError error)
-  | .error .notExhaustive => throw .notExhaustive
+  | .error .notExhaustive => throw lowering.notExhaustive
   | .ok ⟨result, outcome⟩ => pure (lowering, outcome.value?, result.ty)
 
 /-! ## Printing -/
@@ -228,6 +275,13 @@ def _root_.EPL.InferErrorReason.describe (showTy : InfTy → String) : InferErro
   | .emptyMatch => "a match needs an arm"
   | .unknownType => "unknown type in a pattern"
   | .foreignPattern => "this pattern's type differs from the others'"
+  | .mismatch expected actual (.clash left right) =>
+      -- The cause only adds something if it is about parts of the types.
+      if left = actual ∧ right = expected then
+        s!"type mismatch: expected `{showTy expected}`, found `{showTy actual}`"
+      else
+        s!"type mismatch: expected `{showTy expected}`, found `{showTy actual}` \
+          ({(UnifyError.clash left right).describe showTy})"
   | .mismatch expected actual cause =>
       s!"type mismatch: expected `{showTy expected}`, found `{showTy actual}` \
         ({cause.describe showTy})"
@@ -240,15 +294,20 @@ def Error.span : Error → Option Span
   | .lex error => some ⟨error.pos, error.pos⟩
   | .parse error => some error.span
   | .lower error => some error.span
-  | .infer _ span .. => some span
-  | .notExhaustive => none
+  | .infer _ span .. | .notAFunction _ span .. => some span
+  | .notExhaustive span _ => some span
+  | .notExhaustiveUnlocated => none
 
 def Error.message : Error → String
   | .lex error => error.reason.describe
   | .parse error => error.reason.describe
   | .lower error => error.reason.describe
   | .infer globals _ tyVars error => error.reason.describe (showInfTy globals tyVars)
-  | .notExhaustive => "a match does not cover every case"
+  | .notAFunction globals _ tyVars ty =>
+      s!"this is applied to an argument, but its type `{showInfTy globals tyVars ty}` \
+        is not a function type"
+  | .notExhaustive _ ctor => s!"this match does not cover the case `{ctor}`"
+  | .notExhaustiveUnlocated => "a match does not cover every case"
 
 /-- `line:col: message` -/
 def Error.render (error : Error) : String :=

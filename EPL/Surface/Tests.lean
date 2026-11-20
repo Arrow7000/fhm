@@ -47,7 +47,7 @@ open EPL.Surface
 map (\\x -> x + 1) [1, 2, 3]" == "[2, 3, 4] : List Int"
 -- Without one, a binding is monomorphic.
 #guard runToString "let id x = x\n(id 1, id True)" ==
-  "2:8: type mismatch: expected `Bool -> ?5`, found `Int -> Int` (`Int` is not `Bool`)"
+  "2:11: type mismatch: expected `Int`, found `Bool`"
 -- Holes in a head are completed from the definition.
 #guard runToString "let k {a} (x : a) : _ = 1\nk True" == "1 : Int"
 #guard runToString "let f (x : ?t) : ?t = x + 1\nf 2" == "3 : Int"
@@ -96,7 +96,13 @@ let toList {a} (t : Tree a) : List a =
 toList (insert 1 (insert 3 (insert 2 Leaf)))") == "[1] : List Int"
 -- A match that misses a case is rejected before running.
 #guard runToString (maybe ++ "match Just 3 with\n| Just x -> x") ==
-  "a match does not cover every case"
+  "2:7: this match does not cover the case `Nothing`"
+#guard runToString "match [1, 2] with\n| [] -> 0\n| [x] -> x" ==
+  "3:3: this match does not cover the case `Cons`"
+#guard runToString "match (True, False) with\n| (True, _) -> 0\n| (_, True) -> 1" ==
+  "2:3: this match does not cover the case `False`"
+#guard runToString (maybe ++ "let f m = match m with\n  | Just x -> x\nf (Just 1)") ==
+  "2:17: this match does not cover the case `Nothing`"
 
 /-! ## Errors, in pipeline order -/
 
@@ -134,8 +140,12 @@ let odd n = if n < 1 then False else even (n - 1)
 even 4" == "1:5: mutual recursion is not supported: even, odd"
 #guard runToString "let (a, b) = (1, a)\nb" == "1:5: a pattern binding cannot be recursive: a"
 -- Inference, located through the lowering's origins
-#guard runToString "1 + 'c'" ==
-  "1:1: type mismatch: expected `Char -> ?1`, found `Int -> Int` (`Int` is not `Char`)"
+-- An application's mismatch is reported at its argument.
+#guard runToString "1 + 'c'" == "1:5: type mismatch: expected `Int`, found `Char`"
+#guard runToString "let f (xs : List Int) = xs\nf [True]" ==
+  "2:3: type mismatch: expected `List Int`, found `List Bool` (`Bool` is not `Int`)"
+#guard runToString "let x = 1\nx 'a'" ==
+  "2:1: this is applied to an argument, but its type `Int` is not a function type"
 #guard runToString "let f {a} (x : a) : Int = x\n1" ==
   "1:5: type mismatch: expected `a -> Int`, found `?0 -> ?0` (`a` is not `Int`)"
 #guard runToString "\\x -> x x" ==
@@ -145,7 +155,7 @@ even 4" == "1:5: mutual recursion is not supported: even, odd"
     (`?0` cannot be `a`: a type variable would escape its scope)"
 #guard runToString "let g (x : _) = x\ng" == "2:1: the program's type `?1 -> ?1` is not determined"
 #guard runToString "if 1 then 2 else 3" ==
-  "1:4: type mismatch: expected `Bool`, found `Int` (`Int` is not `Bool`)"
+  "1:4: type mismatch: expected `Bool`, found `Int`"
 
 /-! ## Evaluation -/
 

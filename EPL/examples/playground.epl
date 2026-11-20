@@ -1,0 +1,117 @@
+-- An EPL playground.
+--
+-- Run it with `EPL: Run File` (the ▶ button in the editor title, or
+-- Cmd+Alt+R), or from a terminal:
+--
+--     lake build epl && .lake/build/bin/epl EPL/examples/playground.epl
+--
+-- The syntax is FHM's, plus string literals ("abc" is a `List Char`). What
+-- differs is what gets accepted:
+--
+-- * Polymorphism is explicit. A binding is polymorphic only if its head has an
+--   annotation: `{a b}` names its type variables, `(x : a)` annotates a
+--   parameter, and `: T` after the parameters is the result type. A binding
+--   without any annotation is monomorphic.
+-- * A binding may call itself, but only at the type it is being defined at.
+--   Mutual recursion is not supported.
+-- * Matches must be exhaustive, and every arm must be reachable.
+--
+-- The program's value is its last expression, printed with its type.
+
+type Maybe a = Just a | Nothing
+
+type Tree a = Leaf | Node (Tree a) a (Tree a)
+
+-- Lists
+
+let map {a b} (f : a -> b) (xs : List a) : List b =
+  match xs with
+  | [] -> []
+  | x :: rest -> f x :: map f rest
+
+let filter {a} (keep : a -> Bool) (xs : List a) : List a =
+  match xs with
+  | [] -> []
+  | x :: rest -> if keep x then x :: filter keep rest else filter keep rest
+
+let foldr {a b} (f : a -> b -> b) (init : b) (xs : List a) : b =
+  match xs with
+  | [] -> init
+  | x :: rest -> f x (foldr f init rest)
+
+let append {a} (xs : List a) (ys : List a) : List a = foldr (\x acc -> x :: acc) ys xs
+
+let reverse {a} (xs : List a) : List a = foldr (\x acc -> append acc [x]) [] xs
+
+let length {a} (xs : List a) : Int = foldr (\_ n -> n + 1) 0 xs
+
+let zip {a b} (xs : List a) (ys : List b) : List (a, b) =
+  match (xs, ys) with
+  | (x :: xs, y :: ys) -> (x, y) :: zip xs ys
+  | _ -> []
+
+-- `range 1 5` is [1, 2, 3, 4, 5].
+let range (from : Int) (to : Int) : List Int =
+  if to < from then [] else from :: range (from + 1) to
+
+-- Numbers: there is only `+`, `-` and `<`, so multiplication is a loop.
+
+let times (m : Int) (n : Int) : Int = if n < 1 then 0 else m + times m (n - 1)
+
+let factorial (n : Int) : Int = if n < 1 then 1 else times n (factorial (n - 1))
+
+let sum (xs : List Int) : Int = foldr (\x y -> x + y) 0 xs
+
+-- Options
+
+let lookup {k v} (eq : k -> k -> Bool) (key : k) (table : List (k, v)) : Maybe v =
+  match table with
+  | [] -> Nothing
+  | (k, v) :: rest -> if eq key k then Just v else lookup eq key rest
+
+let withDefault {a} (default : a) (m : Maybe a) : a =
+  match m with
+  | Just x -> x
+  | Nothing -> default
+
+let intEq (m : Int) (n : Int) : Bool = if m < n then False else if n < m then False else True
+
+-- A binary search tree
+
+let insert (x : Int) (t : Tree Int) : Tree Int =
+  match t with
+  | Leaf -> Node Leaf x Leaf
+  | Node l y r -> if x < y then Node (insert x l) y r else Node l y (insert x r)
+
+let toList {a} (t : Tree a) : List a =
+  match t with
+  | Leaf -> []
+  | Node l x r -> append (toList l) (x :: toList r)
+
+let sort (xs : List Int) : List Int = toList (foldr insert Leaf xs)
+
+-- Unannotated bindings are fine when they are used at one type.
+let squares = map (\n -> times n n) (range 1 5)
+let names = [(1, "one"), (2, "two"), (3, "three")]
+
+-- Things to try (uncomment one at a time):
+--
+-- An unannotated binding is monomorphic, so this is a type error; giving it
+-- the head `let id {a} (x : a) : a = x` fixes it.
+--   let id x = x
+--   let both = (id 1, id True)
+--
+-- A missing case is an error:
+--   let unwrap {a} (m : Maybe a) : a = match m with
+--     | Just x -> x
+--
+-- Mutual recursion is not supported:
+--   let even (n : Int) : Bool = if n < 1 then True else odd (n - 1)
+--   let odd (n : Int) : Bool = if n < 1 then False else even (n - 1)
+
+-- Tuples are pairs, so the results are nested pairs.
+( (sort [5, 3, 8, 1, 4], zip "abc" (range 1 10))
+, ( (squares, (sum squares, factorial 5))
+  , (reverse "hello", withDefault "?" (lookup intEq 2 names))
+  )
+)

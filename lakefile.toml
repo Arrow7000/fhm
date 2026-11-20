@@ -73,6 +73,11 @@ name = "EPLSurface"
 # runner. `lake build EPLSurface`.
 globs = ["EPL.Surface.+"]
 
+[[lean_exe]]
+name = "epl"
+root = "EPL.Surface.Main"
+# `epl run`, `epl check` and `epl diagnose` for `.epl` files; `lake build epl`.
+
 [[lean_lib]]
 name = "FHMExamples"
 # Executable examples and audit canaries; build with `lake build FHMExamples`.

@@ -9,8 +9,9 @@
 # scripts/install-cursor-extension.sh.
 #
 # After install: Developer: Reload Window (or restart the editor).
-# Highlighting works immediately. Parse squiggles need:
-#   lake build fhm
+# Highlighting works immediately. Diagnostics need:
+#   lake build fhm   (for .fhm files)
+#   lake build epl   (for .epl files)
 set -euo pipefail
 
 ROOT="$(cd "$(dirname "$0")/.." && pwd)"
@@ -52,4 +53,4 @@ echo "linked $TARGET -> $EXT_SRC"
 echo
 echo "Next: reload the window (Cmd+Shift+P → Developer: Reload Window)."
 echo "Edit editors/vscode/ or regenerate the grammar; reload again to pick up changes."
-echo "Parse diagnostics: lake build fhm (binary at .lake/build/bin/fhm)."
+echo "Diagnostics: lake build fhm (.fhm files) and lake build epl (.epl files)."

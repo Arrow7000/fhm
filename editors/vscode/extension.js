@@ -32,13 +32,27 @@ let nextRequestGeneration = 0;
 const symbolCache = new Map();
 
 /**
+ * The languages this extension checks, by VS Code language id: each has its
+ * own settings section and binary (`lake build fhm` / `lake build epl`), and
+ * both binaries print the same `diagnose` JSON. EPL has no hover symbols yet.
+ * @type {Record<string, { section: string, bin: string, pathSetting: string }>}
+ */
+const LANGUAGES = {
+  fhm: { section: "fhm", bin: "fhm", pathSetting: "diagnosePath" },
+  epl: { section: "epl", bin: "epl", pathSetting: "path" },
+};
+
+/**
  * @param {vscode.WorkspaceFolder | undefined} folder
+ * @param {string} [languageId]
  * @returns {string | undefined}
  */
-function resolveDiagnoseBin(folder) {
+function resolveDiagnoseBin(folder, languageId = "fhm") {
+  const lang = LANGUAGES[languageId];
+  if (!lang) return undefined;
   const configured = vscode.workspace
-    .getConfiguration("fhm")
-    .get("diagnosePath", "");
+    .getConfiguration(lang.section)
+    .get(lang.pathSetting, "");
   if (configured && typeof configured === "string" && configured.length > 0) {
     return configured;
   }
@@ -48,7 +62,7 @@ function resolveDiagnoseBin(folder) {
     ".lake",
     "build",
     "bin",
-    "fhm"
+    lang.bin
   );
   return fs.existsSync(candidate) ? candidate : undefined;
 }
@@ -57,18 +71,19 @@ function resolveDiagnoseBin(folder) {
  * @param {vscode.TextDocument} doc
  */
 async function refreshDiagnostics(doc) {
-  if (doc.languageId !== "fhm" || doc.uri.scheme !== "file") return;
+  const lang = LANGUAGES[doc.languageId];
+  if (!lang || doc.uri.scheme !== "file") return;
 
-  const cfg = vscode.workspace.getConfiguration("fhm");
+  const cfg = vscode.workspace.getConfiguration(lang.section);
   const diagnosticsEnabled = cfg.get("diagnostics.enable", true);
   if (!diagnosticsEnabled) {
     diagnostics.set(doc.uri, []);
   }
 
   const folder = vscode.workspace.getWorkspaceFolder(doc.uri);
-  const bin = resolveDiagnoseBin(folder);
+  const bin = resolveDiagnoseBin(folder, doc.languageId);
   if (!bin) {
-    // Highlighting still works; diagnostics need `lake build fhm`.
+    // Highlighting still works; diagnostics need `lake build fhm` / `lake build epl`.
     return;
   }
 
@@ -104,7 +119,7 @@ async function refreshDiagnostics(doc) {
         } catch (err) {
           reject(
             new Error(
-              `fhm diagnose parse failed (exit ${code}): ${stderr || String(err)}`
+              `${lang.bin} diagnose parse failed (exit ${code}): ${stderr || String(err)}`
             )
           );
         }
@@ -143,7 +158,7 @@ async function refreshDiagnostics(doc) {
     diagnostics.set(doc.uri, diags);
   } catch (err) {
     // Keep last good diagnostics/symbols; surface once via console for debugging.
-    console.error("[fhm]", err);
+    console.error(`[${lang.bin}]`, err);
   }
 }
 
@@ -151,7 +166,8 @@ async function refreshDiagnostics(doc) {
  * @param {vscode.TextDocument} doc
  */
 function scheduleRefresh(doc) {
-  if (doc.languageId !== "fhm") return;
+  const lang = LANGUAGES[doc.languageId];
+  if (!lang) return;
   const key = doc.uri.toString();
   // A range is tied to a specific buffer snapshot.  Never answer hovers with
   // offsets from the previous snapshot while this edit is debounced.
@@ -159,7 +175,7 @@ function scheduleRefresh(doc) {
   const prev = pending.get(key);
   if (prev) clearTimeout(prev);
   const ms = vscode.workspace
-    .getConfiguration("fhm")
+    .getConfiguration(lang.section)
     .get("diagnostics.debounceMs", 300);
   pending.set(
     key,
@@ -187,10 +203,56 @@ function currentSymbols(doc) {
   return cache;
 }
 
+/** @type {vscode.OutputChannel | undefined} */
+let eplOutput;
+
+/**
+ * `EPL: Run File`: run the active `.epl` buffer with `epl run` and show the
+ * result (or the first error) in the EPL output channel.
+ */
+function runEplFile() {
+  const editor = vscode.window.activeTextEditor;
+  if (!editor || editor.document.languageId !== "epl") {
+    void vscode.window.showInformationMessage("Open an .epl file to run it.");
+    return;
+  }
+  const doc = editor.document;
+  const folder = vscode.workspace.getWorkspaceFolder(doc.uri);
+  const bin = resolveDiagnoseBin(folder, "epl");
+  if (!eplOutput) eplOutput = vscode.window.createOutputChannel("EPL");
+  const output = eplOutput;
+  output.show(true);
+  if (!bin) {
+    output.appendLine("No epl binary: run `lake build epl`, or set `epl.path`.");
+    return;
+  }
+  const fuel = vscode.workspace.getConfiguration("epl").get("run.fuel", 1000000);
+  const name = path.basename(doc.uri.fsPath || "program.epl");
+  output.appendLine(`> epl run ${name}`);
+  const child = spawn(bin, ["run", "--fuel", String(fuel)], {
+    stdio: ["pipe", "pipe", "pipe"],
+  });
+  let text = "";
+  child.stdout.on("data", (c) => { text += c.toString("utf8"); });
+  // Errors print as `<stdin>:line:col: message`; show the file's name instead.
+  child.stderr.on("data", (c) => { text += c.toString("utf8").replace(/^<stdin>/gm, name); });
+  child.on("error", (err) => output.appendLine(String(err)));
+  child.on("close", () => {
+    output.appendLine(text.trimEnd());
+    output.appendLine("");
+  });
+  child.stdin.write(doc.getText(), "utf8");
+  child.stdin.end();
+}
+
 /** @param {vscode.ExtensionContext} context */
 function activate(context) {
   diagnostics = vscode.languages.createDiagnosticCollection("fhm");
   context.subscriptions.push(diagnostics);
+
+  context.subscriptions.push(
+    vscode.commands.registerCommand("epl.run", runEplFile)
+  );
 
   context.subscriptions.push(
     vscode.languages.registerHoverProvider("fhm", {

@@ -1,0 +1,75 @@
+"use strict";
+// Run: lake build epl && node editors/vscode/test/epl-integration.cjs
+// Only the VS Code host API is simulated. The extension spawns the real
+// workspace `epl` binary for an `.epl` document and publishes its diagnostics.
+const assert = require("node:assert/strict");
+const Module = require("node:module");
+const path = require("node:path");
+const root = path.resolve(__dirname, "../../..");
+assert(require("node:fs").existsSync(path.join(root, ".lake/build/bin/epl")), "Run lake build epl before this integration test");
+
+const settings = { "diagnostics.debounceMs": 0, "diagnostics.enable": true };
+const listeners = {};
+const markerSets = [];
+const disposable = () => ({ dispose() {} });
+const vscode = {
+  workspace: {
+    getConfiguration: () => ({ get: (key, fallback) => settings[key] ?? fallback }),
+    getWorkspaceFolder: () => ({ uri: { fsPath: root } }),
+    textDocuments: [],
+    ...Object.fromEntries(["Change", "Open", "Close", "Save"].map(kind => [
+      `onDid${kind}TextDocument`, callback => { listeners[kind] = callback; return disposable(); }
+    ])),
+  },
+  languages: {
+    createDiagnosticCollection: () => ({
+      set(uri, markers) { markerSets.push({ uri: uri.toString(), markers }); },
+      delete() {}, dispose() {},
+    }),
+    registerHoverProvider: disposable,
+    registerDefinitionProvider: disposable,
+  },
+  commands: { registerCommand: disposable },
+  Range: class Range { constructor(...args) { this.args = args; } },
+  Diagnostic: class Diagnostic { constructor(range, message, severity) { Object.assign(this, { range, message, severity }); } },
+  DiagnosticSeverity: { Error: 0, Warning: 1 },
+};
+const originalLoad = Module._load;
+Module._load = function(request, parent, isMain) {
+  if (request === "vscode") return vscode;
+  return originalLoad.call(this, request, parent, isMain);
+};
+let extension;
+try { extension = require("../extension.js"); }
+finally { Module._load = originalLoad; }
+extension.activate({ subscriptions: [] });
+
+let text = "";
+const uri = { scheme: "file", fsPath: "/tmp/editor-test.epl", toString: () => "file:///tmp/editor-test.epl" };
+const doc = { languageId: "epl", uri, version: 0, getText: () => text, lineAt: line => ({ text: text.split("\n")[line] }) };
+async function update(source, open = false) {
+  const before = markerSets.length;
+  text = source; doc.version++;
+  if (open) listeners.Open(doc); else listeners.Change({ document: doc });
+  const until = Date.now() + 15000;
+  while (markerSets.length === before) {
+    if (Date.now() > until) throw new Error("diagnose publication timed out");
+    await new Promise(resolve => setTimeout(resolve, 10));
+  }
+  return markerSets.at(-1).markers.map(d => ({ message: d.message, range: d.range.args }));
+}
+
+(async () => {
+  assert.deepEqual(await update("let id {a} (x : a) : a = x\n(id 1, id True)\n", true), []);
+  assert.deepEqual(await update("let id x = x\n(id 1, id True)\n"), [
+    { message: "Type mismatch: expected `Int`, found `Bool`.", range: [1, 10, 1, 14] },
+  ]);
+  // Positions are UTF-16: the emoji takes two columns.
+  assert.deepEqual(await update("let 🌀 = 1\n🌀 'a'\n"), [
+    { message: "This is applied to an argument, but its type `Int` is not a function type.", range: [1, 0, 1, 2] },
+  ]);
+  assert.deepEqual(await update("type Maybe a = Just a | Nothing\nmatch Just 1 with\n| Just x -> x\n"), [
+    { message: "This match does not cover the case `Nothing`.", range: [1, 6, 1, 12] },
+  ]);
+  console.log("VS Code EPL integration: PASS (4 real-backend scenarios)");
+})().catch(err => { console.error(err); process.exit(1); });

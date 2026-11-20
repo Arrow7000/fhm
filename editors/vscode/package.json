@@ -1,7 +1,7 @@
 {
   "name": "fhm",
   "displayName": "FHM",
-  "description": "FHM surface language — syntax highlighting, parse diagnostics, and type-on-hover",
+  "description": "FHM and EPL surface languages — syntax highlighting, diagnostics, type-on-hover (FHM) and running (EPL)",
   "version": "0.0.1",
   "publisher": "fhm",
   "engines": {
@@ -11,7 +11,9 @@
     "Programming Languages"
   ],
   "activationEvents": [
-    "onLanguage:fhm"
+    "onLanguage:fhm",
+    "onLanguage:epl",
+    "onCommand:epl.run"
   ],
   "main": "./extension.js",
   "contributes": {
@@ -26,6 +28,17 @@
           ".fhm"
         ],
         "configuration": "./language-configuration.json"
+      },
+      {
+        "id": "epl",
+        "aliases": [
+          "EPL",
+          "epl"
+        ],
+        "extensions": [
+          ".epl"
+        ],
+        "configuration": "./language-configuration.json"
       }
     ],
     "grammars": [
@@ -33,27 +46,89 @@
         "language": "fhm",
         "scopeName": "source.fhm",
         "path": "./syntaxes/fhm.tmLanguage.json"
+      },
+      {
+        "language": "epl",
+        "scopeName": "source.epl",
+        "path": "./syntaxes/epl.tmLanguage.json"
       }
     ],
-    "configuration": {
-      "title": "FHM",
-      "properties": {
-        "fhm.diagnosePath": {
-          "type": "string",
-          "default": "",
-          "description": "Absolute path to fhm binary. Empty = search workspace .lake/build/bin/fhm."
-        },
-        "fhm.diagnostics.debounceMs": {
-          "type": "number",
-          "default": 300,
-          "description": "Debounce for parse diagnostics on document change."
-        },
-        "fhm.diagnostics.enable": {
-          "type": "boolean",
-          "default": true,
-          "description": "Run parse-only diagnostics on didChange."
+    "configuration": [
+      {
+        "title": "FHM",
+        "properties": {
+          "fhm.diagnosePath": {
+            "type": "string",
+            "default": "",
+            "description": "Absolute path to fhm binary. Empty = search workspace .lake/build/bin/fhm."
+          },
+          "fhm.diagnostics.debounceMs": {
+            "type": "number",
+            "default": 300,
+            "description": "Debounce for parse diagnostics on document change."
+          },
+          "fhm.diagnostics.enable": {
+            "type": "boolean",
+            "default": true,
+            "description": "Run parse-only diagnostics on didChange."
+          }
+        }
+      },
+      {
+        "title": "EPL",
+        "properties": {
+          "epl.path": {
+            "type": "string",
+            "default": "",
+            "description": "Absolute path to the epl binary. Empty = search workspace .lake/build/bin/epl."
+          },
+          "epl.diagnostics.debounceMs": {
+            "type": "number",
+            "default": 300,
+            "description": "Debounce for diagnostics on document change."
+          },
+          "epl.diagnostics.enable": {
+            "type": "boolean",
+            "default": true,
+            "description": "Show diagnostics on change."
+          },
+          "epl.run.fuel": {
+            "type": "number",
+            "default": 1000000,
+            "description": "Evaluation steps `EPL: Run File` allows."
+          }
         }
       }
-    }
+    ],
+    "commands": [
+      {
+        "command": "epl.run",
+        "title": "EPL: Run File",
+        "icon": "$(play)"
+      }
+    ],
+    "menus": {
+      "editor/title": [
+        {
+          "command": "epl.run",
+          "when": "editorLangId == epl",
+          "group": "navigation"
+        }
+      ],
+      "commandPalette": [
+        {
+          "command": "epl.run",
+          "when": "editorLangId == epl"
+        }
+      ]
+    },
+    "keybindings": [
+      {
+        "command": "epl.run",
+        "key": "ctrl+alt+r",
+        "mac": "cmd+alt+r",
+        "when": "editorLangId == epl"
+      }
+    ]
   }
 }

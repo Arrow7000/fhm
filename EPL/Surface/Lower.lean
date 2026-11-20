@@ -24,7 +24,8 @@ import EPL.Surface.Syntax
   compiled to nested core matches on one constructor at a time (a decision
   tree), splitting on the leftmost column whose first row is a constructor.
   An arm that no input reaches is rejected. A constructor no row covers is left
-  out, so the core match is partial (and `evaluate` rejects the program).
+  out, so the core match is partial (and `evaluate` rejects the program); the
+  lowering records where, for the error message.
 * **Origins.** Alongside the term, lowering builds an `Origin` tree of the same
   shape that records each core node's source span, so an `InferError`'s path
   leads to a span.
@@ -281,7 +282,14 @@ def Scope.list (scope : Scope) (span : Span) (items : List Lowered) : Lowered :=
 
 /-- Lowering reads the declarations and counts the fresh hole names it has
 made. -/
-abbrev M := ReaderT Globals (StateT Nat (Except LowerError))
+structure LowerState where
+  /-- The number of fresh holes made so far. -/
+  holes : Nat := 0
+  /-- Each constructor a match leaves out, with where the value it misses is
+  matched: the scrutinee, or the pattern whose field it is. -/
+  uncovered : Array (Span × String) := #[]
+
+abbrev M := ReaderT Globals (StateT LowerState (Except LowerError))
 
 def findCtor (span : Span) (name : String) : M (CtorRef × Nat) := do
   match (← read).findCtor name with
@@ -290,7 +298,7 @@ def findCtor (span : Span) (name : String) : M (CtorRef × Nat) := do
 
 /-- A hole no source annotation can name (source names start with a letter). -/
 def freshHole : M Template := do
-  let index ← modifyGet fun index => (index, index + 1)
+  let index ← modifyGet fun state => (state.holes, { state with holes := state.holes + 1 })
   pure (.var s!"_{index}")
 
 /-- Lower an annotation in `scope`: its type variables must be in scope. -/
@@ -371,6 +379,12 @@ def firstCtor : List RPat → Nat → Option (Nat × Span × CtorRef)
   | .any _ :: rest, column => firstCtor rest (column + 1)
   | .ctor span _ ref _ :: _, column => some (column, span, ref)
 
+/-- The span of the first pattern for constructor `ref` in `column` of `rows`. -/
+def ctorSpan (column : Nat) (ref : CtorRef) (rows : List Row) : Option Span :=
+  rows.findSome? fun row => match row.pats[column]? with
+    | some (RPat.ctor span _ other _) => if other = ref then some span else none
+    | _ => none
+
 /-- The rows that match constructor `index` (with `arity` fields) of `type` in
 `column`, whose value is the variable at `level`: its fields replace the
 column. -/
@@ -414,11 +428,15 @@ def compile (leaf : Nat → Scope → M Lowered) (span : Span) :
           let some info := (← read).types[ref.type]? | throw ⟨span, .tooDeep⟩
           let (level, levelSpan) := columns.getD column (0, span)
           let others := columns.eraseIdx column
-          let results ← info.ctors.zipIdx.mapM fun ((_, arity), index) => do
-            let rows ← specialize column ref.type index arity level (row :: rows)
-            let fields := (List.range arity).map fun i => (scope.depth + i, patSpan)
+          let results ← info.ctors.zipIdx.mapM fun ((name, arity), index) => do
+            let specialized ← specialize column ref.type index arity level (row :: rows)
+            if specialized.isEmpty then
+              modify fun state => { state with uncovered := state.uncovered.push (levelSpan, name) }
+            -- A field's value is located at its constructor's pattern.
+            let fieldSpan := (ctorSpan column ⟨ref.type, index⟩ (row :: rows)).getD patSpan
+            let fields := (List.range arity).map fun i => (scope.depth + i, fieldSpan)
             let inner := { scope with depth := scope.depth + arity }
-            let (tree, reached) ← compile leaf span fuel inner (fields ++ others) rows
+            let (tree, reached) ← compile leaf span fuel inner (fields ++ others) specialized
             let branch := tree.map fun body =>
               ((⟨ref.type, index⟩ : CtorRef),
                 (List.range arity).foldr (init := body) fun _ body =>
@@ -624,12 +642,16 @@ structure Lowering where
   origin : Origin
   /-- The span of the program's final expression. -/
   body : Span
+  /-- The constructors that matches leave out, in the order found (see
+  `LowerState.uncovered`). The program is exhaustive exactly when this is
+  empty. -/
+  uncovered : List (Span × String)
 
 def lowerProgram (program : Program) : Except LowerError Lowering := do
   let (globals, sig) ← lowerDecls (preludeDecls ++ program.decls)
   let sorted ← sortBindings true program.bindings
   let fuel := 2 * (Expr.sizeBindings program.bindings + program.body.size) + 8
-  let (term, origin) ← (lowerChain fuel {} sorted program.body).run globals |>.run' 0
-  pure ⟨globals, sig, term, origin, program.body.span⟩
+  let ((term, origin), state) ← (lowerChain fuel {} sorted program.body).run globals |>.run {}
+  pure ⟨globals, sig, term, origin, program.body.span, state.uncovered.toList⟩
 
 end EPL.Surface

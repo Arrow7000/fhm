@@ -29,6 +29,17 @@ keep 1 True
 
 Here the result hole hovers as `(item, a)`, and parameter uses resolve to their head definitions. The annotation after the parameters is the return type. Missing annotations are inferred without creating source hole tokens. Authored forall names retain their order, including unused binders. A fully written signature permits polymorphic recursive calls; an omitted or holeful part keeps calls within its recursive component monomorphic.
 
+## EPL
+
+The same extension handles `.epl` files, for the explicit-polymorphism
+language in `EPL/` (same syntax as FHM, plus string literals):
+
+- **Syntax highlighting**, from a grammar derived from FHM's (`scripts/gen-fhm-tmgrammar.sh` writes both).
+- **Diagnostics on edit**: the program's first error, from `epl diagnose`. There is no hover or go-to-definition yet.
+- **`EPL: Run File`** (the ▶ button in the editor title, or Cmd+Alt+R / Ctrl+Alt+R) runs the buffer with `epl run` and prints `value : type`, or the error, in the EPL output channel.
+
+Build the binary with `lake build epl`. Settings: `epl.path` (default: the workspace's `.lake/build/bin/epl`), `epl.diagnostics.enable`, `epl.diagnostics.debounceMs`, and `epl.run.fuel` (evaluation steps, default 1000000). Try `EPL/examples/playground.epl`.
+
 ## Install via symlink (Cursor or VS Code)
 
 From the repo root:
@@ -36,6 +47,7 @@ From the repo root:
 ```bash
 scripts/gen-fhm-tmgrammar.sh          # once / when Lex keyword tables change
 lake build fhm                       # for diagnostics + hover types
+lake build epl                       # for .epl diagnostics and running
 scripts/install-cursor-extension.sh   # or scripts/install-vscode-extension.sh
 ```
 
@@ -97,6 +109,7 @@ node scripts/hm-editor-smoke.mjs
 node scripts/scratch-hm-audit.mjs
 node editors/vscode/test/lifecycle-regression.cjs
 node editors/vscode/test/anonymous-holes-integration.cjs
+lake build epl && node editors/vscode/test/epl-integration.cjs
 ```
 
 The lifecycle regression mocks the backend to test races. The anonymous-hole integration test uses the actual extension providers and real `fhm diagnose` processes, with only the VS Code host API simulated. It checks precise hole hovers, edits, diagnostics, definition lookup, recursive holes, copied match fallbacks, top-level pattern annotations, and scoped head parameters. It does not launch an editor window or test an LSP protocol.

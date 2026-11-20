@@ -33,6 +33,7 @@ const vscode = {
       assert.equal(language, "fhm"); definitionProvider = provider; return disposable();
     },
   },
+  commands: { registerCommand: () => ({ dispose() {} }) },
   Range: class Range { constructor(...args) { this.args = args; } },
   MarkdownString: class MarkdownString { constructor(value) { this.value = value; } },
   Hover: class Hover { constructor(contents, range) { this.contents = contents; this.range = range; } },

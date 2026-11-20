@@ -54,6 +54,7 @@ const vscode = {
       return { dispose() {} };
     },
   },
+  commands: { registerCommand: () => ({ dispose() {} }) },
   Location: class Location { constructor(...args) { this.args = args; } },
   Range: class Range { constructor(...args) { this.args = args; } },
   Diagnostic: class Diagnostic { constructor(range, message, severity) { Object.assign(this, { range, message, severity }); } },

@@ -219,9 +219,18 @@ Lowering (`Lower.lean`) produces the core term and signature:
 - Matches compile to nested core matches on one constructor at a time.
   Constructor patterns are checked against their arity, and unreachable arms
   are rejected. A case no arm covers is left out of the core match, so
-  `evaluate` rejects the program as not exhaustive.
+  `evaluate` rejects the program as not exhaustive; the lowering records the
+  constructor and where it is missed, for the error message.
 - An `Origin` tree of the core term's shape records each node's source span,
-  so an `InferError`'s path leads to the source.
+  so an `InferError`'s path leads to the source. A mismatch at an application
+  is reported at its argument (parameter type against argument type), or at
+  its function if that is not a function.
+
+The `epl` executable (`lake build epl`) runs a file (`epl [run] [--fuel N]
+file.epl`), checks it (`epl check`), or prints editor diagnostics as JSON
+(`epl diagnose`, the shape `fhm diagnose` prints). The editor extension in
+`editors/vscode` highlights `.epl` files, shows their first error, and runs
+them (`EPL: Run File`). `EPL/examples/playground.epl` is a tour.
 
 | File | Contents |
 |---|---|
@@ -230,4 +239,5 @@ Lowering (`Lower.lean`) produces the core term and signature:
 | `Surface/Parse.lean` | the parser (recursive descent, FHM's layout rules) |
 | `Surface/Lower.lean` | name resolution, binding order, pattern compilation, origins |
 | `Surface/Run.lean` | the pipeline, printing of types, values and errors |
+| `Surface/Main.lean` | the `epl` executable |
 | `Surface/Tests.lean` | whole-program tests, including one per error kind |
