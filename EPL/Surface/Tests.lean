@@ -277,6 +277,11 @@ def packPrelude : String :=
   "2 : Int"
 #guard (runToString (packPrelude ++ "match (p, p) with\n| (MkPack {t} x f, MkPack {u} y g) -> let k (a : t) (b : u) : Int = f b + g a in k x y")).startsWith
   "4:43: type mismatch"
+-- A pattern `let` opens a pack too: the rest of the block is its arm.
+#guard runToString (packPrelude ++ "let q =\n  let (MkPack {t} x f) = p in f x\nq") == "1 : Int"
+#guard runToString (packPrelude ++ "let (MkPack x f) = p\nf x") == "1 : Int"
+#guard runToString (packPrelude ++ "let q =\n  let (MkPack x f) = p in x\nq") ==
+  "4:27: type mismatch: expected `s -> (s -> Int) -> ?7`, found `?8 -> ?9 -> ?8` (`?7` cannot be `s`: a type variable would escape its scope)"
 -- Naming the wrong number of type variables, or one twice.
 #guard runToString (packPrelude ++ "match p with\n| MkPack {t u} x f -> 1") ==
   "4:3: `MkPack` has 1 type variable(s) of its own, but the pattern names 2"
