@@ -1023,4 +1023,63 @@ example : (match evaluate boolSig emptyMatch 10 with
     | .ok _ => none) = some (.rejected ⟨[], .emptyMatch⟩) := by
   decide
 
+/-! ## Existential constructors
+
+`Pack a = MkPack {s} s (s -> a)`: a value of some hidden type `s`, with a way
+to turn it into an `a`. A match on `MkPack` sees `s` as a fresh rigid type
+variable, and the match's result type may not mention it. -/
+
+/-- `Pack` as declaration 1 after `Bool`. -/
+def packSig : Signature := [boolDecl, ⟨1, [⟨1, [.bvar 1, .arrow (.bvar 1) (.bvar 0)]⟩]⟩]
+
+/-- `MkPack : forall a s. s -> (s -> a) -> Pack a`. -/
+example : packSig.ctorScheme ⟨1, 0⟩ =
+    some ⟨2, .arrow (.bvar 1) (.arrow (.arrow (.bvar 1) (.bvar 0)) (.app (.con 1) (.bvar 0)))⟩ := by
+  decide
+
+def mkPack : Expr A := .ctor ⟨1, 0⟩
+
+/-- A `Pack Int` hiding a `Bool`:
+`MkPack True (fun b => match b with True => 1 | False => 0)`. -/
+def packedBool : Source :=
+  .app (.app mkPack trueExpr)
+    (.lambda none (.match (.var 0) [(⟨0, 0⟩, one), (⟨0, 1⟩, .lit (.int 0))]))
+
+/-- `match packedBool with MkPack s f => f s`: applying the function to the
+hidden value is fine. -/
+def unpackApply : Source :=
+  .match packedBool [(⟨1, 0⟩, .lambda none (.lambda none (.app (.var 0) (.var 1))))]
+
+#guard tyOf packSig unpackApply = some int
+#guard evalOf packSig unpackApply = some (.lit (.int 1))
+-- Inside the branch, the hidden type is the rigid level 0.
+#guard (infer packSig unpackApply).toOption.map (·.elaboration) = some
+  (.match (.app (.app mkPack trueExpr)
+      (.lambda (some boolTy) (.match (.var 0) [(⟨0, 0⟩, .lit (.int 1)), (⟨0, 1⟩, .lit (.int 0))])))
+    [(⟨1, 0⟩, .lambda (some (.rigid 0)) (.lambda (some (.arrow (.rigid 0) int))
+      (.app (.var 0) (.var 1))))])
+
+/-- The path and unification failure of a rejected program's mismatch. -/
+def mismatchCause (sig : Signature) (src : Source) : Option (List ExprStep × UnifyError) :=
+  match errorOf sig src with
+  | some ⟨path, .mismatch _ _ cause⟩ => some (path, cause)
+  | _ => none
+
+/-- `match packedBool with MkPack s f => s`: returning the hidden value would
+let its type escape. The match's result type is `?7`, at level 0. -/
+def unpackEscape : Source :=
+  .match packedBool [(⟨1, 0⟩, .lambda none (.lambda none (.var 1)))]
+
+#guard mismatchCause packSig unpackEscape = some ([.matchBranch 0], .escape 7 (.rigid 0))
+
+/-- `(fun y => match packedBool with MkPack s f => f y) True`: the branch
+would need the outer `y : ?0` to have the hidden type. -/
+def unpackLeak : Source :=
+  .app (.lambda none
+    (.match packedBool [(⟨1, 0⟩, .lambda none (.lambda none (.app (.var 0) (.var 2))))]))
+    trueExpr
+
+#guard mismatchCause packSig unpackLeak =
+  some ([.appFunction, .lambdaBody, .matchBranch 0], .escape 0 (.rigid 0))
+
 end EPL.Tests

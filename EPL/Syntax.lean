@@ -241,7 +241,7 @@ The constructor's own variables do not occur in the type it constructs, so
 they are *existential*: building a value may pick any types for them, and a
 match that takes the value apart learns only that there are some such types
 (see the `match` rule of `TypingWith`). In
-`type AnyDb = {w} MkAnyDb (Db w)`, with `Db` declaration `d`, `MkAnyDb` is
+`type AnyDb = MkAnyDb {w} (Db w)`, with `Db` declaration `d`, `MkAnyDb` is
 `⟨1, [.app (.con d) (.bvar 0)]⟩` and has the scheme `forall w. Db w -> AnyDb`. -/
 structure CtorDecl where
   existentials : Nat
@@ -280,7 +280,7 @@ A constructor names a *value*. A *type* is named by its declaration's number,
        .plain [.bvar 0, .app (.con 1) (.bvar 0)]]⟩, -- 1: data List a = Nil | Cons a (List a)
   ⟨1, [.plain [], .plain [.bvar 0]]⟩,           -- 2: data Maybe a  = Nothing | Just a
   ⟨2, [.plain [.bvar 0, .bvar 1]]⟩,             -- 3: data Pair a b = MkPair a b
-  ⟨1, [⟨1, [.bvar 1, .arrow (.bvar 1) (.bvar 0)]⟩]⟩ ] -- 4: data Pack a = {s} MkPack s (s -> a)
+  ⟨1, [⟨1, [.bvar 1, .arrow (.bvar 1) (.bvar 0)]⟩]⟩ ] -- 4: data Pack a = MkPack {s} s (s -> a)
 ```
 
 declares these types:
