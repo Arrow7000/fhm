@@ -355,6 +355,38 @@ private theorem Ty.realize_arrows_instantiate (fields : List SemTy) (args : List
   congr 1
   exact List.map_congr_left fun field _ => Ty.realize_instantiate_lift field args valuation
 
+/-- Realization leaves the fresh rigid levels of a `rigidBlock` alone. -/
+private theorem Ty.realize_rigidBlock (k n : Nat) (valuation : Valuation) :
+    ((rigidBlock k n : List InfTy)).map (·.realize valuation) = rigidBlock k n := by
+  unfold rigidBlock
+  rw [List.map_map]
+  rfl
+
+/-- The realization of the branch bodies' expected type: the constructor's
+own variables are instantiated at fresh rigid levels, which realization keeps
+as they are. -/
+private theorem Ty.realize_branchExpected (ctor : CtorDecl) (args : List InfTy) (resultTy : InfTy)
+    (k : Nat) (valuation : Valuation) :
+    (Ty.arrows (ctor.fields.map fun field =>
+        field.lift.instantiate (args ++ rigidBlock k ctor.existentials)) resultTy).realize
+        valuation =
+      ctor.branchTy (args.map (·.realize valuation)) (rigidBlock k ctor.existentials)
+        (resultTy.realize valuation) := by
+  rw [Ty.realize_arrows, List.map_map]
+  congr 1
+  refine List.map_congr_left fun field _ => ?_
+  simp only [Function.comp_apply, Ty.realize_instantiate_lift, List.map_append,
+    Ty.realize_rigidBlock]
+
+/-- The fresh rigid levels of a `rigidBlock` allocate in any store. -/
+private theorem rigidBlock_allocated {store : MStore} {k n : Nat} :
+    ∀ arg ∈ (rigidBlock k n : List InfTy), arg.Allocated store := by
+  intro arg harg id hid
+  unfold rigidBlock at harg
+  simp only [List.mem_map, List.mem_range] at harg
+  obtain ⟨i, _, rfl⟩ := harg
+  simp [Ty.vars] at hid
+
 /-- Allocation of an arrow spine. -/
 private theorem Ty.allocated_arrows {store : MStore} {domains : List InfTy} {codomain : InfTy}
     (domainsAllocated : ∀ domain ∈ domains, domain.Allocated store)
@@ -365,6 +397,26 @@ private theorem Ty.allocated_arrows {store : MStore} {domains : List InfTy} {cod
   | cons domain rest ih =>
       exact Ty.allocated_arrow (domainsAllocated domain (by simp))
         (ih fun other hmem => domainsAllocated other (by simp [hmem]))
+
+/-- Allocation of the expected type of a match branch. -/
+private theorem arrows_instantiate_allocated {store : MStore} {ctor : CtorDecl}
+    {args : List InfTy} {resultTy : InfTy} {k : Nat}
+    (argsAllocated : ∀ arg ∈ args, arg.Allocated store)
+    (resultAllocated : resultTy.Allocated store) :
+    (Ty.arrows (ctor.fields.map fun field =>
+      field.lift.instantiate (args ++ rigidBlock k ctor.existentials)) resultTy).Allocated
+        store := by
+  apply Ty.allocated_arrows
+  · intro domain hdom
+    rw [List.mem_map] at hdom
+    obtain ⟨field, _, rfl⟩ := hdom
+    exact Ty.allocated_instantiate (field.lift) (args ++ rigidBlock k ctor.existentials) store
+      (fun id hid => by rw [Ty.vars_lift] at hid; simp at hid)
+      (fun arg harg => by
+        rcases List.mem_append.mp harg with h | h
+        · exact argsAllocated arg h
+        · exact rigidBlock_allocated arg h)
+  · exact resultAllocated
 
 /-- Allocation of a type-application spine. -/
 private theorem Ty.allocated_apps {store : MStore} (head : InfTy) (args : List InfTy)
@@ -487,16 +539,17 @@ private theorem TypingWith.match_inv {sig : Signature} {Det : LetCondition} {k :
           pattern.index < decl.ctors.length) ∧
         branchesElab.map (·.1) = branches.map (·.1) ∧
         TypingWith sig Det k ctx scrutinee scrutineeElab (Ty.apps (.con type) args) ∧
-        (∀ (i : Nat) pattern body bodyElab fields,
+        (∀ (i : Nat) pattern body bodyElab ctor,
           branches[i]? = some (pattern, body) →
           branchesElab[i]? = some (pattern, bodyElab) →
-          decl.ctors[pattern.index]? = some fields →
-          TypingWith sig Det k ctx body bodyElab
-            (Ty.arrows (fields.map (·.instantiate args)) ty)) ∧
+          decl.ctors[pattern.index]? = some ctor →
+          TypingWith sig Det (k + ctor.existentials) ctx body bodyElab
+            (ctor.branchTy args (rigidBlock k ctor.existentials) ty)) ∧
+        ty.WF k ∧
         elaboration = .match scrutineeElab branchesElab := by
   cases typing with
-  | «match» hscrut hdecl harity hne hpatterns hmap hall =>
-      exact ⟨_, _, _, _, _, hdecl, harity, hne, hpatterns, hmap, hscrut, hall, rfl⟩
+  | «match» hscrut hdecl harity hne hpatterns hmap hall hwf =>
+      exact ⟨_, _, _, _, _, hdecl, harity, hne, hpatterns, hmap, hscrut, hall, hwf, rfl⟩
 
 /-- A run that succeeds without touching the store on a closed, annotation-free
 type: only `sound` and `principal` remain to be proved. -/
@@ -680,8 +733,9 @@ theorem inferAt_spec_ctor {sig : Signature} (pre : InferPre k ctx store) :
 /-! ## Match
 
 `inferBranches` threads the store through the branches, so its specification
-is `InferSpec` lifted to a list: each branch body is checked against
-`fields[args] -> resultTy`. -/
+is `InferSpec` lifted to a list: each branch body is checked, one rigid level
+deeper per existential of its constructor, against
+`fields[args ++ fresh levels] -> resultTy` (`CtorDecl.branchTy`). -/
 
 /-- What a successful `inferBranches` run guarantees, given the scrutinee's
 type arguments `args` and the shared `resultTy`. -/
@@ -699,24 +753,25 @@ structure BranchesPost (sig : Signature) (k : Nat) (ctx : Ctx Nat) (decl : DataD
   branch elaborates as inferred, at its expected type. -/
   sound : ∀ valuation, result.2.Models valuation →
     store.Models valuation ∧
-      ∀ (i : Nat) pattern body bodyElab fields,
+      ∀ (i : Nat) pattern body bodyElab ctor,
         branches[i]? = some (pattern, body) →
         result.1[i]? = some (pattern, bodyElab) →
-        decl.ctors[pattern.index]? = some fields →
-        Elaborates sig k (ctx.realize valuation) body (bodyElab.realize valuation)
-          (Ty.arrows (fields.map (·.instantiate (args.map (·.realize valuation))))
+        decl.ctors[pattern.index]? = some ctor →
+        Elaborates sig (k + ctor.existentials) (ctx.realize valuation) body
+          (bodyElab.realize valuation)
+          (ctor.branchTy (args.map (·.realize valuation)) (rigidBlock k ctor.existentials)
             (resultTy.realize valuation))
   /-- Every typing of all the branches, under any model of the input, is a
   realization of the result. -/
   principal : ∀ valuation, store.Models valuation →
     ∀ branchesElab : List (CtorRef × Elab),
       branchesElab.map (·.1) = branches.map (·.1) →
-      (∀ (i : Nat) pattern body bodyElab fields,
+      (∀ (i : Nat) pattern body bodyElab ctor,
         branches[i]? = some (pattern, body) →
         branchesElab[i]? = some (pattern, bodyElab) →
-        decl.ctors[pattern.index]? = some fields →
-        Typing sig k (ctx.realize valuation) body bodyElab
-          (Ty.arrows (fields.map (·.instantiate (args.map (·.realize valuation))))
+        decl.ctors[pattern.index]? = some ctor →
+        Typing sig (k + ctor.existentials) (ctx.realize valuation) body bodyElab
+          (ctor.branchTy (args.map (·.realize valuation)) (rigidBlock k ctor.existentials)
             (resultTy.realize valuation))) →
       ∃ extended, result.2.Models extended ∧ Agree store.length valuation extended ∧
         result.1.map (fun branch => (branch.1, branch.2.realize extended)) = branchesElab
@@ -731,12 +786,12 @@ def BranchesSpec (sig : Signature) (k : Nat) (ctx : Ctx Nat) (decl : DataDecl)
   | .error _ => ∀ valuation, store.Models valuation →
       ∀ branchesElab : List (CtorRef × Elab),
         branchesElab.map (·.1) = branches.map (·.1) →
-        ¬ ∀ (i : Nat) pattern body bodyElab fields,
+        ¬ ∀ (i : Nat) pattern body bodyElab ctor,
           branches[i]? = some (pattern, body) →
           branchesElab[i]? = some (pattern, bodyElab) →
-          decl.ctors[pattern.index]? = some fields →
-          Elaborates sig k (ctx.realize valuation) body bodyElab
-            (Ty.arrows (fields.map (·.instantiate (args.map (·.realize valuation))))
+          decl.ctors[pattern.index]? = some ctor →
+          Elaborates sig (k + ctor.existentials) (ctx.realize valuation) body bodyElab
+            (ctor.branchTy (args.map (·.realize valuation)) (rigidBlock k ctor.existentials)
               (resultTy.realize valuation))
 
 /-- Proof: induction on `branches`, each body by its `InferSpec` and the
@@ -775,7 +830,7 @@ theorem inferBranches_spec {sig : Signature} {decl : DataDecl} {args : List InfT
           principal := ?_ }
       · intro valuation models
         refine ⟨models, ?_⟩
-        intro i pattern body bodyElab fields hbr hbrE hfields
+        intro i pattern body bodyElab ctor hbr hbrE hfields
         simp at hbr
       · intro valuation models branchesElab hmap _hall
         have hnil : branchesElab = [] := List.map_eq_nil_iff.mp hmap
@@ -785,10 +840,12 @@ theorem inferBranches_spec {sig : Signature} {decl : DataDecl} {args : List InfT
       obtain ⟨pattern, body⟩ := head
       intro store bodies indices pre argsWF argsAllocated argsLevels resultAllocated resultLevels
       have hbind : inferBranches sig k ctx decl args resultTy ((pattern, body) :: rest) store = (do
-          let fields ← decl.ctors[pattern.index]?.getDM
+          let ctor ← decl.ctors[pattern.index]?.getDM
             (throw ⟨[.matchBranch 0], .foreignPattern⟩)
-          let bodyResult ← (inferAt sig k ctx body store).mapError (.under (.matchBranch 0))
-          let expected := Ty.arrows (fields.map fun field => field.lift.instantiate args) resultTy
+          let inner := k + ctor.existentials
+          let bodyResult ← (inferAt sig inner ctx body store).mapError (.under (.matchBranch 0))
+          let expected := Ty.arrows (ctor.fields.map fun field =>
+            field.lift.instantiate (args ++ rigidBlock k ctor.existentials)) resultTy
           let store ← bodyResult.store.unifyAt [.matchBranch 0] bodyResult.ty expected
           let ((restElab, store), restTypes) ←
             (inferBranches sig k ctx decl args resultTy rest store).mapError InferError.nextBranch
@@ -799,64 +856,62 @@ theorem inferBranches_spec {sig : Signature} {decl : DataDecl} {args : List InfT
       | none =>
           have h : inferBranches sig k ctx decl args resultTy ((pattern, body) :: rest) store =
               .error ⟨[.matchBranch 0], .foreignPattern⟩ := by
-            rw [hbind, hfields]; rfl
+            simp only [hbind, hfields, Option.getDM, Bind.bind, Except.bind]
           simp only [BranchesSpec, h]
           intro valuation models branchesElab hmap hall
           have hidx := indices pattern hmem
           rw [List.getElem?_eq_none_iff] at hfields
           omega
-      | some fields =>
-          have hexpAlloc : (Ty.arrows (fields.map fun field => field.lift.instantiate args)
-              resultTy).Allocated store := by
-            apply Ty.allocated_arrows
-            · intro domain hdom
-              rw [List.mem_map] at hdom
-              obtain ⟨field, _, rfl⟩ := hdom
-              exact Ty.allocated_instantiate (field.lift) args store
-                (fun id hid => by rw [Ty.vars_lift] at hid; simp at hid) argsAllocated
-            · exact resultAllocated
-          cases hb : inferAt sig k ctx body store with
+      | some ctor =>
+          have hexpAlloc : (Ty.arrows (ctor.fields.map fun field =>
+              field.lift.instantiate (args ++ rigidBlock k ctor.existentials)) resultTy).Allocated
+              store :=
+            arrows_instantiate_allocated argsAllocated resultAllocated
+          cases hb : inferAt sig (k + ctor.existentials) ctx body store with
           | error bodyError =>
               have h : inferBranches sig k ctx decl args resultTy ((pattern, body) :: rest) store =
                   .error (.under (.matchBranch 0) bodyError) := by
-                rw [hbind, hfields, hb]; rfl
+                simp only [hbind, hfields, hb, Option.getDM, Bind.bind, Except.bind,
+                  Pure.pure, Except.pure, mapError_error]
               simp only [BranchesSpec, h]
               intro valuation models branchesElab hmap hall
               obtain ⟨headElab, tailElab, rfl, hheadElab, _⟩ := List.map_eq_cons_iff.mp hmap
               obtain ⟨patternElab, bodyElab⟩ := headElab
               simp only at hheadElab
               subst patternElab
-              have hbodyNone := bodies (pattern, body) (by simp) k ctx store pre
+              have hbodyNone := bodies (pattern, body) (by simp) (k + ctor.existentials) ctx store
+                (pre.deeper (by omega))
               unfold InferSpec at hbodyNone
               rw [hb] at hbodyNone
               exact hbodyNone valuation models bodyElab _
-                (hall 0 pattern body bodyElab fields (by simp) (by simp) hfields)
+                (hall 0 pattern body bodyElab ctor (by simp) (by simp) hfields)
           | ok bodyResult =>
-              have hbodyPost : InferPost sig k ctx body store bodyResult := by
-                have hspec := bodies (pattern, body) (by simp) k ctx store pre
+              have hbodyPost : InferPost sig (k + ctor.existentials) ctx body store bodyResult := by
+                have hspec := bodies (pattern, body) (by simp) (k + ctor.existentials) ctx store
+                  (pre.deeper (by omega))
                 unfold InferSpec at hspec
                 rw [hb] at hspec
                 simpa only using hspec
               have hgrow₁ : store.length ≤ bodyResult.store.length := hbodyPost.grows
               have hargsAlloc₁ : ∀ arg ∈ args, arg.Allocated bodyResult.store :=
                 fun arg harg => Ty.allocated_mono hgrow₁ (argsAllocated arg harg)
-              have hexpAlloc₁ : (Ty.arrows (fields.map fun field => field.lift.instantiate args)
-                  resultTy).Allocated bodyResult.store := by
-                apply Ty.allocated_arrows
-                · intro domain hdom
-                  rw [List.mem_map] at hdom
-                  obtain ⟨field, _, rfl⟩ := hdom
-                  exact Ty.allocated_instantiate (field.lift) args bodyResult.store
-                    (fun id hid => by rw [Ty.vars_lift] at hid; simp at hid) hargsAlloc₁
-                · exact Ty.allocated_mono hgrow₁ resultAllocated
+              have hexpAlloc₁ : (Ty.arrows (ctor.fields.map fun field =>
+                  field.lift.instantiate (args ++ rigidBlock k ctor.existentials))
+                  resultTy).Allocated bodyResult.store :=
+                arrows_instantiate_allocated hargsAlloc₁
+                  (Ty.allocated_mono hgrow₁ resultAllocated)
               cases hu : bodyResult.store.unify bodyResult.ty
-                  (Ty.arrows (fields.map fun field => field.lift.instantiate args) resultTy) with
+                  (Ty.arrows (ctor.fields.map fun field =>
+                    field.lift.instantiate (args ++ rigidBlock k ctor.existentials))
+                    resultTy) with
               | error cause =>
                   have h : inferBranches sig k ctx decl args resultTy
                       ((pattern, body) :: rest) store =
                       .error ⟨[.matchBranch 0], .mismatch
                         (bodyResult.store.apply (Ty.arrows
-                          (fields.map fun field => field.lift.instantiate args) resultTy))
+                          (ctor.fields.map fun field =>
+                            field.lift.instantiate (args ++ rigidBlock k ctor.existentials))
+                          resultTy))
                         (bodyResult.store.apply bodyResult.ty) cause⟩ := by
                     simp only [hbind, hfields, hb, MStore.unifyAt, Option.getDM,
                       Bind.bind, Except.bind, Pure.pure, Except.pure, mapError_ok, mapError_error, hu]
@@ -866,7 +921,7 @@ theorem inferBranches_spec {sig : Signature} {decl : DataDecl} {args : List InfT
                   obtain ⟨patternElab, bodyElab⟩ := headElab
                   simp only at hheadElab
                   subst patternElab
-                  have htyping := hall 0 pattern body bodyElab fields (by simp) (by simp) hfields
+                  have htyping := hall 0 pattern body bodyElab ctor (by simp) (by simp) hfields
                   obtain ⟨extended, hmodels, hagree, _, hty⟩ :=
                     hbodyPost.principal valuation models bodyElab _
                       (Elaborates.typing htyping)
@@ -877,9 +932,10 @@ theorem inferBranches_spec {sig : Signature} {decl : DataDecl} {args : List InfT
                   have hresultExt : resultTy.realize extended = resultTy.realize valuation :=
                     Ty.realize_congr resultAllocated (fun id hi => (hagree id hi).symm)
                   have hunifies : bodyResult.ty.realize extended =
-                      (Ty.arrows (fields.map fun field => field.lift.instantiate args)
+                      (Ty.arrows (ctor.fields.map fun field =>
+                        field.lift.instantiate (args ++ rigidBlock k ctor.existentials))
                         resultTy).realize extended := by
-                    rw [Ty.realize_arrows_instantiate, hargsExt, hresultExt]
+                    rw [Ty.realize_branchExpected, hargsExt, hresultExt]
                     exact hty
                   obtain ⟨result, hresult, _⟩ :=
                     MStore.unify_complete hbodyPost.safe hbodyPost.tyAllocated hexpAlloc₁
@@ -926,7 +982,7 @@ theorem inferBranches_spec {sig : Signature} {decl : DataDecl} {args : List InfT
                       obtain ⟨patternElab, bodyElab⟩ := headElab
                       simp only at hheadElab
                       subst patternElab
-                      have htyping := hall 0 pattern body bodyElab fields (by simp) (by simp) hfields
+                      have htyping := hall 0 pattern body bodyElab ctor (by simp) (by simp) hfields
                       obtain ⟨extended, hmodels, hagree, _, hty⟩ :=
                         hbodyPost.principal valuation models bodyElab _
                           (Elaborates.typing htyping)
@@ -937,9 +993,10 @@ theorem inferBranches_spec {sig : Signature} {decl : DataDecl} {args : List InfT
                       have hresultExt : resultTy.realize extended = resultTy.realize valuation :=
                         Ty.realize_congr resultAllocated (fun id hi => (hagree id hi).symm)
                       have hunifies : bodyResult.ty.realize extended =
-                          (Ty.arrows (fields.map fun field => field.lift.instantiate args)
+                          (Ty.arrows (ctor.fields.map fun field =>
+                            field.lift.instantiate (args ++ rigidBlock k ctor.existentials))
                             resultTy).realize extended := by
-                        rw [Ty.realize_arrows_instantiate, hargsExt, hresultExt]
+                        rw [Ty.realize_branchExpected, hargsExt, hresultExt]
                         exact hty
                       obtain ⟨result, hresult, hmodels'⟩ :=
                         MStore.unify_complete hbodyPost.safe hbodyPost.tyAllocated hexpAlloc₁
@@ -951,8 +1008,8 @@ theorem inferBranches_spec {sig : Signature} {decl : DataDecl} {args : List InfT
                       unfold BranchesSpec at hrestNone
                       rw [hr] at hrestNone
                       refine hrestNone extended hmodels' tailElab htailElab ?_
-                      intro i pat srcElab bodyElab' fields' hbr hbrElab hfields'
-                      have htyping' := hall (i + 1) pat srcElab bodyElab' fields'
+                      intro i pat srcElab bodyElab' ctor' hbr hbrElab hfields'
+                      have htyping' := hall (i + 1) pat srcElab bodyElab' ctor'
                         (by simpa using hbr) (by simpa using hbrElab) hfields'
                       rw [ctx_realize_congr_of_agree pre hagree, hargsExt, hresultExt]
                       exact htyping'
@@ -993,7 +1050,7 @@ theorem inferBranches_spec {sig : Signature} {decl : DataDecl} {args : List InfT
                         · exact Ty.allocated_mono hgrowFinal (hbodyPost.elabAllocated ann hann)
                         · exact hrestPost.elabAllocated branch hbranch ann hann
                       · intro start level hlt hstart hanch
-                        have h₁ := hbodyPost.anchored start level hlt hstart hanch
+                        have h₁ := hbodyPost.anchored start level (by omega) hstart hanch
                         have h₂ : store'.Anchored start level := MStore.unify_anchored h₁ hu
                         exact hrestPost.anchored start level hlt
                           (le_trans hstart hgrowAll) h₂
@@ -1004,21 +1061,21 @@ theorem inferBranches_spec {sig : Signature} {decl : DataDecl} {args : List InfT
                         obtain ⟨hmodelsStore, hbodyElab⟩ :=
                           hbodyPost.sound valuation hmodelsBody
                         refine ⟨hmodelsStore, ?_⟩
-                        intro i pat srcElab bodyElab' fields' hbr hbrElab hfields'
+                        intro i pat srcElab bodyElab' ctor' hbr hbrElab hfields'
                         cases i with
                         | zero =>
                             simp only [List.getElem?_cons_zero, Option.some.injEq,
                               Prod.mk.injEq] at hbr hbrElab
                             obtain ⟨rfl, rfl⟩ := hbr
                             obtain ⟨-, rfl⟩ := hbrElab
-                            have hfieldsEq : fields = fields' := by
+                            have hfieldsEq : ctor = ctor' := by
                               rw [hfields] at hfields'
                               exact Option.some.inj hfields'
                             subst hfieldsEq
-                            rw [← Ty.realize_arrows_instantiate, ← htyEq]
+                            rw [← Ty.realize_branchExpected, ← htyEq]
                             exact hbodyElab
                         | succ i =>
-                            exact hbranchesRest i pat srcElab bodyElab' fields'
+                            exact hbranchesRest i pat srcElab bodyElab' ctor'
                               (by simpa using hbr) (by simpa using hbrElab) hfields'
                       · -- principal
                         intro valuation models branchesElab hmap hall
@@ -1028,7 +1085,7 @@ theorem inferBranches_spec {sig : Signature} {decl : DataDecl} {args : List InfT
                         simp only at hheadElab
                         subst patternElab
                         have htyping :=
-                          hall 0 pattern body bodyElab fields (by simp) (by simp) hfields
+                          hall 0 pattern body bodyElab ctor (by simp) (by simp) hfields
                         obtain ⟨extended₁, hmodels₁, hagree₁, helab₁, hty₁⟩ :=
                           hbodyPost.principal valuation models bodyElab _ htyping
                         have hargs₁ : args.map (·.realize extended₁) =
@@ -1038,9 +1095,10 @@ theorem inferBranches_spec {sig : Signature} {decl : DataDecl} {args : List InfT
                         have hresult₁ : resultTy.realize extended₁ = resultTy.realize valuation :=
                           Ty.realize_congr resultAllocated (fun id hi => (hagree₁ id hi).symm)
                         have hunifies : bodyResult.ty.realize extended₁ =
-                            (Ty.arrows (fields.map fun field => field.lift.instantiate args)
+                            (Ty.arrows (ctor.fields.map fun field =>
+                              field.lift.instantiate (args ++ rigidBlock k ctor.existentials))
                               resultTy).realize extended₁ := by
-                          rw [Ty.realize_arrows_instantiate, hargs₁, hresult₁]
+                          rw [Ty.realize_branchExpected, hargs₁, hresult₁]
                           exact hty₁
                         obtain ⟨result, hresult, hmodels₂⟩ :=
                           MStore.unify_complete hbodyPost.safe hbodyPost.tyAllocated hexpAlloc₁
@@ -1048,16 +1106,17 @@ theorem inferBranches_spec {sig : Signature} {decl : DataDecl} {args : List InfT
                         rw [hu] at hresult
                         have hresultEq : result = store' := (Except.ok.inj hresult).symm
                         subst hresultEq
-                        have htypingRest : ∀ (i : Nat) pat srcElab bodyElab' fields',
+                        have htypingRest : ∀ (i : Nat) pat srcElab bodyElab' ctor',
                             rest[i]? = some (pat, srcElab) →
                             tailElab[i]? = some (pat, bodyElab') →
-                            decl.ctors[pat.index]? = some fields' →
-                            Typing sig k (ctx.realize extended₁) srcElab bodyElab'
-                              (Ty.arrows (fields'.map (·.instantiate
-                                (args.map (·.realize extended₁))))
+                            decl.ctors[pat.index]? = some ctor' →
+                            Typing sig (k + ctor'.existentials) (ctx.realize extended₁) srcElab
+                              bodyElab'
+                              (ctor'.branchTy (args.map (·.realize extended₁))
+                                (rigidBlock k ctor'.existentials)
                                 (resultTy.realize extended₁)) := by
-                          intro i pat srcElab bodyElab' fields' hbr hbrElab hfields'
-                          have htyping' := hall (i + 1) pat srcElab bodyElab' fields'
+                          intro i pat srcElab bodyElab' ctor' hbr hbrElab hfields'
+                          have htyping' := hall (i + 1) pat srcElab bodyElab' ctor'
                             (by simpa using hbr) (by simpa using hbrElab) hfields'
                           rw [ctx_realize_congr_of_agree pre hagree₁, hargs₁, hresult₁]
                           exact htyping'
@@ -1151,7 +1210,7 @@ theorem inferAt_spec_match {sig : Signature} {scrutinee : Source}
       simp only [InferSpec, h]
       intro valuation models elaboration ty typing
       obtain ⟨type, decl, args, scrutineeElab, branchesElab, hdecl, harity, hne,
-        hpatterns, hmap, hscrut, hall, helab⟩ := TypingWith.match_inv typing
+        hpatterns, hmap, hscrut, hall, _, helab⟩ := TypingWith.match_inv typing
       exact hne rfl
   | some headPair =>
       obtain ⟨first, second⟩ := headPair
@@ -1167,7 +1226,7 @@ theorem inferAt_spec_match {sig : Signature} {scrutinee : Source}
           simp only [InferSpec, h]
           intro valuation models elaboration ty typing
           obtain ⟨type, declTy, args, scrutineeElab, branchesElab, hdeclTy, harity,
-            hne, hpatterns, hmap, hscrut, hall, helab⟩ := TypingWith.match_inv typing
+            hne, hpatterns, hmap, hscrut, hall, _, helab⟩ := TypingWith.match_inv typing
           have htype : first.type = type := (hpatterns first hmemHead).1
           rw [← htype] at hdeclTy
           rw [hdecl] at hdeclTy
@@ -1185,7 +1244,7 @@ theorem inferAt_spec_match {sig : Signature} {scrutinee : Source}
                 simp only [InferSpec, h]
                 intro valuation models elaboration ty typing
                 obtain ⟨type, declTy, args, scrutineeElab, branchesElab, hdeclTy,
-                  harity, hne, hpatterns, hmap, hscrut, hall, helab⟩ := TypingWith.match_inv typing
+                  harity, hne, hpatterns, hmap, hscrut, hall, _, helab⟩ := TypingWith.match_inv typing
                 have hscrutNone := scrutineeSpec k ctx store pre
                 unfold InferSpec at hscrutNone
                 rw [hs] at hscrutNone
@@ -1233,7 +1292,7 @@ theorem inferAt_spec_match {sig : Signature} {scrutinee : Source}
                     simp only [InferSpec, h]
                     intro valuation models elaboration ty typing
                     obtain ⟨type, declTy, argsSem, scrutineeElab, branchesElab, hdeclTy,
-                      haritySem, hne, hpatterns, hmap, hscrut, hall, helab⟩ :=
+                      haritySem, hne, hpatterns, hmap, hscrut, hall, _, helab⟩ :=
                       TypingWith.match_inv typing
                     have htype : first.type = type := (hpatterns first hmemHead).1
                     rw [← htype] at hdeclTy
@@ -1343,7 +1402,7 @@ theorem inferAt_spec_match {sig : Signature} {scrutinee : Source}
                         simp only [InferSpec, h]
                         intro valuation models elaboration ty typing
                         obtain ⟨type, declTy, argsSem, scrutineeElab, branchesElab, hdeclTy,
-                          haritySem, hne, hpatterns, hmap, hscrut, hall, helab⟩ :=
+                          haritySem, hne, hpatterns, hmap, hscrut, hall, _, helab⟩ :=
                           TypingWith.match_inv typing
                         have htype : first.type = type := (hpatterns first hmemHead).1
                         rw [← htype] at hdeclTy
@@ -1423,16 +1482,19 @@ theorem inferAt_spec_match {sig : Signature} {scrutinee : Source}
                           show ext₃ storeU.length = ty
                           simp only [ext₃, Function.update]
                           simp
-                        have hallR : ∀ (i : Nat) pattern body bodyElab fields,
+                        have hallR : ∀ (i : Nat) pattern body bodyElab ctor,
                             ((first, second) :: restBranches)[i]? = some (pattern, body) →
                             branchesElab[i]? = some (pattern, bodyElab) →
-                            decl.ctors[pattern.index]? = some fields →
-                            Elaborates sig k (ctx.realize ext₃) body bodyElab
-                              (Ty.arrows (fields.map (·.instantiate
+                            decl.ctors[pattern.index]? = some ctor →
+                            Elaborates sig (k + ctor.existentials) (ctx.realize ext₃) body
+                              bodyElab
+                              (ctor.branchTy
                                 ((scrutineeResult.store.freshMany k decl.params).1.map
-                                  (·.realize ext₃)))) (((storeU.fresh k).1).realize ext₃)) := by
-                          intro i pattern body bodyElab fields hbr' hbrElab hfields'
-                          have h := hall i pattern body bodyElab fields hbr' hbrElab hfields'
+                                  (·.realize ext₃))
+                                (rigidBlock k ctor.existentials)
+                                (((storeU.fresh k).1).realize ext₃)) := by
+                          intro i pattern body bodyElab ctor hbr' hbrElab hfields'
+                          have h := hall i pattern body bodyElab ctor hbr' hbrElab hfields'
                           rw [ctx_realize_congr_of_agree pre hagreeVal₃, hargs₃.trans hargs₂,
                             hresult₃]
                           exact h
@@ -1553,18 +1615,20 @@ theorem inferAt_spec_match {sig : Signature} {scrutinee : Source}
                                   (·.realize valuation))) := by
                             rw [hreal, ← htyEq]
                             exact hscrutElab
-                          have hbranchesGoal : ∀ (i : Nat) pattern body bodyElab fields,
+                          have hbranchesGoal : ∀ (i : Nat) pattern body bodyElab ctor,
                               ((first, second) :: restBranches)[i]? = some (pattern, body) →
                               (branchResult.1.map
                                 (fun branch => (branch.1, branch.2.realize valuation)))[i]? =
                                 some (pattern, bodyElab) →
-                              decl.ctors[pattern.index]? = some fields →
-                              Elaborates sig k (ctx.realize valuation) body bodyElab
-                                (Ty.arrows (fields.map (·.instantiate
+                              decl.ctors[pattern.index]? = some ctor →
+                              Elaborates sig (k + ctor.existentials) (ctx.realize valuation)
+                                body bodyElab
+                                (ctor.branchTy
                                   ((scrutineeResult.store.freshMany k decl.params).1.map
-                                    (·.realize valuation)))) (((storeU.fresh k).1).realize
-                                      valuation)) := by
-                            intro i pattern body bodyElab fields hbr' hbrElab hfields'
+                                    (·.realize valuation))
+                                  (rigidBlock k ctor.existentials)
+                                  (((storeU.fresh k).1).realize valuation)) := by
+                            intro i pattern body bodyElab ctor hbr' hbrElab hfields'
                             rw [List.getElem?_map] at hbrElab
                             cases hlookup : branchResult.1[i]? with
                             | none => simp [hlookup] at hbrElab
@@ -1574,14 +1638,18 @@ theorem inferAt_spec_match {sig : Signature} {scrutinee : Source}
                                   Prod.mk.inj (Option.some.inj hbrElab)
                                 subst hpat
                                 rw [← hbody]
-                                exact hbranchesElab i branch.1 body branch.2 fields hbr'
+                                exact hbranchesElab i branch.1 body branch.2 ctor hbr'
                                   hlookup hfields'
+                          have hfreshWF : (((storeU.fresh k).1).realize valuation).WF k := by
+                            have hwf := ((MStore.models_append_unsolved (store := storeU)
+                              (count := 1) (level := k)).1 hmodelsR).2 0 (by simp)
+                            simpa [MStore.fresh_eq, Ty.realize, Ty.bind, Ty.subst] using hwf
                           simp only [Expr.realize, Expr.mapAnn, Expr.mapAnnBranches_eq]
                           exact TypingWith.«match» hscrutGoal hdecl
                             (by rw [List.length_map, hargsLength]) (by simp)
                             (fun pattern hmem => branches_all_facts hallCheck pattern hmem)
                             (by rw [List.map_map]; exact hbrPost.patterns)
-                            hbranchesGoal
+                            hbranchesGoal hfreshWF
                         · -- principal
                           intro valuation models elaboration ty typing
                           have htyWF : ty.WF k := by
@@ -1589,7 +1657,7 @@ theorem inferAt_spec_match {sig : Signature} {scrutinee : Source}
                               Ctx.realize_wf models pre.ctxWF pre.ctxAllocated pre.ctxLevels
                             exact TypingWith.regular hctxWF typing
                           obtain ⟨type, declTy, argsSem, scrutineeElab, branchesElab, hdeclTy,
-                            haritySem, hne, hpatterns, hmap, hscrut, hall, helab⟩ :=
+                            haritySem, hne, hpatterns, hmap, hscrut, hall, _, helab⟩ :=
                             TypingWith.match_inv typing
                           subst helab
                           have htype : first.type = type := (hpatterns first hmemHead).1
@@ -1666,16 +1734,19 @@ theorem inferAt_spec_match {sig : Signature} {scrutinee : Source}
                             show ext₃ storeU.length = ty
                             simp only [ext₃, Function.update]
                             simp
-                          have hallR : ∀ (i : Nat) pattern body bodyElab fields,
+                          have hallR : ∀ (i : Nat) pattern body bodyElab ctor,
                               ((first, second) :: restBranches)[i]? = some (pattern, body) →
                               branchesElab[i]? = some (pattern, bodyElab) →
-                              decl.ctors[pattern.index]? = some fields →
-                              Typing sig k (ctx.realize ext₃) body bodyElab
-                                (Ty.arrows (fields.map (·.instantiate
+                              decl.ctors[pattern.index]? = some ctor →
+                              Typing sig (k + ctor.existentials) (ctx.realize ext₃) body
+                                bodyElab
+                                (ctor.branchTy
                                   ((scrutineeResult.store.freshMany k decl.params).1.map
-                                    (·.realize ext₃)))) (((storeU.fresh k).1).realize ext₃)) := by
-                            intro i pattern body bodyElab fields hbr' hbrElab hfields'
-                            have h := hall i pattern body bodyElab fields hbr' hbrElab hfields'
+                                    (·.realize ext₃))
+                                  (rigidBlock k ctor.existentials)
+                                  (((storeU.fresh k).1).realize ext₃)) := by
+                            intro i pattern body bodyElab ctor hbr' hbrElab hfields'
+                            have h := hall i pattern body bodyElab ctor hbr' hbrElab hfields'
                             rw [ctx_realize_congr_of_agree pre hagreeVal₃, hargs₃.trans hargs₂,
                               hresult₃]
                             exact h
@@ -1712,7 +1783,7 @@ theorem inferAt_spec_match {sig : Signature} {scrutinee : Source}
             simp only [InferSpec, h]
             intro valuation models elaboration ty typing
             obtain ⟨type, declTy, args, scrutineeElab, branchesElab, hdeclTy, harity,
-              hne, hpatterns, hmap, hscrut, hall, helab⟩ := TypingWith.match_inv typing
+              hne, hpatterns, hmap, hscrut, hall, _, helab⟩ := TypingWith.match_inv typing
             have htype : first.type = type := (hpatterns first hmemHead).1
             rw [← htype] at hdeclTy
             rw [hdecl] at hdeclTy
