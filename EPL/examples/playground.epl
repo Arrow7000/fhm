@@ -104,6 +104,20 @@ let sort (xs : List Int) : List Int = toList (foldr insert Leaf xs)
 let squares = map (\n -> times n n) (range 1 5)
 let names = [(1, "one"), (2, "two"), (3, "three")]
 
+-- Hidden types
+
+/-- Something that can be shown, whatever it is: a value of some type `s` that
+    only the constructor knows, together with a way to show it. -/
+type Showable = MkShowable {s} s (s -> List Char)
+
+let showBool (b : Bool) : List Char = if b then "yes" else "no"
+let showSize (n : Int) : List Char = if n < 10 then "small" else "big"
+let things = [MkShowable True showBool, MkShowable 7 showSize, MkShowable "hi" (\s -> s)]
+
+/-- A match can use the hidden value with its function, but not return it. -/
+let show (thing : Showable) : List Char = match thing with
+  | MkShowable value toText -> toText value
+
 -- Things to try (uncomment one at a time):
 --
 -- An unannotated binding is monomorphic, so this is a type error; giving it
@@ -115,6 +129,10 @@ let names = [(1, "one"), (2, "two"), (3, "three")]
 --   let unwrap {a} (m : Maybe a) : a = match m with
 --     | Just x -> x
 --
+-- A hidden type cannot escape its match:
+--   let reveal (thing : Showable) = match thing with
+--     | MkShowable value toText -> value
+--
 -- Mutual recursion is not supported:
 --   let even (n : Int) : Bool = if n < 1 then True else odd (n - 1)
 --   let odd (n : Int) : Bool = if n < 1 then False else even (n - 1)
@@ -122,6 +140,6 @@ let names = [(1, "one"), (2, "two"), (3, "three")]
 -- Tuples are pairs, so the results are nested pairs.
 ( (sort [5, 3, 8, 1, 4], zip "abc" (range 1 10))
 , ( (squares, (sum squares, factorial 5))
-  , (reverse "hello", withDefault "?" (lookup intEq 2 names))
+  , ((reverse "hello", withDefault "?" (lookup intEq 2 names)), map show things)
   )
 )

@@ -88,9 +88,10 @@ car == other                            -- type error: Car v0 vs Car v1
 
 ## Plan
 
-1. **Existential type variables in constructors** (in progress): a
-   constructor may bind its own type variables; matching on it makes them
-   fresh rigids one level deeper, and the result must be well formed at the
-   outer level. Declarative rules first, then inference, then proofs.
+1. **Existential type variables in constructors** (done 2026-11-23, proved):
+   `type Pack a = MkPack {s} s (s -> a)`. Matching on such a constructor makes
+   its variables fresh rigids one level deeper, and the result must be well
+   formed at the outer level. Inside an arm the hidden type can be named as in
+   the declaration (`s`).
 2. `let!` sugar in the surface language.
 3. Affine `Db` and the "live `Db v` in scope" rule for field access.
