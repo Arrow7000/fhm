@@ -307,19 +307,6 @@ private theorem fresh_levelBounded {store : MStore} {k : Nat} :
   subst hid
   rw [MStore.append_unsolved_levelOf, if_neg (by omega), if_pos (by omega)]
 
-/-- Realization distributes over an arrow spine. -/
-private theorem Ty.realize_arrows (domains : List InfTy) (codomain : InfTy)
-    (valuation : Valuation) :
-    (Ty.arrows domains codomain).realize valuation =
-      Ty.arrows (domains.map (·.realize valuation)) (codomain.realize valuation) := by
-  induction domains with
-  | nil => rfl
-  | cons domain rest ih =>
-      change Ty.arrow (domain.realize valuation) ((Ty.arrows rest codomain).realize valuation) =
-        Ty.arrow (domain.realize valuation)
-          (Ty.arrows (rest.map (·.realize valuation)) (codomain.realize valuation))
-      rw [ih]
-
 /-- Realization distributes over a type-application spine. -/
 private theorem Ty.realize_apps (head : InfTy) (args : List InfTy) (valuation : Valuation) :
     (Ty.apps head args).realize valuation =
@@ -344,17 +331,6 @@ private theorem Ty.realize_instantiate_lift (field : SemTy) (args : List InfTy)
     rw [Ty.vars_lift] at hv
     simp at hv
 
-/-- The realization of the branch bodies' expected type. -/
-private theorem Ty.realize_arrows_instantiate (fields : List SemTy) (args : List InfTy)
-    (resultTy : InfTy) (valuation : Valuation) :
-    (Ty.arrows (fields.map fun field => field.lift.instantiate args) resultTy).realize
-        valuation =
-      Ty.arrows (fields.map fun field => field.instantiate (args.map (·.realize valuation)))
-        (resultTy.realize valuation) := by
-  rw [Ty.realize_arrows, List.map_map]
-  congr 1
-  exact List.map_congr_left fun field _ => Ty.realize_instantiate_lift field args valuation
-
 /-- Realization leaves the fresh rigid levels of a `rigidBlock` alone. -/
 private theorem Ty.realize_rigidBlock (k n : Nat) (valuation : Valuation) :
     ((rigidBlock k n : List InfTy)).map (·.realize valuation) = rigidBlock k n := by
@@ -371,7 +347,29 @@ private theorem Ctx.realize_fieldCtx (ctor : CtorDecl) (args : List InfTy) (k : 
         field.lift.instantiate (args ++ rigidBlock k ctor.existentials)).map Scheme.mono).reverse
         valuation =
       ctor.fieldCtx (args.map (·.realize valuation)) (rigidBlock k ctor.existentials) := by
-  sorry
+  unfold Ctx.realize CtorDecl.fieldCtx
+  simp only [List.map_reverse, List.map_map]
+  congr 1
+  apply List.map_congr_left
+  intro field _
+  simp only [Function.comp_apply, Scheme.realize_mono]
+  rw [Ty.realize_instantiate_lift, List.map_append, Ty.realize_rigidBlock]
+
+/-- Realization distributes over appending contexts. -/
+private theorem Ctx.realize_append (first second : Ctx Nat) (valuation : Valuation) :
+    Ctx.realize (first ++ second) valuation =
+      Ctx.realize first valuation ++ Ctx.realize second valuation :=
+  List.map_append
+
+/-- Realization of the context a branch body is inferred in. -/
+private theorem Ctx.realize_fieldCtx_append (ctor : CtorDecl) (args : List InfTy) (k : Nat)
+    (ctx : Ctx Nat) (valuation : Valuation) :
+    Ctx.realize (((ctor.fields.map fun field =>
+        field.lift.instantiate (args ++ rigidBlock k ctor.existentials)).map Scheme.mono).reverse ++
+        ctx) valuation =
+      ctor.fieldCtx (args.map (·.realize valuation)) (rigidBlock k ctor.existentials) ++
+        ctx.realize valuation := by
+  rw [Ctx.realize_append, Ctx.realize_fieldCtx]
 
 /-- The fresh rigid levels of a `rigidBlock` allocate in any store. -/
 private theorem rigidBlock_allocated {store : MStore} {k n : Nat} :
@@ -382,36 +380,80 @@ private theorem rigidBlock_allocated {store : MStore} {k n : Nat} :
   obtain ⟨i, _, rfl⟩ := harg
   simp [Ty.vars] at hid
 
-/-- Allocation of an arrow spine. -/
-private theorem Ty.allocated_arrows {store : MStore} {domains : List InfTy} {codomain : InfTy}
-    (domainsAllocated : ∀ domain ∈ domains, domain.Allocated store)
-    (codomainAllocated : codomain.Allocated store) :
-    (Ty.arrows domains codomain).Allocated store := by
-  induction domains with
-  | nil => exact codomainAllocated
-  | cons domain rest ih =>
-      exact Ty.allocated_arrow (domainsAllocated domain (by simp))
-        (ih fun other hmem => domainsAllocated other (by simp [hmem]))
+/-- The length of a rigid block. -/
+private theorem rigidBlock_length' (k n : Nat) : (rigidBlock k n : List InfTy).length = n := by
+  simp [rigidBlock]
 
-/-- Allocation of the expected type of a match branch. -/
-private theorem arrows_instantiate_allocated {store : MStore} {ctor : CtorDecl}
-    {args : List InfTy} {resultTy : InfTy} {k : Nat}
-    (argsAllocated : ∀ arg ∈ args, arg.Allocated store)
-    (resultAllocated : resultTy.Allocated store) :
-    (Ty.arrows (ctor.fields.map fun field =>
-      field.lift.instantiate (args ++ rigidBlock k ctor.existentials)) resultTy).Allocated
-        store := by
-  apply Ty.allocated_arrows
-  · intro domain hdom
-    rw [List.mem_map] at hdom
-    obtain ⟨field, _, rfl⟩ := hdom
-    exact Ty.allocated_instantiate (field.lift) (args ++ rigidBlock k ctor.existentials) store
-      (fun id hid => by rw [Ty.vars_lift] at hid; simp at hid)
-      (fun arg harg => by
-        rcases List.mem_append.mp harg with h | h
-        · exact argsAllocated arg h
-        · exact rigidBlock_allocated arg h)
-  · exact resultAllocated
+/-- Every member of a rigid block is well formed one block deeper. -/
+private theorem rigidBlock_wf' {k n : Nat} {arg : InfTy} (harg : arg ∈ rigidBlock k n) :
+    arg.WF (k + n) := by
+  unfold rigidBlock at harg
+  obtain ⟨i, hi, rfl⟩ := List.mem_map.mp harg
+  simp only [List.mem_range] at hi
+  show k + i < k + n
+  omega
+
+/-- The members of a rigid block are level-bounded everywhere. -/
+private theorem rigidBlock_levelBounded {store : MStore} {k n level : Nat} :
+    ∀ arg ∈ (rigidBlock k n : List InfTy), arg.LevelBounded store level := by
+  intro arg harg id hid
+  unfold rigidBlock at harg
+  obtain ⟨i, _, rfl⟩ := List.mem_map.mp harg
+  simp [Ty.vars] at hid
+
+/-- A branch's field, instantiated at the scrutinee's arguments and the
+constructor's fresh rigid levels, is well formed one block deeper. -/
+private theorem field_wf {decl : DataDecl} {ctor : CtorDecl} {field : SemTy} {args : List InfTy}
+    {k : Nat} (wf : decl.WF) (ctorMem : ctor ∈ decl.ctors) (fieldMem : field ∈ ctor.fields)
+    (arity : args.length = decl.params) (argsWF : ∀ arg ∈ args, arg.WF k) :
+    ((field.lift : InfTy).instantiate (args ++ rigidBlock k ctor.existentials)).WF
+      (k + ctor.existentials) := by
+  have hscheme : (⟨decl.params + ctor.existentials, (field.lift : InfTy)⟩ : Scheme Nat).WF 0 :=
+    (Ty.scoped_lift).2 (wf ctor ctorMem field fieldMem)
+  refine Scheme.inst_wf (scheme := ⟨decl.params + ctor.existentials, (field.lift : InfTy)⟩)
+    (args := args ++ rigidBlock k ctor.existentials) (k := 0)
+    (k' := k + ctor.existentials) hscheme (Nat.zero_le _) ?_ ?_
+  · rw [List.length_append, arity, rigidBlock_length']
+  · intro arg harg
+    rcases List.mem_append.mp harg with h | h
+    · exact Ty.Scoped.mono (argsWF arg h) (Nat.le_add_right k _) (le_refl 0)
+    · exact rigidBlock_wf' h
+
+/-- A branch's instantiated field mentions only allocated metavariables. -/
+private theorem field_allocated {store : MStore} {ctor : CtorDecl} {field : SemTy}
+    {args : List InfTy} {k : Nat} (argsAllocated : ∀ arg ∈ args, arg.Allocated store) :
+    ((field.lift : InfTy).instantiate (args ++ rigidBlock k ctor.existentials)).Allocated store :=
+  Ty.allocated_instantiate (field.lift) (args ++ rigidBlock k ctor.existentials) store
+    (fun id hid => by rw [Ty.vars_lift] at hid; simp at hid)
+    (fun arg harg => by
+      rcases List.mem_append.mp harg with h | h
+      · exact argsAllocated arg h
+      · exact rigidBlock_allocated arg h)
+
+/-- A branch's instantiated field is level-bounded one block deeper. -/
+private theorem field_levelBounded {store : MStore} {ctor : CtorDecl} {field : SemTy}
+    {args : List InfTy} {k : Nat}
+    (argsLevels : ∀ arg ∈ args, arg.LevelBounded store k) :
+    ((field.lift : InfTy).instantiate (args ++ rigidBlock k ctor.existentials)).LevelBounded
+      store (k + ctor.existentials) :=
+  Ty.levelBounded_instantiate (field.lift) (args ++ rigidBlock k ctor.existentials) store
+    (k + ctor.existentials)
+    (fun id hid => by rw [Ty.vars_lift] at hid; simp at hid)
+    (fun arg harg => by
+      rcases List.mem_append.mp harg with h | h
+      · exact fun id hid => le_trans (argsLevels arg h id hid) (Nat.le_add_right k _)
+      · exact rigidBlock_levelBounded arg h)
+
+/-- The entries of a branch's field context are the constructor's fields. -/
+private theorem mem_fieldCtx {ctor : CtorDecl} {args : List InfTy} {k : Nat} {scheme : Scheme Nat}
+    (hmem : scheme ∈ ((ctor.fields.map fun field =>
+      field.lift.instantiate (args ++ rigidBlock k ctor.existentials)).map Scheme.mono).reverse) :
+    ∃ field ∈ ctor.fields,
+      scheme = Scheme.mono (field.lift.instantiate (args ++ rigidBlock k ctor.existentials)) := by
+  rw [List.mem_reverse, List.mem_map] at hmem
+  obtain ⟨wrapped, hwrapped, rfl⟩ := hmem
+  obtain ⟨field, hfield, rfl⟩ := List.mem_map.mp hwrapped
+  exact ⟨field, hfield, rfl⟩
 
 /-- Allocation of a type-application spine. -/
 private theorem Ty.allocated_apps {store : MStore} (head : InfTy) (args : List InfTy)
@@ -809,7 +851,345 @@ theorem inferBranches_spec {sig : Signature} {decl : DataDecl} {args : List InfT
     (resultWF : resultTy.WF k) (resultAllocated : resultTy.Allocated store)
     (resultLevels : resultTy.LevelBounded store k) :
     BranchesSpec sig k ctx decl args resultTy branches store := by
-  sorry
+  -- `wf`, `arity` and `resultWF` are part of the statement but not needed below.
+  have _declWF : decl.WF := wf
+  have _arity : args.length = decl.params := arity
+  have _resultWF : resultTy.WF k := resultWF
+  revert store bodies indices pre argsAllocated argsLevels argsWF resultAllocated resultLevels
+  induction branches with
+  | nil =>
+      intro store bodies indices pre argsWF argsAllocated argsLevels resultAllocated resultLevels
+      have h : inferBranches sig k ctx decl args resultTy [] store = .ok (([], store), []) :=
+        rfl
+      simp only [BranchesSpec, h]
+      refine
+        { safe := pre.safe
+          grows := le_rfl
+          levels := fun _ _ => le_rfl
+          patterns := rfl
+          elabAllocated := by intro branch hmem; simp at hmem
+          anchored := fun start level hlt hstart hanch => hanch
+          sound := ?_
+          principal := ?_ }
+      · intro valuation models
+        refine ⟨models, ?_⟩
+        intro i pattern body bodyElab ctor hbr hbrE hfields
+        simp at hbr
+      · intro valuation models branchesElab hmap _hall
+        have hnil : branchesElab = [] := List.map_eq_nil_iff.mp hmap
+        subst hnil
+        exact ⟨valuation, models, fun _ _ => rfl, rfl⟩
+  | cons head rest ih =>
+      obtain ⟨pattern, body⟩ := head
+      intro store bodies indices pre argsWF argsAllocated argsLevels resultAllocated resultLevels
+      have hbind : inferBranches sig k ctx decl args resultTy ((pattern, body) :: rest) store = (do
+          let ctor ← decl.ctors[pattern.ctor.index]?.getDM
+            (throw ⟨[.matchBranch 0], .foreignPattern⟩)
+          let fieldTys := ctor.fields.map fun field =>
+            field.lift.instantiate (args ++ rigidBlock k ctor.existentials)
+          let bodyResult ← (inferAt sig (k + ctor.existentials)
+            ((fieldTys.map .mono).reverse ++ ctx) body store).mapError (.under (.matchBranch 0))
+          let store ← bodyResult.store.unifyAt [.matchBranch 0] bodyResult.ty resultTy
+          let ((restElab, store), restTypes) ←
+            (inferBranches sig k ctx decl args resultTy rest store).mapError InferError.nextBranch
+          pure (((pattern, bodyResult.elaboration) :: restElab, store),
+            .node resultTy (fieldTys.map (.node · []) ++ [bodyResult.types]) :: restTypes)) := rfl
+      have hmem : pattern ∈ ((pattern, body) :: rest).map (·.1) := by simp
+      cases hfields : decl.ctors[pattern.ctor.index]? with
+      | none =>
+          have h : inferBranches sig k ctx decl args resultTy ((pattern, body) :: rest) store =
+              .error ⟨[.matchBranch 0], .foreignPattern⟩ := by
+            simp only [hbind, hfields, Option.getDM, Bind.bind, Except.bind]
+          simp only [BranchesSpec, h]
+          intro valuation models branchesElab hmap hall
+          have hidx := indices pattern hmem
+          rw [List.getElem?_eq_none_iff] at hfields
+          omega
+      | some ctor =>
+          have hctorMem : ctor ∈ decl.ctors := List.mem_of_getElem? hfields
+          have hpreInner : InferPre (k + ctor.existentials)
+              (((ctor.fields.map fun field =>
+                field.lift.instantiate (args ++ rigidBlock k ctor.existentials)).map
+                Scheme.mono).reverse ++ ctx) store := by
+            refine ⟨pre.safe, ?_, ?_, ?_⟩
+            · intro scheme hmem
+              rcases List.mem_append.mp hmem with hmem | hmem
+              · obtain ⟨field, hfield, rfl⟩ := mem_fieldCtx hmem
+                exact field_wf wf hctorMem hfield arity argsWF
+              · exact Ty.Scoped.mono (pre.ctxWF scheme hmem) (Nat.le_add_right k _) le_rfl
+            · intro scheme hmem id hid
+              rcases List.mem_append.mp hmem with hmem | hmem
+              · obtain ⟨field, _, rfl⟩ := mem_fieldCtx hmem
+                exact field_allocated argsAllocated id hid
+              · exact pre.ctxAllocated scheme hmem id hid
+            · intro scheme hmem id hid
+              rcases List.mem_append.mp hmem with hmem | hmem
+              · obtain ⟨field, _, rfl⟩ := mem_fieldCtx hmem
+                exact field_levelBounded argsLevels id hid
+              · exact le_trans (pre.ctxLevels scheme hmem id hid) (Nat.le_add_right k _)
+          cases hb : inferAt sig (k + ctor.existentials)
+              (((ctor.fields.map fun field =>
+                field.lift.instantiate (args ++ rigidBlock k ctor.existentials)).map
+                Scheme.mono).reverse ++ ctx) body store with
+          | error bodyError =>
+              have h : inferBranches sig k ctx decl args resultTy ((pattern, body) :: rest) store =
+                  .error (.under (.matchBranch 0) bodyError) := by
+                simp only [hbind, hfields, hb, Option.getDM, Bind.bind, Except.bind,
+                  Pure.pure, Except.pure, mapError_error]
+              simp only [BranchesSpec, h]
+              intro valuation models branchesElab hmap hall
+              obtain ⟨headElab, tailElab, rfl, hheadElab, _⟩ := List.map_eq_cons_iff.mp hmap
+              obtain ⟨patternElab, bodyElab⟩ := headElab
+              simp only at hheadElab
+              subst patternElab
+              have hbodyNone := bodies (pattern, body) (by simp) (k + ctor.existentials) _ store
+                hpreInner
+              unfold InferSpec at hbodyNone
+              rw [hb] at hbodyNone
+              refine hbodyNone valuation models bodyElab (resultTy.realize valuation) ?_
+              rw [Ctx.realize_fieldCtx_append]
+              exact hall 0 pattern body bodyElab ctor (by simp) (by simp) hfields
+          | ok bodyResult =>
+              have hbodyPost : InferPost sig (k + ctor.existentials)
+                  (((ctor.fields.map fun field =>
+                    field.lift.instantiate (args ++ rigidBlock k ctor.existentials)).map
+                    Scheme.mono).reverse ++ ctx) body store bodyResult := by
+                have hspec := bodies (pattern, body) (by simp) (k + ctor.existentials) _ store
+                  hpreInner
+                unfold InferSpec at hspec
+                rw [hb] at hspec
+                simpa only using hspec
+              have hgrow₁ : store.length ≤ bodyResult.store.length := hbodyPost.grows
+              have hresultAlloc₁ : resultTy.Allocated bodyResult.store :=
+                Ty.allocated_mono hgrow₁ resultAllocated
+              cases hu : bodyResult.store.unify bodyResult.ty resultTy with
+              | error cause =>
+                  have h : inferBranches sig k ctx decl args resultTy
+                      ((pattern, body) :: rest) store =
+                      .error ⟨[.matchBranch 0], .mismatch
+                        (bodyResult.store.apply resultTy)
+                        (bodyResult.store.apply bodyResult.ty) cause⟩ := by
+                    simp only [hbind, hfields, hb, MStore.unifyAt, Option.getDM,
+                      Bind.bind, Except.bind, Pure.pure, Except.pure, mapError_ok, mapError_error, hu]
+                  simp only [BranchesSpec, h]
+                  intro valuation models branchesElab hmap hall
+                  obtain ⟨headElab, tailElab, rfl, hheadElab, _⟩ := List.map_eq_cons_iff.mp hmap
+                  obtain ⟨patternElab, bodyElab⟩ := headElab
+                  simp only at hheadElab
+                  subst patternElab
+                  have htyping : Typing sig (k + ctor.existentials)
+                      (Ctx.realize (((ctor.fields.map fun field =>
+                        field.lift.instantiate (args ++ rigidBlock k ctor.existentials)).map
+                        Scheme.mono).reverse ++ ctx) valuation)
+                      body bodyElab (resultTy.realize valuation) := by
+                    rw [Ctx.realize_fieldCtx_append]
+                    exact Elaborates.typing
+                      (hall 0 pattern body bodyElab ctor (by simp) (by simp) hfields)
+                  obtain ⟨extended, hmodels, hagree, _, hty⟩ :=
+                    hbodyPost.principal valuation models bodyElab _ htyping
+                  have hresultExt : resultTy.realize extended = resultTy.realize valuation :=
+                    Ty.realize_congr resultAllocated (fun id hi => (hagree id hi).symm)
+                  have hunifies : bodyResult.ty.realize extended = resultTy.realize extended :=
+                    hty.trans hresultExt.symm
+                  obtain ⟨result, hresult, _⟩ :=
+                    MStore.unify_complete hbodyPost.safe hbodyPost.tyAllocated hresultAlloc₁
+                      hmodels hunifies
+                  rw [hu] at hresult
+                  cases hresult
+              | ok store' =>
+                  have hgrow₂ : bodyResult.store.length ≤ store'.length :=
+                    le_of_eq (MStore.unify_length hu).symm
+                  have hgrowAll : store.length ≤ store'.length := le_trans hgrow₁ hgrow₂
+                  have hlevels' : ∀ id < store.length, store'.levelOf id ≤ store.levelOf id :=
+                    fun id hi => le_trans (MStore.unify_levelOf_le hu id) (hbodyPost.levels id hi)
+                  have hpre' : InferPre k ctx store' :=
+                    pre.extend (MStore.unify_safe hbodyPost.safe hbodyPost.tyAllocated
+                      hresultAlloc₁ hu) hgrowAll hlevels'
+                  have hargsAllocated' : ∀ arg ∈ args, arg.Allocated store' :=
+                    fun arg harg => Ty.allocated_mono hgrowAll (argsAllocated arg harg)
+                  have hargsLevels' : ∀ arg ∈ args, arg.LevelBounded store' k :=
+                    fun arg harg =>
+                      Ty.levelBounded_mono (argsAllocated arg harg) (argsLevels arg harg) hlevels'
+                  have hresultAllocated' : resultTy.Allocated store' :=
+                    Ty.allocated_mono hgrowAll resultAllocated
+                  have hresultLevels' : resultTy.LevelBounded store' k :=
+                    Ty.levelBounded_mono resultAllocated resultLevels hlevels'
+                  have hindices' : ∀ pat ∈ rest.map (·.1),
+                      pat.ctor.index < decl.ctors.length :=
+                    fun pat hpat => indices pat (by simp [hpat])
+                  have hrestBodies : ∀ branch ∈ rest, ∀ k ctx store, InferPre k ctx store →
+                      InferSpec sig k ctx branch.2 store :=
+                    fun branch hbranch => bodies branch (by simp [hbranch])
+                  have hrestSpec := ih hrestBodies hindices' hpre' argsWF hargsAllocated'
+                    hargsLevels' hresultAllocated' hresultLevels'
+                  cases hr : inferBranches sig k ctx decl args resultTy rest store' with
+                  | error restError =>
+                      have h : inferBranches sig k ctx decl args resultTy
+                          ((pattern, body) :: rest) store =
+                          .error (InferError.nextBranch restError) := by
+                        simp only [hbind, hfields, hb, MStore.unifyAt, Option.getDM,
+                          Bind.bind, Except.bind, Pure.pure, Except.pure,
+                          mapError_ok, mapError_error, hu, hr]
+                      simp only [BranchesSpec, h]
+                      intro valuation models branchesElab hmap hall
+                      obtain ⟨headElab, tailElab, rfl, hheadElab, htailElab⟩ :=
+                        List.map_eq_cons_iff.mp hmap
+                      obtain ⟨patternElab, bodyElab⟩ := headElab
+                      simp only at hheadElab
+                      subst patternElab
+                      have htyping : Typing sig (k + ctor.existentials)
+                          (Ctx.realize (((ctor.fields.map fun field =>
+                            field.lift.instantiate (args ++ rigidBlock k ctor.existentials)).map
+                            Scheme.mono).reverse ++ ctx) valuation)
+                          body bodyElab (resultTy.realize valuation) := by
+                        rw [Ctx.realize_fieldCtx_append]
+                        exact Elaborates.typing
+                          (hall 0 pattern body bodyElab ctor (by simp) (by simp) hfields)
+                      obtain ⟨extended, hmodels, hagree, _, hty⟩ :=
+                        hbodyPost.principal valuation models bodyElab _ htyping
+                      have hargsExt : args.map (·.realize extended) =
+                          args.map (·.realize valuation) :=
+                        List.map_congr_left fun arg harg =>
+                          Ty.realize_congr (argsAllocated arg harg) (fun id hi => (hagree id hi).symm)
+                      have hresultExt : resultTy.realize extended = resultTy.realize valuation :=
+                        Ty.realize_congr resultAllocated (fun id hi => (hagree id hi).symm)
+                      have hunifies : bodyResult.ty.realize extended = resultTy.realize extended :=
+                        hty.trans hresultExt.symm
+                      obtain ⟨result, hresult, hmodels'⟩ :=
+                        MStore.unify_complete hbodyPost.safe hbodyPost.tyAllocated hresultAlloc₁
+                          hmodels hunifies
+                      rw [hu] at hresult
+                      have hresultEq : result = store' := (Except.ok.inj hresult).symm
+                      subst hresultEq
+                      have hrestNone := hrestSpec
+                      unfold BranchesSpec at hrestNone
+                      rw [hr] at hrestNone
+                      refine hrestNone extended hmodels' tailElab htailElab ?_
+                      intro i pat srcElab bodyElab' ctor' hbr hbrElab hfields'
+                      have htyping' := hall (i + 1) pat srcElab bodyElab' ctor'
+                        (by simpa using hbr) (by simpa using hbrElab) hfields'
+                      rw [ctx_realize_congr_of_agree pre hagree, hargsExt, hresultExt]
+                      exact htyping'
+                  | ok restFull =>
+                      obtain ⟨restResult, restTypes⟩ := restFull
+                      have h : inferBranches sig k ctx decl args resultTy
+                          ((pattern, body) :: rest) store =
+                          .ok (((pattern, bodyResult.elaboration) :: restResult.1, restResult.2),
+                            .node resultTy ((ctor.fields.map fun field =>
+                              field.lift.instantiate (args ++ rigidBlock k ctor.existentials)).map
+                              (.node · []) ++ [bodyResult.types]) :: restTypes) := by
+                        simp only [hbind, hfields, hb, MStore.unifyAt, Option.getDM,
+                          Bind.bind, Except.bind, Pure.pure, Except.pure, mapError_ok, hu, hr]
+                      have hrestPost : BranchesPost sig k ctx decl args resultTy rest store'
+                          restResult := by
+                        have hspec := hrestSpec
+                        unfold BranchesSpec at hspec
+                        rw [hr] at hspec
+                        simpa only using hspec
+                      simp only [BranchesSpec, h]
+                      have hgrowRest : store'.length ≤ restResult.2.length := hrestPost.grows
+                      have hgrowFinal : bodyResult.store.length ≤ restResult.2.length :=
+                        le_trans hgrow₂ hgrowRest
+                      refine
+                        { safe := hrestPost.safe
+                          grows := le_trans hgrowAll hgrowRest
+                          levels := ?_
+                          patterns := by simp [hrestPost.patterns]
+                          elabAllocated := ?_
+                          anchored := ?_
+                          sound := ?_
+                          principal := ?_ }
+                      · intro id hi
+                        refine le_trans (hrestPost.levels id (lt_of_lt_of_le hi hgrowAll)) ?_
+                        exact le_trans (MStore.unify_levelOf_le hu id) (hbodyPost.levels id hi)
+                      · intro branch hbranch ann hann
+                        rcases List.mem_cons.mp hbranch with rfl | hbranch
+                        · exact Ty.allocated_mono hgrowFinal (hbodyPost.elabAllocated ann hann)
+                        · exact hrestPost.elabAllocated branch hbranch ann hann
+                      · intro start level hlt hstart hanch
+                        have h₁ := hbodyPost.anchored start level (by omega) hstart hanch
+                        have h₂ : store'.Anchored start level := MStore.unify_anchored h₁ hu
+                        exact hrestPost.anchored start level hlt
+                          (le_trans hstart hgrowAll) h₂
+                      · -- sound
+                        intro valuation models
+                        obtain ⟨hmodelsStore', hbranchesRest⟩ := hrestPost.sound valuation models
+                        obtain ⟨hmodelsBody, htyEq⟩ := MStore.unify_sound hu hmodelsStore'
+                        obtain ⟨hmodelsStore, hbodyElab⟩ :=
+                          hbodyPost.sound valuation hmodelsBody
+                        refine ⟨hmodelsStore, ?_⟩
+                        intro i pat srcElab bodyElab' ctor' hbr hbrElab hfields'
+                        cases i with
+                        | zero =>
+                            simp only [List.getElem?_cons_zero, Option.some.injEq,
+                              Prod.mk.injEq] at hbr hbrElab
+                            obtain ⟨rfl, rfl⟩ := hbr
+                            obtain ⟨-, rfl⟩ := hbrElab
+                            have hfieldsEq : ctor = ctor' := by
+                              rw [hfields] at hfields'
+                              exact Option.some.inj hfields'
+                            subst hfieldsEq
+                            rw [← Ctx.realize_fieldCtx_append, ← htyEq]
+                            exact hbodyElab
+                        | succ i =>
+                            exact hbranchesRest i pat srcElab bodyElab' ctor'
+                              (by simpa using hbr) (by simpa using hbrElab) hfields'
+                      · -- principal
+                        intro valuation models branchesElab hmap hall
+                        obtain ⟨headElab, tailElab, rfl, hheadElab, htailElab⟩ :=
+                          List.map_eq_cons_iff.mp hmap
+                        obtain ⟨patternElab, bodyElab⟩ := headElab
+                        simp only at hheadElab
+                        subst patternElab
+                        have htyping : Typing sig (k + ctor.existentials)
+                            (Ctx.realize (((ctor.fields.map fun field =>
+                              field.lift.instantiate (args ++ rigidBlock k ctor.existentials)).map
+                              Scheme.mono).reverse ++ ctx) valuation)
+                            body bodyElab (resultTy.realize valuation) := by
+                          rw [Ctx.realize_fieldCtx_append]
+                          exact hall 0 pattern body bodyElab ctor (by simp) (by simp) hfields
+                        obtain ⟨extended₁, hmodels₁, hagree₁, helab₁, hty₁⟩ :=
+                          hbodyPost.principal valuation models bodyElab _ htyping
+                        have hargs₁ : args.map (·.realize extended₁) =
+                            args.map (·.realize valuation) :=
+                          List.map_congr_left fun arg harg =>
+                            Ty.realize_congr (argsAllocated arg harg) (fun id hi => (hagree₁ id hi).symm)
+                        have hresult₁ : resultTy.realize extended₁ = resultTy.realize valuation :=
+                          Ty.realize_congr resultAllocated (fun id hi => (hagree₁ id hi).symm)
+                        have hunifies : bodyResult.ty.realize extended₁ =
+                            resultTy.realize extended₁ :=
+                          hty₁.trans hresult₁.symm
+                        obtain ⟨result, hresult, hmodels₂⟩ :=
+                          MStore.unify_complete hbodyPost.safe hbodyPost.tyAllocated hresultAlloc₁
+                            hmodels₁ hunifies
+                        rw [hu] at hresult
+                        have hresultEq : result = store' := (Except.ok.inj hresult).symm
+                        subst hresultEq
+                        have htypingRest : ∀ (i : Nat) pat srcElab bodyElab' ctor',
+                            rest[i]? = some (pat, srcElab) →
+                            tailElab[i]? = some (pat, bodyElab') →
+                            decl.ctors[pat.ctor.index]? = some ctor' →
+                            Typing sig (k + ctor'.existentials)
+                              (ctor'.fieldCtx (args.map (·.realize extended₁))
+                                (rigidBlock k ctor'.existentials) ++ ctx.realize extended₁)
+                              srcElab bodyElab' (resultTy.realize extended₁) := by
+                          intro i pat srcElab bodyElab' ctor' hbr hbrElab hfields'
+                          have htyping' := hall (i + 1) pat srcElab bodyElab' ctor'
+                            (by simpa using hbr) (by simpa using hbrElab) hfields'
+                          rw [ctx_realize_congr_of_agree pre hagree₁, hargs₁, hresult₁]
+                          exact htyping'
+                        obtain ⟨extended, hmodelsExt, hagreeExt, hmapExt⟩ :=
+                          hrestPost.principal extended₁ hmodels₂ tailElab htailElab htypingRest
+                        refine ⟨extended, hmodelsExt, ?_, ?_⟩
+                        · intro id hi
+                          exact (hagree₁ id hi).trans (hagreeExt id (lt_of_lt_of_le hi hgrowAll))
+                        · have hagreeExt₁ : Agree bodyResult.store.length extended₁ extended :=
+                            fun id hi => hagreeExt id (lt_of_lt_of_le hi hgrow₂)
+                          rw [List.map_cons, hmapExt]
+                          simp only [List.cons.injEq, Prod.mk.injEq, and_true, true_and]
+                          rw [← Expr.realize_agree (store := bodyResult.store)
+                            hbodyPost.elabAllocated hagreeExt₁]
+                          exact helab₁
 
 /-- A successful declaration lookup gives a well-formed declaration. -/
 private theorem Signature.decl?_wf {sig : Signature} {type : Nat} {decl : DataDecl}
@@ -853,6 +1233,34 @@ private theorem branches_all_of_facts {branches : List (Pattern × Source)} {fir
   simp only [Bool.and_eq_true, beq_iff_eq, decide_eq_true_eq]
   exact ⟨hpattern, hind⟩
 
+/-- The binder-count check records that every pattern binds its constructor's
+fields. -/
+private theorem branches_arity_facts {branches : List (Pattern × Source)} {decl : DataDecl}
+    (all : branches.all (fun branch => decl.ctors[branch.1.ctor.index]?.all fun ctor =>
+      branch.1.binders == ctor.fields.length) = true) :
+    ∀ pattern ∈ branches.map (·.1), ∀ ctor, decl.ctors[pattern.ctor.index]? = some ctor →
+      pattern.binders = ctor.fields.length := by
+  rw [List.all_eq_true] at all
+  intro pattern hpattern ctor hctor
+  obtain ⟨branch, hbranch, hpatternEq⟩ := List.mem_map.mp hpattern
+  subst hpatternEq
+  have h := all branch hbranch
+  rw [Option.all_eq_true] at h
+  simpa using h ctor hctor
+
+/-- Every pattern of a match that typing accepts passes the binder-count check. -/
+private theorem branches_arity_of_facts {branches : List (Pattern × Source)} {decl : DataDecl}
+    (facts : ∀ pattern ∈ branches.map (·.1), ∀ ctor,
+      decl.ctors[pattern.ctor.index]? = some ctor → pattern.binders = ctor.fields.length) :
+    branches.all (fun branch => decl.ctors[branch.1.ctor.index]?.all fun ctor =>
+      branch.1.binders == ctor.fields.length) = true := by
+  rw [List.all_eq_true]
+  intro branch hbranch
+  rw [Option.all_eq_true]
+  intro ctor hctor
+  have := facts branch.1 (List.mem_map.mpr ⟨branch, hbranch, rfl⟩) ctor hctor
+  simpa using this
+
 theorem inferAt_spec_match {sig : Signature} {scrutinee : Source}
     {branches : List (Pattern × Source)}
     (scrutineeSpec : ∀ k ctx store, InferPre k ctx store → InferSpec sig k ctx scrutinee store)
@@ -860,7 +1268,644 @@ theorem inferAt_spec_match {sig : Signature} {scrutinee : Source}
       InferSpec sig k ctx branch.2 store)
     (pre : InferPre k ctx store) :
     InferSpec sig k ctx (.match scrutinee branches) store := by
-  sorry
+  have hbind : inferAt sig k ctx (.match scrutinee branches) store = (do
+      let (first, _) ← branches.head?.getDM (throw (.here .emptyMatch))
+      let decl ← (sig.decl? first.ctor.type).getDM (throw ⟨[.matchBranch 0], .unknownType⟩)
+      if ¬ branches.all (fun branch =>
+          branch.1.ctor.type == first.ctor.type && decide (branch.1.ctor.index < decl.ctors.length)) then
+        throw ⟨[.matchBranch (branches.findIdx fun branch =>
+          !(branch.1.ctor.type == first.ctor.type && decide (branch.1.ctor.index < decl.ctors.length)))],
+          .foreignPattern⟩
+      if ¬ branches.all (fun branch => decl.ctors[branch.1.ctor.index]?.all fun ctor =>
+          branch.1.binders == ctor.fields.length) then
+        throw ⟨[.matchBranch (branches.findIdx fun branch =>
+          !(decl.ctors[branch.1.ctor.index]?.all fun ctor =>
+            branch.1.binders == ctor.fields.length))],
+          .patternArity⟩
+      let scrutineeResult ← (inferAt sig k ctx scrutinee store).mapError
+        (.under .matchScrutinee)
+      let (args, store) := scrutineeResult.store.freshMany k decl.params
+      let store ← store.unifyAt [.matchScrutinee] scrutineeResult.ty
+        (Ty.apps (.con first.ctor.type) args)
+      let (resultTy, store) := store.fresh k
+      let ((branchesElab, store), branchTypes) ←
+        inferBranches sig k ctx decl args resultTy branches store
+      pure ⟨resultTy, .match scrutineeResult.elaboration branchesElab, store,
+        .node resultTy (scrutineeResult.types :: branchTypes)⟩) := rfl
+  cases hhead : branches.head? with
+  | none =>
+      have hbranches : branches = [] := List.head?_eq_none_iff.mp hhead
+      subst hbranches
+      have h : inferAt sig k ctx (.match scrutinee []) store =
+          .error (.here .emptyMatch) := by
+        simp only [hbind, hhead, Option.getDM, Bind.bind, Except.bind]
+      simp only [InferSpec, h]
+      intro valuation models elaboration ty typing
+      obtain ⟨type, decl, args, scrutineeElab, branchesElab, hdecl, harity, hne,
+        hpatterns, _, hmap, hscrut, hall, _, helab⟩ := TypingWith.match_inv typing
+      exact hne rfl
+  | some headPair =>
+      obtain ⟨first, second⟩ := headPair
+      obtain ⟨restBranches, rfl⟩ := List.head?_eq_some_iff.mp hhead
+      have hmemHead : first ∈ ((first, second) :: restBranches).map (·.1) := by simp
+      cases hdecl : sig.decl? first.ctor.type with
+      | none =>
+          have h : inferAt sig k ctx
+              (.match scrutinee ((first, second) :: restBranches)) store =
+              .error ⟨[.matchBranch 0], .unknownType⟩ := by
+            simp only [hbind, hhead, hdecl, Option.getDM, Bind.bind, Except.bind,
+              Pure.pure, Except.pure]
+          simp only [InferSpec, h]
+          intro valuation models elaboration ty typing
+          obtain ⟨type, declTy, args, scrutineeElab, branchesElab, hdeclTy, harity,
+            hne, hpatterns, _, hmap, hscrut, hall, _, helab⟩ := TypingWith.match_inv typing
+          have htype : first.ctor.type = type := (hpatterns first hmemHead).1
+          rw [← htype] at hdeclTy
+          rw [hdecl] at hdeclTy
+          cases hdeclTy
+      | some decl =>
+          by_cases hallCheck : ((first, second) :: restBranches).all (fun branch =>
+              branch.1.ctor.type == first.ctor.type && decide (branch.1.ctor.index < decl.ctors.length)) = true
+          · by_cases hallArity : ((first, second) :: restBranches).all (fun branch =>
+                decl.ctors[branch.1.ctor.index]?.all fun ctor =>
+                  branch.1.binders == ctor.fields.length) = true
+            · cases hs : inferAt sig k ctx scrutinee store with
+              | error scrutineeError =>
+                  have h : inferAt sig k ctx
+                      (.match scrutinee ((first, second) :: restBranches)) store =
+                      .error (.under .matchScrutinee scrutineeError) := by
+                    simp only [hbind, hhead, hdecl, hallCheck, hallArity, hs, not_true, ite_false, Option.getDM,
+                      Bind.bind, Except.bind, Pure.pure, Except.pure, mapError_error]
+                  simp only [InferSpec, h]
+                  intro valuation models elaboration ty typing
+                  obtain ⟨type, declTy, args, scrutineeElab, branchesElab, hdeclTy,
+                    harity, hne, hpatterns, _, hmap, hscrut, hall, _, helab⟩ := TypingWith.match_inv typing
+                  have hscrutNone := scrutineeSpec k ctx store pre
+                  unfold InferSpec at hscrutNone
+                  rw [hs] at hscrutNone
+                  exact hscrutNone valuation models _ _ hscrut
+              | ok scrutineeResult =>
+                  have hscrutPost : InferPost sig k ctx scrutinee store scrutineeResult := by
+                    have hspec := scrutineeSpec k ctx store pre
+                    unfold InferSpec at hspec
+                    rw [hs] at hspec
+                    simpa only using hspec
+                  have hsafeA : (scrutineeResult.store.freshMany k decl.params).2.Safe := by
+                    rw [MStore.freshMany_snd]
+                    exact MStore.append_unsolved_safe hscrutPost.safe
+                  have hgrowA : scrutineeResult.store.length ≤
+                      (scrutineeResult.store.freshMany k decl.params).2.length := by
+                    rw [MStore.freshMany_snd]; simp
+                  have hlenA : (scrutineeResult.store.freshMany k decl.params).2.length =
+                      scrutineeResult.store.length + decl.params := by
+                    rw [MStore.freshMany_snd]; simp
+                  have hleftAllocA : scrutineeResult.ty.Allocated
+                      (scrutineeResult.store.freshMany k decl.params).2 :=
+                    Ty.allocated_mono hgrowA hscrutPost.tyAllocated
+                  have hrightAlloc : (Ty.apps (.con first.ctor.type)
+                      (scrutineeResult.store.freshMany k decl.params).1).Allocated
+                      (scrutineeResult.store.freshMany k decl.params).2 := by
+                    refine Ty.allocated_apps (.con first.ctor.type) _ ?_ ?_
+                    · intro id hid; simp [Ty.vars] at hid
+                    · exact freshMany_args_allocated
+                  cases hu : (scrutineeResult.store.freshMany k decl.params).2.unify
+                      scrutineeResult.ty
+                      (Ty.apps (.con first.ctor.type)
+                        (scrutineeResult.store.freshMany k decl.params).1) with
+                  | error cause =>
+                      have h : inferAt sig k ctx
+                          (.match scrutinee ((first, second) :: restBranches)) store =
+                          .error ⟨[.matchScrutinee], .mismatch
+                            ((scrutineeResult.store.freshMany k decl.params).2.apply
+                              (Ty.apps (.con first.ctor.type)
+                                (scrutineeResult.store.freshMany k decl.params).1))
+                            ((scrutineeResult.store.freshMany k decl.params).2.apply
+                              scrutineeResult.ty) cause⟩ := by
+                        simp only [hbind, hhead, hdecl, hallCheck, hallArity, hs, not_true, ite_false, MStore.unifyAt,
+                          Option.getDM, Bind.bind, Except.bind, Pure.pure, Except.pure,
+                          mapError_ok, mapError_error, hu]
+                      simp only [InferSpec, h]
+                      intro valuation models elaboration ty typing
+                      obtain ⟨type, declTy, argsSem, scrutineeElab, branchesElab, hdeclTy,
+                        haritySem, hne, hpatterns, _, hmap, hscrut, hall, _, helab⟩ :=
+                        TypingWith.match_inv typing
+                      have htype : first.ctor.type = type := (hpatterns first hmemHead).1
+                      rw [← htype] at hdeclTy
+                      rw [hdecl] at hdeclTy
+                      cases hdeclTy
+                      have hctxWF : (ctx.realize valuation).WF k :=
+                        Ctx.realize_wf models pre.ctxWF pre.ctxAllocated pre.ctxLevels
+                      have hargsSemWF : ∀ arg ∈ argsSem, arg.WF k :=
+                        (Ty.wf_apps_parts
+                          (TypingWith.regular hctxWF (Elaborates.typing hscrut))).2
+                      obtain ⟨ext₁, hmodels₁, hagree₁, _, hty₁⟩ :=
+                        hscrutPost.principal valuation models scrutineeElab _
+                          (Elaborates.typing hscrut)
+                      obtain ⟨ext₂, hmodels₂, hagree₂, hargs₂⟩ :=
+                        MStore.freshMany_principal hscrutPost.safe hmodels₁ haritySem hargsSemWF
+                      have hscrut₂ : scrutineeResult.ty.realize ext₂ =
+                          Ty.apps (.con type) argsSem := by
+                        rw [← Ty.realize_congr hscrutPost.tyAllocated hagree₂]
+                        exact hty₁
+                      have hunifies : scrutineeResult.ty.realize ext₂ =
+                          (Ty.apps (.con first.ctor.type)
+                            (scrutineeResult.store.freshMany k decl.params).1).realize ext₂ := by
+                        rw [Ty.realize_apps, hargs₂, htype]
+                        exact hscrut₂
+                      obtain ⟨result, hresult, _⟩ :=
+                        MStore.unify_complete (store :=
+                          (scrutineeResult.store.freshMany k decl.params).2) hsafeA hleftAllocA
+                          hrightAlloc hmodels₂ hunifies
+                      rw [hu] at hresult
+                      cases hresult
+                  | ok storeU =>
+                      have hdeclWF : decl.WF := Signature.decl?_wf hdecl
+                      have hargsLength : (scrutineeResult.store.freshMany k decl.params).1.length
+                          = decl.params := freshMany_fst_length _ _ _
+                      have hindices : ∀ pattern ∈ ((first, second) :: restBranches).map (·.1),
+                          pattern.ctor.index < decl.ctors.length :=
+                        fun pattern hmem => (branches_all_facts hallCheck pattern hmem).2
+                      have hgrowU : (scrutineeResult.store.freshMany k decl.params).2.length ≤
+                          storeU.length := le_of_eq (MStore.unify_length hu).symm
+                      have hgrowB : store.length ≤
+                          (scrutineeResult.store.freshMany k decl.params).2.length :=
+                        le_trans hscrutPost.grows hgrowA
+                      have hgrowStoreR : store.length ≤ (storeU.fresh k).2.length := by
+                        rw [MStore.fresh_eq]
+                        simp only [List.length_append, List.length_replicate]
+                        omega
+                      have hgrowU2 : store.length ≤ storeU.length := by omega
+                      have hgrowAR : (scrutineeResult.store.freshMany k decl.params).2.length ≤
+                          (storeU.fresh k).2.length := by
+                        rw [MStore.fresh_eq]
+                        simp only [List.length_append, List.length_replicate]
+                        omega
+                      have hsafeU : storeU.Safe :=
+                        MStore.unify_safe (store :=
+                          (scrutineeResult.store.freshMany k decl.params).2) hsafeA hleftAllocA
+                          hrightAlloc hu
+                      have hlevelsAU : ∀ id < (scrutineeResult.store.freshMany k
+                          decl.params).2.length,
+                          (storeU.fresh k).2.levelOf id ≤
+                            (scrutineeResult.store.freshMany k decl.params).2.levelOf id := by
+                        intro id hi
+                        have hidU : id < storeU.length := by
+                          rw [MStore.unify_length hu]; exact hi
+                        rw [MStore.fresh_eq, MStore.append_unsolved_levelOf, if_pos hidU]
+                        exact MStore.unify_levelOf_le hu id
+                      have hlevelsU : ∀ id < store.length, (storeU.fresh k).2.levelOf id ≤
+                          store.levelOf id := by
+                        intro id hi
+                        refine le_trans (hlevelsAU id (lt_of_lt_of_le hi ?_)) ?_
+                        · rw [MStore.freshMany_snd]
+                          simp only [List.length_append, List.length_replicate]
+                          have := hgrowB
+                          have := hlenA
+                          omega
+                        · rw [MStore.freshMany_snd, MStore.append_unsolved_levelOf,
+                            if_pos (lt_of_lt_of_le hi hscrutPost.grows)]
+                          exact hscrutPost.levels id hi
+                      have hsafeR : (storeU.fresh k).2.Safe := by
+                        rw [MStore.fresh_eq]
+                        exact MStore.append_unsolved_safe hsafeU
+                      have hpreR : InferPre k ctx (storeU.fresh k).2 :=
+                        pre.extend hsafeR hgrowStoreR hlevelsU
+                      have hargsAllocR : ∀ arg ∈ (scrutineeResult.store.freshMany k
+                          decl.params).1, arg.Allocated (storeU.fresh k).2 :=
+                        fun arg harg => Ty.allocated_mono hgrowAR
+                          (freshMany_args_allocated arg harg)
+                      have hargsLevR : ∀ arg ∈ (scrutineeResult.store.freshMany k
+                          decl.params).1, arg.LevelBounded (storeU.fresh k).2 k :=
+                        fun arg harg => Ty.levelBounded_mono (freshMany_args_allocated arg harg)
+                          (freshMany_args_levelBounded arg harg) hlevelsAU
+                      have hbranchesSpec : BranchesSpec sig k ctx decl
+                          (scrutineeResult.store.freshMany k decl.params).1 (storeU.fresh k).1
+                          ((first, second) :: restBranches) (storeU.fresh k).2 :=
+                        inferBranches_spec bodies hdeclWF hargsLength hindices hpreR
+                          freshMany_args_wf hargsAllocR hargsLevR trivial fresh_allocated
+                          fresh_levelBounded
+                      cases hbr : inferBranches sig k ctx decl
+                          (scrutineeResult.store.freshMany k decl.params).1 (storeU.fresh k).1
+                          ((first, second) :: restBranches) (storeU.fresh k).2 with
+                      | error restError =>
+                          have h : inferAt sig k ctx
+                              (.match scrutinee ((first, second) :: restBranches)) store =
+                              .error restError := by
+                            simp only [hbind, hhead, hdecl, hallCheck, hallArity, hs, not_true, ite_false, MStore.unifyAt,
+                              Option.getDM, Bind.bind, Except.bind, Pure.pure, Except.pure,
+                              mapError_ok, hu, hbr]
+                          simp only [InferSpec, h]
+                          intro valuation models elaboration ty typing
+                          obtain ⟨type, declTy, argsSem, scrutineeElab, branchesElab, hdeclTy,
+                            haritySem, hne, hpatterns, _, hmap, hscrut, hall, _, helab⟩ :=
+                            TypingWith.match_inv typing
+                          have htype : first.ctor.type = type := (hpatterns first hmemHead).1
+                          rw [← htype] at hdeclTy
+                          rw [hdecl] at hdeclTy
+                          cases hdeclTy
+                          have hctxWF : (ctx.realize valuation).WF k :=
+                            Ctx.realize_wf models pre.ctxWF pre.ctxAllocated pre.ctxLevels
+                          have hargsSemWF : ∀ arg ∈ argsSem, arg.WF k :=
+                            (Ty.wf_apps_parts
+                              (TypingWith.regular hctxWF (Elaborates.typing hscrut))).2
+                          obtain ⟨ext₁, hmodels₁, hagree₁, _, hty₁⟩ :=
+                            hscrutPost.principal valuation models scrutineeElab _
+                              (Elaborates.typing hscrut)
+                          obtain ⟨ext₂, hmodels₂, hagree₂, hargs₂⟩ :=
+                            MStore.freshMany_principal hscrutPost.safe hmodels₁ haritySem
+                              hargsSemWF
+                          have hscrut₂ : scrutineeResult.ty.realize ext₂ =
+                              Ty.apps (.con type) argsSem := by
+                            rw [← Ty.realize_congr hscrutPost.tyAllocated hagree₂]
+                            exact hty₁
+                          have hunifies : scrutineeResult.ty.realize ext₂ =
+                              (Ty.apps (.con first.ctor.type)
+                                (scrutineeResult.store.freshMany k decl.params).1).realize
+                                ext₂ := by
+                            rw [Ty.realize_apps, hargs₂, htype]
+                            exact hscrut₂
+                          obtain ⟨storeUnified, hresult, hmodelsU⟩ :=
+                            MStore.unify_complete (store :=
+                              (scrutineeResult.store.freshMany k decl.params).2) hsafeA
+                              hleftAllocA hrightAlloc hmodels₂ hunifies
+                          rw [hu] at hresult
+                          have hresultEq : storeUnified = storeU :=
+                            (Except.ok.inj hresult).symm
+                          subst storeUnified
+                          have hresultWF : ty.WF k :=
+                            TypingWith.regular hctxWF typing
+                          let ext₃ : Valuation := Function.update ext₂ storeU.length ty
+                          have hagreeU : Agree storeU.length ext₂ ext₃ := by
+                            intro id hi
+                            have hne : id ≠ storeU.length := by omega
+                            simp only [ext₃, Function.update]
+                            rw [dif_neg hne]
+                          have hmodelsR : (storeU.fresh k).2.Models ext₃ := by
+                            rw [MStore.fresh_eq, MStore.models_append_unsolved]
+                            refine ⟨?_, ?_⟩
+                            · exact MStore.Models.congr hsafeU hmodelsU hagreeU
+                            · intro i hi
+                              have hi0 : i = 0 := by omega
+                              subst hi0
+                              simpa [ext₃, Function.update] using hresultWF
+                          have hargs₃ : (scrutineeResult.store.freshMany k decl.params).1.map
+                              (·.realize ext₃) =
+                              (scrutineeResult.store.freshMany k decl.params).1.map
+                                (·.realize ext₂) := by
+                            apply List.map_congr_left
+                            intro arg harg
+                            rw [MStore.freshMany_fst] at harg
+                            simp only [List.mem_map, List.mem_range] at harg
+                            obtain ⟨i, hi, rfl⟩ := harg
+                            show ext₃ (scrutineeResult.store.length + i) =
+                              ext₂ (scrutineeResult.store.length + i)
+                            have hne : scrutineeResult.store.length + i ≠ storeU.length := by
+                              rw [MStore.unify_length hu, MStore.freshMany_snd]
+                              simp only [List.length_append, List.length_replicate]
+                              omega
+                            simp only [ext₃, Function.update]
+                            rw [dif_neg hne]
+                          have hagree₁₃ : Agree scrutineeResult.store.length ext₁ ext₃ := by
+                            intro id hi
+                            exact (hagree₂ id hi).trans (hagreeU id
+                              (lt_of_lt_of_le hi (le_trans hgrowA hgrowU)))
+                          have hagreeVal₃ : Agree store.length valuation ext₃ := by
+                            intro id hi
+                            exact (hagree₁ id hi).trans
+                              (hagree₁₃ id (lt_of_lt_of_le hi hscrutPost.grows))
+                          have hresult₃ : ((storeU.fresh k).1).realize ext₃ = ty := by
+                            show ext₃ storeU.length = ty
+                            simp only [ext₃, Function.update]
+                            simp
+                          have hallR : ∀ (i : Nat) pattern body bodyElab ctor,
+                              ((first, second) :: restBranches)[i]? = some (pattern, body) →
+                              branchesElab[i]? = some (pattern, bodyElab) →
+                              decl.ctors[pattern.ctor.index]? = some ctor →
+                              Elaborates sig (k + ctor.existentials)
+                                (ctor.fieldCtx
+                                  ((scrutineeResult.store.freshMany k decl.params).1.map
+                                    (·.realize ext₃))
+                                  (rigidBlock k ctor.existentials) ++ ctx.realize ext₃)
+                                body bodyElab (((storeU.fresh k).1).realize ext₃) := by
+                            intro i pattern body bodyElab ctor hbr' hbrElab hfields'
+                            have h := hall i pattern body bodyElab ctor hbr' hbrElab hfields'
+                            rw [ctx_realize_congr_of_agree pre hagreeVal₃, hargs₃.trans hargs₂,
+                              hresult₃]
+                            exact h
+                          have hbranchesNone := hbranchesSpec
+                          unfold BranchesSpec at hbranchesNone
+                          rw [hbr] at hbranchesNone
+                          exact hbranchesNone ext₃ hmodelsR branchesElab hmap hallR
+                      | ok branchFull =>
+                          obtain ⟨branchResult, branchTypes⟩ := branchFull
+                          have h : inferAt sig k ctx
+                              (.match scrutinee ((first, second) :: restBranches)) store =
+                              .ok ⟨(storeU.fresh k).1,
+                                .match scrutineeResult.elaboration branchResult.1,
+                                branchResult.2,
+                                .node (storeU.fresh k).1 (scrutineeResult.types :: branchTypes)⟩ := by
+                            simp only [hbind, hhead, hdecl, hallCheck, hallArity, hs, not_true, ite_false, MStore.unifyAt,
+                              Option.getDM, Bind.bind, Except.bind, Pure.pure, Except.pure,
+                              mapError_ok, hu, hbr]
+                          have hbrPost : BranchesPost sig k ctx decl
+                              (scrutineeResult.store.freshMany k decl.params).1 (storeU.fresh k).1
+                              ((first, second) :: restBranches) (storeU.fresh k).2
+                              branchResult := by
+                            have hspec := hbranchesSpec
+                            unfold BranchesSpec at hspec
+                            rw [hbr] at hspec
+                            simpa only using hspec
+                          simp only [InferSpec, h]
+                          have hgrowBranches : (storeU.fresh k).2.length ≤ branchResult.2.length :=
+                            hbrPost.grows
+                          have hgrowFinal : store.length ≤ branchResult.2.length :=
+                            le_trans hgrowStoreR hgrowBranches
+                          have hgrowScrut : scrutineeResult.store.length ≤
+                              branchResult.2.length :=
+                            le_trans hgrowA (le_trans hgrowAR hgrowBranches)
+                          have hgrowUFinal : storeU.length ≤ branchResult.2.length := by
+                            have h1 : storeU.length ≤ (storeU.fresh k).2.length := by
+                              rw [MStore.fresh_eq]; simp
+                            omega
+                          refine
+                            { safe := hbrPost.safe
+                              grows := hgrowFinal
+                              levels := ?_
+                              tyWF := trivial
+                              tyAllocated := Ty.allocated_mono hgrowBranches fresh_allocated
+                              tyLevels := Ty.levelBounded_mono fresh_allocated fresh_levelBounded
+                                hbrPost.levels
+                              elabAllocated := ?_
+                              anchored := ?_
+                              sound := ?_
+                              principal := ?_ }
+                          · -- levels
+                            intro id hi
+                            have hidR : id < (storeU.fresh k).2.length :=
+                              lt_of_lt_of_le hi hgrowStoreR
+                            have hidU : id < storeU.length := lt_of_lt_of_le hi hgrowU2
+                            have h1 : branchResult.2.levelOf id ≤ (storeU.fresh k).2.levelOf id :=
+                              hbrPost.levels id hidR
+                            have h2 : (storeU.fresh k).2.levelOf id = storeU.levelOf id := by
+                              rw [MStore.fresh_eq, MStore.append_unsolved_levelOf, if_pos hidU]
+                            have h3 : storeU.levelOf id ≤
+                                (scrutineeResult.store.freshMany k decl.params).2.levelOf id :=
+                              MStore.unify_levelOf_le hu id
+                            have h4 : (scrutineeResult.store.freshMany k decl.params).2.levelOf id =
+                                scrutineeResult.store.levelOf id := by
+                              rw [MStore.freshMany_snd, MStore.append_unsolved_levelOf,
+                                if_pos (lt_of_lt_of_le hi hscrutPost.grows)]
+                            have h5 : scrutineeResult.store.levelOf id ≤ store.levelOf id :=
+                              hscrutPost.levels id hi
+                            calc branchResult.2.levelOf id ≤ (storeU.fresh k).2.levelOf id := h1
+                              _ = storeU.levelOf id := h2
+                              _ ≤ (scrutineeResult.store.freshMany k decl.params).2.levelOf id := h3
+                              _ = scrutineeResult.store.levelOf id := h4
+                              _ ≤ store.levelOf id := h5
+                          · -- elabAllocated
+                            intro ann hann
+                            simp only [Expr.anns, List.mem_append] at hann
+                            rcases hann with hann | hann
+                            · exact Ty.allocated_mono hgrowScrut (hscrutPost.elabAllocated ann hann)
+                            · exact annsBranches_allocated hbrPost.elabAllocated ann hann
+                          · -- anchored
+                            intro start level hlt hstart hanch
+                            have h₁ := hscrutPost.anchored start level hlt hstart hanch
+                            have h₂ : (scrutineeResult.store.freshMany k decl.params).2.Anchored
+                                start level := by
+                              rw [MStore.freshMany_snd]
+                              exact MStore.Anchored.append_unsolved h₁ hlt
+                            have h₃ : storeU.Anchored start level := MStore.unify_anchored h₂ hu
+                            have h₄ : (storeU.fresh k).2.Anchored start level := by
+                              rw [MStore.fresh_eq]
+                              exact MStore.Anchored.append_unsolved h₃ hlt
+                            exact hbrPost.anchored start level hlt (le_trans hstart hgrowStoreR) h₄
+                          · -- sound
+                            intro valuation models
+                            obtain ⟨hmodelsR, hbranchesElab⟩ := hbrPost.sound valuation models
+                            have hmodelsU : storeU.Models valuation :=
+                              MStore.Models.of_append_unsolved (store := storeU) (count := 1)
+                                (level := k) hmodelsR
+                            obtain ⟨hmodelsA, htyEq⟩ := MStore.unify_sound hu hmodelsU
+                            have hmodelsScrut : scrutineeResult.store.Models valuation :=
+                              MStore.Models.of_append_unsolved
+                                (store := scrutineeResult.store) (count := decl.params)
+                                (level := k) hmodelsA
+                            obtain ⟨hmodelsStore, hscrutElab⟩ :=
+                              hscrutPost.sound valuation hmodelsScrut
+                            refine ⟨hmodelsStore, ?_⟩
+                            have hreal : Ty.apps (.con first.ctor.type)
+                                ((scrutineeResult.store.freshMany k decl.params).1.map
+                                  (·.realize valuation)) =
+                                (Ty.apps (.con first.ctor.type)
+                                  (scrutineeResult.store.freshMany k decl.params).1).realize
+                                  valuation := by
+                              rw [Ty.realize_apps]
+                              rfl
+                            have hscrutGoal : Elaborates sig k (ctx.realize valuation) scrutinee
+                                (scrutineeResult.elaboration.realize valuation)
+                                (Ty.apps (.con first.ctor.type)
+                                  ((scrutineeResult.store.freshMany k decl.params).1.map
+                                    (·.realize valuation))) := by
+                              rw [hreal, ← htyEq]
+                              exact hscrutElab
+                            have hbranchesGoal : ∀ (i : Nat) pattern body bodyElab ctor,
+                                ((first, second) :: restBranches)[i]? = some (pattern, body) →
+                                (branchResult.1.map
+                                  (fun branch => (branch.1, branch.2.realize valuation)))[i]? =
+                                  some (pattern, bodyElab) →
+                                decl.ctors[pattern.ctor.index]? = some ctor →
+                                Elaborates sig (k + ctor.existentials)
+                                  (ctor.fieldCtx
+                                    ((scrutineeResult.store.freshMany k decl.params).1.map
+                                      (·.realize valuation))
+                                    (rigidBlock k ctor.existentials) ++ ctx.realize valuation)
+                                  body bodyElab (((storeU.fresh k).1).realize valuation) := by
+                              intro i pattern body bodyElab ctor hbr' hbrElab hfields'
+                              rw [List.getElem?_map] at hbrElab
+                              cases hlookup : branchResult.1[i]? with
+                              | none => simp [hlookup] at hbrElab
+                              | some branch =>
+                                  rw [hlookup] at hbrElab
+                                  obtain ⟨hpat, hbody⟩ :=
+                                    Prod.mk.inj (Option.some.inj hbrElab)
+                                  subst hpat
+                                  rw [← hbody]
+                                  exact hbranchesElab i branch.1 body branch.2 ctor hbr'
+                                    hlookup hfields'
+                            have hfreshWF : (((storeU.fresh k).1).realize valuation).WF k := by
+                              have hwf := ((MStore.models_append_unsolved (store := storeU)
+                                (count := 1) (level := k)).1 hmodelsR).2 0 (by simp)
+                              simpa [MStore.fresh_eq, Ty.realize, Ty.bind, Ty.subst] using hwf
+                            simp only [Expr.realize, Expr.mapAnn, Expr.mapAnnBranches_eq]
+                            exact TypingWith.«match» hscrutGoal hdecl
+                              (by rw [List.length_map, hargsLength]) (by simp)
+                              (fun pattern hmem => branches_all_facts hallCheck pattern hmem)
+                              (fun pattern hmem ctor hctor =>
+                                branches_arity_facts hallArity pattern hmem ctor hctor)
+                              (by rw [List.map_map]; exact hbrPost.patterns)
+                              hbranchesGoal hfreshWF
+                          · -- principal
+                            intro valuation models elaboration ty typing
+                            have htyWF : ty.WF k := by
+                              have hctxWF : (ctx.realize valuation).WF k :=
+                                Ctx.realize_wf models pre.ctxWF pre.ctxAllocated pre.ctxLevels
+                              exact TypingWith.regular hctxWF typing
+                            obtain ⟨type, declTy, argsSem, scrutineeElab, branchesElab, hdeclTy,
+                              haritySem, hne, hpatterns, _, hmap, hscrut, hall, _, helab⟩ :=
+                              TypingWith.match_inv typing
+                            subst helab
+                            have htype : first.ctor.type = type := (hpatterns first hmemHead).1
+                            rw [← htype] at hdeclTy
+                            rw [hdecl] at hdeclTy
+                            cases hdeclTy
+                            have hctxWF : (ctx.realize valuation).WF k :=
+                              Ctx.realize_wf models pre.ctxWF pre.ctxAllocated pre.ctxLevels
+                            have hargsSemWF : ∀ arg ∈ argsSem, arg.WF k :=
+                              (Ty.wf_apps_parts (TypingWith.regular hctxWF hscrut)).2
+                            obtain ⟨ext₁, hmodels₁, hagree₁, helab₁, hty₁⟩ :=
+                              hscrutPost.principal valuation models scrutineeElab _ hscrut
+                            obtain ⟨ext₂, hmodels₂, hagree₂, hargs₂⟩ :=
+                              MStore.freshMany_principal hscrutPost.safe hmodels₁ haritySem
+                                hargsSemWF
+                            have hscrut₂ : scrutineeResult.ty.realize ext₂ =
+                                Ty.apps (.con type) argsSem := by
+                              rw [← Ty.realize_congr hscrutPost.tyAllocated hagree₂]
+                              exact hty₁
+                            have hunifies : scrutineeResult.ty.realize ext₂ =
+                                (Ty.apps (.con first.ctor.type)
+                                  (scrutineeResult.store.freshMany k decl.params).1).realize
+                                  ext₂ := by
+                              rw [Ty.realize_apps, hargs₂, htype]
+                              exact hscrut₂
+                            obtain ⟨storeUnified, hresult, hmodelsU⟩ :=
+                              MStore.unify_complete (store :=
+                                (scrutineeResult.store.freshMany k decl.params).2) hsafeA
+                                hleftAllocA hrightAlloc hmodels₂ hunifies
+                            rw [hu] at hresult
+                            have hresultEq : storeUnified = storeU :=
+                              (Except.ok.inj hresult).symm
+                            subst storeUnified
+                            let ext₃ : Valuation := Function.update ext₂ storeU.length ty
+                            have hagreeU : Agree storeU.length ext₂ ext₃ := by
+                              intro id hi
+                              have hne : id ≠ storeU.length := by omega
+                              simp only [ext₃, Function.update]
+                              rw [dif_neg hne]
+                            have hmodelsR : (storeU.fresh k).2.Models ext₃ := by
+                              rw [MStore.fresh_eq, MStore.models_append_unsolved]
+                              refine ⟨?_, ?_⟩
+                              · exact MStore.Models.congr hsafeU hmodelsU hagreeU
+                              · intro i hi
+                                have hi0 : i = 0 := by omega
+                                subst hi0
+                                simpa [ext₃, Function.update] using htyWF
+                            have hargs₃ : (scrutineeResult.store.freshMany k decl.params).1.map
+                                (·.realize ext₃) =
+                                (scrutineeResult.store.freshMany k decl.params).1.map
+                                  (·.realize ext₂) := by
+                              apply List.map_congr_left
+                              intro arg harg
+                              rw [MStore.freshMany_fst] at harg
+                              simp only [List.mem_map, List.mem_range] at harg
+                              obtain ⟨i, hi, rfl⟩ := harg
+                              show ext₃ (scrutineeResult.store.length + i) =
+                                ext₂ (scrutineeResult.store.length + i)
+                              have hne : scrutineeResult.store.length + i ≠ storeU.length := by
+                                rw [MStore.unify_length hu, MStore.freshMany_snd]
+                                simp only [List.length_append, List.length_replicate]
+                                omega
+                              simp only [ext₃, Function.update]
+                              rw [dif_neg hne]
+                            have hagree₁₃ : Agree scrutineeResult.store.length ext₁ ext₃ := by
+                              intro id hi
+                              exact (hagree₂ id hi).trans (hagreeU id
+                                (lt_of_lt_of_le hi (le_trans hgrowA hgrowU)))
+                            have hagreeVal₃ : Agree store.length valuation ext₃ := by
+                              intro id hi
+                              exact (hagree₁ id hi).trans
+                                (hagree₁₃ id (lt_of_lt_of_le hi hscrutPost.grows))
+                            have hresult₃ : ((storeU.fresh k).1).realize ext₃ = ty := by
+                              show ext₃ storeU.length = ty
+                              simp only [ext₃, Function.update]
+                              simp
+                            have hallR : ∀ (i : Nat) pattern body bodyElab ctor,
+                                ((first, second) :: restBranches)[i]? = some (pattern, body) →
+                                branchesElab[i]? = some (pattern, bodyElab) →
+                                decl.ctors[pattern.ctor.index]? = some ctor →
+                                Typing sig (k + ctor.existentials)
+                                  (ctor.fieldCtx
+                                    ((scrutineeResult.store.freshMany k decl.params).1.map
+                                      (·.realize ext₃))
+                                    (rigidBlock k ctor.existentials) ++ ctx.realize ext₃)
+                                  body bodyElab (((storeU.fresh k).1).realize ext₃) := by
+                              intro i pattern body bodyElab ctor hbr' hbrElab hfields'
+                              have h := hall i pattern body bodyElab ctor hbr' hbrElab hfields'
+                              rw [ctx_realize_congr_of_agree pre hagreeVal₃, hargs₃.trans hargs₂,
+                                hresult₃]
+                              exact h
+                            obtain ⟨extended, hmodelsExt, hagreeExt, hmapExt⟩ :=
+                              hbrPost.principal ext₃ hmodelsR branchesElab hmap hallR
+                            refine ⟨extended, hmodelsExt, ?_, ?_, ?_⟩
+                            · intro id hi
+                              exact (hagreeVal₃ id hi).trans
+                                (hagreeExt id (lt_of_lt_of_le hi hgrowStoreR))
+                            · have hagree₁ext : Agree scrutineeResult.store.length ext₁ extended := by
+                                intro id hi
+                                exact (hagree₁₃ id hi).trans
+                                  (hagreeExt id (lt_of_lt_of_le hi (le_trans hgrowA hgrowAR)))
+                              simp only [Expr.realize, Expr.mapAnn, Expr.mapAnnBranches_eq,
+                                Expr.match.injEq]
+                              refine ⟨?_, hmapExt⟩
+                              show scrutineeResult.elaboration.realize extended = scrutineeElab
+                              rw [← Expr.realize_agree (store := scrutineeResult.store)
+                                hscrutPost.elabAllocated hagree₁ext]
+                              exact helab₁
+                            · rw [← Ty.realize_congr fresh_allocated hagreeExt, hresult₃]
+            · have hnotA : (¬ (((first, second) :: restBranches).all (fun branch =>
+                  decl.ctors[branch.1.ctor.index]?.all fun ctor =>
+                    branch.1.binders == ctor.fields.length) = true)) = True := eq_true hallArity
+              have h : inferAt sig k ctx
+                  (.match scrutinee ((first, second) :: restBranches)) store =
+                  .error ⟨[.matchBranch (((first, second) :: restBranches).findIdx
+                    fun branch => !(decl.ctors[branch.1.ctor.index]?.all fun ctor =>
+                      branch.1.binders == ctor.fields.length))],
+                    .patternArity⟩ := by
+                simp only [hbind, hhead, hdecl, hallCheck, hnotA, not_true, ite_true,
+                  ite_false, Option.getDM, Bind.bind, Except.bind, Pure.pure, Except.pure]
+              simp only [InferSpec, h]
+              intro valuation models elaboration ty typing
+              obtain ⟨type, declTy, args, scrutineeElab, branchesElab, hdeclTy,
+                harity, hne, hpatterns, hbinders, hmap, hscrut, hall, _, helab⟩ :=
+                TypingWith.match_inv typing
+              have htype : first.ctor.type = type := (hpatterns first hmemHead).1
+              rw [← htype] at hdeclTy
+              rw [hdecl] at hdeclTy
+              cases hdeclTy
+              exact hallArity (branches_arity_of_facts hbinders)
+          · have hnot : (¬ (((first, second) :: restBranches).all (fun branch =>
+                branch.1.ctor.type == first.ctor.type &&
+                  decide (branch.1.ctor.index < decl.ctors.length)) = true)) = True :=
+              eq_true hallCheck
+            have h : inferAt sig k ctx
+                (.match scrutinee ((first, second) :: restBranches)) store =
+                .error ⟨[.matchBranch (((first, second) :: restBranches).findIdx
+                  fun branch => !(branch.1.ctor.type == first.ctor.type &&
+                    decide (branch.1.ctor.index < decl.ctors.length)))],
+                  .foreignPattern⟩ := by
+              simp only [hbind, hhead, hdecl, hnot, ite_true, Option.getDM, Bind.bind,
+                Except.bind, Pure.pure, Except.pure]
+            simp only [InferSpec, h]
+            intro valuation models elaboration ty typing
+            obtain ⟨type, declTy, args, scrutineeElab, branchesElab, hdeclTy, harity,
+              hne, hpatterns, _, hmap, hscrut, hall, _, helab⟩ := TypingWith.match_inv typing
+            have htype : first.ctor.type = type := (hpatterns first hmemHead).1
+            rw [← htype] at hdeclTy
+            rw [hdecl] at hdeclTy
+            cases hdeclTy
+            exact hallCheck (branches_all_of_facts fun pattern hpat =>
+              ⟨(hpatterns pattern hpat).1.trans htype.symm, (hpatterns pattern hpat).2⟩)
+
 theorem inferAt_spec_var {sig : Signature} (pre : InferPre k ctx store) :
     InferSpec sig k ctx (.var index) store := by
   have hbind : inferAt sig k ctx (.var index) store =
