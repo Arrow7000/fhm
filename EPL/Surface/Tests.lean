@@ -240,7 +240,7 @@ def docsOf (source : String) : List String :=
 #guard runToString "type Pack a = MkPack {s} s (s -> a)\nmatch MkPack True (\\b -> if b then 1 else 0) with\n| MkPack s f -> f s" == "1 : Int"
 -- Returning the hidden value lets its type escape. The message names it `s`.
 #guard runToString "type Pack a = MkPack {s} s (s -> a)\nmatch MkPack True (\\b -> if b then 1 else 0) with\n| MkPack s f -> s" ==
-  "3:17: type mismatch: expected `s -> (s -> Int) -> ?7`, found `?8 -> ?9 -> ?8` (`?7` cannot be `s`: a type variable would escape its scope)"
+  "3:17: type mismatch: expected `?7`, found `s` (`?7` cannot be `s`: a type variable would escape its scope)"
 -- Different packs of one type may hide different types.
 #guard runToString "type Pack a = MkPack {s} s (s -> a)\nlet open {a} (p : Pack a) : a = match p with\n  | MkPack x f -> f x\nopen (MkPack 'x' (\\c -> 5)) + open (MkPack 2 (\\n -> n + 1))" == "8 : Int"
 -- An arm is one type variable deeper per hidden type, so a polymorphic `let`
@@ -265,7 +265,7 @@ def packPrelude : String :=
 -- An unnamed hidden type is shown with the declaration's name, primed when
 -- that name is taken.
 #guard runToString (packPrelude ++ "let use {s} (z : s) : s = match p with\n  | MkPack x f -> x\nuse 'c'") ==
-  "4:19: type mismatch: expected `s' -> (s' -> Int) -> ?8`, found `?9 -> ?10 -> ?9` (`?8` cannot be `s'`: a type variable would escape its scope)"
+  "4:19: type mismatch: expected `?8`, found `s'` (`?8` cannot be `s'`: a type variable would escape its scope)"
 #guard symbolsOf (packPrelude ++ "match p with\n| MkPack x f -> f x") "x" == ["4:10 def s", "4:19 use s"]
 #guard symbolsOf (packPrelude ++ "let use {s} (z : s) : Int = match p with\n  | MkPack x f -> f x\nuse 'c'") "x" ==
   ["4:12 def s'", "4:21 use s'"]
@@ -281,7 +281,7 @@ def packPrelude : String :=
 #guard runToString (packPrelude ++ "let q =\n  let (MkPack {t} x f) = p in f x\nq") == "1 : Int"
 #guard runToString (packPrelude ++ "let (MkPack x f) = p\nf x") == "1 : Int"
 #guard runToString (packPrelude ++ "let q =\n  let (MkPack x f) = p in x\nq") ==
-  "4:27: type mismatch: expected `s -> (s -> Int) -> ?7`, found `?8 -> ?9 -> ?8` (`?7` cannot be `s`: a type variable would escape its scope)"
+  "4:27: type mismatch: expected `?7`, found `s` (`?7` cannot be `s`: a type variable would escape its scope)"
 -- Naming the wrong number of type variables, or one twice.
 #guard runToString (packPrelude ++ "match p with\n| MkPack {t u} x f -> 1") ==
   "4:3: `MkPack` has 1 type variable(s) of its own, but the pattern names 2"
