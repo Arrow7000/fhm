@@ -101,6 +101,116 @@ private theorem Ty.arrows_wf_codomain {domains : List (Ty V)} {codomain : Ty V} 
   | nil => exact wf
   | cons domain domains ih => exact ih wf.2
 
+/-- A type that mentions no rigid variables is unchanged by a rigid
+substitution. -/
+private theorem Ty.substRigids_closed_eq_self {V : Type} {ty : Ty V} {f : Nat → Ty V}
+    {binders : Nat} (wf : ty.Scoped 0 binders) : ty.substRigids f = ty := by
+  show ty.subst ⟨.bvar, f, .var⟩ = ty
+  have hc : ty.subst ⟨.bvar, f, .var⟩ = ty.subst Ty.Subst.id :=
+    Ty.subst_congr wf (fun _ _ => rfl) (fun l hl => absurd hl (Nat.not_lt_zero l))
+      (fun _ _ => rfl)
+  rw [hc, Ty.subst_id]
+
+/-- A type in scope at depth `k` is unchanged by a rigid substitution that is
+the identity below `k`. -/
+private theorem Ty.substRigids_eq_self {V : Type} {ty : Ty V} {f : Nat → Ty V} {k : Nat}
+    (wf : ty.WF k) (agrees : ∀ l < k, f l = .rigid l) : ty.substRigids f = ty := by
+  show ty.subst ⟨.bvar, f, .var⟩ = ty
+  have hc : ty.subst ⟨.bvar, f, .var⟩ = ty.subst Ty.Subst.id :=
+    Ty.subst_congr wf (fun _ _ => rfl) (fun l hl => agrees l hl) (fun _ _ => rfl)
+  rw [hc, Ty.subst_id]
+
+/-- An `instantiate` followed by a rigid substitution is the `instantiate` at
+the substituted arguments, provided the type mentions only binders. -/
+private theorem Ty.instantiate_substRigids {V : Type} {ty : Ty V} {args : List (Ty V)}
+    {f : Nat → Ty V} (wf : ty.Scoped 0 args.length) :
+    (ty.instantiate args).substRigids f =
+      ty.instantiate (args.map (·.substRigids f)) := by
+  have h := Scheme.inst_substRigids (scheme := ⟨args.length, ty⟩) args (k := 0) wf
+    (f := f) (rigids := 0) (fun l hl => absurd hl (Nat.not_lt_zero l))
+  simp only [Scheme.inst, Scheme.substRigids] at h
+  rw [Ty.substRigids_closed_eq_self wf] at h
+  exact h
+
+/-- A rigid substitution acts on an arrow type domain by domain. -/
+private theorem Ty.arrows_substRigids {V : Type} (domains : List (Ty V)) (codomain : Ty V)
+    (f : Nat → Ty V) :
+    (Ty.arrows domains codomain).substRigids f =
+      Ty.arrows (domains.map (·.substRigids f)) (codomain.substRigids f) := by
+  induction domains with
+  | nil => rfl
+  | cons d ds ih =>
+      change Ty.substRigids f (Ty.arrow d (Ty.arrows ds codomain)) =
+        Ty.arrow (Ty.substRigids f d)
+          (Ty.arrows (ds.map (·.substRigids f)) (Ty.substRigids f codomain))
+      rw [show Ty.substRigids f (Ty.arrow d (Ty.arrows ds codomain)) =
+          Ty.arrow (Ty.substRigids f d) (Ty.substRigids f (Ty.arrows ds codomain)) from rfl]
+      rw [ih]
+
+/-- The head and the arguments of a well-scoped type application are well
+scoped. -/
+private theorem Ty.apps_scoped_inv {V : Type} {head : Ty V} {args : List (Ty V)} {r b : Nat}
+    (h : (Ty.apps head args).Scoped r b) :
+    head.Scoped r b ∧ ∀ a ∈ args, a.Scoped r b := by
+  induction args generalizing head with
+  | nil => exact ⟨h, by simp⟩
+  | cons a as ih =>
+      change Ty.Scoped r b (Ty.apps (Ty.app head a) as) at h
+      obtain ⟨hhead, hrest⟩ := ih h
+      refine ⟨hhead.1, ?_⟩
+      intro x hx
+      rcases List.mem_cons.mp hx with rfl | hmem
+      · exact hhead.2
+      · exact hrest x hmem
+
+/-- A list of types in scope at depth `k` is unchanged by a rigid substitution
+that is the identity below `k`. -/
+private theorem List.map_substRigids_eq_self {args : List SemTy} {f : Nat → SemTy} {k : Nat}
+    (wf : ∀ a ∈ args, a.WF k) (agrees : ∀ l < k, f l = .rigid l) :
+    args.map (·.substRigids f) = args := by
+  rw [List.map_congr_left fun a ha => Ty.substRigids_eq_self (wf a ha) agrees]
+  exact List.map_id args
+
+/-- Indexing a list by every index below its length gives the list back. -/
+private theorem list_getD_range_map {α : Type} {l : List α} {n : Nat} (hlen : l.length = n)
+    (d : Nat → α) : (List.range n).map (fun i => l.getD i (d i)) = l := by
+  apply List.ext_getElem
+  · simp [hlen]
+  · intro i hi _
+    simp only [List.getElem_map, List.getElem_range]
+    have hai : i < l.length := by simpa [hlen] using hi
+    rw [List.getD_eq_getElem?_getD, List.getElem?_eq_getElem hai, Option.getD_some]
+
+/-- A rigid block substituted pointwise is the list of types it stands for. -/
+private theorem rigidBlock_map_substRigids {k n : Nat} {hidden : List SemTy} {f : Nat → SemTy}
+    (hlen : hidden.length = n) (hf : ∀ i < n, f (k + i) = hidden.getD i (.rigid (k + i))) :
+    (rigidBlock k n).map (·.substRigids f) = hidden := by
+  have hmap : (rigidBlock k n).map (·.substRigids f) = (List.range n).map fun i => f (k + i) := by
+    unfold rigidBlock
+    rw [List.map_map]
+    rfl
+  rw [hmap, show (List.range n).map (fun i => f (k + i)) =
+      (List.range n).map (fun i => hidden.getD i (.rigid (k + i))) from by
+    apply List.map_congr_left
+    intro i hi
+    exact hf i (List.mem_range.mp hi)]
+  exact list_getD_range_map hlen _
+
+/-- A successful declaration lookup gives a well-formed declaration. -/
+private theorem Signature.decl?_wf {sig : Signature} {type : Nat} {decl : DataDecl}
+    (found : sig.decl? type = some decl) : decl.WF := by
+  cases h : sig[type]? with
+  | none => simp [Signature.decl?, h] at found
+  | some other =>
+      by_cases hwf : other.WF
+      · simp only [Signature.decl?, h, Option.bind_eq_bind, Option.bind_some] at found
+        simp only [hwf, if_true, Option.some.injEq] at found
+        subst found
+        exact hwf
+      · simp only [Signature.decl?, h, Option.bind_eq_bind, Option.bind_some] at found
+        simp only [hwf, if_false] at found
+        cases found
+
 /-- Branch lists with the same patterns line up by index: the elaboration has a
 branch at every index where the source does, with the same pattern. -/
 private theorem exists_branch_of_map_fst {A B : Type} {branches : List (CtorRef × Expr A)}
@@ -118,36 +228,6 @@ private theorem exists_branch_of_map_fst {A B : Type} {branches : List (CtorRef 
   rw [hfst] at hbranch
   exact ⟨bodyElab, hbranch⟩
 
-/-- A match's result type is well formed: it is the codomain of the type of its
-first branch, which is an arrow type. -/
-private theorem match_result_wf {k : Nat} {ctx : Ctx Empty} {decl : DataDecl} {type : Nat}
-    {args : List (Ty Empty)} {branches : List (CtorRef × Source)}
-    {branchesElab : List (CtorRef × Elab)} {resultTy : Ty Empty}
-    (ctxWF : ctx.WF k)
-    (branchesNe : branches ≠ [])
-    (patternsOk : ∀ pattern ∈ branches.map (·.1),
-      pattern.type = type ∧ pattern.index < decl.ctors.length)
-    (aligned : branchesElab.map (·.1) = branches.map (·.1))
-    (bodies : ∀ (i : Nat) (pattern : CtorRef) (body : Source) (bodyElab : Elab)
-      (fields : List SemTy),
-      branches[i]? = some (pattern, body) →
-      branchesElab[i]? = some (pattern, bodyElab) →
-      decl.ctors[pattern.index]? = some fields →
-      Ctx.WF k ctx →
-      (Ty.arrows (fields.map (·.instantiate args)) resultTy).WF k) :
-    resultTy.WF k := by
-  obtain ⟨pattern, body, hb0⟩ : ∃ pattern body, branches[0]? = some (pattern, body) := by
-    cases branches with
-    | nil => exact absurd rfl branchesNe
-    | cons branch rest => exact ⟨branch.1, branch.2, rfl⟩
-  obtain ⟨bodyElab, hbE⟩ := exists_branch_of_map_fst aligned hb0
-  have hmem : pattern ∈ branches.map (·.1) :=
-    List.mem_map.mpr ⟨(pattern, body), List.mem_of_getElem? hb0, rfl⟩
-  have hlen : pattern.index < decl.ctors.length := (patternsOk pattern hmem).2
-  obtain ⟨fields, hfields⟩ : ∃ fields, decl.ctors[pattern.index]? = some fields :=
-    ⟨decl.ctors[pattern.index]'hlen, List.getElem?_eq_getElem hlen⟩
-  exact Ty.arrows_wf_codomain (bodies 0 pattern body bodyElab fields hb0 hbE hfields ctxWF)
-
 /-- Erasing the bodies of two pattern-aligned branch lists commutes with the
 alignment: branch by branch, the types agree by the indexed premise. -/
 private theorem map_erase_eq_of_aligned {A B : Type} {branches : List (CtorRef × Expr A)}
@@ -156,10 +236,10 @@ private theorem map_erase_eq_of_aligned {A B : Type} {branches : List (CtorRef �
       pattern.type = type ∧ pattern.index < decl.ctors.length)
     (aligned : branchesElab.map (·.1) = branches.map (·.1))
     (bodies : ∀ (i : Nat) (pattern : CtorRef) (body : Expr A) (bodyElab : Expr B)
-      (fields : List SemTy),
+      (ctor : CtorDecl),
       branches[i]? = some (pattern, body) →
       branchesElab[i]? = some (pattern, bodyElab) →
-      decl.ctors[pattern.index]? = some fields → Expr.erase bodyElab = Expr.erase body) :
+      decl.ctors[pattern.index]? = some ctor → Expr.erase bodyElab = Expr.erase body) :
     branchesElab.map (fun branch => (branch.1, Expr.erase branch.2)) =
       branches.map (fun branch => (branch.1, Expr.erase branch.2)) := by
   apply List.ext_getElem?
@@ -195,8 +275,8 @@ theorem mono {Det Det' : LetCondition}
     TypingWith sig Det' k ctx src elaboration ty := by
   induction typing with
   | «match» scrutineeTyping declEq argsLen branchesNe patternsOk aligned branchTyping
-      scrutineeIh branchIh =>
-      exact .«match» scrutineeIh declEq argsLen branchesNe patternsOk aligned branchIh
+      resultTyWF scrutineeIh branchIh =>
+      exact .«match» scrutineeIh declEq argsLen branchesNe patternsOk aligned branchIh resultTyWF
   | lit => exact .lit
   | primOp h => exact .primOp h
   | ctor hsch hinst => exact .ctor hsch hinst
@@ -214,8 +294,8 @@ theorem regular (ctxWF : ctx.WF k) (typing : TypingWith sig Det k ctx src elabor
     ty.WF k := by
   induction typing with
   | «match» scrutineeTyping declEq argsLen branchesNe patternsOk aligned branchTyping
-      scrutineeIh branchIh =>
-      exact match_result_wf ctxWF branchesNe patternsOk aligned branchIh
+      resultTyWF scrutineeIh branchIh =>
+      exact resultTyWF
   | lit => exact PrimLit.ty_wf _
   | primOp h => exact PrimOp.ty_wf h
   | ctor hsch hinst =>
@@ -240,7 +320,7 @@ theorem regular (ctxWF : ctx.WF k) (typing : TypingWith sig Det k ctx src elabor
 theorem erase_eq (typing : TypingWith sig Det k ctx src elaboration ty) : elaboration.erase = src.erase := by
   induction typing with
   | «match» scrutineeTyping declEq argsLen branchesNe patternsOk aligned branchTyping
-      scrutineeIh branchIh =>
+      resultTyWF scrutineeIh branchIh =>
       simp only [Expr.erase, scrutineeIh]
       rw [Expr.eraseBranches_eq, Expr.eraseBranches_eq,
         map_erase_eq_of_aligned patternsOk aligned branchIh]
@@ -260,14 +340,14 @@ theorem erase (ctxWF : ctx.WF k) (typing : TypingWith sig Det k ctx src elaborat
     RuntimeTyping sig k ctx src.erase ty := by
   induction typing with
   | «match» scrutineeTyping declEq argsLen branchesNe patternsOk aligned branchTyping
-      scrutineeIh branchIh =>
+      resultTyWF scrutineeIh branchIh =>
       refine RuntimeTyping.«match» (scrutineeIh ctxWF) declEq argsLen ?_ ?_ ?_
       · rw [Expr.eraseBranches_eq]
         intro hnil
         exact branchesNe (List.map_eq_nil_iff.mp hnil)
       · rw [Expr.eraseBranches_eq]
         simpa using patternsOk
-      · intro pattern body fields hmem hfields
+      · intro pattern body ctor hmem hfields k' hle hidden hlen hhidden
         rw [Expr.eraseBranches_eq] at hmem
         obtain ⟨⟨pattern₀, body₀⟩, hmem₀, heq⟩ := List.mem_map.mp hmem
         simp only [Prod.mk.injEq] at heq
@@ -276,7 +356,61 @@ theorem erase (ctxWF : ctx.WF k) (typing : TypingWith sig Det k ctx src elaborat
         obtain ⟨bodyElab, hiElab⟩ := exists_branch_of_map_fst aligned hi
         rw [← hpat] at hfields
         rw [← hbod]
-        exact branchIh i pattern₀ body₀ bodyElab fields hi hiElab hfields ctxWF
+        -- The branch body is typed one depth per existential deeper, with the
+        -- constructor's own variables as the fresh levels `k, ..., k+e-1`.
+        expose_names
+        have hctx : ctx_1.WF (k_1 + ctor.existentials) :=
+          Ctx.WF.mono ctxWF (Nat.le_add_right k_1 ctor.existentials)
+        have ih := branchIh i pattern₀ body₀ bodyElab ctor hi hiElab hfields hctx
+        -- Replace those fresh levels by the value's own `hidden` types,
+        -- keeping everything below `k` as it is.
+        let f : Nat → SemTy :=
+          fun l => if l < k_1 then .rigid l else hidden.getD (l - k_1) (.rigid l)
+        have hf_agree : ∀ l < k_1, f l = .rigid l := fun l hl => by simp [f, hl]
+        have himages : ∀ l < k_1 + ctor.existentials, (f l).WF k' := by
+          intro l hl
+          by_cases hlt : l < k_1
+          · rw [hf_agree l hlt]
+            show l < k'
+            omega
+          · have hfl : f l = hidden.getD (l - k_1) (.rigid l) := by simp [f, hlt]
+            rw [hfl]
+            have hd : l - k_1 < hidden.length := by omega
+            rw [List.getD_eq_getElem?_getD, List.getElem?_eq_getElem hd, Option.getD_some]
+            exact hhidden _ (List.getElem_mem hd)
+        have hsub := RuntimeTyping.substRigids (k' := k') hctx ih f himages
+        rw [map_substRigids_eq_self ctxWF hf_agree] at hsub
+        have hdeclWF : decl.WF := Signature.decl?_wf declEq
+        have hctors : ctor ∈ decl.ctors := List.mem_of_getElem? hfields
+        have hargsWF : ∀ a ∈ args, a.WF k_1 :=
+          (Ty.apps_scoped_inv (regular ctxWF scrutineeTyping)).2
+        have hargsMap : args.map (·.substRigids f) = args :=
+          List.map_substRigids_eq_self hargsWF hf_agree
+        have hhiddenMap : (rigidBlock k_1 ctor.existentials).map (·.substRigids f) = hidden :=
+          rigidBlock_map_substRigids hlen fun i hi => by
+            show f (k_1 + i) = hidden.getD i (.rigid (k_1 + i))
+            simp [f, show ¬ k_1 + i < k_1 by omega, show k_1 + i - k_1 = i by omega]
+        have hfieldsMap :
+            (ctor.fields.map (fun ft =>
+                ft.instantiate (args ++ rigidBlock k_1 ctor.existentials))).map
+              (·.substRigids f) =
+              ctor.fields.map (fun ft => ft.instantiate (args ++ hidden)) := by
+          rw [List.map_map]
+          apply List.map_congr_left
+          intro ft hft
+          show (ft.instantiate (args ++ rigidBlock k_1 ctor.existentials)).substRigids f =
+            ft.instantiate (args ++ hidden)
+          have hfield : ft.Scoped 0 (args.length + ctor.existentials) := by
+            have h := hdeclWF ctor hctors ft hft
+            rwa [← argsLen] at h
+          have hscope : ft.Scoped 0 (args ++ rigidBlock k_1 ctor.existentials).length := by
+            simpa [List.length_append, rigidBlock] using hfield
+          rw [Ty.instantiate_substRigids (f := f) hscope, List.map_append, hargsMap, hhiddenMap]
+        have hty : (ctor.branchTy args (rigidBlock k_1 ctor.existentials) resultTy).substRigids f =
+            ctor.branchTy args hidden resultTy := by
+          simp only [CtorDecl.branchTy, Ty.arrows_substRigids, hfieldsMap,
+            Ty.substRigids_eq_self resultTyWF hf_agree]
+        rwa [hty] at hsub
   | lit => exact .lit
   | primOp h => exact .primOp h
   | ctor hsch hinst => exact .ctor hsch hinst
