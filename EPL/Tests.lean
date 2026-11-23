@@ -27,7 +27,7 @@ def boolSig : Signature := [boolDecl]
 
 /-- `List a = Nil | Cons a (List a)` as declaration 1 after `Bool`. -/
 def listSig : Signature :=
-  [boolDecl, ⟨1, [[], [.bvar 0, .app (.con 1) (.bvar 0)]]⟩]
+  [boolDecl, ⟨1, [.plain [], .plain [.bvar 0, .app (.con 1) (.bvar 0)]]⟩]
 
 def trueExpr : Expr A := .ctor ⟨0, 0⟩
 
@@ -594,7 +594,7 @@ def finalValue (input : Source) (fuel : Nat) : Option RuntimeExpr :=
 /-- A field mentioning an undeclared parameter makes its declaration ill
 formed: `decl?` hides it, so none of its constructors has a scheme and no
 match can name it. Other declarations are unaffected. -/
-def illScopedSig : Signature := [boolDecl, ⟨0, [[.bvar 0]]⟩]
+def illScopedSig : Signature := [boolDecl, ⟨0, [.plain [.bvar 0]]⟩]
 
 example : illScopedSig.decl? 1 = none := by decide
 example : illScopedSig.decl? 0 = some boolDecl := by decide
@@ -766,7 +766,7 @@ example : (infer boolSig charLtExpr).toOption.map (·.ty) = some boolTy := by
 
 /-- Declaration 0 is `List`-shaped rather than `True | False`. -/
 def listShapedSig : Signature :=
-  [⟨1, [[], [.bvar 0, .app (.con 0) (.bvar 0)]]⟩]
+  [⟨1, [.plain [], .plain [.bvar 0, .app (.con 0) (.bvar 0)]]⟩]
 
 example : (infer [] (intLtExpr 1 2)).toOption = none := by
   decide
@@ -884,8 +884,8 @@ private theorem instantiate_arrows (args : List SemTy) (codomain : SemTy) :
 /-- The instance of a constructor's scheme is headed by its data type, so it is
 never a primitive type. -/
 private theorem ctorScheme_inst_ne_prim (decl : DataDecl) (type : Nat)
-    (fields : List SemTy) (args : List SemTy) (p : PrimTy) :
-    (decl.ctorScheme type fields).inst args ≠ .prim p := by
+    (ctor : CtorDecl) (args : List SemTy) (p : PrimTy) :
+    (decl.ctorScheme type ctor).inst args ≠ .prim p := by
   unfold DataDecl.ctorScheme Scheme.inst DataDecl.selfTy
   rw [instantiate_arrows, instantiate_apps]
   apply arrows_ne_prim
@@ -895,9 +895,9 @@ private theorem ctorScheme_inst_ne_prim (decl : DataDecl) (type : Nat)
 /-- A constructor's scheme is its declaration's `ctorScheme`. -/
 private theorem ctorScheme_eq {sig : Signature} {type index : Nat}
     {scheme : Scheme Empty} (found : sig.ctorScheme ⟨type, index⟩ = some scheme) :
-    ∃ (decl : DataDecl) (fields : List SemTy),
-      sig.decl? type = some decl ∧ decl.ctors[index]? = some fields ∧
-        scheme = decl.ctorScheme type fields := by
+    ∃ (decl : DataDecl) (ctor : CtorDecl),
+      sig.decl? type = some decl ∧ decl.ctors[index]? = some ctor ∧
+        scheme = decl.ctorScheme type ctor := by
   cases hdecl : sig.decl? type with
   | none => simp [Signature.ctorScheme, hdecl] at found
   | some decl =>
