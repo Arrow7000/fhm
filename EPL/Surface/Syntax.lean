@@ -187,11 +187,16 @@ def Expr.span : Expr → Span
   | .binOp span .. | .pair span _ _ | .list span _ | .lambda span _ _ | .app span _ _
   | .letIn span _ _ | .ite span _ _ _ | .match span _ _ => span
 
-/-- A constructor declaration `C field ...`. Its span starts at its name. -/
+/-- A constructor declaration `C {s t} field ...`. Its span starts at its name.
+`{s t}` names the constructor's own (existential) type variables, which its
+fields may use besides the data type's parameters. -/
 structure CtorDecl where
   span : Span
   name : String
   fields : List Ty
+  existentials : List String := []
+  /-- Where each of `existentials` is written. -/
+  existentialSpans : List Span := []
   deriving Repr, Inhabited
 
 /-- `type T a b = C1 fields | C2 fields | ...` -/

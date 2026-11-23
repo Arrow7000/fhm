@@ -356,16 +356,22 @@ def Ty.renderArgs : List Ty → List String
   | ty :: rest => ty.render 2 :: Ty.renderArgs rest
 end
 
+/-- `{s t}`, if the constructor has type variables of its own. -/
+def CtorDecl.existentialsText (ctor : CtorDecl) : List String :=
+  if ctor.existentials.isEmpty then [] else ["{" ++ " ".intercalate ctor.existentials ++ "}"]
+
 /-- `type Maybe a =` and a line `  | C fields` per constructor. -/
 def DataDecl.declaration (decl : DataDecl) : String :=
   "\n".intercalate (s!"type {" ".intercalate (decl.name :: decl.params)} =" ::
     decl.ctors.map fun ctor =>
-      "  | " ++ " ".intercalate (ctor.name :: ctor.fields.map (·.render 2)))
+      "  | " ++ " ".intercalate (ctor.name :: ctor.existentialsText ++ ctor.fields.map (·.render 2)))
 
-/-- A constructor's type: `{a} a -> Maybe a`. -/
+/-- A constructor's type: `{a} a -> Maybe a`; its own type variables come after
+the data type's parameters, as in `{a s} s -> (s -> a) -> Pack a`. -/
 def DataDecl.ctorTy (decl : DataDecl) (ctor : CtorDecl) : String :=
   let result := " ".intercalate (decl.name :: decl.params)
-  tyParamsPrefix decl.params ++ " -> ".intercalate (ctor.fields.map (·.render 1) ++ [result])
+  tyParamsPrefix (decl.params ++ ctor.existentials) ++
+    " -> ".intercalate (ctor.fields.map (·.render 1) ++ [result])
 
 /-- What hover shows for a type: its declaration. -/
 def Lowering.typeInfo (lowering : Lowering) (name : String) : String × Option String :=
@@ -413,6 +419,9 @@ def Lowering.declSymbols (lowering : Lowering) : List Symbol :=
       let span := nameSpanAt ctor.span ctor.name
       { name := ctor.name, kind := "ctor", ty := decl.ctorTy ctor, span, scope := everywhere,
         isDef := true, doc := lowering.docs.lookup span.start, declaration } ::
+      (ctor.existentials.zip ctor.existentialSpans).map (fun (name, span) =>
+        { name, kind := "param", ty := s!"type variable (of {ctor.name})", span,
+          scope := ctor.span, isDef := true }) ++
       tyUsesList lowering decl ctor.fields
 
 /-- The symbol of a type, type variable or constructor in a pattern. -/

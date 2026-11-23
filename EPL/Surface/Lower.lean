@@ -168,12 +168,13 @@ private def noSpan : Span := default
 `type Pair a b = Pair a b`. -/
 def preludeDecls : List DataDecl :=
   [{ span := noSpan, name := "Bool", params := [],
-     ctors := [⟨noSpan, "True", []⟩, ⟨noSpan, "False", []⟩] },
+     ctors := [{ span := noSpan, name := "True", fields := [] }, { span := noSpan, name := "False", fields := [] }] },
    { span := noSpan, name := "List", params := ["a"],
-     ctors := [⟨noSpan, "Nil", []⟩,
-      ⟨noSpan, "Cons", [.var noSpan "a", .con noSpan "List" [.var noSpan "a"]]⟩] },
+     ctors := [{ span := noSpan, name := "Nil", fields := [] },
+      { span := noSpan, name := "Cons",
+        fields := [.var noSpan "a", .con noSpan "List" [.var noSpan "a"]] }] },
    { span := noSpan, name := "Pair", params := ["a", "b"],
-     ctors := [⟨noSpan, "Pair", [.var noSpan "a", .var noSpan "b"]⟩] }]
+     ctors := [{ span := noSpan, name := "Pair", fields := [.var noSpan "a", .var noSpan "b"] }] }]
 
 def trueRef : CtorRef := ⟨0, 0⟩
 def falseRef : CtorRef := ⟨0, 1⟩
@@ -246,14 +247,20 @@ def lowerDecls (decls : List DataDecl) : Except LowerError (Globals × Signature
   let sig ← decls.mapM fun decl => do
     if let some name := firstDuplicate decl.params then
       throw ⟨decl.span, .duplicateTypeParameter name⟩
-    let param (span : Span) (name : String) : Except LowerError SemTy :=
-      match decl.params.idxOf? name with
-      | some index => pure (.bvar index)
-      | none => throw ⟨span, .unboundTypeVariable name⟩
     let noHole (span : Span) (_ : Option String) : Except LowerError SemTy :=
       throw ⟨span, .holeInDeclaration⟩
-    let ctors ← decl.ctors.mapM fun ctor =>
-      ctor.fields.mapM (lowerTyWith globals param noHole)
+    let ctors ← decl.ctors.mapM fun ctor => do
+      -- The data type's parameters are `bvar 0, ...`, then the constructor's
+      -- own variables.
+      let vars := decl.params ++ ctor.existentials
+      if let some name := firstDuplicate vars then
+        throw ⟨ctor.span, .duplicateTypeParameter name⟩
+      let var (span : Span) (name : String) : Except LowerError SemTy :=
+        match vars.idxOf? name with
+        | some index => pure (.bvar index)
+        | none => throw ⟨span, .unboundTypeVariable name⟩
+      pure (⟨ctor.existentials.length, ← ctor.fields.mapM (lowerTyWith globals var noHole)⟩ :
+        EPL.CtorDecl)
     pure (⟨decl.params.length, ctors⟩ : EPL.DataDecl)
   pure (globals, sig)
 

@@ -15,6 +15,7 @@ Layout, as in FHM:
   the binding's `let` (or, in a block, past the block's column);
 * a `match` arm on a later line starts its `|` in the column of the first arm;
 * a constructor's fields are indented past its declaration's `type`.
+* a constructor may name its own type variables, `C {s} s (s -> a)`.
 
 Infix operators do not chain: `a + b + c` needs parentheses.
 -/
@@ -555,10 +556,14 @@ def ctorFields (declCol : Nat) : Nat → P (List Ty)
       else tyAtom n
     return field :: (← ctorFields declCol n)
 
+/-- `C {s t} fields`: a constructor, its own type variables (if any) and its
+fields. -/
 def ctorDecl (declCol : Nat) (n : Nat) : P CtorDecl := do
   let (tok, name) ← upperName .constructorName
+  let existentials ← if (← accept (.punct .lbrace)).isSome then binderNames n else pure []
   let fields ← ctorFields declCol n
-  return ⟨← spanFrom tok.span.start, name, fields⟩
+  return { span := ← spanFrom tok.span.start, name, fields,
+           existentials := existentials.map (·.1), existentialSpans := existentials.map (·.2) }
 
 def moreCtors (declCol : Nat) : Nat → P (List CtorDecl)
   | 0 => tooDeep
