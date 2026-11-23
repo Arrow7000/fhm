@@ -57,15 +57,22 @@ A program is a `Signature` (a list of `DataDecl`s) and an expression; the
 signature is a parameter of every judgment and of evaluation. Declaration
 `i` is the type constructor `Ty.con i`. Types are applied with binary
 `Ty.app`, and kinds are not checked: an ill-kinded type such as `Bool Int`
-is a type without values. A declaration lists, per constructor, its field
-types over the declaration's parameters (`bvar`s) and any declared types,
-so recursive and mutually recursive types are allowed. A declaration is well
-formed (`DataDecl.WF`) when every field type mentions only its parameters;
-the constants of an ill-formed declaration have no type.
+is a type without values. A declaration lists its constructors (`CtorDecl`):
+each has some type variables of its own (`existentials`) and field types over
+the declaration's parameters, the constructor's own variables (`bvar`s, in
+that order) and any declared types, so recursive and mutually recursive types
+are allowed. A declaration is well formed (`DataDecl.WF`) when every field
+type mentions only those variables; the constants of an ill-formed
+declaration have no type.
+
+A constructor's own variables do not occur in the type it builds, so they are
+existential: `type AnyDb = MkAnyDb {w} (Db w)` gives
+`MkAnyDb : forall w. Db w -> AnyDb`. Building a value may pick any type for
+`w`; a match on it learns only that there is one.
 
 Constructors are named by `CtorRef ⟨type, index⟩`; names are resolved
 before the core, so a constructor always says which type it belongs to. A
-constructor `C_i : forall params. fields_i -> T params` is an expression
+constructor `C_i : forall params existentials_i. fields_i -> T params` is an expression
 (`Expr.ctor`) applied to its fields by ordinary application, like `Ty.con` is
 applied by `Ty.app`. It is first class, and typing treats it like a variable
 with a closed scheme.
@@ -74,9 +81,20 @@ with a closed scheme.
 constructor patterns. A branch body is a function of its constructor's
 fields, so patterns bind nothing themselves. Typing requires at least one
 branch, every pattern a constructor of the scrutinee's type `T args`, and
-each body of type `fields_i[args] -> r`. Matches may be partial and may
-repeat a pattern; the first matching branch is taken. A match with no
+each body of type `fields_i[args, existentials] -> r`. Matches may be partial
+and may repeat a pattern; the first matching branch is taken. A match with no
 branches is not typable: its type would be unconstrained.
+
+A constructor's own variables become fresh rigid levels
+`k, ..., k + existentials - 1` for its branch, which is checked at that depth
+(as `letPoly` checks its right-hand side), and the result type `r` must be
+well formed at the outer depth `k`. That premise is the escape check: no
+branch can return a value whose type mentions its hidden types. In inference,
+`r` is a metavariable at level `k`, and Rémy levels already forbid solving it
+(or any metavariable of the context) to a type that mentions a deeper level.
+The erased typing takes a branch Kripke style, for every choice of the hidden
+types at every deeper depth, and erasure turns the fresh levels into that form
+with the same type substitution as for `letPoly`.
 
 Exhaustiveness is separate from typing, as in FHM: `Exhaustive sig e` says
 every match in `e` covers every constructor of the type its patterns name.
@@ -202,7 +220,9 @@ induction on the source proving `InferSpec`:
 ## Surface language
 
 `EPL/Surface/` is an unverified front end (`lake build EPLSurface`) with
-FHM's syntax: `type` declarations, top-level `let`s and a final expression,
+FHM's syntax: `type` declarations (a constructor names its own type variables
+like a function head does: `type Pack a = MkPack {s} s (s -> a)`), top-level
+`let`s and a final expression,
 function heads `let f {a} (x : a) y : R = ...`, `_` and `?a` holes, `\x -> e`,
 `if`, `+ - < ::`, pairs, lists, strings (`List Char`) and `match` with nested
 patterns. It stops at the first error, reported as a typed error with a

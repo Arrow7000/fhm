@@ -34,7 +34,7 @@ car == other                            -- type error: Car v0 vs Car v1
    `Db v`, `Person v` are ordinary phantom type parameters, and comparability
    is ordinary type equality. This already works in EPL today.
 2. **A mutation mints a fresh brand via an existential constructor.**
-   `type AnyDb = {w} MkAnyDb (Db w)`, `persist : {v t} Db v -> Draft t -> AnyDb`
+   `type AnyDb = MkAnyDb {w} (Db w)`, `persist : {v t} Db v -> Draft t -> AnyDb`
    (rank 1). Matching on `MkAnyDb db` introduces `w` as a fresh rigid type
    variable; the match's result type must not mention it (escape check).
    `let! db1 = e in rest` is sugar for `match e with MkAnyDb db1 -> rest`:
