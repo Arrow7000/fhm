@@ -141,6 +141,8 @@ structure TypeInfo where
   name : String
   params : Nat
   ctors : List (String × Nat)
+  /-- Each constructor's own (existential) type variables, by name. -/
+  ctorTyVars : List (List String) := []
   deriving Repr, Inhabited
 
 /-- The declared types; type `con i` is entry `i`. -/
@@ -243,7 +245,8 @@ def lowerDecls (decls : List DataDecl) : Except LowerError (Globals × Signature
       throw ⟨ctor.span, .duplicateConstructor ctor.name⟩
   let globals : Globals :=
     ⟨decls.map fun decl => ⟨decl.name, decl.params.length,
-      decl.ctors.map fun ctor => (ctor.name, ctor.fields.length)⟩⟩
+      decl.ctors.map (fun ctor => (ctor.name, ctor.fields.length)),
+      decl.ctors.map (·.existentials)⟩⟩
   let sig ← decls.mapM fun decl => do
     if let some name := firstDuplicate decl.params then
       throw ⟨decl.span, .duplicateTypeParameter name⟩
@@ -587,13 +590,16 @@ def compile (leaf : Nat → Scope → M Lowered) (armScope : Nat → Span) (span
             let fieldSpan := (ctorSpan column ⟨ref.type, index⟩ (row :: rows)).getD patSpan
             let fields := (List.range arity).map fun i => (scope.depth + i, fieldSpan)
             let fieldIds ← (List.range arity).mapM fun _ => freshBinder
-            let inner := fieldIds.foldl (fun scope id => scope.bind none id) scope
+            -- The core checks the branch one rigid level deeper per type
+            -- variable of the constructor's own; they keep its declaration's names.
+            let deeper := scope.enterTyVars (info.ctorTyVars.getD index [])
+            let inner := fieldIds.foldl (fun scope id => scope.bind none id) deeper
             let (tree, reached) ←
               compile leaf armScope span fuel inner (fields ++ others) specialized
             let branch := tree.map fun body =>
               ((⟨ref.type, index⟩ : CtorRef),
                 fieldIds.foldr (init := body) fun id body =>
-                  scope.lambda body.2.span none id body)
+                  deeper.lambda body.2.span none id body)
             pure (branch, reached)
           let branches := results.filterMap (·.1)
           pure (some (.match (scope.varAt level) (branches.map fun (ref, body) => (ref, body.1)),

@@ -231,4 +231,25 @@ def docsOf (source : String) : List String :=
 #guard runToString "let x = 1\n--- Nothing.\nx" ==
   "2:1: a doc comment must come before a `let`, a `type` or a constructor"
 
+/-! ## Existential constructors -/
+
+-- `MkPack {s}`: the constructor's own type variable `s` is hidden from its type.
+#guard runToString "type Pack a = MkPack {s} s (s -> a)\nMkPack 'x' (\\c -> 5)" ==
+  "MkPack 'x' <function> : Pack Int"
+-- Opening a pack and applying its function to its value.
+#guard runToString "type Pack a = MkPack {s} s (s -> a)\nmatch MkPack True (\\b -> if b then 1 else 0) with\n| MkPack s f -> f s" == "1 : Int"
+-- Returning the hidden value lets its type escape. The message names it `s`.
+#guard runToString "type Pack a = MkPack {s} s (s -> a)\nmatch MkPack True (\\b -> if b then 1 else 0) with\n| MkPack s f -> s" ==
+  "3:17: type mismatch: expected `s -> (s -> Int) -> ?7`, found `?8 -> ?9 -> ?8` (`?7` cannot be `s`: a type variable would escape its scope)"
+-- Different packs of one type may hide different types.
+#guard runToString "type Pack a = MkPack {s} s (s -> a)\nlet open {a} (p : Pack a) : a = match p with\n  | MkPack x f -> f x\nopen (MkPack 'x' (\\c -> 5)) + open (MkPack 2 (\\n -> n + 1))" == "8 : Int"
+-- An arm is one type variable deeper per hidden type, so a polymorphic `let`
+-- inside it gets its own type variable rather than the hidden one.
+#guard runToString "type Pack a = MkPack {s} s (s -> a)\nmatch MkPack True (\\b -> if b then 1 else 0) with\n| MkPack x f ->\n  let id {b} (y : b) : b = y in f (id x) + id 10" == "11 : Int"
+-- Inside an arm, the hidden type can be named as in the declaration.
+#guard runToString "type Pack a = MkPack {s} s (s -> a)\nmatch MkPack True (\\b -> if b then 1 else 0) with\n| MkPack x f ->\n  let g (y : s) : Int = f y in g x" == "1 : Int"
+-- A constructor's fields may only use its type's parameters and its own variables.
+#guard runToString "type T = MkT s\n1" == "1:14: type variable `s` is not in scope"
+#guard runToString "type T a = MkT {a} a\n1" == "1:12: type parameter `a` is bound twice"
+
 end EPL.Surface.Tests
