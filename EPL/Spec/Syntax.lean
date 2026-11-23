@@ -643,40 +643,40 @@ Each `…Branches` companion is the obvious `List.map` (or `flatMap`); these
 `simp` lemmas let proofs work with `List` lemmas instead of the mutual
 recursion. -/
 
-@[simp] theorem mapAnnBranches_eq (f : A → B) (branches : List (CtorRef × Expr A)) :
+@[simp] theorem mapAnnBranches_eq (f : A → B) (branches : List (Pattern × Expr A)) :
     Expr.mapAnnBranches f branches = branches.map fun branch => (branch.1, branch.2.mapAnn f) := by
   induction branches with
   | nil => rfl
   | cons branch rest ih => simp [Expr.mapAnnBranches, ih]
 
-@[simp] theorem annsBranches_eq (branches : List (CtorRef × Expr A)) :
+@[simp] theorem annsBranches_eq (branches : List (Pattern × Expr A)) :
     Expr.annsBranches branches = branches.flatMap (·.2.anns) := by
   induction branches with
   | nil => rfl
   | cons branch rest ih => simp [Expr.annsBranches, ih]
 
-@[simp] theorem eraseBranches_eq (branches : List (CtorRef × Expr A)) :
+@[simp] theorem eraseBranches_eq (branches : List (Pattern × Expr A)) :
     Expr.eraseBranches branches = branches.map fun branch => (branch.1, branch.2.erase) := by
   induction branches with
   | nil => rfl
   | cons branch rest ih => simp [Expr.eraseBranches, ih]
 
-@[simp] theorem shiftBranches_eq (cutoff amount : Nat) (branches : List (CtorRef × Expr A)) :
+@[simp] theorem shiftBranches_eq (cutoff amount : Nat) (branches : List (Pattern × Expr A)) :
     Expr.shiftBranches cutoff amount branches =
-      branches.map fun branch => (branch.1, branch.2.shift cutoff amount) := by
+      branches.map fun branch => (branch.1, branch.2.shift (cutoff + branch.1.binders) amount) := by
   induction branches with
   | nil => rfl
   | cons branch rest ih => simp [Expr.shiftBranches, ih]
 
-@[simp] theorem substAtBranches_eq (branches : List (CtorRef × Expr A)) (depth : Nat)
+@[simp] theorem substAtBranches_eq (branches : List (Pattern × Expr A)) (depth : Nat)
     (value : Expr A) :
     Expr.substAtBranches branches depth value =
-      branches.map fun branch => (branch.1, branch.2.substAt depth value) := by
+      branches.map fun branch => (branch.1, branch.2.substAt (depth + branch.1.binders) value) := by
   induction branches with
   | nil => rfl
   | cons branch rest ih => simp [Expr.substAtBranches, ih]
 
-theorem traverseAnnBranches_eq (f : A → Option B) (branches : List (CtorRef × Expr A)) :
+theorem traverseAnnBranches_eq (f : A → Option B) (branches : List (Pattern × Expr A)) :
     Expr.traverseAnnBranches f branches =
       branches.mapM fun branch => (branch.2.traverseAnn f).map (branch.1, ·) := by
   induction branches with
@@ -687,34 +687,34 @@ theorem traverseAnnBranches_eq (f : A → Option B) (branches : List (CtorRef ×
       cases body.traverseAnn f <;> simp
 
 /-- Mapping the bodies commutes with looking up a branch. -/
-theorem findBranch_map (g : Expr A → Expr B) (ref : CtorRef) (branches : List (CtorRef × Expr A)) :
+theorem findBranch_map (g : Expr A → Expr B) (ref : CtorRef) (branches : List (Pattern × Expr A)) :
     findBranch ref (branches.map fun branch => (branch.1, g branch.2)) =
       (findBranch ref branches).map g := by
   induction branches with
   | nil => rfl
   | cons branch rest ih =>
-      by_cases h : branch.1 = ref <;> simp_all [findBranch]
+      by_cases h : branch.1.ctor = ref <;> simp_all [findBranch]
 
-/-- The branch found is one of the branches. -/
-theorem findBranch_mem {ref : CtorRef} {branches : List (CtorRef × Expr A)} {body : Expr A}
-    (found : findBranch ref branches = some body) : (ref, body) ∈ branches := by
+/-- The branch found is one of the branches, and its pattern is for `ref`. -/
+theorem findBranch_mem {ref : CtorRef} {branches : List (Pattern × Expr A)} {body : Expr A}
+    (found : findBranch ref branches = some body) :
+    ∃ pattern, pattern.ctor = ref ∧ (pattern, body) ∈ branches := by
   simp only [findBranch, Option.map_eq_some_iff] at found
   obtain ⟨⟨pattern, body'⟩, find, rfl⟩ := found
   have := List.find?_some find
   simp at this
-  subst this
-  exact List.mem_of_find?_eq_some find
+  exact ⟨pattern, this, List.mem_of_find?_eq_some find⟩
 
 
 /-- A branch body's annotations are among the annotations of the branch list. -/
-private theorem mem_annsBranches_of_mem {branch : CtorRef × Expr A}
-    {branches : List (CtorRef × Expr A)} {ann : A} (mem : branch ∈ branches)
+private theorem mem_annsBranches_of_mem {branch : Pattern × Expr A}
+    {branches : List (Pattern × Expr A)} {ann : A} (mem : branch ∈ branches)
     (inBody : ann ∈ branch.2.anns) : ann ∈ Expr.annsBranches branches := by
   rw [Expr.annsBranches_eq]
   exact List.mem_flatMap_of_mem mem inBody
 
 /-- The branch-list form of `anns_mapAnn`. -/
-private theorem annsBranches_mapAnnBranches {f : A → B} {branches : List (CtorRef × Expr A)}
+private theorem annsBranches_mapAnnBranches {f : A → B} {branches : List (Pattern × Expr A)}
     (hbranch : ∀ branch ∈ branches, (branch.2.mapAnn f).anns = branch.2.anns.map f) :
     Expr.annsBranches (Expr.mapAnnBranches f branches) = (Expr.annsBranches branches).map f := by
   induction branches with
@@ -729,7 +729,7 @@ private theorem annsBranches_mapAnnBranches {f : A → B} {branches : List (Ctor
       simpa only [← Expr.annsBranches_eq, ← Expr.mapAnnBranches_eq] using ih
 
 /-- Pointwise equality of mapped branch bodies is equality of the branch lists. -/
-private theorem mapAnnBranches_congr {f g : A → B} {branches : List (CtorRef × Expr A)}
+private theorem mapAnnBranches_congr {f g : A → B} {branches : List (Pattern × Expr A)}
     (hbranch : ∀ branch ∈ branches, branch.2.mapAnn f = branch.2.mapAnn g) :
     Expr.mapAnnBranches f branches = Expr.mapAnnBranches g branches := by
   induction branches with
@@ -744,7 +744,7 @@ private theorem mapAnnBranches_congr {f g : A → B} {branches : List (CtorRef �
 
 /-- Equality of mapped branch lists makes the maps agree on the branch bodies'
 annotations. -/
-private theorem annsBranches_mapAnn_eq {f g : A → B} {branches : List (CtorRef × Expr A)}
+private theorem annsBranches_mapAnn_eq {f g : A → B} {branches : List (Pattern × Expr A)}
     (equal : Expr.mapAnnBranches f branches = Expr.mapAnnBranches g branches)
     (hbranch : ∀ branch ∈ branches, branch.2.mapAnn f = branch.2.mapAnn g →
       ∀ ann ∈ branch.2.anns, f ann = g ann) :
@@ -927,7 +927,7 @@ private theorem option_bind3_none {α β γ δ : Type} {o1 : Option α} {o2 : Op
 
 /-- The branch-list form of `traverseAnn_eq_none_iff`. -/
 private theorem traverseAnnBranches_eq_none_iff {f : Ty V → Option SemTy}
-    {branches : List (CtorRef × Expr (Ty V))}
+    {branches : List (Pattern × Expr (Ty V))}
     (hbranch : ∀ branch ∈ branches,
       branch.2.traverseAnn f = none ↔ ∃ ann ∈ branch.2.anns, f ann = none) :
     Expr.traverseAnnBranches f branches = none ↔
@@ -982,10 +982,10 @@ private theorem traverseAnn_eq_none_iff {f : Ty V → Option SemTy} :
 
 /-- The branch-list form of `traverseAnn_eq_some_iff`. -/
 private theorem traverseAnnBranches_eq_some_iff {f : Ty V → Option SemTy} {r : SemTy → Ty V}
-    {branches : List (CtorRef × Expr (Ty V))}
+    {branches : List (Pattern × Expr (Ty V))}
     (hbranch : ∀ branch ∈ branches, ∀ el : Elab,
       branch.2.traverseAnn f = some el ↔ branch.2 = el.mapAnn r) :
-    ∀ ys : List (CtorRef × Elab),
+    ∀ ys : List (Pattern × Elab),
       Expr.traverseAnnBranches f branches = some ys ↔ branches = Expr.mapAnnBranches r ys := by
   induction branches with
   | nil =>

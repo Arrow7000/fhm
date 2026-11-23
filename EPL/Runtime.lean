@@ -81,13 +81,13 @@ inductive Step : RuntimeExpr → RuntimeExpr → Prop
       Step scrutinee scrutinee' →
       Step (.match scrutinee branches) (.match scrutinee' branches)
 
-  /-- A constructor value meets a match: apply the first branch for that
-  constructor to the fields. -/
+  /-- A constructor value meets a match: the first branch for that
+  constructor, with the fields substituted for its pattern's variables. -/
   | matchCtor :
       Value scrutinee →
       scrutinee.spine = (.ctor ref, fields) →
       Expr.findBranch ref branches = some body →
-      Step (.match scrutinee branches) (Expr.apps body fields)
+      Step (.match scrutinee branches) (body.substMany fields)
 
   /-- Evaluate a let's right-hand side. -/
   | letRhs :
@@ -128,10 +128,10 @@ def reduceApp : RuntimeExpr → RuntimeExpr → Option RuntimeExpr
 
 /-- Contract a match on a value, if it has a branch for the value's
 constructor. -/
-def reduceMatch (scrutinee : RuntimeExpr) (branches : List (CtorRef × RuntimeExpr)) :
+def reduceMatch (scrutinee : RuntimeExpr) (branches : List (Pattern × RuntimeExpr)) :
     Option RuntimeExpr :=
   match scrutinee.spine with
-  | (.ctor ref, fields) => (Expr.findBranch ref branches).map (Expr.apps · fields)
+  | (.ctor ref, fields) => (Expr.findBranch ref branches).map (·.substMany fields)
   | _ => none
 
 /-- One step; `none` exactly when there is no `Step` successor. -/

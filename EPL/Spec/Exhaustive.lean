@@ -34,7 +34,7 @@ private theorem Signature.covers_iff {sig : Signature} {patterns : List CtorRef}
 /-- `Expr.exhaustiveBranches` accepts exactly the lists whose branch bodies
 are exhaustive. -/
 private theorem Expr.exhaustiveBranches_eq_true {sig : Signature}
-    {branches : List (CtorRef × Expr A)} :
+    {branches : List (Pattern × Expr A)} :
     Expr.exhaustiveBranches sig branches = true ↔
       ∀ branch ∈ branches, branch.2.exhaustive sig = true := by
   induction branches with
@@ -141,7 +141,7 @@ theorem Exhaustive.shift {sig : Signature} {expr : Expr A} (exhaustive : Exhaust
       refine .match (scrutineeIh cutoff) ?_ ?_
       · intro branch branchMem
         obtain ⟨original, originalMem, rfl⟩ := List.mem_map.mp branchMem
-        exact branchIhs original originalMem cutoff
+        exact branchIhs original originalMem (cutoff + original.1.binders)
       · simpa only [List.map_map, Function.comp_def] using covers
 
 /-- Substituting an exhaustive value into an exhaustive term. -/
@@ -167,23 +167,19 @@ theorem Exhaustive.substAt {sig : Signature} {expr value : Expr A}
       refine .match (scrutineeIh depth) ?_ ?_
       · intro branch branchMem
         obtain ⟨original, originalMem, rfl⟩ := List.mem_map.mp branchMem
-        exact branchIhs original originalMem depth
+        exact branchIhs original originalMem (depth + original.1.binders)
       · simpa only [List.map_map, Function.comp_def] using covers
 
-/-- Applying an exhaustive head to exhaustive arguments is exhaustive. -/
-private theorem Expr.apps_exhaustive {sig : Signature} {head : Expr A} {args : List (Expr A)}
-    (headExhaustive : Exhaustive sig head)
-    (argsExhaustive : ∀ argument ∈ args, Exhaustive sig argument) :
-    Exhaustive sig (Expr.apps head args) := by
-  induction args generalizing head with
-  | nil => simpa [Expr.apps] using headExhaustive
-  | cons argument rest ih =>
-      have appliedExhaustive : Exhaustive sig (.app head argument) :=
-        .app headExhaustive (argsExhaustive argument (by simp))
-      have restExhaustive : ∀ next ∈ rest, Exhaustive sig next :=
-        fun next nextMem => argsExhaustive next (by simp [nextMem])
-      change Exhaustive sig (Expr.apps (.app head argument) rest)
-      exact ih appliedExhaustive restExhaustive
+/-- Substituting exhaustive values into an exhaustive body is exhaustive. -/
+private theorem Expr.substMany_exhaustive {sig : Signature} {body : Expr A}
+    {values : List (Expr A)} (bodyExhaustive : Exhaustive sig body)
+    (valuesExhaustive : ∀ value ∈ values, Exhaustive sig value) :
+    Exhaustive sig (body.substMany values) := by
+  induction values generalizing body with
+  | nil => simpa [Expr.substMany] using bodyExhaustive
+  | cons value rest ih =>
+      exact ih (Exhaustive.substAt bodyExhaustive (valuesExhaustive value (by simp)) _)
+        fun next nextMem => valuesExhaustive next (by simp [nextMem])
 
 /-- The fields of an exhaustive expression's spine are exhaustive. -/
 private theorem Exhaustive.spine {sig : Signature} {expr : Expr A} (exhaustive : Exhaustive sig expr) :
@@ -224,8 +220,8 @@ private theorem Exhaustive.eval {sig : Signature} {op : PrimOp} {left right : Pr
 
 /-- Exhaustiveness survives a step. Proof: induction on the step;
 `beta`/`letValue`/`fixUnfold` by `Exhaustive.substAt`; `matchCtor` because
-the taken branch and the scrutinee's fields are exhaustive (`Expr.apps`
-of exhaustive terms is exhaustive). -/
+the taken branch and the scrutinee's fields are exhaustive (substituting
+exhaustive values into an exhaustive body is exhaustive). -/
 theorem Exhaustive.step {sig : Signature} {expr next : RuntimeExpr}
     (exhaustive : Exhaustive sig expr) (step : Eval.Step expr next) :
     Exhaustive sig next := by
@@ -268,8 +264,8 @@ theorem Exhaustive.step {sig : Signature} {expr next : RuntimeExpr}
       | «match» scrutineeExhaustive branchesExhaustive covers =>
           have fieldsExhaustive := (Exhaustive.spine scrutineeExhaustive).2
           rw [spine] at fieldsExhaustive
-          exact Expr.apps_exhaustive
-            (branchesExhaustive _ (Expr.findBranch_mem find)) fieldsExhaustive
+          obtain ⟨_, _, mem⟩ := Expr.findBranch_mem find
+          exact Expr.substMany_exhaustive (branchesExhaustive _ mem) fieldsExhaustive
   | letRhs step ih =>
       intro exhaustive
       cases exhaustive with

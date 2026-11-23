@@ -210,14 +210,14 @@ theorem isValue_iff : isValue expr = true ↔ Value expr := by
             | «match» scrutinee branches => simp [hs] at hsp
   · exact isValue_of_value
 
-/-- A successful `reduceMatch` is the scrutinee's constructor case applied to
-its fields. -/
+/-- A successful `reduceMatch` is the scrutinee's constructor's branch with
+its fields substituted. -/
 private theorem reduceMatch_some {scrutinee result : RuntimeExpr}
-    {branches : List (CtorRef × RuntimeExpr)}
+    {branches : List (Pattern × RuntimeExpr)}
     (found : reduceMatch scrutinee branches = some result) :
     ∃ (ref : CtorRef) (fields : List RuntimeExpr) (body : RuntimeExpr),
       scrutinee.spine = (.ctor ref, fields) ∧
-        Expr.findBranch ref branches = some body ∧ result = Expr.apps body fields := by
+        Expr.findBranch ref branches = some body ∧ result = body.substMany fields := by
   unfold reduceMatch at found
   split at found
   · rename_i ref fields hspine
@@ -228,13 +228,13 @@ private theorem reduceMatch_some {scrutinee result : RuntimeExpr}
         exact ⟨ref, fields, body, hspine, hfind, found.symm⟩
   · simp at found
 
-/-- A constructor scrutinee with a branch reduces to that branch applied to the
-scrutinee's fields. -/
+/-- A constructor scrutinee with a branch reduces to that branch with the
+scrutinee's fields substituted. -/
 private theorem reduceMatch_eq_some {scrutinee : RuntimeExpr}
-    {branches : List (CtorRef × RuntimeExpr)} {ref : CtorRef} {fields : List RuntimeExpr}
+    {branches : List (Pattern × RuntimeExpr)} {ref : CtorRef} {fields : List RuntimeExpr}
     {body : RuntimeExpr} (hspine : scrutinee.spine = (.ctor ref, fields))
     (hfind : Expr.findBranch ref branches = some body) :
-    reduceMatch scrutinee branches = some (Expr.apps body fields) := by
+    reduceMatch scrutinee branches = some (body.substMany fields) := by
   simp [reduceMatch, hspine, hfind]
 
 /-- Contracting an application of two values is a step. -/

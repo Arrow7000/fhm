@@ -309,13 +309,24 @@ and these constructors (numbered from 0 in declaration order;
 So `Cons 3 Nil : List Int` is
 `.app (.app (.ctor ⟨1, 1⟩) (.lit (.int 3))) (.ctor ⟨1, 0⟩)`, and
 `match xs with | Nil => a | Cons h t => b` is
-`.match xs [(⟨1, 0⟩, a), (⟨1, 1⟩, .lambda none (.lambda none b))]`.
+`.match xs [(⟨⟨1, 0⟩, 0⟩, a), (⟨⟨1, 1⟩, 2⟩, b)]` (see `Pattern`).
 
 By convention declaration 0 is always `Bool` (`boolDecl`); the comparison
 operators rely on it. -/
 structure CtorRef where
   type : Nat
   index : Nat
+  deriving DecidableEq, Repr
+
+/-- A match branch's pattern: the constructor it matches, and how many
+variables it binds, which typing requires to be one per field. In the branch
+body the fields are the innermost variables, the last field `var 0`: in
+`(⟨⟨1, 1⟩, 2⟩, b)`, for `Cons h t => b`, `h` is `var 1` and `t` is `var 0` in
+`b`. (Stored, rather than looked up in the signature, so that shifting and
+substitution need no signature.) -/
+structure Pattern where
+  ctor : CtorRef
+  binders : Nat
   deriving DecidableEq, Repr
 
 /-! ## Expressions -/
@@ -384,13 +395,11 @@ inductive Expr (A : Type) where
   and stands for the whole `fix`. `self` annotates the recursive binder, as
   `param` does a lambda's. -/
   | fix (self : Option A) (body : Expr A)
-  /-- `match scrutinee with | pattern => body | ...`. Each branch names the
-  constructor it matches; the first branch whose pattern is the scrutinee's
-  constructor is taken. A branch body is a function of the constructor's
-  fields (`fun h t => b` for `Cons h t => b`; just `b` for a constructor
-  without fields), so patterns bind nothing themselves. Matches may be
-  partial (see `Exhaustive`). -/
-  | «match» (scrutinee : Expr A) (branches : List (CtorRef × Expr A))
+  /-- `match scrutinee with | pattern => body | ...`. Each branch's pattern
+  names the constructor it matches and binds its fields (see `Pattern`); the
+  first branch whose pattern is the scrutinee's constructor is taken. Matches
+  may be partial (see `Exhaustive`). -/
+  | «match» (scrutinee : Expr A) (branches : List (Pattern × Expr A))
   deriving Repr
 
 /-- Structural induction on `Expr`, with a hypothesis for every branch body of
@@ -492,7 +501,7 @@ def Expr.decEq [DecidableEq A] : (x y : Expr A) → Decidable (x = y)
 
 /-- Decidable equality of branch lists. -/
 def Expr.decEqBranches [DecidableEq A] :
-    (x y : List (CtorRef × Expr A)) → Decidable (x = y)
+    (x y : List (Pattern × Expr A)) → Decidable (x = y)
   | [], [] => isTrue rfl
   | (p, b) :: bs, (p', b') :: bs' =>
       if hp : p = p' then
@@ -520,7 +529,7 @@ def Expr.mapAnn (f : A → B) : Expr A → Expr B
   | .match scrutinee branches => .match (scrutinee.mapAnn f) (Expr.mapAnnBranches f branches)
 
 /-- `Expr.mapAnn` on every branch body. -/
-def Expr.mapAnnBranches (f : A → B) : List (CtorRef × Expr A) → List (CtorRef × Expr B)
+def Expr.mapAnnBranches (f : A → B) : List (Pattern × Expr A) → List (Pattern × Expr B)
   | [] => []
   | (pattern, body) :: rest => (pattern, body.mapAnn f) :: Expr.mapAnnBranches f rest
 end
@@ -547,7 +556,7 @@ def Expr.traverseAnn (f : A → Option B) : Expr A → Option (Expr B)
 
 /-- `Expr.traverseAnn` on every branch body. -/
 def Expr.traverseAnnBranches (f : A → Option B) :
-    List (CtorRef × Expr A) → Option (List (CtorRef × Expr B))
+    List (Pattern × Expr A) → Option (List (Pattern × Expr B))
   | [] => some []
   | (pattern, body) :: rest => do
       some ((pattern, ← body.traverseAnn f) :: (← Expr.traverseAnnBranches f rest))
@@ -567,7 +576,7 @@ def Expr.anns : Expr A → List A
   | .match scrutinee branches => scrutinee.anns ++ Expr.annsBranches branches
 
 /-- Every annotation of the branch bodies, in order. -/
-def Expr.annsBranches : List (CtorRef × Expr A) → List A
+def Expr.annsBranches : List (Pattern × Expr A) → List A
   | [] => []
   | (_, body) :: rest => body.anns ++ Expr.annsBranches rest
 end
@@ -587,7 +596,7 @@ def Expr.erase : Expr A → RuntimeExpr
   | .match scrutinee branches => .match scrutinee.erase (Expr.eraseBranches branches)
 
 /-- `Expr.erase` on every branch body. -/
-def Expr.eraseBranches : List (CtorRef × Expr A) → List (CtorRef × RuntimeExpr)
+def Expr.eraseBranches : List (Pattern × Expr A) → List (Pattern × RuntimeExpr)
   | [] => []
   | (pattern, body) :: rest => (pattern, body.erase) :: Expr.eraseBranches rest
 end
@@ -606,13 +615,13 @@ def Expr.shift (cutoff amount : Nat) : Expr A → Expr A
   | .match scrutinee branches =>
       .match (scrutinee.shift cutoff amount) (Expr.shiftBranches cutoff amount branches)
 
-/-- `Expr.shift` on every branch body. Patterns bind nothing, so the cutoff is
-unchanged. -/
+/-- `Expr.shift` on every branch body, under its pattern's binders. -/
 def Expr.shiftBranches (cutoff amount : Nat) :
-    List (CtorRef × Expr A) → List (CtorRef × Expr A)
+    List (Pattern × Expr A) → List (Pattern × Expr A)
   | [] => []
   | (pattern, body) :: rest =>
-      (pattern, body.shift cutoff amount) :: Expr.shiftBranches cutoff amount rest
+      (pattern, body.shift (cutoff + pattern.binders) amount) ::
+        Expr.shiftBranches cutoff amount rest
 end
 
 mutual
@@ -635,17 +644,25 @@ def Expr.substAt : Expr A → Nat → Expr A → Expr A
   | .match scrutinee branches, depth, value =>
       .match (scrutinee.substAt depth value) (Expr.substAtBranches branches depth value)
 
-/-- `Expr.substAt` on every branch body. -/
+/-- `Expr.substAt` on every branch body, under its pattern's binders. -/
 def Expr.substAtBranches :
-    List (CtorRef × Expr A) → Nat → Expr A → List (CtorRef × Expr A)
+    List (Pattern × Expr A) → Nat → Expr A → List (Pattern × Expr A)
   | [], _, _ => []
   | (pattern, body) :: rest, depth, value =>
-      (pattern, body.substAt depth value) :: Expr.substAtBranches rest depth value
+      (pattern, body.substAt (depth + pattern.binders) value) ::
+        Expr.substAtBranches rest depth value
 end
 
 /-- Replace the innermost bound variable `var 0` by `value`: `body[value/x]`
 for the body of a binder `x`, as in beta reduction. -/
 def Expr.subst1 (body value : Expr A) : Expr A := body.substAt 0 value
+
+/-- Replace the innermost `values.length` bound variables by `values`, the
+last value for `var 0`: a match branch's body with its fields filled in. Each
+value's free variables are relative to the outside of all those binders. -/
+def Expr.substMany (body : Expr A) : List (Expr A) → Expr A
+  | [] => body
+  | value :: rest => (body.substAt rest.length value).substMany rest
 
 /-- The head of an application spine and its arguments, in order. -/
 def Expr.spine : Expr A → Expr A × List (Expr A)
@@ -658,8 +675,8 @@ def Expr.spine : Expr A → Expr A × List (Expr A)
 def Expr.apps (head : Expr A) (args : List (Expr A)) : Expr A :=
   args.foldl .app head
 
-/-- The first branch whose pattern is `ref`. -/
-def Expr.findBranch (ref : CtorRef) (branches : List (CtorRef × Expr A)) : Option (Expr A) :=
-  (branches.find? (·.1 == ref)).map (·.2)
+/-- The body of the first branch whose pattern is for constructor `ref`. -/
+def Expr.findBranch (ref : CtorRef) (branches : List (Pattern × Expr A)) : Option (Expr A) :=
+  (branches.find? (·.1.ctor == ref)).map (·.2)
 
 end EPL

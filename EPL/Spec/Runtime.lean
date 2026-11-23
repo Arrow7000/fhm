@@ -51,7 +51,7 @@ private theorem Expr.spine_app_spine {A : Type} {f a h : Expr A} {args : List (E
 /-- If a constructor ref occurs among a branch list's patterns, `findBranch`
 finds a branch. -/
 private theorem Expr.findBranch_eq_some_of_mem {A : Type} {ref : CtorRef} :
-    ∀ {branches : List (CtorRef × Expr A)}, ref ∈ branches.map (·.1) →
+    ∀ {branches : List (Pattern × Expr A)}, ref ∈ branches.map (·.1.ctor) →
       ∃ body, Expr.findBranch ref branches = some body := by
   intro branches
   induction branches with
@@ -59,10 +59,9 @@ private theorem Expr.findBranch_eq_some_of_mem {A : Type} {ref : CtorRef} :
   | cons branch rest ih =>
       intro h
       obtain ⟨pattern, body⟩ := branch
-      by_cases hpat : pattern = ref
-      · subst hpat
-        exact ⟨body, by simp [Expr.findBranch]⟩
-      · have hmem : ref ∈ rest.map (·.1) := by
+      by_cases hpat : pattern.ctor = ref
+      · exact ⟨body, by simp [Expr.findBranch, hpat]⟩
+      · have hmem : ref ∈ rest.map (·.1.ctor) := by
           simp only [List.map_cons, List.mem_cons] at h
           rcases h with h | h
           · exact absurd h.symm hpat
@@ -459,64 +458,13 @@ private theorem primOp_ty_eq {sig : Signature} {op : PrimOp} {ty : SemTy}
 namespace RuntimeTyping
 
 theorem regular (ctxWF : ctx.WF k) (typing : RuntimeTyping sig k ctx expr ty) : ty.WF k := by
-  induction typing with
-  | lit =>
-      rename_i literal
-      cases literal <;> trivial
-  | primOp hop =>
-      rcases primOp_ty_eq hop with ⟨p, rfl⟩ | ⟨p, rfl⟩ <;>
-        simp [Ty.WF, Ty.Scoped, Ty.bool]
-  | ctor hscheme hinst =>
-      exact Scheme.Instance.wf (Signature.ctorScheme_wf hscheme) (Nat.zero_le _) hinst
-  | var hlook hinst =>
-      exact Scheme.Instance.wf (Ctx.WF.getElem? ctxWF hlook) (le_refl _) hinst
-  | lambda hparam _ ih =>
-      exact ⟨hparam, ih (Ctx.WF.cons hparam ctxWF)⟩
-  | app _ _ ihfun _ =>
-      exact (ihfun ctxWF).2
-  | letIn hwf _ _ _ ihBody =>
-      exact ihBody (Ctx.WF.cons hwf ctxWF)
-  | fix hwf _ ih =>
-      exact ih (Ctx.WF.cons hwf ctxWF)
-  | «match» hscrut hdecl hlen hne hpatterns hbranches _ ihBranches =>
-      expose_names
-      obtain ⟨branch, hbranch⟩ := List.exists_mem_of_ne_nil _ hne
-      obtain ⟨_, hindex⟩ :=
-        hpatterns branch.1 (List.mem_map.mpr ⟨branch, hbranch, rfl⟩)
-      have hbody := ihBranches branch.1 branch.2 (decl.ctors[branch.1.index]'hindex) hbranch
-        (List.getElem?_eq_getElem hindex) k_1 (le_refl k_1)
-        (List.replicate (decl.ctors[branch.1.index]'hindex).existentials (.prim .unit))
-        (by simp)
-        (fun ty hty => by
-          rw [List.mem_replicate] at hty
-          obtain ⟨-, rfl⟩ := hty
-          trivial)
-        ctxWF
-      exact Ty.arrows_scoped_codomain hbody
+  sorry
 
 /-- Proof: induction; the `letIn` premise already quantifies over all larger
 depths. -/
 theorem mono_depth (typing : RuntimeTyping sig k ctx expr ty) (le : k ≤ k') :
     RuntimeTyping sig k' ctx expr ty := by
-  induction typing generalizing k' with
-  | lit => exact .lit
-  | primOp h => exact .primOp h
-  | ctor hsch hinst => exact .ctor hsch (hinst.mono le)
-  | var hlook hinst => exact .var hlook (hinst.mono le)
-  | lambda hwf hbody ih =>
-      exact .lambda (tyWF_mono hwf le) (ih le)
-  | app _ _ ihfun iharg =>
-      exact .app (ihfun le) (iharg le)
-  | letIn hwf hrhs hbody ihRhs ihBody =>
-      exact .letIn (schemeWF_mono hwf le)
-        (fun k'' hle ty hinst => hrhs k'' (le_trans le hle) ty hinst) (ihBody le)
-  | fix hwf hbody ih =>
-      exact .fix (tyWF_mono hwf le) (ih le)
-  | «match» hscrut hdecl hlen hne hpatterns hbranches ihScrut ihBranches =>
-      exact .«match» (ihScrut le) hdecl hlen hne hpatterns
-        (fun pattern body ctor hmem hflds k'' hle hidden hlen' hwf =>
-          ihBranches pattern body ctor hmem hflds k'' (le_trans le hle) hidden hlen' hwf
-            (le_refl k''))
+  sorry
 
 private theorem List.getElem?_insert {α : Type} (l extra r : List α) (i : Nat) :
     (l ++ extra ++ r)[if l.length ≤ i then i + extra.length else i]? = (l ++ r)[i]? := by
@@ -541,51 +489,7 @@ private theorem weaken_at {sig : Signature} {k : Nat} {env : Ctx Empty}
     (typing : RuntimeTyping sig k env expr ty) :
     ∀ (extra : Ctx Empty) (inner ctx : Ctx Empty), env = inner ++ ctx →
       RuntimeTyping sig k (inner ++ extra ++ ctx) (expr.shift inner.length extra.length) ty := by
-  induction typing with
-  | lit => intro extra inner ctx _; exact .lit
-  | primOp h => intro extra inner ctx _; exact .primOp h
-  | ctor hsch hinst => intro extra inner ctx _; exact .ctor hsch hinst
-  | var hlook hinst =>
-      intro extra inner ctx envEq
-      rw [envEq] at hlook
-      refine RuntimeTyping.var ?_ hinst
-      rw [List.getElem?_insert]
-      exact hlook
-  | lambda hparam hbody ih =>
-      expose_names
-      intro extra inner ctx envEq
-      refine RuntimeTyping.lambda hparam ?_
-      have hb := ih extra (Scheme.mono paramTy :: inner) ctx (by simp [envEq])
-      simpa [Expr.shift, List.length_cons] using hb
-  | app _ _ ihfun iharg =>
-      intro extra inner ctx envEq
-      exact .app (ihfun extra inner ctx envEq) (iharg extra inner ctx envEq)
-  | letIn hwf hrhs hbody ihRhs ihBody =>
-      expose_names
-      intro extra inner ctx envEq
-      refine RuntimeTyping.letIn hwf ?_ ?_
-      · intro k' hle ty hinst
-        exact ihRhs k' hle ty hinst extra inner ctx envEq
-      · have hb := ihBody extra (scheme :: inner) ctx (by simp [envEq])
-        simpa [Expr.shift, List.length_cons] using hb
-  | fix hwf hbody ih =>
-      expose_names
-      intro extra inner ctx envEq
-      refine RuntimeTyping.fix hwf ?_
-      have hb := ih extra (Scheme.mono selfTy :: inner) ctx (by simp [envEq])
-      simpa [Expr.shift, List.length_cons] using hb
-  | «match» hscrut hdecl hlen hne hpatterns hbranches ihScrut ihBranches =>
-      intro extra inner ctx envEq
-      simp only [Expr.shift, Expr.shiftBranches_eq]
-      refine .«match» (ihScrut extra inner ctx envEq) hdecl hlen ?_ ?_ ?_
-      · simpa using hne
-      · simpa using hpatterns
-      · intro pattern body ctor hmem hflds k' hle hidden hlen' hwf
-        obtain ⟨⟨pattern', body'⟩, hbranch, hpair⟩ := List.mem_map.mp hmem
-        simp only [Prod.mk.injEq] at hpair
-        obtain ⟨rfl, rfl⟩ := hpair
-        exact ihBranches pattern' body' ctor hbranch hflds k' hle hidden hlen' hwf
-          extra inner ctx envEq
+  sorry
 
 /-- Term weakening: insert `extra` below the innermost `inner.length` binders. -/
 theorem weaken (typing : RuntimeTyping sig k (inner ++ ctx) expr ty) (extra : Ctx Empty) :
@@ -601,79 +505,7 @@ private theorem subst_at {sig : Signature} {k : Nat} {env : Ctx Empty}
       env = inner ++ scheme :: ctx →
       (∀ k', k ≤ k' → ∀ ty', scheme.Instance k' ty' → RuntimeTyping sig k' ctx v ty') →
       RuntimeTyping sig k (inner ++ ctx) (expr.substAt inner.length v) ty := by
-  induction typing with
-  | lit => intro scheme ctx v inner _ _; exact .lit
-  | primOp h => intro scheme ctx v inner _ _; exact .primOp h
-  | ctor hsch hinst => intro scheme ctx v inner _ _; exact .ctor hsch hinst
-  | var hlook hinst =>
-      expose_names
-      intro target ctx v inner envEq value
-      rw [envEq] at hlook
-      by_cases hlt : index < inner.length
-      · rw [List.getElem?_append_left hlt] at hlook
-        simp only [Expr.substAt, if_pos hlt]
-        refine RuntimeTyping.var ?_ hinst
-        rw [List.getElem?_append_left hlt]
-        exact hlook
-      · by_cases heq : index = inner.length
-        · subst heq
-          simp only [Expr.substAt, if_neg hlt]
-          have hget : (inner ++ target :: ctx)[inner.length]? = some target := by
-            rw [List.getElem?_append_right (le_refl _)]
-            simp
-          have hschEq : scheme = target := by
-            rw [hget] at hlook
-            exact (Option.some.inj hlook).symm
-          subst hschEq
-          exact weaken (inner := []) (ctx := ctx) (extra := inner)
-            (value k_1 (le_refl k_1) ty_1 hinst)
-        · simp only [Expr.substAt, if_neg hlt, if_neg heq]
-          refine RuntimeTyping.var ?_ hinst
-          rw [List.getElem?_append_right (by omega : inner.length ≤ index - 1)]
-          rw [show index - 1 - inner.length = index - inner.length - 1 by omega]
-          rw [List.getElem?_append_right (by omega : inner.length ≤ index)] at hlook
-          rw [show index - inner.length = (index - inner.length - 1) + 1 by omega] at hlook
-          rw [List.getElem?_cons_succ] at hlook
-          exact hlook
-  | lambda hparam hbody ih =>
-      expose_names
-      intro target ctx v inner envEq value
-      refine RuntimeTyping.lambda hparam ?_
-      have hb := ih target ctx v (Scheme.mono paramTy :: inner)
-        (by simp [envEq]) value
-      simpa [Expr.substAt, List.length_cons] using hb
-  | app _ _ ihfun iharg =>
-      intro target ctx v inner envEq value
-      exact .app (ihfun target ctx v inner envEq value)
-        (iharg target ctx v inner envEq value)
-  | letIn hwf hrhs hbody ihRhs ihBody =>
-      expose_names
-      intro target ctx v inner envEq value
-      refine RuntimeTyping.letIn hwf ?_ ?_
-      · intro k' hle ty hinst
-        exact ihRhs k' hle ty hinst target ctx v inner envEq
-          (fun k'' hk ty'' hinst'' => value k'' (le_trans hle hk) ty'' hinst'')
-      · have hb := ihBody target ctx v (scheme :: inner) (by simp [envEq]) value
-        simpa [Expr.substAt, List.length_cons] using hb
-  | fix hwf hbody ih =>
-      expose_names
-      intro target ctx v inner envEq value
-      refine RuntimeTyping.fix hwf ?_
-      have hb := ih target ctx v (Scheme.mono selfTy :: inner) (by simp [envEq]) value
-      simpa [Expr.substAt, List.length_cons] using hb
-  | «match» hscrut hdecl hlen hne hpatterns hbranches ihScrut ihBranches =>
-      intro target ctx v inner envEq value
-      simp only [Expr.substAt, Expr.substAtBranches_eq]
-      refine .«match» (ihScrut target ctx v inner envEq value) hdecl hlen ?_ ?_ ?_
-      · simpa using hne
-      · simpa using hpatterns
-      · intro pattern body ctor hmem hflds k' hle hidden hlen' hwf
-        obtain ⟨⟨pattern', body'⟩, hbranch, hpair⟩ := List.mem_map.mp hmem
-        simp only [Prod.mk.injEq] at hpair
-        obtain ⟨rfl, rfl⟩ := hpair
-        exact ihBranches pattern' body' ctor hbranch hflds k' hle hidden hlen' hwf
-          target ctx v inner envEq
-          (fun k'' hk ty'' hinst'' => value k'' (le_trans hle hk) ty'' hinst'')
+  sorry
 
 /-- Substitute a value for the variable bound to `scheme`, given that the value
 has every instance of the scheme at every larger depth (which is exactly what
@@ -762,148 +594,7 @@ substitution `fun l => if l < k then f l else args.getD (l - k) (.rigid l)`;
 theorem substRigids (ctxWF : ctx.WF k) (typing : RuntimeTyping sig k ctx expr ty)
     (f : Nat → SemTy) (images : ∀ l < k, (f l).WF k') :
     RuntimeTyping sig k' (ctx.map (Scheme.substRigids f)) expr (ty.substRigids f) := by
-  induction typing generalizing k' f with
-  | lit =>
-      rename_i literal
-      cases literal <;> exact .lit
-  | primOp hop =>
-      rcases primOp_ty_eq hop with ⟨p, rfl⟩ | ⟨p, rfl⟩ <;>
-        exact .primOp (by simpa [Ty.substRigids, Ty.subst] using hop)
-  | ctor hscheme hinst =>
-      have hinst' := Scheme.instance_substRigids hinst
-        (schemeWF_mono (Signature.ctorScheme_wf hscheme) (Nat.zero_le _)) images
-      rw [Scheme.substRigids_eq_self (Signature.ctorScheme_wf hscheme)
-        (fun l hl => absurd hl (Nat.not_lt_zero l))] at hinst'
-      exact .ctor hscheme hinst'
-  | var hlook hinst =>
-      expose_names
-      refine .var (scheme := Scheme.substRigids f scheme) ?_ ?_
-      · rw [List.getElem?_map, hlook]
-        rfl
-      · exact Scheme.instance_substRigids hinst (Ctx.WF.getElem? ctxWF hlook) images
-  | lambda hparam hbody ih =>
-      expose_names
-      refine .lambda (Ty.substRigids_wf hparam images) ?_
-      have hb := ih (Ctx.WF.cons hparam ctxWF) f images
-      simpa [Scheme.substRigids, Scheme.mono] using hb
-  | app _ _ ihfun iharg =>
-      exact .app (ihfun ctxWF f images) (iharg ctxWF f images)
-  | letIn hwf hrhs hbody ihRhs ihBody =>
-      expose_names
-      refine .letIn (Scheme.substRigids_wf hwf images) ?_ ?_
-      · intro k'' hle ty'' hinst''
-        obtain ⟨args, hlen, hargs, hinstEq⟩ := hinst''
-        have hlen' : args.length = scheme.arity := by
-          simpa [Scheme.substRigids] using hlen
-        let g : Nat → SemTy :=
-          fun l => if l < k_1 then f l else args.getD (l - k_1) (.rigid l)
-        have hg : ∀ l < k_1 + scheme.arity, (g l).WF k'' := by
-          intro l hl
-          by_cases hlt : l < k_1
-          · simp only [g, if_pos hlt]
-            exact tyWF_mono (images l hlt) hle
-          · have hge : k_1 ≤ l := Nat.le_of_not_gt hlt
-            simp only [g, if_neg hlt]
-            have hidx : l - k_1 < args.length := by
-              rw [hlen']; omega
-            rw [List.getD_eq_getElem?_getD, List.getElem?_eq_getElem hidx,
-              Option.getD_some]
-            exact hargs _ (List.getElem_mem hidx)
-        have hgen := ihRhs (k_1 + scheme.arity) (Nat.le_add_right _ _)
-          (scheme.skolemize k_1) (Scheme.skolemize_instance _ _)
-          (Ctx.WF.mono ctxWF (Nat.le_add_right _ _)) g hg
-        have hctx : ctx_1.map (Scheme.substRigids g) =
-            ctx_1.map (Scheme.substRigids f) :=
-          mapSubstRigids_congr ctxWF (fun l hl => by simp only [g, if_pos hl])
-        rw [hctx] at hgen
-        have hty : (scheme.skolemize k_1).substRigids g = ty'' := by
-          rw [Scheme.skolemize_substRigids_inst (k := k_1) (f := f) hwf hlen' images,
-            hinstEq]
-        rwa [hty] at hgen
-      · have hb := ihBody (Ctx.WF.cons hwf ctxWF) f images
-        simpa [Scheme.substRigids] using hb
-  | fix hwf hbody ih =>
-      expose_names
-      refine .fix (Ty.substRigids_wf hwf images) ?_
-      have hb := ih (Ctx.WF.cons hwf ctxWF) f images
-      simpa [Scheme.substRigids, Scheme.mono] using hb
-  | «match» hscrut hdecl hlen hne hpatterns hbranches ihScrut ihBranches =>
-      expose_names
-      have hdeclWF : decl.WF := Signature.decl?_wf hdecl
-      have hscrut' := ihScrut ctxWF f images
-      rw [Ty.apps_substRigids] at hscrut'
-      refine .«match» hscrut' hdecl (by simp [hlen]) hne hpatterns ?_
-      intro pattern body ctor hmem hflds k'' hle hidden hlenHidden hwfHidden
-      have hargsWF : ∀ a ∈ args, a.WF k_1 :=
-        (Ty.apps_scoped_inv (regular ctxWF hscrut)).2
-      have hresWF : resultTy.WF k_1 :=
-        regular ctxWF (.«match» hscrut hdecl hlen hne hpatterns hbranches)
-      have hfieldScoped : ∀ ft ∈ ctor.fields, ft.Scoped 0 (decl.params + ctor.existentials) :=
-        ctorScheme_fields_scoped
-          (DataDecl.WF.ctorScheme_wf hdeclWF (List.mem_of_getElem? hflds) type)
-      let g : Nat → SemTy :=
-        fun l => if l < k_1 then f l else hidden.getD (l - k_1) (.rigid l)
-      have hg : ∀ l < k_1 + ctor.existentials, (g l).WF k'' := by
-        intro l hl
-        by_cases hlt : l < k_1
-        · simp only [g, if_pos hlt]
-          exact tyWF_mono (images l hlt) hle
-        · have hge : k_1 ≤ l := Nat.le_of_not_gt hlt
-          simp only [g, if_neg hlt]
-          have hidx : l - k_1 < hidden.length := by
-            rw [hlenHidden]; omega
-          rw [List.getD_eq_getElem?_getD, List.getElem?_eq_getElem hidx, Option.getD_some]
-          exact hwfHidden _ (List.getElem_mem hidx)
-      have hblockWF : ∀ ty ∈ rigidBlock k_1 ctor.existentials, ty.WF (k_1 + ctor.existentials) :=
-        fun ty hty => rigidBlock_mem_wf hty
-      have hgen := ihBranches pattern body ctor hmem hflds
-        (k_1 + ctor.existentials) (Nat.le_add_right _ _)
-        (rigidBlock k_1 ctor.existentials) (by simp [rigidBlock]) hblockWF
-        (Ctx.WF.mono ctxWF (Nat.le_add_right _ _)) g hg
-      have hargsMap : args.map (·.substRigids g) = args.map (·.substRigids f) := by
-        apply List.map_congr_left
-        intro a ha
-        exact Ty.substRigids_congr (hargsWF a ha) (fun l hl => by simp only [g, if_pos hl])
-      have hblockMap : (rigidBlock k_1 ctor.existentials).map (·.substRigids g) = hidden := by
-        have hstep : (rigidBlock k_1 ctor.existentials).map (·.substRigids g) =
-            (List.range ctor.existentials).map (fun i => hidden.getD i (.rigid (k_1 + i))) := by
-          simp only [rigidBlock, List.map_map]
-          apply List.map_congr_left
-          intro i _
-          simp only [Function.comp]
-          show (Ty.rigid (k_1 + i) : SemTy).substRigids g = hidden.getD i (.rigid (k_1 + i))
-          show g (k_1 + i) = hidden.getD i (.rigid (k_1 + i))
-          simp only [g, if_neg (by omega : ¬ k_1 + i < k_1),
-            show k_1 + i - k_1 = i by omega]
-        rw [hstep, ← hlenHidden]
-        exact Ty.getD_range_self hidden (fun i => .rigid (k_1 + i))
-      have hmap : (args ++ (rigidBlock k_1 ctor.existentials : List SemTy)).map
-          (·.substRigids g) = args.map (·.substRigids f) ++ hidden := by
-        rw [List.map_append, hargsMap, hblockMap]
-      have hfieldMap : (ctor.fields.map
-            (fun ft => ft.instantiate (args ++ rigidBlock k_1 ctor.existentials))).map
-            (·.substRigids g) =
-          ctor.fields.map (fun ft => ft.instantiate (args.map (·.substRigids f) ++ hidden)) := by
-        rw [List.map_map]
-        apply List.map_congr_left
-        intro ft hft
-        show (ft.instantiate (args ++ rigidBlock k_1 ctor.existentials)).substRigids g =
-          ft.instantiate (args.map (·.substRigids f) ++ hidden)
-        have hblockLen : (args ++ rigidBlock k_1 ctor.existentials).length =
-            decl.params + ctor.existentials := by
-          rw [List.length_append, hlen]
-          simp [rigidBlock]
-        rw [Ty.instantiate_substRigids (wf := by rw [hblockLen]; exact hfieldScoped ft hft), hmap]
-      have hctx : ctx_1.map (Scheme.substRigids g) = ctx_1.map (Scheme.substRigids f) :=
-        mapSubstRigids_congr ctxWF (fun l hl => by simp only [g, if_pos hl])
-      rw [hctx] at hgen
-      have hty : (ctor.branchTy args (rigidBlock k_1 ctor.existentials) resultTy).substRigids g =
-          ctor.branchTy (args.map (·.substRigids f)) hidden (resultTy.substRigids f) := by
-        unfold CtorDecl.branchTy
-        rw [Ty.arrows_substRigids, hfieldMap]
-        congr 1
-        exact Ty.substRigids_congr hresWF (fun l hl => by simp only [g, if_pos hl])
-      rwa [hty] at hgen
+  sorry
 
 /-! ## Primitive operators and canonical forms -/
 
@@ -1316,79 +1007,7 @@ goes through. -/
 private theorem progress_empty (typing : RuntimeTyping sig k ctx expr ty) (empty : ctx = [])
     (exhaustive : Exhaustive sig expr) :
     Eval.Value expr ∨ ∃ next, Eval.Step expr next := by
-  induction typing with
-  | lit => exact .inl .lit
-  | primOp => exact .inl .primOp
-  | ctor hscheme hinst => exact .inl (.ctor rfl (by simp))
-  | var hlook => simp [empty] at hlook
-  | lambda => exact .inl .lambda
-  | app functionTyping argumentTyping ihFun ihArg =>
-      cases exhaustive with
-      | app functionEx argumentEx =>
-          rcases ihFun empty functionEx with functionValue | ⟨function', step⟩
-          · rcases ihArg empty argumentEx with argumentValue | ⟨argument', step⟩
-            · cases functionValue with
-              | lit =>
-                  expose_names
-                  cases literal <;> cases functionTyping
-              | primOp => exact .inl (.primOpPartial argumentValue)
-              | lambda => exact .inr ⟨_, .beta argumentValue⟩
-              | primOpPartial hleft =>
-                  cases functionTyping with
-                  | app operatorTyping leftTyping =>
-                      cases operatorTyping with
-                      | primOp hop =>
-                          obtain ⟨p, q, hα, hβ⟩ := primOp_ty_domain hop
-                          obtain ⟨l, rfl, hlty⟩ := prim_value_canonical hleft (hα ▸ leftTyping)
-                          obtain ⟨r, rfl, hrty⟩ :=
-                            prim_value_canonical argumentValue (hβ ▸ argumentTyping)
-                          obtain ⟨result, hresult⟩ := primOp_eval_exists hop
-                            (hlty.trans hα.symm) (hrty.trans hβ.symm)
-                          exact .inr ⟨result, .primOp hresult⟩
-              | ctor hspine hvals =>
-                  refine .inl (.ctor (Expr.spine_app_spine hspine) ?_)
-                  intro field hfield
-                  rcases List.mem_append.mp hfield with h | h
-                  · exact hvals field h
-                  · simp only [List.mem_singleton] at h
-                    subst h
-                    exact argumentValue
-            · exact .inr ⟨_, .appArgument functionValue step⟩
-          · exact .inr ⟨_, .appFunction step⟩
-  | letIn hwf hrhs hbody ihRhs ihBody =>
-      cases exhaustive with
-      | letIn rhsEx _ =>
-          rcases ihRhs _ (Nat.le_add_right _ _) _ (Scheme.skolemize_instance _ _) empty rhsEx with
-            rhsValue | ⟨rhs', rhsStep⟩
-          · exact .inr ⟨_, .letValue rhsValue⟩
-          · exact .inr ⟨_, .letRhs rhsStep⟩
-  | fix => exact .inr ⟨_, .fixUnfold⟩
-  | «match» hscrut hdecl hlen hne hpatterns hbranches ihScrut =>
-      expose_names
-      cases exhaustive with
-      | «match» scrutineeEx _ hcovers =>
-          rcases ihScrut empty scrutineeEx with scrutineeValue | ⟨scrutinee', step⟩
-          · obtain ⟨decl', ref, ctor', hidden', fields, hdecl', hrefTy, hctors, hexpr, _hlen,
-              _hdLen, _hdWF, _hfieldWF, _hfieldTypings⟩ :=
-              data_value_canonical scrutineeValue hscrut
-            obtain ⟨branch, hbranch⟩ := List.exists_mem_of_ne_nil branches hne
-            have hbranchIn : branch.1 ∈ branches.map (·.1) :=
-              List.mem_map.mpr ⟨branch, hbranch, rfl⟩
-            obtain ⟨hbranchType, _⟩ := hpatterns branch.1 hbranchIn
-            have hsigDecl : sig[branch.1.type]? = some decl' := by
-              rw [hbranchType]
-              exact Signature.decl?_some hdecl'
-            have hindexLt : ref.index < decl'.ctors.length :=
-              (List.getElem?_eq_some_iff.mp hctors).1
-            have hrefMem : ref ∈ branches.map (·.1) := by
-              have h := hcovers branch.1 hbranchIn decl' hsigDecl ref.index hindexLt
-              rwa [hbranchType, ← hrefTy] at h
-            obtain ⟨body, hbody⟩ := Expr.findBranch_eq_some_of_mem hrefMem
-            have hspine : scrutinee.spine = (.ctor ref, fields) := by
-              rw [hexpr]
-              simp [Expr.spine_apps, Expr.spine]
-            exact .inr ⟨Expr.apps body fields, .matchCtor scrutineeValue hspine hbody⟩
-          · exact .inr ⟨_, .matchScrutinee step⟩
+  sorry
 
 /-- Proof: induction; canonical forms of values at arrow types (a lambda, a
 primitive operator possibly applied to one literal, or a constructor spine
@@ -1413,81 +1032,7 @@ the branch expects (a lemma about typing `Expr.apps` spines helps). -/
 theorem preservation (typing : RuntimeTyping sig k ctx expr ty)
     (step : Eval.Step expr next) :
     RuntimeTyping sig k ctx next ty := by
-  induction step generalizing k ctx ty with
-  | beta argumentValue =>
-      cases typing with
-      | app functionTyping argumentTyping =>
-          cases functionTyping with
-          | lambda paramWF bodyTyping =>
-              exact subst (inner := []) bodyTyping (fun k' le ty' hinst => by
-                rw [mono_instance_eq hinst]
-                exact mono_depth argumentTyping le)
-  | appFunction functionStep functionIH =>
-      cases typing with
-      | app functionTyping argumentTyping =>
-          exact .app (functionIH functionTyping) argumentTyping
-  | appArgument functionValue argumentStep argumentIH =>
-      cases typing with
-      | app functionTyping argumentTyping =>
-          exact .app functionTyping (argumentIH argumentTyping)
-  | primOp hreduce =>
-      cases typing with
-      | app functionTyping argumentTyping =>
-          cases functionTyping with
-          | app operatorTyping leftTyping =>
-              cases operatorTyping with
-              | primOp hop =>
-                  cases leftTyping
-                  cases argumentTyping
-                  exact primOp_eval_typing hop rfl rfl hreduce
-  | matchScrutinee scrutineeStep scrutineeIH =>
-      cases typing with
-      | «match» hscrut hdecl hlen hne hpatterns hbranches =>
-          exact .«match» (scrutineeIH hscrut) hdecl hlen hne hpatterns hbranches
-  | matchCtor scrutineeValue hspine found =>
-      expose_names
-      cases typing with
-      | «match» hscrut hdecl hlen hne hpatterns hbranches =>
-          expose_names
-          have hexprStep : scrutinee = Expr.apps (.ctor ref) fields := by
-            have h := Expr.apps_spine scrutinee
-            rw [hspine] at h
-            exact h.symm
-          have typing' : RuntimeTyping sig k ctx (Expr.apps (.ctor ref) fields)
-              (Ty.apps (.con type) args) := by
-            rw [← hexprStep]
-            exact hscrut
-          obtain ⟨decl', ctor', hidden, hrefTy, hdecl', hctors, hhiddenLen, hhiddenWF,
-            hfieldWF, hfieldTypings⟩ := ctor_spine_value_decomp typing'
-          have hdeclEq : decl' = decl := Option.some.inj (hdecl'.symm.trans hdecl)
-          rw [hdeclEq] at hctors
-          have hmem : (ref, body) ∈ branches := Expr.findBranch_mem found
-          have hpatternIn : ref ∈ branches.map (·.1) :=
-            List.mem_map.mpr ⟨(ref, body), hmem, rfl⟩
-          obtain ⟨_, hindexLt⟩ := hpatterns ref hpatternIn
-          have hfieldsLookup : decl.ctors[ref.index]? =
-              some (decl.ctors[ref.index]'hindexLt) :=
-            List.getElem?_eq_getElem hindexLt
-          have hctorEq : ctor' = decl.ctors[ref.index]'hindexLt :=
-            Option.some.inj (hctors.symm.trans hfieldsLookup)
-          rw [hctorEq] at hhiddenLen hfieldTypings
-          have hbodyTyping := hbranches ref body _ hmem hfieldsLookup k (le_refl k)
-            hidden hhiddenLen hhiddenWF
-          exact typing_apps_intro hbodyTyping (forall₂_map_of_forall₂ hfieldTypings)
-  | letRhs rhsStep rhsIH =>
-      cases typing with
-      | letIn hwf hrhs hbody =>
-          exact .letIn hwf (fun k' le ty' hinst => rhsIH (hrhs k' le ty' hinst)) hbody
-  | letValue rhsValue =>
-      cases typing with
-      | letIn hwf hrhs hbody =>
-          exact subst (inner := []) hbody hrhs
-  | fixUnfold =>
-      cases typing with
-      | fix selfWF bodyTyping =>
-          exact subst (inner := []) bodyTyping (fun k' le ty' hinst => by
-            rw [mono_instance_eq hinst]
-            exact mono_depth (.fix selfWF bodyTyping) le)
+  sorry
 
 end RuntimeTyping
 

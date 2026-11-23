@@ -36,8 +36,10 @@ def MStore.applyElab (store : MStore) (elaboration : Expr InfTy) : Expr InfTy :=
 /-- The type inference found for each node of a term, in the term's shape: a
 node's children are its children's trees, in `ExprStep` order (`lambdaBody`;
 `appFunction`, `appArgument`; `letRhs`, `letBody`; `fixBody`;
-`matchScrutinee`, then each `matchBranch`). It is for tools such as editors:
-no theorem is stated about it. -/
+`matchScrutinee`, then each `matchBranch`). A branch's tree is a node of its
+own, typed as the match, whose children are a leaf per field (the type of the
+variable the pattern binds for it) and then the body's tree. It is for tools
+such as editors: no theorem is stated about it. -/
 inductive TypeTree where
   | node (ty : InfTy) (children : List TypeTree)
   deriving Repr
@@ -93,12 +95,15 @@ inductive InferErrorReason where
   | unknownType
   /-- This branch's pattern is not a constructor of the first pattern's type. -/
   | foreignPattern
+  /-- This branch's pattern binds a different number of variables than its
+  constructor has fields. -/
+  | patternArity
   /-- Two types that must be equal are not; `cause` is the clash within them.
   At an application, `actual` is the function's type and `expected` is
   `argument -> ?result`; at an explicit let, the right-hand side's type against
   the annotation; at a `fix`, the body's type against the binder's; at a
   scrutinee, its type against its pattern's; at a branch, the body's type
-  against `fields -> result`. -/
+  against the match's. -/
   | mismatch (expected actual : InfTy) (cause : UnifyError)
   /-- An explicit let's definition and context leave these holes of its
   annotation undetermined: each could equally be one of its binders. -/
@@ -219,35 +224,43 @@ def inferAt (sig : Signature) (k : Nat) (ctx : Ctx Nat) :
       -- The first pattern names the type; every pattern must be one of its
       -- constructors.
       let (first, _) ← branches.head?.getDM (throw (.here .emptyMatch))
-      let decl ← (sig.decl? first.type).getDM (throw ⟨[.matchBranch 0], .unknownType⟩)
+      let decl ← (sig.decl? first.ctor.type).getDM (throw ⟨[.matchBranch 0], .unknownType⟩)
       if ¬ branches.all (fun branch =>
-          branch.1.type == first.type && decide (branch.1.index < decl.ctors.length)) then
+          branch.1.ctor.type == first.ctor.type &&
+            decide (branch.1.ctor.index < decl.ctors.length)) then
         throw ⟨[.matchBranch (branches.findIdx fun branch =>
-          !(branch.1.type == first.type && decide (branch.1.index < decl.ctors.length)))],
+          !(branch.1.ctor.type == first.ctor.type &&
+            decide (branch.1.ctor.index < decl.ctors.length)))],
           .foreignPattern⟩
+      -- Every pattern binds one variable per field.
+      if ¬ branches.all (fun branch => decl.ctors[branch.1.ctor.index]?.all fun ctor =>
+          branch.1.binders == ctor.fields.length) then
+        throw ⟨[.matchBranch (branches.findIdx fun branch =>
+          !(decl.ctors[branch.1.ctor.index]?.all fun ctor =>
+            branch.1.binders == ctor.fields.length))],
+          .patternArity⟩
       let scrutineeResult ← (inferAt sig k ctx scrutinee store).mapError
         (.under .matchScrutinee)
       let (args, store) := scrutineeResult.store.freshMany k decl.params
       let store ← store.unifyAt [.matchScrutinee] scrutineeResult.ty
-        (Ty.apps (.con first.type) args)
+        (Ty.apps (.con first.ctor.type) args)
       let (resultTy, store) := store.fresh k
       let ((branchesElab, store), branchTypes) ←
         inferBranches sig k ctx decl args resultTy branches store
       pure ⟨resultTy, .match scrutineeResult.elaboration branchesElab, store,
         .node resultTy (scrutineeResult.types :: branchTypes)⟩
 
-/-- Infer each branch body in turn and unify its type with
-`field_1 -> ... -> field_n -> resultTy`, the fields of its constructor
-instantiated at `args` and, for the constructor's own variables, at fresh
-rigid levels. Error paths start at the failing branch. Also returns each
-body's `TypeTree`. -/
+/-- Infer each branch body in turn, with its constructor's fields in the
+context, and unify its type with `resultTy`. The fields are instantiated at
+`args` and, for the constructor's own variables, at fresh rigid levels. Error
+paths start at the failing branch. Also returns each branch's `TypeTree`. -/
 def inferBranches (sig : Signature) (k : Nat) (ctx : Ctx Nat) (decl : DataDecl)
     (args : List InfTy) (resultTy : InfTy) :
-    List (CtorRef × Source) → MStore →
-      Except InferError ((List (CtorRef × Expr InfTy) × MStore) × List TypeTree)
+    List (Pattern × Source) → MStore →
+      Except InferError ((List (Pattern × Expr InfTy) × MStore) × List TypeTree)
   | [], store => pure (([], store), [])
   | (pattern, body) :: rest, store => do
-      let ctor ← decl.ctors[pattern.index]?.getDM
+      let ctor ← decl.ctors[pattern.ctor.index]?.getDM
         (throw ⟨[.matchBranch 0], .foreignPattern⟩)
       -- The constructor's own variables are the fresh rigid levels
       -- `k, ..., inner - 1`, and the body is inferred at the inner depth.
@@ -255,14 +268,15 @@ def inferBranches (sig : Signature) (k : Nat) (ctx : Ctx Nat) (decl : DataDecl)
       -- below, so unification cannot solve them to a type that mentions the
       -- fresh levels: that is the escape check.
       let inner := k + ctor.existentials
-      let bodyResult ← (inferAt sig inner ctx body store).mapError (.under (.matchBranch 0))
-      let expected := Ty.arrows (ctor.fields.map fun field =>
-        field.lift.instantiate (args ++ rigidBlock k ctor.existentials)) resultTy
-      let store ← bodyResult.store.unifyAt [.matchBranch 0] bodyResult.ty expected
+      let fieldTys := ctor.fields.map fun field =>
+        field.lift.instantiate (args ++ rigidBlock k ctor.existentials)
+      let bodyResult ← (inferAt sig inner ((fieldTys.map .mono).reverse ++ ctx) body store).mapError
+        (.under (.matchBranch 0))
+      let store ← bodyResult.store.unifyAt [.matchBranch 0] bodyResult.ty resultTy
       let ((restElab, store), restTypes) ←
         (inferBranches sig k ctx decl args resultTy rest store).mapError InferError.nextBranch
       pure (((pattern, bodyResult.elaboration) :: restElab, store),
-        bodyResult.types :: restTypes)
+        .node resultTy (fieldTys.map (.node · []) ++ [bodyResult.types]) :: restTypes)
 end
 
 /-! ## Closed programs -/
@@ -294,7 +308,7 @@ def Expr.firstUndetermined : Expr InfTy → Option InferError
 
 /-- `Expr.firstUndetermined` on the branch bodies, the first numbered `index`. -/
 def Expr.firstUndeterminedBranches (index : Nat) :
-    List (CtorRef × Expr InfTy) → Option InferError
+    List (Pattern × Expr InfTy) → Option InferError
   | [] => none
   | (_, body) :: rest =>
       (body.firstUndetermined.map (.under (.matchBranch index))) <|>

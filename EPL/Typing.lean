@@ -94,11 +94,12 @@ def Signature.ctorScheme (sig : Signature) (ref : CtorRef) : Option (Scheme Empt
   let ctor ← decl.ctors[ref.index]?
   some (decl.ctorScheme ref.type ctor)
 
-/-- The type of a match branch for `ctor` on a scrutinee of type `T args`,
-with `hidden` for the constructor's own variables: `f_1 -> ... -> f_n ->
-resultTy`, each field instantiated at `args ++ hidden`. -/
-def CtorDecl.branchTy (ctor : CtorDecl) (args hidden : List SemTy) (resultTy : SemTy) : SemTy :=
-  Ty.arrows (ctor.fields.map (·.instantiate (args ++ hidden))) resultTy
+/-- What a match branch for `ctor` adds to the context, on a scrutinee of
+type `T args` and with `hidden` for the constructor's own variables: its
+fields, each instantiated at `args ++ hidden`, the last field innermost (it is
+`var 0`; see `Pattern`). -/
+def CtorDecl.fieldCtx (ctor : CtorDecl) (args hidden : List SemTy) : Ctx Empty :=
+  (ctor.fields.map fun field => .mono (field.instantiate (args ++ hidden))).reverse
 
 /-- `scheme` completes the written annotation `ann` at depth `k`. -/
 structure PolyAnn.Completes (k : Nat) (ann : PolyAnn Template) (scheme : Scheme Empty) :
@@ -194,18 +195,19 @@ inductive TypingWith (sig : Signature) (Det : LetCondition) :
       TypingWith sig Det k ctx (.fix self body) (.fix (some selfTy) bodyElab) selfTy
 
   /-- A match on a value of type `T args`: there is at least one branch; every
-  pattern is a constructor of `T`; and the branch for a constructor with
-  fields `f_1 ... f_n` has type `f_1 -> ... -> f_n -> resultTy`
-  (`CtorDecl.branchTy`). The match need not be exhaustive. The elaboration
-  keeps the patterns and elaborates each branch body.
+  pattern is a constructor of `T` and binds one variable per field; and the
+  branch for a constructor with fields `f_1 ... f_n` has type `resultTy` with
+  `f_1 ... f_n` added to the context (`CtorDecl.fieldCtx`). The match need not
+  be exhaustive. The elaboration keeps the patterns and elaborates each branch
+  body.
 
   A constructor's own (existential) variables become fresh rigid levels
   `k, ..., k + existentials - 1`, and its branch is checked at that depth, as
   `letPoly` checks its right-hand side: the branch must work whatever types
   the value was built with. `resultTy` is shared by all branches and must be
   well formed at the outer depth `k`, so it cannot mention a branch's fresh
-  levels: this is the escape check. (The context is well formed at `k` by
-  assumption, so nothing else can mention them either.) A branch's depth is
+  levels: this is the escape check. (The outer context is well formed at `k`
+  by assumption, so only the branch's own fields can mention them.) A branch's depth is
   not recorded in the elaboration; it follows from the pattern and the
   signature. -/
   | «match» :
@@ -225,28 +227,32 @@ inductive TypingWith (sig : Signature) (Det : LetCondition) :
 
       -- (5) Every pattern is a constructor of this same type `T` (not of some
       --     other type), and that constructor exists.
-      (∀ pattern ∈ branches.map (·.1), pattern.type = type ∧ pattern.index < decl.ctors.length) →
+      (∀ pattern ∈ branches.map (·.1),
+        pattern.ctor.type = type ∧ pattern.ctor.index < decl.ctors.length) →
 
-      -- (6) Elaboration keeps the patterns as they are, in the same order; only
-      --     the branch bodies get elaborated (their lambdas get types filled in).
+      -- (6) Every pattern binds one variable per field of its constructor.
+      (∀ pattern ∈ branches.map (·.1), ∀ ctor, decl.ctors[pattern.ctor.index]? = some ctor →
+        pattern.binders = ctor.fields.length) →
+
+      -- (7) Elaboration keeps the patterns as they are, in the same order; only
+      --     the branch bodies get elaborated.
       branchesElab.map (·.1) = branches.map (·.1) →
 
-      -- (7) Each branch body is typed. Indexing by `i` pairs the i-th source branch
+      -- (8) Each branch body is typed. Indexing by `i` pairs the i-th source branch
       --     with the i-th elaborated one.
       (∀ (i : Nat) pattern body bodyElab ctor,
         branches[i]? = some (pattern, body) →            -- source branch i
         branchesElab[i]? = some (pattern, bodyElab) →    -- elaborated branch i
-        decl.ctors[pattern.index]? = some ctor →         -- the constructor the pattern names
+        decl.ctors[pattern.ctor.index]? = some ctor →    -- the constructor the pattern names
         -- Checked one depth level deeper per existential, so the
         -- constructor's own variables are the fresh levels k, ..., k+e-1
-        TypingWith sig Det (k + ctor.existentials) ctx body bodyElab
-          -- The body is a function of the fields:
-          --   f_1 -> ... -> f_n -> resultTy
-          -- with each field's parameters replaced by `args` and its existentials
-          -- by the fresh rigid levels.
-          (ctor.branchTy args (rigidBlock k ctor.existentials) resultTy)) →
+        TypingWith sig Det (k + ctor.existentials)
+          -- with the fields in the context, each field's parameters replaced
+          -- by `args` and its existentials by the fresh rigid levels
+          (ctor.fieldCtx args (rigidBlock k ctor.existentials) ++ ctx)
+          body bodyElab resultTy) →
 
-      -- (8) The escape check: the match's type only mentions levels < k,
+      -- (9) The escape check: the match's type only mentions levels < k,
       --     so it can't mention any branch's fresh levels.
       resultTy.WF k →
 
@@ -335,8 +341,9 @@ inductive RuntimeTyping (sig : Signature) : Nat → Ctx Empty → RuntimeExpr �
       RuntimeTyping sig k ctx (.fix self body) selfTy
 
   /-- A match on a value of type `T args`, as in `TypingWith`: at least one
-  branch, every pattern a constructor of `T`, and each branch a function of
-  its constructor's fields to `resultTy`. Like `letIn`, a branch is typed
+  branch, every pattern a constructor of `T` binding one variable per field,
+  and each branch of type `resultTy` with its constructor's fields in the
+  context. Like `letIn`, a branch is typed
   Kripke style: for every choice `hidden` of the constructor's own variables,
   at every depth `k' ≥ k`. `resultTy` is fixed before `hidden` is chosen, so
   it cannot depend on it: that order of quantifiers is this rule's escape
@@ -347,12 +354,15 @@ inductive RuntimeTyping (sig : Signature) : Nat → Ctx Empty → RuntimeExpr �
       sig.decl? type = some decl →
       args.length = decl.params →
       branches ≠ [] →
-      (∀ pattern ∈ branches.map (·.1), pattern.type = type ∧ pattern.index < decl.ctors.length) →
+      (∀ pattern ∈ branches.map (·.1),
+        pattern.ctor.type = type ∧ pattern.ctor.index < decl.ctors.length) →
+      (∀ pattern ∈ branches.map (·.1), ∀ ctor, decl.ctors[pattern.ctor.index]? = some ctor →
+        pattern.binders = ctor.fields.length) →
       (∀ pattern body ctor, (pattern, body) ∈ branches →
-        decl.ctors[pattern.index]? = some ctor →
+        decl.ctors[pattern.ctor.index]? = some ctor →
         ∀ k', k ≤ k' → ∀ hidden : List SemTy, hidden.length = ctor.existentials →
           (∀ ty ∈ hidden, ty.WF k') →
-          RuntimeTyping sig k' ctx body (ctor.branchTy args hidden resultTy)) →
+          RuntimeTyping sig k' (ctor.fieldCtx args hidden ++ ctx) body resultTy) →
       RuntimeTyping sig k ctx (.match scrutinee branches) resultTy
 
 /-! ## Exhaustiveness
@@ -392,7 +402,7 @@ inductive Exhaustive {A : Type} (sig : Signature) : Expr A → Prop
   | «match» :
       Exhaustive sig scrutinee →
       (∀ branch ∈ branches, Exhaustive sig branch.2) →
-      sig.Covers (branches.map (·.1)) →
+      sig.Covers (branches.map (·.1.ctor)) →
       Exhaustive sig (.match scrutinee branches)
 
 /-- `Signature.Covers`, as a check. -/
@@ -412,10 +422,10 @@ def Expr.exhaustive (sig : Signature) : Expr A → Bool
   | .letIn _ rhs body => rhs.exhaustive sig && body.exhaustive sig
   | .match scrutinee branches =>
       scrutinee.exhaustive sig && Expr.exhaustiveBranches sig branches &&
-        sig.covers (branches.map (·.1))
+        sig.covers (branches.map (·.1.ctor))
 
 /-- `Expr.exhaustive` on every branch body. -/
-def Expr.exhaustiveBranches (sig : Signature) : List (CtorRef × Expr A) → Bool
+def Expr.exhaustiveBranches (sig : Signature) : List (Pattern × Expr A) → Bool
   | [] => true
   | (_, body) :: rest => body.exhaustive sig && Expr.exhaustiveBranches sig rest
 end

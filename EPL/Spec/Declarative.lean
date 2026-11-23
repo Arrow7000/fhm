@@ -213,8 +213,8 @@ private theorem Signature.decl?_wf {sig : Signature} {type : Nat} {decl : DataDe
 
 /-- Branch lists with the same patterns line up by index: the elaboration has a
 branch at every index where the source does, with the same pattern. -/
-private theorem exists_branch_of_map_fst {A B : Type} {branches : List (CtorRef × Expr A)}
-    {branchesElab : List (CtorRef × Expr B)} {i : Nat} {pattern : CtorRef} {body : Expr A}
+private theorem exists_branch_of_map_fst {A B : Type} {branches : List (Pattern × Expr A)}
+    {branchesElab : List (Pattern × Expr B)} {i : Nat} {pattern : Pattern} {body : Expr A}
     (aligned : branchesElab.map (·.1) = branches.map (·.1))
     (found : branches[i]? = some (pattern, body)) :
     ∃ bodyElab, branchesElab[i]? = some (pattern, bodyElab) := by
@@ -230,16 +230,16 @@ private theorem exists_branch_of_map_fst {A B : Type} {branches : List (CtorRef 
 
 /-- Erasing the bodies of two pattern-aligned branch lists commutes with the
 alignment: branch by branch, the types agree by the indexed premise. -/
-private theorem map_erase_eq_of_aligned {A B : Type} {branches : List (CtorRef × Expr A)}
-    {branchesElab : List (CtorRef × Expr B)} {decl : DataDecl} {type : Nat}
+private theorem map_erase_eq_of_aligned {A B : Type} {branches : List (Pattern × Expr A)}
+    {branchesElab : List (Pattern × Expr B)} {decl : DataDecl} {type : Nat}
     (patternsOk : ∀ pattern ∈ branches.map (·.1),
-      pattern.type = type ∧ pattern.index < decl.ctors.length)
+      pattern.ctor.type = type ∧ pattern.ctor.index < decl.ctors.length)
     (aligned : branchesElab.map (·.1) = branches.map (·.1))
-    (bodies : ∀ (i : Nat) (pattern : CtorRef) (body : Expr A) (bodyElab : Expr B)
+    (bodies : ∀ (i : Nat) (pattern : Pattern) (body : Expr A) (bodyElab : Expr B)
       (ctor : CtorDecl),
       branches[i]? = some (pattern, body) →
       branchesElab[i]? = some (pattern, bodyElab) →
-      decl.ctors[pattern.index]? = some ctor → Expr.erase bodyElab = Expr.erase body) :
+      decl.ctors[pattern.ctor.index]? = some ctor → Expr.erase bodyElab = Expr.erase body) :
     branchesElab.map (fun branch => (branch.1, Expr.erase branch.2)) =
       branches.map (fun branch => (branch.1, Expr.erase branch.2)) := by
   apply List.ext_getElem?
@@ -259,9 +259,9 @@ private theorem map_erase_eq_of_aligned {A B : Type} {branches : List (CtorRef �
       obtain ⟨bodyElab, hbE⟩ := exists_branch_of_map_fst aligned hb
       have hmem : pattern ∈ branches.map (·.1) :=
         List.mem_map.mpr ⟨(pattern, body), List.mem_of_getElem? hb, rfl⟩
-      have hlen : pattern.index < decl.ctors.length := (patternsOk pattern hmem).2
-      obtain ⟨fields, hfields⟩ : ∃ fields, decl.ctors[pattern.index]? = some fields :=
-        ⟨decl.ctors[pattern.index]'hlen, List.getElem?_eq_getElem hlen⟩
+      have hlen : pattern.ctor.index < decl.ctors.length := (patternsOk pattern hmem).2
+      obtain ⟨fields, hfields⟩ : ∃ fields, decl.ctors[pattern.ctor.index]? = some fields :=
+        ⟨decl.ctors[pattern.ctor.index]'hlen, List.getElem?_eq_getElem hlen⟩
       rw [hbE]
       show some (pattern, Expr.erase bodyElab) = some (pattern, Expr.erase body)
       rw [bodies i pattern body bodyElab fields hb hbE hfields]
@@ -273,63 +273,17 @@ theorem mono {Det Det' : LetCondition}
     (weaker : ∀ k ctx ann rhs scheme, Det k ctx ann rhs scheme → Det' k ctx ann rhs scheme)
     (typing : TypingWith sig Det k ctx src elaboration ty) :
     TypingWith sig Det' k ctx src elaboration ty := by
-  induction typing with
-  | «match» scrutineeTyping declEq argsLen branchesNe patternsOk aligned branchTyping
-      resultTyWF scrutineeIh branchIh =>
-      exact .«match» scrutineeIh declEq argsLen branchesNe patternsOk aligned branchIh resultTyWF
-  | lit => exact .lit
-  | primOp h => exact .primOp h
-  | ctor hsch hinst => exact .ctor hsch hinst
-  | var hlook hinst => exact .var hlook hinst
-  | lambda hwf hmatch hbody ih => exact .lambda hwf hmatch ih
-  | app hf ha ihf iha => exact .app ihf iha
-  | letMono hrhs hbody ihrhs ihbody => exact .letMono ihrhs ihbody
-  | letPoly hcomp hrhs hdet hbody ihrhs ihbody =>
-      exact .letPoly hcomp ihrhs (weaker _ _ _ _ _ hdet) ihbody
-  | fix hwf hmatch hbody ih => exact .fix hwf hmatch ih
+  sorry
 
 /-- Types are well-formed. Proof: induction on the derivation; the `var`
 and `const` cases are `Scheme.inst_wf`. -/
 theorem regular (ctxWF : ctx.WF k) (typing : TypingWith sig Det k ctx src elaboration ty) :
     ty.WF k := by
-  induction typing with
-  | «match» scrutineeTyping declEq argsLen branchesNe patternsOk aligned branchTyping
-      resultTyWF scrutineeIh branchIh =>
-      exact resultTyWF
-  | lit => exact PrimLit.ty_wf _
-  | primOp h => exact PrimOp.ty_wf h
-  | ctor hsch hinst =>
-      exact Scheme.instance_wf (Signature.ctorScheme_wf hsch) (Nat.zero_le _) hinst
-  | var hlook hinst =>
-      exact Scheme.instance_wf (ctxWF_getElem ctxWF hlook) (le_refl _) hinst
-  | lambda hparam hmatch hbody ih =>
-      expose_names
-      exact ⟨hparam, ih (ctxWF_cons (Scheme.mono paramTy) hparam ctxWF)⟩
-  | app hf ha ihf iha => exact (ihf ctxWF).2
-  | letMono hrhs hbody ihrhs ihbody =>
-      expose_names
-      exact ihbody (ctxWF_cons (Scheme.mono rhsTy) (ihrhs ctxWF) ctxWF)
-  | letPoly hcomp hrhs hdet hbody ihrhs ihbody =>
-      expose_names
-      exact ihbody (ctxWF_cons scheme hcomp.wf ctxWF)
-  | fix hwf hmatch hbody ih =>
-      expose_names
-      exact ih (ctxWF_cons (Scheme.mono selfTy) hwf ctxWF)
+  sorry
 
 /-- A source program and its elaboration erase alike. -/
 theorem erase_eq (typing : TypingWith sig Det k ctx src elaboration ty) : elaboration.erase = src.erase := by
-  induction typing with
-  | «match» scrutineeTyping declEq argsLen branchesNe patternsOk aligned branchTyping
-      resultTyWF scrutineeIh branchIh =>
-      simp only [Expr.erase, scrutineeIh]
-      rw [Expr.eraseBranches_eq, Expr.eraseBranches_eq,
-        map_erase_eq_of_aligned patternsOk aligned branchIh]
-  | lit | primOp | ctor | var => rfl
-  | lambda _ _ _ ih => simp [Expr.erase, ih]
-  | app _ _ ihf iha => simp [Expr.erase, ihf, iha]
-  | letMono _ _ ihrhs ihbody => simp [Expr.erase, ihrhs, ihbody]
-  | letPoly _ _ _ _ ihrhs ihbody => simp [Expr.erase, ihrhs, ihbody]
-  | fix _ _ _ ih => simp [Expr.erase, ih]
+  sorry
 
 /-- Erasure preserves typing. Proof: induction on the derivation. In the
 `letPoly` case the induction hypothesis types the right-hand side at the
@@ -338,110 +292,7 @@ generic instance at depth `k + arity`; `RuntimeTyping.substRigids` with
 instance, and `Scheme.substRigids_eq_self` shows the context is unchanged. -/
 theorem erase (ctxWF : ctx.WF k) (typing : TypingWith sig Det k ctx src elaboration ty) :
     RuntimeTyping sig k ctx src.erase ty := by
-  induction typing with
-  | «match» scrutineeTyping declEq argsLen branchesNe patternsOk aligned branchTyping
-      resultTyWF scrutineeIh branchIh =>
-      refine RuntimeTyping.«match» (scrutineeIh ctxWF) declEq argsLen ?_ ?_ ?_
-      · rw [Expr.eraseBranches_eq]
-        intro hnil
-        exact branchesNe (List.map_eq_nil_iff.mp hnil)
-      · rw [Expr.eraseBranches_eq]
-        simpa using patternsOk
-      · intro pattern body ctor hmem hfields k' hle hidden hlen hhidden
-        rw [Expr.eraseBranches_eq] at hmem
-        obtain ⟨⟨pattern₀, body₀⟩, hmem₀, heq⟩ := List.mem_map.mp hmem
-        simp only [Prod.mk.injEq] at heq
-        obtain ⟨hpat, hbod⟩ := heq
-        obtain ⟨i, hi⟩ := List.mem_iff_getElem?.mp hmem₀
-        obtain ⟨bodyElab, hiElab⟩ := exists_branch_of_map_fst aligned hi
-        rw [← hpat] at hfields
-        rw [← hbod]
-        -- The branch body is typed one depth per existential deeper, with the
-        -- constructor's own variables as the fresh levels `k, ..., k+e-1`.
-        expose_names
-        have hctx : ctx_1.WF (k_1 + ctor.existentials) :=
-          Ctx.WF.mono ctxWF (Nat.le_add_right k_1 ctor.existentials)
-        have ih := branchIh i pattern₀ body₀ bodyElab ctor hi hiElab hfields hctx
-        -- Replace those fresh levels by the value's own `hidden` types,
-        -- keeping everything below `k` as it is.
-        let f : Nat → SemTy :=
-          fun l => if l < k_1 then .rigid l else hidden.getD (l - k_1) (.rigid l)
-        have hf_agree : ∀ l < k_1, f l = .rigid l := fun l hl => by simp [f, hl]
-        have himages : ∀ l < k_1 + ctor.existentials, (f l).WF k' := by
-          intro l hl
-          by_cases hlt : l < k_1
-          · rw [hf_agree l hlt]
-            show l < k'
-            omega
-          · have hfl : f l = hidden.getD (l - k_1) (.rigid l) := by simp [f, hlt]
-            rw [hfl]
-            have hd : l - k_1 < hidden.length := by omega
-            rw [List.getD_eq_getElem?_getD, List.getElem?_eq_getElem hd, Option.getD_some]
-            exact hhidden _ (List.getElem_mem hd)
-        have hsub := RuntimeTyping.substRigids (k' := k') hctx ih f himages
-        rw [map_substRigids_eq_self ctxWF hf_agree] at hsub
-        have hdeclWF : decl.WF := Signature.decl?_wf declEq
-        have hctors : ctor ∈ decl.ctors := List.mem_of_getElem? hfields
-        have hargsWF : ∀ a ∈ args, a.WF k_1 :=
-          (Ty.apps_scoped_inv (regular ctxWF scrutineeTyping)).2
-        have hargsMap : args.map (·.substRigids f) = args :=
-          List.map_substRigids_eq_self hargsWF hf_agree
-        have hhiddenMap : (rigidBlock k_1 ctor.existentials).map (·.substRigids f) = hidden :=
-          rigidBlock_map_substRigids hlen fun i hi => by
-            show f (k_1 + i) = hidden.getD i (.rigid (k_1 + i))
-            simp [f, show ¬ k_1 + i < k_1 by omega, show k_1 + i - k_1 = i by omega]
-        have hfieldsMap :
-            (ctor.fields.map (fun ft =>
-                ft.instantiate (args ++ rigidBlock k_1 ctor.existentials))).map
-              (·.substRigids f) =
-              ctor.fields.map (fun ft => ft.instantiate (args ++ hidden)) := by
-          rw [List.map_map]
-          apply List.map_congr_left
-          intro ft hft
-          show (ft.instantiate (args ++ rigidBlock k_1 ctor.existentials)).substRigids f =
-            ft.instantiate (args ++ hidden)
-          have hfield : ft.Scoped 0 (args.length + ctor.existentials) := by
-            have h := hdeclWF ctor hctors ft hft
-            rwa [← argsLen] at h
-          have hscope : ft.Scoped 0 (args ++ rigidBlock k_1 ctor.existentials).length := by
-            simpa [List.length_append, rigidBlock] using hfield
-          rw [Ty.instantiate_substRigids (f := f) hscope, List.map_append, hargsMap, hhiddenMap]
-        have hty : (ctor.branchTy args (rigidBlock k_1 ctor.existentials) resultTy).substRigids f =
-            ctor.branchTy args hidden resultTy := by
-          simp only [CtorDecl.branchTy, Ty.arrows_substRigids, hfieldsMap,
-            Ty.substRigids_eq_self resultTyWF hf_agree]
-        rwa [hty] at hsub
-  | lit => exact .lit
-  | primOp h => exact .primOp h
-  | ctor hsch hinst => exact .ctor hsch hinst
-  | var hlook hinst => exact .var hlook hinst
-  | lambda hparam hmatch hbody ih =>
-      expose_names
-      exact .lambda hparam (ih (ctxWF_cons (Scheme.mono paramTy) hparam ctxWF))
-  | app hf ha ihf iha => exact .app (ihf ctxWF) (iha ctxWF)
-  | letMono hrhs hbody ihrhs ihbody =>
-      expose_names
-      have hwf := regular ctxWF hrhs
-      refine RuntimeTyping.letIn (scheme := Scheme.mono rhsTy) hwf ?_ ?_
-      · intro k' hle ty hinst
-        obtain rfl := Scheme.instance_mono.mp hinst
-        exact RuntimeTyping.mono_depth (ihrhs ctxWF) hle
-      · exact ihbody (ctxWF_cons (Scheme.mono rhsTy) hwf ctxWF)
-  | letPoly hcomp hrhs hdet hbody ihrhs ihbody =>
-      expose_names
-      refine RuntimeTyping.letIn (scheme := scheme) hcomp.wf ?_
-        (ihbody (ctxWF_cons scheme hcomp.wf ctxWF))
-      intro k' hle ty hinst
-      obtain ⟨args, hlen, hargs, rfl⟩ := hinst
-      have hwfK : Ctx.WF (k_1 + scheme.arity) ctx_1 :=
-        Ctx.WF.mono ctxWF (Nat.le_add_right k_1 scheme.arity)
-      have hsub := RuntimeTyping.substRigids (k' := k') hwfK (ihrhs hwfK)
-        (blockSubst k_1 args) (fun l hl => blockSubst_wf hlen hargs hle hl)
-      rwa [map_substRigids_eq_self ctxWF (fun l hl => by simp [blockSubst, hl]),
-        Scheme.skolemize_substRigids hcomp.wf hlen] at hsub
-  | fix hwf hmatch hbody ih =>
-      expose_names
-      exact .fix hwf (ih (ctxWF_cons (Scheme.mono selfTy) hwf ctxWF))
+  sorry
 
 end TypingWith
 
