@@ -98,7 +98,7 @@ def tooGeneral : Source :=
 /-- `if 1 < 2 then 'y' else 'n'`. -/
 def ifLt : Source :=
   .match (.app (.app (.primOp .intLt) one) (.lit (.int 2)))
-    [(⟨0, 0⟩, .lit (.char 'y')), (⟨0, 1⟩, .lit (.char 'n'))]
+    [(⟨⟨0, 0⟩, 0⟩, .lit (.char 'y')), (⟨⟨0, 1⟩, 0⟩, .lit (.char 'n'))]
 
 #guard tyOf boolSig ifLt = some (.prim .char)
 #guard evalOf boolSig ifLt = some (.lit (.char 'y'))
@@ -110,9 +110,8 @@ def lengthProgram : Source :=
     .fix (some (.arrow (.app (.con 1) (.var "a")) int.lift))
       (.lambda none
         (.match (.var 0)
-          [(⟨1, 0⟩, .lit (.int 0)),
-           (⟨1, 1⟩, .lambda none (.lambda none
-             (.app (.app (.primOp .intAdd) one) (.app (.var 3) (.var 0)))))]))
+          [(⟨⟨1, 0⟩, 0⟩, .lit (.int 0)),
+           (⟨⟨1, 1⟩, 2⟩, .app (.app (.primOp .intAdd) one) (.app (.var 3) (.var 0)))]))
   let list : Source :=
     .app (.app (.ctor ⟨1, 1⟩) one)
       (.app (.app (.ctor ⟨1, 1⟩) (.lit (.int 2))) (.ctor ⟨1, 0⟩))
@@ -605,7 +604,7 @@ example : (listSig.ctorScheme ⟨1, 1⟩).isSome := by decide
 
 /-- `if c then a else b` as a match on `Bool`. -/
 def ifThen (c a b : Source) : Source :=
-  .match c [(⟨0, 0⟩, a), (⟨0, 1⟩, b)]
+  .match c [(⟨⟨0, 0⟩, 0⟩, a), (⟨⟨0, 1⟩, 0⟩, b)]
 
 def nil : Source := .ctor ⟨1, 0⟩
 
@@ -624,11 +623,11 @@ example : (infer listSig ifFalse).toOption.map (·.ty) = some int := by
   some (.lit (.int 2))
 
 /-- `match Cons 5 Nil with Nil => 0 | Cons x xs => x : Int`, evaluating to
-`5`, and annotating `x : Int` and `xs : List Int`. -/
+`5`. -/
 def matchCons : Source :=
   .match (cons (.lit (.int 5)) nil)
-    [(⟨1, 0⟩, .lit (.int 0)),
-     (⟨1, 1⟩, .lambda none (.lambda none (.var 1)))]
+    [(⟨⟨1, 0⟩, 0⟩, .lit (.int 0)),
+     (⟨⟨1, 1⟩, 2⟩, .var 1)]
 
 example : (infer listSig matchCons).toOption.map (·.ty) = some int := by
   decide
@@ -636,8 +635,8 @@ example : (infer listSig matchCons).toOption.map (·.ty) = some int := by
 example : (infer listSig matchCons).toOption.map (·.elaboration) =
     some (.match (.app (.app (.ctor ⟨1, 1⟩) (.lit (.int 5)))
           (.ctor ⟨1, 0⟩))
-      [(⟨1, 0⟩, .lit (.int 0)),
-       (⟨1, 1⟩, .lambda (some int) (.lambda (some listTy) (.var 1)))]) := by
+      [(⟨⟨1, 0⟩, 0⟩, .lit (.int 0)),
+       (⟨⟨1, 1⟩, 2⟩, .var 1)]) := by
   decide
 
 #guard ((evaluate listSig matchCons 50).toOption.bind (·.2.value?)) =
@@ -676,12 +675,11 @@ def listNilBranch : Source :=
   .lit (.int 0)
 
 def listConsBranch : Source :=
-  .lambda none (.lambda none
-    (.app (.app (.primOp .intAdd) (.lit (.int 1)))
-      (.app (.var 3) (.var 0))))
+  .app (.app (.primOp .intAdd) (.lit (.int 1)))
+    (.app (.var 3) (.var 0))
 
 def listMatch (scrutinee : Source) : Source :=
-  .match scrutinee [(⟨1, 0⟩, listNilBranch), (⟨1, 1⟩, listConsBranch)]
+  .match scrutinee [(⟨⟨1, 0⟩, 0⟩, listNilBranch), (⟨⟨1, 1⟩, 2⟩, listConsBranch)]
 
 def listLength : Source :=
   .fix (some (.arrow listTy int))
@@ -700,7 +698,7 @@ requires. -/
 
 /-- `match False with True => 1`, missing the `False` branch. -/
 def partialMatch : Source :=
-  .match falseExpr [(⟨0, 0⟩, .lit (.int 1))]
+  .match falseExpr [(⟨⟨0, 0⟩, 0⟩, .lit (.int 1))]
 
 example : (infer boolSig partialMatch).toOption.map (·.ty) = some int := by
   decide
@@ -722,9 +720,15 @@ example : (infer boolSig emptyMatch).toOption = none := by decide
 
 /-- Patterns naming two different types are rejected. -/
 def crossTypedMatch : Source :=
-  .match trueExpr [(⟨0, 0⟩, trueExpr), (⟨1, 0⟩, nil)]
+  .match trueExpr [(⟨⟨0, 0⟩, 0⟩, trueExpr), (⟨⟨1, 0⟩, 0⟩, nil)]
 
 example : (infer listSig crossTypedMatch).toOption = none := by decide
+
+/-- A pattern must bind one variable per field: `True` has none. -/
+def overboundMatch : Source :=
+  .match trueExpr [(⟨⟨0, 0⟩, 1⟩, one), (⟨⟨0, 1⟩, 0⟩, one)]
+
+example : (infer boolSig overboundMatch).toOption = none := by decide
 
 /-! ## Primitive operations -/
 
@@ -980,6 +984,9 @@ example : errorOf [] ifLt = some ⟨[.matchBranch 0], .unknownType⟩ := by deci
 example : errorOf listSig crossTypedMatch = some ⟨[.matchBranch 1], .foreignPattern⟩ := by
   decide
 
+example : errorOf boolSig overboundMatch = some ⟨[.matchBranch 0], .patternArity⟩ := by
+  decide
+
 /-- `1 + 'c'`: the function `(+) 1 : Int -> Int` against `Char -> ?1`. -/
 example : errorOf boolSig (.app (.app (.primOp .intAdd) one) (.lit (.char 'c'))) =
     some ⟨[], .mismatch (.arrow (.prim .char) (.var 1))
@@ -1043,21 +1050,15 @@ def mkPack : Expr A := .ctor ⟨1, 0⟩
 `MkPack True (fun b => match b with True => 1 | False => 0)`. -/
 def packedBool : Source :=
   .app (.app mkPack trueExpr)
-    (.lambda none (.match (.var 0) [(⟨0, 0⟩, one), (⟨0, 1⟩, .lit (.int 0))]))
+    (.lambda none (.match (.var 0) [(⟨⟨0, 0⟩, 0⟩, one), (⟨⟨0, 1⟩, 0⟩, .lit (.int 0))]))
 
 /-- `match packedBool with MkPack s f => f s`: applying the function to the
 hidden value is fine. -/
 def unpackApply : Source :=
-  .match packedBool [(⟨1, 0⟩, .lambda none (.lambda none (.app (.var 0) (.var 1))))]
+  .match packedBool [(⟨⟨1, 0⟩, 2⟩, .app (.var 0) (.var 1))]
 
 #guard tyOf packSig unpackApply = some int
 #guard evalOf packSig unpackApply = some (.lit (.int 1))
--- Inside the branch, the hidden type is the rigid level 0.
-#guard (infer packSig unpackApply).toOption.map (·.elaboration) = some
-  (.match (.app (.app mkPack trueExpr)
-      (.lambda (some boolTy) (.match (.var 0) [(⟨0, 0⟩, .lit (.int 1)), (⟨0, 1⟩, .lit (.int 0))])))
-    [(⟨1, 0⟩, .lambda (some (.rigid 0)) (.lambda (some (.arrow (.rigid 0) int))
-      (.app (.var 0) (.var 1))))])
 
 /-- The path and unification failure of a rejected program's mismatch. -/
 def mismatchCause (sig : Signature) (src : Source) : Option (List ExprStep × UnifyError) :=
@@ -1068,7 +1069,7 @@ def mismatchCause (sig : Signature) (src : Source) : Option (List ExprStep × Un
 /-- `match packedBool with MkPack s f => s`: returning the hidden value would
 let its type escape. The match's result type is `?7`, at level 0. -/
 def unpackEscape : Source :=
-  .match packedBool [(⟨1, 0⟩, .lambda none (.lambda none (.var 1)))]
+  .match packedBool [(⟨⟨1, 0⟩, 2⟩, .var 1)]
 
 #guard mismatchCause packSig unpackEscape = some ([.matchBranch 0], .escape 7 (.rigid 0))
 
@@ -1076,7 +1077,7 @@ def unpackEscape : Source :=
 would need the outer `y : ?0` to have the hidden type. -/
 def unpackLeak : Source :=
   .app (.lambda none
-    (.match packedBool [(⟨1, 0⟩, .lambda none (.lambda none (.app (.var 0) (.var 2))))]))
+    (.match packedBool [(⟨⟨1, 0⟩, 2⟩, .app (.var 0) (.var 2))]))
     trueExpr
 
 #guard mismatchCause packSig unpackLeak =

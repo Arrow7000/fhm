@@ -42,7 +42,8 @@ inductive BinderTy where
   | domain
   /-- A let: the type of its right-hand side, child 0. -/
   | rhs
-  /-- A `fix`: the node's own type. -/
+  /-- A `fix`, or a match branch's field (a leaf of the branch's node, see
+  `Scope.branch`): the node's own type. -/
   | self
   deriving Repr, DecidableEq, Inhabited
 
@@ -83,7 +84,8 @@ def Origin.mapInfo (f : OriginInfo → OriginInfo) : Origin → Origin
   | .node span tyVars children info => .node span tyVars children (f info)
 
 /-- The child a step goes to, in `Origin.node`'s list: a match's scrutinee is
-child 0 and branch `i` is child `i + 1`. -/
+child 0 and branch `i` is child `i + 1` (whose last child is the body, see
+`Scope.branch`). -/
 def _root_.EPL.ExprStep.child : ExprStep → Nat
   | .lambdaBody | .appFunction | .letRhs | .fixBody | .matchScrutinee => 0
   | .appArgument | .letBody => 1
@@ -93,9 +95,10 @@ def _root_.EPL.ExprStep.child : ExprStep → Nat
 def Origin.locate : Origin → List ExprStep → Origin
   | origin, [] => origin
   | origin@(.node _ _ children _), step :: path =>
-      match children[step.child]? with
-      | some child => child.locate path
-      | none => origin
+      match children[step.child]?, step with
+      | some branch, .matchBranch _ => (branch.children.getLast?.getD branch).locate path
+      | some child, _ => child.locate path
+      | none, _ => origin
 
 /-! ## Errors -/
 
@@ -364,6 +367,16 @@ def Scope.apps (scope : Scope) (span : Span) (head : Lowered) (args : List Lower
 def Scope.lambda (scope : Scope) (span : Span) (ann : Option Template) (id : Nat)
     (body : Lowered) : Lowered :=
   (.lambda ann body.1, scope.origin span [body.2] { binder := some (id, .domain) })
+
+/-- A match branch for constructor `ref` whose pattern binds the variables with
+ids `fieldIds`, one per field, located at `fieldSpan`. Like inference's
+`TypeTree`, its origin is a node of its own with a leaf per field, then the
+body. -/
+def Scope.branch (scope : Scope) (ref : CtorRef) (fieldSpan : Span) (fieldIds : List Nat)
+    (body : Lowered) : EPL.Pattern × Lowered :=
+  (⟨ref, fieldIds.length⟩, body.1,
+    scope.origin body.2.span (fieldIds.map (fun id =>
+      scope.origin fieldSpan [] { binder := some (id, .self) }) ++ [body.2]))
 
 /-- `[a, b, ...]` as `Cons a (Cons b ... Nil)`. -/
 def Scope.list (scope : Scope) (span : Span) (items : List Lowered) : Lowered :=
@@ -648,13 +661,10 @@ def compile (leaf : Nat → Scope → M Lowered) (armScope : Nat → Span) (span
             let inner := fieldIds.foldl (fun scope id => scope.bind none id) deeper
             let (tree, reached) ←
               compile leaf armScope span fuel inner (fields ++ others) specialized
-            let branch := tree.map fun body =>
-              ((⟨ref.type, index⟩ : CtorRef),
-                fieldIds.foldr (init := body) fun id body =>
-                  deeper.lambda body.2.span none id body)
+            let branch := tree.map (deeper.branch ⟨ref.type, index⟩ fieldSpan fieldIds)
             pure (branch, reached)
           let branches := results.filterMap (·.1)
-          pure (some (.match (scope.varAt level) (branches.map fun (ref, body) => (ref, body.1)),
+          pure (some (.match (scope.varAt level) (branches.map fun (pattern, body) => (pattern, body.1)),
               scope.origin patSpan (scope.origin levelSpan [] :: branches.map (·.2.2))),
             results.flatMap (·.2))
 
@@ -788,8 +798,10 @@ def lowerExpr : Nat → Scope → Expr → M Lowered
         let cond ← lowerExpr fuel scope cond
         let thenBranch ← lowerExpr fuel scope thenBranch
         let elseBranch ← lowerExpr fuel scope elseBranch
-        pure (.match cond.1 [(trueRef, thenBranch.1), (falseRef, elseBranch.1)],
-          scope.origin span [cond.2, thenBranch.2, elseBranch.2])
+        let thenBranch := scope.branch trueRef span [] thenBranch
+        let elseBranch := scope.branch falseRef span [] elseBranch
+        pure (.match cond.1 [(thenBranch.1, thenBranch.2.1), (elseBranch.1, elseBranch.2.1)],
+          scope.origin span [cond.2, thenBranch.2.2, elseBranch.2.2])
     | .match span scrutinee arms => do
         let rows := arms.map fun (pattern, _) => [pattern]
         let leaf (arm : Nat) (scope : Scope) : M Lowered :=

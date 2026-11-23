@@ -78,10 +78,14 @@ applied by `Ty.app`. It is first class, and typing treats it like a variable
 with a closed scheme.
 
 `match scrutinee [(pattern, body), ...]` lists branches with explicit
-constructor patterns. A branch body is a function of its constructor's
-fields, so patterns bind nothing themselves. Typing requires at least one
-branch, every pattern a constructor of the scrutinee's type `T args`, and
-each body of type `fields_i[args, existentials] -> r`. Matches may be partial
+patterns: a constructor and a number of binders, one per field, the last
+field innermost (`Cons h t => b` binds `h` as `var 1` and `t` as `var 0`).
+The count is stored so that shifting and substitution need no signature.
+Typing requires at least one branch, every pattern a constructor of the
+scrutinee's type `T args` binding one variable per field, and each body of
+type `r` with `fields_i[args, existentials]` added to the context. A branch
+is not a function of its fields: no closure per arm, and a branch's type is
+the match's. Matches may be partial
 and may repeat a pattern; the first matching branch is taken. A match with no
 branches is not typable: its type would be unconstrained.
 
@@ -102,7 +106,8 @@ Progress assumes both typing and exhaustiveness.
 
 Evaluation does not consult the signature. A constructor applied to values
 is a value, and a match whose scrutinee is a constructor value steps to the
-first branch for that constructor applied to the fields.
+first branch for that constructor, with the fields substituted for its
+pattern's variables (`Expr.substMany`).
 
 ## Declarative typing
 

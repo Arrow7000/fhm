@@ -590,6 +590,7 @@ def _root_.EPL.InferErrorReason.describe (showTy : InfTy → String) : InferErro
   | .emptyMatch => "a match needs an arm"
   | .unknownType => "unknown type in a pattern"
   | .foreignPattern => "this pattern's type differs from the others'"
+  | .patternArity => "this pattern binds a different number of variables than its constructor has fields"
   | .mismatch expected actual (.clash left right) =>
       -- The cause only adds something if it is about parts of the types.
       if left = actual ∧ right = expected then
