@@ -221,8 +221,9 @@ induction on the source proving `InferSpec`:
 
 `EPL/Surface/` is an unverified front end (`lake build EPLSurface`) with
 FHM's syntax: `type` declarations (a constructor names its own type variables
-like a function head does: `type Pack a = MkPack {s} s (s -> a)`), top-level
-`let`s and a final expression,
+like a function head does: `type Pack a = MkPack {s} s (s -> a)`; a pattern may
+name them for its arm, `MkPack {t} x f`, and otherwise they cannot be named
+there), top-level `let`s and a final expression,
 function heads `let f {a} (x : a) y : R = ...`, `_` and `?a` holes, `\x -> e`,
 `if`, `+ - < ::`, pairs, lists, strings (`List Char`) and `match` with nested
 patterns. It stops at the first error, reported as a typed error with a

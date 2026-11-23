@@ -91,7 +91,8 @@ car == other                            -- type error: Car v0 vs Car v1
 1. **Existential type variables in constructors** (done 2026-11-23, proved):
    `type Pack a = MkPack {s} s (s -> a)`. Matching on such a constructor makes
    its variables fresh rigids one level deeper, and the result must be well
-   formed at the outer level. Inside an arm the hidden type can be named as in
-   the declaration (`s`).
+   formed at the outer level. A pattern may name the hidden types,
+   `MkPack {t} x f`; otherwise they can't be named in the arm (messages and
+   hover show the declaration's name, primed if it is taken).
 2. `let!` sugar in the surface language.
 3. Affine `Db` and the "live `Db v` in scope" rule for field access.
