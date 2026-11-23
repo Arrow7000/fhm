@@ -232,15 +232,35 @@ def Template.MatchesOpt : Option Template → SemTy → Prop
 
 /-! ## Data declarations -/
 
-/-- A data type with `params` type parameters (`bvar 0 ... bvar (params - 1)`
-in field types) and one list of field types per constructor. Field types may
-name any declared type, so recursion and mutual recursion are allowed.
+/-- A constructor declaration: `existentials` type variables of its own, and
+its field types. In a field type, `bvar 0 ... bvar (params - 1)` are the data
+type's parameters and `bvar params ... bvar (params + existentials - 1)` are
+the constructor's own variables.
+
+The constructor's own variables do not occur in the type it constructs, so
+they are *existential*: building a value may pick any types for them, and a
+match that takes the value apart learns only that there are some such types
+(see the `match` rule of `TypingWith`). In
+`type AnyDb = {w} MkAnyDb (Db w)`, with `Db` declaration `d`, `MkAnyDb` is
+`⟨1, [.app (.con d) (.bvar 0)]⟩` and has the scheme `forall w. Db w -> AnyDb`. -/
+structure CtorDecl where
+  existentials : Nat
+  fields : List SemTy
+  deriving DecidableEq, Repr
+
+/-- A constructor without variables of its own. -/
+def CtorDecl.plain (fields : List SemTy) : CtorDecl := ⟨0, fields⟩
+
+/-- A data type with `params` type parameters and its constructors. Field
+types may name any declared type, so recursion and mutual recursion are
+allowed.
 
 If `List` is declaration 1, `data List a = Nil | Cons a (List a)` is
-`⟨1, [[], [.bvar 0, .app (.con 1) (.bvar 0)]]⟩`. See `CtorRef` for more. -/
+`⟨1, [.plain [], .plain [.bvar 0, .app (.con 1) (.bvar 0)]]⟩`. See `CtorRef`
+for more. -/
 structure DataDecl where
   params : Nat
-  ctors : List (List SemTy)
+  ctors : List CtorDecl
   deriving DecidableEq, Repr
 
 /-- A program's data declarations: type `con i` is declaration `i`. -/
@@ -255,10 +275,12 @@ A constructor names a *value*. A *type* is named by its declaration's number,
 `Ty.con`, applied to arguments with `Ty.app`. A worked example: the signature
 
 ```
-[ ⟨0, [[], []]⟩,                                -- 0: data Bool     = True | False
-  ⟨1, [[], [.bvar 0, .app (.con 1) (.bvar 0)]]⟩, -- 1: data List a   = Nil | Cons a (List a)
-  ⟨1, [[], [.bvar 0]]⟩,                         -- 2: data Maybe a  = Nothing | Just a
-  ⟨2, [[.bvar 0, .bvar 1]]⟩ ]                   -- 3: data Pair a b = MkPair a b
+[ ⟨0, [.plain [], .plain []]⟩,                  -- 0: data Bool     = True | False
+  ⟨1, [.plain [],
+       .plain [.bvar 0, .app (.con 1) (.bvar 0)]]⟩, -- 1: data List a = Nil | Cons a (List a)
+  ⟨1, [.plain [], .plain [.bvar 0]]⟩,           -- 2: data Maybe a  = Nothing | Just a
+  ⟨2, [.plain [.bvar 0, .bvar 1]]⟩,             -- 3: data Pair a b = MkPair a b
+  ⟨1, [⟨1, [.bvar 1, .arrow (.bvar 1) (.bvar 0)]⟩]⟩ ] -- 4: data Pack a = {s} MkPack s (s -> a)
 ```
 
 declares these types:
@@ -282,6 +304,7 @@ and these constructors (numbered from 0 in declaration order;
 | `Cons`   | `⟨1, 1⟩`  | `forall a. a -> List a -> List a` |
 | `Just`   | `⟨2, 1⟩`  | `forall a. a -> Maybe a`          |
 | `MkPair` | `⟨3, 0⟩`  | `forall a b. a -> b -> Pair a b`  |
+| `MkPack` | `⟨4, 0⟩`  | `forall a s. s -> (s -> a) -> Pack a` |
 
 So `Cons 3 Nil : List Int` is
 `.app (.app (.ctor ⟨1, 1⟩) (.lit (.int 3))) (.ctor ⟨1, 0⟩)`, and

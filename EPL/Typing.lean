@@ -34,7 +34,7 @@ def PrimLit.ty : PrimLit → Ty V
 /-- By convention, declaration 0 of a signature is `Bool`, with constructors
 `True | False` in that order. Comparisons are typed only in signatures that
 follow the convention. -/
-def boolDecl : DataDecl := ⟨0, [[], []]⟩
+def boolDecl : DataDecl := ⟨0, [.plain [], .plain []]⟩
 
 /-- The type `Bool`: declaration 0, by convention (see `boolDecl`). -/
 def Ty.bool : Ty V := .con 0
@@ -64,17 +64,20 @@ def Ty.arrows (domains : List (Ty V)) (codomain : Ty V) : Ty V := domains.foldr 
 def DataDecl.selfTy (decl : DataDecl) (type : Nat) : SemTy :=
   Ty.apps (.con type) ((List.range decl.params).map .bvar)
 
-/-- `forall params. field_1 -> ... -> field_n -> T params`. -/
-def DataDecl.ctorScheme (decl : DataDecl) (type : Nat) (fields : List SemTy) : Scheme Empty :=
-  ⟨decl.params, Ty.arrows fields (decl.selfTy type)⟩
+/-- `forall params existentials. field_1 -> ... -> field_n -> T params`: the
+constructor's own variables are binders of its scheme like the parameters,
+they just do not occur in the result. -/
+def DataDecl.ctorScheme (decl : DataDecl) (type : Nat) (ctor : CtorDecl) : Scheme Empty :=
+  ⟨decl.params + ctor.existentials, Ty.arrows ctor.fields (decl.selfTy type)⟩
 
-/-- Every field type mentions only the declaration's parameters. -/
+/-- Every field type mentions only the declaration's parameters and its
+constructor's own variables. -/
 def DataDecl.WF (decl : DataDecl) : Prop :=
-  ∀ fields ∈ decl.ctors, ∀ field ∈ fields, field.Scoped 0 decl.params
+  ∀ ctor ∈ decl.ctors, ∀ field ∈ ctor.fields, field.Scoped 0 (decl.params + ctor.existentials)
 
 /-- `DataDecl.WF` is decidable. -/
 instance (decl : DataDecl) : Decidable decl.WF :=
-  inferInstanceAs (Decidable (∀ fields ∈ decl.ctors, ∀ field ∈ fields, _))
+  inferInstanceAs (Decidable (∀ ctor ∈ decl.ctors, ∀ field ∈ ctor.fields, _))
 
 /-- Declaration `type`; `none` if the signature does not declare it or the
 declaration is not well formed. (The check is per declaration, so an
@@ -88,8 +91,14 @@ def Signature.decl? (sig : Signature) (type : Nat) : Option DataDecl := do
 declaration for its type or the declaration has no such constructor. -/
 def Signature.ctorScheme (sig : Signature) (ref : CtorRef) : Option (Scheme Empty) := do
   let decl ← sig.decl? ref.type
-  let fields ← decl.ctors[ref.index]?
-  some (decl.ctorScheme ref.type fields)
+  let ctor ← decl.ctors[ref.index]?
+  some (decl.ctorScheme ref.type ctor)
+
+/-- The type of a match branch for `ctor` on a scrutinee of type `T args`,
+with `hidden` for the constructor's own variables: `f_1 -> ... -> f_n ->
+resultTy`, each field instantiated at `args ++ hidden`. -/
+def CtorDecl.branchTy (ctor : CtorDecl) (args hidden : List SemTy) (resultTy : SemTy) : SemTy :=
+  Ty.arrows (ctor.fields.map (·.instantiate (args ++ hidden))) resultTy
 
 /-- `scheme` completes the written annotation `ann` at depth `k`. -/
 structure PolyAnn.Completes (k : Nat) (ann : PolyAnn Template) (scheme : Scheme Empty) :
@@ -186,22 +195,62 @@ inductive TypingWith (sig : Signature) (Det : LetCondition) :
 
   /-- A match on a value of type `T args`: there is at least one branch; every
   pattern is a constructor of `T`; and the branch for a constructor with
-  fields `f_1 ... f_n` has type `f_1 -> ... -> f_n -> resultTy` (the fields
-  instantiated at `args`). The match need not be exhaustive. The elaboration
-  keeps the patterns and elaborates each branch body. -/
+  fields `f_1 ... f_n` has type `f_1 -> ... -> f_n -> resultTy`
+  (`CtorDecl.branchTy`). The match need not be exhaustive. The elaboration
+  keeps the patterns and elaborates each branch body.
+
+  A constructor's own (existential) variables become fresh rigid levels
+  `k, ..., k + existentials - 1`, and its branch is checked at that depth, as
+  `letPoly` checks its right-hand side: the branch must work whatever types
+  the value was built with. `resultTy` is shared by all branches and must be
+  well formed at the outer depth `k`, so it cannot mention a branch's fresh
+  levels: this is the escape check. (The context is well formed at `k` by
+  assumption, so nothing else can mention them either.) A branch's depth is
+  not recorded in the elaboration; it follows from the pattern and the
+  signature. -/
   | «match» :
+      -- (1) The scrutinee has type `T args`: data type number `type`, applied
+      --     to some type arguments (none for Bool). The rule needs `type` to find the
+      --     declaration and `args` to fill in its parameters in the field types.
       TypingWith sig Det k ctx scrutinee scrutineeElab (Ty.apps (.con type) args) →
+
+      -- (2) `type` names a declared, well-formed data type; call it `decl`.
       sig.decl? type = some decl →
+
+      -- (3) It's fully applied: one argument per parameter (0 for Bool, 1 for List).
       args.length = decl.params →
+
+      -- (4) At least one branch. With none, nothing would constrain `resultTy`.
       branches ≠ [] →
+
+      -- (5) Every pattern is a constructor of this same type `T` (not of some
+      --     other type), and that constructor exists.
       (∀ pattern ∈ branches.map (·.1), pattern.type = type ∧ pattern.index < decl.ctors.length) →
+
+      -- (6) Elaboration keeps the patterns as they are, in the same order; only
+      --     the branch bodies get elaborated (their lambdas get types filled in).
       branchesElab.map (·.1) = branches.map (·.1) →
-      (∀ (i : Nat) pattern body bodyElab fields,
-        branches[i]? = some (pattern, body) →
-        branchesElab[i]? = some (pattern, bodyElab) →
-        decl.ctors[pattern.index]? = some fields →
-        TypingWith sig Det k ctx body bodyElab
-          (Ty.arrows (fields.map (·.instantiate args)) resultTy)) →
+
+      -- (7) Each branch body is typed. Indexing by `i` pairs the i-th source branch
+      --     with the i-th elaborated one.
+      (∀ (i : Nat) pattern body bodyElab ctor,
+        branches[i]? = some (pattern, body) →            -- source branch i
+        branchesElab[i]? = some (pattern, bodyElab) →    -- elaborated branch i
+        decl.ctors[pattern.index]? = some ctor →         -- the constructor the pattern names
+        -- Checked one depth level deeper per existential, so the
+        -- constructor's own variables are the fresh levels k, ..., k+e-1
+        TypingWith sig Det (k + ctor.existentials) ctx body bodyElab
+          -- The body is a function of the fields:
+          --   f_1 -> ... -> f_n -> resultTy
+          -- with each field's parameters replaced by `args` and its existentials
+          -- by the fresh rigid levels.
+          (ctor.branchTy args (rigidBlock k ctor.existentials) resultTy)) →
+
+      -- (8) The escape check: the match's type only mentions levels < k,
+      --     so it can't mention any branch's fresh levels.
+      resultTy.WF k →
+
+      -- Conclusion: the whole match has type `resultTy` at depth k.
       TypingWith sig Det k ctx (.match scrutinee branches) (.match scrutineeElab branchesElab)
         resultTy
 
@@ -287,16 +336,23 @@ inductive RuntimeTyping (sig : Signature) : Nat → Ctx Empty → RuntimeExpr �
 
   /-- A match on a value of type `T args`, as in `TypingWith`: at least one
   branch, every pattern a constructor of `T`, and each branch a function of
-  its constructor's fields (instantiated at `args`) to `resultTy`. -/
+  its constructor's fields to `resultTy`. Like `letIn`, a branch is typed
+  Kripke style: for every choice `hidden` of the constructor's own variables,
+  at every depth `k' ≥ k`. `resultTy` is fixed before `hidden` is chosen, so
+  it cannot depend on it: that order of quantifiers is this rule's escape
+  check. Erasure turns `TypingWith`'s fresh rigid levels into this form by
+  the same type substitution as for `letPoly`. -/
   | «match» :
       RuntimeTyping sig k ctx scrutinee (Ty.apps (.con type) args) →
       sig.decl? type = some decl →
       args.length = decl.params →
       branches ≠ [] →
       (∀ pattern ∈ branches.map (·.1), pattern.type = type ∧ pattern.index < decl.ctors.length) →
-      (∀ pattern body fields, (pattern, body) ∈ branches →
-        decl.ctors[pattern.index]? = some fields →
-        RuntimeTyping sig k ctx body (Ty.arrows (fields.map (·.instantiate args)) resultTy)) →
+      (∀ pattern body ctor, (pattern, body) ∈ branches →
+        decl.ctors[pattern.index]? = some ctor →
+        ∀ k', k ≤ k' → ∀ hidden : List SemTy, hidden.length = ctor.existentials →
+          (∀ ty ∈ hidden, ty.WF k') →
+          RuntimeTyping sig k' ctx body (ctor.branchTy args hidden resultTy)) →
       RuntimeTyping sig k ctx (.match scrutinee branches) resultTy
 
 /-! ## Exhaustiveness
