@@ -238,18 +238,26 @@ def inferAt (sig : Signature) (k : Nat) (ctx : Ctx Nat) :
 
 /-- Infer each branch body in turn and unify its type with
 `field_1 -> ... -> field_n -> resultTy`, the fields of its constructor
-instantiated at `args`. Error paths start at the failing branch. Also returns
-each body's `TypeTree`. -/
+instantiated at `args` and, for the constructor's own variables, at fresh
+rigid levels. Error paths start at the failing branch. Also returns each
+body's `TypeTree`. -/
 def inferBranches (sig : Signature) (k : Nat) (ctx : Ctx Nat) (decl : DataDecl)
     (args : List InfTy) (resultTy : InfTy) :
     List (CtorRef × Source) → MStore →
       Except InferError ((List (CtorRef × Expr InfTy) × MStore) × List TypeTree)
   | [], store => pure (([], store), [])
   | (pattern, body) :: rest, store => do
-      let fields ← decl.ctors[pattern.index]?.getDM
+      let ctor ← decl.ctors[pattern.index]?.getDM
         (throw ⟨[.matchBranch 0], .foreignPattern⟩)
-      let bodyResult ← (inferAt sig k ctx body store).mapError (.under (.matchBranch 0))
-      let expected := Ty.arrows (fields.map fun field => field.lift.instantiate args) resultTy
+      -- The constructor's own variables are the fresh rigid levels
+      -- `k, ..., inner - 1`, and the body is inferred at the inner depth.
+      -- `resultTy`, `args` and the context's metavariables are at level `k` or
+      -- below, so unification cannot solve them to a type that mentions the
+      -- fresh levels: that is the escape check.
+      let inner := k + ctor.existentials
+      let bodyResult ← (inferAt sig inner ctx body store).mapError (.under (.matchBranch 0))
+      let expected := Ty.arrows (ctor.fields.map fun field =>
+        field.lift.instantiate (args ++ rigidBlock k ctor.existentials)) resultTy
       let store ← bodyResult.store.unifyAt [.matchBranch 0] bodyResult.ty expected
       let ((restElab, store), restTypes) ←
         (inferBranches sig k ctx decl args resultTy rest store).mapError InferError.nextBranch
