@@ -246,8 +246,44 @@ def docsOf (source : String) : List String :=
 -- An arm is one type variable deeper per hidden type, so a polymorphic `let`
 -- inside it gets its own type variable rather than the hidden one.
 #guard runToString "type Pack a = MkPack {s} s (s -> a)\nmatch MkPack True (\\b -> if b then 1 else 0) with\n| MkPack x f ->\n  let id {b} (y : b) : b = y in f (id x) + id 10" == "11 : Int"
--- Inside an arm, the hidden type can be named as in the declaration.
-#guard runToString "type Pack a = MkPack {s} s (s -> a)\nmatch MkPack True (\\b -> if b then 1 else 0) with\n| MkPack x f ->\n  let g (y : s) : Int = f y in g x" == "1 : Int"
+/-- A `Pack Int` hiding a `Bool`, as `p`. -/
+def packPrelude : String :=
+  "type Pack a = MkPack {s} s (s -> a)\nlet p = MkPack True (\\b -> if b then 1 else 0)\n"
+
+-- The declaration's name for the hidden type is not in scope in an arm...
+#guard runToString (packPrelude ++ "match p with\n| MkPack x f -> let g (y : s) : Int = f y in g x") ==
+  "4:28: type variable `s` is not in scope"
+-- ...but the pattern can name it.
+#guard runToString (packPrelude ++ "match p with\n| MkPack {t} x f -> let g (y : t) : Int = f y in g x") ==
+  "1 : Int"
+-- An outer `s` keeps its meaning in the arm.
+#guard runToString (packPrelude ++ "let use {s} (z : s) : Int = match p with\n  | MkPack x f -> let h (w : s) : s = w in f x\nuse 'c'") ==
+  "1 : Int"
+-- A pattern's `{s}` shadows an outer `s`.
+#guard runToString (packPrelude ++ "let use {s} (z : s) : Int = match p with\n  | MkPack {s} x f -> let g (y : s) : Int = f y in g x\nuse 'c'") ==
+  "1 : Int"
+-- An unnamed hidden type is shown with the declaration's name, primed when
+-- that name is taken.
+#guard runToString (packPrelude ++ "let use {s} (z : s) : s = match p with\n  | MkPack x f -> x\nuse 'c'") ==
+  "4:19: type mismatch: expected `s' -> (s' -> Int) -> ?8`, found `?9 -> ?10 -> ?9` (`?8` cannot be `s'`: a type variable would escape its scope)"
+#guard symbolsOf (packPrelude ++ "match p with\n| MkPack x f -> f x") "x" == ["4:10 def s", "4:19 use s"]
+#guard symbolsOf (packPrelude ++ "let use {s} (z : s) : Int = match p with\n  | MkPack x f -> f x\nuse 'c'") "x" ==
+  ["4:12 def s'", "4:21 use s'"]
+#guard symbolsOf (packPrelude ++ "match p with\n| MkPack {t} x f -> f x") "x" == ["4:14 def t", "4:23 use t"]
+#guard symbolsOf (packPrelude ++ "match p with\n| MkPack {t} x f -> let g (y : t) : Int = f y in g x") "t" ==
+  ["4:11 def type variable (of this pattern)", "4:32 use type variable (of this pattern)"]
+-- Two packs in one pattern hide two different types.
+#guard runToString (packPrelude ++ "match (p, p) with\n| (MkPack {t} x f, MkPack {u} y g) -> let k (a : t) (b : u) : Int = f a + g b in k x y") ==
+  "2 : Int"
+#guard (runToString (packPrelude ++ "match (p, p) with\n| (MkPack {t} x f, MkPack {u} y g) -> let k (a : t) (b : u) : Int = f b + g a in k x y")).startsWith
+  "4:43: type mismatch"
+-- Naming the wrong number of type variables, or one twice.
+#guard runToString (packPrelude ++ "match p with\n| MkPack {t u} x f -> 1") ==
+  "4:3: `MkPack` has 1 type variable(s) of its own, but the pattern names 2"
+#guard runToString "match [1] with\n| Cons {t} x xs -> x\n| Nil -> 0" ==
+  "2:3: `Cons` has no type variables of its own to name"
+#guard runToString (packPrelude ++ "match (p, p) with\n| (MkPack {t} x f, MkPack {t} y g) -> f x + g y") ==
+  "4:3: type variable `t` is bound twice in this pattern"
 -- A constructor's fields may only use its type's parameters and its own variables.
 #guard runToString "type T = MkT s\n1" == "1:14: type variable `s` is not in scope"
 #guard runToString "type T a = MkT {a} a\n1" == "1:12: type parameter `a` is bound twice"

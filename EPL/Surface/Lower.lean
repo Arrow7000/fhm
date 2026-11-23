@@ -116,6 +116,11 @@ inductive LowerErrorReason where
   | duplicateConstructor (name : String)
   | duplicateTypeParameter (name : String)
   | duplicatePatternVariable (name : String)
+  /-- `C {t ...}` in a pattern names `actual` type variables, but the
+  constructor has `expected` of its own. -/
+  | ctorTyVarArity (name : String) (expected actual : Nat)
+  /-- A pattern binds the type variable `name` twice. -/
+  | duplicatePatternTypeVariable (name : String)
   /-- Two top-level bindings of the same name. -/
   | duplicateBinding (name : String)
   /-- These bindings refer to each other in a cycle. -/
@@ -279,6 +284,10 @@ structure Scope where
   k : Nat := 0
   /-- Type variables in scope, by rigid level, innermost first. -/
   tyVars : List (String × Nat) := []
+  /-- The rigid levels of hidden types in scope that no name refers to (a
+  constructor's own type variables in a match arm whose pattern does not bind
+  them), with the constructor declaration's names. Only for display. -/
+  hiddenTyVars : List (String × Nat) := []
   /-- The id of the binder at each level (see `OriginInfo.binder`). -/
   ids : Array Nat := #[]
   /-- Where each type variable in scope is bound, and by what. -/
@@ -311,6 +320,24 @@ def Scope.enterTyVars (scope : Scope) (names : List String) : Scope :=
     k := scope.k + names.length
     tyVars := (names.zipIdx.map fun (name, i) => (name, scope.k + i)).reverse ++ scope.tyVars }
 
+/-- Enter a constructor's own type variables as hidden types at the next rigid
+levels, named `names` for display only. -/
+def Scope.enterHidden (scope : Scope) (names : List String) : Scope :=
+  { scope with
+    k := scope.k + names.length
+    hiddenTyVars := (names.zipIdx.map fun (name, i) => (name, scope.k + i)).reverse ++
+      scope.hiddenTyVars }
+
+/-- A name for every rigid level in scope, for messages and hover: the type
+variables' own names, then the hidden types', primed until they differ from
+every other name shown. -/
+def Scope.displayTyVars (scope : Scope) : List (String × Nat) :=
+  let prime (taken : List String) (name : String) : String :=
+    (List.range (taken.length + 1)).foldl
+      (fun name _ => if name ∈ taken then name ++ "'" else name) name
+  scope.tyVars ++ scope.hiddenTyVars.foldl (init := []) fun shown (name, level) =>
+    shown ++ [(prime (scope.tyVars.map (·.1) ++ shown.map (·.1)) name, level)]
+
 /-- Record that `owner` binds the type variables `names` at `spans`. -/
 def Scope.defineTyVars (scope : Scope) (names : List String) (spans : List Span)
     (owner : String) : Scope :=
@@ -319,7 +346,7 @@ def Scope.defineTyVars (scope : Scope) (names : List String) (spans : List Span)
 
 def Scope.origin (scope : Scope) (span : Span) (children : List Origin)
     (info : OriginInfo := {}) : Origin :=
-  .node span scope.tyVars children info
+  .node span scope.displayTyVars children info
 
 /-- A core term and its origins. -/
 abbrev Lowered := Source × Origin
@@ -478,13 +505,16 @@ def headTemplate (scope : Scope) (params : List ValueParam) (result : Option Ty)
 inductive RPat where
   /-- Matches anything, binding it to `name` if given. -/
   | any (name : Option (String × Span))
-  | ctor (span : Span) (name : String) (ref : CtorRef) (args : List RPat)
+  /-- `tyVars` names the constructor's own type variables, if the pattern binds
+  them. -/
+  | ctor (span : Span) (name : String) (ref : CtorRef) (tyVars : List (String × Span))
+      (args : List RPat)
   deriving Repr, Inhabited
 
 mutual
 def RPat.ctorCount : RPat → Nat
   | .any _ => 0
-  | .ctor _ _ _ args => RPat.ctorCountList args + 1
+  | .ctor _ _ _ _ args => RPat.ctorCountList args + 1
 
 def RPat.ctorCountList : List RPat → Nat
   | [] => 0
@@ -495,20 +525,23 @@ mutual
 def resolvePattern : Pattern → M RPat
   | .wildcard _ => pure (.any none)
   | .var span name => pure (.any (some (name, span)))
-  | .ctor span name args => do
+  | .ctor span name tyVars args => do
       let (ref, arity) ← findCtor span name
       if args.length ≠ arity then throw ⟨span, .patternArity name arity args.length⟩
+      let own := (((← read).types[ref.type]?).bind (·.ctorTyVars[ref.index]?)).getD []
+      if !tyVars.isEmpty && tyVars.length ≠ own.length then
+        throw ⟨span, .ctorTyVarArity name own.length tyVars.length⟩
       recordOccurrence { name, span := nameSpanAt span name, kind := .ctor }
-      pure (.ctor span name ref (← resolvePatterns args))
+      pure (.ctor span name ref tyVars (← resolvePatterns args))
   | .pair span fst snd => do
-      pure (.ctor span "Pair" pairRef [← resolvePattern fst, ← resolvePattern snd])
+      pure (.ctor span "Pair" pairRef [] [← resolvePattern fst, ← resolvePattern snd])
   | .cons span opSpan head tail => do
       recordOccurrence { name := BinOp.cons.describe, span := opSpan, kind := .op "Cons" }
-      pure (.ctor span "Cons" consRef [← resolvePattern head, ← resolvePattern tail])
+      pure (.ctor span "Cons" consRef [] [← resolvePattern head, ← resolvePattern tail])
   | .list span items => do
       let items ← resolvePatterns items
-      pure (items.foldr (init := .ctor span "Nil" nilRef []) fun item rest =>
-        .ctor span "Cons" consRef [item, rest])
+      pure (items.foldr (init := .ctor span "Nil" nilRef [] []) fun item rest =>
+        .ctor span "Cons" consRef [] [item, rest])
 
 def resolvePatterns : List Pattern → M (List RPat)
   | [] => pure []
@@ -520,6 +553,8 @@ bound (to levels), and the arm it leads to. -/
 structure Row where
   pats : List RPat
   aliases : List ((String × Span) × Nat)
+  /-- The type variables bound so far (`MkPack {t} ...`), to rigid levels. -/
+  tyAliases : List ((String × Span) × Nat) := []
   arm : Nat
   deriving Inhabited
 
@@ -527,32 +562,36 @@ structure Row where
 def firstCtor : List RPat → Nat → Option (Nat × Span × CtorRef)
   | [], _ => none
   | .any _ :: rest, column => firstCtor rest (column + 1)
-  | .ctor span _ ref _ :: _, column => some (column, span, ref)
+  | .ctor span _ ref _ _ :: _, column => some (column, span, ref)
 
 /-- The span of the first pattern for constructor `ref` in `column` of `rows`. -/
 def ctorSpan (column : Nat) (ref : CtorRef) (rows : List Row) : Option Span :=
   rows.findSome? fun row => match row.pats[column]? with
-    | some (RPat.ctor span _ other _) => if other = ref then some span else none
+    | some (RPat.ctor span _ other _ _) => if other = ref then some span else none
     | _ => none
 
 /-- The rows that match constructor `index` (with `arity` fields) of `type` in
 `column`, whose value is the variable at `level`: its fields replace the
-column. -/
-def specialize (column type index arity level : Nat) : List Row → M (List Row)
+column. The constructor's own type variables are the rigid levels from `rigid`
+on; a pattern that names them (`MkPack {t} ...`) binds its names to them. -/
+def specialize (column type index arity level rigid : Nat) : List Row → M (List Row)
   | [] => pure []
   | row :: rows => do
-      let rest ← specialize column type index arity level rows
+      let rest ← specialize column type index arity level rigid rows
       let others := row.pats.eraseIdx column
       match row.pats[column]? with
       | some (.any name) =>
           let aliases := match name with
             | some name => (name, level) :: row.aliases
             | none => row.aliases
-          pure (⟨List.replicate arity (.any none) ++ others, aliases, row.arm⟩ :: rest)
-      | some (.ctor span name ref args) =>
+          pure ({ row with pats := List.replicate arity (.any none) ++ others, aliases } :: rest)
+      | some (.ctor span name ref tyVars args) =>
           if ref.type ≠ type then
             throw ⟨span, .foreignPattern name ((← read).typeName type)⟩
-          else if ref.index = index then pure (⟨args ++ others, row.aliases, row.arm⟩ :: rest)
+          else if ref.index = index then
+            let tyAliases := (tyVars.zipIdx.map fun (tyVar, i) => (tyVar, rigid + i)) ++
+              row.tyAliases
+            pure ({ row with pats := args ++ others, tyAliases } :: rest)
           else pure rest
       | none => pure rest
 
@@ -572,9 +611,21 @@ def compile (leaf : Nat → Scope → M Lowered) (armScope : Nat → Span) (span
             | (.any (some name), (level, _)) => some (name, level)
             | _ => none
           let names := row.aliases ++ bound
+          -- The type variables the patterns name, as ordinary type variables.
+          let tyAliases : List ((String × Span) × Nat) := row.tyAliases
+          for ((tyVar, tyVarSpan), _) in tyAliases do
+            recordOccurrence { name := tyVar, span := tyVarSpan, kind := .tyVar "this pattern",
+                               isDef := true, scope := armScope row.arm }
+          let tyNames : List String :=
+            tyAliases.map fun (bound : (String × Span) × Nat) => bound.1.1
+          let tySpans : List Span := tyAliases.map fun (bound : (String × Span) × Nat) => bound.1.2
+          let tyLevels : List Nat := tyAliases.map fun (bound : (String × Span) × Nat) => bound.2
+          let scope := { scope with tyVars := tyNames.zip tyLevels ++ scope.tyVars }
+          let scope := scope.defineTyVars tyNames tySpans "this pattern"
+          -- A pattern variable's type is shown with the arm's type variable names.
           for ((name, nameSpan), level) in names do
             recordName { name := name, span := nameSpan, scope := armScope row.arm,
-                         binder := scope.idAt level }
+                         binder := scope.idAt level, tyVars := scope.displayTyVars }
           let scope := names.foldl (fun scope ((name, _), level) =>
             scope.alias name level) scope
           pure (some (← leaf row.arm scope), [row.arm])
@@ -583,7 +634,7 @@ def compile (leaf : Nat → Scope → M Lowered) (armScope : Nat → Span) (span
           let (level, levelSpan) := columns.getD column (0, span)
           let others := columns.eraseIdx column
           let results ← info.ctors.zipIdx.mapM fun ((name, arity), index) => do
-            let specialized ← specialize column ref.type index arity level (row :: rows)
+            let specialized ← specialize column ref.type index arity level scope.k (row :: rows)
             if specialized.isEmpty then
               modify fun state => { state with uncovered := state.uncovered.push (levelSpan, name) }
             -- A field's value is located at its constructor's pattern.
@@ -591,8 +642,9 @@ def compile (leaf : Nat → Scope → M Lowered) (armScope : Nat → Span) (span
             let fields := (List.range arity).map fun i => (scope.depth + i, fieldSpan)
             let fieldIds ← (List.range arity).mapM fun _ => freshBinder
             -- The core checks the branch one rigid level deeper per type
-            -- variable of the constructor's own; they keep its declaration's names.
-            let deeper := scope.enterTyVars (info.ctorTyVars.getD index [])
+            -- variable of the constructor's own. They are hidden types, unless a
+            -- pattern names them (see `specialize`).
+            let deeper := scope.enterHidden (info.ctorTyVars.getD index [])
             let inner := fieldIds.foldl (fun scope id => scope.bind none id) deeper
             let (tree, reached) ←
               compile leaf armScope span fuel inner (fields ++ others) specialized
@@ -615,10 +667,12 @@ def compileMatch (scope : Scope) (span : Span) (columns : List (Nat × Span))
   for row in rows do
     if let some name := firstDuplicate (Pattern.varsList row) then
       throw ⟨((row.head?.map (·.span)).getD span), .duplicatePatternVariable name⟩
+    if let some name := firstDuplicate (Pattern.tyVarsList row) then
+      throw ⟨((row.head?.map (·.span)).getD span), .duplicatePatternTypeVariable name⟩
   let resolved ← rows.mapM resolvePatterns
   let fuel := (resolved.map RPat.ctorCountList).sum + 1
   let (tree, reached) ← compile leaf armScope span fuel scope columns
-    (resolved.zipIdx.map fun (pats, arm) => ⟨pats, [], arm⟩)
+    (resolved.zipIdx.map fun (pats, arm) => { pats, aliases := [], arm })
   for row in rows, arm in [0:rows.length] do
     unless reached.contains arm do
       throw ⟨((row.head?.map (·.span)).getD span), .redundantArm⟩
@@ -780,7 +834,7 @@ def lowerChain : Nat → Scope → Span → Bool → List (Binding × Expr) → 
         let letId ← freshBinder
         let selfId ← freshBinder
         recordName { name := name, span := nameSpan, scope := block, binder := letId,
-                     tyParams := binders, tyVars := inner.tyVars, topLevel := topLevel,
+                     tyParams := binders, tyVars := inner.displayTyVars, topLevel := topLevel,
                      binding := true }
         for (tyVar, span) in binders.zip
             (binding.tyParamSpans ++ ((binding.ann.map (·.binderSpans)).getD [])) do

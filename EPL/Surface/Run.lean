@@ -465,7 +465,7 @@ def Lowering.symbols (lowering : Lowering) (types : TypeTree) : Array Symbol := 
   let defs := lowering.names.filterMap fun name =>
     (binders.get? name.binder).map fun (ty, tyVars) => ({
       name := name.name, kind := "val",
-      ty := tyParamsPrefix name.tyParams ++ showInfTy lowering.globals tyVars ty,
+      ty := tyParamsPrefix name.tyParams ++ showInfTy lowering.globals (name.tyVars ++ tyVars) ty,
       span := name.span, scope := name.scope, isDef := true,
       doc := lowering.docs.lookup name.span.start } : Symbol)
   let uses := facts.filterMap fun
@@ -560,6 +560,10 @@ def LowerErrorReason.describe : LowerErrorReason → String
   | .duplicateConstructor name => s!"constructor `{name}` is already declared"
   | .duplicateTypeParameter name => s!"type parameter `{name}` is bound twice"
   | .duplicatePatternVariable name => s!"`{name}` is bound twice in this pattern"
+  | .ctorTyVarArity name 0 _ => s!"`{name}` has no type variables of its own to name"
+  | .ctorTyVarArity name expected actual =>
+      s!"`{name}` has {expected} type variable(s) of its own, but the pattern names {actual}"
+  | .duplicatePatternTypeVariable name => s!"type variable `{name}` is bound twice in this pattern"
   | .duplicateBinding name => s!"`{name}` is defined twice"
   | .mutualRecursion names =>
       s!"mutual recursion is not supported: {", ".intercalate names}"

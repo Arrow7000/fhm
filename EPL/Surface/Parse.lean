@@ -214,7 +214,7 @@ def patAtom : Nat → P Pattern
     match tok.token with
     | .punct .underscore => bump; return .wildcard tok.span
     | .ident name false => bump; return .var tok.span name
-    | .ident name true => bump; return .ctor tok.span name []
+    | .ident name true => bump; return .ctor tok.span name [] []
     | .punct .lparen =>
         bump
         let fst ← pattern n
@@ -254,16 +254,18 @@ def patArgs : Nat → P (List Pattern)
         else return []
     | none => return []
 
-/-- A constructor applied to atoms, or an atom. -/
+/-- A constructor applied to atoms (`C {t} x y`, naming its own type variables
+if it binds them), or an atom. -/
 def patApp : Nat → P Pattern
   | 0 => tooDeep
   | n + 1 => do
     match ← peek with
     | some tok@{ token := .ident name true, .. } =>
         bump
+        let tyVars ← if (← accept (.punct .lbrace)).isSome then binderNames n else pure []
         let args ← patArgs n
         return .ctor ⟨tok.span.start, (args.getLast?.map (·.span.stop)).getD tok.span.stop⟩
-          name args
+          name tyVars args
     | _ => patAtom n
 
 /-- Right-associative `::`. -/

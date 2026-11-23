@@ -66,8 +66,10 @@ inductive Pattern where
   | wildcard (span : Span)
   /-- A lowercase name: matches anything and binds it. -/
   | var (span : Span) (name : String)
-  /-- A constructor and one pattern per field, e.g. `Just x` or `True`. -/
-  | ctor (span : Span) (name : String) (args : List Pattern)
+  /-- A constructor and one pattern per field, e.g. `Just x` or `True`.
+  `tyVars` names the constructor's own type variables, if the pattern binds
+  them: `MkPack {t} x f`. -/
+  | ctor (span : Span) (name : String) (tyVars : List (String × Span)) (args : List Pattern)
   /-- `(p, q)` -/
   | pair (span : Span) (fst snd : Pattern)
   /-- `p :: q`; `opSpan` is the `::`'s. -/
@@ -77,7 +79,7 @@ inductive Pattern where
   deriving Repr, Inhabited
 
 def Pattern.span : Pattern → Span
-  | .wildcard span | .var span _ | .ctor span _ _ | .pair span _ _ | .cons span ..
+  | .wildcard span | .var span _ | .ctor span _ _ _ | .pair span _ _ | .cons span ..
   | .list span _ => span
 
 mutual
@@ -85,7 +87,7 @@ mutual
 def Pattern.vars : Pattern → List String
   | .wildcard _ => []
   | .var _ name => [name]
-  | .ctor _ _ args => Pattern.varsList args
+  | .ctor _ _ _ args => Pattern.varsList args
   | .pair _ fst snd => fst.vars ++ snd.vars
   | .cons _ _ head tail => head.vars ++ tail.vars
   | .list _ items => Pattern.varsList items
@@ -93,6 +95,19 @@ def Pattern.vars : Pattern → List String
 def Pattern.varsList : List Pattern → List String
   | [] => []
   | pattern :: rest => pattern.vars ++ Pattern.varsList rest
+end
+
+mutual
+/-- The type variables a pattern binds (`MkPack {t} ...`), left to right. -/
+def Pattern.tyVars : Pattern → List String
+  | .wildcard _ | .var .. => []
+  | .ctor _ _ tyVars args => tyVars.map (·.1) ++ Pattern.tyVarsList args
+  | .pair _ fst snd | .cons _ _ fst snd => fst.tyVars ++ snd.tyVars
+  | .list _ items => Pattern.tyVarsList items
+
+def Pattern.tyVarsList : List Pattern → List String
+  | [] => []
+  | pattern :: rest => pattern.tyVars ++ Pattern.tyVarsList rest
 end
 
 /-- The infix operators. -/
@@ -268,7 +283,7 @@ end
 mutual
 def Pattern.size : Pattern → Nat
   | .wildcard _ | .var .. => 1
-  | .ctor _ _ args => Pattern.sizeList args + 1
+  | .ctor _ _ _ args => Pattern.sizeList args + 1
   | .pair _ fst snd | .cons _ _ fst snd => fst.size + snd.size + 1
   | .list _ items => Pattern.sizeList items + 1
 
